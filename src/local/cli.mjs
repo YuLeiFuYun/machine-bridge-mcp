@@ -329,7 +329,7 @@ async function apiConfigureCommand(args) {
       if (answer) upstreamUrl = answer;
     }
     if (explicitModel === undefined) {
-      const answer = (await ask(`Upstream model [${upstreamModel}]: `)).trim();
+      const answer = (await ask(`External model [${upstreamModel}]: `)).trim();
       if (answer) upstreamModel = answer;
     }
     if (upstreamKey === undefined && !state.localApi.upstreamKey) {
@@ -349,13 +349,13 @@ async function apiConfigureCommand(args) {
   saveState(state);
 
   const logger = createLogger({ quiet: Boolean(args.quiet), component: "api" });
-  logger.success("upstream model provider configured", {
+  logger.success("external model API provider configured", {
     upstream: state.localApi.upstreamUrl,
     upstreamModel: state.localApi.upstreamModel,
     key: redactSecret(state.localApi.upstreamKey),
   });
   logger.plain("  Existing machine-mcp API processes from v0.2.2+ pick this up on the next request.");
-  logger.plain("  If Cherry Studio still sees upstream_not_configured, restart `machine-mcp` once.");
+  logger.plain("  If a v0.2.3+ running proxy still shows stale provider state, restart `machine-mcp` once.");
 }
 
 async function startConfiguredApiServer(state, args, logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "api" })) {
@@ -636,7 +636,8 @@ function printStartJson(state, apiServer, { noPrintCredentials = false } = {}) {
       api_key: apiKey,
       already_running: Boolean(apiServer.alreadyRunning),
       upstream_configured: Boolean(state.localApi?.upstreamKey || valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY")),
-      model: state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL,
+      model: state.localApi?.upstreamKey ? (state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL) : null,
+      chatgpt_web_backed: false,
       client_type: "OpenAI-compatible",
     } : null,
     workspace: state.workspace.path,
@@ -651,7 +652,8 @@ function printApiJson(apiServer, state, { noPrintCredentials = false } = {}) {
       base_url: apiServer.baseUrl,
       api_key: noPrintCredentials ? previewSecret(state.localApi.apiKey) : state.localApi.apiKey,
       upstream_configured: Boolean(state.localApi?.upstreamKey || valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY")),
-      model: state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL,
+      model: state.localApi?.upstreamKey ? (state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL) : null,
+      chatgpt_web_backed: false,
       client_type: "OpenAI-compatible",
     },
     workspace: state.workspace.path,
@@ -691,15 +693,18 @@ function printMcpConnection(state, { json = false, noPrintCredentials = false, i
 
 function printApiConnection(apiServer, state, { noPrintCredentials = false, quiet = false } = {}) {
   const logger = createLogger({ component: "ready", quiet });
-  logger.success("Local model API provider is ready");
+  const configured = Boolean(state.localApi?.upstreamKey || valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY"));
+  logger.success("Local OpenAI-compatible API proxy is running");
   logger.plain(`  API Base URL: ${apiServer.baseUrl}`);
   logger.plain(`  API key: ${noPrintCredentials ? `${redactSecret(state.localApi.apiKey)} (redacted)` : state.localApi.apiKey}`);
   logger.plain("  Client type: OpenAI-compatible");
-  logger.plain(`  Model: ${state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL}`);
-  if (state.localApi?.upstreamKey || valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY")) {
-    logger.plain("  Model provider: configured");
+  logger.plain("  ChatGPT web backing: no; ChatGPT web uses the Remote MCP bridge, not this /v1 API.");
+  if (configured) {
+    logger.plain(`  Model: ${state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL}`);
+    logger.plain("  External model API provider: configured");
   } else {
-    logger.plain("  Model provider: not configured yet; run `machine-mcp api configure` before using chat/completions.");
+    logger.plain("  Models: none until an external OpenAI-compatible provider is configured.");
+    logger.plain("  For ChatGPT web, use the MCP Server URL/password instead of this local API.");
   }
 }
 
@@ -905,8 +910,8 @@ Usage:
 
 Commands:
   start             Deploy/update Worker, install autostart, start daemon and local API
-  api               Start local OpenAI-compatible API provider only
-  api configure     Save upstream provider URL/key/model for local API generation
+  api               Start local OpenAI-compatible API proxy only
+  api configure     Configure an external model API provider for the local proxy
   workspace show    Show remembered workspace
   workspace set     Re-select workspace; prompts with current/default path
   service status    Show autostart status
@@ -933,15 +938,15 @@ Start options:
   --full-env            Pass full parent environment to exec_command (default: minimal env)
   --state-dir DIR       Override state root
   --json                Print MCP and local API connection details as JSON
-  --no-api              Do not start the local OpenAI-compatible API provider
+  --no-api              Do not start the local OpenAI-compatible API proxy
   --api                 Deprecated no-op; local API starts by default
   --api-port PORT       Local API port (default: 8765)
   --port PORT           Alias for --api-port on the api command
   --api-host HOST       Local API host (default: 127.0.0.1)
   --api-key KEY         Set or replace local API key in state
   --rotate-api-key      Rotate local API key
-  --api-upstream-url URL  Upstream OpenAI-compatible base URL (default: https://api.openai.com/v1)
-  --api-upstream-key KEY  Upstream provider key; env OPENAI_API_KEY also works
+  --api-upstream-url URL  External OpenAI-compatible base URL (default: https://api.openai.com/v1)
+  --api-upstream-key KEY  External provider key; env OPENAI_API_KEY also works
   --api-upstream-model MODEL Model shown locally and sent upstream (default: gpt-4.1-mini)
   --api-model MODEL     Alias for --api-upstream-model
 
@@ -952,13 +957,13 @@ Uninstall options:
 }
 
 function apiUsage() {
-  console.log(`machine-bridge-mcp local API provider
+  console.log(`machine-bridge-mcp local API proxy
 
 Usage:
   machine-mcp
   machine-mcp --api-port 8766
-  machine-mcp api                    # API provider only
-  machine-mcp api configure          # save upstream key/model once
+  machine-mcp api                    # API proxy only
+  machine-mcp api configure          # configure external model provider
   machine-mcp api --api-port 8766
 
 Client settings:
@@ -973,12 +978,12 @@ Options:
   --port PORT             Alias for --api-port
   --api-key KEY           Set or replace local API key in state
   --rotate-api-key        Rotate local API key
-  --api-upstream-url URL  Upstream OpenAI-compatible base URL
-  --api-upstream-key KEY  Upstream provider key; env OPENAI_API_KEY also works
+  --api-upstream-url URL  External OpenAI-compatible base URL
+  --api-upstream-key KEY  External provider key; env OPENAI_API_KEY also works
   --api-upstream-model MODEL Model shown locally and sent upstream (default: gpt-4.1-mini)
   --api-model MODEL       Alias for --api-upstream-model
   --no-print-credentials  Redact the local API key in console output
-  --no-api                Only valid for start; disables the default local API provider
+  --no-api                Only valid for start; disables the default local API proxy
   --state-dir DIR         Override state root
 
 Environment:
@@ -989,7 +994,7 @@ Environment:
 
 
 function apiConfigureUsage() {
-  console.log(`machine-bridge-mcp local API provider setup
+  console.log(`machine-bridge-mcp local API proxy setup
 
 Usage:
   machine-mcp api configure
@@ -997,13 +1002,13 @@ Usage:
   machine-mcp api configure --api-upstream-url https://api.openai.com/v1
 
 What this stores:
-  Upstream Base URL, upstream model, and upstream API key are saved in the owner-only workspace state.
-  The local API key for Cherry Studio is separate and remains the key printed by machine-mcp.
+  External provider base URL, model, and API key are saved in the owner-only workspace state.
+  This is not a ChatGPT web API. The local API key for desktop clients is separate and remains the key printed by machine-mcp.
 
 Options:
   --workspace PATH          Configure this workspace
-  --api-upstream-url URL    Upstream OpenAI-compatible base URL
-  --api-upstream-key KEY    Upstream provider key to save
+  --api-upstream-url URL    External OpenAI-compatible base URL
+  --api-upstream-key KEY    External provider key to save
   --api-upstream-model MODEL Model shown locally and sent upstream
   --api-model MODEL         Alias for --api-upstream-model
   --clear-api-upstream-key  Remove the saved upstream key

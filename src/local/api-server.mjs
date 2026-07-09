@@ -8,7 +8,6 @@ export const DEFAULT_API_HOST = "127.0.0.1";
 export const DEFAULT_API_PORT = 8765;
 export const DEFAULT_UPSTREAM_URL = "https://api.openai.com/v1";
 export const DEFAULT_UPSTREAM_MODEL = "gpt-4.1-mini";
-export const DEFAULT_API_MODEL = DEFAULT_UPSTREAM_MODEL;
 export const DEFAULT_API_MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 const PROXY_ROUTES = new Set([
@@ -70,14 +69,13 @@ export async function startLocalApiServer(options = {}) {
   const upstreamUrl = normalizeBaseUrl(options.upstreamUrl);
   const upstreamKey = String(options.upstreamKey || "");
   const upstreamModel = String(options.upstreamModel || options.model || DEFAULT_UPSTREAM_MODEL);
-  const model = upstreamModel;
   const loadConfig = typeof options.loadConfig === "function" ? options.loadConfig : null;
   const maxBodyBytes = Number(options.maxBodyBytes || DEFAULT_API_MAX_BODY_BYTES);
 
   if (!apiKey) throw new Error("Local API key is missing");
 
   const server = http.createServer((req, res) => {
-    void handleRequest(req, res, { logger, apiKey, upstreamUrl, upstreamKey, model, upstreamModel, loadConfig, maxBodyBytes });
+    void handleRequest(req, res, { logger, apiKey, upstreamUrl, upstreamKey, upstreamModel, loadConfig, maxBodyBytes });
   });
 
   server.keepAliveTimeout = 65_000;
@@ -102,7 +100,7 @@ export async function startLocalApiServer(options = {}) {
   const actualPort = typeof address === "object" && address ? address.port : port;
   const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
   const baseUrl = `http://${urlHost}:${actualPort}/v1`;
-  logger.success("local OpenAI-compatible API started", { baseUrl, model, upstream: upstreamUrl, upstreamModel, upstreamConfigured: Boolean(upstreamKey) });
+  logger.success("local OpenAI-compatible API proxy started", { baseUrl, upstream: upstreamUrl, upstreamModel, upstreamConfigured: Boolean(upstreamKey), chatgptWebBacked: false });
 
   return {
     server,
@@ -125,7 +123,7 @@ async function handleRequest(req, res, context) {
   try {
     if (req.method === "OPTIONS") return sendEmpty(res, 204);
     const config = await currentConfig(context);
-    if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "machine-bridge-mcp-local-api", api_key_sha256: sha256String(context.apiKey), upstream_configured: Boolean(config.upstreamKey), model: config.model, upstream_model: config.upstreamModel });
+    if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "machine-bridge-mcp-local-api", api_key_sha256: sha256String(context.apiKey), upstream_configured: Boolean(config.upstreamKey), upstream_model: config.upstreamModel, chatgpt_web_backed: false });
 
     if (!isAuthorized(req, context.apiKey)) return sendOpenAiError(res, 401, "invalid_api_key", "Missing or invalid local API key.");
 
@@ -168,12 +166,12 @@ async function currentConfig(context) {
   return {
     upstreamUrl: normalizeBaseUrl(dynamic.upstreamUrl || context.upstreamUrl),
     upstreamKey: String(dynamic.upstreamKey || context.upstreamKey || ""),
-    upstreamModel: String(dynamic.upstreamModel || dynamic.model || context.upstreamModel || context.model || DEFAULT_UPSTREAM_MODEL),
+    upstreamModel: String(dynamic.upstreamModel || context.upstreamModel || DEFAULT_UPSTREAM_MODEL),
   };
 }
 
 function missingUpstreamMessage() {
-  return "Local API is running, but no upstream model provider key is configured. Run `machine-mcp api configure` to save a provider key, or run `machine-mcp api configure --api-upstream-key <key> --api-upstream-model <model>`. New API processes pick up saved configuration automatically; if this process was started before that feature existed, restart `machine-mcp`.";
+  return "This local OpenAI-compatible endpoint is not backed by ChatGPT web. ChatGPT web connects to your machine through the Remote MCP bridge, not through /v1/chat/completions. To use this endpoint with desktop clients, configure a separate OpenAI-compatible model API provider with `machine-mcp api configure`, or disable it with `machine-mcp --no-api`.";
 }
 
 async function proxyRequest(req, res, url, context) {
@@ -254,6 +252,7 @@ function isAuthorized(req, expectedKey) {
 }
 
 function modelsPayload(config) {
+  if (!config.upstreamKey) return { object: "list", data: [] };
   return {
     object: "list",
     data: [{

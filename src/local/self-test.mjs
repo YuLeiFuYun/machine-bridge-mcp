@@ -82,18 +82,22 @@ async function apiSelfTest() {
     const healthPayload = await health.json();
     const expectedHash = createHash("sha256").update("local-test-key").digest("hex");
     if (healthPayload.api_key_sha256 !== expectedHash) throw new Error("health did not expose expected API key hash");
+    if (healthPayload.upstream_configured !== false) throw new Error("health should report no external model provider");
+    if (healthPayload.chatgpt_web_backed !== false) throw new Error("local API must not claim ChatGPT web backing");
     const unauth = await fetch(`${base}/v1/models`);
     if (unauth.status !== 401) throw new Error(`unauthorized models returned ${unauth.status}`);
     const models = await fetch(`${base}/v1/models`, { headers: { authorization: "Bearer local-test-key" } });
     if (models.status !== 200) throw new Error(`authorized models returned ${models.status}`);
     const payload = await models.json();
-    if (payload?.data?.length !== 1 || payload?.data?.[0]?.id !== "test-model") throw new Error("model payload did not expose only the upstream model");
+    if (payload?.data?.length !== 0) throw new Error("unconfigured model payload should be empty");
     const chat = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
       body: JSON.stringify({ model: "test-model", messages: [] }),
     });
-    if (chat.status !== 503) throw new Error(`missing upstream key should return 503, got ${chat.status}`);
+    if (chat.status !== 503) throw new Error(`missing external provider should return 503, got ${chat.status}`);
+    const chatPayload = await chat.json();
+    if (!/not backed by ChatGPT web/.test(chatPayload?.error?.message || "")) throw new Error("missing provider error did not clarify ChatGPT web backing");
   } finally {
     await api.close();
   }
@@ -125,6 +129,11 @@ async function proxyModelSelfTest(logger) {
     logger,
   });
   try {
+    const models = await fetch(`http://${api.host}:${api.port}/v1/models`, { headers: { authorization: "Bearer local-test-key" } });
+    if (models.status !== 200) throw new Error(`configured models returned ${models.status}`);
+    const modelsPayload = await models.json();
+    if (modelsPayload?.data?.length !== 1 || modelsPayload.data[0].id !== "real-upstream-model") throw new Error("configured model payload did not expose upstream model");
+
     const response = await fetch(`http://${api.host}:${api.port}/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },

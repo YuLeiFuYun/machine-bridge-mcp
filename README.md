@@ -28,7 +28,7 @@ Source checkout:
 3. Generates a stable MCP connection password and daemon secret.
 4. Checks `wrangler whoami`; if needed, opens `wrangler login`.
 5. Deploys the hosted Worker relay with `wrangler deploy --secrets-file`.
-6. Installs login autostart for the local daemon and default local API provider.
+6. Installs login autostart for the local daemon and default local API proxy.
 7. Starts the local daemon and local OpenAI-compatible API provider.
 8. Prints MCP connection details on first run, plus local API settings:
 
@@ -51,43 +51,43 @@ On repeat runs, the CLI reuses existing state and secrets unless you request rot
 
 MCP connection details are printed on first run, after secret rotation, when the MCP URL changes, or when you explicitly pass `--print-mcp-credentials`. Routine runs print that MCP details are unchanged.
 
-## Local OpenAI-compatible API provider
+## Local OpenAI-compatible API proxy
 
-`machine-bridge-mcp` exposes a local OpenAI-compatible API provider by default for desktop AI clients such as Cherry Studio, Chatbox, Continue, or other apps that accept an OpenAI-style base URL and API key. No extra command is needed; the recommended `machine-mcp` command starts both the Remote MCP daemon and the local API provider.
+The project has two separate integration surfaces:
 
-Start the normal daemon and API provider:
+- **ChatGPT web / ChatGPT apps:** use the Remote MCP Server URL and MCP connection password printed by `machine-mcp`. In this mode, ChatGPT calls tools on your machine through the Worker + local daemon bridge.
+- **Desktop clients such as Cherry Studio, Chatbox, or Continue:** may use the optional local OpenAI-compatible `/v1` proxy. This proxy is not backed by your ChatGPT web session, ChatGPT Plus, or ChatGPT Pro. It can only generate text after you configure a separate OpenAI-compatible model API provider.
+
+Start the normal daemon and local API proxy:
 
 ```zsh
 machine-mcp
 ```
 
-Start only the local API service, without the Remote MCP daemon:
+Start only the local API proxy, without the Remote MCP daemon:
 
 ```zsh
 machine-mcp api
 ```
 
-Disable the default local API provider for a daemon run:
+Disable the default local API proxy for a daemon run:
 
 ```zsh
 machine-mcp --no-api
 ```
 
-The CLI prints client settings like:
+When the proxy is running, the CLI prints client settings like:
 
 ```text
 API Base URL: http://127.0.0.1:8765/v1
 API key: local_api_key_...
 Client type: OpenAI-compatible
+ChatGPT web backing: no
 ```
 
-Use these values in the local AI client:
+Use these values in the desktop client only if you also configure an external model provider. For ChatGPT web, ignore the local API fields and use the MCP connection details instead.
 
-- Base URL: `http://127.0.0.1:8765/v1`
-- API key: the `local_api_key_...` printed by the CLI
-- Model: the upstream model shown by `GET /v1/models`, for example `gpt-4.1-mini`
-
-Before chat/completions can generate text, configure the upstream OpenAI-compatible model provider once:
+Configure an external OpenAI-compatible model API provider once:
 
 ```zsh
 machine-mcp api configure
@@ -102,7 +102,9 @@ machine-mcp api configure \
   --api-upstream-model gpt-4.1-mini
 ```
 
-The upstream key is saved in the owner-only workspace state and redacted in status/doctor output. Existing `machine-mcp` API processes from v0.2.2+ reload this saved provider configuration on each request, so a newly configured key is picked up without changing Cherry Studio's Base URL or API key. After configuration, select the upstream model shown by `GET /v1/models` in Cherry Studio. If an older running process still returns `upstream_not_configured`, restart `machine-mcp` once.
+The external provider key is saved in the owner-only workspace state and redacted in status/doctor output. Existing `machine-mcp` API processes from v0.2.3+ reload this saved provider configuration on each request, so a newly configured provider is picked up without changing Cherry Studio's Base URL or local API key. After configuration, select the model shown by `GET /v1/models` in the desktop client.
+
+If no external provider is configured, `GET /v1/models` returns an empty list and generation endpoints return `503 upstream_not_configured` with an explanation. This is intentional: ChatGPT web does not expose an OpenAI-compatible local API through this project.
 
 If port `8765` conflicts with another local app, choose a different port explicitly:
 
@@ -117,13 +119,15 @@ machine-mcp api --api-port 8766
 machine-mcp api --port 8766
 ```
 
-By default, the local API binds to `127.0.0.1`, starts with `machine-mcp`, and stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Explicit `--api-host`, `--api-port`, `--api-upstream-url`, and `--api-upstream-model` values are persisted for the workspace so autostart uses the same API settings. `--api-model` is accepted as a compatibility alias for `--api-upstream-model`; local `/v1/models` still displays the upstream model directly. Upstream API keys are saved only when you explicitly run `machine-mcp api configure` or pass `--api-upstream-key`; they are stored in owner-only state and redacted in diagnostics. Rotate the local API key with:
+By default, the local API binds to `127.0.0.1`, starts with `machine-mcp`, and stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Explicit `--api-host`, `--api-port`, `--api-upstream-url`, and `--api-upstream-model` values are persisted for the workspace so autostart uses the same API settings. `--api-model` is accepted as a compatibility alias for `--api-upstream-model`; local `/v1/models` still displays the external provider model directly. External provider keys are saved only when you explicitly run `machine-mcp api configure` or pass `--api-upstream-key`; they are stored in owner-only state and redacted in diagnostics.
+
+Rotate the local desktop-client API key with:
 
 ```zsh
 machine-mcp api --rotate-api-key
 ```
 
-Update the upstream OpenAI-compatible provider later:
+Update the external OpenAI-compatible provider later:
 
 ```zsh
 machine-mcp api configure \
@@ -132,9 +136,9 @@ machine-mcp api configure \
   --api-upstream-model gpt-4.1-mini
 ```
 
-The local `/v1/models` list intentionally shows the real upstream model, not a project alias. Requests are forwarded with the model selected by the desktop client; if a request omits `model`, the proxy fills in the configured upstream model.
+Requests are forwarded with the model selected by the desktop client; if a request omits `model`, the proxy fills in the configured external provider model.
 
-Environment variables are also supported for the current process: `MBM_API_HOST`, `MBM_API_PORT`, `MBM_API_KEY`, `MBM_API_UPSTREAM_URL`, `MBM_API_UPSTREAM_KEY`, `MBM_API_UPSTREAM_MODEL`, `MBM_API_MODEL`, plus common OpenAI names such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. For login autostart, prefer `machine-mcp api configure` so the upstream provider is available without relying on shell environment inheritance.
+Environment variables are also supported for the current process: `MBM_API_HOST`, `MBM_API_PORT`, `MBM_API_KEY`, `MBM_API_UPSTREAM_URL`, `MBM_API_UPSTREAM_KEY`, `MBM_API_UPSTREAM_MODEL`, `MBM_API_MODEL`, plus common OpenAI names such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. For login autostart, prefer `machine-mcp api configure` so the external provider is available without relying on shell environment inheritance.
 
 Supported local API routes:
 
@@ -145,8 +149,7 @@ Supported local API routes:
 - `POST /v1/embeddings`
 - `POST /v1/completions`
 
-Model-producing routes proxy to the configured upstream provider. If no upstream key is configured, the API still starts and `/v1/models` works, but generation endpoints return a clear `503 upstream_not_configured` error with the setup command. Logs record route, status, latency, and safe configuration metadata; request and response bodies and API keys are not logged.
-
+Model-producing routes proxy to the configured external provider. Logs record route, status, latency, and safe configuration metadata; request and response bodies and API keys are not logged.
 
 ## Re-select workspace
 
