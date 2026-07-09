@@ -4,12 +4,15 @@ import path, { resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalDaemon } from "./daemon.mjs";
+import { startLocalApiServer, DEFAULT_API_HOST, DEFAULT_API_PORT, DEFAULT_API_MODEL, DEFAULT_UPSTREAM_URL } from "./api-server.mjs";
+import { createLogger, redactSecret } from "./log.mjs";
 import { runWrangler } from "./shell.mjs";
 import {
   acquireDaemonLock,
   appName,
   defaultStateRoot,
   ensureOwnerOnlyDir,
+  ensureLocalApiKey,
   ensureWorkerSecrets,
   expandHome,
   loadGlobalConfig,
@@ -29,11 +32,13 @@ import {
 export async function main(argv = process.argv.slice(2)) {
   const [command, rest] = normalizeCommand(argv);
   const args = parseArgs(rest);
+  if (command === "api" && args.help) return apiUsage();
   if (args.help || command === "help") return usage();
   if (args.version || command === "version") return version();
 
   switch (command) {
     case "start": return startCommand(args);
+    case "api": return apiCommand(args);
     case "status": return statusCommand(args);
     case "doctor": return doctorCommand(args);
     case "workspace": return workspaceCommand(args);
@@ -154,9 +159,11 @@ async function confirm(prompt, assumeYes = false) {
 
 async function startCommand(args) {
   assertNodeVersion();
+  const logger = createLogger({ quiet: Boolean(args.quiet), verbose: Boolean(args.verbose), component: "cli" });
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
   ensureWorkerSecrets(state, { rotateSecrets: Boolean(args.rotateSecrets), workerName: args.workerName && String(args.workerName) });
+  if (args.api) ensureLocalApiKey(state, { apiKey: valueFromArgsEnv(args.apiKey, "MBM_API_KEY"), rotateApiKey: Boolean(args.rotateApiKey) });
   state.policy = {
     allowWrite: args.noWrite ? false : true,
     allowExec: args.noExec ? false : true,
@@ -176,12 +183,17 @@ async function startCommand(args) {
   if (!args.daemonOnly) await stopAutostartBestEffort(Boolean(args.quiet));
 
   const lock = acquireDaemonLock(state);
+  let apiServer = null;
   if (!lock.acquired) {
     if (!args.quiet) {
       const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
-      console.warn(`Local daemon is already running for this workspace (${pid}). Not starting a duplicate.`);
+      logger.warn(`local daemon already running for this workspace (${pid}); not starting a duplicate`);
       printConnection(state, { json: Boolean(args.json), noPrintCredentials: Boolean(args.noPrintCredentials) });
     }
+    if (!args.api) return;
+    apiServer = await startConfiguredApiServer(state, args);
+    printApiConnection(apiServer, state, { noPrintCredentials: Boolean(args.noPrintCredentials) });
+    keepProcessAlive({ apiServer, logger });
     return;
   }
 
@@ -191,39 +203,82 @@ async function startCommand(args) {
       secret: state.worker.daemonSecret,
       workspace,
       policy: state.policy,
-      logger: structuredLogger(args.quiet),
+      logger: createLogger({ quiet: Boolean(args.quiet), verbose: Boolean(args.verbose), component: "daemon" }),
     });
 
     const waitForConnect = daemon.start();
     await waitForConnectWithNotice(waitForConnect, 20_000);
+    if (args.api) apiServer = await startConfiguredApiServer(state, args);
     printConnection(state, { json: Boolean(args.json), noPrintCredentials: Boolean(args.noPrintCredentials) });
-    keepProcessAlive(daemon, lock);
+    if (apiServer) printApiConnection(apiServer, state, { noPrintCredentials: Boolean(args.noPrintCredentials) });
+    keepProcessAlive({ daemon, lock, apiServer, logger });
   } catch (error) {
     lock.release();
+    if (apiServer) await apiServer.close().catch(() => {});
     throw error;
   }
 }
 
+async function apiCommand(args) {
+  assertNodeVersion();
+  const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
+  const state = loadState(workspace, { stateDir: args.stateDir });
+  ensureLocalApiKey(state, { apiKey: valueFromArgsEnv(args.apiKey, "MBM_API_KEY"), rotateApiKey: Boolean(args.rotateApiKey) });
+  saveState(state);
+  const logger = createLogger({ quiet: Boolean(args.quiet), verbose: Boolean(args.verbose), component: "api" });
+  const apiServer = await startConfiguredApiServer(state, args, logger);
+  printApiConnection(apiServer, state, { noPrintCredentials: Boolean(args.noPrintCredentials) });
+  keepProcessAlive({ apiServer, logger });
+}
+
+async function startConfiguredApiServer(state, args, logger = createLogger({ quiet: Boolean(args.quiet), verbose: Boolean(args.verbose), component: "api" })) {
+  const apiOptions = apiOptionsFromArgs(state, args);
+  return startLocalApiServer({ ...apiOptions, logger });
+}
+
+function apiOptionsFromArgs(state, args = {}) {
+  const upstreamKey = valueFromArgsEnv(args.apiUpstreamKey, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY");
+  const explicitPort = args.apiPort !== undefined && args.apiPort !== true ? args.apiPort : (args.port !== undefined && args.port !== true ? args.port : undefined);
+  const envPort = valueFromArgsEnv(undefined, "MBM_API_PORT", "PORT");
+  return {
+    host: valueFromArgsEnv(args.apiHost, "MBM_API_HOST") || DEFAULT_API_HOST,
+    port: explicitPort ?? envPort ?? DEFAULT_API_PORT,
+    apiKey: valueFromArgsEnv(args.apiKey, "MBM_API_KEY") || state.localApi?.apiKey || ensureLocalApiKey(state, { rotateApiKey: Boolean(args.rotateApiKey) }),
+    upstreamUrl: valueFromArgsEnv(args.apiUpstreamUrl, "MBM_API_UPSTREAM_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE") || DEFAULT_UPSTREAM_URL,
+    upstreamKey: upstreamKey || "",
+    model: valueFromArgsEnv(args.apiModel, "MBM_API_MODEL", "OPENAI_MODEL") || DEFAULT_API_MODEL,
+  };
+}
+
+function valueFromArgsEnv(argValue, ...envNames) {
+  if (argValue !== undefined && argValue !== null && argValue !== true) return String(argValue);
+  for (const name of envNames) {
+    if (process.env[name]) return process.env[name];
+  }
+  return undefined;
+}
+
 async function ensureWorker(state, args) {
+  const logger = createLogger({ quiet: Boolean(args.quiet), verbose: Boolean(args.verbose), component: "worker" });
   const desiredHash = workerDeployHash(state);
   const complete = state.worker.url && state.worker.mcpServerUrl && state.worker.oauthPassword && state.worker.daemonSecret && state.worker.oauthTokenVersion && state.worker.name;
   if (!args.forceWorker && !args.rotateSecrets && complete && state.worker.deployHash === desiredHash) {
     const health = await workerHealth(state.worker.url);
     if (health.ok) {
-      console.log(`Worker unchanged and healthy: ${state.worker.url}`);
+      logger.success("Worker unchanged and healthy", { url: state.worker.url });
       return state.worker;
     }
-    console.warn(`Worker health check failed, redeploying: ${health.error}`);
+    logger.warn("Worker health check failed; redeploying", { error: health.error });
   }
 
-  console.log("Checking Cloudflare Wrangler login...");
+  logger.info("Checking Cloudflare Wrangler login");
   const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
   if (whoami.code !== 0) {
-    console.log("Wrangler is not logged in; opening Cloudflare login...");
+    logger.info("Wrangler is not logged in; opening Cloudflare login");
     await runWrangler(["login"]);
   }
 
-  console.log(`Deploying Cloudflare Worker '${state.worker.name}'...`);
+  logger.info("Deploying Cloudflare Worker", { name: state.worker.name });
   const deploy = await withSecretsFile(state, secretFile => runWrangler([
     "deploy",
     "--name", state.worker.name,
@@ -241,8 +296,8 @@ async function ensureWorker(state, args) {
   saveState(state);
 
   const health = await retryHealth(state.worker.url, 8);
-  if (!health.ok) console.warn(`Worker deployed but health check did not pass yet: ${health.error}`);
-  else console.log(`Worker ready: ${state.worker.url}`);
+  if (!health.ok) logger.warn("Worker deployed but health check did not pass yet", { error: health.error });
+  else logger.success("Worker ready", { url: state.worker.url });
   return state.worker;
 }
 
@@ -348,10 +403,11 @@ async function waitForConnectWithNotice(promise, timeoutMs) {
   });
   const result = await Promise.race([promise.then(() => "connected"), timed]);
   clearTimeout(timeout);
-  if (result === "timeout") console.warn("Daemon is still connecting; credentials are printed now and the process will keep retrying.");
+  if (result === "timeout") createLogger({ component: "daemon" }).warn("Still connecting; credentials are printed now and the process will keep retrying");
 }
 
 function printConnection(state, { json = false, noPrintCredentials = false } = {}) {
+  const logger = createLogger({ component: "ready" });
   const payload = {
     mcp_server_url: state.worker.mcpServerUrl,
     mcp_connection_password: state.worker.oauthPassword,
@@ -363,27 +419,39 @@ function printConnection(state, { json = false, noPrintCredentials = false } = {
   };
   if (json) {
     const safePayload = noPrintCredentials ? { ...payload, mcp_connection_password: previewSecret(payload.mcp_connection_password) } : payload;
-    console.log(JSON.stringify(safePayload, null, 2));
+    logger.json(safePayload);
     return;
   }
-  console.log("\nMachine Bridge MCP is ready. Keep this process running.\n");
-  console.log(`MCP Server URL: ${payload.mcp_server_url}`);
-  if (!noPrintCredentials) console.log(`MCP connection password: ${payload.mcp_connection_password}`);
-  else console.log(`MCP connection password: ${previewSecret(payload.mcp_connection_password)} (redacted)`);
-  console.log(`Workspace cwd for relative paths: ${payload.workspace}`);
-  console.log(`Policy: write=${payload.policy.allowWrite ? "on" : "off"}, exec=${payload.policy.allowExec ? "on" : "off"}, unrestricted_paths=${payload.policy.unrestrictedPaths ? "on" : "off"}`);
-  console.log(`State: ${payload.state_path}\n`);
+  logger.success("Remote MCP bridge is ready; keep this process running");
+  logger.plain(`  MCP Server URL: ${payload.mcp_server_url}`);
+  if (!noPrintCredentials) logger.plain(`  MCP connection password: ${payload.mcp_connection_password}`);
+  else logger.plain(`  MCP connection password: ${previewSecret(payload.mcp_connection_password)} (redacted)`);
+  logger.plain(`  Workspace cwd: ${payload.workspace}`);
+  logger.plain(`  Policy: write=${payload.policy.allowWrite ? "on" : "off"}, exec=${payload.policy.allowExec ? "on" : "off"}, unrestricted_paths=${payload.policy.unrestrictedPaths ? "on" : "off"}`);
+  logger.plain(`  State: ${payload.state_path}`);
 }
 
-function keepProcessAlive(daemon, lock) {
-  const stop = () => {
-    console.log("Stopping daemon...");
-    daemon.stop();
-    lock?.release?.();
+function printApiConnection(apiServer, state, { noPrintCredentials = false } = {}) {
+  const logger = createLogger({ component: "ready" });
+  logger.success("Local model API provider is ready");
+  logger.plain(`  API Base URL: ${apiServer.baseUrl}`);
+  logger.plain(`  API key: ${noPrintCredentials ? `${redactSecret(state.localApi.apiKey)} (redacted)` : state.localApi.apiKey}`);
+  logger.plain("  Client type: OpenAI-compatible");
+}
+
+function keepProcessAlive({ daemon = null, lock = null, apiServer = null, logger = createLogger({ component: "cli" }) } = {}) {
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    logger.info("stopping local services");
+    try { daemon?.stop?.(); } catch {}
+    try { await apiServer?.close?.(); } catch {}
+    try { lock?.release?.(); } catch {}
     process.exit(0);
   };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  process.once("SIGINT", () => void stop());
+  process.once("SIGTERM", () => void stop());
   process.once("exit", () => lock?.release?.());
   setInterval(() => {}, 2 ** 31 - 1);
 }
@@ -537,12 +605,7 @@ async function removeAutostartBestEffort(stateRoot) {
 }
 
 function structuredLogger(quiet) {
-  if (quiet) return { info() {}, warn() {}, error() {} };
-  return {
-    info: msg => console.log(`[daemon] ${msg}`),
-    warn: msg => console.warn(`[daemon] ${msg}`),
-    error: msg => console.error(`[daemon] ${msg}`),
-  };
+  return createLogger({ quiet, component: "daemon" });
 }
 
 function sanitizeLines(text) {
@@ -578,6 +641,7 @@ Usage:
 
 Commands:
   start             Deploy/update Worker, install autostart, start local daemon
+  api               Start local OpenAI-compatible API provider only
   workspace show    Show remembered workspace
   workspace set     Re-select workspace; prompts with current/default path
   service status    Show autostart status
@@ -603,10 +667,51 @@ Start options:
   --full-env            Pass full parent environment to exec_command (default: minimal env)
   --state-dir DIR       Override state root
   --json                Print connection details as JSON
+  --api                 Also start local OpenAI-compatible API provider
+  --api-port PORT       Local API port (default: 8765)
+  --port PORT           Alias for --api-port on the api command
+  --api-host HOST       Local API host (default: 127.0.0.1)
+  --api-key KEY         Set or replace local API key in state
+  --rotate-api-key      Rotate local API key
+  --api-upstream-url URL  Upstream OpenAI-compatible base URL (default: https://api.openai.com/v1)
+  --api-upstream-key KEY  Upstream provider key; env OPENAI_API_KEY also works
+  --api-model MODEL     Model id advertised by /v1/models
 
 Uninstall options:
   --keep-worker         Do not delete deployed Worker(s) during uninstall
   --yes                 Do not prompt before uninstall
+`);
+}
+
+function apiUsage() {
+  console.log(`machine-bridge-mcp local API provider
+
+Usage:
+  machine-mcp api
+  machine-mcp api --api-port 8766
+  machine-mcp start --api --api-port 8766
+
+Client settings:
+  API Base URL: http://127.0.0.1:<port>/v1
+  API key: printed on startup unless --no-print-credentials is set
+  Client type: OpenAI-compatible
+
+Options:
+  --workspace PATH        Use and remember this workspace path
+  --api-host HOST         Local API host (default: 127.0.0.1)
+  --api-port PORT         Local API port (default: 8765)
+  --port PORT             Alias for --api-port
+  --api-key KEY           Set or replace local API key in state
+  --rotate-api-key        Rotate local API key
+  --api-upstream-url URL  Upstream OpenAI-compatible base URL
+  --api-upstream-key KEY  Upstream provider key; env OPENAI_API_KEY also works
+  --api-model MODEL       Model id advertised by /v1/models
+  --no-print-credentials  Redact the local API key in console output
+  --state-dir DIR         Override state root
+
+Environment:
+  MBM_API_HOST, MBM_API_PORT, MBM_API_KEY, MBM_API_UPSTREAM_URL, MBM_API_UPSTREAM_KEY, MBM_API_MODEL
+  OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_API_BASE, OPENAI_MODEL
 `);
 }
 

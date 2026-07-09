@@ -9,6 +9,7 @@ const packagePath = path.join(repoRoot, "package.json");
 const workerPath = path.join(repoRoot, "src", "worker", "index.ts");
 const args = new Set(process.argv.slice(2));
 const checkOnly = args.has("--check");
+const log = message => process.stderr.write(`${message}\n`);
 
 const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
 const expected = String(pkg.version || "").trim();
@@ -23,7 +24,7 @@ if (!match) fail("Could not find `const SERVER_VERSION = \"...\";` in src/worker
 
 const current = match[1];
 if (current === expected) {
-  console.log(`Worker version is in sync: ${expected}`);
+  log(`Worker version is in sync: ${expected}`);
   process.exit(0);
 }
 
@@ -33,7 +34,7 @@ if (checkOnly) {
 
 const updated = source.replace(pattern, `const SERVER_VERSION = "${expected}";`);
 writeFileSync(workerPath, updated);
-console.log(`Updated Worker version: ${current} -> ${expected}`);
+log(`Updated Worker version: ${current} -> ${expected}`);
 
 function fail(message) {
   console.error(message);

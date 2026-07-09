@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "One-command hosted Remote MCP bridge to a local machine daemon.",
   "type": "module",
   "license": "MIT",
@@ -35,7 +35,7 @@
     "prepublishOnly": "npm run check && npm run version:check",
     "worker:types": "wrangler types src/worker/worker-configuration.d.ts",
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit",
-    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/self-test.mjs",
+    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/self-test.mjs && node --check src/local/api-server.mjs && node --check src/local/log.mjs",
     "check": "npm run typecheck && npm run syntax && npm run self-test"
   },
   "dependencies": {

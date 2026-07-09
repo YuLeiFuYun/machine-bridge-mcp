@@ -207,6 +207,14 @@ export function ensureWorkerSecrets(state, options = {}) {
   if (!state.worker.name || options.workerName) state.worker.name = options.workerName || defaultWorkerName(state.workspace.hash);
 }
 
+export function ensureLocalApiKey(state, options = {}) {
+  state.localApi ||= {};
+  if (options.apiKey && options.apiKey !== true) state.localApi.apiKey = String(options.apiKey);
+  if (!state.localApi.apiKey || options.rotateApiKey) state.localApi.apiKey = randomToken("local_api_key");
+  state.localApi.updatedAt = new Date().toISOString();
+  return state.localApi.apiKey;
+}
+
 export function defaultWorkerName(hash) {
   return `mbm-${String(hash || "default").slice(0, 12)}`;
 }
@@ -237,6 +245,7 @@ export function redactState(state) {
   if (clone.worker?.oauthPassword) clone.worker.oauthPassword = previewSecret(clone.worker.oauthPassword);
   if (clone.worker?.daemonSecret) clone.worker.daemonSecret = previewSecret(clone.worker.daemonSecret);
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = previewSecret(clone.worker.oauthTokenVersion);
+  if (clone.localApi?.apiKey) clone.localApi.apiKey = previewSecret(clone.localApi.apiKey);
   return clone;
 }
 
