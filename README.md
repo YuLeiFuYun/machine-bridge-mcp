@@ -38,6 +38,14 @@ MCP connection password: mcp_password_...
 
 Keep the foreground process running for the current session. The installed autostart entry keeps the daemon available after future logins.
 
+The command is safe to run repeatedly:
+
+```zsh
+npm install -g machine-bridge-mcp@latest && machine-mcp
+```
+
+On repeat runs, the CLI reuses existing state and secrets unless you request rotation, skips Worker redeploys when the deployed Worker is healthy and unchanged, refreshes the autostart entry, stops any currently loaded autostart daemon before starting the foreground daemon, and refuses to start a second daemon for the same workspace if another foreground instance is already running.
+
 ## Re-select workspace
 
 ```zsh
@@ -80,7 +88,7 @@ machine-mcp service uninstall
 machine-mcp --no-autostart
 ```
 
-Autostart runs the daemon with `--daemon-only --no-print-credentials`, so service logs do not contain the MCP connection password. If you start with `--no-write`, `--no-exec`, or `--full-env`, those policy flags are preserved in the autostart entry.
+Autostart runs the daemon with `--daemon-only --no-print-credentials`, so service logs do not contain the MCP connection password. If you start with `--no-write`, `--no-exec`, or `--full-env`, those policy flags are preserved in the autostart entry. macOS/Linux service definitions restart only on process failure; a normal duplicate-instance exit is not treated as a crash loop.
 
 ## Secrets rotation
 
@@ -157,7 +165,9 @@ Default state roots:
 - Linux with `XDG_STATE_HOME`: `$XDG_STATE_HOME/machine-bridge-mcp`
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
-State contains the MCP password and daemon secret. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password because users need to paste it into their MCP client.
+State contains the MCP password and daemon secret. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password because users need to paste it into their MCP client. State files, temporary Worker secret files, lock files, and log directories are created under the user state root with owner-only permissions where the platform supports POSIX modes.
+
+The Worker rejects browser requests with an `Origin` header unless the origin is the Worker itself or a loopback HTTP origin. To allow additional browser-based MCP clients, set `MBM_ALLOWED_ORIGINS` to a comma-separated list of exact origins in `wrangler.jsonc` or Cloudflare Worker settings.
 
 Override state root:
 

@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.1.1";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -353,7 +353,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         tools: this.allTools().map((tool) => tool.name),
       };
     }
-    if (workspaceTools.some((tool) => tool.name === name)) return this.callDaemonTool(name, args);
+    if (workspaceTools.some((tool) => tool.name === name)) {
+      if (!this.daemonToolEnabled(name)) throw new Error(`tool disabled by local daemon policy: ${name}`);
+      return this.callDaemonTool(name, args);
+    }
     throw new Error(`unknown tool: ${name}`);
   }
 
@@ -399,7 +402,23 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   private allTools(): Array<Record<string, unknown>> {
-    return [serverInfoTool, ...workspaceTools].map((tool) => ({ ...tool }));
+    const advertised = this.daemonAdvertisedTools();
+    const localTools = advertised
+      ? workspaceTools.filter((tool) => advertised.has(tool.name))
+      : workspaceTools;
+    return [serverInfoTool, ...localTools].map((tool) => ({ ...tool }));
+  }
+
+  private daemonToolEnabled(name: string): boolean {
+    const advertised = this.daemonAdvertisedTools();
+    return !advertised || advertised.has(name);
+  }
+
+  private daemonAdvertisedTools(): Set<string> | null {
+    const socket = this.daemonSockets()[0];
+    const attachment = socket ? this.daemonAttachment(socket) : undefined;
+    if (!attachment?.tools?.length) return null;
+    return new Set(attachment.tools);
   }
 
   private daemonSockets(): WebSocket[] {
@@ -847,7 +866,6 @@ function validateOrigin(request: Request, base: string, configured = ""): boolea
   try {
     const parsed = new URL(origin);
     if (origin === base) return true;
-    if (parsed.protocol === "https:") return true;
     return parsed.protocol === "http:" && isLoopbackHost(parsed.hostname);
   } catch {
     return false;

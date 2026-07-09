@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, chmodSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,7 +89,7 @@ export function loadState(workspace, options = {}) {
   ensureOwnerOnlyDir(profileDir);
   let state = {};
   if (existsSync(statePath)) {
-    state = JSON.parse(readFileSync(statePath, "utf8"));
+    state = readJsonObjectOrBackup(statePath);
   }
   state.schemaVersion = 1;
   state.workspace = {
@@ -111,6 +111,93 @@ export function saveState(state) {
   writeFileSync(statePath, `${JSON.stringify(serializable, null, 2)}\n`, { mode: 0o600 });
   ownerOnlyFile(statePath);
 }
+
+export function daemonLockPathForState(state) {
+  const profileDir = state?.paths?.profileDir;
+  if (!profileDir) throw new Error("state profile dir is missing");
+  return path.join(profileDir, "daemon.lock");
+}
+
+export function acquireDaemonLock(state) {
+  const lockPath = daemonLockPathForState(state);
+  ensureOwnerOnlyDir(path.dirname(lockPath));
+  const token = randomBytes(16).toString("hex");
+  const payload = {
+    pid: process.pid,
+    token,
+    workspace: state?.workspace?.path || "",
+    startedAt: new Date().toISOString(),
+    entryScript: process.argv[1] || "",
+  };
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fd;
+    try {
+      fd = openSync(lockPath, "wx", 0o600);
+      writeFileSync(fd, JSON.stringify(payload, null, 2) + "\n");
+      closeSync(fd);
+      ownerOnlyFile(lockPath);
+      return {
+        acquired: true,
+        path: lockPath,
+        owner: payload,
+        release() {
+          releaseDaemonLock(lockPath, token);
+        },
+      };
+    } catch (error) {
+      if (fd !== undefined) {
+        try { closeSync(fd); } catch {}
+      }
+      if (error?.code !== "EEXIST") throw error;
+      const owner = readDaemonLockOwner(lockPath);
+      if (owner?.pid && isPidAlive(owner.pid)) {
+        return { acquired: false, path: lockPath, owner, release() {} };
+      }
+      try { unlinkSync(lockPath); } catch {}
+    }
+  }
+  const owner = readDaemonLockOwner(lockPath);
+  return { acquired: false, path: lockPath, owner, release() {} };
+}
+
+function releaseDaemonLock(lockPath, token) {
+  const owner = readDaemonLockOwner(lockPath);
+  if (owner?.token !== token) return;
+  try { unlinkSync(lockPath); } catch {}
+}
+
+export function readDaemonLockOwner(lockPath) {
+  try {
+    const parsed = JSON.parse(readFileSync(lockPath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid) {
+  const parsed = Number(pid);
+  if (!Number.isInteger(parsed) || parsed <= 0) return false;
+  try {
+    process.kill(parsed, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function readJsonObjectOrBackup(filePath) {
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    const backupPath = `${filePath}.corrupt-${Date.now()}`;
+    try { renameSync(filePath, backupPath); } catch {}
+    return {};
+  }
+}
+
 
 export function ensureWorkerSecrets(state, options = {}) {
   state.worker ||= {};

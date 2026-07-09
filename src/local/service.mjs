@@ -132,7 +132,10 @@ function launchdPlist({ args, stdout, stderr }) {
 ${args.map(arg => `    <string>${escapeXml(arg)}</string>`).join("\n")}
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
   <key>StandardOutPath</key><string>${escapeXml(stdout)}</string>
   <key>StandardErrorPath</key><string>${escapeXml(stderr)}</string>
 </dict>
@@ -179,7 +182,7 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=${execArgs}
-Restart=always
+Restart=on-failure
 RestartSec=5
 StandardOutput=append:${spec.stdout}
 StandardError=append:${spec.stderr}

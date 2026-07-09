@@ -6,6 +6,7 @@ import readline from "node:readline/promises";
 import { LocalDaemon } from "./daemon.mjs";
 import { runWrangler } from "./shell.mjs";
 import {
+  acquireDaemonLock,
   appName,
   defaultStateRoot,
   ensureOwnerOnlyDir,
@@ -172,18 +173,35 @@ async function startCommand(args) {
     await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], policy: state.policy });
   }
 
-  const daemon = new LocalDaemon({
-    workerUrl: state.worker.url,
-    secret: state.worker.daemonSecret,
-    workspace,
-    policy: state.policy,
-    logger: structuredLogger(args.quiet),
-  });
+  if (!args.daemonOnly) await stopAutostartBestEffort(Boolean(args.quiet));
 
-  const waitForConnect = daemon.start();
-  await waitForConnectWithNotice(waitForConnect, 20_000);
-  printConnection(state, { json: Boolean(args.json), noPrintCredentials: Boolean(args.noPrintCredentials) });
-  keepProcessAlive(daemon);
+  const lock = acquireDaemonLock(state);
+  if (!lock.acquired) {
+    if (!args.quiet) {
+      const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
+      console.warn(`Local daemon is already running for this workspace (${pid}). Not starting a duplicate.`);
+      printConnection(state, { json: Boolean(args.json), noPrintCredentials: Boolean(args.noPrintCredentials) });
+    }
+    return;
+  }
+
+  try {
+    const daemon = new LocalDaemon({
+      workerUrl: state.worker.url,
+      secret: state.worker.daemonSecret,
+      workspace,
+      policy: state.policy,
+      logger: structuredLogger(args.quiet),
+    });
+
+    const waitForConnect = daemon.start();
+    await waitForConnectWithNotice(waitForConnect, 20_000);
+    printConnection(state, { json: Boolean(args.json), noPrintCredentials: Boolean(args.noPrintCredentials) });
+    keepProcessAlive(daemon, lock);
+  } catch (error) {
+    lock.release();
+    throw error;
+  }
 }
 
 async function ensureWorker(state, args) {
@@ -357,14 +375,16 @@ function printConnection(state, { json = false, noPrintCredentials = false } = {
   console.log(`State: ${payload.state_path}\n`);
 }
 
-function keepProcessAlive(daemon) {
+function keepProcessAlive(daemon, lock) {
   const stop = () => {
     console.log("Stopping daemon...");
     daemon.stop();
+    lock?.release?.();
     process.exit(0);
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
+  process.once("exit", () => lock?.release?.());
   setInterval(() => {}, 2 ** 31 - 1);
 }
 
@@ -446,6 +466,15 @@ async function installAutostartBestEffort({ workspace, stateRoot, entryScript, p
     else console.warn("Autostart installation returned a warning; run `machine-mcp service status` for details.");
   } catch (error) {
     console.warn(`Autostart installation skipped: ${error.message}`);
+  }
+}
+
+async function stopAutostartBestEffort(quiet = false) {
+  try {
+    const { stopAutostart } = await import("./service.mjs");
+    await stopAutostart({ logger: structuredLogger(true) });
+  } catch (error) {
+    if (!quiet) console.warn(`Autostart stop skipped: ${error.message}`);
   }
 }
 
@@ -568,6 +597,7 @@ Start options:
   --rotate-secrets      Rotate secrets before deploying
   --daemon-only         Skip deploy and only connect daemon from existing state
   --no-autostart        Do not install login autostart during start
+  --no-print-credentials Redact the MCP password in console output
   --no-write            Disable write_file (default: write enabled)
   --no-exec             Disable exec_command (default: exec enabled)
   --full-env            Pass full parent environment to exec_command (default: minimal env)
