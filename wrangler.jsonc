@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "machine-bridge-mcp",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BRIDGE",
+        "class_name": "BridgeRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BridgeRoom"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "MBM_WORKER_MAX_BODY_BYTES": "33554432",
+    "MBM_ALLOWED_ORIGINS": ""
+  }
+}

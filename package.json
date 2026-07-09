@@ -1,0 +1,59 @@
+{
+  "name": "machine-bridge-mcp",
+  "version": "0.1.0",
+  "description": "One-command hosted Remote MCP bridge to a local machine daemon.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "machine-bridge-mcp": "bin/machine-mcp.mjs",
+    "machine-mcp": "bin/machine-mcp.mjs",
+    "mbm": "bin/machine-mcp.mjs"
+  },
+  "files": [
+    "mbm",
+    "mbm.cmd",
+    "bin",
+    "src/local",
+    "src/worker/index.ts",
+    "wrangler.jsonc",
+    "tsconfig.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node bin/machine-mcp.mjs start",
+    "doctor": "node bin/machine-mcp.mjs doctor",
+    "self-test": "node src/local/self-test.mjs",
+    "worker:types": "wrangler types src/worker/worker-configuration.d.ts",
+    "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit",
+    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/self-test.mjs",
+    "check": "npm run typecheck && npm run syntax && npm run self-test"
+  },
+  "dependencies": {
+    "wrangler": "^4.24.3",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.8.3"
+  },
+  "keywords": [
+    "mcp",
+    "remote-mcp",
+    "cloudflare-workers",
+    "durable-objects",
+    "wrangler",
+    "local-machine"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YuLeiFuYun/machine-bridge-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YuLeiFuYun/machine-bridge-mcp/issues"
+  },
+  "homepage": "https://github.com/YuLeiFuYun/machine-bridge-mcp#readme"
+}
