@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createLogger } from "./log.mjs";
@@ -53,7 +53,7 @@ export function normalizeBaseUrl(value, fallback = DEFAULT_UPSTREAM_URL) {
   try {
     parsed = new URL(raw);
   } catch {
-    throw new Error(`Invalid upstream API URL: ${raw}`);
+    throw new Error("Invalid upstream API URL.");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(`Invalid upstream API URL protocol: ${parsed.protocol}`);
   if (parsed.username || parsed.password) throw new Error("Upstream API URL must not contain credentials; pass keys with --api-upstream-key or environment variables.");
@@ -121,7 +121,7 @@ async function handleRequest(req, res, context) {
 
   try {
     if (req.method === "OPTIONS") return sendEmpty(res, 204);
-    if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "machine-bridge-mcp-local-api" });
+    if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "machine-bridge-mcp-local-api", api_key_sha256: sha256String(context.apiKey) });
 
     if (!isAuthorized(req, context.apiKey)) return sendOpenAiError(res, 401, "invalid_api_key", "Missing or invalid local API key.");
 
@@ -203,6 +203,10 @@ function readBody(req, maxBytes) {
   });
 }
 
+function sha256String(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
+
 function isAuthorized(req, expectedKey) {
   const auth = String(req.headers.authorization || "");
   if (auth.startsWith("Bearer ") && auth.slice(7) === expectedKey) return true;
@@ -247,10 +251,10 @@ function setCorsHeaders(res) {
 
 function withPortHint(error, port) {
   if (error?.code === "EADDRINUSE") {
-    error.message = `Local API port ${port} is already in use. Re-run with \`machine-mcp api --api-port <free_port>\` or \`machine-mcp start --api --api-port <free_port>\`.`;
+    error.message = `Local API port ${port} is already in use. Re-run with \`machine-mcp --api-port <free_port>\` or \`machine-mcp api --api-port <free_port>\`.`;
   }
   if (error?.code === "EACCES") {
-    error.message = `Local API port ${port} is not permitted. Re-run with \`machine-mcp api --api-port <free_port>\`.`;
+    error.message = `Local API port ${port} is not permitted. Re-run with \`machine-mcp --api-port <free_port>\` or \`machine-mcp api --api-port <free_port>\`.`;
   }
   return error;
 }

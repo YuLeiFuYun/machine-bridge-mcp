@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +75,9 @@ async function apiSelfTest() {
   try {
     const health = await fetch(`${base}/health`);
     if (health.status !== 200) throw new Error(`health returned ${health.status}`);
+    const healthPayload = await health.json();
+    const expectedHash = createHash("sha256").update("local-test-key").digest("hex");
+    if (healthPayload.api_key_sha256 !== expectedHash) throw new Error("health did not expose expected API key hash");
     const unauth = await fetch(`${base}/v1/models`);
     if (unauth.status !== 401) throw new Error(`unauthorized models returned ${unauth.status}`);
     const models = await fetch(`${base}/v1/models`, { headers: { authorization: "Bearer local-test-key" } });

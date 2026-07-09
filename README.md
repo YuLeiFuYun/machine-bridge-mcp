@@ -28,15 +28,18 @@ Source checkout:
 3. Generates a stable MCP connection password and daemon secret.
 4. Checks `wrangler whoami`; if needed, opens `wrangler login`.
 5. Deploys the hosted Worker relay with `wrangler deploy --secrets-file`.
-6. Installs login autostart for the local daemon.
-7. Starts the local daemon and prints:
+6. Installs login autostart for the local daemon and default local API provider.
+7. Starts the local daemon and local OpenAI-compatible API provider.
+8. Prints MCP connection details on first run, plus local API settings:
 
 ```text
 MCP Server URL: https://<worker>.<account>.workers.dev/mcp
 MCP connection password: mcp_password_...
+API Base URL: http://127.0.0.1:8765/v1
+API key: local_api_key_...
 ```
 
-Keep the foreground process running for the current session. The installed autostart entry keeps the daemon available after future logins.
+Keep the foreground process running for the current session. The installed autostart entry keeps the daemon and local API available after future logins.
 
 The command is safe to run repeatedly:
 
@@ -44,22 +47,30 @@ The command is safe to run repeatedly:
 npm install -g machine-bridge-mcp@latest && machine-mcp
 ```
 
-On repeat runs, the CLI reuses existing state and secrets unless you request rotation, skips Worker redeploys when the deployed Worker is healthy and unchanged, refreshes the autostart entry, stops any currently loaded autostart daemon before starting the foreground daemon, and refuses to start a second daemon for the same workspace if another foreground instance is already running.
+On repeat runs, the CLI reuses existing state and secrets unless you request rotation, skips Worker redeploys when the deployed Worker is healthy and Worker source/config/secrets are unchanged, refreshes the autostart entry, stops any currently loaded autostart daemon before starting the foreground daemon, and refuses to start a second daemon for the same workspace if another foreground instance is already running. Local-only package, CLI, logging, and API-provider changes do not by themselves force a Worker redeploy.
+
+MCP connection details are printed on first run, after secret rotation, when the MCP URL changes, or when you explicitly pass `--print-mcp-credentials`. Routine runs print that MCP details are unchanged.
 
 ## Local OpenAI-compatible API provider
 
-`machine-bridge-mcp` can also expose a local OpenAI-compatible API provider for desktop AI clients such as Cherry Studio, Chatbox, Continue, or other apps that accept an OpenAI-style base URL and API key.
+`machine-bridge-mcp` exposes a local OpenAI-compatible API provider by default for desktop AI clients such as Cherry Studio, Chatbox, Continue, or other apps that accept an OpenAI-style base URL and API key. No extra command is needed; the recommended `machine-mcp` command starts both the Remote MCP daemon and the local API provider.
 
-Start only the local API service:
+Start the normal daemon and API provider:
+
+```zsh
+machine-mcp
+```
+
+Start only the local API service, without the Remote MCP daemon:
 
 ```zsh
 machine-mcp api
 ```
 
-Or run it together with the Remote MCP daemon:
+Disable the default local API provider for a daemon run:
 
 ```zsh
-machine-mcp start --api
+machine-mcp --no-api
 ```
 
 The CLI prints client settings like:
@@ -79,8 +90,8 @@ Use these values in the local AI client:
 If port `8765` conflicts with another local app, choose a different port explicitly:
 
 ```zsh
+machine-mcp --api-port 8766
 machine-mcp api --api-port 8766
-machine-mcp start --api --api-port 8766
 ```
 
 `--port` is also accepted on the `api` command:
@@ -89,7 +100,7 @@ machine-mcp start --api --api-port 8766
 machine-mcp api --port 8766
 ```
 
-By default, the local API binds to `127.0.0.1` and does not start unless you run `machine-mcp api` or pass `--api`. It stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Rotate it with:
+By default, the local API binds to `127.0.0.1`, starts with `machine-mcp`, and stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Explicit `--api-host`, `--api-port`, `--api-model`, and `--api-upstream-url` values are persisted for the workspace so autostart uses the same non-secret API settings; upstream API keys are not written to state. Rotate the local API key with:
 
 ```zsh
 machine-mcp api --rotate-api-key
@@ -237,7 +248,7 @@ Default state roots:
 - Linux with `XDG_STATE_HOME`: `$XDG_STATE_HOME/machine-bridge-mcp`
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
-State contains the MCP password, daemon secret, and local API key when the API provider has been started. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password because users need to paste it into their MCP client; `api` prints the local API key for the same reason. Use `--no-print-credentials` to redact console credentials. State files, temporary Worker secret files, lock files, and log directories are created under the user state root with owner-only permissions where the platform supports POSIX modes.
+State contains the MCP password, daemon secret, and local API key. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password only when a ChatGPT app is likely to need reconnection: first run, secret rotation, MCP URL changes, or `--print-mcp-credentials`. The local API base URL and API key print on normal foreground starts because desktop AI clients need them. Use `--no-print-credentials` to redact console credentials. State files, temporary Worker secret files, lock files, and log directories are created under the user state root with owner-only permissions where the platform supports POSIX modes.
 
 The Worker rejects browser requests with an `Origin` header unless the origin is the Worker itself or a loopback HTTP origin. To allow additional browser-based MCP clients, set `MBM_ALLOWED_ORIGINS` to a comma-separated list of exact origins in `wrangler.jsonc` or Cloudflare Worker settings.
 
@@ -255,7 +266,7 @@ flowchart LR
   W --> DO["Durable Object broker"]
   D["Local daemon"] -- "outbound WebSocket" --> W
   D --> M["Local filesystem and shell"]
-  API["Optional local /v1 API"] -- "OpenAI-compatible HTTP" --> U["Configured upstream provider"]
+  API["Default local /v1 API"] -- "OpenAI-compatible HTTP" --> U["Configured upstream provider"]
   CLI["machine-mcp CLI"] --> API
   CLI["machine-mcp CLI"] --> W
   CLI --> D
@@ -269,8 +280,8 @@ Why this architecture:
 - The public MCP URL is stable after deployment.
 - The Worker stores OAuth client/code/token metadata and relays tool calls.
 - The local daemon is the only process touching files or executing commands.
-- The optional local `/v1` API binds to loopback by default and starts only when requested.
-- Autostart keeps the daemon alive across logins without requiring MCP clients to change URLs.
+- The local `/v1` API binds to loopback by default, starts automatically with the daemon, and can be disabled with `--no-api`.
+- Autostart keeps the daemon and local API alive across logins without requiring MCP clients to change URLs.
 
 ## Development
 

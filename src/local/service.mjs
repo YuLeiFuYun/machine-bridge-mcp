@@ -54,6 +54,7 @@ function serviceSpec({ workspace, stateRoot, entryScript, policy = {} }) {
       allowWrite: policy.allowWrite !== false,
       allowExec: policy.allowExec !== false,
       minimalEnv: policy.minimalEnv !== false,
+      apiEnabled: policy.apiEnabled !== false,
     },
   };
 }
@@ -71,6 +72,7 @@ function daemonArgs(spec) {
   if (spec.policy.allowWrite === false) args.push("--no-write");
   if (spec.policy.allowExec === false) args.push("--no-exec");
   if (spec.policy.minimalEnv === false) args.push("--full-env");
+  if (spec.policy.apiEnabled === false) args.push("--no-api");
   return args;
 }
 
