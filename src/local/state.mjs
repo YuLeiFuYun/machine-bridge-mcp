@@ -246,6 +246,7 @@ export function redactState(state) {
   if (clone.worker?.daemonSecret) clone.worker.daemonSecret = previewSecret(clone.worker.daemonSecret);
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = previewSecret(clone.worker.oauthTokenVersion);
   if (clone.localApi?.apiKey) clone.localApi.apiKey = previewSecret(clone.localApi.apiKey);
+  if (clone.localApi?.upstreamKey) clone.localApi.upstreamKey = previewSecret(clone.localApi.upstreamKey);
   return clone;
 }
 

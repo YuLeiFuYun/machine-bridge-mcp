@@ -7,7 +7,8 @@ import { createLogger } from "./log.mjs";
 export const DEFAULT_API_HOST = "127.0.0.1";
 export const DEFAULT_API_PORT = 8765;
 export const DEFAULT_UPSTREAM_URL = "https://api.openai.com/v1";
-export const DEFAULT_API_MODEL = "machine-bridge-mcp";
+export const DEFAULT_UPSTREAM_MODEL = "gpt-4.1-mini";
+export const DEFAULT_API_MODEL = DEFAULT_UPSTREAM_MODEL;
 export const DEFAULT_API_MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 const PROXY_ROUTES = new Set([
@@ -68,13 +69,15 @@ export async function startLocalApiServer(options = {}) {
   const apiKey = String(options.apiKey || "");
   const upstreamUrl = normalizeBaseUrl(options.upstreamUrl);
   const upstreamKey = String(options.upstreamKey || "");
-  const model = String(options.model || DEFAULT_API_MODEL);
+  const upstreamModel = String(options.upstreamModel || options.model || DEFAULT_UPSTREAM_MODEL);
+  const model = upstreamModel;
+  const loadConfig = typeof options.loadConfig === "function" ? options.loadConfig : null;
   const maxBodyBytes = Number(options.maxBodyBytes || DEFAULT_API_MAX_BODY_BYTES);
 
   if (!apiKey) throw new Error("Local API key is missing");
 
   const server = http.createServer((req, res) => {
-    void handleRequest(req, res, { logger, apiKey, upstreamUrl, upstreamKey, model, maxBodyBytes });
+    void handleRequest(req, res, { logger, apiKey, upstreamUrl, upstreamKey, model, upstreamModel, loadConfig, maxBodyBytes });
   });
 
   server.keepAliveTimeout = 65_000;
@@ -99,7 +102,7 @@ export async function startLocalApiServer(options = {}) {
   const actualPort = typeof address === "object" && address ? address.port : port;
   const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
   const baseUrl = `http://${urlHost}:${actualPort}/v1`;
-  logger.success("local OpenAI-compatible API started", { baseUrl, model, upstream: upstreamUrl, upstreamConfigured: Boolean(upstreamKey) });
+  logger.success("local OpenAI-compatible API started", { baseUrl, model, upstream: upstreamUrl, upstreamModel, upstreamConfigured: Boolean(upstreamKey) });
 
   return {
     server,
@@ -121,21 +124,22 @@ async function handleRequest(req, res, context) {
 
   try {
     if (req.method === "OPTIONS") return sendEmpty(res, 204);
-    if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "machine-bridge-mcp-local-api", api_key_sha256: sha256String(context.apiKey) });
+    const config = await currentConfig(context);
+    if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "machine-bridge-mcp-local-api", api_key_sha256: sha256String(context.apiKey), upstream_configured: Boolean(config.upstreamKey), model: config.model, upstream_model: config.upstreamModel });
 
     if (!isAuthorized(req, context.apiKey)) return sendOpenAiError(res, 401, "invalid_api_key", "Missing or invalid local API key.");
 
     if (req.method === "GET" && url.pathname === "/v1/models") {
       context.logger.info("request completed", { requestId, method: req.method, path: url.pathname, status: 200, durationMs: Date.now() - started });
-      return sendJson(res, 200, modelsPayload(context.model));
+      return sendJson(res, 200, modelsPayload(config));
     }
 
     if (req.method === "POST" && PROXY_ROUTES.has(url.pathname)) {
-      if (!context.upstreamKey) {
-        return sendOpenAiError(res, 503, "upstream_not_configured", "No upstream API key is configured. Set --api-upstream-key or MBM_API_UPSTREAM_KEY/OPENAI_API_KEY.");
+      if (!config.upstreamKey) {
+        return sendOpenAiError(res, 503, "upstream_not_configured", missingUpstreamMessage());
       }
-      context.logger.info("proxy request started", { requestId, path: url.pathname, upstream: context.upstreamUrl });
-      await proxyRequest(req, res, url, context);
+      context.logger.info("proxy request started", { requestId, path: url.pathname, upstream: config.upstreamUrl });
+      await proxyRequest(req, res, url, { ...context, ...config });
       context.logger.info("proxy request completed", { requestId, path: url.pathname, status: res.statusCode, durationMs: Date.now() - started });
       return;
     }
@@ -151,14 +155,36 @@ async function handleRequest(req, res, context) {
   }
 }
 
+
+async function currentConfig(context) {
+  let dynamic = {};
+  if (context.loadConfig) {
+    try {
+      dynamic = await context.loadConfig();
+    } catch (error) {
+      context.logger.warn("could not reload local API configuration", { error: error.message });
+    }
+  }
+  return {
+    upstreamUrl: normalizeBaseUrl(dynamic.upstreamUrl || context.upstreamUrl),
+    upstreamKey: String(dynamic.upstreamKey || context.upstreamKey || ""),
+    upstreamModel: String(dynamic.upstreamModel || dynamic.model || context.upstreamModel || context.model || DEFAULT_UPSTREAM_MODEL),
+  };
+}
+
+function missingUpstreamMessage() {
+  return "Local API is running, but no upstream model provider key is configured. Run `machine-mcp api configure` to save a provider key, or run `machine-mcp api configure --api-upstream-key <key> --api-upstream-model <model>`. New API processes pick up saved configuration automatically; if this process was started before that feature existed, restart `machine-mcp`.";
+}
+
 async function proxyRequest(req, res, url, context) {
   const body = await readBody(req, context.maxBodyBytes);
+  const outboundBody = normalizeJsonModel(body, req.headers["content-type"], context);
   const upstreamTarget = `${context.upstreamUrl}${url.pathname.slice(3)}${url.search}`;
   const headers = copyProxyHeaders(req.headers, context.upstreamKey);
   const response = await fetch(upstreamTarget, {
     method: "POST",
     headers,
-    body,
+    body: outboundBody,
     signal: AbortSignal.timeout(10 * 60 * 1000),
   });
 
@@ -169,6 +195,19 @@ async function proxyRequest(req, res, url, context) {
   if (!res.hasHeader("content-type")) res.setHeader("content-type", "application/json");
   if (response.body) await pipeline(Readable.fromWeb(response.body), res);
   else res.end();
+}
+
+
+function normalizeJsonModel(body, contentType, context) {
+  if (!String(contentType || "").toLowerCase().includes("application/json")) return body;
+  try {
+    const payload = JSON.parse(body.toString("utf8"));
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return body;
+    if (!payload.model) payload.model = context.upstreamModel;
+    return Buffer.from(JSON.stringify(payload));
+  } catch {
+    return body;
+  }
 }
 
 function copyProxyHeaders(source, upstreamKey) {
@@ -214,14 +253,14 @@ function isAuthorized(req, expectedKey) {
   return typeof apiKey === "string" && apiKey === expectedKey;
 }
 
-function modelsPayload(model) {
+function modelsPayload(config) {
   return {
     object: "list",
     data: [{
-      id: model,
+      id: config.upstreamModel,
       object: "model",
       created: 0,
-      owned_by: "machine-bridge-mcp",
+      owned_by: "upstream",
     }],
   };
 }

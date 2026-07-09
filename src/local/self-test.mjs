@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import http from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ async function stateSelfTest() {
     const state = loadState(workspace, { stateDir: stateRoot });
     ensureWorkerSecrets(state, { rotateSecrets: true });
     ensureLocalApiKey(state, { rotateApiKey: true });
+    state.localApi.upstreamKey = "upstream_key_test_redaction_value";
     const lock = acquireDaemonLock(state);
     if (!lock.acquired) throw new Error("first daemon lock acquisition failed");
     try {
@@ -39,6 +41,7 @@ async function stateSelfTest() {
     if (redacted.worker.daemonSecret === state.worker.daemonSecret) throw new Error("daemonSecret was not redacted");
     if (redacted.worker.oauthTokenVersion === state.worker.oauthTokenVersion) throw new Error("oauthTokenVersion was not redacted");
     if (redacted.localApi.apiKey === state.localApi.apiKey) throw new Error("local API key was not redacted");
+    if (redacted.localApi.upstreamKey === state.localApi.upstreamKey) throw new Error("upstream API key was not redacted");
     if (!previewSecret(state.worker.oauthPassword).includes("...")) throw new Error("previewSecret did not preview long secret");
     if (!redactSecret(state.localApi.apiKey).includes("...")) throw new Error("redactSecret did not preview long secret");
   } finally {
@@ -68,7 +71,8 @@ async function apiSelfTest() {
     port: 0,
     apiKey: "local-test-key",
     upstreamKey: "",
-    model: "test-model",
+    model: "ignored-local-model-option",
+    upstreamModel: "test-model",
     logger,
   });
   const base = `http://${api.host}:${api.port}`;
@@ -83,7 +87,7 @@ async function apiSelfTest() {
     const models = await fetch(`${base}/v1/models`, { headers: { authorization: "Bearer local-test-key" } });
     if (models.status !== 200) throw new Error(`authorized models returned ${models.status}`);
     const payload = await models.json();
-    if (payload?.data?.[0]?.id !== "test-model") throw new Error("model payload did not include configured model");
+    if (payload?.data?.length !== 1 || payload?.data?.[0]?.id !== "test-model") throw new Error("model payload did not expose only the upstream model");
     const chat = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
@@ -92,5 +96,45 @@ async function apiSelfTest() {
     if (chat.status !== 503) throw new Error(`missing upstream key should return 503, got ${chat.status}`);
   } finally {
     await api.close();
+  }
+
+  await proxyModelSelfTest(logger);
+}
+
+async function proxyModelSelfTest(logger) {
+  let captured = null;
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", chunk => chunks.push(chunk));
+    req.on("end", () => {
+      captured = { authorization: req.headers.authorization, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) };
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ id: "ok", choices: [] }));
+    });
+  });
+  await new Promise(resolve => upstream.listen({ host: "127.0.0.1", port: 0 }, resolve));
+  const upstreamPort = upstream.address().port;
+  const api = await startLocalApiServer({
+    host: "127.0.0.1",
+    port: 0,
+    apiKey: "local-test-key",
+    upstreamUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    upstreamKey: "upstream-test-key",
+    model: "ignored-local-model-option",
+    upstreamModel: "real-upstream-model",
+    logger,
+  });
+  try {
+    const response = await fetch(`http://${api.host}:${api.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
+      body: JSON.stringify({ model: "real-upstream-model", messages: [] }),
+    });
+    if (response.status !== 200) throw new Error(`proxy rewrite returned ${response.status}`);
+    if (captured?.authorization !== "Bearer upstream-test-key") throw new Error("upstream authorization was not set");
+    if (captured?.body?.model !== "real-upstream-model") throw new Error("upstream model was not preserved");
+  } finally {
+    await api.close();
+    await new Promise(resolve => upstream.close(resolve));
   }
 }

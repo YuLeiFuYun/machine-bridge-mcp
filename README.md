@@ -85,7 +85,24 @@ Use these values in the local AI client:
 
 - Base URL: `http://127.0.0.1:8765/v1`
 - API key: the `local_api_key_...` printed by the CLI
-- Model: the model shown by `GET /v1/models` or your configured `--api-model`
+- Model: the upstream model shown by `GET /v1/models`, for example `gpt-4.1-mini`
+
+Before chat/completions can generate text, configure the upstream OpenAI-compatible model provider once:
+
+```zsh
+machine-mcp api configure
+```
+
+Non-interactive setup is also supported:
+
+```zsh
+machine-mcp api configure \
+  --api-upstream-url https://api.openai.com/v1 \
+  --api-upstream-key "$OPENAI_API_KEY" \
+  --api-upstream-model gpt-4.1-mini
+```
+
+The upstream key is saved in the owner-only workspace state and redacted in status/doctor output. Existing `machine-mcp` API processes from v0.2.2+ reload this saved provider configuration on each request, so a newly configured key is picked up without changing Cherry Studio's Base URL or API key. After configuration, select the upstream model shown by `GET /v1/models` in Cherry Studio. If an older running process still returns `upstream_not_configured`, restart `machine-mcp` once.
 
 If port `8765` conflicts with another local app, choose a different port explicitly:
 
@@ -100,22 +117,24 @@ machine-mcp api --api-port 8766
 machine-mcp api --port 8766
 ```
 
-By default, the local API binds to `127.0.0.1`, starts with `machine-mcp`, and stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Explicit `--api-host`, `--api-port`, `--api-model`, and `--api-upstream-url` values are persisted for the workspace so autostart uses the same non-secret API settings; upstream API keys are not written to state. Rotate the local API key with:
+By default, the local API binds to `127.0.0.1`, starts with `machine-mcp`, and stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Explicit `--api-host`, `--api-port`, `--api-upstream-url`, and `--api-upstream-model` values are persisted for the workspace so autostart uses the same API settings. `--api-model` is accepted as a compatibility alias for `--api-upstream-model`; local `/v1/models` still displays the upstream model directly. Upstream API keys are saved only when you explicitly run `machine-mcp api configure` or pass `--api-upstream-key`; they are stored in owner-only state and redacted in diagnostics. Rotate the local API key with:
 
 ```zsh
 machine-mcp api --rotate-api-key
 ```
 
-Configure an upstream OpenAI-compatible provider:
+Update the upstream OpenAI-compatible provider later:
 
 ```zsh
-machine-mcp api \
+machine-mcp api configure \
   --api-upstream-url https://api.openai.com/v1 \
   --api-upstream-key "$OPENAI_API_KEY" \
-  --api-model gpt-4.1
+  --api-upstream-model gpt-4.1-mini
 ```
 
-Environment variables are also supported: `MBM_API_HOST`, `MBM_API_PORT`, `MBM_API_KEY`, `MBM_API_UPSTREAM_URL`, `MBM_API_UPSTREAM_KEY`, `MBM_API_MODEL`, plus common OpenAI names such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`.
+The local `/v1/models` list intentionally shows the real upstream model, not a project alias. Requests are forwarded with the model selected by the desktop client; if a request omits `model`, the proxy fills in the configured upstream model.
+
+Environment variables are also supported for the current process: `MBM_API_HOST`, `MBM_API_PORT`, `MBM_API_KEY`, `MBM_API_UPSTREAM_URL`, `MBM_API_UPSTREAM_KEY`, `MBM_API_UPSTREAM_MODEL`, `MBM_API_MODEL`, plus common OpenAI names such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. For login autostart, prefer `machine-mcp api configure` so the upstream provider is available without relying on shell environment inheritance.
 
 Supported local API routes:
 
@@ -126,7 +145,7 @@ Supported local API routes:
 - `POST /v1/embeddings`
 - `POST /v1/completions`
 
-Model-producing routes proxy to the configured upstream provider. If no upstream key is configured, the API still starts and `/v1/models` works, but generation endpoints return a clear `503 upstream_not_configured` error. Logs record route, status, latency, and safe configuration metadata; request and response bodies and API keys are not logged.
+Model-producing routes proxy to the configured upstream provider. If no upstream key is configured, the API still starts and `/v1/models` works, but generation endpoints return a clear `503 upstream_not_configured` error with the setup command. Logs record route, status, latency, and safe configuration metadata; request and response bodies and API keys are not logged.
 
 
 ## Re-select workspace
@@ -248,7 +267,7 @@ Default state roots:
 - Linux with `XDG_STATE_HOME`: `$XDG_STATE_HOME/machine-bridge-mcp`
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
-State contains the MCP password, daemon secret, and local API key. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password only when a ChatGPT app is likely to need reconnection: first run, secret rotation, MCP URL changes, or `--print-mcp-credentials`. The local API base URL and API key print on normal foreground starts because desktop AI clients need them. Use `--no-print-credentials` to redact console credentials. State files, temporary Worker secret files, lock files, and log directories are created under the user state root with owner-only permissions where the platform supports POSIX modes.
+State contains the MCP password, daemon secret, local API key, and any explicitly configured upstream provider key. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password only when a ChatGPT app is likely to need reconnection: first run, secret rotation, MCP URL changes, or `--print-mcp-credentials`. The local API base URL and API key print on normal foreground starts because desktop AI clients need them. Use `--no-print-credentials` to redact console credentials. State files, temporary Worker secret files, lock files, and log directories are created under the user state root with owner-only permissions where the platform supports POSIX modes.
 
 The Worker rejects browser requests with an `Origin` header unless the origin is the Worker itself or a loopback HTTP origin. To allow additional browser-based MCP clients, set `MBM_ALLOWED_ORIGINS` to a comma-separated list of exact origins in `wrangler.jsonc` or Cloudflare Worker settings.
 
