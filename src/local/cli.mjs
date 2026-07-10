@@ -4,7 +4,7 @@ import path, { resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalDaemon } from "./daemon.mjs";
-import { startLocalApiServer, DEFAULT_API_HOST, DEFAULT_API_PORT, DEFAULT_UPSTREAM_MODEL, DEFAULT_UPSTREAM_URL } from "./api-server.mjs";
+import { startLocalApiServer, DEFAULT_API_HOST, DEFAULT_API_PORT, DEFAULT_API_MODEL } from "./api-server.mjs";
 import { createLogger, redactSecret } from "./log.mjs";
 import { runWrangler } from "./shell.mjs";
 import {
@@ -32,11 +32,6 @@ import {
 export async function main(argv = process.argv.slice(2)) {
   const [command, rest] = normalizeCommand(argv);
   const args = parseArgs(rest);
-  if (command === "api" && isApiConfigureSubcommand(args._[0])) {
-    const subArgs = { ...args, _: args._.slice(1) };
-    if (subArgs.help) return apiConfigureUsage();
-    return apiConfigureCommand(subArgs);
-  }
   if (command === "api" && args.help) return apiUsage();
   if (args.help || command === "help") return usage();
   if (args.version || command === "version") return version();
@@ -82,10 +77,6 @@ function parseArgs(argv) {
 
 function toCamel(key) {
   return key.replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
-}
-
-function isApiConfigureSubcommand(value) {
-  return ["configure", "config", "setup"].includes(String(value || ""));
 }
 
 function stateRootFromArgs(args) {
@@ -157,44 +148,6 @@ async function ask(prompt) {
   } finally {
     rl.close();
   }
-}
-
-function askSecret(prompt) {
-  if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") return ask(prompt);
-  return new Promise((resolvePromise, reject) => {
-    let value = "";
-    const onData = chunk => {
-      const text = chunk.toString("utf8");
-      for (const ch of text) {
-        if (ch === "\u0003") {
-          cleanup();
-          process.stdout.write("\n");
-          reject(new Error("Cancelled"));
-          return;
-        }
-        if (ch === "\r" || ch === "\n") {
-          cleanup();
-          process.stdout.write("\n");
-          resolvePromise(value);
-          return;
-        }
-        if (ch === "\u007f" || ch === "\b") {
-          value = value.slice(0, -1);
-          continue;
-        }
-        value += ch;
-      }
-    };
-    const cleanup = () => {
-      process.stdin.off("data", onData);
-      try { process.stdin.setRawMode(false); } catch {}
-      process.stdin.pause();
-    };
-    process.stdout.write(prompt);
-    process.stdin.resume();
-    process.stdin.setRawMode(true);
-    process.stdin.on("data", onData);
-  });
 }
 
 async function confirm(prompt, assumeYes = false) {
@@ -305,69 +258,16 @@ async function apiCommand(args) {
 }
 
 
-async function apiConfigureCommand(args) {
-  assertNodeVersion();
-  const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
-  const state = loadState(workspace, { stateDir: args.stateDir });
-  state.localApi ||= {};
-
-  if (args.clearApiUpstreamKey || args.clearUpstreamKey) {
-    delete state.localApi.upstreamKey;
-  }
-
-  const explicitUrl = explicitArg(args.apiUpstreamUrl);
-  const explicitModel = explicitArg(args.apiUpstreamModel) ?? explicitArg(args.apiModel);
-  const explicitKey = explicitArg(args.apiUpstreamKey);
-
-  let upstreamUrl = explicitUrl ?? valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE") ?? state.localApi.upstreamUrl ?? DEFAULT_UPSTREAM_URL;
-  let upstreamModel = explicitModel ?? valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_MODEL", "OPENAI_MODEL") ?? state.localApi.upstreamModel ?? DEFAULT_UPSTREAM_MODEL;
-  let upstreamKey = explicitKey;
-
-  if (process.stdin.isTTY && !args.yes) {
-    if (explicitUrl === undefined) {
-      const answer = (await ask(`Upstream Base URL [${upstreamUrl}]: `)).trim();
-      if (answer) upstreamUrl = answer;
-    }
-    if (explicitModel === undefined) {
-      const answer = (await ask(`External model [${upstreamModel}]: `)).trim();
-      if (answer) upstreamModel = answer;
-    }
-    if (upstreamKey === undefined && !state.localApi.upstreamKey) {
-      upstreamKey = (await askSecret("Upstream API key: ")).trim();
-    } else if (upstreamKey === undefined && state.localApi.upstreamKey) {
-      const answer = (await askSecret("Upstream API key [keep existing]: ")).trim();
-      if (answer) upstreamKey = answer;
-    }
-  }
-
-  if (upstreamKey === undefined) upstreamKey = valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY");
-  if (!upstreamKey && !state.localApi.upstreamKey) {
-    throw new Error("No upstream API key provided. Run `machine-mcp api configure --api-upstream-key <key>` or run the interactive command in a terminal.");
-  }
-
-  configureLocalApiState(state, { ...args, apiUpstreamUrl: upstreamUrl, apiUpstreamModel: upstreamModel, apiUpstreamKey: upstreamKey || undefined });
-  saveState(state);
-
-  const logger = createLogger({ quiet: Boolean(args.quiet), component: "api" });
-  logger.success("external model API provider configured", {
-    upstream: state.localApi.upstreamUrl,
-    upstreamModel: state.localApi.upstreamModel,
-    key: redactSecret(state.localApi.upstreamKey),
-  });
-  logger.plain("  Existing machine-mcp API processes from v0.2.2+ pick this up on the next request.");
-  logger.plain("  If a v0.2.3+ running proxy still shows stale provider state, restart `machine-mcp` once.");
-}
-
 async function startConfiguredApiServer(state, args, logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "api" })) {
   const apiOptions = apiOptionsFromArgs(state, args);
-  return startLocalApiServer({ ...apiOptions, loadConfig: createApiConfigLoader(state, args), logger });
+  return startLocalApiServer({ ...apiOptions, logger });
 }
 
 async function startOptionalApiServer(state, args, parentLogger) {
   const logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "api" });
   const apiOptions = apiOptionsFromArgs(state, args);
   try {
-    return await startLocalApiServer({ ...apiOptions, loadConfig: createApiConfigLoader(state, args), logger });
+    return await startLocalApiServer({ ...apiOptions, logger });
   } catch (error) {
     if (error?.code === "EADDRINUSE") {
       const baseUrl = apiBaseUrl(apiOptions.host, apiOptions.port);
@@ -379,7 +279,7 @@ async function startOptionalApiServer(state, args, parentLogger) {
       parentLogger.warn(error.message);
       return null;
     }
-    parentLogger.warn(`Local API provider skipped: ${error.message}`);
+    parentLogger.warn(`Local API skipped: ${error.message}`);
     return null;
   }
 }
@@ -405,47 +305,28 @@ async function probeLocalApiHealth(baseUrl, expectedApiKey = "") {
 }
 
 function apiOptionsFromArgs(state, args = {}) {
-  const upstreamKey = valueFromArgsEnv(args.apiUpstreamKey, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY") || state.localApi?.upstreamKey || "";
   const explicitPort = explicitArg(args.apiPort) ?? explicitArg(args.port);
   const envPort = valueFromArgsEnv(undefined, "MBM_API_PORT", "PORT");
-  const upstreamModel = valueFromArgsEnv(args.apiUpstreamModel, "MBM_API_UPSTREAM_MODEL", "OPENAI_MODEL") || valueFromArgsEnv(args.apiModel, "MBM_API_MODEL") || state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL;
   return {
     host: valueFromArgsEnv(args.apiHost, "MBM_API_HOST") || state.localApi?.host || DEFAULT_API_HOST,
     port: explicitPort ?? envPort ?? state.localApi?.port ?? DEFAULT_API_PORT,
     apiKey: valueFromArgsEnv(args.apiKey, "MBM_API_KEY") || state.localApi?.apiKey || ensureLocalApiKey(state, { rotateApiKey: Boolean(args.rotateApiKey) }),
-    upstreamUrl: valueFromArgsEnv(args.apiUpstreamUrl, "MBM_API_UPSTREAM_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE") || state.localApi?.upstreamUrl || DEFAULT_UPSTREAM_URL,
-    upstreamKey,
-    model: upstreamModel,
-    upstreamModel,
+    model: valueFromArgsEnv(args.apiModel, "MBM_API_MODEL") || state.localApi?.model || DEFAULT_API_MODEL,
+    workerUrl: state.worker?.url || "",
+    daemonSecret: state.worker?.daemonSecret || "",
   };
 }
 
 function configureLocalApiState(state, args = {}) {
   state.localApi ||= {};
-  ensureLocalApiKey(state, { apiKey: valueFromArgsEnv(args.apiKey, "MBM_API_KEY"), rotateApiKey: Boolean(args.rotateApiKey) });
+  ensureLocalApiKey(state, { apiKey: explicitArg(args.apiKey), rotateApiKey: Boolean(args.rotateApiKey) });
   const port = explicitArg(args.apiPort) ?? explicitArg(args.port);
   if (port !== undefined && String(port) !== "0") state.localApi.port = String(port);
   const host = explicitArg(args.apiHost);
   if (host !== undefined) state.localApi.host = String(host);
-  const upstreamUrl = explicitArg(args.apiUpstreamUrl);
-  if (upstreamUrl !== undefined) state.localApi.upstreamUrl = String(upstreamUrl);
-  const upstreamKey = explicitArg(args.apiUpstreamKey);
-  if (upstreamKey !== undefined) state.localApi.upstreamKey = String(upstreamKey);
-  const upstreamModel = explicitArg(args.apiUpstreamModel) ?? explicitArg(args.apiModel);
-  if (upstreamModel !== undefined) {
-    state.localApi.upstreamModel = String(upstreamModel);
-    delete state.localApi.model;
-  }
+  const model = explicitArg(args.apiModel);
+  if (model !== undefined) state.localApi.model = String(model);
   state.localApi.updatedAt = new Date().toISOString();
-}
-
-function createApiConfigLoader(state, args = {}) {
-  const workspace = state.workspace?.path;
-  const stateDir = args.stateDir;
-  return () => {
-    const fresh = workspace ? loadState(workspace, { stateDir }) : state;
-    return apiOptionsFromArgs(fresh, args);
-  };
 }
 
 function explicitArg(value) {
@@ -623,7 +504,8 @@ async function waitForConnectWithNotice(promise, timeoutMs, quiet = false) {
 
 function printStartJson(state, apiServer, { noPrintCredentials = false } = {}) {
   const mcpPassword = noPrintCredentials ? previewSecret(state.worker.oauthPassword) : state.worker.oauthPassword;
-  const apiKey = state.localApi?.apiKey ? (noPrintCredentials ? previewSecret(state.localApi.apiKey) : state.localApi.apiKey) : null;
+  const runtimeApiKey = apiServer?.apiKey || state.localApi?.apiKey || "";
+  const apiKey = runtimeApiKey ? (noPrintCredentials ? previewSecret(runtimeApiKey) : runtimeApiKey) : null;
   createLogger({ component: "ready" }).json({
     mcp: {
       server_url: state.worker.mcpServerUrl,
@@ -635,9 +517,9 @@ function printStartJson(state, apiServer, { noPrintCredentials = false } = {}) {
       base_url: apiServer.baseUrl,
       api_key: apiKey,
       already_running: Boolean(apiServer.alreadyRunning),
-      upstream_configured: Boolean(state.localApi?.upstreamKey || valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY")),
-      model: state.localApi?.upstreamKey ? (state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL) : null,
-      chatgpt_web_backed: false,
+      backend: "chatgpt-mcp",
+      model: state.localApi?.model || DEFAULT_API_MODEL,
+      mcp_bridge_configured: Boolean(state.worker?.url && state.worker?.daemonSecret),
       client_type: "OpenAI-compatible",
     } : null,
     workspace: state.workspace.path,
@@ -647,13 +529,14 @@ function printStartJson(state, apiServer, { noPrintCredentials = false } = {}) {
 }
 
 function printApiJson(apiServer, state, { noPrintCredentials = false } = {}) {
+  const runtimeApiKey = apiServer?.apiKey || state.localApi?.apiKey || "";
   createLogger({ component: "ready" }).json({
     local_api: {
       base_url: apiServer.baseUrl,
-      api_key: noPrintCredentials ? previewSecret(state.localApi.apiKey) : state.localApi.apiKey,
-      upstream_configured: Boolean(state.localApi?.upstreamKey || valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY")),
-      model: state.localApi?.upstreamKey ? (state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL) : null,
-      chatgpt_web_backed: false,
+      api_key: noPrintCredentials ? previewSecret(runtimeApiKey) : runtimeApiKey,
+      backend: "chatgpt-mcp",
+      model: apiServer?.model || state.localApi?.model || DEFAULT_API_MODEL,
+      mcp_bridge_configured: Boolean(state.worker?.url && state.worker?.daemonSecret),
       client_type: "OpenAI-compatible",
     },
     workspace: state.workspace.path,
@@ -693,20 +576,17 @@ function printMcpConnection(state, { json = false, noPrintCredentials = false, i
 
 function printApiConnection(apiServer, state, { noPrintCredentials = false, quiet = false } = {}) {
   const logger = createLogger({ component: "ready", quiet });
-  const configured = Boolean(state.localApi?.upstreamKey || valueFromArgsEnv(undefined, "MBM_API_UPSTREAM_KEY", "OPENAI_API_KEY"));
-  logger.success("Local OpenAI-compatible API proxy is running");
+  const runtimeApiKey = apiServer?.apiKey || state.localApi?.apiKey || "";
+  logger.success("Local ChatGPT MCP-backed OpenAI-compatible API is running");
   logger.plain(`  API Base URL: ${apiServer.baseUrl}`);
-  logger.plain(`  API key: ${noPrintCredentials ? `${redactSecret(state.localApi.apiKey)} (redacted)` : state.localApi.apiKey}`);
+  logger.plain(`  API key: ${noPrintCredentials ? `${redactSecret(runtimeApiKey)} (redacted)` : runtimeApiKey}`);
   logger.plain("  Client type: OpenAI-compatible");
-  logger.plain("  ChatGPT web backing: no; ChatGPT web uses the Remote MCP bridge, not this /v1 API.");
-  if (configured) {
-    logger.plain(`  Model: ${state.localApi?.upstreamModel || DEFAULT_UPSTREAM_MODEL}`);
-    logger.plain("  External model API provider: configured");
-  } else {
-    logger.plain("  Models: none until an external OpenAI-compatible provider is configured.");
-    logger.plain("  For ChatGPT web, use the MCP Server URL/password instead of this local API.");
-  }
+  logger.plain(`  Model: ${apiServer?.model || state.localApi?.model || DEFAULT_API_MODEL}`);
+  logger.plain("  Backend: ChatGPT MCP sampling via the connected ChatGPT app");
+  if (state.worker?.mcpServerUrl) logger.plain(`  MCP Server URL: ${state.worker.mcpServerUrl}`);
+  else logger.plain("  MCP bridge: not deployed yet; run `machine-mcp` before using generation routes.");
 }
+
 
 function keepProcessAlive({ daemon = null, lock = null, apiServer = null, logger = createLogger({ component: "cli" }) } = {}) {
   let stopping = false;
@@ -910,8 +790,7 @@ Usage:
 
 Commands:
   start             Deploy/update Worker, install autostart, start daemon and local API
-  api               Start local OpenAI-compatible API proxy only
-  api configure     Configure an external model API provider for the local proxy
+  api               Start local ChatGPT MCP-backed OpenAI-compatible API only
   workspace show    Show remembered workspace
   workspace set     Re-select workspace; prompts with current/default path
   service status    Show autostart status
@@ -938,17 +817,14 @@ Start options:
   --full-env            Pass full parent environment to exec_command (default: minimal env)
   --state-dir DIR       Override state root
   --json                Print MCP and local API connection details as JSON
-  --no-api              Do not start the local OpenAI-compatible API proxy
+  --no-api              Do not start the local OpenAI-compatible API
   --api                 Deprecated no-op; local API starts by default
   --api-port PORT       Local API port (default: 8765)
   --port PORT           Alias for --api-port on the api command
   --api-host HOST       Local API host (default: 127.0.0.1)
   --api-key KEY         Set or replace local API key in state
   --rotate-api-key      Rotate local API key
-  --api-upstream-url URL  External OpenAI-compatible base URL (default: https://api.openai.com/v1)
-  --api-upstream-key KEY  External provider key; env OPENAI_API_KEY also works
-  --api-upstream-model MODEL Model shown locally and sent upstream (default: gpt-4.1-mini)
-  --api-model MODEL     Alias for --api-upstream-model
+  --api-model MODEL     Local model id advertised by /v1/models (default: chatgpt-mcp)
 
 Uninstall options:
   --keep-worker         Do not delete deployed Worker(s) during uninstall
@@ -957,19 +833,19 @@ Uninstall options:
 }
 
 function apiUsage() {
-  console.log(`machine-bridge-mcp local API proxy
+  console.log(`machine-bridge-mcp local ChatGPT MCP-backed API
 
 Usage:
   machine-mcp
   machine-mcp --api-port 8766
-  machine-mcp api                    # API proxy only
-  machine-mcp api configure          # configure external model provider
+  machine-mcp api                    # local API only
   machine-mcp api --api-port 8766
 
 Client settings:
   API Base URL: http://127.0.0.1:<port>/v1
   API key: printed on startup unless --no-print-credentials is set
-  Client type: OpenAI-compatible
+  Model: chatgpt-mcp by default
+  Backend: connected ChatGPT app through the Remote MCP bridge
 
 Options:
   --workspace PATH        Use and remember this workspace path
@@ -978,43 +854,20 @@ Options:
   --port PORT             Alias for --api-port
   --api-key KEY           Set or replace local API key in state
   --rotate-api-key        Rotate local API key
-  --api-upstream-url URL  External OpenAI-compatible base URL
-  --api-upstream-key KEY  External provider key; env OPENAI_API_KEY also works
-  --api-upstream-model MODEL Model shown locally and sent upstream (default: gpt-4.1-mini)
-  --api-model MODEL       Alias for --api-upstream-model
+  --api-model MODEL       Local model id advertised by /v1/models
   --no-print-credentials  Redact the local API key in console output
-  --no-api                Only valid for start; disables the default local API proxy
+  --no-api                Only valid for start; disables the default local API
   --state-dir DIR         Override state root
 
+Important:
+  Generation routes require a ChatGPT app connected to the printed MCP Server URL.
+  The local API sends sampling/createMessage requests through that MCP connection.
+
 Environment:
-  MBM_API_HOST, MBM_API_PORT, MBM_API_KEY, MBM_API_UPSTREAM_URL, MBM_API_UPSTREAM_KEY, MBM_API_UPSTREAM_MODEL, MBM_API_MODEL
-  OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_API_BASE, OPENAI_MODEL
+  MBM_API_HOST, MBM_API_PORT, MBM_API_KEY, MBM_API_MODEL
 `);
 }
 
-
-function apiConfigureUsage() {
-  console.log(`machine-bridge-mcp local API proxy setup
-
-Usage:
-  machine-mcp api configure
-  machine-mcp api configure --api-upstream-key <key> --api-upstream-model gpt-4.1-mini
-  machine-mcp api configure --api-upstream-url https://api.openai.com/v1
-
-What this stores:
-  External provider base URL, model, and API key are saved in the owner-only workspace state.
-  This is not a ChatGPT web API. The local API key for desktop clients is separate and remains the key printed by machine-mcp.
-
-Options:
-  --workspace PATH          Configure this workspace
-  --api-upstream-url URL    External OpenAI-compatible base URL
-  --api-upstream-key KEY    External provider key to save
-  --api-upstream-model MODEL Model shown locally and sent upstream
-  --api-model MODEL         Alias for --api-upstream-model
-  --clear-api-upstream-key  Remove the saved upstream key
-  --state-dir DIR           Override state root
-`);
-}
 
 function version() {
   const pkg = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));

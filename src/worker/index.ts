@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.2.3";
+const SERVER_VERSION = "0.2.4";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -50,6 +50,12 @@ interface OAuthToken {
   expires_at: number;
 }
 
+interface AuthenticatedClient {
+  clientId: string;
+  scope: string;
+  resource: string;
+}
+
 interface OAuthStore {
   clients: Record<string, OAuthClient>;
   codes: Record<string, OAuthCode>;
@@ -70,6 +76,22 @@ interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  streamId?: string;
+}
+
+interface McpClientState {
+  clientId: string;
+  initializedAt: string;
+  capabilities: Record<string, unknown>;
+  clientInfo?: Record<string, unknown>;
+}
+
+interface McpClientStream {
+  id: string;
+  clientId: string;
+  connectedAt: number;
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  heartbeat: ReturnType<typeof setInterval>;
 }
 
 const serverInfoTool = {
@@ -195,6 +217,9 @@ const MCP_INSTRUCTIONS = [
 
 export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new Map<string, PendingCall>();
+  private readonly pendingClientRequests = new Map<string, PendingCall>();
+  private readonly mcpClients = new Map<string, McpClientState>();
+  private readonly mcpClientStreams = new Map<string, McpClientStream>();
 
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env);
@@ -209,10 +234,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
 
       if (url.pathname === "/" && request.method === "GET") {
-        return json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, mcp: `${base}/mcp`, daemon: this.daemonStatus(false) });
+        return json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, mcp: `${base}/mcp`, daemon: this.daemonStatus(false), mcp_clients: this.mcpClientStatus(false) });
       }
       if (url.pathname === "/healthz") {
-        return json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, daemon: this.daemonStatus(false) });
+        return json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, daemon: this.daemonStatus(false), mcp_clients: this.mcpClientStatus(false) });
       }
       if (url.pathname === "/.well-known/mcp.json") {
         return json(this.mcpMetadata(base));
@@ -235,6 +260,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       if (url.pathname === "/daemon/ws") return this.acceptDaemonWebSocket(request);
       if (url.pathname === "/mcp") return this.handleMcp(request, base);
       if (url.pathname === "/api/daemon/status") return json(this.daemonStatus(false));
+      if (url.pathname === "/api/mcp/sampling") return this.handleSamplingApi(request);
       return json({ error: "not_found" }, 404);
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.code, message: error.message }, error.status);
@@ -297,27 +323,33 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   private async handleMcp(request: Request, base: string): Promise<Response> {
-    if (request.method === "GET") return new Response("GET SSE stream is not implemented; use POST Streamable HTTP.", { status: 405 });
     if (request.method === "DELETE") return new Response(null, { status: 405 });
-    if (request.method !== "POST") return json({ error: "mcp endpoint expects POST JSON-RPC" }, 405);
+    if (request.method !== "POST" && request.method !== "GET") return json({ error: "mcp endpoint expects POST JSON-RPC or GET SSE" }, 405);
 
-    if (!(await this.verifyAccessToken(bearerToken(request), base))) {
+    const auth = await this.verifyAccessToken(bearerToken(request), base);
+    if (!auth) {
       return new Response("OAuth bearer token required", {
         status: 401,
         headers: { "WWW-Authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` },
       });
     }
 
+    if (request.method === "GET") return this.openMcpSseStream(request, auth);
+
     const body = await parseJsonRequest(request, this.bodyLimitBytes());
-    if (isJsonRpcResponse(body)) return new Response(null, { status: 202 });
+    if (isJsonRpcResponse(body)) {
+      this.handleClientJsonRpcResponse(body);
+      return new Response(null, { status: 202 });
+    }
     if (!isJsonRpcRequest(body)) return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
-    const response = await this.dispatchJsonRpc(body, base);
+    const response = await this.dispatchJsonRpc(body, base, auth);
     if (response === null) return new Response(null, { status: 202 });
     return json(response);
   }
 
-  private async dispatchJsonRpc(request: JsonRpcRequest, base: string): Promise<Record<string, unknown> | null> {
+  private async dispatchJsonRpc(request: JsonRpcRequest, base: string, auth: AuthenticatedClient): Promise<Record<string, unknown> | null> {
     if (request.method === "initialize") {
+      this.recordClientInitialize(auth, request.params);
       return rpcResult(request.id, {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
@@ -350,6 +382,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         mcp_url: `${base}/mcp`,
         oauth: this.authorizationServerMetadata(base),
         daemon: this.daemonStatus(true),
+        mcp_clients: this.mcpClientStatus(true),
         tools: this.allTools().map((tool) => tool.name),
       };
     }
@@ -399,6 +432,172 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     } satisfies DaemonAttachment);
     server.send(JSON.stringify({ type: "welcome", server: SERVER_NAME, version: SERVER_VERSION }));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private async handleSamplingApi(request: Request): Promise<Response> {
+    if (request.method !== "POST") return json({ error: "method_not_allowed", message: "POST required" }, 405);
+    const expected = this.env.DAEMON_SHARED_SECRET ?? "";
+    const supplied = request.headers.get("X-Bridge-Token") ?? "";
+    if (!expected || !(await safeEqual(supplied, expected))) return json({ error: "unauthorized", message: "Unauthorized local API bridge request" }, 401);
+
+    const body = await parseRequestBody(request, this.bodyLimitBytes());
+    const timeoutMs = clampNumber(body.timeout_ms ?? body.timeoutMs, 180_000, 1_000, 600_000);
+    const params = samplingParamsFromApiBody(body);
+    const result = await this.requestClientSampling(params, timeoutMs);
+    return json({ ok: true, result });
+  }
+
+  private openMcpSseStream(request: Request, auth: AuthenticatedClient): Response {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const streamId = randomToken("mcp_stream");
+    const stream: McpClientStream = {
+      id: streamId,
+      clientId: auth.clientId,
+      connectedAt: Date.now(),
+      writer,
+      heartbeat: setInterval(() => {
+        void writeSseComment(writer, `keepalive ${Date.now()}`).catch(() => this.closeMcpClientStream(streamId));
+      }, 25_000),
+    };
+    this.mcpClientStreams.set(streamId, stream);
+    request.signal.addEventListener("abort", () => this.closeMcpClientStream(streamId), { once: true });
+    void writeSseComment(writer, `${SERVER_NAME} connected`).catch(() => this.closeMcpClientStream(streamId));
+    return new Response(readable, {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+      },
+    });
+  }
+
+  private closeMcpClientStream(streamId: string): void {
+    const stream = this.mcpClientStreams.get(streamId);
+    if (!stream) return;
+    this.mcpClientStreams.delete(streamId);
+    clearInterval(stream.heartbeat);
+    for (const [id, pending] of this.pendingClientRequests) {
+      if (pending.streamId !== streamId) continue;
+      clearTimeout(pending.timeout);
+      this.pendingClientRequests.delete(id);
+      pending.reject(new HttpError(
+        409,
+        "mcp_client_stream_closed",
+        "The MCP client server-to-client stream closed before it answered sampling/createMessage. Reconnect ChatGPT to the MCP Server URL and retry."
+      ));
+    }
+    try {
+      void stream.writer.close();
+    } catch {
+      // Ignore already-closed streams.
+    }
+  }
+
+  private async requestClientSampling(params: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
+    const streams = [...this.mcpClientStreams.values()].sort((left, right) => right.connectedAt - left.connectedAt);
+    if (!streams.length) {
+      throw new HttpError(
+        409,
+        "mcp_client_stream_missing",
+        "No MCP client has an open server-to-client stream. Connect ChatGPT to the printed MCP Server URL and keep a client stream open so this bridge can send sampling/createMessage requests."
+      );
+    }
+
+    const capableStreams = streams.filter((stream) => this.clientSupportsSampling(stream.clientId));
+    if (!capableStreams.length) {
+      throw new HttpError(
+        501,
+        "mcp_sampling_not_supported",
+        "A ChatGPT MCP client stream is connected, but the client did not advertise the MCP sampling capability. This local /v1 API requires a client that can receive sampling/createMessage requests."
+      );
+    }
+
+    const request: JsonRpcRequest = {
+      jsonrpc: JSONRPC_VERSION,
+      id: randomToken("sampling"),
+      method: "sampling/createMessage",
+      params,
+    };
+    return this.sendClientRequest(capableStreams[0], request, timeoutMs);
+  }
+
+  private async sendClientRequest(stream: McpClientStream, request: JsonRpcRequest, timeoutMs: number): Promise<unknown> {
+    const id = String(request.id);
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingClientRequests.delete(id);
+        reject(new HttpError(
+          504,
+          "mcp_sampling_timeout",
+          "Timed out waiting for the MCP client to answer sampling/createMessage. Check that ChatGPT is still connected and that the sampling request was approved."
+        ));
+      }, timeoutMs);
+      this.pendingClientRequests.set(id, { resolve, reject, timeout, streamId: stream.id });
+      void writeSseJson(stream.writer, request, id).catch((error) => {
+        clearTimeout(timeout);
+        this.pendingClientRequests.delete(id);
+        this.closeMcpClientStream(stream.id);
+        reject(new HttpError(409, "mcp_client_stream_unavailable", `MCP client stream is not writable: ${errorMessage(error)}`));
+      });
+    });
+  }
+
+  private handleClientJsonRpcResponse(response: unknown): void {
+    const candidate = response as Record<string, unknown>;
+    const id = String(candidate.id ?? "");
+    if (!id) return;
+    const pending = this.pendingClientRequests.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    this.pendingClientRequests.delete(id);
+    if ("error" in candidate) {
+      pending.reject(new HttpError(
+        502,
+        "mcp_sampling_client_error",
+        `MCP client returned an error for sampling/createMessage: ${jsonRpcErrorMessage(candidate.error)}`
+      ));
+    }
+    else pending.resolve(candidate.result);
+  }
+
+  private recordClientInitialize(auth: AuthenticatedClient, params: unknown): void {
+    const body = asObject(params);
+    const meta = asObject(body._meta);
+    const directCapabilities = asObject(body.capabilities);
+    const metaCapabilities = asObject(meta["io.modelcontextprotocol/clientCapabilities"]);
+    const capabilities = Object.keys(directCapabilities).length ? directCapabilities : metaCapabilities;
+    this.mcpClients.set(auth.clientId, {
+      clientId: auth.clientId,
+      initializedAt: new Date().toISOString(),
+      capabilities,
+      clientInfo: asObject(body.clientInfo),
+    });
+  }
+
+  private clientSupportsSampling(clientId: string): boolean {
+    const capabilities = this.mcpClients.get(clientId)?.capabilities;
+    return Boolean(capabilities && Object.prototype.hasOwnProperty.call(capabilities, "sampling"));
+  }
+
+  private mcpClientStatus(detail: boolean): Record<string, unknown> {
+    const streams = [...this.mcpClientStreams.values()];
+    const samplingCapableClientIds = new Set([...this.mcpClients.values()].filter((client) => Object.prototype.hasOwnProperty.call(client.capabilities, "sampling")).map((client) => client.clientId));
+    const base = {
+      stream_count: streams.length,
+      initialized_count: this.mcpClients.size,
+      sampling_capable_count: samplingCapableClientIds.size,
+    };
+    if (!detail) return base;
+    return {
+      ...base,
+      streams: streams.map((stream) => ({
+        id: stream.id,
+        client_id: stream.clientId,
+        connected_at: new Date(stream.connectedAt).toISOString(),
+        sampling_capable: samplingCapableClientIds.has(stream.clientId),
+      })),
+    };
   }
 
   private allTools(): Array<Record<string, unknown>> {
@@ -652,20 +851,21 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return json({ access_token: accessToken, token_type: "Bearer", expires_in: TOKEN_TTL_SECONDS, scope: record.scope });
   }
 
-  private async verifyAccessToken(token: string, base: string): Promise<boolean> {
-    if (!token) return false;
+  private async verifyAccessToken(token: string, base: string): Promise<AuthenticatedClient | null> {
+    if (!token) return null;
     const store = await this.oauthStore();
     const key = `sha256:${await sha256Hex(token)}`;
     const record = store.tokens[key];
-    if (!record) return false;
+    if (!record) return null;
     if (record.expires_at <= Math.floor(Date.now() / 1000)) {
       delete store.tokens[key];
       await this.ctx.storage.put("oauth", store);
-      return false;
+      return null;
     }
     const currentVersion = this.env.OAUTH_TOKEN_VERSION ?? "";
-    if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return false;
-    return record.resource === `${base}/mcp`;
+    if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
+    if (record.resource !== `${base}/mcp`) return null;
+    return { clientId: record.client_id, scope: record.scope, resource: record.resource };
   }
 
   private bodyLimitBytes(): number {
@@ -706,6 +906,45 @@ function rpcError(id: JsonRpcId | undefined, code: number, message: string): Rec
 
 function textToolResult(value: unknown, isError = false): Record<string, unknown> {
   return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }], isError };
+}
+
+function samplingParamsFromApiBody(body: Record<string, unknown>): Record<string, unknown> {
+  const messages = body.messages;
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new HttpError(400, "invalid_sampling_request", "sampling/createMessage requires a non-empty messages array");
+  }
+  const maxTokens = Number(body.maxTokens);
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+    throw new HttpError(400, "invalid_sampling_request", "sampling/createMessage requires maxTokens");
+  }
+  const params = { ...body };
+  delete params.timeout_ms;
+  delete params.timeoutMs;
+  return params;
+}
+
+async function writeSseJson(writer: WritableStreamDefaultWriter<Uint8Array>, value: unknown, id?: string): Promise<void> {
+  const lines = [];
+  if (id) lines.push(`id: ${sseLine(id)}`);
+  lines.push("event: message");
+  for (const line of JSON.stringify(value).split(/\r?\n/)) lines.push(`data: ${line}`);
+  lines.push("", "");
+  await writer.write(new TextEncoder().encode(lines.join("\n")));
+}
+
+async function writeSseComment(writer: WritableStreamDefaultWriter<Uint8Array>, value: string): Promise<void> {
+  await writer.write(new TextEncoder().encode(`: ${sseLine(value)}\n\n`));
+}
+
+function sseLine(value: string): string {
+  return value.replaceAll("\r", " ").replaceAll("\n", " ");
+}
+
+function jsonRpcErrorMessage(error: unknown): string {
+  const value = asObject(error);
+  const message = typeof value.message === "string" && value.message ? value.message : "MCP client returned an error";
+  const code = value.code === undefined ? "" : ` (${String(value.code)})`;
+  return `${message}${code}`;
 }
 
 function json(value: unknown, status = 200): Response {
@@ -861,8 +1100,12 @@ function isAllowedRedirectUri(value: string): boolean {
 function validateOrigin(request: Request, base: string, configured = ""): boolean {
   const origin = request.headers.get("Origin");
   if (!origin) return true;
+  if (isDefaultAllowedOrigin(origin, base)) return true;
   const allowed = configured.split(",").map((item) => item.trim()).filter(Boolean);
-  if (allowed.length > 0) return allowed.includes(origin);
+  return allowed.includes(origin);
+}
+
+function isDefaultAllowedOrigin(origin: string, base: string): boolean {
   try {
     const parsed = new URL(origin);
     if (origin === base) return true;

@@ -28,8 +28,8 @@ Source checkout:
 3. Generates a stable MCP connection password and daemon secret.
 4. Checks `wrangler whoami`; if needed, opens `wrangler login`.
 5. Deploys the hosted Worker relay with `wrangler deploy --secrets-file`.
-6. Installs login autostart for the local daemon and default local API proxy.
-7. Starts the local daemon and local OpenAI-compatible API provider.
+6. Installs login autostart for the local daemon and default local API.
+7. Starts the local daemon and local OpenAI-compatible API.
 8. Prints MCP connection details on first run, plus local API settings:
 
 ```text
@@ -47,64 +47,48 @@ The command is safe to run repeatedly:
 npm install -g machine-bridge-mcp@latest && machine-mcp
 ```
 
-On repeat runs, the CLI reuses existing state and secrets unless you request rotation, skips Worker redeploys when the deployed Worker is healthy and Worker source/config/secrets are unchanged, refreshes the autostart entry, stops any currently loaded autostart daemon before starting the foreground daemon, and refuses to start a second daemon for the same workspace if another foreground instance is already running. Local-only package, CLI, logging, and API-provider changes do not by themselves force a Worker redeploy.
+On repeat runs, the CLI reuses existing state and secrets unless you request rotation, skips Worker redeploys when the deployed Worker is healthy and Worker source/config/secrets are unchanged, refreshes the autostart entry, stops any currently loaded autostart daemon before starting the foreground daemon, and refuses to start a second daemon for the same workspace if another foreground instance is already running. Local-only package, CLI, logging, and local API changes do not by themselves force a Worker redeploy.
 
 MCP connection details are printed on first run, after secret rotation, when the MCP URL changes, or when you explicitly pass `--print-mcp-credentials`. Routine runs print that MCP details are unchanged.
 
-## Local OpenAI-compatible API proxy
+## Local OpenAI-compatible API
 
-The project has two separate integration surfaces:
+The project exposes two connected integration surfaces:
 
 - **ChatGPT web / ChatGPT apps:** use the Remote MCP Server URL and MCP connection password printed by `machine-mcp`. In this mode, ChatGPT calls tools on your machine through the Worker + local daemon bridge.
-- **Desktop clients such as Cherry Studio, Chatbox, or Continue:** may use the optional local OpenAI-compatible `/v1` proxy. This proxy is not backed by your ChatGPT web session, ChatGPT Plus, or ChatGPT Pro. It can only generate text after you configure a separate OpenAI-compatible model API provider.
+- **Desktop clients such as Cherry Studio, Chatbox, or Continue:** use the optional local OpenAI-compatible `/v1` API. `POST /v1/chat/completions` is backed by MCP sampling: the local API asks the hosted Worker to send `sampling/createMessage` to the already-connected ChatGPT MCP client, then wraps the MCP sampling result as an OpenAI-compatible chat completion response.
 
-Start the normal daemon and local API proxy:
+No separate model API setup is required or used in this path; the local API never asks for a model base URL or model API key. Generation depends on the ChatGPT-side MCP client actually being connected and able to receive server-to-client sampling requests. If ChatGPT is not connected, has no open MCP stream for server-to-client messages, or did not advertise the MCP `sampling` capability, generation returns an explicit OpenAI-shaped error saying that the missing piece is the MCP client stream or sampling capability.
+
+Start the normal daemon and local API:
 
 ```zsh
 machine-mcp
 ```
 
-Start only the local API proxy, without the Remote MCP daemon:
+Start only the local API from remembered state:
 
 ```zsh
 machine-mcp api
 ```
 
-Disable the default local API proxy for a daemon run:
+Disable the default local API for a daemon run:
 
 ```zsh
 machine-mcp --no-api
 ```
 
-When the proxy is running, the CLI prints client settings like:
+When the API is running, the CLI prints client settings like:
 
 ```text
 API Base URL: http://127.0.0.1:8765/v1
 API key: local_api_key_...
 Client type: OpenAI-compatible
-ChatGPT web backing: no
+Model: chatgpt-mcp
+Backend: ChatGPT MCP sampling via the connected ChatGPT app
 ```
 
-Use these values in the desktop client only if you also configure an external model provider. For ChatGPT web, ignore the local API fields and use the MCP connection details instead.
-
-Configure an external OpenAI-compatible model API provider once:
-
-```zsh
-machine-mcp api configure
-```
-
-Non-interactive setup is also supported:
-
-```zsh
-machine-mcp api configure \
-  --api-upstream-url https://api.openai.com/v1 \
-  --api-upstream-key "$OPENAI_API_KEY" \
-  --api-upstream-model gpt-4.1-mini
-```
-
-The external provider key is saved in the owner-only workspace state and redacted in status/doctor output. Existing `machine-mcp` API processes from v0.2.3+ reload this saved provider configuration on each request, so a newly configured provider is picked up without changing Cherry Studio's Base URL or local API key. After configuration, select the model shown by `GET /v1/models` in the desktop client.
-
-If no external provider is configured, `GET /v1/models` returns an empty list and generation endpoints return `503 upstream_not_configured` with an explanation. This is intentional: ChatGPT web does not expose an OpenAI-compatible local API through this project.
+Use the API Base URL, API key, and model in your desktop client. Separately, connect ChatGPT to the printed MCP Server URL/password so the Worker has an MCP client stream that can receive `sampling/createMessage`.
 
 If port `8765` conflicts with another local app, choose a different port explicitly:
 
@@ -119,7 +103,7 @@ machine-mcp api --api-port 8766
 machine-mcp api --port 8766
 ```
 
-By default, the local API binds to `127.0.0.1`, starts with `machine-mcp`, and stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Explicit `--api-host`, `--api-port`, `--api-upstream-url`, and `--api-upstream-model` values are persisted for the workspace so autostart uses the same API settings. `--api-model` is accepted as a compatibility alias for `--api-upstream-model`; local `/v1/models` still displays the external provider model directly. External provider keys are saved only when you explicitly run `machine-mcp api configure` or pass `--api-upstream-key`; they are stored in owner-only state and redacted in diagnostics.
+By default, the local API binds to `127.0.0.1`, starts with `machine-mcp`, and stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Explicit `--api-host`, `--api-port`, and `--api-model` values are persisted for the workspace so autostart uses the same API settings. `--api-model` only controls the local model id advertised by `GET /v1/models`; the actual model is chosen by the connected MCP client, and any different `model` value in a chat-completions request is passed as an MCP model preference hint.
 
 Rotate the local desktop-client API key with:
 
@@ -127,29 +111,15 @@ Rotate the local desktop-client API key with:
 machine-mcp api --rotate-api-key
 ```
 
-Update the external OpenAI-compatible provider later:
-
-```zsh
-machine-mcp api configure \
-  --api-upstream-url https://api.openai.com/v1 \
-  --api-upstream-key "$OPENAI_API_KEY" \
-  --api-upstream-model gpt-4.1-mini
-```
-
-Requests are forwarded with the model selected by the desktop client; if a request omits `model`, the proxy fills in the configured external provider model.
-
-Environment variables are also supported for the current process: `MBM_API_HOST`, `MBM_API_PORT`, `MBM_API_KEY`, `MBM_API_UPSTREAM_URL`, `MBM_API_UPSTREAM_KEY`, `MBM_API_UPSTREAM_MODEL`, `MBM_API_MODEL`, plus common OpenAI names such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. For login autostart, prefer `machine-mcp api configure` so the external provider is available without relying on shell environment inheritance.
+Environment variables supported for the current process: `MBM_API_HOST`, `MBM_API_PORT`, `MBM_API_KEY`, and `MBM_API_MODEL`. Environment overrides are not persisted to state; use `--api-host`, `--api-port`, `--api-key`, or `--api-model` when you want a setting saved for future runs and autostart.
 
 Supported local API routes:
 
 - `GET /health` without authentication
 - `GET /v1/models` with `Authorization: Bearer <local_api_key>` or `x-api-key`
 - `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `POST /v1/embeddings`
-- `POST /v1/completions`
 
-Model-producing routes proxy to the configured external provider. Logs record route, status, latency, and safe configuration metadata; request and response bodies and API keys are not logged.
+`POST /v1/responses`, `POST /v1/completions`, and `POST /v1/embeddings` return `501 unsupported_endpoint`; MCP sampling is a chat-message path and does not expose embeddings or the full Responses API. Logs record route, status, latency, and safe configuration metadata; request and response bodies and API keys are not logged.
 
 ## Re-select workspace
 
@@ -270,7 +240,7 @@ Default state roots:
 - Linux with `XDG_STATE_HOME`: `$XDG_STATE_HOME/machine-bridge-mcp`
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
-State contains the MCP password, daemon secret, local API key, and any explicitly configured upstream provider key. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password only when a ChatGPT app is likely to need reconnection: first run, secret rotation, MCP URL changes, or `--print-mcp-credentials`. The local API base URL and API key print on normal foreground starts because desktop AI clients need them. Use `--no-print-credentials` to redact console credentials. State files, temporary Worker secret files, lock files, and log directories are created under the user state root with owner-only permissions where the platform supports POSIX modes.
+State contains the MCP password, daemon secret, and local API key. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password only when a ChatGPT app is likely to need reconnection: first run, secret rotation, MCP URL changes, or `--print-mcp-credentials`. The local API base URL and API key print on normal foreground starts because desktop AI clients need them. Use `--no-print-credentials` to redact console credentials. State files, temporary Worker secret files, lock files, and log directories are created under the user state root with owner-only permissions where the platform supports POSIX modes.
 
 The Worker rejects browser requests with an `Origin` header unless the origin is the Worker itself or a loopback HTTP origin. To allow additional browser-based MCP clients, set `MBM_ALLOWED_ORIGINS` to a comma-separated list of exact origins in `wrangler.jsonc` or Cloudflare Worker settings.
 
@@ -284,13 +254,15 @@ machine-mcp --state-dir /path/to/state
 
 ```mermaid
 flowchart LR
-  C["Remote MCP client"] -- "HTTPS /mcp + OAuth" --> W["Hosted Worker relay"]
+  C["ChatGPT / MCP client"] -- "HTTPS /mcp + OAuth" --> W["Hosted Worker relay"]
+  C -- "GET SSE stream for server-to-client MCP" --> W
   W --> DO["Durable Object broker"]
   D["Local daemon"] -- "outbound WebSocket" --> W
   D --> M["Local filesystem and shell"]
-  API["Default local /v1 API"] -- "OpenAI-compatible HTTP" --> U["Configured upstream provider"]
+  API["Local /v1/chat/completions"] -- "POST /api/mcp/sampling" --> W
+  DO -- "sampling/createMessage" --> C
   CLI["machine-mcp CLI"] --> API
-  CLI["machine-mcp CLI"] --> W
+  CLI --> W
   CLI --> D
   CLI --> S["Autostart service"]
 ```

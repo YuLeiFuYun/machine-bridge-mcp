@@ -100,7 +100,15 @@ export function loadState(workspace, options = {}) {
   state.paths = { stateRoot, profileDir, statePath };
   state.worker ||= {};
   state.policy ||= {};
+  migrateLocalApiState(state);
   return state;
+}
+
+function migrateLocalApiState(state) {
+  if (!state.localApi || typeof state.localApi !== "object" || Array.isArray(state.localApi)) return;
+  delete state.localApi.upstreamUrl;
+  delete state.localApi.upstreamKey;
+  delete state.localApi.upstreamModel;
 }
 
 export function saveState(state) {
@@ -246,7 +254,6 @@ export function redactState(state) {
   if (clone.worker?.daemonSecret) clone.worker.daemonSecret = previewSecret(clone.worker.daemonSecret);
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = previewSecret(clone.worker.oauthTokenVersion);
   if (clone.localApi?.apiKey) clone.localApi.apiKey = previewSecret(clone.localApi.apiKey);
-  if (clone.localApi?.upstreamKey) clone.localApi.upstreamKey = previewSecret(clone.localApi.upstreamKey);
   return clone;
 }
 
