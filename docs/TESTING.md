@@ -24,8 +24,9 @@ The suite includes:
 - isolated command HOME/temp/cache behavior;
 - one-shot timeout, descendant termination, cancellation, and process-session interaction;
 - daemon/startup locking and state corruption recovery;
-- guarded state-root removal and legacy-state migration;
-- log redaction, control-character handling, and service-log trimming;
+- guarded state-root removal, schema migration, policy-origin persistence, and legacy implicit-default migration;
+- no filename-based sensitive-file denial under unrestricted policy;
+- log redaction, control-character handling, message/field bounds, default success-log suppression, and service warning-level configuration;
 - CLI parsing, policy profiles, and client configuration boundaries;
 - live stdio MCP initialization, discovery, calls, rich content, sessions, cancellation, and continued responsiveness;
 - live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, dynamic tool advertisement, rich content, daemon replacement, and cancellation.
@@ -34,12 +35,13 @@ The suite includes:
 
 ```sh
 npm run worker:dry-run
+npm audit --audit-level=high
 npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 npm run version:check
 ```
 
-GitHub Actions executes the main suite on Linux, macOS, and Windows. Node 22 and 24 are covered on Linux; Node 22 is covered on macOS and Windows. A separate package-audit job runs production dependency auditing and a dry-run package build. Dependency and GitHub Actions updates are monitored by Dependabot.
+GitHub Actions executes the main suite on Linux, macOS, and Windows. Node 22 and 24 are covered on Linux; Node 22 is covered on macOS and Windows. A separate package-audit job audits both the complete dependency graph and the production-only graph, then performs a dry-run package build. Dependency and GitHub Actions updates are monitored by Dependabot.
 
 ## Test design rules
 
@@ -48,4 +50,5 @@ GitHub Actions executes the main suite on Linux, macOS, and Windows. Node 22 and
 - Every bounded resource needs an over-limit test.
 - Every multi-stage mutation needs a no-partial-commit test.
 - Every remote call correlation change needs daemon replacement and cancellation coverage.
-- Logs and public metadata should be tested for absence of sensitive fields, not only presence of expected fields.
+- Logs and public metadata should be tested for absence of sensitive fields, arguments, outputs, and routine success noise—not only presence of expected fields.
+- Cross-platform tests must avoid shell syntax, URL-path conversion, and executable-shim assumptions specific to one operating system.

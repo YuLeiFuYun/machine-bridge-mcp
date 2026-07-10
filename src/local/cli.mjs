@@ -1,12 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import path, { resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalDaemon } from "./daemon.mjs";
 import { runStdioServer } from "./stdio.mjs";
-import { normalizePolicy } from "./tools.mjs";
-import { createLogger, sanitizeLogText } from "./log.mjs";
+import { DEFAULT_POLICY_PROFILE, DEFAULT_POLICY_REVISION, POLICY_PROFILES, normalizePolicy, policyProfile } from "./tools.mjs";
+import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
 import { runWrangler } from "./shell.mjs";
 import {
   acquireDaemonLock,
@@ -37,10 +37,10 @@ const BOOLEAN_OPTIONS = new Set([
   "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
   "daemonOnly", "noAutostart", "noPrintCredentials", "printMcpCredentials",
   "printCredentials", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
-  "yes", "keepWorker", "noApi", "api", "rotateApiKey",
+  "yes", "keepWorker",
 ]);
 const VALUE_OPTIONS = new Set([
-  "workspace", "stateDir", "workerName", "profile", "execMode", "client", "apiPort", "apiHost", "apiKey", "apiModel", "port",
+  "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel",
 ]);
 
 export async function main(argv = process.argv.slice(2)) {
@@ -51,6 +51,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === "api") throw removedLocalApiError();
   validateCommandOptions(command, args);
   validatePositionals(command, args);
+  validateLoggingOptions(args);
 
   switch (command) {
     case "start": return startCommand(args);
@@ -72,16 +73,15 @@ export async function main(argv = process.argv.slice(2)) {
 
 const COMMAND_OPTIONS = {
   start: new Set([
-    "workspace", "stateDir", "workerName", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
+    "workspace", "stateDir", "workerName", "quiet", "json", "verbose", "logLevel", "rotateSecrets", "forceWorker",
     "daemonOnly", "noAutostart", "noPrintCredentials", "printMcpCredentials", "printCredentials",
     "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
-    "noApi", "api", "apiPort", "apiHost", "apiKey", "rotateApiKey", "apiModel", "port",
   ]),
-  stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose"]),
+  stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose", "quiet", "logLevel"]),
   "client-config": new Set(["workspace", "stateDir", "profile", "client", "json"]),
   status: new Set(["workspace", "stateDir"]),
   doctor: new Set(["workspace", "stateDir"]),
-  "rotate-secrets": new Set(["workspace", "stateDir", "workerName", "noPrintCredentials", "quiet"]),
+  "rotate-secrets": new Set(["workspace", "stateDir", "workerName", "noPrintCredentials", "printMcpCredentials", "printCredentials", "quiet"]),
   workspace: new Set(["workspace", "stateDir"]),
   service: new Set(["workspace", "stateDir", "quiet"]),
   autostart: new Set(["workspace", "stateDir", "quiet"]),
@@ -95,6 +95,21 @@ export function validateCommandOptions(command, args) {
     if (key === "_" || key === "help" || key === "version") continue;
     if (!allowed.has(key)) throw new Error(`Option --${toKebab(key)} is not valid for ${command}`);
   }
+}
+
+export function validateLoggingOptions(args = {}) {
+  if (args.quiet && args.verbose) throw new Error("--quiet and --verbose cannot be used together");
+  if (args.logLevel !== undefined && (args.quiet || args.verbose)) {
+    throw new Error("--log-level cannot be combined with --quiet or --verbose");
+  }
+  if (args.logLevel !== undefined) normalizeLogLevel(args.logLevel);
+}
+
+function effectiveLogLevel(args = {}) {
+  if (args.logLevel !== undefined) return normalizeLogLevel(args.logLevel);
+  if (args.quiet) return "error";
+  if (args.verbose) return "debug";
+  return "info";
 }
 
 function toKebab(value) {
@@ -256,8 +271,7 @@ async function confirm(prompt, assumeYes = false) {
 
 async function startCommand(args) {
   assertNodeVersion();
-  assertNoRemovedLocalApiOptions(args);
-  const logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "cli" });
+  const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), component: "cli" });
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
   const startupLock = acquireStartupLock(state);
@@ -273,7 +287,7 @@ async function startCommand(args) {
     } else {
       // Stop an installed service before acquiring the runtime lock. If a
       // foreground daemon owns the lock, no new policy or secret state is saved.
-      await stopAutostartBestEffort(Boolean(args.quiet));
+      await stopAutostartBestEffort(logger);
     }
 
     const lock = acquireDaemonLock(state);
@@ -281,7 +295,7 @@ async function startCommand(args) {
       const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
       logger.warn(`local daemon already running for this workspace (${pid}); requested changes were not applied`);
       if (args.json) printStartJson(state, {
-        noPrintCredentials: Boolean(args.noPrintCredentials),
+        showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
         requestedChangesApplied: false,
         notice: "local daemon already running; requested changes were not applied",
       });
@@ -289,6 +303,7 @@ async function startCommand(args) {
         noPrintCredentials: Boolean(args.noPrintCredentials),
         includeCredentials: Boolean(args.printMcpCredentials || args.printCredentials),
         quiet: Boolean(args.quiet),
+        verbose: Boolean(args.verbose),
       });
       return;
     }
@@ -299,7 +314,9 @@ async function startCommand(args) {
       const firstMcpConnection = !previousMcpServerUrl || !state.worker?.oauthPassword;
       const workerName = validateWorkerName(args.workerName);
       ensureWorkerSecrets(state, { rotateSecrets: Boolean(args.rotateSecrets), workerName });
+      const previousPolicyOrigin = state.policy?.origin;
       state.policy = resolvePolicy(args, state.policy);
+      const policyMigrated = !previousPolicyOrigin && state.policy.origin === "migrated";
       state.policy.updatedAt = new Date().toISOString();
       saveState(state);
 
@@ -307,10 +324,10 @@ async function startCommand(args) {
       else if (!state.worker.url) throw new Error("--daemon-only requires an existing worker URL in state; run start once without --daemon-only");
 
       const mcpConnectionChanged = previousMcpServerUrl && previousMcpServerUrl !== state.worker.mcpServerUrl;
-      const shouldPrintMcpCredentials = Boolean(args.json || args.printMcpCredentials || args.printCredentials || firstMcpConnection || args.rotateSecrets || mcpConnectionChanged);
+      const shouldPrintMcpCredentials = Boolean(args.printMcpCredentials || args.printCredentials || firstMcpConnection || args.rotateSecrets || mcpConnectionChanged);
 
       if (!args.daemonOnly && !args.noAutostart) {
-        await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1] });
+        await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
       }
 
       daemon = new LocalDaemon({
@@ -318,7 +335,7 @@ async function startCommand(args) {
         secret: state.worker.daemonSecret,
         workspace,
         policy: state.policy,
-        logger: createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "daemon" }),
+        logger: createLogger({ level: args.json ? "error" : effectiveLogLevel(args), component: "daemon" }),
         onSuperseded: () => {
           logger.warn("this daemon was replaced by a newer authenticated instance; exiting without reconnecting");
           lock.release();
@@ -327,13 +344,18 @@ async function startCommand(args) {
       });
 
       const waitForConnect = daemon.start();
-      await waitForConnectWithNotice(waitForConnect, 20_000, Boolean(args.quiet || args.json));
-      if (args.json) printStartJson(state, { noPrintCredentials: Boolean(args.noPrintCredentials) });
+      await waitForConnectWithNotice(waitForConnect, 20_000, logger);
+      if (args.json) printStartJson(state, {
+        showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
+        notice: policyMigrated ? "legacy implicit policy migrated to full access" : "",
+      });
       else {
         printMcpConnection(state, {
           noPrintCredentials: Boolean(args.noPrintCredentials),
           includeCredentials: shouldPrintMcpCredentials,
           quiet: Boolean(args.quiet),
+          verbose: Boolean(args.verbose),
+          policyMigrated,
         });
       }
       keepProcessAlive({ daemon, lock, logger });
@@ -347,13 +369,6 @@ async function startCommand(args) {
   }
 }
 
-const POLICY_PROFILES = Object.freeze({
-  review: Object.freeze({ profile: "review", allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
-  edit: Object.freeze({ profile: "edit", allowWrite: true, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
-  agent: Object.freeze({ profile: "agent", allowWrite: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
-  full: Object.freeze({ profile: "full", allowWrite: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }),
-});
-
 export function resolvePolicy(args = {}, stored = {}) {
   const hasStored = stored && typeof stored === "object" && (
     typeof stored.allowWrite === "boolean" || typeof stored.allowExec === "boolean" || typeof stored.execMode === "string"
@@ -361,14 +376,15 @@ export function resolvePolicy(args = {}, stored = {}) {
   const explicitKeys = ["profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths"];
   const hasExplicit = explicitKeys.some((key) => Object.prototype.hasOwnProperty.call(args, key));
   let base;
+
   if (args.profile !== undefined) {
     const profile = String(args.profile).trim().toLowerCase();
     if (!POLICY_PROFILES[profile]) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
-    base = { ...POLICY_PROFILES[profile] };
+    base = policyProfile(profile, "explicit");
   } else if (hasStored) {
-    base = normalizePolicy(stored);
+    base = migrateLegacyPolicy(stored);
   } else {
-    base = { ...POLICY_PROFILES.full };
+    base = policyProfile(DEFAULT_POLICY_PROFILE, "default");
   }
 
   if (!hasExplicit) return normalizePolicy(base);
@@ -388,16 +404,42 @@ export function resolvePolicy(args = {}, stored = {}) {
   if (args.absolutePaths === true) base.exposeAbsolutePaths = true;
   if (args.absolutePaths === false) base.exposeAbsolutePaths = false;
   const overrideKeys = ["execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths"];
-  if (args.profile === undefined || overrideKeys.some((key) => Object.prototype.hasOwnProperty.call(args, key))) base.profile = "custom";
+  if (args.profile === undefined || overrideKeys.some((key) => Object.prototype.hasOwnProperty.call(args, key))) {
+    base.profile = "custom";
+    base.origin = "custom";
+    base.revision = DEFAULT_POLICY_REVISION;
+  }
   return normalizePolicy(base);
 }
+
+function migrateLegacyPolicy(stored = {}) {
+  if (stored.origin === "default" && Number(stored.revision || 0) < DEFAULT_POLICY_REVISION) {
+    return policyProfile(DEFAULT_POLICY_PROFILE, "default");
+  }
+  if (stored.origin === "migrated" && Number(stored.revision || 0) < DEFAULT_POLICY_REVISION) {
+    return policyProfile(DEFAULT_POLICY_PROFILE, "migrated");
+  }
+  if (stored.origin) return normalizePolicy(stored);
+  const normalized = normalizePolicy(stored);
+  const looksLikeLegacyImplicitDefault = (
+    normalized.profile === "custom" &&
+    normalized.allowWrite === true &&
+    normalized.execMode === "shell" &&
+    normalized.unrestrictedPaths === false &&
+    normalized.minimalEnv === true &&
+    normalized.exposeAbsolutePaths === false
+  );
+  if (looksLikeLegacyImplicitDefault) return policyProfile("full", "migrated");
+  return normalizePolicy({ ...normalized, origin: "legacy-preserved", revision: DEFAULT_POLICY_REVISION });
+}
+
 
 async function stdioCommand(args) {
   assertNodeVersion();
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
   const policy = resolvePolicy(args, state.policy);
-  await runStdioServer({ workspace, policy, verbose: Boolean(args.verbose) });
+  await runStdioServer({ workspace, policy, logLevel: effectiveLogLevel(args) });
 }
 
 async function clientConfigCommand(args) {
@@ -426,17 +468,13 @@ async function clientConfigCommand(args) {
   }
 }
 
-function assertNoRemovedLocalApiOptions(args) {
-  const removed = ["api", "noApi", "apiPort", "apiHost", "apiKey", "rotateApiKey", "apiModel", "port"].filter((key) => args[key] !== undefined);
-  if (removed.length) throw removedLocalApiError();
-}
-
 function removedLocalApiError() {
   return new Error("Local /v1 API support has been removed. Use the printed Remote MCP Server URL/password with an MCP client instead.");
 }
 
+
 async function ensureWorker(state, args) {
-  const logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "worker" });
+  const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), component: "worker" });
   const desiredHash = workerDeployHash(state);
   const expectedVersion = currentPackageVersion();
   const complete = state.worker.url && state.worker.mcpServerUrl && state.worker.oauthPassword && state.worker.daemonSecret && state.worker.oauthTokenVersion && state.worker.name;
@@ -487,7 +525,7 @@ async function withSecretsFile(state, callback) {
   const dir = state.paths.profileDir;
   ensureOwnerOnlyDir(dir);
   cleanupStaleSecretFiles(dir);
-  const tempPath = resolve(dir, `worker-secrets-${process.pid}-${Date.now()}.json`);
+  const tempPath = resolve(dir, `worker-secrets-${process.pid}-${Date.now()}-${randomBytes(6).toString("hex")}.json`);
   const payload = {
     MCP_OAUTH_PASSWORD: state.worker.oauthPassword,
     DAEMON_SHARED_SECRET: state.worker.daemonSecret,
@@ -504,10 +542,14 @@ async function withSecretsFile(state, callback) {
 
 function cleanupStaleSecretFiles(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isFile() || !/^worker-secrets-.*\.json$/.test(entry.name)) continue;
+    if (!entry.isFile()) continue;
+    const match = /^worker-secrets-(\d+)-(\d+)(?:-[a-f0-9]+)?\.json$/.exec(entry.name);
+    if (!match) continue;
     const file = resolve(dir, entry.name);
     try {
-      if (Date.now() - statSync(file).mtimeMs > 60 * 60 * 1000) unlinkSync(file);
+      const pid = Number(match[1]);
+      const ageMs = Date.now() - statSync(file).mtimeMs;
+      if (!isPidAlive(pid) || ageMs > 60 * 60 * 1000) unlinkSync(file);
     } catch {}
   }
 }
@@ -562,8 +604,16 @@ async function workerHealth(workerUrl, expectedVersion = currentPackageVersion()
     if (body?.version !== expectedVersion) return { ok: false, error: `version_mismatch:${body?.version || "unknown"}!=${expectedVersion}` };
     return { ok: true, version: body.version };
   } catch (error) {
-    return { ok: false, error: error.message };
+    return { ok: false, error: workerHealthError(error) };
   }
+}
+
+function workerHealthError(error) {
+  const message = String(error?.message || error || "");
+  if (/timeout|aborted/i.test(message)) return "timeout";
+  if (/certificate|TLS|SSL/i.test(message)) return "tls_error";
+  if (/fetch failed|network|ECONN|ENOTFOUND|EAI_AGAIN/i.test(message)) return "network_error";
+  return "request_failed";
 }
 
 async function retryHealth(workerUrl, expectedVersion, attempts) {
@@ -583,23 +633,22 @@ function extractWorkerUrl(text = "") {
   return anyHttps.find(match => /workers\.dev|\/healthz|\/mcp/.test(match[0]))?.[0]?.replace(/[),.]+$/, "") || "";
 }
 
-async function waitForConnectWithNotice(promise, timeoutMs, quiet = false) {
+async function waitForConnectWithNotice(promise, timeoutMs, logger) {
   let timeout;
   const timed = new Promise(resolvePromise => {
     timeout = setTimeout(() => resolvePromise("timeout"), timeoutMs);
   });
   const result = await Promise.race([promise.then(() => "connected"), timed]);
   clearTimeout(timeout);
-  if (result === "timeout") createLogger({ component: "daemon", quiet }).warn("Still connecting; the process will keep retrying");
+  if (result === "timeout") logger.warn("Still connecting; the process will keep retrying");
 }
 
 
-function printStartJson(state, { noPrintCredentials = false, requestedChangesApplied = true, notice = "" } = {}) {
-  const mcpPassword = noPrintCredentials ? previewSecret(state.worker.oauthPassword) : state.worker.oauthPassword;
+function printStartJson(state, { showCredentials = false, requestedChangesApplied = true, notice = "" } = {}) {
   createLogger({ component: "ready" }).json({
     mcp: {
       server_url: state.worker.mcpServerUrl,
-      connection_password: mcpPassword,
+      connection_password: showCredentials ? state.worker.oauthPassword : previewSecret(state.worker.oauthPassword),
       worker_url: state.worker.url,
       worker_name: state.worker.name,
     },
@@ -611,35 +660,44 @@ function printStartJson(state, { noPrintCredentials = false, requestedChangesApp
   });
 }
 
-function printMcpConnection(state, { json = false, noPrintCredentials = false, includeCredentials = false, quiet = false } = {}) {
-  const logger = createLogger({ component: "ready", quiet });
+function printMcpConnection(state, {
+  noPrintCredentials = false,
+  includeCredentials = false,
+  quiet = false,
+  verbose = false,
+  policyMigrated = false,
+} = {}) {
+  const logger = createLogger({ component: "ready", quiet, level: quiet ? "error" : verbose ? "debug" : "info" });
   const payload = {
     mcp_server_url: state.worker.mcpServerUrl,
     mcp_connection_password: state.worker.oauthPassword,
-    worker_url: state.worker.url,
-    worker_name: state.worker.name,
     workspace: state.workspace.path,
     state_path: state.paths.statePath,
     policy: state.policy,
   };
-  if (json) {
-    const safePayload = noPrintCredentials ? { ...payload, mcp_connection_password: previewSecret(payload.mcp_connection_password) } : payload;
-    logger.json(safePayload);
-    return;
-  }
   if (includeCredentials) {
     logger.success("Remote MCP bridge is ready; save these connection details if your ChatGPT app needs to reconnect");
     logger.plain(`  MCP Server URL: ${payload.mcp_server_url}`);
     if (!noPrintCredentials) logger.plain(`  MCP connection password: ${payload.mcp_connection_password}`);
     else logger.plain(`  MCP connection password: ${previewSecret(payload.mcp_connection_password)} (redacted)`);
   } else {
-    logger.success("Remote MCP bridge is ready; MCP connection details unchanged");
-    logger.plain("  Use --print-mcp-credentials only when a ChatGPT app needs to reconnect.");
+    logger.success("Remote MCP bridge is ready");
+    logger.plain("  Connection credentials unchanged; use --print-mcp-credentials only when reconnecting a client.");
   }
-  logger.plain(`  Workspace cwd: ${payload.workspace}`);
-  logger.plain(`  Policy: profile=${payload.policy.profile || "custom"}, write=${payload.policy.allowWrite ? "on" : "off"}, exec_mode=${payload.policy.execMode || (payload.policy.allowExec ? "shell" : "off")}, unrestricted_paths=${payload.policy.unrestrictedPaths ? "on" : "off"}, absolute_paths=${payload.policy.exposeAbsolutePaths ? "on" : "off"}`);
-  logger.plain(`  State: ${payload.state_path}`);
+  if (policyMigrated) {
+    logger.warn("Legacy implicit policy migrated to full access; use --profile agent, edit, or review to narrow it.");
+  }
+  logger.plain(`  Workspace: ${payload.workspace}`);
+  logger.plain(`  Policy: ${formatPolicySummary(payload.policy)}`);
+  if (verbose) logger.plain(`  State: ${payload.state_path}`);
 }
+
+function formatPolicySummary(policy = {}) {
+  const scope = policy.unrestrictedPaths ? "all local paths" : "workspace only";
+  const environment = policy.minimalEnv ? "isolated env" : "full parent env";
+  return `${policy.profile || "custom"} [${policy.origin || "unknown"}; write=${policy.allowWrite ? "on" : "off"}; exec=${policy.execMode || "off"}; ${scope}; ${environment}; absolute_paths=${policy.exposeAbsolutePaths ? "on" : "off"}]`;
+}
+
 
 function keepProcessAlive({ daemon = null, lock = null, logger = createLogger({ component: "cli" }) } = {}) {
   let stopping = false;
@@ -660,8 +718,14 @@ function keepProcessAlive({ daemon = null, lock = null, logger = createLogger({ 
 async function statusCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
+  const storedPolicyOrigin = state.policy?.origin;
+  state.policy = resolvePolicy({}, state.policy);
   const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
-  const payload = { ...redactState(state), workerHealth: health };
+  const payload = {
+    ...redactState(state),
+    policyMigrationPending: !storedPolicyOrigin && state.policy.origin === "migrated",
+    workerHealth: health,
+  };
   console.log(JSON.stringify(payload, null, 2));
 }
 
@@ -674,9 +738,17 @@ async function doctorCommand(args) {
   const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
   checks.push({ name: "cloudflare-login", ok: whoami.code === 0, detail: whoami.code === 0 ? "authenticated" : sanitizeLines(whoami.stderr || whoami.stdout) });
   const state = loadState(workspace, { stateDir: args.stateDir });
+  const storedPolicyOrigin = state.policy?.origin;
+  state.policy = resolvePolicy({}, state.policy);
+  checks.push({ name: "policy", ok: true, detail: formatPolicySummary(state.policy) });
   const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
   checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
-  console.log(JSON.stringify({ ok: checks.every(check => check.ok), checks, state: redactState(state) }, null, 2));
+  console.log(JSON.stringify({
+    ok: checks.every(check => check.ok),
+    checks,
+    policyMigrationPending: !storedPolicyOrigin && state.policy.origin === "migrated",
+    state: redactState(state),
+  }, null, 2));
 }
 
 async function rotateSecretsCommand(args) {
@@ -688,7 +760,7 @@ async function rotateSecretsCommand(args) {
     throw new Error(`another startup/deployment operation is already running for this workspace (${pid})`);
   }
   try {
-    await stopAutostartBestEffort(Boolean(args.quiet));
+    await stopAutostartBestEffort(createLogger({ level: args.quiet ? "error" : "warn", component: "service" }));
     await sleep(500);
     const daemonOwner = readDaemonLockOwner(daemonLockPathForState(state));
     if (daemonOwner?.pid && isPidAlive(daemonOwner.pid)) {
@@ -696,9 +768,10 @@ async function rotateSecretsCommand(args) {
     }
     ensureWorkerSecrets(state, { rotateSecrets: true, workerName: validateWorkerName(args.workerName) });
     saveState(state);
-    console.log(`Rotated MCP password: ${args.noPrintCredentials ? "<redacted>" : state.worker.oauthPassword}`);
-    console.log(`Rotated daemon secret: ${args.noPrintCredentials ? "<redacted>" : previewSecret(state.worker.daemonSecret)}`);
-    console.log("Run start to redeploy the Worker with the new secrets and revoke old OAuth access tokens.");
+    const showMcpPassword = Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials);
+    console.log(`Rotated MCP connection password: ${showMcpPassword ? state.worker.oauthPassword : previewSecret(state.worker.oauthPassword)}`);
+    console.log(`Rotated daemon secret: ${previewSecret(state.worker.daemonSecret)}`);
+    console.log("Run `machine-mcp --print-mcp-credentials` to redeploy and display the new client connection credentials when needed.");
   } finally {
     startupLock.release();
   }
@@ -742,23 +815,23 @@ async function serviceCommand(args) {
   throw new Error(`Unknown service action: ${action}`);
 }
 
-async function installAutostartBestEffort({ workspace, stateRoot, entryScript }) {
+async function installAutostartBestEffort({ workspace, stateRoot, entryScript, logger }) {
   try {
     const { installAutostart } = await import("./service.mjs");
-    const result = await installAutostart({ workspace, stateRoot, entryScript, logger: structuredLogger(false) });
-    if (result?.ok) console.log("Autostart installed for future logins. Use `machine-mcp service status` to inspect or `machine-mcp service uninstall` to remove.");
-    else console.warn("Autostart installation returned a warning; run `machine-mcp service status` for details.");
+    const result = await installAutostart({ workspace, stateRoot, entryScript, logger: structuredLogger(true) });
+    if (result?.ok) logger.info("Autostart installed for future logins", { provider: result.provider });
+    else logger.warn("Autostart installation reported a problem; run `machine-mcp service status` for details");
   } catch (error) {
-    console.warn(`Autostart installation skipped: ${error.message}`);
+    logger.warn("Autostart installation skipped", { error_class: classifyOperationalError(error) });
   }
 }
 
-async function stopAutostartBestEffort(quiet = false) {
+async function stopAutostartBestEffort(logger) {
   try {
     const { stopAutostart } = await import("./service.mjs");
     await stopAutostart({ logger: structuredLogger(true) });
   } catch (error) {
-    if (!quiet) console.warn(`Autostart stop skipped: ${error.message}`);
+    logger.warn("Autostart stop skipped", { error_class: classifyOperationalError(error) });
   }
 }
 
@@ -820,6 +893,7 @@ function knownWorkerNames(stateRoot) {
     const stateFile = resolve(profiles, entry.name, "state.json");
     if (!existsSync(stateFile)) continue;
     try {
+      if (statSync(stateFile).size > 2 * 1024 * 1024) continue;
       const state = JSON.parse(readFileSync(stateFile, "utf8"));
       const name = String(state?.worker?.name || "");
       if (/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) names.add(name);
@@ -839,7 +913,7 @@ async function removeAutostartBestEffort(stateRoot) {
     }
     return true;
   } catch (error) {
-    console.warn(`Autostart removal skipped or failed: ${error.message}`);
+    console.warn(`Autostart removal skipped or failed (${classifyOperationalError(error)}). Run machine-mcp service status for details.`);
     return false;
   }
 }
@@ -872,8 +946,9 @@ function isPidAlive(pid) {
 }
 
 function structuredLogger(quiet) {
-  return createLogger({ quiet, component: "daemon" });
+  return createLogger({ quiet, component: "service" });
 }
+
 
 function sanitizeLines(text) {
   const home = process.env.HOME || process.env.USERPROFILE || "";
@@ -910,7 +985,7 @@ function usage() {
   console.log(`machine-bridge-mcp
 
 Usage:
-  npm install -g machine-bridge-mcp@latest && machine-mcp
+  npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest && machine-mcp
   npx machine-bridge-mcp@latest                  # no global install; autostart may rely on npm cache
   ./mbm                                          # from source checkout
   .\\mbm.cmd                                      # from source checkout on Windows cmd
@@ -946,9 +1021,12 @@ Start options:
   --no-exec             Disable run_process and exec_command
   --full-env            Pass the full parent environment to local commands
   --unrestricted-paths  Allow filesystem tools outside the workspace
-  --absolute-paths      Return absolute local paths in tool results (off by default)
+  --absolute-paths      Return absolute local paths (enabled by the full profile)
   --state-dir DIR       Override state root
-  --json                Print MCP connection details as JSON
+  --json                Print connection details as JSON; credentials stay redacted unless explicitly requested
+  --log-level LEVEL     error, warn, info (default), or debug
+  --verbose             Alias for --log-level debug; includes per-tool success/correlation logs
+  --quiet               Alias for --log-level error
 
 Uninstall options:
   --keep-worker         Do not delete deployed Worker(s) during uninstall

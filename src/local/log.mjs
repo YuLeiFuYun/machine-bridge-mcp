@@ -9,6 +9,11 @@ const COLORS = {
   gray: "\x1b[90m",
 };
 
+const MAX_LOG_MESSAGE_CHARS = 2048;
+const MAX_LOG_FIELD_CHARS = 4096;
+const MAX_LOG_ARRAY_ITEMS = 32;
+const MAX_LOG_OBJECT_KEYS = 48;
+const LEVEL_RANK = Object.freeze({ debug: 10, info: 20, success: 20, warn: 30, error: 40 });
 const SENSITIVE_KEY = /(authorization|cookie|password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)/i;
 const SECRET_VALUE = /\b(?:mcp_password|daemon_secret|token_version|mcp_at|mcp_code)_[A-Za-z0-9_-]+\b/g;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*\b/gi;
@@ -16,23 +21,26 @@ const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*\b/gi;
 export function createLogger(options = {}) {
   const quiet = Boolean(options.quiet);
   const verbose = Boolean(options.verbose);
-  const component = sanitizeLogText(options.component ? String(options.component) : "cli");
+  const minimumLevel = normalizeLogLevel(options.level || (quiet ? "error" : verbose ? "debug" : "info"));
+  const component = sanitizeLogText(options.component ? String(options.component) : "cli", 128);
   const useColor = shouldUseColor(options);
+  const stdout = options.stderrOnly ? process.stderr : process.stdout;
 
   const write = (stream, level, label, color, message, fields) => {
-    if (quiet && level !== "error") return;
-    if (level === "debug" && !verbose) return;
+    if (LEVEL_RANK[level] < LEVEL_RANK[minimumLevel]) return;
     const prefix = useColor ? `${color}${label}${COLORS.reset}` : label;
     const suffix = formatFields(fields);
-    stream.write(`${prefix} ${component}: ${sanitizeLogText(message)}${suffix}\n`);
+    stream.write(`${prefix} ${component}: ${sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS)}${suffix}\n`);
   };
 
   return {
+    verbose: minimumLevel === "debug",
+    level: minimumLevel,
     child(childComponent) {
       return createLogger({ ...options, component: childComponent });
     },
-    info(message, fields) { write(process.stdout, "info", "[info]", COLORS.blue, message, fields); },
-    success(message, fields) { write(process.stdout, "success", "[ok]", COLORS.green, message, fields); },
+    info(message, fields) { write(stdout, "info", "[info]", COLORS.blue, message, fields); },
+    success(message, fields) { write(stdout, "success", "[ok]", COLORS.green, message, fields); },
     warn(message, fields) { write(process.stderr, "warn", "[warn]", COLORS.yellow, message, fields); },
     error(message, fields) { write(process.stderr, "error", "[error]", COLORS.red, message, fields); },
     debug(message, fields) { write(process.stderr, "debug", "[debug]", COLORS.gray, message, fields); },
@@ -41,13 +49,41 @@ export function createLogger(options = {}) {
   };
 }
 
-export function redactSecret(value) {
-  return value ? "<redacted>" : "<empty>";
+export function normalizeLogLevel(value = "info") {
+  const level = String(value || "info").trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(LEVEL_RANK, level) || level === "success") {
+    throw new Error("log level must be one of: error, warn, info, debug");
+  }
+  return level;
+}
+
+
+export function classifyOperationalError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/cancel/i.test(message)) return "cancelled";
+  if (/timed out/i.test(message)) return "timeout";
+  if (/outside the configured workspace/i.test(message)) return "path_boundary";
+  if (/disabled|requires .* mode/i.test(message)) return "policy_denied";
+  if (/not found|ENOENT/i.test(message)) return "not_found";
+  if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
+  if (/maximum|exceeds|max_bytes|too many/i.test(message)) return "limit_exceeded";
+  if (/invalid|must|requires|ambiguous|mismatch/i.test(message)) return "invalid_request";
+  return "execution_failed";
 }
 
 export function formatFields(fields) {
-  if (!fields || typeof fields !== "object" || !Object.keys(fields).length) return "";
-  return ` ${JSON.stringify(sanitizeLogValue(fields))}`;
+  try {
+    if (!fields || typeof fields !== "object" || !Object.keys(fields).length) return "";
+    const sanitized = sanitizeLogValue(fields);
+    const json = JSON.stringify(sanitized);
+    if (json.length <= MAX_LOG_FIELD_CHARS) return ` ${json}`;
+    return ` ${JSON.stringify({
+      fields_truncated: true,
+      field_names: Object.keys(fields).slice(0, MAX_LOG_OBJECT_KEYS),
+    })}`;
+  } catch {
+    return ' {"fields_unavailable":true}';
+  }
 }
 
 export function sanitizeLogValue(value, key = "", seen = new WeakSet(), depth = 0) {
@@ -56,23 +92,28 @@ export function sanitizeLogValue(value, key = "", seen = new WeakSet(), depth = 
   if (typeof value === "string") return sanitizeLogText(value);
   if (typeof value === "bigint") return value.toString();
   if (value === null || typeof value !== "object") return value;
-  if (depth >= 8) return "<max-depth>";
+  if (depth >= 6) return "<max-depth>";
   if (seen.has(value)) return "<circular>";
   seen.add(value);
-  if (Array.isArray(value)) return value.slice(0, 100).map(item => sanitizeLogValue(item, "", seen, depth + 1));
+  if (Array.isArray(value)) return value.slice(0, MAX_LOG_ARRAY_ITEMS).map(item => sanitizeLogValue(item, "", seen, depth + 1));
   const out = {};
-  for (const [childKey, childValue] of Object.entries(value).slice(0, 100)) {
+  for (const [childKey, childValue] of Object.entries(value).slice(0, MAX_LOG_OBJECT_KEYS)) {
     out[childKey] = sanitizeLogValue(childValue, childKey, seen, depth + 1);
   }
   return out;
 }
 
-export function sanitizeLogText(value) {
-  return String(value ?? "")
+export function sanitizeLogText(value, maxChars = MAX_LOG_MESSAGE_CHARS) {
+  let raw;
+  try { raw = String(value ?? ""); } catch { raw = "<unprintable>"; }
+  const sanitized = raw
     .replace(SECRET_VALUE, "<redacted-secret>")
     .replace(BEARER_VALUE, "Bearer <redacted>")
     .replace(/[\r\n\t]/g, match => match === "\t" ? "\\t" : "\\n")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "?");
+  if (!Number.isFinite(Number(maxChars)) || Number(maxChars) <= 0) return "";
+  const limit = Math.max(16, Number(maxChars));
+  return sanitized.length > limit ? `${sanitized.slice(0, limit - 1)}…` : sanitized;
 }
 
 function shouldUseColor(options) {

@@ -12,15 +12,15 @@ No transport is treated as a sandbox. Both transports invoke the same local runt
 
 ## Components
 
-### Shared tool catalog
+### Shared protocol metadata and tool catalog
 
-`src/shared/tool-catalog.json` is the single source of truth for tool names, descriptions, input schemas, annotations, and policy availability. The Worker and stdio runtime import it directly. A catalog test rejects duplicate names, unknown availability classes, open schemas, missing annotations, profile drift, and a second hand-maintained Worker catalog.
+`src/shared/server-metadata.json` is the single source of truth for server identity, MCP protocol versions, and host instructions. `src/shared/tool-catalog.json` is the single source of truth for tool names, descriptions, input schemas, annotations, and policy availability. The Worker and local runtime import both directly. Catalog tests reject metadata drift, duplicate names, unknown availability classes, open schemas, missing annotations, profile drift, and second hand-maintained Worker definitions.
 
 ### CLI and state layer
 
 The CLI canonicalizes workspaces, resolves policy profiles, maintains per-workspace state and credentials, serializes startup/deploy/rotation with locks, deploys the Worker, installs optional platform-native autostart, and starts either remote daemon or stdio mode.
 
-A canonical workspace receives an independent profile, Worker name, secret set, daemon/startup locks, and state file. State schema version 3 removes obsolete local API state and records the expanded policy model.
+A canonical workspace receives an independent profile, Worker name, secret set, daemon/startup locks, and state file. State schema version 4 records policy origin/revision in addition to the capability fields and retains removal of obsolete local API state.
 
 ### Local runtime
 
@@ -38,7 +38,7 @@ Remote mode attaches WebSocket connection/reconnect behavior. Stdio mode invokes
 
 ### Stdio MCP server
 
-The stdio server implements newline-delimited JSON-RPC over stdin/stdout. It negotiates supported MCP versions, advertises policy-filtered tools, returns text plus structured content, supports native image content, maps cancellation notifications to runtime call IDs, and sends logs only to stderr.
+The stdio server implements newline-delimited JSON-RPC over stdin/stdout. It negotiates supported MCP versions, advertises policy-filtered tools, returns text plus structured content, supports native image content, maps cancellation notifications to runtime call IDs, and sends level-filtered logs only to stderr.
 
 ### Cloudflare Worker and Durable Object
 
@@ -55,7 +55,7 @@ The daemon attachment deliberately omits workspace path/name/hash and process ID
 
 ### Autostart layer
 
-The service layer emits launchd, systemd-user, or Windows Scheduled Task definitions. Credentials are not embedded in service definitions; the daemon loads owner-only state. The exact policy is stored in owner-only state; platform service definitions contain only the workspace and state-root selectors.
+The service layer emits launchd, systemd-user, or Windows Scheduled Task definitions. Credentials are not embedded in service definitions; the daemon loads owner-only state. The exact policy is stored in owner-only state; platform service definitions contain only the workspace/state-root selectors and a `warn` log-level setting.
 
 ## Trust boundaries
 
@@ -102,7 +102,7 @@ Duplicate in-flight JSON-RPC IDs for the same access token are rejected so cance
 
 ## Filesystem resolution and privacy
 
-The workspace is canonicalized once. Existing targets use `realpath`; the result must remain inside the workspace unless unrestricted mode is explicit. New targets walk to the nearest existing ancestor and validate its canonical path.
+The workspace is canonicalized and compared with targets through consistent platform-native/async `realpath` representations. Existing targets must remain inside the workspace unless the active policy is unrestricted. New targets walk to the nearest existing ancestor, validate its canonical path, and reconstruct the destination below that canonical ancestor.
 
 Path behavior is profile-dependent. The default `full` profile permits unrestricted direct filesystem paths and returns absolute paths. The `agent`, `edit`, and `review` profiles enforce canonical workspace containment and return workspace-relative paths. Error strings redact canonical and common platform-alias forms of workspace, runtime, and home paths whenever absolute path display is disabled.
 
@@ -146,7 +146,7 @@ Pending calls retain their originating socket reference. A stale socket cannot c
 
 ## Persistence
 
-Local state and global config are owner-only, versioned, and written through temporary files, flushes, and atomic rename. Malformed state becomes a bounded `.corrupt-*` backup. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. Reads reject symbolic links and use no-follow descriptors where supported. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
 
 Removal validates the state marker, canonical target, known contents, active locks, filesystem root/home/current/package/workspace/source exclusions, and Worker deletion outcome before recursive deletion.
 
@@ -154,15 +154,17 @@ OAuth metadata is pruned on access. Expired codes/tokens, old throttling records
 
 ## Observability
 
-Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status. Local operational logs record tool identity, shortened random call ID, duration, outcome, and coarse error class, but not arguments or outputs. Worker unexpected-error logs contain endpoint and error class, not raw exception text.
+Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status and policy origin/revision.
 
-Cloudflare sampling is size control rather than an audit log. The project intentionally does not claim complete forensic logging.
+Foreground logging defaults to `info`; autostart uses `warn`. Routine successful calls and shortened random correlation IDs are debug-only. `info` retains deployment/connection transitions and successful calls slower than 30 seconds. Failures log tool name, duration, and coarse error class without arguments or outputs. Unexpected local and Worker errors are reduced to classes in normal logs. Messages, strings, arrays, object depth/key counts, and serialized fields are bounded.
+
+Cloudflare sampling is size control rather than an audit log. The project intentionally does not claim complete forensic logging. See [LOGGING.md](LOGGING.md).
 
 ## Explicit non-goals
 
 - operating-system sandboxing of arbitrary executables;
 - preventing an authorized client from requesting data available to enabled tools;
-- automatically deciding which workspace files are sensitive;
+- automatically deciding which local files are sensitive or overriding MCP-host/platform safety policy;
 - surviving daemon restart with process sessions;
 - PTY/terminal emulation;
 - model-level prompt-injection prevention;

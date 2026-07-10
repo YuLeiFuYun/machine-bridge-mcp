@@ -1,12 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, chmodSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, writeFileSync, chmodSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-export const appName = "machine-bridge-mcp";
+export const appName = String(serverMetadata.name);
 const STATE_MARKER = ".machine-bridge-mcp-state";
+const MAX_STATE_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_LOCK_BYTES = 64 * 1024;
+const MAX_MARKER_BYTES = 4096;
 
 export function expandHome(input = "") {
   if (!input || input === "~") return os.homedir();
@@ -29,7 +33,7 @@ export function defaultStateRoot() {
 }
 
 
-export function configPath(stateRoot = defaultStateRoot()) {
+function configPath(stateRoot = defaultStateRoot()) {
   return path.join(expandHome(stateRoot), "config.json");
 }
 
@@ -78,13 +82,10 @@ export function workspaceHash(workspace) {
   return createHash("sha256").update(String(workspace)).digest("hex").slice(0, 24);
 }
 
-export function profileDirForWorkspace(workspace, stateRoot = defaultStateRoot()) {
+function profileDirForWorkspace(workspace, stateRoot = defaultStateRoot()) {
   return path.join(expandHome(stateRoot), "profiles", workspaceHash(workspace));
 }
 
-export function statePathForWorkspace(workspace, stateRoot = defaultStateRoot()) {
-  return path.join(profileDirForWorkspace(workspace, stateRoot), "state.json");
-}
 
 export function loadState(workspace, options = {}) {
   const stateRoot = ensureStateRoot(options.stateDir ? expandHome(options.stateDir) : defaultStateRoot());
@@ -96,7 +97,7 @@ export function loadState(workspace, options = {}) {
     ownerOnlyFile(statePath);
     state = readJsonObjectOrBackup(statePath);
   }
-  state.schemaVersion = 3;
+  state.schemaVersion = 4;
   state.workspace = {
     path: workspace,
     hash: workspaceHash(workspace),
@@ -189,7 +190,7 @@ function releaseProcessLock(lockPath, token) {
 
 export function readDaemonLockOwner(lockPath) {
   try {
-    const parsed = JSON.parse(readFileSync(lockPath, "utf8"));
+    const parsed = JSON.parse(readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -207,9 +208,31 @@ function isPidAlive(pid) {
   }
 }
 
+function readBoundedUtf8(filePath, maxBytes, label) {
+  const pathInfo = lstatSync(filePath);
+  if (pathInfo.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
+  const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
+  const fd = openSync(filePath, Number(fsConstants.O_RDONLY) | noFollow);
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw new Error(`${label} is not a regular file`);
+    if (info.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
+    const buffer = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const count = readSync(fd, buffer, offset, buffer.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return buffer.subarray(0, offset).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function readJsonObjectOrBackup(filePath) {
   try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    const parsed = JSON.parse(readBoundedUtf8(filePath, MAX_STATE_JSON_BYTES, "state JSON"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("JSON root must be an object");
     return parsed;
   } catch {
@@ -286,7 +309,7 @@ function assertSafeStateRootForRemoval(root) {
 }
 
 function assertValidStateMarker(marker, options = {}) {
-  const content = readFileSync(marker, "utf8");
+  const content = readBoundedUtf8(marker, MAX_MARKER_BYTES, "state marker");
   try {
     const value = JSON.parse(content);
     if (value?.app === appName && value?.schema === 1) return;
@@ -315,7 +338,7 @@ function stateRootMatchesRecordedWorkspace(root) {
       if (!entry.isDirectory()) continue;
       const stateFile = path.join(profiles, entry.name, "state.json");
       if (!existsSync(stateFile)) continue;
-      const value = JSON.parse(readFileSync(stateFile, "utf8"));
+      const value = JSON.parse(readBoundedUtf8(stateFile, MAX_STATE_JSON_BYTES, "state JSON"));
       if (typeof value?.workspace?.path !== "string") continue;
       try { if (realpathSync(value.workspace.path) === root) return true; } catch {}
     }
@@ -327,7 +350,7 @@ function isRecognizableLegacyStateRoot(root) {
   const config = path.join(root, "config.json");
   try {
     if (existsSync(config)) {
-      const value = JSON.parse(readFileSync(config, "utf8"));
+      const value = JSON.parse(readBoundedUtf8(config, MAX_STATE_JSON_BYTES, "config JSON"));
       if (
         value &&
         typeof value.selectedWorkspace === "string" &&
@@ -343,7 +366,7 @@ function isRecognizableLegacyStateRoot(root) {
       if (!entry.isDirectory() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
       const stateFile = path.join(profiles, entry.name, "state.json");
       if (!existsSync(stateFile)) continue;
-      const value = JSON.parse(readFileSync(stateFile, "utf8"));
+      const value = JSON.parse(readBoundedUtf8(stateFile, MAX_STATE_JSON_BYTES, "state JSON"));
       if (value?.workspace?.hash === entry.name && typeof value?.workspace?.path === "string") return true;
     }
   } catch {}
@@ -354,11 +377,13 @@ function atomicWriteJson(filePath, value) {
   const dir = path.dirname(filePath);
   ensureOwnerOnlyDir(dir);
   cleanupStaleAtomicTemps(dir, path.basename(filePath));
+  const serialized = `${JSON.stringify(value, null, 2)}\n`;
+  if (Buffer.byteLength(serialized) > MAX_STATE_JSON_BYTES) throw new Error(`state JSON exceeds ${MAX_STATE_JSON_BYTES} bytes`);
   const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   let fd;
   try {
     fd = openSync(tempPath, "wx", 0o600);
-    writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    writeFileSync(fd, serialized, "utf8");
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
@@ -412,11 +437,11 @@ export function ensureWorkerSecrets(state, options = {}) {
   if (!state.worker.name || options.workerName) state.worker.name = options.workerName || defaultWorkerName(state.workspace.hash);
 }
 
-export function defaultWorkerName(hash) {
+function defaultWorkerName(hash) {
   return `mbm-${String(hash || "default").slice(0, 12)}`;
 }
 
-export function randomToken(prefix) {
+function randomToken(prefix) {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
 }
 
@@ -424,9 +449,6 @@ export function sha256(value) {
   return createHash("sha256").update(String(value)).digest("hex");
 }
 
-export function fileSha256(filePath) {
-  return createHash("sha256").update(readFileSync(filePath)).digest("hex");
-}
 
 export function ensureOwnerOnlyDir(dir) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -434,6 +456,9 @@ export function ensureOwnerOnlyDir(dir) {
 }
 
 export function ownerOnlyFile(filePath) {
+  const info = lstatSync(filePath);
+  if (info.isSymbolicLink()) throw new Error(`owner-only file must not be a symbolic link: ${filePath}`);
+  if (!info.isFile()) throw new Error(`owner-only path is not a regular file: ${filePath}`);
   try { chmodSync(filePath, 0o600); } catch {}
 }
 

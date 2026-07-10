@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Cross-client MCP bridge for policy-controlled local files, Git, images, patches, and processes over stdio or OAuth-protected remote relay.",
   "type": "module",
   "license": "MIT",
@@ -50,8 +50,8 @@
     "catalog:test": "node tests/catalog-test.mjs"
   },
   "dependencies": {
-    "wrangler": "^4.110.0",
-    "ws": "^8.18.3"
+    "wrangler": "4.110.0",
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

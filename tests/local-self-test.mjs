@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
-import { parseArgs, resolvePolicy, validateCommandOptions, validatePositionals } from "../src/local/cli.mjs";
+import { parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals } from "../src/local/cli.mjs";
 import { daemonSelfTest } from "./daemon-self-test.mjs";
-import { formatFields, redactSecret, sanitizeLogText } from "../src/local/log.mjs";
+import { formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { daemonArgs, systemdQuote, trimAutostartLogs } from "../src/local/service.mjs";
 import { MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
 import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, previewSecret, redactState, removeStateRoot, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
@@ -29,8 +29,11 @@ async function stateSelfTest() {
     setSelectedWorkspace(workspace, stateRoot);
     if (selectedWorkspace(stateRoot) !== workspace) throw new Error("selected workspace was not persisted");
     const state = loadState(workspace, { stateDir: stateRoot });
-    if (state.schemaVersion !== 3) throw new Error("unexpected state schema version");
+    if (state.schemaVersion !== 4) throw new Error("unexpected state schema version");
     ensureWorkerSecrets(state, { rotateSecrets: true });
+    state.oversized = "x".repeat(2 * 1024 * 1024 + 1);
+    expectThrow(() => saveState(state), "state JSON exceeds");
+    delete state.oversized;
     const lock = acquireDaemonLock(state);
     if (!lock.acquired) throw new Error("first daemon lock acquisition failed");
     try {
@@ -58,7 +61,6 @@ async function stateSelfTest() {
     if (redacted.worker.daemonSecret !== "<redacted>") throw new Error("daemonSecret was not fully redacted");
     if (redacted.worker.oauthTokenVersion !== "<redacted>") throw new Error("oauthTokenVersion was not fully redacted");
     if (previewSecret(state.worker.oauthPassword) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
-    if (redactSecret(state.worker.daemonSecret) !== "<redacted>") throw new Error("redactSecret did not fully redact secret");
 
     state.localApi = {
       apiKey: "old-local-api-key",
@@ -71,6 +73,15 @@ async function stateSelfTest() {
     if (profileEntries.some(name => name.endsWith(".tmp"))) throw new Error("atomic state write left a temporary file");
     const migrated = loadState(workspace, { stateDir: stateRoot });
     if ("localApi" in migrated) throw new Error("legacy local API state was not removed");
+    migrated.policy = { profile: "custom", allowWrite: true, execMode: "shell", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false };
+    saveState(migrated);
+    const policyReload = loadState(workspace, { stateDir: stateRoot });
+    policyReload.policy = resolvePolicy({}, policyReload.policy);
+    saveState(policyReload);
+    const policyPersisted = loadState(workspace, { stateDir: stateRoot });
+    if (policyPersisted.policy.profile !== "full" || policyPersisted.policy.origin !== "migrated" || policyPersisted.policy.revision !== 2) {
+      throw new Error("migrated policy origin/revision was not persisted");
+    }
 
     await writeFile(state.paths.statePath, "{not-json", "utf8");
     const recovered = loadState(workspace, { stateDir: stateRoot });
@@ -120,6 +131,7 @@ async function activeDaemonPolicyMutationSelfTest() {
   try {
     const state = loadState(workspace, { stateDir: stateRoot });
     state.policy = resolvePolicy({ profile: "review" }, {});
+    ensureWorkerSecrets(state, { rotateSecrets: true });
     saveState(state);
     const daemonLock = acquireDaemonLock(state);
     if (!daemonLock.acquired) throw new Error("policy mutation test could not acquire daemon lock");
@@ -133,7 +145,6 @@ async function activeDaemonPolicyMutationSelfTest() {
         "--state-dir", stateRoot,
         "--profile", "full",
         "--json",
-        "--no-print-credentials",
       ], {
         cwd: workspace,
         encoding: "utf8",
@@ -144,6 +155,9 @@ async function activeDaemonPolicyMutationSelfTest() {
       const output = JSON.parse(child.stdout.trim());
       if (output.requested_changes_applied !== false || !String(output.notice || "").includes("not applied")) {
         throw new Error("locked JSON start did not report that policy changes were rejected");
+      }
+      if (output.mcp?.connection_password !== "<redacted>" || child.stdout.includes("mcp_password_")) {
+        throw new Error("JSON start exposed connection credentials without an explicit print flag");
       }
       const unchanged = loadState(workspace, { stateDir: stateRoot });
       if (unchanged.policy.profile !== "review" || unchanged.policy.allowWrite || unchanged.policy.execMode !== "off") {
@@ -194,6 +208,7 @@ function cliSelfTest() {
   if (parsed.noWrite !== true || parsed._[0] !== "/tmp/example") throw new Error("boolean option consumed positional workspace");
   if (parsed.unrestrictedPaths !== false || parsed.workerName !== "mbm-test") throw new Error("CLI option parsing failed");
   expectThrow(() => parseArgs(["--unknown-option"]), "Unknown option");
+  expectThrow(() => parseArgs(["--api"]), "Unknown option");
   expectThrow(() => parseArgs(["--workspace"]), "requires a value");
   expectThrow(() => parseArgs(["--quiet", "--quiet"]), "Duplicate option");
   expectThrow(() => parseArgs(["--quiet=maybe"]), "expects true or false");
@@ -202,7 +217,11 @@ function cliSelfTest() {
   expectThrow(() => validatePositionals("uninstall", { _: ["unexpected"] }), "does not accept positional");
   expectThrow(() => validateCommandOptions("uninstall", { _: [], workspace: "/tmp/project" }), "not valid for uninstall");
   expectThrow(() => validateCommandOptions("doctor", { _: [], fullEnv: true }), "not valid for doctor");
-  validateCommandOptions("start", { _: [], unrestrictedPaths: true, noExec: true });
+  validateCommandOptions("start", { _: [], unrestrictedPaths: true, noExec: true, logLevel: "warn" });
+  validateLoggingOptions({ logLevel: "warn" });
+  expectThrow(() => validateLoggingOptions({ logLevel: "trace" }), "log level must be");
+  expectThrow(() => validateLoggingOptions({ quiet: true, verbose: true }), "cannot be used together");
+  expectThrow(() => validateLoggingOptions({ logLevel: "warn", verbose: true }), "cannot be combined");
   validateCommandOptions("stdio", { _: [], profile: "agent", execMode: "direct" });
   validateCommandOptions("client-config", { _: [], client: "cursor", profile: "review" });
   validatePositionals("workspace", { _: ["set", "/tmp/project"] });
@@ -217,13 +236,28 @@ function cliSelfTest() {
     defaultPolicy.execMode !== "shell" ||
     !defaultPolicy.unrestrictedPaths ||
     defaultPolicy.minimalEnv ||
-    !defaultPolicy.exposeAbsolutePaths
+    !defaultPolicy.exposeAbsolutePaths ||
+    defaultPolicy.origin !== "default"
   ) {
     throw new Error("new-workspace default policy is not maximum-permission full mode");
   }
   const review = resolvePolicy({ profile: "review" }, {});
-  const legacy = resolvePolicy({}, { allowWrite: true, allowExec: true, minimalEnv: true });
-  if (!legacy.allowWrite || legacy.execMode !== "shell") throw new Error("legacy execution policy was not preserved");
+  const legacy = resolvePolicy({}, { profile: "custom", allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  if (legacy.profile !== "full" || legacy.origin !== "migrated" || !legacy.unrestrictedPaths || legacy.minimalEnv || !legacy.exposeAbsolutePaths) {
+    throw new Error("legacy implicit default policy was not migrated to full");
+  }
+  const staleDefault = resolvePolicy({}, { profile: "review", origin: "default", revision: 1, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  if (staleDefault.profile !== "full" || staleDefault.origin !== "default" || staleDefault.revision !== 2) {
+    throw new Error("outdated default-origin policy did not follow the current policy revision");
+  }
+  const staleExplicit = resolvePolicy({}, { profile: "review", origin: "explicit", revision: 1, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  if (staleExplicit.profile !== "review" || staleExplicit.origin !== "explicit") {
+    throw new Error("explicit policy was overwritten by a default revision upgrade");
+  }
+  const legacyReview = resolvePolicy({}, { profile: "review", allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  if (legacyReview.profile !== "review" || legacyReview.origin !== "legacy-preserved" || legacyReview.allowWrite) {
+    throw new Error("legacy explicit restrictive policy was not preserved");
+  }
   const agent = resolvePolicy({ profile: "agent" }, {});
   if (!agent.allowWrite || agent.execMode !== "direct") throw new Error("agent profile is incorrect");
   const restrictedAgent = resolvePolicy({ profile: "agent", noExec: true, absolutePaths: true }, {});
@@ -251,6 +285,14 @@ function logSelfTest() {
   }
   if (rendered.includes("\nforged")) throw new Error("structured log newline injection was not escaped");
   if (sanitizeLogText("ok\n[error] forged").includes("\n[error]")) throw new Error("log message newline injection was not escaped");
+  if (sanitizeLogText("x".repeat(10_000)).length > 2048) throw new Error("log message length was not bounded");
+  const hostileFields = {};
+  Object.defineProperty(hostileFields, "broken", { enumerable: true, get() { throw new Error("getter failed"); } });
+  if (!formatFields(hostileFields).includes("fields_unavailable")) throw new Error("logging failed closed on hostile structured fields");
+  const unprintable = { toString() { throw new Error("toString failed"); } };
+  if (sanitizeLogText(unprintable) !== "<unprintable>") throw new Error("logging failed on an unprintable message");
+  const oversizedFields = formatFields(Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`field_${i}`, "x".repeat(20_000)])));
+  if (oversizedFields.length > 4500 || !oversizedFields.includes("fields_truncated")) throw new Error("structured log fields were not bounded");
 }
 
 async function serviceSelfTest() {
@@ -260,14 +302,21 @@ async function serviceSelfTest() {
     await writeFile(join(stateRoot, "placeholder"), "", "utf8");
     await import("node:fs/promises").then(({ mkdir }) => mkdir(logs, { recursive: true }));
     const file = join(logs, "daemon.err.log");
-    await writeFile(file, "x".repeat(4096), "utf8");
+    await writeFile(file, `${"discarded-line\n".repeat(300)}kept-unicode-日志\nlast-line\n`, "utf8");
     trimAutostartLogs(stateRoot, { maxBytes: 2048, keepBytes: 1024 });
-    if ((await stat(file)).size > 1024) throw new Error("autostart log trimming failed");
+    const trimmed = await readFile(file, "utf8");
+    if ((await stat(file)).size > 1024 || trimmed.startsWith("�") || !trimmed.endsWith("last-line\n")) {
+      throw new Error("autostart log tail trimming was not line/UTF-8 safe");
+    }
     const quoted = systemdQuote("path with space/%value'\n");
     if (!quoted.startsWith('"') || !quoted.includes("%%") || !quoted.includes("\\n")) throw new Error("systemd argument quoting failed");
     const args = daemonArgs({ entryScript: "/package/bin/machine-mcp.mjs", workspace: "/workspace", stateRoot: "/state" });
     if (args.some((value) => ["--profile", "--exec-mode", "--no-write", "--full-env", "--unrestricted-paths", "--absolute-paths"].includes(value))) {
       throw new Error("autostart duplicated policy outside owner-only state");
+    }
+    const logLevelIndex = args.indexOf("--log-level");
+    if (logLevelIndex < 0 || args[logLevelIndex + 1] !== "warn" || args.includes("--quiet")) {
+      throw new Error("autostart did not retain warning/error logs without normal chatter");
     }
   } finally {
     await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
@@ -321,7 +370,7 @@ async function workerSourceSelfTest() {
     'role: "expired"',
     "daemon_hello_timeout",
     "replaced by authenticated daemon",
-    "MCP_PROTOCOL_VERSION = \"2025-11-25\"",
+    "serverMetadata.protocolVersion",
     "notifications/cancelled",
     "structuredContent",
     "../shared/tool-catalog.json",

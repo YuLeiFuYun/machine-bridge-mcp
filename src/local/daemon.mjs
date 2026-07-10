@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { chmod, link, lstat, mkdir, opendir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, open, opendir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import WebSocket from "ws";
@@ -9,7 +9,8 @@ import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
 import { MAX_COMMAND_BYTES, ProcessSessionManager, terminateProcessTree, validateArgv } from "./process-sessions.mjs";
 export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
-import { MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, toolNamesForPolicy } from "./tools.mjs";
+import { MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, SERVER_NAME, toolNamesForPolicy } from "./tools.mjs";
+import { classifyOperationalError } from "./log.mjs";
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
@@ -18,6 +19,7 @@ const MAX_DIRECTORY_ENTRIES = 10_000;
 const MAX_PATH_RESULT_BYTES = 4 * 1024 * 1024;
 const MAX_WALK_ENTRIES = 200_000;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const SLOW_TOOL_CALL_MS = 30_000;
 
 export class LocalDaemon {
   constructor({ workerUrl = "", secret = "", workspace, policy, logger = console, onSuperseded = null }) {
@@ -66,12 +68,18 @@ export class LocalDaemon {
 
   runtimeInfo() {
     return {
-      name: "machine-bridge-mcp",
+      name: SERVER_NAME,
       protocol_version: MCP_PROTOCOL_VERSION,
       supported_protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
       workspace: this.displayPath(this.workspace),
       workspace_name: basename(this.workspace),
       policy: this.policy,
+      enforcement: {
+        filesystem_scope: this.policy.unrestrictedPaths ? "local-user-accessible" : "workspace",
+        sensitive_filename_filter: false,
+        operating_system_permissions_apply: true,
+        host_policy_is_independent: true,
+      },
       tools: ["server_info", ...this.tools()],
       runtime: {
         environment: this.policy.minimalEnv ? "isolated-minimal" : "full-parent",
@@ -109,7 +117,7 @@ export class LocalDaemon {
   connect() {
     if (this.closed) return;
     const wsUrl = `${this.workerUrl.replace(/^http/i, "ws")}/daemon/ws`;
-    this.logger.info?.("connecting daemon websocket", { endpoint: redactUrl(wsUrl) });
+    this.logger.debug?.("connecting to remote relay", { endpoint: redactUrl(wsUrl) });
     const socket = new WebSocket(wsUrl, { headers: { "X-Bridge-Token": this.secret } });
     this.ws = socket;
 
@@ -119,7 +127,7 @@ export class LocalDaemon {
         return;
       }
       this.reconnectAttempt = 0;
-      this.logger.info?.("daemon websocket connected");
+      this.logger.info?.("remote relay connected");
       this.send({ type: "hello", tools: this.tools(), policy: this.policy, protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS });
       if (this.connectedOnceResolve) {
         this.connectedOnceResolve(true);
@@ -138,7 +146,7 @@ export class LocalDaemon {
         return;
       }
       void this.handleMessage(raw).catch(error => {
-        this.logger.error?.("daemon message handler failed", { error: this.safeErrorMessage(error) });
+        this.logger.error?.("daemon message handler failed", { error_class: classifyOperationalError(error) });
       });
     });
 
@@ -157,13 +165,13 @@ export class LocalDaemon {
         this.logger.warn?.("daemon connection permanently superseded", fields);
         queueMicrotask(() => {
           try { this.onSuperseded?.(); } catch (error) {
-            this.logger.error?.("daemon superseded callback failed", { error_class: classifyError(error) });
+            this.logger.error?.("daemon superseded callback failed", { error_class: classifyOperationalError(error) });
           }
         });
         return;
       }
-      if (this.closed) this.logger.info?.("daemon websocket closed", fields);
-      else this.logger.warn?.("daemon websocket disconnected", fields);
+      if (this.closed) this.logger.debug?.("remote relay closed", fields);
+      else this.logger.warn?.("remote relay disconnected", fields);
       if (!this.closed) {
         const delay = reconnectDelay(this.reconnectAttempt++);
         this.logger.debug?.("scheduling daemon reconnect", { delay_ms: delay });
@@ -174,8 +182,8 @@ export class LocalDaemon {
 
     socket.on("error", error => {
       if (this.ws !== socket) return;
-      if (this.closed) this.logger.info?.("daemon websocket closed during shutdown", { error: boundedErrorMessage(error) });
-      else this.logger.error?.("daemon websocket error", { error: boundedErrorMessage(error) });
+      if (this.closed) this.logger.debug?.("remote relay closed during shutdown", { error_class: classifyOperationalError(error) });
+      else this.logger.error?.("remote relay error", { error_class: classifyOperationalError(error) });
     });
   }
 
@@ -185,7 +193,7 @@ export class LocalDaemon {
       this.ws.send(JSON.stringify(value));
       return true;
     } catch (error) {
-      this.logger.warn?.("daemon websocket send failed", { error: boundedErrorMessage(error) });
+      this.logger.warn?.("remote relay send failed", { error_class: classifyOperationalError(error) });
       return false;
     }
   }
@@ -229,11 +237,15 @@ export class LocalDaemon {
       const result = await this.executeTool(tool, argumentsValue, { callId: id });
       if (this.cancelledCalls.has(id)) throw new Error("tool call cancelled");
       this.send({ type: "tool_result", id, ok: true, result });
-      this.logger.info?.("tool call completed", { call_id: shortCallId(id), tool, duration_ms: Date.now() - started, ok: true });
+      const durationMs = Date.now() - started;
+      if (durationMs >= SLOW_TOOL_CALL_MS) this.logger.info?.("slow tool call completed", { tool, duration_ms: durationMs });
+      else this.logger.debug?.("tool call completed", { call_id: shortCallId(id), tool, duration_ms: durationMs });
     } catch (error) {
       const safeError = this.safeErrorMessage(error);
       this.send({ type: "tool_result", id, ok: false, error: { message: safeError } });
-      this.logger.warn?.("tool call failed", { call_id: shortCallId(id), tool, duration_ms: Date.now() - started, ok: false, error_class: classifyError(error) });
+      const durationMs = Date.now() - started;
+      this.logger.warn?.("tool call failed", { tool, duration_ms: durationMs, error_class: classifyOperationalError(error) });
+      this.logger.debug?.("tool call failure correlation", { call_id: shortCallId(id) });
     } finally {
       clearTimeout(deadline);
       this.activeToolCalls -= 1;
@@ -258,7 +270,7 @@ export class LocalDaemon {
       }, 2000);
       timer.unref?.();
     }
-    this.logger.info?.("tool call cancellation requested", { call_id: shortCallId(callId), reason });
+    this.logger.debug?.("tool call cancellation requested", { call_id: shortCallId(callId), reason });
   }
 
   async executeTool(tool, args, context = {}) {
@@ -366,11 +378,9 @@ export class LocalDaemon {
     }
     if (!args.path) throw new Error("path is required");
     const full = await this.resolveExistingPath(args.path);
-    const info = await stat(full);
-    if (!info.isFile()) throw new Error("path is not a file");
-    if (info.size > MAX_WRITE_BYTES) throw new Error(`file exceeds maximum readable text size (${info.size} > ${MAX_WRITE_BYTES})`);
     this.throwIfCancelled(context);
-    const content = await readUtf8File(full);
+    const { buffer, info } = await readBoundedFile(full, MAX_WRITE_BYTES, "readable text file");
+    const content = decodeUtf8(buffer);
     this.throwIfCancelled(context);
     const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
     const startLine = args.start_line === undefined ? 1 : clampInt(args.start_line, 1, 1, Number.MAX_SAFE_INTEGER);
@@ -399,11 +409,8 @@ export class LocalDaemon {
   async viewImage(args, context = {}) {
     if (!args.path) throw new Error("path is required");
     const full = await this.resolveExistingPath(args.path);
-    const info = await stat(full);
-    if (!info.isFile()) throw new Error("path is not a file");
-    if (info.size > MAX_IMAGE_BYTES) throw new Error(`image exceeds maximum size (${info.size} > ${MAX_IMAGE_BYTES})`);
     this.throwIfCancelled(context);
-    const buffer = await readFile(full);
+    const { buffer, info } = await readBoundedFile(full, MAX_IMAGE_BYTES, "image");
     this.throwIfCancelled(context);
     const mimeType = detectImageMime(buffer);
     if (!mimeType) throw new Error("unsupported image format; expected PNG, JPEG, GIF, or WebP");
@@ -545,10 +552,9 @@ export class LocalDaemon {
 
   async searchOneFile(full, query, matches, max, context = {}) {
     this.throwIfCancelled(context);
-    const info = await stat(full).catch(() => null);
-    if (!info?.isFile() || info.size > 1024 * 1024) return;
-    const buffer = await readFile(full).catch(() => null);
-    if (!buffer || buffer.includes(0)) return;
+    const bounded = await readBoundedFile(full, 1024 * 1024, "search file").catch(() => null);
+    if (!bounded || bounded.buffer.includes(0)) return;
+    const buffer = bounded.buffer;
     let text;
     try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch { return; }
     if (!text) return;
@@ -850,11 +856,34 @@ function assertContainedPath(root, target) {
   throw new Error("path is outside the configured workspace; restart with --unrestricted-paths to allow it");
 }
 
-async function readUtf8File(filePath) {
-  const buffer = await readFile(filePath);
+async function readBoundedFile(filePath, maxBytes, label) {
+  const handle = await open(filePath, "r");
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error(`${label} is not a regular file`);
+    if (info.size > maxBytes) throw new Error(`${label} exceeds maximum size (${info.size} > ${maxBytes})`);
+    const buffer = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return { buffer: buffer.subarray(0, offset), info };
+  } finally {
+    await handle.close();
+  }
+}
+
+function decodeUtf8(buffer) {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
     throw new Error("file is not valid UTF-8 text");
   }
+}
+
+async function readUtf8File(filePath) {
+  const { buffer } = await readBoundedFile(filePath, MAX_WRITE_BYTES, "text file");
+  return decodeUtf8(buffer);
 }
 
 async function atomicWriteText(full, content, existing = null, options = {}) {
@@ -1010,18 +1039,6 @@ function isPlainRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function classifyError(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/cancel/i.test(message)) return "cancelled";
-  if (/timed out/i.test(message)) return "timeout";
-  if (/outside the configured workspace/i.test(message)) return "path_boundary";
-  if (/disabled by daemon policy|requires .* mode/i.test(message)) return "policy_denied";
-  if (/not found|ENOENT/i.test(message)) return "not_found";
-  if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
-  if (/maximum|exceeds|max_bytes|too many/i.test(message)) return "limit_exceeded";
-  if (/invalid|must|requires|ambiguous|mismatch/i.test(message)) return "invalid_request";
-  return "execution_failed";
-}
 
 function equivalentPathPrefixes(...values) {
   const prefixes = new Set(values.filter(Boolean).map((value) => String(value)));

@@ -123,3 +123,9 @@ Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authoriza
 - `review` is read-only and workspace-confined.
 
 A client configuration is an authorization decision. Anyone who controls an authorized host can invoke every tool exposed by the selected profile.
+
+## Host-side safety rules
+
+The local `full` profile controls Machine Bridge's own tool catalog, path resolver, path display, process environment, and shell availability. It does not control the MCP host's model policy, approval UI, connector gateway, or platform execution filters.
+
+Machine Bridge itself does not block files because their names look sensitive. If `server_info` reports `full` and a direct `read_file` request is still rejected as a “sensitive file” by the execution layer, that refusal comes from the host/platform rather than this server. Changing `--profile`, `--unrestricted-paths`, or `--absolute-paths` cannot override it. Use a trusted local client or an operator-controlled local command only where doing so is consistent with the host's terms and the user's security intent.

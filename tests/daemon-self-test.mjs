@@ -8,7 +8,13 @@ export async function daemonSelfTest() {
   if (isSupersededClose(1012, "service restart") || isSupersededClose(1006, "replaced by authenticated daemon")) throw new Error("transient daemon close was treated as superseded");
   const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
   const outside = await mkdtemp(join(tmpdir(), "mbm-daemon-outside-"));
-  const logger = { info() {}, warn() {}, error() {} };
+  const logEvents = [];
+  const logger = {
+    info(message, fields) { logEvents.push({ level: "info", message, fields }); },
+    warn(message, fields) { logEvents.push({ level: "warn", message, fields }); },
+    error(message, fields) { logEvents.push({ level: "error", message, fields }); },
+    debug(message, fields) { logEvents.push({ level: "debug", message, fields }); },
+  };
   const restricted = new LocalDaemon({
     workerUrl: "https://example.invalid",
     secret: "test-secret-value-123456",
@@ -48,15 +54,31 @@ export async function daemonSelfTest() {
     await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
     await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
     await writeFile(join(outside, "outside.txt"), "outside-needle", "utf8");
+    await writeFile(join(outside, "passwords.txt"), "password-file-visible", "utf8");
+    await writeFile(join(outside, ".env"), "OUTSIDE_SECRET=visible", "utf8");
 
     const envFile = await restricted.readFile(".env", 1024);
     if (!envFile.content.includes("SECRET=visible")) throw new Error("workspace .env should remain readable");
+
+    logEvents.length = 0;
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" } }));
+    if (logEvents.some(event => event.level === "info" && event.message === "tool call completed")) {
+      throw new Error("remote daemon emitted routine success at info level");
+    }
+    if (!logEvents.some(event => event.level === "debug" && event.message === "tool call completed")) {
+      throw new Error("remote daemon omitted debug success correlation");
+    }
 
     await expectReject(() => restricted.readFile(join(outside, "outside.txt"), 1024), "outside the configured workspace");
     await expectReject(() => restricted.readFile(path.relative(workspace, join(outside, "outside.txt")), 1024), "outside the configured workspace");
 
     const outsideFile = await unrestricted.readFile(join(outside, "outside.txt"), 1024);
     if (!outsideFile.content.includes("outside-needle")) throw new Error("unrestricted absolute read failed");
+    const passwordFile = await unrestricted.readFile(join(outside, "passwords.txt"), 1024);
+    const outsideEnv = await unrestricted.readFile(join(outside, ".env"), 1024);
+    if (!passwordFile.content.includes("password-file-visible") || !outsideEnv.content.includes("OUTSIDE_SECRET=visible")) {
+      throw new Error("unrestricted policy applied a sensitive-filename block");
+    }
 
     const linkPath = join(workspace, "outside-link");
     try {
