@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "./shell.mjs";
@@ -38,11 +38,42 @@ export async function stopAutostart({ logger = console } = {}) {
   return run("systemctl", ["--user", "stop", "machine-bridge-mcp.service"], { capture: true, allowFailure: true });
 }
 
+
+export function trimAutostartLogs(stateRoot, options = {}) {
+  const root = expandHome(stateRoot);
+  const maxBytes = Number.isFinite(Number(options.maxBytes)) ? Math.max(1024, Number(options.maxBytes)) : 2 * 1024 * 1024;
+  const keepBytes = Math.min(maxBytes, Number.isFinite(Number(options.keepBytes)) ? Math.max(1024, Number(options.keepBytes)) : 1024 * 1024);
+  const logs = path.join(root, "logs");
+  for (const name of ["daemon.out.log", "daemon.err.log"]) {
+    const file = path.join(logs, name);
+    try {
+      const info = statSync(file);
+      if (info.size > maxBytes) {
+        const fd = openSync(file, "r");
+        try {
+          const current = fstatSync(fd);
+          const length = Math.min(keepBytes, current.size);
+          const buffer = Buffer.alloc(length);
+          readSync(fd, buffer, 0, length, Math.max(0, current.size - length));
+          writeFileSync(file, buffer, { mode: 0o600 });
+        } finally {
+          closeSync(fd);
+        }
+      }
+      chmodSync(file, 0o600);
+    } catch {}
+  }
+}
+
 function serviceSpec({ workspace, stateRoot, entryScript, policy = {} }) {
   const root = expandHome(stateRoot);
   const logs = path.join(root, "logs");
   ensureOwnerOnlyDir(root);
   ensureOwnerOnlyDir(logs);
+  for (const file of [path.join(logs, "daemon.out.log"), path.join(logs, "daemon.err.log")]) {
+    writeFileSync(file, "", { flag: "a", mode: 0o600 });
+    try { chmodSync(file, 0o600); } catch {}
+  }
   return {
     workspace,
     stateRoot: root,
@@ -54,7 +85,7 @@ function serviceSpec({ workspace, stateRoot, entryScript, policy = {} }) {
       allowWrite: policy.allowWrite !== false,
       allowExec: policy.allowExec !== false,
       minimalEnv: policy.minimalEnv !== false,
-      apiEnabled: policy.apiEnabled !== false,
+      unrestrictedPaths: policy.unrestrictedPaths === true,
     },
   };
 }
@@ -72,7 +103,7 @@ function daemonArgs(spec) {
   if (spec.policy.allowWrite === false) args.push("--no-write");
   if (spec.policy.allowExec === false) args.push("--no-exec");
   if (spec.policy.minimalEnv === false) args.push("--full-env");
-  if (spec.policy.apiEnabled === false) args.push("--no-api");
+  if (spec.policy.unrestrictedPaths === true) args.push("--unrestricted-paths");
   return args;
 }
 
@@ -220,8 +251,15 @@ function winQuote(value) {
   return `"${String(value).replaceAll('"', '\\"')}"`;
 }
 
-function systemdQuote(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
+export function systemdQuote(value) {
+  const escaped = String(value)
+    .replaceAll("\\", "\\\\")
+    .replaceAll("\"", "\\\"")
+    .replaceAll("%", "%%")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t");
+  return `"${escaped}"`;
 }
 
 function escapeXml(value) {

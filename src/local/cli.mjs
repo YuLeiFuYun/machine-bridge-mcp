@@ -4,15 +4,15 @@ import path, { resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalDaemon } from "./daemon.mjs";
-import { startLocalApiServer, DEFAULT_API_HOST, DEFAULT_API_PORT, DEFAULT_API_MODEL } from "./api-server.mjs";
-import { createLogger, redactSecret } from "./log.mjs";
+import { createLogger, sanitizeLogText } from "./log.mjs";
 import { runWrangler } from "./shell.mjs";
 import {
   acquireDaemonLock,
+  acquireStartupLock,
   appName,
+  daemonLockPathForState,
   defaultStateRoot,
   ensureOwnerOnlyDir,
-  ensureLocalApiKey,
   ensureWorkerSecrets,
   expandHome,
   loadGlobalConfig,
@@ -20,8 +20,10 @@ import {
   ownerOnlyFile,
   packageRoot,
   previewSecret,
+  readDaemonLockOwner,
   redactState,
   removeStateRoot,
+  validateStateRootForRemoval,
   resolveWorkspace,
   saveGlobalConfig,
   saveState,
@@ -29,16 +31,27 @@ import {
   setSelectedWorkspace,
 } from "./state.mjs";
 
+const BOOLEAN_OPTIONS = new Set([
+  "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
+  "daemonOnly", "noAutostart", "noPrintCredentials", "printMcpCredentials",
+  "printCredentials", "noWrite", "noExec", "fullEnv", "unrestrictedPaths",
+  "yes", "keepWorker", "noApi", "api", "rotateApiKey",
+]);
+const VALUE_OPTIONS = new Set([
+  "workspace", "stateDir", "workerName", "apiPort", "apiHost", "apiKey", "apiModel", "port",
+]);
+
 export async function main(argv = process.argv.slice(2)) {
   const [command, rest] = normalizeCommand(argv);
   const args = parseArgs(rest);
-  if (command === "api" && args.help) return apiUsage();
   if (args.help || command === "help") return usage();
   if (args.version || command === "version") return version();
+  if (command === "api") throw removedLocalApiError();
+  validateCommandOptions(command, args);
+  validatePositionals(command, args);
 
   switch (command) {
     case "start": return startCommand(args);
-    case "api": return apiCommand(args);
     case "status": return statusCommand(args);
     case "doctor": return doctorCommand(args);
     case "workspace": return workspaceCommand(args);
@@ -53,26 +66,100 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
+const COMMAND_OPTIONS = {
+  start: new Set([
+    "workspace", "stateDir", "workerName", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
+    "daemonOnly", "noAutostart", "noPrintCredentials", "printMcpCredentials", "printCredentials",
+    "noWrite", "noExec", "fullEnv", "unrestrictedPaths",
+    "noApi", "api", "apiPort", "apiHost", "apiKey", "rotateApiKey", "apiModel", "port",
+  ]),
+  status: new Set(["workspace", "stateDir"]),
+  doctor: new Set(["workspace", "stateDir"]),
+  "rotate-secrets": new Set(["workspace", "stateDir", "workerName", "noPrintCredentials", "quiet"]),
+  workspace: new Set(["workspace", "stateDir"]),
+  service: new Set(["workspace", "stateDir", "quiet"]),
+  autostart: new Set(["workspace", "stateDir", "quiet"]),
+  uninstall: new Set(["stateDir", "keepWorker", "yes"]),
+};
+
+export function validateCommandOptions(command, args) {
+  const allowed = COMMAND_OPTIONS[command];
+  if (!allowed) return;
+  for (const key of Object.keys(args)) {
+    if (key === "_" || key === "help" || key === "version") continue;
+    if (!allowed.has(key)) throw new Error(`Option --${toKebab(key)} is not valid for ${command}`);
+  }
+}
+
+function toKebab(value) {
+  return String(value).replace(/[A-Z]/g, (ch) => `-${ch.toLowerCase()}`);
+}
+
+export function validatePositionals(command, args) {
+  const count = args._.length;
+  const conflict = Boolean(args.workspace) && count > (command === "workspace" || command === "service" || command === "autostart" ? 1 : 0);
+  if (conflict) throw new Error("workspace path was provided both positionally and with --workspace");
+  if (["start", "status", "doctor", "rotate-secrets"].includes(command)) {
+    if (count > 1) throw new Error(`${command} accepts at most one positional workspace path`);
+    if (args.workspace && count) throw new Error("workspace path was provided both positionally and with --workspace");
+    return;
+  }
+  if (command === "workspace") {
+    const action = String(args._[0] || "show");
+    const max = action === "set" || action === "select" ? 2 : 1;
+    if (count > max) throw new Error(`workspace ${action} received too many positional arguments`);
+    if (args.workspace && count > 1) throw new Error("workspace path was provided both positionally and with --workspace");
+    return;
+  }
+  if (command === "service" || command === "autostart") {
+    const action = String(args._[0] || "status");
+    const max = action === "install" ? 2 : 1;
+    if (count > max) throw new Error(`service ${action} received too many positional arguments`);
+    if (args.workspace && count > 1) throw new Error("workspace path was provided both positionally and with --workspace");
+    return;
+  }
+  if (command === "uninstall" && count) throw new Error("uninstall does not accept positional arguments");
+}
+
 function normalizeCommand(argv) {
   if (!argv.length || argv[0].startsWith("--")) return ["start", argv];
   return [argv[0], argv.slice(1)];
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const out = { _: [] };
+  let positionalOnly = false;
   for (let i = 0; i < argv.length; i += 1) {
     const raw = argv[i];
-    if (!raw.startsWith("--")) {
+    if (positionalOnly || raw === "-" || !raw.startsWith("--")) {
       out._.push(raw);
       continue;
     }
+    if (raw === "--") {
+      positionalOnly = true;
+      continue;
+    }
     const eq = raw.indexOf("=");
-    const key = raw.slice(2, eq >= 0 ? eq : undefined);
-    let value = eq >= 0 ? raw.slice(eq + 1) : true;
-    if (eq < 0 && argv[i + 1] && !argv[i + 1].startsWith("--")) value = argv[++i];
-    out[toCamel(key)] = value;
+    const rawKey = raw.slice(2, eq >= 0 ? eq : undefined);
+    if (!rawKey) throw new Error("invalid empty option");
+    const key = toCamel(rawKey);
+    if (!BOOLEAN_OPTIONS.has(key) && !VALUE_OPTIONS.has(key)) throw new Error(`Unknown option: --${rawKey}`);
+    if (Object.prototype.hasOwnProperty.call(out, key)) throw new Error(`Duplicate option: --${rawKey}`);
+    if (BOOLEAN_OPTIONS.has(key)) {
+      out[key] = eq >= 0 ? parseBooleanOption(raw.slice(eq + 1), rawKey) : true;
+      continue;
+    }
+    const value = eq >= 0 ? raw.slice(eq + 1) : argv[++i];
+    if (value === undefined || value === "" || value.startsWith("--")) throw new Error(`Option --${rawKey} requires a value`);
+    out[key] = value;
   }
   return out;
+}
+
+function parseBooleanOption(value, key) {
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  throw new Error(`Option --${key} expects true or false when using =`);
 }
 
 function toCamel(key) {
@@ -159,198 +246,108 @@ async function confirm(prompt, assumeYes = false) {
 
 async function startCommand(args) {
   assertNodeVersion();
+  assertNoRemovedLocalApiOptions(args);
   const logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "cli" });
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
-  const previousMcpServerUrl = state.worker?.mcpServerUrl || "";
-  const firstMcpConnection = !previousMcpServerUrl || !state.worker?.oauthPassword;
-  const apiEnabled = args.noApi ? false : true;
-
-  ensureWorkerSecrets(state, { rotateSecrets: Boolean(args.rotateSecrets), workerName: args.workerName && String(args.workerName) });
-  if (apiEnabled) configureLocalApiState(state, args);
-  state.policy = {
-    allowWrite: args.noWrite ? false : true,
-    allowExec: args.noExec ? false : true,
-    unrestrictedPaths: true,
-    minimalEnv: args.fullEnv ? false : true,
-    apiEnabled,
-    updatedAt: new Date().toISOString(),
-  };
-  saveState(state);
-
-  if (!args.daemonOnly) await ensureWorker(state, args);
-  else if (!state.worker.url) throw new Error("--daemon-only requires an existing worker URL in state; run start once without --daemon-only");
-
-  const mcpConnectionChanged = previousMcpServerUrl && previousMcpServerUrl !== state.worker.mcpServerUrl;
-  const shouldPrintMcpCredentials = Boolean(args.json || args.printMcpCredentials || args.printCredentials || firstMcpConnection || args.rotateSecrets || mcpConnectionChanged);
-
-  if (!args.daemonOnly && !args.noAutostart) {
-    await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], policy: state.policy });
+  const startupLock = acquireStartupLock(state);
+  if (!startupLock.acquired) {
+    const pid = startupLock.owner?.pid ? `pid ${startupLock.owner.pid}` : "unknown pid";
+    throw new Error(`another startup/deployment operation is already running for this workspace (${pid})`);
   }
-
-  if (!args.daemonOnly) await stopAutostartBestEffort(Boolean(args.quiet));
-
-  const lock = acquireDaemonLock(state);
-  let daemon = null;
-  let apiServer = null;
-  if (!lock.acquired) {
-    if (!args.quiet) {
-      const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
-      logger.warn(`local daemon already running for this workspace (${pid}); not starting a duplicate`);
-      if (!args.json) printMcpConnection(state, {
-        noPrintCredentials: Boolean(args.noPrintCredentials),
-        includeCredentials: shouldPrintMcpCredentials,
-        quiet: Boolean(args.quiet),
-      });
+  try {
+    if (args.daemonOnly) {
+      const { trimAutostartLogs } = await import("./service.mjs");
+      trimAutostartLogs(state.paths.stateRoot);
     }
-    if (!apiEnabled) {
-      if (args.json) printStartJson(state, null, { noPrintCredentials: Boolean(args.noPrintCredentials) });
+    const previousMcpServerUrl = state.worker?.mcpServerUrl || "";
+    const firstMcpConnection = !previousMcpServerUrl || !state.worker?.oauthPassword;
+
+    const workerName = validateWorkerName(args.workerName);
+    ensureWorkerSecrets(state, { rotateSecrets: Boolean(args.rotateSecrets), workerName });
+    state.policy = {
+      allowWrite: args.noWrite ? false : true,
+      allowExec: args.noExec ? false : true,
+      unrestrictedPaths: Boolean(args.unrestrictedPaths),
+      minimalEnv: args.fullEnv ? false : true,
+      updatedAt: new Date().toISOString(),
+    };
+    saveState(state);
+
+    if (!args.daemonOnly) await ensureWorker(state, args);
+    else if (!state.worker.url) throw new Error("--daemon-only requires an existing worker URL in state; run start once without --daemon-only");
+
+    const mcpConnectionChanged = previousMcpServerUrl && previousMcpServerUrl !== state.worker.mcpServerUrl;
+    const shouldPrintMcpCredentials = Boolean(args.json || args.printMcpCredentials || args.printCredentials || firstMcpConnection || args.rotateSecrets || mcpConnectionChanged);
+
+    if (!args.daemonOnly && !args.noAutostart) {
+      await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], policy: state.policy });
+    }
+
+    if (!args.daemonOnly) await stopAutostartBestEffort(Boolean(args.quiet));
+
+    const lock = acquireDaemonLock(state);
+    let daemon = null;
+    if (!lock.acquired) {
+      if (!args.quiet) {
+        const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
+        logger.warn(`local daemon already running for this workspace (${pid}); not starting a duplicate`);
+        if (!args.json) printMcpConnection(state, {
+          noPrintCredentials: Boolean(args.noPrintCredentials),
+          includeCredentials: shouldPrintMcpCredentials,
+          quiet: Boolean(args.quiet),
+        });
+      }
+      if (args.json) printStartJson(state, { noPrintCredentials: Boolean(args.noPrintCredentials) });
       return;
     }
-    apiServer = await startOptionalApiServer(state, args, logger);
-    if (args.json) printStartJson(state, apiServer, { noPrintCredentials: Boolean(args.noPrintCredentials) });
-    else if (apiServer) printApiConnection(apiServer, state, { noPrintCredentials: Boolean(args.noPrintCredentials), quiet: Boolean(args.quiet) });
-    if (apiServer && !apiServer.alreadyRunning) keepProcessAlive({ apiServer, logger });
-    return;
-  }
 
-  try {
-    daemon = new LocalDaemon({
-      workerUrl: state.worker.url,
-      secret: state.worker.daemonSecret,
-      workspace,
-      policy: state.policy,
-      logger: createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "daemon" }),
-    });
-
-    const waitForConnect = daemon.start();
-    await waitForConnectWithNotice(waitForConnect, 20_000, Boolean(args.quiet || args.json));
-    if (apiEnabled) apiServer = await startOptionalApiServer(state, args, logger);
-    if (args.json) printStartJson(state, apiServer, { noPrintCredentials: Boolean(args.noPrintCredentials) });
-    else {
-      printMcpConnection(state, {
-        noPrintCredentials: Boolean(args.noPrintCredentials),
-        includeCredentials: shouldPrintMcpCredentials,
-        quiet: Boolean(args.quiet),
+    try {
+      daemon = new LocalDaemon({
+        workerUrl: state.worker.url,
+        secret: state.worker.daemonSecret,
+        workspace,
+        policy: state.policy,
+        logger: createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "daemon" }),
       });
-      if (apiServer) printApiConnection(apiServer, state, { noPrintCredentials: Boolean(args.noPrintCredentials), quiet: Boolean(args.quiet) });
-    }
-    keepProcessAlive({ daemon, lock, apiServer: apiServer?.alreadyRunning ? null : apiServer, logger });
-  } catch (error) {
-    try { daemon?.stop?.(); } catch {}
-    lock.release();
-    if (apiServer && !apiServer.alreadyRunning) await apiServer.close().catch(() => {});
-    throw error;
-  }
-}
 
-async function apiCommand(args) {
-  assertNodeVersion();
-  const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
-  const state = loadState(workspace, { stateDir: args.stateDir });
-  configureLocalApiState(state, args);
-  saveState(state);
-  const logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "api" });
-  const apiServer = await startConfiguredApiServer(state, args, logger);
-  if (args.json) printApiJson(apiServer, state, { noPrintCredentials: Boolean(args.noPrintCredentials) });
-  else printApiConnection(apiServer, state, { noPrintCredentials: Boolean(args.noPrintCredentials), quiet: Boolean(args.quiet) });
-  keepProcessAlive({ apiServer, logger });
-}
-
-
-async function startConfiguredApiServer(state, args, logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "api" })) {
-  const apiOptions = apiOptionsFromArgs(state, args);
-  return startLocalApiServer({ ...apiOptions, logger });
-}
-
-async function startOptionalApiServer(state, args, parentLogger) {
-  const logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "api" });
-  const apiOptions = apiOptionsFromArgs(state, args);
-  try {
-    return await startLocalApiServer({ ...apiOptions, logger });
-  } catch (error) {
-    if (error?.code === "EADDRINUSE") {
-      const baseUrl = apiBaseUrl(apiOptions.host, apiOptions.port);
-      const health = await probeLocalApiHealth(baseUrl, state.localApi?.apiKey);
-      if (health.ok) {
-        logger.success("local OpenAI-compatible API already running", { baseUrl });
-        return { ...health, baseUrl, host: apiOptions.host, port: Number(apiOptions.port), alreadyRunning: true, close() { return Promise.resolve(); } };
+      const waitForConnect = daemon.start();
+      await waitForConnectWithNotice(waitForConnect, 20_000, Boolean(args.quiet || args.json));
+      if (args.json) printStartJson(state, { noPrintCredentials: Boolean(args.noPrintCredentials) });
+      else {
+        printMcpConnection(state, {
+          noPrintCredentials: Boolean(args.noPrintCredentials),
+          includeCredentials: shouldPrintMcpCredentials,
+          quiet: Boolean(args.quiet),
+        });
       }
-      parentLogger.warn(error.message);
-      return null;
+      keepProcessAlive({ daemon, lock, logger });
+    } catch (error) {
+      try { daemon?.stop?.(); } catch {}
+      lock.release();
+      throw error;
     }
-    parentLogger.warn(`Local API skipped: ${error.message}`);
-    return null;
+  } finally {
+    startupLock.release();
   }
 }
 
-function apiBaseUrl(host, port) {
-  const textHost = String(host || DEFAULT_API_HOST);
-  const urlHost = textHost.includes(":") && !textHost.startsWith("[") ? `[${textHost}]` : textHost;
-  return `http://${urlHost}:${port || DEFAULT_API_PORT}/v1`;
+function assertNoRemovedLocalApiOptions(args) {
+  const removed = ["api", "noApi", "apiPort", "apiHost", "apiKey", "rotateApiKey", "apiModel", "port"].filter((key) => args[key] !== undefined);
+  if (removed.length) throw removedLocalApiError();
 }
 
-async function probeLocalApiHealth(baseUrl, expectedApiKey = "") {
-  try {
-    const healthUrl = `${String(baseUrl).replace(/\/v1$/, "")}/health`;
-    const response = await fetch(healthUrl, { signal: AbortSignal.timeout(750) });
-    if (!response.ok) return { ok: false };
-    const body = await response.json().catch(() => null);
-    if (body?.service !== "machine-bridge-mcp-local-api") return { ok: false };
-    if (body.api_key_sha256 && expectedApiKey && body.api_key_sha256 !== sha256String(expectedApiKey)) return { ok: false, reason: "api_key_mismatch" };
-    return { ok: true };
-  } catch {
-    return { ok: false };
-  }
-}
-
-function apiOptionsFromArgs(state, args = {}) {
-  const explicitPort = explicitArg(args.apiPort) ?? explicitArg(args.port);
-  const envPort = valueFromArgsEnv(undefined, "MBM_API_PORT", "PORT");
-  return {
-    host: valueFromArgsEnv(args.apiHost, "MBM_API_HOST") || state.localApi?.host || DEFAULT_API_HOST,
-    port: explicitPort ?? envPort ?? state.localApi?.port ?? DEFAULT_API_PORT,
-    apiKey: valueFromArgsEnv(args.apiKey, "MBM_API_KEY") || state.localApi?.apiKey || ensureLocalApiKey(state, { rotateApiKey: Boolean(args.rotateApiKey) }),
-    model: valueFromArgsEnv(args.apiModel, "MBM_API_MODEL") || state.localApi?.model || DEFAULT_API_MODEL,
-    workerUrl: state.worker?.url || "",
-    daemonSecret: state.worker?.daemonSecret || "",
-  };
-}
-
-function configureLocalApiState(state, args = {}) {
-  state.localApi ||= {};
-  ensureLocalApiKey(state, { apiKey: explicitArg(args.apiKey), rotateApiKey: Boolean(args.rotateApiKey) });
-  const port = explicitArg(args.apiPort) ?? explicitArg(args.port);
-  if (port !== undefined && String(port) !== "0") state.localApi.port = String(port);
-  const host = explicitArg(args.apiHost);
-  if (host !== undefined) state.localApi.host = String(host);
-  const model = explicitArg(args.apiModel);
-  if (model !== undefined) state.localApi.model = String(model);
-  state.localApi.updatedAt = new Date().toISOString();
-}
-
-function explicitArg(value) {
-  return value !== undefined && value !== null && value !== true ? String(value) : undefined;
-}
-
-function sha256String(value) {
-  return createHash("sha256").update(String(value)).digest("hex");
-}
-
-function valueFromArgsEnv(argValue, ...envNames) {
-  if (argValue !== undefined && argValue !== null && argValue !== true) return String(argValue);
-  for (const name of envNames) {
-    if (process.env[name]) return process.env[name];
-  }
-  return undefined;
+function removedLocalApiError() {
+  return new Error("Local /v1 API support has been removed. Use the printed Remote MCP Server URL/password with an MCP client instead.");
 }
 
 async function ensureWorker(state, args) {
   const logger = createLogger({ quiet: Boolean(args.quiet || args.json), verbose: Boolean(args.verbose), component: "worker" });
   const desiredHash = workerDeployHash(state);
+  const expectedVersion = currentPackageVersion();
   const complete = state.worker.url && state.worker.mcpServerUrl && state.worker.oauthPassword && state.worker.daemonSecret && state.worker.oauthTokenVersion && state.worker.name;
   if (!args.forceWorker && !args.rotateSecrets && complete && state.worker.deployHash === desiredHash) {
-    const health = await workerHealth(state.worker.url);
+    const health = await workerHealth(state.worker.url, expectedVersion);
     if (health.ok) {
       logger.success("Worker unchanged and healthy", { url: state.worker.url });
       return state.worker;
@@ -378,13 +375,17 @@ async function ensureWorker(state, args) {
   if (!workerUrl) throw new Error("Worker deployed but URL could not be detected. Re-run with --worker-name or inspect Wrangler output.");
   state.worker.url = workerUrl.replace(/\/+$/, "");
   state.worker.mcpServerUrl = `${state.worker.url}/mcp`;
-  state.worker.deployHash = desiredHash;
+  delete state.worker.deployHash;
   state.worker.updatedAt = new Date().toISOString();
   saveState(state);
 
-  const health = await retryHealth(state.worker.url, 8);
-  if (!health.ok) logger.warn("Worker deployed but health check did not pass yet", { error: health.error });
-  else logger.success("Worker ready", { url: state.worker.url });
+  const health = await retryHealth(state.worker.url, expectedVersion, 8);
+  if (!health.ok) {
+    throw new Error(`Worker deployment did not become healthy at the expected version: ${health.error}`);
+  }
+  state.worker.deployHash = desiredHash;
+  saveState(state);
+  logger.success("Worker ready", { url: state.worker.url, version: health.version });
   return state.worker;
 }
 
@@ -432,11 +433,7 @@ function workerDeployHash(state) {
 }
 
 function workerHashContent(file) {
-  const content = readFileSync(file, "utf8");
-  if (path.relative(packageRoot, file).replaceAll("\\", "/") === "src/worker/index.ts") {
-    return content.replace(/const SERVER_VERSION = "[^"]+";/, 'const SERVER_VERSION = "<ignored-for-deploy-hash>";');
-  }
-  return content;
+  return readFileSync(file, "utf8");
 }
 
 function workerDeployHashFiles() {
@@ -461,23 +458,24 @@ function collectHashFiles(target, out) {
   }
 }
 
-async function workerHealth(workerUrl) {
+async function workerHealth(workerUrl, expectedVersion = currentPackageVersion()) {
   if (!workerUrl) return { ok: false, error: "missing_worker_url" };
   try {
     const response = await fetch(`${String(workerUrl).replace(/\/+$/, "")}/healthz`, { signal: AbortSignal.timeout(5000) });
     if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
     const body = await response.json().catch(() => null);
     if (body?.ok !== true || body?.server !== appName) return { ok: false, error: "unexpected_health_response" };
-    return { ok: true };
+    if (body?.version !== expectedVersion) return { ok: false, error: `version_mismatch:${body?.version || "unknown"}!=${expectedVersion}` };
+    return { ok: true, version: body.version };
   } catch (error) {
     return { ok: false, error: error.message };
   }
 }
 
-async function retryHealth(workerUrl, attempts) {
+async function retryHealth(workerUrl, expectedVersion, attempts) {
   let last = { ok: false, error: "not_checked" };
   for (let i = 0; i < attempts; i += 1) {
-    last = await workerHealth(workerUrl);
+    last = await workerHealth(workerUrl, expectedVersion);
     if (last.ok) return last;
     await sleep(1000 + i * 500);
   }
@@ -502,10 +500,8 @@ async function waitForConnectWithNotice(promise, timeoutMs, quiet = false) {
 }
 
 
-function printStartJson(state, apiServer, { noPrintCredentials = false } = {}) {
+function printStartJson(state, { noPrintCredentials = false } = {}) {
   const mcpPassword = noPrintCredentials ? previewSecret(state.worker.oauthPassword) : state.worker.oauthPassword;
-  const runtimeApiKey = apiServer?.apiKey || state.localApi?.apiKey || "";
-  const apiKey = runtimeApiKey ? (noPrintCredentials ? previewSecret(runtimeApiKey) : runtimeApiKey) : null;
   createLogger({ component: "ready" }).json({
     mcp: {
       server_url: state.worker.mcpServerUrl,
@@ -513,34 +509,9 @@ function printStartJson(state, apiServer, { noPrintCredentials = false } = {}) {
       worker_url: state.worker.url,
       worker_name: state.worker.name,
     },
-    local_api: apiServer ? {
-      base_url: apiServer.baseUrl,
-      api_key: apiKey,
-      already_running: Boolean(apiServer.alreadyRunning),
-      backend: "chatgpt-mcp",
-      model: state.localApi?.model || DEFAULT_API_MODEL,
-      mcp_bridge_configured: Boolean(state.worker?.url && state.worker?.daemonSecret),
-      client_type: "OpenAI-compatible",
-    } : null,
     workspace: state.workspace.path,
     state_path: state.paths.statePath,
     policy: state.policy,
-  });
-}
-
-function printApiJson(apiServer, state, { noPrintCredentials = false } = {}) {
-  const runtimeApiKey = apiServer?.apiKey || state.localApi?.apiKey || "";
-  createLogger({ component: "ready" }).json({
-    local_api: {
-      base_url: apiServer.baseUrl,
-      api_key: noPrintCredentials ? previewSecret(runtimeApiKey) : runtimeApiKey,
-      backend: "chatgpt-mcp",
-      model: apiServer?.model || state.localApi?.model || DEFAULT_API_MODEL,
-      mcp_bridge_configured: Boolean(state.worker?.url && state.worker?.daemonSecret),
-      client_type: "OpenAI-compatible",
-    },
-    workspace: state.workspace.path,
-    state_path: state.paths.statePath,
   });
 }
 
@@ -570,32 +541,17 @@ function printMcpConnection(state, { json = false, noPrintCredentials = false, i
     logger.plain("  Use --print-mcp-credentials only when a ChatGPT app needs to reconnect.");
   }
   logger.plain(`  Workspace cwd: ${payload.workspace}`);
-  logger.plain(`  Policy: write=${payload.policy.allowWrite ? "on" : "off"}, exec=${payload.policy.allowExec ? "on" : "off"}, local_api=${payload.policy.apiEnabled === false ? "off" : "on"}, unrestricted_paths=${payload.policy.unrestrictedPaths ? "on" : "off"}`);
+  logger.plain(`  Policy: write=${payload.policy.allowWrite ? "on" : "off"}, exec=${payload.policy.allowExec ? "on" : "off"}, unrestricted_paths=${payload.policy.unrestrictedPaths ? "on" : "off"}`);
   logger.plain(`  State: ${payload.state_path}`);
 }
 
-function printApiConnection(apiServer, state, { noPrintCredentials = false, quiet = false } = {}) {
-  const logger = createLogger({ component: "ready", quiet });
-  const runtimeApiKey = apiServer?.apiKey || state.localApi?.apiKey || "";
-  logger.success("Local ChatGPT MCP-backed OpenAI-compatible API is running");
-  logger.plain(`  API Base URL: ${apiServer.baseUrl}`);
-  logger.plain(`  API key: ${noPrintCredentials ? `${redactSecret(runtimeApiKey)} (redacted)` : runtimeApiKey}`);
-  logger.plain("  Client type: OpenAI-compatible");
-  logger.plain(`  Model: ${apiServer?.model || state.localApi?.model || DEFAULT_API_MODEL}`);
-  logger.plain("  Backend: ChatGPT MCP sampling via the connected ChatGPT app");
-  if (state.worker?.mcpServerUrl) logger.plain(`  MCP Server URL: ${state.worker.mcpServerUrl}`);
-  else logger.plain("  MCP bridge: not deployed yet; run `machine-mcp` before using generation routes.");
-}
-
-
-function keepProcessAlive({ daemon = null, lock = null, apiServer = null, logger = createLogger({ component: "cli" }) } = {}) {
+function keepProcessAlive({ daemon = null, lock = null, logger = createLogger({ component: "cli" }) } = {}) {
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
     stopping = true;
     logger.info("stopping local services");
     try { daemon?.stop?.(); } catch {}
-    try { await apiServer?.close?.(); } catch {}
     try { lock?.release?.(); } catch {}
     process.exit(0);
   };
@@ -616,11 +572,11 @@ async function statusCommand(args) {
 async function doctorCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const checks = [];
-  checks.push({ name: "node", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version });
+  checks.push({ name: "node", ok: Number(process.versions.node.split(".")[0]) >= 22, detail: process.version });
   const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true });
   checks.push({ name: "wrangler", ok: wrangler.code === 0, detail: (wrangler.stdout || wrangler.stderr).trim() });
   const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
-  checks.push({ name: "cloudflare-login", ok: whoami.code === 0, detail: sanitizeLines(whoami.stdout || whoami.stderr) });
+  checks.push({ name: "cloudflare-login", ok: whoami.code === 0, detail: whoami.code === 0 ? "authenticated" : sanitizeLines(whoami.stderr || whoami.stdout) });
   const state = loadState(workspace, { stateDir: args.stateDir });
   const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
   checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
@@ -630,11 +586,26 @@ async function doctorCommand(args) {
 async function rotateSecretsCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
-  ensureWorkerSecrets(state, { rotateSecrets: true, workerName: args.workerName && String(args.workerName) });
-  saveState(state);
-  console.log(`Rotated MCP password: ${state.worker.oauthPassword}`);
-  console.log(`Rotated daemon secret: ${previewSecret(state.worker.daemonSecret)}`);
-  console.log("Run start to redeploy the Worker with the new secrets and revoke old OAuth access tokens.");
+  const startupLock = acquireStartupLock(state);
+  if (!startupLock.acquired) {
+    const pid = startupLock.owner?.pid ? `pid ${startupLock.owner.pid}` : "unknown pid";
+    throw new Error(`another startup/deployment operation is already running for this workspace (${pid})`);
+  }
+  try {
+    await stopAutostartBestEffort(Boolean(args.quiet));
+    await sleep(500);
+    const daemonOwner = readDaemonLockOwner(daemonLockPathForState(state));
+    if (daemonOwner?.pid && isPidAlive(daemonOwner.pid)) {
+      throw new Error(`refusing to rotate secrets while the daemon is active (pid ${daemonOwner.pid}); stop the foreground daemon and retry`);
+    }
+    ensureWorkerSecrets(state, { rotateSecrets: true, workerName: validateWorkerName(args.workerName) });
+    saveState(state);
+    console.log(`Rotated MCP password: ${args.noPrintCredentials ? "<redacted>" : state.worker.oauthPassword}`);
+    console.log(`Rotated daemon secret: ${args.noPrintCredentials ? "<redacted>" : previewSecret(state.worker.daemonSecret)}`);
+    console.log("Run start to redeploy the Worker with the new secrets and revoke old OAuth access tokens.");
+  } finally {
+    startupLock.release();
+  }
 }
 
 async function serviceCommand(args) {
@@ -698,6 +669,7 @@ async function stopAutostartBestEffort(quiet = false) {
 async function uninstallCommand(args) {
   const stateRoot = stateRootFromArgs(args);
   const deleteRemote = !args.keepWorker;
+  validateStateRootForRemoval(stateRoot);
   const action = deleteRemote
     ? `delete deployed Worker(s), remove autostart entries, and remove local state at ${stateRoot}`
     : `remove autostart entries and local state at ${stateRoot} while keeping deployed Worker(s)`;
@@ -706,8 +678,15 @@ async function uninstallCommand(args) {
     console.log("Uninstall cancelled. Re-run with `machine-mcp uninstall --yes` to skip confirmation.");
     return;
   }
+  const autostartRemoved = await removeAutostartBestEffort(stateRoot);
+  if (!autostartRemoved) throw new Error("autostart removal failed; state and Worker were kept so the uninstall can be retried safely");
+  await sleep(500);
+  const activeLocks = activeStateLocks(stateRoot);
+  if (activeLocks.length) {
+    const detail = activeLocks.map((item) => `${item.kind}:${item.pid || "unknown"}`).join(", ");
+    throw new Error(`refusing to uninstall while Machine Bridge processes are active (${detail}); stop foreground sessions and retry`);
+  }
   if (deleteRemote) await deleteKnownWorkers(stateRoot);
-  await removeAutostartBestEffort(stateRoot);
   removeStateRoot(stateRoot);
   console.log("Removed local autostart entries and state.");
   if (deleteRemote) console.log("Requested deletion for known deployed Worker(s).");
@@ -721,10 +700,18 @@ async function deleteKnownWorkers(stateRoot) {
     console.log("No deployed Worker name found in local state.");
     return;
   }
+  const failures = [];
   for (const name of names) {
     const result = await runWrangler(["delete", name, "--force"], { capture: true, allowFailure: true });
-    if (result.code === 0) console.log(`Deleted Worker: ${name}`);
-    else console.warn(`Failed to delete Worker ${name}: ${(result.stderr || result.stdout || "unknown error").trim()}`);
+    const detail = (result.stderr || result.stdout || "unknown error").trim();
+    if (result.code === 0 || /not found|does not exist|could not find/i.test(detail)) {
+      console.log(`Deleted Worker: ${name}`);
+    } else {
+      failures.push({ name, detail: sanitizeLines(detail) || "unknown error" });
+    }
+  }
+  if (failures.length) {
+    throw new Error(`failed to delete Worker(s): ${failures.map((item) => `${item.name} (${item.detail})`).join(", ")}; local state was kept for retry`);
   }
 }
 
@@ -738,7 +725,8 @@ function knownWorkerNames(stateRoot) {
     if (!existsSync(stateFile)) continue;
     try {
       const state = JSON.parse(readFileSync(stateFile, "utf8"));
-      if (state?.worker?.name) names.add(String(state.worker.name));
+      const name = String(state?.worker?.name || "");
+      if (/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) names.add(name);
     } catch {}
   }
   return [...names];
@@ -746,10 +734,44 @@ function knownWorkerNames(stateRoot) {
 
 async function removeAutostartBestEffort(stateRoot) {
   try {
-    const { uninstallAutostart } = await import("./service.mjs");
-    await uninstallAutostart({ stateRoot, logger: structuredLogger(false) });
+    const { stopAutostart, uninstallAutostart } = await import("./service.mjs");
+    await stopAutostart({ logger: structuredLogger(true) }).catch(() => {});
+    const result = await uninstallAutostart({ stateRoot, logger: structuredLogger(false) });
+    if (result?.ok === false) {
+      console.warn("Autostart removal reported failure.");
+      return false;
+    }
+    return true;
   } catch (error) {
     console.warn(`Autostart removal skipped or failed: ${error.message}`);
+    return false;
+  }
+}
+
+function activeStateLocks(stateRoot) {
+  const profiles = resolve(expandHome(stateRoot), "profiles");
+  if (!existsSync(profiles)) return [];
+  const active = [];
+  for (const profile of readdirSync(profiles, { withFileTypes: true })) {
+    if (!profile.isDirectory()) continue;
+    for (const [kind, name] of [["daemon", "daemon.lock"], ["startup", "startup.lock"]]) {
+      const lockPath = resolve(profiles, profile.name, name);
+      if (!existsSync(lockPath)) continue;
+      const owner = readDaemonLockOwner(lockPath);
+      if (owner?.pid && isPidAlive(owner.pid)) active.push({ kind, pid: owner.pid, path: lockPath });
+    }
+  }
+  return active;
+}
+
+function isPidAlive(pid) {
+  const parsed = Number(pid);
+  if (!Number.isInteger(parsed) || parsed <= 0) return false;
+  try {
+    process.kill(parsed, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
   }
 }
 
@@ -760,7 +782,7 @@ function structuredLogger(quiet) {
 function sanitizeLines(text) {
   const home = process.env.HOME || process.env.USERPROFILE || "";
   const homePattern = home ? new RegExp(escapeRegExp(home), "g") : null;
-  let value = String(text || "")
+  let value = sanitizeLogText(text)
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "<email>");
   if (homePattern) value = value.replace(homePattern, "~");
   return value
@@ -774,9 +796,18 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function validateWorkerName(value) {
+  if (value === undefined || value === null || value === false) return undefined;
+  const name = String(value).trim();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+    throw new Error("--worker-name must be 1-63 lowercase letters, digits, or hyphens, and cannot start or end with a hyphen");
+  }
+  return name;
+}
+
 function assertNodeVersion() {
   const major = Number(process.versions.node.split(".")[0]);
-  if (major < 20) throw new Error(`Node.js >=20 is required; current ${process.version}`);
+  if (major < 22) throw new Error(`Node.js >=22 is required; current ${process.version}`);
 }
 
 function usage() {
@@ -789,8 +820,7 @@ Usage:
   .\\mbm.cmd                                      # from source checkout on Windows cmd
 
 Commands:
-  start             Deploy/update Worker, install autostart, start daemon and local API
-  api               Start local ChatGPT MCP-backed OpenAI-compatible API only
+  start             Deploy/update Worker, install autostart, start daemon
   workspace show    Show remembered workspace
   workspace set     Re-select workspace; prompts with current/default path
   service status    Show autostart status
@@ -815,16 +845,9 @@ Start options:
   --no-write            Disable write_file (default: write enabled)
   --no-exec             Disable exec_command (default: exec enabled)
   --full-env            Pass full parent environment to exec_command (default: minimal env)
+  --unrestricted-paths  Allow absolute and parent paths outside the workspace (default: blocked)
   --state-dir DIR       Override state root
-  --json                Print MCP and local API connection details as JSON
-  --no-api              Do not start the local OpenAI-compatible API
-  --api                 Deprecated no-op; local API starts by default
-  --api-port PORT       Local API port (default: 8765)
-  --port PORT           Alias for --api-port on the api command
-  --api-host HOST       Local API host (default: 127.0.0.1)
-  --api-key KEY         Set or replace local API key in state
-  --rotate-api-key      Rotate local API key
-  --api-model MODEL     Local model id advertised by /v1/models (default: chatgpt-mcp)
+  --json                Print MCP connection details as JSON
 
 Uninstall options:
   --keep-worker         Do not delete deployed Worker(s) during uninstall
@@ -832,42 +855,10 @@ Uninstall options:
 `);
 }
 
-function apiUsage() {
-  console.log(`machine-bridge-mcp local ChatGPT MCP-backed API
-
-Usage:
-  machine-mcp
-  machine-mcp --api-port 8766
-  machine-mcp api                    # local API only
-  machine-mcp api --api-port 8766
-
-Client settings:
-  API Base URL: http://127.0.0.1:<port>/v1
-  API key: printed on startup unless --no-print-credentials is set
-  Model: chatgpt-mcp by default
-  Backend: connected ChatGPT app through the Remote MCP bridge
-
-Options:
-  --workspace PATH        Use and remember this workspace path
-  --api-host HOST         Local API host (default: 127.0.0.1)
-  --api-port PORT         Local API port (default: 8765)
-  --port PORT             Alias for --api-port
-  --api-key KEY           Set or replace local API key in state
-  --rotate-api-key        Rotate local API key
-  --api-model MODEL       Local model id advertised by /v1/models
-  --no-print-credentials  Redact the local API key in console output
-  --no-api                Only valid for start; disables the default local API
-  --state-dir DIR         Override state root
-
-Important:
-  Generation routes require a ChatGPT app connected to the printed MCP Server URL.
-  The local API sends sampling/createMessage requests through that MCP connection.
-
-Environment:
-  MBM_API_HOST, MBM_API_PORT, MBM_API_KEY, MBM_API_MODEL
-`);
+function currentPackageVersion() {
+  const pkg = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
+  return String(pkg.version);
 }
-
 
 function version() {
   const pkg = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));

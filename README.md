@@ -1,153 +1,149 @@
 # machine-bridge-mcp
 
-`machine-bridge-mcp` turns your machine into a Remote MCP server through a small hosted relay and a local outbound daemon.
+`machine-bridge-mcp` exposes a selected local workspace to Remote MCP clients through a Cloudflare Worker relay and an outbound-only local daemon.
 
-The recommended deployment command is short and stable for autostart:
-
-```zsh
-npm install -g machine-bridge-mcp@latest && machine-mcp
+```text
+Remote MCP client -> HTTPS/OAuth -> Cloudflare Worker + Durable Object
+                                      ^
+                                      | outbound WebSocket
+                                      |
+                               local daemon -> workspace/files/shell
 ```
 
-No-global-install alternative:
+No inbound port is opened on the local machine. The Worker does not read local files or execute commands; it authenticates MCP clients and relays bounded tool calls to the daemon.
+
+## Install and start
+
+Recommended global installation:
+
+```zsh
+npm install -g machine-bridge-mcp@latest
+machine-mcp
+```
+
+Without a global installation:
 
 ```zsh
 npx machine-bridge-mcp@latest
 ```
 
-Source checkout:
+From a source checkout:
 
 ```zsh
+npm install
 ./mbm          # macOS/Linux
 .\mbm.cmd      # Windows cmd
 ```
 
-## What it does on first run
+On first run, the CLI:
 
-1. Asks for a workspace path. Press Enter to use the current directory.
-2. Remembers that workspace for later runs.
-3. Generates a stable MCP connection password and daemon secret.
-4. Checks `wrangler whoami`; if needed, opens `wrangler login`.
-5. Deploys the hosted Worker relay with `wrangler deploy --secrets-file`.
-6. Installs login autostart for the local daemon and default local API.
-7. Starts the local daemon and local OpenAI-compatible API.
-8. Prints MCP connection details on first run, plus local API settings:
+1. Selects and remembers a workspace.
+2. Generates an MCP connection password, daemon secret, and OAuth token version.
+3. Authenticates Wrangler if required.
+4. Deploys a per-workspace Worker.
+5. Installs a login autostart entry unless `--no-autostart` is used.
+6. Starts the outbound local daemon.
+7. Prints the Remote MCP URL and connection password.
+
+Keep the foreground process running for the current session. The installed service handles later logins.
+
+## Connect an MCP client
+
+Use the values printed by `machine-mcp`:
 
 ```text
 MCP Server URL: https://<worker>.<account>.workers.dev/mcp
 MCP connection password: mcp_password_...
-API Base URL: http://127.0.0.1:8765/v1
-API key: local_api_key_...
 ```
 
-Keep the foreground process running for the current session. The installed autostart entry keeps the daemon and local API available after future logins.
+The password is shown on first setup, after secret rotation, when the MCP URL changes, or with `--print-mcp-credentials`. Use `--no-print-credentials` to redact it in terminal output.
 
-The command is safe to run repeatedly:
+The former experimental local OpenAI-compatible `/v1` API has been removed. Use the Remote MCP endpoint directly.
+
+## Security defaults
+
+Version 0.3.0 changes the default filesystem boundary:
+
+- Relative paths are resolved from the selected workspace.
+- Reads, writes, directory traversal, searches, and Git operations are confined to that workspace by default.
+- Symbolic links cannot be used to escape the workspace boundary.
+- `write_file` and `exec_command` remain enabled by default.
+- Shell commands receive a minimal environment by default.
+- `write_file` is limited to 5 MiB, writes atomically, and refuses to overwrite symbolic links.
+- Files that look sensitive, including `.env` and key files, are readable when they are inside the selected workspace. The bridge does not infer sensitivity from filenames.
+
+A narrower session:
 
 ```zsh
-npm install -g machine-bridge-mcp@latest && machine-mcp
+machine-mcp --no-write --no-exec
 ```
 
-On repeat runs, the CLI reuses existing state and secrets unless you request rotation, skips Worker redeploys when the deployed Worker is healthy and Worker source/config/secrets are unchanged, refreshes the autostart entry, stops any currently loaded autostart daemon before starting the foreground daemon, and refuses to start a second daemon for the same workspace if another foreground instance is already running. Local-only package, CLI, logging, and local API changes do not by themselves force a Worker redeploy.
-
-MCP connection details are printed on first run, after secret rotation, when the MCP URL changes, or when you explicitly pass `--print-mcp-credentials`. Routine runs print that MCP details are unchanged.
-
-## Local OpenAI-compatible API
-
-The project exposes two connected integration surfaces:
-
-- **ChatGPT web / ChatGPT apps:** use the Remote MCP Server URL and MCP connection password printed by `machine-mcp`. In this mode, ChatGPT calls tools on your machine through the Worker + local daemon bridge.
-- **Desktop clients such as Cherry Studio, Chatbox, or Continue:** use the optional local OpenAI-compatible `/v1` API. `POST /v1/chat/completions` is backed by MCP sampling: the local API asks the hosted Worker to send `sampling/createMessage` to the already-connected ChatGPT MCP client, then wraps the MCP sampling result as an OpenAI-compatible chat completion response.
-
-No separate model API setup is required or used in this path; the local API never asks for a model base URL or model API key. Generation depends on the ChatGPT-side MCP client actually being connected and able to receive server-to-client sampling requests. If ChatGPT is not connected, has no open MCP stream for server-to-client messages, or did not advertise the MCP `sampling` capability, generation returns an explicit OpenAI-shaped error saying that the missing piece is the MCP client stream or sampling capability.
-
-Start the normal daemon and local API:
+Explicitly permit filesystem paths outside the workspace:
 
 ```zsh
-machine-mcp
+machine-mcp --unrestricted-paths
 ```
 
-Start only the local API from remembered state:
+Pass the complete parent process environment to shell commands only when required:
 
 ```zsh
-machine-mcp api
+machine-mcp --full-env
 ```
 
-Disable the default local API for a daemon run:
+`--unrestricted-paths` and `--full-env` materially increase the data-exposure boundary. See [SECURITY.md](SECURITY.md) before enabling them.
 
-```zsh
-machine-mcp --no-api
-```
-
-When the API is running, the CLI prints client settings like:
+## Commands
 
 ```text
-API Base URL: http://127.0.0.1:8765/v1
-API key: local_api_key_...
-Client type: OpenAI-compatible
-Model: chatgpt-mcp
-Backend: ChatGPT MCP sampling via the connected ChatGPT app
+machine-mcp [start options]
+machine-mcp workspace show
+machine-mcp workspace set [PATH]
+machine-mcp service status|install|start|stop|uninstall
+machine-mcp status
+machine-mcp doctor
+machine-mcp rotate-secrets
+machine-mcp uninstall [--keep-worker] [--yes]
 ```
 
-Use the API Base URL, API key, and model in your desktop client. Separately, connect ChatGPT to the printed MCP Server URL/password so the Worker has an MCP client stream that can receive `sampling/createMessage`.
+Important start options:
 
-If port `8765` conflicts with another local app, choose a different port explicitly:
-
-```zsh
-machine-mcp --api-port 8766
-machine-mcp api --api-port 8766
+```text
+--workspace PATH
+--worker-name NAME
+--force-worker
+--rotate-secrets
+--daemon-only
+--no-autostart
+--no-print-credentials
+--print-mcp-credentials
+--no-write
+--no-exec
+--full-env
+--unrestricted-paths
+--state-dir DIR
+--json
 ```
 
-`--port` is also accepted on the `api` command:
+Unknown, duplicate, malformed, and command-inapplicable options are rejected. Boolean options do not consume a following positional workspace path; use `--option=false` when an explicit false value is needed.
 
-```zsh
-machine-mcp api --port 8766
-```
-
-By default, the local API binds to `127.0.0.1`, starts with `machine-mcp`, and stores a per-workspace local API key in the same owner-only state profile used by the MCP credentials. Explicit `--api-host`, `--api-port`, and `--api-model` values are persisted for the workspace so autostart uses the same API settings. `--api-model` only controls the local model id advertised by `GET /v1/models`; the actual model is chosen by the connected MCP client, and any different `model` value in a chat-completions request is passed as an MCP model preference hint.
-
-Rotate the local desktop-client API key with:
-
-```zsh
-machine-mcp api --rotate-api-key
-```
-
-Environment variables supported for the current process: `MBM_API_HOST`, `MBM_API_PORT`, `MBM_API_KEY`, and `MBM_API_MODEL`. Environment overrides are not persisted to state; use `--api-host`, `--api-port`, `--api-key`, or `--api-model` when you want a setting saved for future runs and autostart.
-
-Supported local API routes:
-
-- `GET /health` without authentication
-- `GET /v1/models` with `Authorization: Bearer <local_api_key>` or `x-api-key`
-- `POST /v1/chat/completions`
-
-`POST /v1/responses`, `POST /v1/completions`, and `POST /v1/embeddings` return `501 unsupported_endpoint`; MCP sampling is a chat-message path and does not expose embeddings or the full Responses API. Logs record route, status, latency, and safe configuration metadata; request and response bodies and API keys are not logged.
-
-## Re-select workspace
+## Workspace selection
 
 ```zsh
 machine-mcp workspace set
-```
-
-Or provide it directly:
-
-```zsh
-machine-mcp workspace set /path/to/new/default
-```
-
-Show the remembered workspace:
-
-```zsh
+machine-mcp workspace set /path/to/project
 machine-mcp workspace show
+machine-mcp workspace reset
 ```
 
-## Autostart service
+Each canonical workspace path receives an independent profile, Worker name, secret set, and daemon lock.
 
-Supported platforms:
+## Autostart
+
+Supported providers:
 
 - macOS: user LaunchAgent
-- Linux: `systemd --user` with best-effort `loginctl enable-linger`
+- Linux: `systemd --user`, with best-effort user lingering
 - Windows: Scheduled Task at logon
-
-Commands:
 
 ```zsh
 machine-mcp service status
@@ -157,66 +153,16 @@ machine-mcp service stop
 machine-mcp service uninstall
 ```
 
-`start` installs autostart by default. Skip that behavior with:
+Autostart runs `--daemon-only --no-print-credentials --quiet`. The selected write, execution, environment, and path-boundary policies are persisted in the service definition. Service log files are owner-only where supported and are trimmed at daemon startup to prevent unbounded growth.
 
-```zsh
-machine-mcp --no-autostart
-```
-
-Autostart runs the daemon with `--daemon-only --no-print-credentials`, so service logs do not contain the MCP connection password. If you start with `--no-write`, `--no-exec`, or `--full-env`, those policy flags are preserved in the autostart entry. macOS/Linux service definitions restart only on process failure; a normal duplicate-instance exit is not treated as a crash loop.
-
-## Secrets rotation
+## Secret rotation
 
 ```zsh
 machine-mcp rotate-secrets
 machine-mcp
 ```
 
-`rotate-secrets` creates a new MCP connection password, daemon secret, and OAuth token version. The next deploy rejects previously issued OAuth access tokens.
-
-## Uninstall
-
-Delete known deployed Worker(s), remove autostart entries, and remove local state:
-
-```zsh
-machine-mcp uninstall
-```
-
-Non-interactive:
-
-```zsh
-machine-mcp uninstall --yes
-```
-
-Keep the deployed Worker but remove local state/autostart:
-
-```zsh
-machine-mcp uninstall --keep-worker
-```
-
-If installed globally, remove the npm package afterwards:
-
-```zsh
-npm uninstall -g machine-bridge-mcp
-```
-
-## Defaults and permissions
-
-This project optimizes for easy use with official Remote MCP clients:
-
-- `write_file` is enabled by default.
-- `exec_command` is enabled by default.
-- Absolute paths are allowed.
-- Parent-directory paths such as `../other-project/file.ts` are allowed.
-- Sensitive-looking files such as `.env`, private keys, token files, and dot-directories are not hidden by default.
-- Relative paths use the selected workspace as cwd.
-- Shell commands run with a minimal environment by default; use `--full-env` to pass the parent process environment.
-
-Narrower session:
-
-```zsh
-machine-mcp --no-write --no-exec
-```
+The first command stops the installed autostart service, refuses to proceed if another foreground daemon remains active, and then rotates the MCP password, daemon secret, and OAuth token version in local state. The second redeploys the Worker; previously issued OAuth access tokens then fail validation.
 
 ## MCP tools
 
@@ -232,6 +178,8 @@ machine-mcp --no-write --no-exec
 - `git_diff`
 - `exec_command`
 
+Tool availability reflects daemon policy after the daemon handshake. `git_status` and `git_diff` detect the repository containing the requested path, including nested repositories.
+
 ## State and logs
 
 Default state roots:
@@ -240,54 +188,78 @@ Default state roots:
 - Linux with `XDG_STATE_HOME`: `$XDG_STATE_HOME/machine-bridge-mcp`
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
-State contains the MCP password, daemon secret, and local API key. Status/doctor output redacts secrets. The normal foreground `start` command prints the MCP password only when a ChatGPT app is likely to need reconnection: first run, secret rotation, MCP URL changes, or `--print-mcp-credentials`. The local API base URL and API key print on normal foreground starts because desktop AI clients need them. Use `--no-print-credentials` to redact console credentials. State files, temporary Worker secret files, lock files, and log directories are created under the user state root with owner-only permissions where the platform supports POSIX modes.
+Override the root with `--state-dir DIR`. A new custom root must be empty; a non-empty unmarked root must contain recognizable legacy Machine Bridge state before it is adopted. Legacy text markers are migrated to the current structured marker. Uninstall refuses to recursively delete filesystem roots, the home directory, the current/package directory, source trees, recorded workspaces, unrelated files, or an unrecognized state root.
 
-The Worker rejects browser requests with an `Origin` header unless the origin is the Worker itself or a loopback HTTP origin. To allow additional browser-based MCP clients, set `MBM_ALLOWED_ORIGINS` to a comma-separated list of exact origins in `wrangler.jsonc` or Cloudflare Worker settings.
+State contains credentials and therefore uses owner-only permissions where supported. State/config writes use temporary files, `fsync`, and atomic rename. Corrupt state files are retained as bounded `.corrupt-*` backups rather than silently overwritten. Status and doctor output redact secrets and personal Wrangler output; structured logs fully redact credential-like fields and neutralize control characters.
 
-Override state root:
+Temporary Wrangler secret files are created under the owner-only profile directory and removed in a `finally` block. Stale files older than one hour are cleaned before deployment.
+
+## Worker protections
+
+The Worker currently enforces:
+
+- OAuth authorization code flow with PKCE S256.
+- Hashed access-token storage and token-version revocation.
+- Exact resource, client, and redirect URI binding.
+- Bounded registration metadata, clients, authorization codes, tokens, and failed-login records.
+- Per-source dynamic-client registration limits and password-failure throttling.
+- A consent page that displays the validated client and redirect URI.
+- Request-body and concurrent daemon-call limits.
+- Same-origin browser access by default, exact configured-origin CORS/preflight support, and rejection of unlisted cross-origin requests.
+- `no-store`, content-type protection, CSP, frame denial, and referrer suppression on authorization responses.
+- Minimal public health output; live daemon/workspace details require an authenticated MCP call.
+
+Browser requests are same-origin by default. Additional browser origins can be listed exactly in `MBM_ALLOWED_ORIGINS`; the Worker then returns matching CORS preflight and response headers. Loopback OAuth redirect URIs do not implicitly authorize loopback browser origins. Do not use wildcards or `null`.
+
+## Uninstall
+
+Delete known Workers, autostart entries, and local state:
 
 ```zsh
-machine-mcp --state-dir /path/to/state
+machine-mcp uninstall
 ```
 
-## Architecture
+Non-interactive:
 
-```mermaid
-flowchart LR
-  C["ChatGPT / MCP client"] -- "HTTPS /mcp + OAuth" --> W["Hosted Worker relay"]
-  C -- "GET SSE stream for server-to-client MCP" --> W
-  W --> DO["Durable Object broker"]
-  D["Local daemon"] -- "outbound WebSocket" --> W
-  D --> M["Local filesystem and shell"]
-  API["Local /v1/chat/completions"] -- "POST /api/mcp/sampling" --> W
-  DO -- "sampling/createMessage" --> C
-  CLI["machine-mcp CLI"] --> API
-  CLI --> W
-  CLI --> D
-  CLI --> S["Autostart service"]
+```zsh
+machine-mcp uninstall --yes
 ```
 
-Why this architecture:
+Keep deployed Workers while removing local state and autostart:
 
-- No inbound local port is exposed to the internet.
-- No local tunnel process is required.
-- The public MCP URL is stable after deployment.
-- The Worker stores OAuth client/code/token metadata and relays tool calls.
-- The local daemon is the only process touching files or executing commands.
-- The local `/v1` API binds to loopback by default, starts automatically with the daemon, and can be disabled with `--no-api`.
-- Autostart keeps the daemon and local API alive across logins without requiring MCP clients to change URLs.
+```zsh
+machine-mcp uninstall --keep-worker
+```
+
+Remove a global npm installation separately:
+
+```zsh
+npm uninstall -g machine-bridge-mcp
+```
+
+## Architecture and failure behavior
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for trust boundaries, request lifecycles, limits, reconnect behavior, and the rationale for the Worker/Durable Object/daemon split.
+
+Operationally:
+
+- A newer daemon connection replaces the older socket. The relay handshake does not upload the local workspace name, path hash, or process ID.
+- Pending calls are bound to the socket that received them, so a stale socket cannot complete or cancel calls on the replacement connection; active child processes are terminated when that connection is lost or replaced.
+- The daemon reconnects after transient Worker/network failures using bounded exponential backoff with jitter, and terminates active child processes when the active relay socket closes.
+- Tool calls and Wrangler subprocesses have bounded execution time and output; timed-out commands terminate their process tree where the platform permits.
+- Separate per-workspace startup and daemon locks prevent overlapping deploy/rotation operations and duplicate local daemons.
+- Uninstall stops and removes autostart first, refuses to proceed while an active startup or daemon process owns a lock, and preserves local state when Worker deletion fails so the operation can be retried.
+- Worker health checks verify the expected package/Worker version before a deployment hash is accepted.
 
 ## Development
 
 ```zsh
-npm install
+npm ci
 npm run check
+npm run worker:dry-run
+npm audit --omit=dev --audit-level=high
 ```
 
-`npm run check` generates Worker runtime types, type-checks the Worker, checks local JS syntax, and runs daemon self-tests.
+`npm run check` generates Worker types, type-checks the Worker, checks all local JavaScript entry points, and runs regression tests for path confinement, symbolic-link escapes, atomic writes, UTF-8 handling, nested Git repositories, minimal environments, daemon locking, CLI parsing, state recovery/removal guards, log redaction, log trimming, Worker hardening guards, and a live local OAuth/MCP flow through Wrangler.
 
-Worker build dry-run:
-
-```zsh
-npx wrangler deploy --dry-run
-```
+The release checks are validated on Node.js 22 and 24. Node.js 22 or newer is required by the current Wrangler toolchain. See [CHANGELOG.md](CHANGELOG.md) for release notes.

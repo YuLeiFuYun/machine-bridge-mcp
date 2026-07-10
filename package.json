@@ -1,11 +1,11 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "One-command hosted Remote MCP bridge to a local machine daemon.",
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "bin": {
     "machine-bridge-mcp": "bin/machine-mcp.mjs",
@@ -22,6 +22,9 @@
     "wrangler.jsonc",
     "tsconfig.json",
     "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "docs",
     "LICENSE"
   ],
   "scripts": {
@@ -35,16 +38,18 @@
     "prepublishOnly": "npm run check && npm run version:check",
     "worker:types": "wrangler types src/worker/worker-configuration.d.ts",
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit",
-    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/self-test.mjs && node --check src/local/api-server.mjs && node --check src/local/log.mjs",
-    "check": "npm run typecheck && npm run syntax && npm run self-test"
+    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/self-test.mjs && node --check src/local/log.mjs && node --check scripts/sync-worker-version.mjs && node --check scripts/worker-integration-test.mjs",
+    "check": "npm run typecheck && npm run syntax && npm run self-test && npm run worker:integration-test",
+    "worker:dry-run": "wrangler deploy --dry-run",
+    "worker:integration-test": "node scripts/worker-integration-test.mjs"
   },
   "dependencies": {
-    "wrangler": "^4.24.3",
+    "wrangler": "^4.110.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
-    "typescript": "^5.8.3"
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
   },
   "keywords": [
     "mcp",

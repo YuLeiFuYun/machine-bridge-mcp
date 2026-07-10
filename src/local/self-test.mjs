@@ -1,18 +1,21 @@
-import { createHash } from "node:crypto";
-import http from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { run } from "./shell.mjs";
+import { parseArgs, validateCommandOptions, validatePositionals } from "./cli.mjs";
 import { daemonSelfTest } from "./daemon.mjs";
-import { startLocalApiServer } from "./api-server.mjs";
-import { createLogger, redactSecret } from "./log.mjs";
-import { acquireDaemonLock, ensureLocalApiKey, ensureWorkerSecrets, loadState, previewSecret, redactState, saveState, selectedWorkspace, setSelectedWorkspace } from "./state.mjs";
+import { formatFields, redactSecret, sanitizeLogText } from "./log.mjs";
+import { systemdQuote, trimAutostartLogs } from "./service.mjs";
+import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, previewSecret, redactState, removeStateRoot, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "./state.mjs";
 
 await daemonSelfTest();
 await stateSelfTest();
+await cliSelfTest();
+await logSelfTest();
+await serviceSelfTest();
+await shellSelfTest();
 await workerSourceSelfTest();
-await apiSelfTest();
-console.log("local daemon/state/api self-test ok");
+console.log("local daemon/state/cli/log/service/worker self-test ok");
 
 async function stateSelfTest() {
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-state-test-"));
@@ -21,8 +24,8 @@ async function stateSelfTest() {
     setSelectedWorkspace(workspace, stateRoot);
     if (selectedWorkspace(stateRoot) !== workspace) throw new Error("selected workspace was not persisted");
     const state = loadState(workspace, { stateDir: stateRoot });
+    if (state.schemaVersion !== 2) throw new Error("unexpected state schema version");
     ensureWorkerSecrets(state, { rotateSecrets: true });
-    ensureLocalApiKey(state, { rotateApiKey: true });
     const lock = acquireDaemonLock(state);
     if (!lock.acquired) throw new Error("first daemon lock acquisition failed");
     try {
@@ -36,26 +39,137 @@ async function stateSelfTest() {
     if (!relock.acquired) throw new Error("daemon lock was not released");
     relock.release();
 
-    const redacted = redactState(state);
-    if (redacted.worker.oauthPassword === state.worker.oauthPassword) throw new Error("oauthPassword was not redacted");
-    if (redacted.worker.daemonSecret === state.worker.daemonSecret) throw new Error("daemonSecret was not redacted");
-    if (redacted.worker.oauthTokenVersion === state.worker.oauthTokenVersion) throw new Error("oauthTokenVersion was not redacted");
-    if (redacted.localApi.apiKey === state.localApi.apiKey) throw new Error("local API key was not redacted");
-    if (!previewSecret(state.worker.oauthPassword).includes("...")) throw new Error("previewSecret did not preview long secret");
-    if (!redactSecret(state.localApi.apiKey).includes("...")) throw new Error("redactSecret did not preview long secret");
+    const startup = acquireStartupLock(state);
+    if (!startup.acquired) throw new Error("startup lock acquisition failed");
+    const duplicateStartup = acquireStartupLock(state);
+    if (duplicateStartup.acquired) throw new Error("duplicate startup lock acquisition should fail");
+    startup.release();
+    const startupAgain = acquireStartupLock(state);
+    if (!startupAgain.acquired) throw new Error("startup lock was not released");
+    startupAgain.release();
 
-    state.localApi.upstreamUrl = "https://api.example.test/v1";
-    state.localApi.upstreamKey = "old-upstream-key";
-    state.localApi.upstreamModel = "old-upstream-model";
+    const redacted = redactState(state);
+    if (redacted.worker.oauthPassword !== "<redacted>") throw new Error("oauthPassword was not fully redacted");
+    if (redacted.worker.daemonSecret !== "<redacted>") throw new Error("daemonSecret was not fully redacted");
+    if (redacted.worker.oauthTokenVersion !== "<redacted>") throw new Error("oauthTokenVersion was not fully redacted");
+    if (previewSecret(state.worker.oauthPassword) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
+    if (redactSecret(state.worker.daemonSecret) !== "<redacted>") throw new Error("redactSecret did not fully redact secret");
+
+    state.localApi = {
+      apiKey: "old-local-api-key",
+      upstreamUrl: "https://api.example.test/v1",
+      upstreamKey: "old-upstream-key",
+      upstreamModel: "old-upstream-model",
+    };
     saveState(state);
+    const profileEntries = await readdir(state.paths.profileDir);
+    if (profileEntries.some(name => name.endsWith(".tmp"))) throw new Error("atomic state write left a temporary file");
     const migrated = loadState(workspace, { stateDir: stateRoot });
-    if ("upstreamUrl" in migrated.localApi || "upstreamKey" in migrated.localApi || "upstreamModel" in migrated.localApi) {
-      throw new Error("legacy upstream local API state was not migrated away");
+    if ("localApi" in migrated) throw new Error("legacy local API state was not removed");
+
+    await writeFile(state.paths.statePath, "{not-json", "utf8");
+    const recovered = loadState(workspace, { stateDir: stateRoot });
+    if (recovered.workspace.path !== workspace) throw new Error("corrupt state recovery failed");
+    const backups = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
+    if (backups.length !== 1) throw new Error("corrupt state backup was not retained exactly once");
+    const safeRemoval = validateStateRootForRemoval(stateRoot);
+    if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed");
+
+    const legacyStateRoot = await mkdtemp(join(tmpdir(), "mbm-legacy-state-"));
+    try {
+      await writeFile(join(legacyStateRoot, ".machine-bridge-mcp-state"), "machine-bridge-mcp state root\n", "utf8");
+      const legacyState = loadState(workspace, { stateDir: legacyStateRoot });
+      const marker = JSON.parse(await readFile(join(legacyState.paths.stateRoot, ".machine-bridge-mcp-state"), "utf8"));
+      if (marker.app !== "machine-bridge-mcp" || marker.schema !== 1) throw new Error("legacy state marker was not migrated");
+      removeStateRoot(legacyStateRoot);
+    } finally {
+      await rm(legacyStateRoot, { recursive: true, force: true }).catch(() => {});
+    }
+
+    const lookalike = await mkdtemp(join(tmpdir(), "mbm-lookalike-state-"));
+    try {
+      await import("node:fs/promises").then(({ mkdir }) => mkdir(join(lookalike, "profiles")));
+      expectThrow(() => loadState(workspace, { stateDir: lookalike }), "does not contain recognizable");
+    } finally {
+      await rm(lookalike, { recursive: true, force: true }).catch(() => {});
+    }
+
+    const unrelated = await mkdtemp(join(tmpdir(), "mbm-unrelated-test-"));
+    try {
+      await writeFile(join(unrelated, "keep.txt"), "do not delete", "utf8");
+      expectThrow(() => validateStateRootForRemoval(unrelated), "unrelated entries");
+      if (!(await stat(join(unrelated, "keep.txt"))).isFile()) throw new Error("unsafe state root validation modified unrelated data");
+    } finally {
+      await rm(unrelated, { recursive: true, force: true }).catch(() => {});
     }
   } finally {
-    await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
+    try { removeStateRoot(stateRoot); } catch { await rm(stateRoot, { recursive: true, force: true }).catch(() => {}); }
     await rm(workspace, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+function cliSelfTest() {
+  const parsed = parseArgs(["--no-write", "/tmp/example", "--unrestricted-paths=false", "--worker-name", "mbm-test"]);
+  if (parsed.noWrite !== true || parsed._[0] !== "/tmp/example") throw new Error("boolean option consumed positional workspace");
+  if (parsed.unrestrictedPaths !== false || parsed.workerName !== "mbm-test") throw new Error("CLI option parsing failed");
+  expectThrow(() => parseArgs(["--unknown-option"]), "Unknown option");
+  expectThrow(() => parseArgs(["--workspace"]), "requires a value");
+  expectThrow(() => parseArgs(["--quiet", "--quiet"]), "Duplicate option");
+  expectThrow(() => parseArgs(["--quiet=maybe"]), "expects true or false");
+  expectThrow(() => validatePositionals("start", { _: ["one", "two"] }), "at most one positional");
+  expectThrow(() => validatePositionals("start", { _: ["one"], workspace: "two" }), "both positionally");
+  expectThrow(() => validatePositionals("uninstall", { _: ["unexpected"] }), "does not accept positional");
+  expectThrow(() => validateCommandOptions("uninstall", { _: [], workspace: "/tmp/project" }), "not valid for uninstall");
+  expectThrow(() => validateCommandOptions("doctor", { _: [], fullEnv: true }), "not valid for doctor");
+  validateCommandOptions("start", { _: [], unrestrictedPaths: true, noExec: true });
+  validatePositionals("workspace", { _: ["set", "/tmp/project"] });
+  validatePositionals("service", { _: ["install", "/tmp/project"] });
+}
+
+function logSelfTest() {
+  const rendered = formatFields({
+    token: "mcp_at_should-not-appear",
+    nested: { password: "secret", message: "mcp_password_abcdef\nforged" },
+    authorization: "Bearer abcdefghijklmnopqrstuvwxyz",
+  });
+  if (rendered.includes("should-not-appear") || rendered.includes("password_abcdef") || rendered.includes("Bearer abcdef")) {
+    throw new Error("structured log secret redaction failed");
+  }
+  if (rendered.includes("\nforged")) throw new Error("structured log newline injection was not escaped");
+  if (sanitizeLogText("ok\n[error] forged").includes("\n[error]")) throw new Error("log message newline injection was not escaped");
+}
+
+async function serviceSelfTest() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-service-test-"));
+  try {
+    const logs = join(stateRoot, "logs");
+    await writeFile(join(stateRoot, "placeholder"), "", "utf8");
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(logs, { recursive: true }));
+    const file = join(logs, "daemon.err.log");
+    await writeFile(file, "x".repeat(4096), "utf8");
+    trimAutostartLogs(stateRoot, { maxBytes: 2048, keepBytes: 1024 });
+    if ((await stat(file)).size > 1024) throw new Error("autostart log trimming failed");
+    const quoted = systemdQuote("path with space/%value'\n");
+    if (!quoted.startsWith('"') || !quoted.includes("%%") || !quoted.includes("\\n")) throw new Error("systemd argument quoting failed");
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function shellSelfTest() {
+  const result = await run(process.execPath, ["-e", "process.stdout.write('x'.repeat(4096)); process.stderr.write('y'.repeat(4096));"], {
+    capture: true,
+    maxOutputBytes: 1024,
+  });
+  if (result.code !== 0 || !result.stdout.includes("[truncated") || !result.stderr.includes("[truncated")) {
+    throw new Error("bounded shell capture failed");
+  }
+  const timedOut = await run(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+    capture: true,
+    allowFailure: true,
+    timeoutMs: 50,
+  });
+  if (timedOut.code !== 124 || !timedOut.stderr.includes("timed out")) throw new Error("shell timeout handling failed");
 }
 
 async function workerSourceSelfTest() {
@@ -66,191 +180,35 @@ async function workerSourceSelfTest() {
     "return this.exchangeToken(request, base);",
     "return this.acceptDaemonWebSocket(request);",
     "return this.handleMcp(request, base);",
-    "return this.handleSamplingApi(request);",
-  ].filter((snippet) => source.includes(snippet));
+  ].filter(snippet => source.includes(snippet));
   if (unawaitedAsyncRoutes.length) {
     throw new Error(`Worker async routes must be awaited so HttpError is caught: ${unawaitedAsyncRoutes.join(", ")}`);
   }
-}
-
-
-async function apiSelfTest() {
-  const logger = createLogger({ quiet: true, component: "api-test" });
-  const api = await startLocalApiServer({
-    host: "127.0.0.1",
-    port: 0,
-    apiKey: "local-test-key",
-    model: "chatgpt-mcp",
-    logger,
-  });
-  const base = `http://${api.host}:${api.port}`;
-  try {
-    if (api.apiKey !== "local-test-key") throw new Error("local API server did not expose runtime API key for CLI printing");
-    const health = await fetch(`${base}/health`);
-    if (health.status !== 200) throw new Error(`health returned ${health.status}`);
-    const healthPayload = await health.json();
-    const expectedHash = createHash("sha256").update("local-test-key").digest("hex");
-    if (healthPayload.api_key_sha256 !== expectedHash) throw new Error("health did not expose expected API key hash");
-    if (healthPayload.backend !== "chatgpt-mcp") throw new Error("health did not report MCP-backed backend");
-    if (healthPayload.mcp_bridge_configured !== false) throw new Error("health should report missing MCP bridge");
-    const unauth = await fetch(`${base}/v1/models`);
-    if (unauth.status !== 401) throw new Error(`unauthorized models returned ${unauth.status}`);
-    const models = await fetch(`${base}/v1/models`, { headers: { authorization: "Bearer local-test-key" } });
-    if (models.status !== 200) throw new Error(`authorized models returned ${models.status}`);
-    const payload = await models.json();
-    if (payload?.data?.length !== 1 || payload.data[0].id !== "chatgpt-mcp") throw new Error("model payload should expose local MCP model");
-    const chat = await fetch(`${base}/v1/chat/completions`, {
-      method: "POST",
-      headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
-      body: JSON.stringify({ model: "chatgpt-mcp", messages: [{ role: "user", content: "hello" }] }),
-    });
-    if (chat.status !== 503) throw new Error(`missing MCP bridge should return 503, got ${chat.status}`);
-    const chatPayload = await chat.json();
-    if (!/Remote MCP bridge/.test(chatPayload?.error?.message || "")) throw new Error("missing bridge error did not clarify MCP bridge requirement");
-
-    const unsupported = await fetch(`${base}/v1/responses`, {
-      method: "POST",
-      headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
-      body: JSON.stringify({ input: "hello" }),
-    });
-    if (unsupported.status !== 501) throw new Error(`unsupported Responses endpoint returned ${unsupported.status}`);
-    const unsupportedPayload = await unsupported.json();
-    if (unsupportedPayload?.error?.code !== "unsupported_endpoint") throw new Error("unsupported endpoint did not return explicit error code");
-
-  } finally {
-    await api.close();
+  for (const required of [
+    "MAX_PENDING_CALLS",
+    "MAX_DAEMON_MESSAGE_BYTES",
+    "withOAuthLock",
+    "oauthQueue",
+    "AUTH_FAILURE_LIMIT",
+    "OAUTH_BODY_LIMIT_BYTES",
+    "pending.socket !== ws",
+    "isJsonRpcId(candidate.id)",
+    "pruneRecordByExpiry(store.tokens, MAX_OAUTH_TOKENS)",
+    "A valid PKCE S256 challenge is required.",
+  ]) {
+    if (!source.includes(required)) throw new Error(`Worker hardening guard missing: ${required}`);
   }
-
-  await mcpSamplingSelfTest(logger);
-  await mcpSamplingErrorSelfTest(logger);
-}
-
-async function mcpSamplingSelfTest(logger) {
-  let captured = null;
-  const expectedErrorLogger = { ...logger, error() {} };
-  const worker = http.createServer((req, res) => {
-    const chunks = [];
-    req.on("data", chunk => chunks.push(chunk));
-    req.on("end", () => {
-      captured = { bridgeToken: req.headers["x-bridge-token"], url: req.url, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) };
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ ok: true, result: { role: "assistant", content: { type: "text", text: "hello from ChatGPT MCP" }, model: "chatgpt-client-model", stopReason: "endTurn" } }));
-    });
-  });
-  await new Promise(resolve => worker.listen({ host: "127.0.0.1", port: 0 }, resolve));
-  const workerPort = worker.address().port;
-  const api = await startLocalApiServer({
-    host: "127.0.0.1",
-    port: 0,
-    apiKey: "local-test-key",
-    workerUrl: `http://127.0.0.1:${workerPort}`,
-    daemonSecret: "daemon-test-secret",
-    model: "chatgpt-mcp",
-    logger: expectedErrorLogger,
-  });
-  try {
-    const models = await fetch(`http://${api.host}:${api.port}/v1/models`, { headers: { authorization: "Bearer local-test-key" } });
-    if (models.status !== 200) throw new Error(`configured models returned ${models.status}`);
-    const modelsPayload = await models.json();
-    if (modelsPayload?.data?.length !== 1 || modelsPayload.data[0].id !== "chatgpt-mcp") throw new Error("model payload did not expose local MCP model");
-
-    const image = await fetch(`http://${api.host}:${api.port}/v1/chat/completions`, {
-      method: "POST",
-      headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
-      body: JSON.stringify({ model: "chatgpt-mcp", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://example.test/image.png" } }] }] }),
-    });
-    if (image.status !== 400) throw new Error(`unsupported non-text content returned ${image.status}`);
-    const imagePayload = await image.json();
-    if (imagePayload?.error?.code !== "unsupported_content") throw new Error("unsupported non-text content did not return explicit error code");
-
-    const response = await fetch(`http://${api.host}:${api.port}/v1/chat/completions`, {
-      method: "POST",
-      headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
-      body: JSON.stringify({
-        model: "gpt-5-hint",
-        messages: [
-          { role: "system", content: "Be concise." },
-          { role: "developer", content: "Use plain text." },
-          { role: "user", content: [{ type: "text", text: "Say hello" }] },
-        ],
-        max_completion_tokens: 77,
-      }),
-    });
-    if (response.status !== 200) throw new Error(`MCP sampling rewrite returned ${response.status}`);
-    if (captured?.url !== "/api/mcp/sampling") throw new Error("sampling request did not target Worker sampling endpoint");
-    if (captured?.bridgeToken !== "daemon-test-secret") throw new Error("bridge token was not set");
-    if (captured?.body?.messages?.[0]?.content?.text !== "Say hello") throw new Error("chat message was not converted to MCP sampling message");
-    if (captured?.body?.systemPrompt !== "Be concise.\n\nUse plain text.") throw new Error("system/developer prompt was not forwarded");
-    if (captured?.body?.maxTokens !== 77) throw new Error("max_completion_tokens was not converted to maxTokens");
-    if (captured?.body?.modelPreferences?.hints?.[0]?.name !== "gpt-5-hint") throw new Error("model hint was not forwarded");
-    const payload = await response.json();
-    if (payload?.choices?.[0]?.message?.content !== "hello from ChatGPT MCP") throw new Error("MCP sampling result was not wrapped as chat completion");
-    if (payload?.model !== "chatgpt-client-model") throw new Error("MCP sampling result model was not preserved");
-  } finally {
-    await api.close();
-    await new Promise(resolve => worker.close(resolve));
+  for (const removed of ["/api/mcp/sampling", "/api/daemon/status", "sampling/createMessage"]) {
+    if (source.includes(removed)) throw new Error(`obsolete or public-sensitive Worker route remains: ${removed}`);
   }
 }
 
-async function mcpSamplingErrorSelfTest(logger) {
-  await withMockWorkerError(
-    logger,
-    409,
-    { error: "mcp_client_stream_missing", message: "No MCP client has an open server-to-client stream for sampling/createMessage." },
-    async ({ base }) => {
-      const response = await fetch(`${base}/v1/chat/completions`, {
-        method: "POST",
-        headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
-        body: JSON.stringify({ model: "chatgpt-mcp", messages: [{ role: "user", content: "hello" }] }),
-      });
-      if (response.status !== 409) throw new Error(`missing MCP stream should return 409, got ${response.status}`);
-      const payload = await response.json();
-      if (payload?.error?.code !== "mcp_client_stream_missing") throw new Error("missing MCP stream error code was not preserved");
-      if (!/MCP client|server-to-client stream/.test(payload?.error?.message || "")) throw new Error("missing MCP stream error message was not explicit");
-    }
-  );
-
-  await withMockWorkerError(
-    logger,
-    501,
-    { error: "mcp_sampling_not_supported", message: "A connected MCP client did not advertise the MCP sampling capability." },
-    async ({ base }) => {
-      const response = await fetch(`${base}/v1/chat/completions`, {
-        method: "POST",
-        headers: { authorization: "Bearer local-test-key", "content-type": "application/json" },
-        body: JSON.stringify({ model: "chatgpt-mcp", messages: [{ role: "user", content: "hello" }] }),
-      });
-      if (response.status !== 501) throw new Error(`missing sampling capability should return 501, got ${response.status}`);
-      const payload = await response.json();
-      if (payload?.error?.code !== "mcp_sampling_not_supported") throw new Error("missing sampling capability error code was not preserved");
-      if (!/sampling capability/.test(payload?.error?.message || "")) throw new Error("missing sampling capability message was not explicit");
-    }
-  );
-}
-
-async function withMockWorkerError(logger, status, payload, callback) {
-  const expectedErrorLogger = { ...logger, error() {} };
-  const worker = http.createServer((req, res) => {
-    req.resume();
-    res.statusCode = status;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(payload));
-  });
-  await new Promise(resolve => worker.listen({ host: "127.0.0.1", port: 0 }, resolve));
-  const workerPort = worker.address().port;
-  const api = await startLocalApiServer({
-    host: "127.0.0.1",
-    port: 0,
-    apiKey: "local-test-key",
-    workerUrl: `http://127.0.0.1:${workerPort}`,
-    daemonSecret: "daemon-test-secret",
-    model: "chatgpt-mcp",
-    logger: expectedErrorLogger,
-  });
+function expectThrow(callback, pattern) {
   try {
-    await callback({ base: `http://${api.host}:${api.port}` });
-  } finally {
-    await api.close();
-    await new Promise(resolve => worker.close(resolve));
+    callback();
+  } catch (error) {
+    if (String(error?.message || error).includes(pattern)) return;
+    throw error;
   }
+  throw new Error(`expected throw containing: ${pattern}`);
 }

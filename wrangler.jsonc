@@ -21,10 +21,10 @@
   ],
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
+    "head_sampling_rate": 0.1
   },
   "vars": {
-    "MBM_WORKER_MAX_BODY_BYTES": "33554432",
+    "MBM_WORKER_MAX_BODY_BYTES": "8388608",
     "MBM_ALLOWED_ORIGINS": ""
   }
 }
