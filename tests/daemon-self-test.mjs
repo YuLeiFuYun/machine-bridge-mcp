@@ -8,6 +8,7 @@ export async function daemonSelfTest() {
   if (isSupersededClose(1012, "service restart") || isSupersededClose(1006, "replaced by authenticated daemon")) throw new Error("transient daemon close was treated as superseded");
   const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
   const outside = await mkdtemp(join(tmpdir(), "mbm-daemon-outside-"));
+  const jobState = await mkdtemp(join(tmpdir(), "mbm-daemon-jobs-"));
   const logEvents = [];
   const logger = {
     info(message, fields) { logEvents.push({ level: "info", message, fields }); },
@@ -21,6 +22,7 @@ export async function daemonSelfTest() {
     workspace,
     policy: { allowWrite: true, allowExec: true },
     logger,
+    jobRoot: join(jobState, "restricted"),
   });
   const unrestricted = new LocalDaemon({
     workerUrl: "https://example.invalid",
@@ -28,6 +30,7 @@ export async function daemonSelfTest() {
     workspace,
     policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true },
     logger,
+    jobRoot: join(jobState, "unrestricted"),
   });
   const previousSecret = process.env.MBM_DAEMON_SELFTEST_SECRET;
   process.env.MBM_DAEMON_SELFTEST_SECRET = "should-not-leak";
@@ -176,6 +179,13 @@ export async function daemonSelfTest() {
 
     const command = await restricted.execCommand("node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"", 5);
     if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
+    const diagnostics = await restricted.diagnoseRuntime();
+    if (!diagnostics.request_reached_local_runtime || !diagnostics.checks.some(check => check.layer === "local-process-spawn" && check.ok)) {
+      throw new Error("runtime diagnostics did not prove local process execution");
+    }
+    if (!diagnostics.checks.some(check => check.layer === "managed-job-storage" && check.ok)) {
+      throw new Error("runtime diagnostics did not validate managed-job storage");
+    }
     const isolatedHome = await restricted.runDirectProcess({ argv: [process.execPath, "-e", "process.stdout.write(process.env.HOME || '')"], timeout_seconds: 5 });
     if (!isolatedHome.stdout.includes("machine-bridge-mcp-") || isolatedHome.stdout === process.env.HOME) throw new Error("minimal command environment did not isolate HOME");
     await expectReject(() => restricted.execCommand(`printf '${"x".repeat(MAX_COMMAND_BYTES)}'`, 5), "maximum size");
@@ -213,6 +223,7 @@ export async function daemonSelfTest() {
     else process.env.MBM_DAEMON_SELFTEST_SECRET = previousSecret;
     await rm(workspace, { recursive: true, force: true }).catch(() => {});
     await rm(outside, { recursive: true, force: true }).catch(() => {});
+    await rm(jobState, { recursive: true, force: true }).catch(() => {});
   }
   return true;
 }

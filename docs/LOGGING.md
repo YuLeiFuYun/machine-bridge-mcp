@@ -73,8 +73,10 @@ logs/daemon.err.log
 
 They are owner-only where the platform supports Unix-style permissions. Existing files are tail-trimmed on UTF-8/line boundaries before daemon startup. Because background services use `warn`, normal successful tool traffic should not cause sustained log growth.
 
+Each managed job also has owner-only `runner.out.log` and `runner.err.log` files for runner startup/crash diagnostics. Child-step stdout and stderr are captured into bounded job results according to `capture_output`; they are not copied into runner or daemon operational logs. Runner logs are retained with the bounded job directory and removed by job retention cleanup.
+
 ## MCP host boundary
 
-Machine Bridge does not classify filenames as sensitive and does not block `.env`, password, key, or credential-looking names. The active local policy and operating-system permissions determine what the server itself can read.
+Machine Bridge does not classify filenames as sensitive and does not block `.env`, password, key, or credential-looking names. The active local policy, local OS permissions, and endpoint-security controls determine what the server itself can read or execute.
 
 An MCP host, model provider, desktop application, or platform execution layer may independently deny a request involving credentials or sensitive files. Such a denial occurs before or outside Machine Bridge's file resolver and cannot be disabled by selecting the local `full` profile. Use `server_info`, `machine-mcp status`, and `machine-mcp doctor` to distinguish the active local policy from host-side enforcement.

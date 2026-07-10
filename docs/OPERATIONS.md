@@ -8,7 +8,20 @@ machine-mcp doctor
 machine-mcp service status
 ```
 
-`status` prints redacted profile state and verifies the deployed Worker version. `doctor` checks Node.js, the package-installed Wrangler binary, Cloudflare login, and Worker health. Public `/healthz` output contains only server identity and version; daemon details require an authenticated `server_info` call.
+`status` prints redacted profile state and verifies the deployed Worker version. Resource source paths remain redacted. `doctor` checks Node.js, the package-installed Wrangler binary, Cloudflare login, Worker health, and the same fixed local filesystem/process/shell/job-storage/resource probes exposed by `diagnose_runtime`. Public `/healthz` output contains only server identity and version; daemon details require an authenticated `server_info` call.
+
+### Blocking-layer decision table
+
+| Result | Interpretation |
+|---|---|
+| No structured result because the host rejects the call | Host/connector approval or safety layer, or transport before daemon delivery |
+| `mcp-host-to-daemon` passes but `local-filesystem` fails | Local state/runtime permissions, disk policy, sandbox, or endpoint security |
+| Filesystem passes but `local-process-spawn` fails | Local executable policy, endpoint security, OS permissions, or damaged Node runtime |
+| Direct spawn passes but `local-shell` fails | Shell path/profile/policy problem |
+| `managed-job-storage` fails | Owner-only profile/job directory cannot be used |
+| Registered resource is unavailable | File moved, permissions changed, size exceeded, or local access denied |
+
+A successful diagnostic result applies only to that probe. An MCP host can still deny a later call based on its own request context.
 
 ## Logs
 
@@ -28,6 +41,37 @@ Foreground mode defaults to `info`; autostart uses `warn`. Use `--verbose` or `-
 Normal logs intentionally omit tool arguments, file/patch/image content, command text and argv, stdin/stdout/stderr, OAuth request bodies, connection credentials, authorization codes, and tokens. Unexpected daemon and Worker failures use coarse error classes rather than raw exception messages. Messages and structured fields are bounded and secret-like fields/token formats are redacted.
 
 See [LOGGING.md](LOGGING.md) for the event contract and MCP-host boundary. Cloudflare observability is sampled and is not a complete audit log.
+
+## Managed jobs and local recovery
+
+Register local-only resources from the terminal:
+
+```sh
+machine-mcp resource add NAME FILE_PATH
+machine-mcp resource list
+machine-mcp resource check NAME
+machine-mcp resource remove NAME
+```
+
+Inspect detached jobs even when the MCP host no longer permits execution tools:
+
+```sh
+machine-mcp job list
+machine-mcp job inspect JOB_ID
+machine-mcp job approve JOB_ID [--yes]
+machine-mcp job cancel JOB_ID
+machine-mcp job submit plan.json
+```
+
+Registry changes apply to newly submitted jobs without restarting the daemon. Active jobs use the resource snapshot accepted with their plan.
+
+Policy changes affect new direct submissions. Cancel accepted running jobs explicitly when revoking execution authority. A staged plan launches only after local `job approve`, which is an independent operator authorization. A managed job transitions through `queued`, `running`, `cleaning`, and a terminal status such as `succeeded`, `failed`, or `cancelled`. Cleanup-specific terminal variants report a failed finally phase. If a runner PID dies, the next daemon/job-CLI start marks the job interrupted, removes stale private runtime copies, and runs the finally phase in recovery mode. Automatic recovery is capped at three attempts; persistent failure becomes `recovery_exhausted`.
+
+Use job-scoped `temporary_files` for local helpers. For remote maintenance, prefer `ssh ... sh -s` with the remote script in step `stdin`; this avoids remote temporary scripts. Explicit remote cleanup belongs in idempotent `finally_steps`.
+
+Uninstall refuses to remove local state while any managed job remains active. Active plans are needed for recovery and are owner-only. Terminal jobs delete their full plans. Bounded redacted results and runner-level diagnostics remain for up to seven days/50 jobs. Step output is never copied to ordinary daemon logs.
+
+See [MANAGED_JOBS.md](MANAGED_JOBS.md).
 
 ## Reconnect and replacement
 
@@ -54,7 +98,13 @@ Defense-in-depth limits include:
 - command timeout: 1–600 seconds;
 - process-session read wait: at most 30 seconds;
 - direct directory result: 10,000 entries and 4 MiB of path metadata;
-- recursive walk: 200,000 visited entries.
+- recursive walk: 200,000 visited entries;
+- managed jobs: 50 retained, seven-day retention;
+- managed-job steps: 16 main plus 16 finally;
+- managed-job timeout: 1–3,600 seconds per step;
+- managed-job output: 64 KiB per stream and 256 KiB total captured across one job;
+- registered resources: 64, 1 MiB each, 8 MiB referenced per job;
+- job-scoped temporary files: 16 files, 512 KiB total content.
 
 ## Upgrade behavior
 
@@ -85,5 +135,6 @@ After suspected credential or client compromise:
 1. stop foreground and autostart daemons;
 2. run `machine-mcp rotate-secrets`;
 3. restart without broad flags and redeploy;
-4. inspect Cloudflare account access, Worker configuration, local state permissions, and service logs;
-5. remove the Worker and local state if continued remote access is unnecessary.
+4. inspect Cloudflare account access, Worker configuration, local state/resource permissions, managed-job results, and service logs;
+5. cancel active managed jobs and remove compromised resource aliases;
+6. remove the Worker and local state if continued remote access is unnecessary.

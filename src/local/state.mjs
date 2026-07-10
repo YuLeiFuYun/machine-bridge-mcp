@@ -20,7 +20,7 @@ export function expandHome(input = "") {
 
 export function resolveWorkspace(input = process.cwd()) {
   const resolved = path.resolve(expandHome(input));
-  return realpathSync(resolved);
+  return realpathSync.native ? realpathSync.native(resolved) : realpathSync(resolved);
 }
 
 export function defaultStateRoot() {
@@ -52,9 +52,10 @@ export function saveGlobalConfig(config, stateRoot = defaultStateRoot()) {
 
 export function setSelectedWorkspace(workspace, stateRoot = defaultStateRoot()) {
   const root = expandHome(stateRoot);
+  const canonicalWorkspace = resolveWorkspace(workspace);
   const config = loadGlobalConfig(root);
-  config.selectedWorkspace = workspace;
-  config.selectedWorkspaceHash = workspaceHash(workspace);
+  config.selectedWorkspace = canonicalWorkspace;
+  config.selectedWorkspaceHash = workspaceHash(canonicalWorkspace);
   saveGlobalConfig(config, root);
   return config;
 }
@@ -79,7 +80,9 @@ export function removeStateRoot(stateRoot = defaultStateRoot()) {
 }
 
 export function workspaceHash(workspace) {
-  return createHash("sha256").update(String(workspace)).digest("hex").slice(0, 24);
+  const canonical = resolveWorkspace(workspace);
+  const identity = process.platform === "win32" ? canonical.toLowerCase() : canonical;
+  return createHash("sha256").update(identity).digest("hex").slice(0, 24);
 }
 
 function profileDirForWorkspace(workspace, stateRoot = defaultStateRoot()) {
@@ -87,9 +90,43 @@ function profileDirForWorkspace(workspace, stateRoot = defaultStateRoot()) {
 }
 
 
+function matchingLegacyProfileDir(canonicalWorkspace, stateRoot) {
+  const profilesRoot = path.join(stateRoot, "profiles");
+  if (!existsSync(profilesRoot)) return "";
+  const matches = [];
+  for (const entry of readdirSync(profilesRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
+    const profileDir = path.join(profilesRoot, entry.name);
+    const stateFile = path.join(profileDir, "state.json");
+    if (!existsSync(stateFile)) continue;
+    try {
+      const value = JSON.parse(readBoundedUtf8(stateFile, MAX_STATE_JSON_BYTES, "state JSON"));
+      const storedWorkspace = value?.workspace?.path;
+      if (typeof storedWorkspace !== "string") continue;
+      if (sameWorkspaceIdentity(storedWorkspace, canonicalWorkspace)) matches.push(profileDir);
+    } catch {}
+  }
+  if (matches.length > 1) throw new Error("multiple Machine Bridge profiles refer to the same canonical workspace; remove or merge the duplicate state profiles");
+  return matches[0] || "";
+}
+
+function sameWorkspaceIdentity(left, right) {
+  try {
+    const a = resolveWorkspace(left);
+    const b = resolveWorkspace(right);
+    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    return false;
+  }
+}
+
 export function loadState(workspace, options = {}) {
+  const canonicalWorkspace = resolveWorkspace(workspace);
   const stateRoot = ensureStateRoot(options.stateDir ? expandHome(options.stateDir) : defaultStateRoot());
-  const profileDir = profileDirForWorkspace(workspace, stateRoot);
+  const canonicalProfileDir = profileDirForWorkspace(canonicalWorkspace, stateRoot);
+  const profileDir = existsSync(canonicalProfileDir)
+    ? canonicalProfileDir
+    : matchingLegacyProfileDir(canonicalWorkspace, stateRoot) || canonicalProfileDir;
   const statePath = path.join(profileDir, "state.json");
   ensureOwnerOnlyDir(profileDir);
   let state = {};
@@ -97,15 +134,16 @@ export function loadState(workspace, options = {}) {
     ownerOnlyFile(statePath);
     state = readJsonObjectOrBackup(statePath);
   }
-  state.schemaVersion = 4;
+  state.schemaVersion = 5;
   state.workspace = {
-    path: workspace,
-    hash: workspaceHash(workspace),
+    path: canonicalWorkspace,
+    hash: path.basename(profileDir),
     updatedAt: new Date().toISOString(),
   };
   state.paths = { stateRoot, profileDir, statePath };
   state.worker ||= {};
   state.policy ||= {};
+  state.resources ||= {};
   delete state.localApi;
   return state;
 }
@@ -467,6 +505,11 @@ export function redactState(state) {
   if (clone.worker?.oauthPassword) clone.worker.oauthPassword = "<redacted>";
   if (clone.worker?.daemonSecret) clone.worker.daemonSecret = "<redacted>";
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = "<redacted>";
+  if (clone.resources && typeof clone.resources === "object") {
+    for (const value of Object.values(clone.resources)) {
+      if (value && typeof value === "object" && value.path) value.path = "<local-resource-path>";
+    }
+  }
   return clone;
 }
 

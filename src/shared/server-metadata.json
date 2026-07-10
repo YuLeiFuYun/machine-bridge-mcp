@@ -10,7 +10,14 @@
     "You are connected to a local workspace through machine-bridge-mcp.",
     "Remote mode uses a Cloudflare relay; stdio mode runs on the local machine. File and command operations execute on the user's local runtime, not in the Worker.",
     "Filesystem scope and path display follow the active local policy; the default full profile is unrestricted.",
-    "Filename sensitivity is not classified by this server; the MCP host may enforce additional independent rules.",
+    "Filename sensitivity is not classified by this server; the MCP host, connector gateway, local OS, or endpoint-security software may enforce additional independent rules.",
+    "Use diagnose_runtime to distinguish a request that reached the daemon from local filesystem, process-spawn, shell, managed-job-storage, and resource failures. A tool call blocked before any response cannot be diagnosed by the server.",
+    "Never request or return secret-file contents when a local resource alias can be used. Resources are registered only through the local machine-mcp CLI and may be injected by path, stdin, or environment without entering MCP arguments.",
+    "If execution-class tools are unavailable but write access remains, use stage_job to persist a reviewed plan without running it; the operator can launch it locally with machine-mcp job approve JOB_ID.",
+    "For multi-step, remote, long-running, or cleanup-sensitive work, prefer one start_job call with argv steps, job-scoped temporary_files, and idempotent finally_steps. The detached runner continues after MCP disconnects; inspect it with read_job or the local machine-mcp job CLI.",
+    "Prefer sending remote shell programs through a process stdin rather than creating remote helper files. If temporary files are necessary, use {{temp:name}} or explicit finally_steps.",
+    "Managed-job resource redaction is defense in depth, not a guarantee against transformed or partial secret output. Use capture_output=discard for steps that may echo credentials.",
+    "Do not use shell encoding, renaming, or alternate tools to bypass host or platform safety policy.",
     "run_process avoids shell parsing but is not an OS sandbox. exec_command is exposed only in shell mode and has the local user's authority.",
     "Inspect before editing, prefer read_file line ranges, edit_file, or apply_patch over whole-file replacement, and report commands that were run."
   ]
