@@ -32,7 +32,7 @@ A newly selected workspace starts with the maximum-permission `full` profile for
 - tool results may return absolute paths;
 - child processes inherit the complete parent environment.
 
-Existing workspace state keeps its saved policy during upgrade. Use `--profile full` to explicitly move an older workspace to the new maximum-permission behavior.
+Policy state records whether it came from the default, an explicit named profile, or custom overrides. Version 0.5 migrates the exact pre-0.4 implicit-default shape to `full` once; explicit restrictive profiles and identified custom policies remain unchanged.
 
 | Profile | File edits | Direct argv processes | Shell commands | Filesystem scope | Process environment |
 |---|---:|---:|---:|---|---|
@@ -48,10 +48,12 @@ This default prioritizes usability, not least privilege. `run_process` and proce
 Node.js 22 or newer is required.
 
 ```sh
-npm install -g machine-bridge-mcp@latest
+npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest
 ```
 
-From a source checkout:
+Recent npm releases may otherwise warn that Wrangler's native dependencies (`esbuild`, `workerd`, and `sharp`) have install scripts awaiting approval. The scoped command above approves only those packages for this installation; it does not change the user's global npm policy. A plain install can still work when compatible prebuilt artifacts are already available, but `machine-mcp doctor` is the authoritative runtime check.
+
+From a source checkout, the checked-in exact-version `allowScripts` policy approves the reviewed native dependencies:
 
 ```sh
 npm install
@@ -118,6 +120,9 @@ The default is `full`. Narrow or customize it with explicit flags:
 --full-env
 --unrestricted-paths
 --absolute-paths
+--log-level error|warn|info|debug
+--verbose
+--quiet
 ```
 
 Important distinctions:
@@ -126,7 +131,8 @@ Important distinctions:
 - `--unrestricted-paths=false`, `--absolute-paths=false`, and `--full-env=false` can narrow those individual settings.
 - `--absolute-paths` changes returned path metadata; it does not independently grant additional access.
 - In isolated-environment profiles, commands receive private HOME, temp, and cache directories plus a small set of platform variables.
-- Files with sensitive-looking names are not automatically blocked inside the workspace. A workspace `.env` remains readable when read tools are enabled.
+- The server has no filename blacklist. Under `full`, direct read tools may read any UTF-8 regular file that the local OS user can access, including files outside the workspace and names such as `.env`, `passwords.txt`, or private-key files.
+- Maximum local policy does not override operating-system permissions, macOS TCC/SIP, Windows ACLs, container boundaries, or independent safety rules imposed by the MCP host/platform. A host-generated “sensitive file” denial is outside this server's enforcement layer.
 
 ## Tools
 
@@ -188,6 +194,7 @@ machine-mcp service status|install|start|stop|uninstall
 machine-mcp status
 machine-mcp doctor
 machine-mcp rotate-secrets
+machine-mcp --print-mcp-credentials
 machine-mcp uninstall [--keep-worker] [--yes]
 ```
 
@@ -201,16 +208,16 @@ Remote mode supports:
 - Linux `systemd --user`, with best-effort lingering;
 - Windows Scheduled Task at logon.
 
-The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. Service logs are owner-only where supported and trimmed before daemon startup.
+The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. Background services run at log level `warn`: failures and connection problems are retained, while routine successful tool calls are omitted. Logs are owner-only where supported and bounded by tail trimming.
 
 ## Secret rotation
 
 ```sh
-machine-mcp rotate-secrets --no-print-credentials
-machine-mcp
+machine-mcp rotate-secrets
+machine-mcp --print-mcp-credentials
 ```
 
-Rotation stops the installed service, refuses to proceed while another foreground daemon owns the workspace lock, rotates the MCP password, daemon secret, and OAuth token version, and requires redeployment. Previously issued access tokens then fail validation.
+Rotation stops the installed service, refuses to proceed while another foreground daemon owns the workspace lock, rotates the MCP password, daemon secret, and OAuth token version, and requires redeployment. Rotated values are redacted by default; only the client connection password can be printed through the explicit reconnect flag. Previously issued access tokens then fail validation.
 
 ## State and observability
 
@@ -222,7 +229,7 @@ Default state roots:
 
 State/config writes use owner-only temporary files, flushes, and atomic rename. Malformed state is retained as a bounded corrupt backup before reconstruction. Uninstall validates markers, canonical paths, active locks, workspace/source exclusions, and known contents before recursive deletion.
 
-Operational logs record bounded metadata such as component, tool name, shortened call ID, duration, outcome, and error class. They do not intentionally log file contents, patch bodies, command strings, stdin, OAuth passwords, access tokens, or daemon secrets. See [docs/OPERATIONS.md](docs/OPERATIONS.md).
+Default foreground logs show startup/deployment transitions, relay connectivity, warnings/errors, and successful calls that exceed 30 seconds. Routine successful tool calls and correlation IDs appear only at `--log-level debug` or `--verbose`. Background services use `warn`. Log messages and structured fields are bounded, secret-like keys and known token formats are redacted, and tool arguments/results are not written. See [docs/LOGGING.md](docs/LOGGING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Development and verification
 
@@ -230,6 +237,7 @@ Operational logs record bounded metadata such as component, tool name, shortened
 npm ci
 npm run check
 npm run worker:dry-run
+npm audit --audit-level=high
 npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```

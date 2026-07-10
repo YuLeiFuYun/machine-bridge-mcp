@@ -1,0 +1,17 @@
+{
+  "name": "machine-bridge-mcp",
+  "protocolVersion": "2025-11-25",
+  "supportedProtocolVersions": [
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26"
+  ],
+  "instructions": [
+    "You are connected to a local workspace through machine-bridge-mcp.",
+    "Remote mode uses a Cloudflare relay; stdio mode runs on the local machine. File and command operations execute on the user's local runtime, not in the Worker.",
+    "Filesystem scope and path display follow the active local policy; the default full profile is unrestricted.",
+    "Filename sensitivity is not classified by this server; the MCP host may enforce additional independent rules.",
+    "run_process avoids shell parsing but is not an OS sandbox. exec_command is exposed only in shell mode and has the local user's authority.",
+    "Inspect before editing, prefer read_file line ranges, edit_file, or apply_patch over whole-file replacement, and report commands that were run."
+  ]
+}

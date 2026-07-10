@@ -51,7 +51,9 @@ Direct filesystem scope is profile-dependent. The default `full` profile is unre
 
 The default `full` profile returns absolute paths. Narrower profiles return workspace-relative paths to reduce username and directory-layout disclosure. Path display and access scope remain separate controls.
 
-Sensitive-looking names are not blocked inside the workspace. Files such as `.env`, private keys, credentials, database dumps, and production configuration remain readable when they are in the selected workspace. Choose the narrowest practical workspace.
+The server does not maintain a sensitive-filename blacklist. Under `full`, direct read tools may access any UTF-8 regular file available to the local OS user, including files outside the selected workspace and names such as `.env`, password stores, private keys, credentials, database dumps, and production configuration. Narrower profiles confine direct filesystem tools but do not classify names inside that boundary.
+
+Maximum local policy does not bypass Unix permissions, Windows ACLs, macOS TCC/SIP, container/VM boundaries, or security decisions made by the MCP host/platform. A host-side “sensitive file” refusal is independent of Machine Bridge and cannot be disabled by local policy configuration.
 
 Processes are not confined by the filesystem-tool resolver. They can access paths, networks, processes, credential stores, and devices available to the local user.
 
@@ -67,7 +69,7 @@ These controls do not defend against a malicious process running under the same 
 
 Local state contains the MCP connection password and daemon secret. State, lock, temporary secret, runtime, and service-log files use owner-only permissions where supported. State writes are atomic. Logs recursively redact known credential fields and token formats and neutralize control characters.
 
-First-run or explicit credential output can intentionally display the MCP password. Avoid shared terminal logs, shell recordings, screenshots, CI output, or support tickets. Use `--no-print-credentials` for recorded sessions.
+First-run or explicit reconnect output can intentionally display the MCP connection password. JSON output and standalone secret rotation redact credentials by default; printing requires the explicit reconnect flag. The daemon secret is never printed in full. Avoid shared terminal logs, shell recordings, screenshots, CI output, or support tickets.
 
 The default `full` profile passes the complete parent environment. Narrower profiles replace HOME, temp, and common cache paths and do not pass arbitrary parent variables. The isolated mode reduces accidental environment-secret leakage; it does not prevent code from explicitly accessing known resources.
 
@@ -101,7 +103,7 @@ Sessions use pipes, not a PTY. Do not assume terminal-oriented programs will beh
 
 ## Logs and privacy
 
-Operational logs record coarse metadata and error classes, not tool arguments, command text, stdin, file/patch contents, or outputs. Unexpected Worker exceptions are reduced to error classes. Git author email is omitted from `git_log` unless explicitly requested.
+Default operational logs record startup/connection transitions, failed calls, slow-call duration, and coarse error classes. Routine successful calls and shortened correlation IDs are debug-only. Tool arguments, command text, stdin, file/patch contents, and outputs are omitted. Messages and fields are bounded; unexpected daemon and Worker exceptions are reduced to error classes. Git author email is omitted from `git_log` unless explicitly requested.
 
 No logging policy can prevent data from being returned to a client that explicitly invokes an enabled tool. The Worker necessarily relays remote tool arguments and results; this is not end-to-end encryption against the user's Cloudflare execution environment.
 
@@ -124,7 +126,7 @@ Also:
 - patch the OS and use supported Node.js releases;
 - enable MFA on Cloudflare, GitHub, and npm accounts;
 - do not configure broad CORS origins;
-- avoid `--full-env`, `--unrestricted-paths`, and `--absolute-paths` unless required;
+- select `agent`, `edit`, or `review` instead of the default `full` when broad authority is unnecessary;
 - inspect client names and OAuth redirect URIs;
 - rotate secrets after suspected disclosure;
 - inspect `status`, `doctor`, and service status;

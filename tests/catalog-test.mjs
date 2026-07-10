@@ -1,7 +1,18 @@
 import { readFile } from "node:fs/promises";
-import { allToolNames, toolResult, toolsForPolicy } from "../src/local/tools.mjs";
+import { allToolNames, MCP_INSTRUCTIONS, toolResult, toolsForPolicy } from "../src/local/tools.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
+const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
+assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
+assert(metadata.protocolVersion === "2025-11-25", "shared protocol version is invalid");
+assert(Array.isArray(metadata.supportedProtocolVersions) && metadata.supportedProtocolVersions.includes(metadata.protocolVersion), "shared supported protocol versions are invalid");
+assert(Array.isArray(metadata.instructions) && metadata.instructions.length >= 4, "shared server instructions are missing");
+assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
+const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
+assert(workerSource.includes('server-metadata.json'), "Worker does not import shared server metadata");
+assert(!workerSource.includes("const MCP_INSTRUCTIONS = ["), "Worker retains a second hand-maintained instruction catalog");
+assert(!workerSource.includes('const MCP_PROTOCOL_VERSION = "'), "Worker retains a second hand-maintained protocol version");
+
 const names = catalog.map((tool) => tool.name);
 const unique = new Set(names);
 assert(names.length === unique.size, "tool catalog contains duplicate names");
@@ -36,7 +47,6 @@ assert(result.isError === false, "successful tool result was marked as an error"
 assert(result.structuredContent?.nested?.value === 1, "structuredContent was not preserved");
 assert(JSON.parse(result.content[0].text).nested.value === 1, "text and structured tool content diverged");
 
-const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
 assert(workerSource.includes('../shared/tool-catalog.json'), "Worker does not import the shared tool catalog");
 assert(!workerSource.includes('const workspaceTools = ['), "Worker contains a second hand-maintained tool catalog");
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.0 - 2026-07-10
+
+### Changed
+
+- Replace routine per-tool success chatter with explicit log levels. Foreground mode defaults to `info`, autostart uses `warn`, fast successful calls are debug-only, and successful calls over 30 seconds remain visible as slow-call events. `--verbose` maps to `debug`; `--quiet` maps to `error`; `--log-level` accepts `error`, `warn`, `info`, or `debug`.
+- Record policy origin and revision in state and daemon metadata. The exact legacy implicit-default policy shape is migrated once to the current maximum-permission `full` profile, while explicit named profiles and identified custom policies are preserved.
+- Redact JSON connection credentials and standalone secret-rotation output by default. Printing the client connection password now requires the explicit reconnect flag; the daemon secret is never printed in full.
+- Centralize server name, MCP protocol versions, and instructions in shared metadata consumed by both Worker and local transports.
+- Reject obsolete removed-local-API flags instead of silently accepting them.
+
+### Security and privacy
+
+- Upgrade and pin `ws` to 8.21.0 to address current memory-disclosure and denial-of-service advisories; pin the reviewed Wrangler runtime version.
+- Bind text, image, and search reads to an opened file handle, enforce limits against that handle, and avoid `stat`/read growth races.
+- Bound state, configuration, marker, lock, service-command, log-message, and structured-log sizes. Reject symbolic-link state files, use no-follow reads where supported, and make service-log tail trimming UTF-8 and line safe.
+- Remove stale temporary Worker secret files when their owner process is gone, not only after an age threshold.
+- Document and expose that Machine Bridge has no sensitive-filename blacklist. Local `full` permits any OS-readable UTF-8 regular file, but cannot override operating-system or independent MCP-host/platform policy.
+
+### Tests and operations
+
+- Add regression coverage for legacy policy migration, sensitive-looking files outside the workspace, inherited full-profile environment, default daemon/stdio log suppression, log bounding, state write bounds, service warning-level configuration, and shared metadata drift.
+- Audit both complete and production-only dependency graphs in GitHub Actions.
+- Document npm's scoped install-script approval for Wrangler native dependencies and add a dedicated logging/observability reference.
+
 ## 0.4.2 - 2026-07-10
 
 ### Fixed

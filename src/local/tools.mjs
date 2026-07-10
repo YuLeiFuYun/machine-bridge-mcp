@@ -1,16 +1,30 @@
 import catalog from "../shared/tool-catalog.json" with { type: "json" };
+import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 
-export const MCP_PROTOCOL_VERSION = "2025-11-25";
-export const MCP_SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
+export const SERVER_NAME = String(serverMetadata.name);
+export const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(serverMetadata.supportedProtocolVersions.map((value) => String(value)));
 
-export const MCP_INSTRUCTIONS = [
-  "You are connected to a local workspace through machine-bridge-mcp.",
-  "Remote mode uses a Cloudflare relay; stdio mode runs entirely on the local machine.",
-  "File and command operations execute on the user's local runtime, not in the Worker.",
-  "Relative paths use the configured workspace. Direct filesystem tools are workspace-scoped unless unrestricted paths are explicitly enabled.",
-  "run_process avoids shell parsing but is not an OS sandbox. exec_command is only exposed in shell execution mode and has the local user's authority.",
-  "Inspect before editing, prefer edit_file or apply_patch over whole-file replacement, and report commands that were run.",
-].join("\n");
+export const MCP_INSTRUCTIONS = Object.freeze(serverMetadata.instructions.map((value) => String(value))).join("\n");
+
+
+export const DEFAULT_POLICY_PROFILE = "full";
+export const DEFAULT_POLICY_REVISION = 2;
+
+export const POLICY_PROFILES = Object.freeze({
+  review: Object.freeze({ profile: "review", allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
+  edit: Object.freeze({ profile: "edit", allowWrite: true, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
+  agent: Object.freeze({ profile: "agent", allowWrite: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
+  full: Object.freeze({ profile: "full", allowWrite: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }),
+});
+
+const POLICY_ORIGINS = new Set(["default", "explicit", "custom", "migrated", "legacy-preserved"]);
+
+export function policyProfile(name, origin = "explicit") {
+  const profile = String(name || "").trim().toLowerCase();
+  if (!POLICY_PROFILES[profile]) throw new Error(`unknown policy profile: ${profile}`);
+  return normalizePolicy({ ...POLICY_PROFILES[profile], origin, revision: DEFAULT_POLICY_REVISION });
+}
 
 export function normalizePolicy(policy = {}) {
   const execMode = ["off", "direct", "shell"].includes(policy.execMode)
@@ -18,8 +32,12 @@ export function normalizePolicy(policy = {}) {
     : policy.allowExec === true
       ? "shell"
       : "off";
+  const origin = POLICY_ORIGINS.has(policy.origin) ? policy.origin : "custom";
+  const revision = Number.isInteger(policy.revision) && policy.revision > 0 ? policy.revision : DEFAULT_POLICY_REVISION;
   return {
     profile: typeof policy.profile === "string" && policy.profile ? policy.profile : "custom",
+    origin,
+    revision,
     allowWrite: policy.allowWrite === true,
     allowExec: execMode !== "off",
     execMode,
@@ -44,9 +62,6 @@ export function allToolNames() {
   return catalog.map((tool) => tool.name);
 }
 
-export function findTool(name) {
-  return catalog.find((tool) => tool.name === name) || null;
-}
 
 export function toolResult(value, isError = false) {
   const special = specialMcpResult(value);
