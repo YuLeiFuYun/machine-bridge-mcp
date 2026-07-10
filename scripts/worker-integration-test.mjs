@@ -203,6 +203,39 @@ try {
   assert(initialized.response.status === 200, `authenticated initialize failed: ${initialized.response.status}`);
   assert(initialized.body.result?.serverInfo?.version === pkg.version, "initialize returned the wrong Worker version");
 
+  for (let index = 0; index < 4; index += 1) {
+    const extraRegistration = await fetch(`${base}/oauth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_name: `Quota Client ${index}`, redirect_uris: [redirectUri] }),
+    });
+    assert(extraRegistration.status === 200, `registration quota rejected client ${index + 2} too early`);
+  }
+  const registrationOverflow = await fetch(`${base}/oauth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: "Quota Overflow", redirect_uris: [redirectUri] }),
+  });
+  assert(registrationOverflow.status === 429, "per-source registration quota was not enforced");
+
+  for (let attempt = 1; attempt <= 10; attempt += 1) {
+    const failedLogin = await fetch(`${base}/oauth/authorize`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ ...authorization, login_token: `wrong-${attempt}` }),
+      redirect: "manual",
+    });
+    const expectedStatus = attempt === 10 ? 429 : 401;
+    assert(failedLogin.status === expectedStatus, `password throttling attempt ${attempt} returned ${failedLogin.status}`);
+  }
+  const blockedLogin = await fetch(`${base}/oauth/authorize`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ ...authorization, login_token: "integration-password" }),
+    redirect: "manual",
+  });
+  assert(blockedLogin.status === 429, "blocked source could immediately retry with the correct password");
+
   console.log("worker OAuth/MCP integration test ok");
 } catch (error) {
   process.stderr.write(`${error.stack || error.message}\n--- wrangler output ---\n${logs}\n`);

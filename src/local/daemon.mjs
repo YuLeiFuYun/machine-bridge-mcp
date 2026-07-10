@@ -442,7 +442,7 @@ export class LocalDaemon {
       timer.unref?.();
       const cleanup = () => {
         clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
+        if (killTimer && !timedOut) clearTimeout(killTimer);
         this.activeProcesses.delete(child);
       };
       const finish = callback => {
@@ -683,6 +683,16 @@ export async function daemonSelfTest() {
       restricted.terminateActiveProcesses("SIGTERM");
       await expectReject(() => interrupted, "exited");
       if (restricted.activeProcesses.size !== 0) throw new Error("terminated process remained tracked");
+
+      const descendantPidFile = join(workspace, "timeout-descendant.pid");
+      const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
+      await expectReject(() => restricted.execCommand(descendantCommand, 1), "command timed out");
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 2500));
+      const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
+      if (isProcessAlive(descendantPid)) {
+        try { process.kill(descendantPid, "SIGKILL"); } catch {}
+        throw new Error("timeout escalation left a SIGTERM-ignoring descendant running");
+      }
     }
 
     const restrictedRoots = restricted.listRoots();
@@ -696,6 +706,20 @@ export async function daemonSelfTest() {
     await rm(outside, { recursive: true, force: true }).catch(() => {});
   }
   return true;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
 }
 
 async function expectReject(callback, pattern) {

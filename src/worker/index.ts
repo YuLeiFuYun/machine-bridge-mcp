@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.3.0";
+const SERVER_VERSION = "0.3.1";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -603,7 +603,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
     }
     for (const [identity, value] of Object.entries(store.auth_failures)) {
-      if (value.last_attempt + AUTH_BLOCK_SECONDS <= now) {
+      if (!identity.startsWith("hmac-sha256:") || value.last_attempt + AUTH_BLOCK_SECONDS <= now) {
         delete store.auth_failures[identity];
         changed = true;
       }
@@ -613,6 +613,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       ...Object.values(store.tokens).map((value) => value.client_id),
     ]);
     for (const [clientId, client] of Object.entries(store.clients)) {
+      if (client.registration_identity && !client.registration_identity.startsWith("hmac-sha256:")) {
+        delete client.registration_identity;
+        changed = true;
+      }
       if (!client.last_used_at) {
         client.last_used_at = client.created_at;
         changed = true;
@@ -646,7 +650,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
     return this.withOAuthLock(async () => {
       const store = await this.oauthStore();
-      const registrationIdentity = await authorizationIdentity(request);
+      const registrationIdentity = await authorizationIdentity(request, this.identityKey());
       const identityClientCount = Object.values(store.clients).filter((client) => client.registration_identity === registrationIdentity).length;
       if (identityClientCount >= MAX_OAUTH_CLIENTS_PER_IDENTITY) {
         return json({ error: "too_many_requests", error_description: "client registration limit reached for this source" }, 429);
@@ -741,7 +745,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       const { client, clientId, redirectUri, codeChallenge, requestedResource, scope, state } = validation.value;
       const now = Math.floor(Date.now() / 1000);
-      const identity = await authorizationIdentity(request);
+      const identity = await authorizationIdentity(request, this.identityKey());
       const failure = store.auth_failures[identity];
       if (failure?.blocked_until > now) {
         return this.authorizePage(request, base, "Too many failed attempts. Try again later.", body, 429, validation.value);
@@ -845,6 +849,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     } finally {
       release();
     }
+  }
+
+  private identityKey(): string {
+    const key = this.env.OAUTH_TOKEN_VERSION || this.env.DAEMON_SHARED_SECRET || this.env.MCP_OAUTH_PASSWORD;
+    if (!key) throw new HttpError(503, "server_not_configured", "OAuth identity key is not configured");
+    return key;
   }
 
   private bodyLimitBytes(): number {
@@ -1108,9 +1118,18 @@ function pruneRecordByExpiry<T extends { expires_at: number }>(record: Record<st
   for (const key of Object.keys(record)) if (!allowed.has(key)) delete record[key];
 }
 
-async function authorizationIdentity(request: Request): Promise<string> {
-  const source = request.headers.get("CF-Connecting-IP") || request.headers.get("User-Agent") || "unknown";
-  return `sha256:${await sha256Hex(source.slice(0, 512))}`;
+async function authorizationIdentity(request: Request, keyMaterial: string): Promise<string> {
+  const source = (request.headers.get("CF-Connecting-IP") || "unknown").slice(0, 128);
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(keyMaterial),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(source));
+  return `hmac-sha256:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function recordAuthorizationFailure(store: OAuthStore, identity: string, now: number): void {

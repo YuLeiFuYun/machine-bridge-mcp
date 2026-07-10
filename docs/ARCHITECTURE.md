@@ -87,7 +87,7 @@ Limits are defense-in-depth and are intentionally below platform maxima:
 
 The local state schema is versioned. A custom state root is adopted only when empty or when it contains a recognizable legacy layout; legacy text markers are migrated, and removal validates the marker, contents, canonical path, active locks, and workspace/source-tree exclusions. JSON state and global config are written to owner-only temporary files, flushed, and atomically renamed. A malformed state file is renamed to a bounded corrupt backup before a clean state object is reconstructed. State roots carry an owner-only marker; uninstall validates the target and refuses dangerous or unrecognized recursive deletion.
 
-OAuth metadata is pruned on access. Expired codes and tokens, old throttling records, and inactive clients without active credentials are removed.
+OAuth metadata is pruned on access. Expired codes and tokens, old throttling records, and inactive clients without active credentials are removed. Registration and password-throttling identities use a deployment-keyed HMAC of the Cloudflare source address rather than storing an address or reversible unsalted hash.
 
 Cross-origin browser access is denied unless the exact origin is configured; allowed origins receive bounded preflight and response headers. Same-origin requests remain allowed.
 

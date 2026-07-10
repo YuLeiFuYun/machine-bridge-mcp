@@ -57,7 +57,7 @@ Public health and metadata endpoints do not expose live daemon policy or connect
 
 ### Relay and denial of service
 
-Only one daemon socket is active. New connections replace old ones. Pending calls are socket-bound and concurrency-limited. Request and output sizes are bounded. Dynamic registration is limited globally and per hashed source identity; inactive clients expire.
+Only one daemon socket is active. New connections replace old ones. Pending calls are socket-bound and concurrency-limited. Request and output sizes are bounded. Dynamic registration is limited globally and per keyed-HMAC source identity; the source IP is not stored directly and inactive clients expire.
 
 These controls reduce accidental exhaustion and simple abuse. The CLI uses the package-installed Wrangler binary and does not fall back to downloading an unpinned command through `npx`. They do not replace Cloudflare account protections, rate-limiting/WAF rules, or cost alerts for an internet-facing deployment.
 
