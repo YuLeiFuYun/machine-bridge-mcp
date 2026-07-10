@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.0 - 2026-07-10
+
+### Added
+
+- Add `diagnose_runtime`, a fixed-input layered diagnostic that distinguishes requests reaching the daemon from Machine Bridge policy, local filesystem, process-spawn, shell, managed-job storage, and registered-resource failures. `machine-mcp doctor` runs the same local probes.
+- Add operator-registered local file resources. Credentials and other local-only files can be referenced by alias and injected into managed steps through a private copied path, stdin, or an environment variable without sending file contents or source paths through MCP.
+- Add durable managed jobs with ordered argv steps, bounded output, job-scoped temporary files, detached execution, cancellation, idempotent `finally_steps`, dead-runner detection, bounded recovery, and local CLI inspection/cancellation.
+- Add two-phase handoff: `stage_job` persists a validated non-running plan for operator review, and `machine-mcp job approve JOB_ID` provides explicit local authorization when a host blocks execution-class tools.
+- Add a local JSON fallback with `machine-mcp job submit plan.json` for situations where the MCP host cannot deliver an execution request.
+
+### Security and privacy
+
+- Keep resource values out of MCP plans and results. Referenced files are reopened, bounded, hashed at acceptance, verified before use, copied with owner-only permissions, and removed after cleanup.
+- Redact exact resource paths, exact UTF-8 values, and bounded exact base64/hex forms from retained output. Add `capture_output: "discard"` for credential-consuming commands where output must not be retained.
+- Delete active job plans, runner PID files, temporary helper contents, argv, stdin, environment overrides, resource source paths, and hashes after terminal commit. Retain only bounded status/redacted results for up to seven days and 50 jobs.
+- Enforce canonical managed-job cwd containment in restricted profiles, bounded per-job resources/temporary files/output, no-follow plan/resource reads, owner-only job state, bounded runner diagnostics, recovery mutual exclusion, and a three-attempt automatic recovery limit.
+- Refuse uninstall while detached jobs remain active. Later profile changes affect new submissions; accepted running jobs require explicit cancellation.
+- Clarify that managed jobs are durability and local-authorization mechanisms, not a bypass for MCP-host, operating-system, or endpoint-security policy.
+
+### Operations and tests
+
+- Add local resource commands: `resource add`, `list`, `check`, and `remove`.
+- Add local managed-job commands: `job submit`, `inspect`, `approve`, `list`, `read`, and `cancel`. Approval is interactive by default; `--yes` is required for non-interactive JSON approval.
+- Add state schema version 5 for resource registry metadata while redacting resource source paths from normal status output.
+- Add regression coverage for staging/approval/cancel-before-start, stdio disconnect survival, resource replacement races and output redaction, job-scoped helper cleanup, failure/timeout/cancellation finally paths, concurrent recovery, corrupt plans, output budgets, local CLI fallback, uninstall refusal, and cross-profile tool exposure.
+- Add a dedicated managed-jobs/resource operations and threat-model guide.
+
 ## 0.5.0 - 2026-07-10
 
 ### Changed

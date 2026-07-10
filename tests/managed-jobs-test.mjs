@@ -1,0 +1,346 @@
+import { spawn } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { inspectResourceFile, ManagedJobManager } from "../src/local/managed-jobs.mjs";
+
+const root = await mkdtemp(join(tmpdir(), "mbm-managed-job-test-"));
+const workspace = join(root, "workspace");
+const jobRoot = join(root, "jobs");
+const secretFile = join(root, "local-resource.txt");
+const helperFile = join(workspace, "temporary-helper.txt");
+const cleanupMarker = join(workspace, "cleanup-marker.txt");
+const cancelMarker = join(workspace, "cancel-cleanup-marker.txt");
+const recoveryMarker = join(workspace, "recovery-cleanup-marker.txt");
+const secret = "managed-job-secret-value-42";
+
+await mkdir(workspace, { recursive: true });
+await writeFile(secretFile, `${secret}\n`, { mode: 0o600 });
+if (process.platform !== "win32") await chmod(secretFile, 0o600);
+await writeFile(helperFile, "temporary", "utf8");
+
+try {
+  const resource = inspectResourceFile(secretFile);
+  const manager = new ManagedJobManager({
+    jobRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: false, unrestrictedPaths: true },
+    resources: { "test-secret": resource },
+  });
+
+  const restrictedManager = new ManagedJobManager({
+    jobRoot: join(root, "restricted-jobs"),
+    workspace,
+    policy: { execMode: "direct", minimalEnv: true, unrestrictedPaths: false },
+    resources: {},
+  });
+  expectThrow(() => restrictedManager.start({
+    steps: [{ argv: [process.execPath, "-e", ""], cwd: root }],
+  }), "outside the configured workspace");
+
+  const stagedMarker = join(workspace, "staged-approved.txt");
+  const staged = manager.stage({
+    name: "local approval handoff",
+    steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'approved')", stagedMarker], env_resources: { MBM_REVIEW_ONLY: "test-secret" }, timeout_seconds: 10 }],
+  });
+  assert(staged.status === "staged" && staged.execution_started === false, "stage_job started execution");
+  await delay(200);
+  assert(!(await exists(stagedMarker)), "staged job executed before local approval");
+  const stagedStatus = manager.read({ job_id: staged.job_id });
+  assert(stagedStatus.status === "staged" && await exists(join(jobRoot, staged.job_id, "plan.json")), "staged plan was not retained for approval");
+  const stagedInspection = manager.inspectLocal({ job_id: staged.job_id });
+  const stagedInspectionText = JSON.stringify(stagedInspection);
+  assert(stagedInspection.review_plan?.steps?.length === 1 && stagedInspection.plan_sha256 === staged.plan_sha256, "local staged-plan inspection is incomplete");
+  const inspectedResource = stagedInspection.review_plan?.resources?.["test-secret"];
+  assert(!stagedInspectionText.includes(secretFile) && inspectedResource && !("path" in inspectedResource) && !("sha256" in inspectedResource), "local staged-plan inspection exposed a resource source path/hash");
+  const approved = manager.approve({ job_id: staged.job_id }, { localOperator: true });
+  assert(approved.status === "queued" && approved.approval === "local-operator", "local approval did not launch the staged job");
+  const approvedResult = await waitForJob(manager, staged.job_id);
+  assert(approvedResult.status === "succeeded" && await readFile(stagedMarker, "utf8") === "approved", "approved staged job did not execute");
+
+  const neverRunMarker = join(workspace, "staged-cancelled.txt");
+  const stagedCancelled = manager.stage({
+    name: "cancel before approval",
+    steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'should-not-run')", neverRunMarker] }],
+    finally_steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'finally-should-not-run')", neverRunMarker] }],
+  });
+  const cancelledBeforeStart = manager.cancel({ job_id: stagedCancelled.job_id });
+  assert(cancelledBeforeStart.status === "cancelled_before_start" && cancelledBeforeStart.execution_started === false, "staged cancellation status is incorrect");
+  await delay(200);
+  assert(!(await exists(neverRunMarker)), "cancelled staged job executed a main or finally step");
+  assert(!(await exists(join(jobRoot, stagedCancelled.job_id, "plan.json"))), "cancelled staged plan was not scrubbed");
+
+  const publicResources = manager.listResources();
+  assert(publicResources.count === 1 && publicResources.resources[0].name === "test-secret", "resource alias was not listed");
+  assert(!JSON.stringify(publicResources).includes(secretFile) && !JSON.stringify(publicResources).includes(secret), "resource listing exposed a path or value");
+  assert(manager.diagnoseStorage().ok, "managed-job storage probe failed");
+
+  const script = [
+    "const fs=require('node:fs');",
+    "const chunks=[];",
+    "process.stdin.on('data',c=>chunks.push(c));",
+    "process.stdin.on('end',()=>{",
+    " const p=process.argv[1];",
+    " const file=fs.readFileSync(p);",
+    " const stdin=Buffer.concat(chunks);",
+    " process.stdout.write(file.toString()+process.env.MBM_JOB_SECRET+'\\n'+stdin.toString()+file.toString('base64')+'\\n'+file.toString('hex')+'\\n'+p+'\\n');",
+    " process.exit(7);",
+    "});",
+  ].join("");
+  const cleanupScript = "const fs=require('node:fs'); fs.rmSync(process.argv[1],{force:true}); fs.writeFileSync(process.argv[2],'cleaned');";
+
+  const accepted = manager.start({
+    name: "resource redaction and finally cleanup",
+    temporary_files: [{ name: "helper.js", content: "process.stdout.write('temporary-helper-ok')" }],
+    steps: [{
+      name: "run job-scoped helper",
+      argv: [process.execPath, "{{temp:helper.js}}"],
+      timeout_seconds: 20,
+    }, {
+      name: "consume local resource",
+      argv: [process.execPath, "-e", script, "{{resource:test-secret}}"],
+      env_resources: { MBM_JOB_SECRET: "test-secret" },
+      stdin_resource: "test-secret",
+      timeout_seconds: 20,
+    }],
+    finally_steps: [{
+      name: "remove temporary helper",
+      argv: [process.execPath, "-e", cleanupScript, helperFile, cleanupMarker],
+      timeout_seconds: 20,
+    }],
+  });
+  assert(accepted.detached && accepted.continues_without_mcp_connection, "managed job was not accepted as detached");
+  const failed = await waitForJob(manager, accepted.job_id);
+  assert(failed.status === "failed", `expected failed job, got ${failed.status}`);
+  assert(!(await exists(helperFile)) && await exists(cleanupMarker), "finally step did not clean the temporary helper");
+  const serialized = JSON.stringify(failed);
+  assert(!serialized.includes(secret), "job result exposed raw resource content");
+  assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("base64")), "job result exposed base64 resource content");
+  assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("hex")), "job result exposed hex resource content");
+  assert(!serialized.includes(secretFile), "job result exposed the registered resource path");
+  assert(serialized.includes("redacted-resource:test-secret") && serialized.includes("resource:test-secret"), "job result did not mark redacted values and paths");
+  assert(serialized.includes("temporary-helper-ok"), "job-scoped temporary helper did not run");
+  assert(!(await exists(join(jobRoot, accepted.job_id, "runtime"))), "job runtime resource copies and temporary files were not removed");
+  assert(!(await exists(join(jobRoot, accepted.job_id, "plan.json"))), "finished job retained scripts, stdin, argv, or resource source paths in plan.json");
+
+  const changingResource = join(root, "changing-resource.txt");
+  await writeFile(changingResource, "first-value", { mode: 0o600 });
+  if (process.platform !== "win32") await chmod(changingResource, 0o600);
+  const changingManager = new ManagedJobManager({
+    jobRoot: join(root, "changing-jobs"),
+    workspace,
+    policy: { execMode: "direct", minimalEnv: false },
+    resources: { changing: inspectResourceFile(changingResource) },
+  });
+  const changingJob = changingManager.start({
+    name: "resource replacement fails closed",
+    steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},250)"], stdin_resource: "changing", timeout_seconds: 10 }],
+  });
+  await writeFile(changingResource, "second-value", { mode: 0o600 });
+  const changed = await waitForJob(changingManager, changingJob.job_id);
+  assert(changed.status === "failed" && changed.result?.error_class === "resource_error", "resource change after submission did not fail closed");
+
+  const outputBudget = manager.start({
+    name: "bounded aggregate output",
+    steps: Array.from({ length: 8 }, (_, index) => ({
+      name: `output-${index}`,
+      argv: [process.execPath, "-e", "process.stdout.write('x'.repeat(200000)); process.stderr.write('y'.repeat(200000));"],
+      timeout_seconds: 20,
+      allow_failure: true,
+    })),
+  });
+  const bounded = await waitForJob(manager, outputBudget.job_id);
+  assert(bounded.status === "succeeded", `bounded output job ended as ${bounded.status}`);
+  const resultText = JSON.stringify(bounded.result);
+  assert(Buffer.byteLength(resultText) < 2 * 1024 * 1024, "managed job result exceeded a safe transport bound");
+  assert(bounded.result.capture_limit_bytes === 256 * 1024 && bounded.result.capture_remaining_bytes === 0, "aggregate capture budget was not enforced");
+
+  const discarded = manager.start({
+    name: "discard output",
+    steps: [{
+      argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_DISCARD_SECRET)"],
+      env_resources: { MBM_DISCARD_SECRET: "test-secret" },
+      capture_output: "discard",
+      timeout_seconds: 20,
+    }],
+  });
+  const discardedResult = await waitForJob(manager, discarded.job_id);
+  const discardedStep = discardedResult.result.steps[0];
+  assert(discardedStep.output_discarded === true && discardedStep.stdout === "" && discardedStep.stderr === "", "discard output mode retained output");
+
+  const cancellable = manager.start({
+    name: "cancel with cleanup",
+    steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},30000)"], timeout_seconds: 60 }],
+    finally_steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'cancel-cleaned')", cancelMarker], timeout_seconds: 20 }],
+  });
+  await waitForRunning(manager, cancellable.job_id);
+  const cancellation = manager.cancel({ job_id: cancellable.job_id });
+  assert(cancellation.cancellation_requested && cancellation.cleanup_will_run, "cancellation was not accepted");
+  const cancelled = await waitForJob(manager, cancellable.job_id);
+  assert(cancelled.status === "cancelled", `expected cancelled job, got ${cancelled.status}`);
+  assert(await exists(cancelMarker), "cancelled job did not execute finally cleanup");
+
+  const recoverable = manager.start({
+    name: "recover interrupted cleanup",
+    steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},30000)"], timeout_seconds: 60 }],
+    finally_steps: [{ argv: [process.execPath, "-e", "require('node:fs').appendFileSync(process.argv[1],'x')", recoveryMarker], timeout_seconds: 20 }],
+  });
+  await waitForRunning(manager, recoverable.job_id);
+  const recoverableDir = join(jobRoot, recoverable.job_id);
+  const runnerPid = Number((await readFile(join(recoverableDir, "runner.pid"), "utf8")).trim());
+  if (!Number.isInteger(runnerPid) || runnerPid <= 0) throw new Error("managed job did not persist its runner PID");
+  try { process.kill(runnerPid, "SIGKILL"); } catch {}
+  await waitForPidExit(runnerPid, 10_000);
+  const statusFile = join(recoverableDir, "status.json");
+  const stale = JSON.parse(await readFile(statusFile, "utf8"));
+  Object.assign(stale, {
+    status: "running",
+    runner_pid: runnerPid,
+    updated_at: new Date(Date.now() - 60_000).toISOString(),
+    finished_at: null,
+  });
+  await writeFile(statusFile, `${JSON.stringify(stale, null, 2)}
+`, { mode: 0o600 });
+  const recoveryManager = new ManagedJobManager({
+    jobRoot,
+    workspace,
+    policy: { execMode: "direct", minimalEnv: false },
+    resources: { "test-secret": resource },
+  });
+  const concurrentRecoveryManager = new ManagedJobManager({
+    jobRoot,
+    workspace,
+    policy: { execMode: "direct", minimalEnv: false },
+    resources: { "test-secret": resource },
+  });
+  const recovered = await waitForJob(recoveryManager, recoverable.job_id, new Set(["recovered", "recovery_failed"]));
+  assert(recovered.status === "recovered", `expected recovered cleanup, got ${recovered.status}`);
+  assert(await readFile(recoveryMarker, "utf8") === "x", "concurrent recovery launched duplicate finally execution");
+  assert(concurrentRecoveryManager.read({ job_id: recoverable.job_id }).status === "recovered", "concurrent manager did not observe recovered terminal state");
+  assert(!(await exists(join(recoverableDir, "plan.json"))), "recovered job retained its execution plan");
+
+  const exhaustedId = "job_recoveryexhaustedabcdefghijkl";
+  const exhaustedDir = join(jobRoot, exhaustedId);
+  await mkdir(exhaustedDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(exhaustedDir, "plan.json"), `${JSON.stringify({
+    version: 1,
+    name: "recovery exhausted",
+    workspace,
+    full_env: false,
+    resources: {},
+    temporary_files: [],
+    steps: [{ name: "noop", argv: [process.execPath, "-e", ""], cwd: workspace, env: {}, env_resources: {}, stdin: null, stdin_resource: null, timeout_seconds: 10, allow_failure: false, capture_output: "redacted" }],
+    finally_steps: [],
+  })}
+`, { mode: 0o600 });
+  await writeFile(join(exhaustedDir, "status.json"), `${JSON.stringify({
+    job_id: exhaustedId,
+    name: "recovery exhausted",
+    status: "interrupted",
+    recovery_attempts: 3,
+    created_at: new Date(Date.now() - 120_000).toISOString(),
+    updated_at: new Date(Date.now() - 120_000).toISOString(),
+    runner_pid: 99999999,
+  })}
+`, { mode: 0o600 });
+  const exhaustedManager = new ManagedJobManager({ jobRoot, workspace, policy: { execMode: "direct", minimalEnv: true }, resources: {} });
+  const exhausted = exhaustedManager.read({ job_id: exhaustedId });
+  assert(exhausted.status === "recovery_exhausted" && exhausted.recovery_attempts === 3, "recovery limit did not become terminal");
+  assert(!(await exists(join(exhaustedDir, "plan.json"))) && !(await exists(join(exhaustedDir, "runner.pid"))), "recovery exhaustion retained active metadata");
+
+  const corruptDir = join(jobRoot, "job_abcdefghijklmnopqrstuvwxyz123456");
+  await mkdir(corruptDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(corruptDir, "plan.json"), "{not-json", { mode: 0o600 });
+  await writeFile(join(corruptDir, "status.json"), `${JSON.stringify({
+    job_id: "job_abcdefghijklmnopqrstuvwxyz123456",
+    name: "corrupt plan",
+    status: "queued",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  })}
+`, { mode: 0o600 });
+  const runnerEntry = fileURLToPath(new URL("../src/local/job-runner.mjs", import.meta.url));
+  const corruptRunner = spawn(process.execPath, [runnerEntry, "--job-dir", corruptDir], { stdio: "ignore", windowsHide: true });
+  await new Promise((resolvePromise, rejectPromise) => {
+    corruptRunner.once("close", resolvePromise);
+    corruptRunner.once("error", rejectPromise);
+  });
+  const corruptStatus = JSON.parse(await readFile(join(corruptDir, "status.json"), "utf8"));
+  assert(corruptStatus.status === "runner_failed", `corrupt plan did not become runner_failed: ${corruptStatus.status}`);
+  assert(!(await exists(join(corruptDir, "plan.json"))) && !(await exists(join(corruptDir, "runner.pid"))), "fatal runner retained active execution metadata");
+
+  if (process.platform !== "win32") {
+    const insecure = join(root, "insecure-resource.txt");
+    await writeFile(insecure, "not-secret", { mode: 0o644 });
+    await chmod(insecure, 0o644);
+    expectThrow(() => inspectResourceFile(insecure), "readable by group or others");
+    const allowed = inspectResourceFile(insecure, { allowInsecurePermissions: true });
+    assert(allowed.allowInsecurePermissions === true, "explicit insecure-permission override was not retained");
+  }
+
+  const rootMode = (await stat(jobRoot)).mode & 0o777;
+  if (process.platform !== "win32") assert(rootMode === 0o700, `job root mode is ${rootMode.toString(8)}, expected 700`);
+  console.log("managed jobs/resources integration test ok");
+} finally {
+  await rm(root, { recursive: true, force: true });
+}
+
+async function waitForRunning(manager, jobId, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = manager.read({ job_id: jobId });
+    if (["running", "cleaning"].includes(value.status)) return value;
+    if (!new Set(["queued"]).has(value.status)) throw new Error(`job finished before cancellation: ${value.status}`);
+    await delay(50);
+  }
+  throw new Error("timed out waiting for managed job to start");
+}
+
+async function waitForJob(manager, jobId, terminal = null, timeoutMs = 20_000) {
+  const terminalStates = terminal || new Set([
+    "succeeded", "failed", "cancelled", "succeeded_cleanup_failed", "failed_cleanup_failed",
+    "cancelled_cleanup_failed", "recovered", "recovery_failed",
+  ]);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = manager.read({ job_id: jobId });
+    if (terminalStates.has(value.status)) return value;
+    await delay(50);
+  }
+  const dir = join(jobRoot, jobId);
+  const diagnostics = {};
+  for (const name of ["status.json", "runner.out.log", "runner.err.log"]) {
+    try { diagnostics[name] = await readFile(join(dir, name), "utf8"); } catch {}
+  }
+  throw new Error(`timed out waiting for managed job ${jobId}: ${JSON.stringify(diagnostics)}`);
+}
+
+async function waitForPidExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); } catch { return; }
+    await delay(50);
+  }
+  throw new Error(`timed out waiting for runner pid ${pid} to exit`);
+}
+
+async function exists(path) {
+  try { await stat(path); return true; } catch { return false; }
+}
+
+function delay(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+function expectThrow(callback, pattern) {
+  try { callback(); } catch (error) {
+    if (String(error?.message || error).includes(pattern)) return;
+    throw error;
+  }
+  throw new Error(`expected throw containing: ${pattern}`);
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}

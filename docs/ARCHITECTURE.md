@@ -20,7 +20,7 @@ No transport is treated as a sandbox. Both transports invoke the same local runt
 
 The CLI canonicalizes workspaces, resolves policy profiles, maintains per-workspace state and credentials, serializes startup/deploy/rotation with locks, deploys the Worker, installs optional platform-native autostart, and starts either remote daemon or stdio mode.
 
-A canonical workspace receives an independent profile, Worker name, secret set, daemon/startup locks, and state file. State schema version 4 records policy origin/revision in addition to the capability fields and retains removal of obsolete local API state.
+A canonical workspace receives an independent profile, Worker name, secret set, resource registry, managed-job directory, daemon/startup locks, and state file. State schema version 5 records policy origin/revision and local resource metadata in addition to the capability fields.
 
 ### Local runtime
 
@@ -30,11 +30,33 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 - file, text search, image, patch, and Git operations;
 - direct and shell process execution;
 - process-session buffers and stdin lifecycle;
+- layered fixed runtime diagnostics;
+- local resource aliases and detached managed-job coordination;
 - mutation serialization;
 - child-process tracking and cancellation;
 - output, traversal, concurrency, and time limits.
 
 Remote mode attaches WebSocket connection/reconnect behavior. Stdio mode invokes the same runtime directly.
+
+### Managed job runner
+
+`ManagedJobManager` persists bounded per-workspace job envelopes below the owner-only profile directory. `start_job` validates the complete plan, snapshots referenced resource metadata/hashes, writes an owner-only plan/status, and launches `job-runner.mjs` as a detached process with runner-level logs redirected to owner-only files. `stage_job` performs the same acceptance validation but writes a non-running `staged` envelope; only local `job approve` transitions it to queued and launches the runner.
+
+The runner:
+
+- materializes registered resources as private `0600` copies after hash verification;
+- materializes bounded job-scoped temporary files;
+- substitutes resource/temp/runtime/workspace placeholders;
+- executes ordered argv steps with bounded output and timeout/process-tree termination;
+- polls an owner-only cancellation marker, terminates the current child tree, and keeps the runner alive for finally steps;
+- attempts ordered finally steps after success, failure, timeout, or cancellation;
+- removes private runtime copies;
+- writes bounded redacted results and terminal status;
+- deletes the full execution plan and runner PID file after terminal commit.
+
+Running managed jobs do not belong to an MCP socket or daemon call ID and snapshot the accepted environment mode/resources. Later profile changes govern new direct submissions; accepted running jobs require explicit cancellation. Staged plans launch no process and require explicit local approval. Daemon disconnect/replacement does not terminate them. Dead runner PIDs are detected on the next daemon or local job-CLI start; stale private runtime data is removed and the finally phase is retried in recovery mode. Recovery deliberately reruns all finally steps, so cleanup must be idempotent.
+
+Local resource registrations remain in owner-only state and are reloaded for every new job. MCP-visible resource inventory includes aliases and validation status but never source paths, hashes, or contents.
 
 ### Stdio MCP server
 
@@ -66,8 +88,12 @@ flowchart LR
   L[Local MCP client] -->|stdio JSON-RPC| R
   R -->|canonical workspace tools| F[Selected workspace]
   R -->|optional direct/shell processes| P[Local user / OS / network]
-  CLI[CLI + state] --> W
+  R -->|durable accepted plan| J[Detached managed-job runner]
+  J -->|private copies| LR[Local resource files]
+  J -->|argv/stdin/env| P
+  CLI[CLI + owner-only state] --> W
   CLI --> R
+  CLI --> J
   CLI --> S[Autostart provider]
 ```
 
@@ -86,7 +112,8 @@ Remote OAuth determines which client may call tools. Local stdio access relies o
 9. `tools/call` receives a random relay call ID and is bound to the current socket and authenticated client request key.
 10. The runtime validates policy and arguments, executes the tool, and returns a bounded result.
 11. The Durable Object accepts a result only from the socket that received that call.
-12. A matching cancellation notification removes the pending call, tells the daemon to cancel, and terminates any child processes bound to it.
+12. A matching cancellation notification removes the pending call, tells the daemon to cancel, and terminates any ordinary child processes bound to it.
+13. `start_job` is different: after durable acceptance, the detached runner is no longer bound to the relay call or socket. Later cancellation uses `cancel_job` or the local CLI.
 
 Duplicate in-flight JSON-RPC IDs for the same access token are rejected so cancellation cannot ambiguously target multiple calls.
 
@@ -98,7 +125,7 @@ Duplicate in-flight JSON-RPC IDs for the same access token are rejected so cance
 4. Each call receives an internal random call ID used only for cancellation and process tracking.
 5. Results are emitted as JSON-RPC on stdout; logs remain on stderr.
 6. Duplicate in-flight request IDs are rejected.
-7. Closing stdin cancels pending calls, terminates active processes, and removes the isolated runtime directory.
+7. Closing stdin cancels pending calls, terminates ordinary active processes/process sessions, and removes the transport runtime directory. Previously accepted managed jobs continue in their persistent per-workspace job directories.
 
 ## Filesystem resolution and privacy
 
@@ -136,7 +163,9 @@ The default `full` profile passes the complete parent environment. Isolated envi
 
 One-shot calls have bounded output and timeouts. Process sessions retain bounded byte buffers with monotonic offsets, accept bounded stdin, support short output/exit waits, and are capped per runtime. Valid UTF-8 is returned as text; byte slices that are not valid UTF-8 also include lossless base64 data. Session IDs are random. Sessions are memory-only and are killed on runtime stop, remote disconnect, or daemon replacement.
 
-Child processes run in a separate process group where supported. Timeout, cancellation, disconnect, and replacement send termination to the process tree, with forced escalation for timeout/disconnect paths.
+Child processes run in a separate process group where supported. Timeout, cancellation, disconnect, and replacement send termination to ordinary process trees, with forced escalation for timeout/disconnect paths.
+
+Managed jobs use the same argv/environment primitives but a different lifecycle. Each job is capped at 16 main and 16 finally steps, 50 retained jobs, 64 registered resources, 8 MiB of referenced resource bytes, 512 KiB of temporary-file content, and bounded per-step output. They are non-interactive. Resource paths/stdin/environment are injected only inside the runner. Exact resource output redaction is defense in depth; discard capture is the strong option when a command may echo credentials.
 
 ## Daemon reconnect and replacement
 
@@ -146,7 +175,9 @@ Pending calls retain their originating socket reference. A stale socket cannot c
 
 ## Persistence
 
-Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. Reads reject symbolic links and use no-follow descriptors where supported. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. Reads reject symbolic links and use no-follow descriptors where supported. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+
+Active managed jobs persist an owner-only plan, status, runner PID, and bounded runner diagnostics. Terminal jobs delete the full plan and retain only bounded status/redacted results for up to seven days. This balances crash cleanup with minimization of scripts, stdin, argv, environment overrides, and resource source paths.
 
 Removal validates the state marker, canonical target, known contents, active locks, filesystem root/home/current/package/workspace/source exclusions, and Worker deletion outcome before recursive deletion.
 
@@ -154,7 +185,7 @@ OAuth metadata is pruned on access. Expired codes/tokens, old throttling records
 
 ## Observability
 
-Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status and policy origin/revision.
+Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status, policy origin/revision, managed-job counts, and resource alias names without paths or values. `diagnose_runtime` runs fixed local probes and explicitly reports that its own request reached the daemon.
 
 Foreground logging defaults to `info`; autostart uses `warn`. Routine successful calls and shortened random correlation IDs are debug-only. `info` retains deployment/connection transitions and successful calls slower than 30 seconds. Failures log tool name, duration, and coarse error class without arguments or outputs. Unexpected local and Worker errors are reduced to classes in normal logs. Messages, strings, arrays, object depth/key counts, and serialized fields are bounded.
 
@@ -165,7 +196,9 @@ Cloudflare sampling is size control rather than an audit log. The project intent
 - operating-system sandboxing of arbitrary executables;
 - preventing an authorized client from requesting data available to enabled tools;
 - automatically deciding which local files are sensitive or overriding MCP-host/platform safety policy;
-- surviving daemon restart with process sessions;
+- surviving daemon restart with process sessions (managed jobs are the separate durable mechanism);
+- guaranteed finally cleanup across permanent power, disk, credential, network, or endpoint-security failure;
+- bypassing MCP-host, connector, operating-system, or endpoint-security policy;
 - PTY/terminal emulation;
 - model-level prompt-injection prevention;
 - multi-user tenancy in one Worker deployment.

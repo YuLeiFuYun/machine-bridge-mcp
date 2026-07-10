@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { loadState } from "../src/local/state.mjs";
+import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temp = await mkdtemp(join(tmpdir(), "mbm-stdio-test-"));
@@ -51,7 +53,7 @@ try {
   send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const listed = await responseFor(2);
   const tools = new Map(listed.result.tools.map((tool) => [tool.name, tool]));
-  for (const required of ["server_info", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
+  for (const required of ["server_info", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "diagnose_runtime", "list_local_resources", "stage_job", "start_job", "list_jobs", "read_job", "cancel_job", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
     assert(tools.has(required), `stdio default full profile omitted ${required}`);
   }
   assert(tools.get("write_file")?.annotations?.destructiveHint === true, "tool annotations missing");
@@ -99,6 +101,14 @@ try {
   assert(serverInfo.result?.structuredContent?.enforcement?.sensitive_filename_filter === false, "server_info did not disclose the absence of a sensitive-filename filter");
   assert(serverInfo.result?.structuredContent?.enforcement?.host_policy_is_independent === true, "server_info did not disclose the independent host-policy boundary");
 
+  send({ jsonrpc: "2.0", id: 602, method: "tools/call", params: { name: "diagnose_runtime", arguments: {} } });
+  const diagnostics = await responseFor(602, 10_000);
+  assert(diagnostics.result?.structuredContent?.request_reached_local_runtime === true, "runtime diagnostic did not prove daemon reachability");
+  assert(diagnostics.result?.structuredContent?.checks?.some((check) => check.layer === "local-process-spawn" && check.ok), "runtime diagnostic did not validate local process spawning");
+  send({ jsonrpc: "2.0", id: 603, method: "tools/call", params: { name: "list_local_resources", arguments: {} } });
+  const localResources = await responseFor(603);
+  assert(localResources.result?.structuredContent?.count === 0 && localResources.result?.structuredContent?.paths_exposed === false, "empty local resource registry was not reported safely");
+
   send({ jsonrpc: "2.0", id: 601, method: "tools/call", params: { name: "exec_command", arguments: { command: "printf shell-ok", timeout_seconds: 5 } } });
   const shellResult = await responseFor(601);
   assert(shellResult.result?.structuredContent?.stdout === "shell-ok", "default full profile shell execution failed");
@@ -139,10 +149,68 @@ try {
   const ping = await responseFor(8);
   assert(ping.result && Object.keys(ping.result).length === 0, "stdio server did not remain responsive after cancellation");
 
+  const stagedMarker = join(workspace, "staged-job-must-not-run.txt");
+  send({ jsonrpc: "2.0", id: 690, method: "tools/call", params: { name: "stage_job", arguments: {
+    name: "stdio local approval handoff",
+    steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'unexpected')", stagedMarker], timeout_seconds: 10 }],
+  } } });
+  const stagedAccepted = await responseFor(690);
+  const stagedJobId = stagedAccepted.result?.structuredContent?.job_id;
+  assert(stagedAccepted.result?.structuredContent?.status === "staged" && stagedAccepted.result?.structuredContent?.execution_started === false, "stage_job did not remain non-executing");
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+  try { await readFile(stagedMarker); throw new Error("staged job executed before approval"); } catch (error) {
+    if (!String(error?.message || error).includes("ENOENT")) throw error;
+  }
+  send({ jsonrpc: "2.0", id: 691, method: "tools/call", params: { name: "read_job", arguments: { job_id: stagedJobId } } });
+  const stagedRead = await responseFor(691);
+  assert(stagedRead.result?.structuredContent?.status === "staged", "read_job did not report staged status");
+  send({ jsonrpc: "2.0", id: 692, method: "tools/call", params: { name: "cancel_job", arguments: { job_id: stagedJobId } } });
+  const stagedCancelled = await responseFor(692);
+  assert(stagedCancelled.result?.structuredContent?.status === "cancelled_before_start" && stagedCancelled.result?.structuredContent?.execution_started === false, "cancel_job did not cancel the staged plan without execution");
+
+  const detachedMarker = join(workspace, "detached-job-marker.txt");
+  const detachedCleanup = join(workspace, "detached-job-cleanup.txt");
+  const detachedScript = "setTimeout(()=>require('node:fs').writeFileSync(process.argv[1],'detached-complete'),500)";
+  send({ jsonrpc: "2.0", id: 700, method: "tools/call", params: { name: "start_job", arguments: {
+    name: "survive stdio disconnect",
+    steps: [{ argv: [process.execPath, "-e", detachedScript, detachedMarker], timeout_seconds: 10 }],
+    finally_steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'cleanup-complete')", detachedCleanup], timeout_seconds: 10 }],
+  } } });
+  const detachedAccepted = await responseFor(700);
+  const detachedJobId = detachedAccepted.result?.structuredContent?.job_id;
+  assert(detachedAccepted.result?.structuredContent?.continues_without_mcp_connection === true && typeof detachedJobId === "string", "managed job was not accepted as connection-independent");
+
   child.stdin.end();
   const exit = await waitForExit(child, 10_000);
   assert(exit.code === 0, `stdio server exited with ${exit.code}: ${stderr}`);
   assert(!stderr.includes("tool call completed"), "default stdio logging emitted per-call success noise");
+  await waitForFile(detachedMarker, 10_000);
+  await waitForFile(detachedCleanup, 10_000);
+  assert(await readFile(detachedMarker, "utf8") === "detached-complete", "managed job did not survive stdio disconnect");
+  assert(await readFile(detachedCleanup, "utf8") === "cleanup-complete", "managed job finally step did not survive stdio disconnect");
+  const state = loadState(canonicalWorkspace, { stateDir });
+  const jobRoot = await realpath(join(state.paths.profileDir, "jobs"));
+  const resultFile = join(jobRoot, detachedJobId, "result.json");
+  try {
+    await waitForFile(resultFile, 10_000);
+  } catch (error) {
+    const manager = new ManagedJobManager({
+      jobRoot,
+      workspace: canonicalWorkspace,
+      policy: state.policy,
+      resources: state.resources,
+      resourceStatePath: state.paths.statePath,
+    });
+    const diagnostic = manager.read({ job_id: detachedJobId });
+    const jobDir = join(jobRoot, detachedJobId);
+    const files = {};
+    for (const name of ["status.json", "result.json", "runner.out.log", "runner.err.log", "runner.pid"]) {
+      try { files[name] = await readFile(join(jobDir, name), "utf8"); } catch {}
+    }
+    throw new Error(`${error.message}; managed_job=${JSON.stringify(diagnostic)}; files=${JSON.stringify(files)}`);
+  }
+  const detachedResult = JSON.parse(await readFile(resultFile, "utf8"));
+  assert(["succeeded", "recovered"].includes(detachedResult.status), `detached managed job ended as ${detachedResult.status}`);
   console.log("stdio MCP integration test ok");
 } finally {
   if (child.exitCode === null) child.kill("SIGKILL");
@@ -187,6 +255,15 @@ function waitForExit(processChild, timeoutMs) {
       resolvePromise({ code, signal });
     });
   });
+}
+
+async function waitForFile(path, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { await readFile(path); return; } catch {}
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  }
+  throw new Error(`timed out waiting for file: ${path}`);
 }
 
 function appendBounded(current, chunk) {
