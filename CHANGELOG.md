@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.3 - 2026-07-10
+
+### Security
+
+- Add an exact-version npm `allowScripts` policy for the reviewed Wrangler runtime/build binaries (`esbuild@0.28.1`, `sharp@0.34.5`, and `workerd@1.20260708.1`) and explicitly deny the optional `fsevents` install script. Dependency upgrades therefore require renewed script approval.
+
+### Changed
+
+- Exclude the development-only Worker integration test from the published npm package while retaining it in the repository and CI.
+- Add a fail-closed release command that synchronizes `main`, the version tag, the GitHub Release, and its npm tarball; block `npm publish` when those artifacts do not match.
+
 ## 0.3.2 - 2026-07-10
 
 ### Fixed

@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "One-command hosted Remote MCP bridge to a local machine daemon.",
   "type": "module",
   "license": "MIT",
@@ -18,7 +18,7 @@
     "bin",
     "src/local",
     "src/worker/index.ts",
-    "scripts",
+    "scripts/sync-worker-version.mjs",
     "wrangler.jsonc",
     "tsconfig.json",
     "README.md",
@@ -35,13 +35,16 @@
     "version:check": "node scripts/sync-worker-version.mjs --check",
     "version": "node scripts/sync-worker-version.mjs && git add package.json package-lock.json src/worker/index.ts",
     "prepack": "npm run version:check",
-    "prepublishOnly": "npm run check && npm run version:check",
+    "prepublishOnly": "npm run check && npm run version:check && npm run release:check",
     "worker:types": "wrangler types src/worker/worker-configuration.d.ts",
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit",
-    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/self-test.mjs && node --check src/local/log.mjs && node --check scripts/sync-worker-version.mjs && node --check scripts/worker-integration-test.mjs",
+    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/self-test.mjs && node --check src/local/log.mjs && node --check scripts/sync-worker-version.mjs && node --check scripts/github-release.mjs && node --check scripts/worker-integration-test.mjs",
     "check": "npm run typecheck && npm run syntax && npm run self-test && npm run worker:integration-test",
     "worker:dry-run": "wrangler deploy --dry-run",
-    "worker:integration-test": "node scripts/worker-integration-test.mjs"
+    "worker:integration-test": "node scripts/worker-integration-test.mjs",
+    "release:check": "node scripts/github-release.mjs --check",
+    "release:publish": "node scripts/github-release.mjs --publish",
+    "release:backfill": "node scripts/github-release.mjs --backfill"
   },
   "dependencies": {
     "wrangler": "^4.110.0",
@@ -66,5 +69,11 @@
   "bugs": {
     "url": "https://github.com/YuLeiFuYun/machine-bridge-mcp/issues"
   },
-  "homepage": "https://github.com/YuLeiFuYun/machine-bridge-mcp#readme"
+  "homepage": "https://github.com/YuLeiFuYun/machine-bridge-mcp#readme",
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "sharp@0.34.5": true,
+    "workerd@1.20260708.1": true,
+    "fsevents": false
+  }
 }

@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.3.2";
+const SERVER_VERSION = "0.3.3";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
