@@ -2,6 +2,7 @@ import { mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
 import { parseArgs, resolvePolicy, validateCommandOptions, validatePositionals } from "../src/local/cli.mjs";
 import { daemonSelfTest } from "./daemon-self-test.mjs";
@@ -123,9 +124,9 @@ async function activeDaemonPolicyMutationSelfTest() {
     const daemonLock = acquireDaemonLock(state);
     if (!daemonLock.acquired) throw new Error("policy mutation test could not acquire daemon lock");
     try {
-      const entry = new URL("../bin/machine-mcp.mjs", import.meta.url);
+      const entry = fileURLToPath(new URL("../bin/machine-mcp.mjs", import.meta.url));
       const child = spawnSync(process.execPath, [
-        entry.pathname,
+        entry,
         "start",
         "--daemon-only",
         "--workspace", workspace,
@@ -162,9 +163,9 @@ async function clientConfigDefaultSelfTest() {
   const workspaceRaw = await mkdtemp(join(tmpdir(), "mbm-client-config-workspace-"));
   const workspace = await realpath(workspaceRaw);
   try {
-    const entry = new URL("../bin/machine-mcp.mjs", import.meta.url);
+    const entry = fileURLToPath(new URL("../bin/machine-mcp.mjs", import.meta.url));
     const child = spawnSync(process.execPath, [
-      entry.pathname,
+      entry,
       "client-config",
       "--client", "all",
       "--workspace", workspace,

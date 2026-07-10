@@ -12,7 +12,7 @@ const pkg = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "u
 const port = await openPort();
 const base = `http://127.0.0.1:${port}`;
 const persistDir = await mkdtemp(path.join(os.tmpdir(), "mbm-worker-test-"));
-const wrangler = path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "wrangler.cmd" : "wrangler");
+const wrangler = path.join(packageRoot, "node_modules", "wrangler", "bin", "wrangler.js");
 const args = [
   "dev",
   "--local",
@@ -28,7 +28,7 @@ const args = [
 
 let logs = "";
 const daemonSockets = [];
-const child = spawn(wrangler, args, {
+const child = spawn(process.execPath, [wrangler, ...args], {
   cwd: packageRoot,
   env: { ...process.env, NO_COLOR: "1", CI: "1" },
   detached: process.platform !== "win32",

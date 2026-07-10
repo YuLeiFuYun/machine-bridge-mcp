@@ -25,7 +25,8 @@ export class LocalDaemon {
     if (this.workerUrl && (typeof secret !== "string" || secret.length < 16)) throw new Error("daemon secret is missing or too short");
     this.secret = secret || "";
     this.workspaceInput = resolve(workspace || process.cwd());
-    this.workspace = realpathSync(this.workspaceInput);
+    this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
+    this.workspaceCanonicalPromise = null;
     this.policy = normalizePolicy(policy);
     this.logger = logger;
     this.onSuperseded = typeof onSuperseded === "function" ? onSuperseded : null;
@@ -751,28 +752,45 @@ export class LocalDaemon {
   resolvePath(inputPath = ".") {
     const raw = String(inputPath || ".");
     if (raw.includes("\0")) throw new Error("path contains a NUL byte");
-    return isAbsolute(raw) ? resolve(raw) : resolve(this.workspace, raw);
+    return isAbsolute(raw) ? resolve(raw) : resolve(this.workspaceInput, raw);
+  }
+
+  async canonicalWorkspace() {
+    if (!this.workspaceCanonicalPromise) {
+      this.workspaceCanonicalPromise = realpath(this.workspaceInput).then((canonical) => {
+        this.workspace = canonical;
+        this.processSessionManager.workspace = canonical;
+        return canonical;
+      }).catch((error) => {
+        this.workspaceCanonicalPromise = null;
+        throw error;
+      });
+    }
+    return this.workspaceCanonicalPromise;
   }
 
   async resolveExistingPath(inputPath = ".") {
     const candidate = this.resolvePath(inputPath);
-    const canonical = await realpath(candidate);
-    if (!this.policy.unrestrictedPaths) assertContainedPath(this.workspace, canonical);
+    const [workspace, canonical] = await Promise.all([this.canonicalWorkspace(), realpath(candidate)]);
+    if (!this.policy.unrestrictedPaths) assertContainedPath(workspace, canonical);
     return canonical;
   }
 
   async resolveWritePath(inputPath = ".") {
     const candidate = this.resolvePath(inputPath);
     if (this.policy.unrestrictedPaths) return candidate;
+    const candidateInfo = await lstat(candidate).catch(() => null);
     let ancestor = candidate;
     while (!(await lstat(ancestor).catch(() => null))) {
       const parent = dirname(ancestor);
       if (parent === ancestor) break;
       ancestor = parent;
     }
-    const canonicalAncestor = await realpath(ancestor);
-    assertContainedPath(this.workspace, canonicalAncestor);
-    return candidate;
+    const [workspace, canonicalAncestor] = await Promise.all([this.canonicalWorkspace(), realpath(ancestor)]);
+    assertContainedPath(workspace, canonicalAncestor);
+    if (candidateInfo?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
+    const suffix = relative(ancestor, candidate);
+    return suffix ? resolve(canonicalAncestor, suffix) : canonicalAncestor;
   }
 
   displayPath(fullPath) {

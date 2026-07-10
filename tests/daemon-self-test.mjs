@@ -152,7 +152,7 @@ export async function daemonSelfTest() {
     const status = await restricted.gitStatus({ path: "nested-repo" });
     if (status.code !== 0 || !status.stdout.includes("tracked.txt")) throw new Error("nested git status detection failed");
 
-    const command = await restricted.execCommand("printf ${MBM_DAEMON_SELFTEST_SECRET-unset}", 5);
+    const command = await restricted.execCommand("node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"", 5);
     if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
     const isolatedHome = await restricted.runDirectProcess({ argv: [process.execPath, "-e", "process.stdout.write(process.env.HOME || '')"], timeout_seconds: 5 });
     if (!isolatedHome.stdout.includes("machine-bridge-mcp-") || isolatedHome.stdout === process.env.HOME) throw new Error("minimal command environment did not isolate HOME");

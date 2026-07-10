@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.2 - 2026-07-10
+
+### Fixed
+
+- Canonicalize the configured workspace and requested targets through the same asynchronous `realpath` path on Windows, while retaining a native synchronous initial value. This prevents Windows short-path/long-path aliases for the same temporary directory from being misclassified as a workspace escape.
+- Keep workspace confinement unchanged: only the representation comparison changed, and targets outside the canonical workspace remain rejected in restricted profiles.
+
+### Verification
+
+- Preserve the existing cross-platform path-boundary regression, which exposed the issue on the Windows GitHub Actions runner while Linux and macOS passed.
+- Make the minimal-environment shell regression use a cross-platform Node command instead of POSIX parameter-expansion syntax under PowerShell.
+- Convert test entry-point file URLs with `fileURLToPath()` so Windows does not interpret `/D:/...` URL paths as `C:\D:\...` filesystem paths.
+- Launch Wrangler's JavaScript entry point through the active Node executable in integration tests instead of directly spawning the Windows `.cmd` shim.
+
 ## 0.4.1 - 2026-07-10
 
 ### Changed

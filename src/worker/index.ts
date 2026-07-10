@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import toolCatalog from "../shared/tool-catalog.json";
 
 const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.4.1";
+const SERVER_VERSION = "0.4.2";
 const MCP_PROTOCOL_VERSION = "2025-11-25";
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
 const JSONRPC_VERSION = "2.0";
