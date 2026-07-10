@@ -5,10 +5,12 @@ import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalDaemon } from "./daemon.mjs";
 import { runStdioServer } from "./stdio.mjs";
-import { DEFAULT_POLICY_PROFILE, DEFAULT_POLICY_REVISION, POLICY_PROFILES, normalizePolicy, policyProfile } from "./tools.mjs";
+import { assertCanonicalFullPolicy, DEFAULT_POLICY_PROFILE, DEFAULT_POLICY_REVISION, POLICY_PROFILES, normalizePolicy, policyProfile, toolsForPolicy } from "./tools.mjs";
 import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
 import { activeManagedJobs, inspectResourceFile, loadManagedJobPlan, ManagedJobManager, publicResourceRegistry, validateResourceName } from "./managed-jobs.mjs";
 import { runWrangler } from "./shell.mjs";
+import { generateRegisteredSshKey } from "./resource-operations.mjs";
+import { runFullAccessTest } from "./full-access-test.mjs";
 import {
   acquireDaemonLock,
   acquireStartupLock,
@@ -60,6 +62,7 @@ export async function main(argv = process.argv.slice(2)) {
     case "client-config": return clientConfigCommand(args);
     case "status": return statusCommand(args);
     case "doctor": return doctorCommand(args);
+    case "full-test": return fullTestCommand(args);
     case "workspace": return workspaceCommand(args);
     case "service":
     case "autostart": return serviceCommand(args);
@@ -84,6 +87,7 @@ const COMMAND_OPTIONS = {
   "client-config": new Set(["workspace", "stateDir", "profile", "client", "json"]),
   status: new Set(["workspace", "stateDir"]),
   doctor: new Set(["workspace", "stateDir"]),
+  "full-test": new Set(["workspace", "stateDir", "json"]),
   "rotate-secrets": new Set(["workspace", "stateDir", "workerName", "noPrintCredentials", "printMcpCredentials", "printCredentials", "quiet"]),
   workspace: new Set(["workspace", "stateDir"]),
   service: new Set(["workspace", "stateDir", "quiet"]),
@@ -123,7 +127,7 @@ function toKebab(value) {
 
 export function validatePositionals(command, args) {
   const count = args._.length;
-  if (["start", "stdio", "status", "doctor", "rotate-secrets"].includes(command)) {
+  if (["start", "stdio", "status", "doctor", "full-test", "rotate-secrets"].includes(command)) {
     if (count > 1) throw new Error(`${command} accepts at most one positional workspace path`);
     if (args.workspace && count) throw new Error("workspace path was provided both positionally and with --workspace");
     return;
@@ -148,7 +152,7 @@ export function validatePositionals(command, args) {
   }
   if (command === "resource") {
     const action = String(args._[0] || "list");
-    const max = action === "add" ? 3 : action === "remove" || action === "check" ? 2 : 1;
+    const max = action === "add" || action === "generate-ssh-key" ? 3 : action === "remove" || action === "check" ? 2 : 1;
     if (count > max) throw new Error(`resource ${action} received too many positional arguments`);
     return;
   }
@@ -506,6 +510,42 @@ async function resourceCommand(args) {
       }
     } finally {
       lock.release();
+    }
+    return;
+  }
+
+  if (action === "generate-ssh-key") {
+    const name = validateResourceName(args._[1]);
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (!home) throw new Error("HOME or USERPROFILE is required to choose a default SSH key path");
+    const requestedPath = args._[2] ? expandHome(args._[2]) : join(home, ".ssh", `machine-mcp-${name}-ed25519`);
+    const key = await generateRegisteredSshKey({
+      workspace,
+      stateDir: args.stateDir,
+      name,
+      targetPath: requestedPath,
+      comment: `machine-mcp:${name}`,
+    });
+    const result = {
+      name: key.name,
+      created: key.created,
+      private_key_path: key.privateKeyPath,
+      public_key_path: key.publicKeyPath,
+      fingerprint: key.fingerprint,
+      key_type: key.keyType,
+      private_mode: key.privateMode,
+      public_mode: key.publicMode,
+      private_key_content_exposed: key.privateKeyContentExposed,
+      registered: key.registered,
+      available_to_new_jobs_immediately: key.availableToNewJobsImmediately,
+    };
+    if (args.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`${key.created ? "Generated and registered" : "Reused and registered"} SSH key resource: ${name}`);
+      console.log(`Private key: ${key.privateKeyPath}`);
+      console.log(`Public key: ${key.publicKeyPath}`);
+      console.log(`Fingerprint: ${key.fingerprint}`);
+      console.log("Private key content was not printed or sent through MCP.");
     }
     return;
   }
@@ -884,6 +924,14 @@ async function doctorCommand(args) {
   const storedPolicyOrigin = state.policy?.origin;
   state.policy = resolvePolicy({}, state.policy);
   checks.push({ name: "policy", ok: true, detail: formatPolicySummary(state.policy) });
+  if (state.policy.profile === "full") {
+    try {
+      assertCanonicalFullPolicy(state.policy);
+      checks.push({ name: "full-policy-contract", ok: true, detail: `${toolsForPolicy(state.policy).length} tools exposed` });
+    } catch (error) {
+      checks.push({ name: "full-policy-contract", ok: false, detail: sanitizeLines(error?.message || error) });
+    }
+  }
   const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
   checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
   const diagnosticRuntime = new LocalDaemon({
@@ -915,6 +963,15 @@ async function doctorCommand(args) {
     policyMigrationPending: !storedPolicyOrigin && state.policy.origin === "migrated",
     state: redactState(state),
   }, null, 2));
+}
+
+async function fullTestCommand(args) {
+  const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
+  const state = loadState(workspace, { stateDir: args.stateDir });
+  const policy = resolvePolicy({}, state.policy);
+  const result = await runFullAccessTest({ workspace, policy });
+  console.log(JSON.stringify(result, null, 2));
+  if (!result.ok) process.exitCode = 1;
 }
 
 async function rotateSecretsCommand(args) {
@@ -1188,7 +1245,10 @@ Commands:
   service uninstall Remove only the autostart entry
   status            Print redacted local profile state and Worker health
   doctor            Check Node, Wrangler, Cloudflare login, Worker health
+  full-test         Run real local full-profile capability tests in a temporary sandbox
   rotate-secrets    Rotate MCP password and daemon secret in local state
+  resource generate-ssh-key NAME [PATH]
+                    Generate/reuse an Ed25519 key locally and register its private file by alias
   uninstall         Delete known Worker(s), remove autostart and local state
 
 Start options:

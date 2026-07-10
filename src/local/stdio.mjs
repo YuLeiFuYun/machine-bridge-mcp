@@ -131,14 +131,12 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
         const result = await runtime.executeTool(name, args, { callId });
         send(rpcResult(message.id, toolResult(result)));
         const durationMs = Date.now() - started;
-        if (durationMs >= SLOW_TOOL_CALL_MS) logger.info("slow tool call completed", { tool: name, duration_ms: durationMs });
-        else logger.debug("tool call completed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs });
+        logger.debug(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs });
       } catch (error) {
         const safeError = runtime.safeErrorMessage(error);
         send(rpcResult(message.id, toolResult({ error: safeError }, true)));
         const durationMs = Date.now() - started;
-        logger.warn("tool call failed", { tool: name, duration_ms: durationMs, error_class: classifyOperationalError(error) });
-        logger.debug("tool call failure correlation", { call_id: callId.slice(0, 20) });
+        logger.debug("tool call failed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs, error_class: classifyOperationalError(error) });
       } finally {
         if (key) pending.delete(key);
         runtime.finishCall(callId);

@@ -58,6 +58,14 @@ Running managed jobs do not belong to an MCP socket or daemon call ID and snapsh
 
 Local resource registrations remain in owner-only state and are reloaded for every new job. MCP-visible resource inventory includes aliases and validation status but never source paths, hashes, or contents.
 
+### Canonical policy contracts
+
+Named profiles are normalized to their complete capability sets. In particular, `full` always means write enabled, shell execution, unrestricted paths, complete parent environment, absolute-path display, and every catalog tool. CLI flags that alter an individual capability deliberately change the profile identity to `custom`. Policy revision 3 repairs stale or manually edited named-profile fields rather than allowing a misleading partially restricted `full` label.
+
+The full-only `generate_ssh_key_resource` operation is implemented locally. The Worker only filters and relays its shared catalog definition. Local generation uses `ssh-keygen`, verifies public/private correspondence, registers the private file through the same owner-only state transaction as the CLI, and rolls back a newly created pair if state persistence fails.
+
+`full-test` constructs a local runtime with canonical full policy and executes real operations in disposable directories. It is an acceptance test for the local implementation, not a probe that changes remote systems or bypasses host policy.
+
 ### Stdio MCP server
 
 The stdio server implements newline-delimited JSON-RPC over stdin/stdout. It negotiates supported MCP versions, advertises policy-filtered tools, returns text plus structured content, supports native image content, maps cancellation notifications to runtime call IDs, and sends level-filtered logs only to stderr.
@@ -187,7 +195,7 @@ OAuth metadata is pruned on access. Expired codes/tokens, old throttling records
 
 Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status, policy origin/revision, managed-job counts, and resource alias names without paths or values. `diagnose_runtime` runs fixed local probes and explicitly reports that its own request reached the daemon.
 
-Foreground logging defaults to `info`; autostart uses `warn`. Routine successful calls and shortened random correlation IDs are debug-only. `info` retains deployment/connection transitions and successful calls slower than 30 seconds. Failures log tool name, duration, and coarse error class without arguments or outputs. Unexpected local and Worker errors are reduced to classes in normal logs. Messages, strings, arrays, object depth/key counts, and serialized fields are bounded.
+Foreground logging defaults to `info`; autostart uses `warn`. All per-tool starts, successes, failures, cancellations, durations, and shortened random correlation IDs are debug-only. Normal logs retain deployment, connection, protocol, service, and infrastructure events rather than duplicating MCP tool outcomes. Unexpected local and Worker infrastructure errors are reduced to classes. Messages, strings, arrays, object depth/key counts, and serialized fields are bounded.
 
 Cloudflare sampling is size control rather than an audit log. The project intentionally does not claim complete forensic logging. See [LOGGING.md](LOGGING.md).
 

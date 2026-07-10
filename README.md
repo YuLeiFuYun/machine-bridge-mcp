@@ -32,7 +32,7 @@ A newly selected workspace starts with the maximum-permission `full` profile for
 - tool results may return absolute paths;
 - child processes inherit the complete parent environment.
 
-Policy state records whether it came from the default, an explicit named profile, or custom overrides. Version 0.5 migrates the exact pre-0.4 implicit-default shape to `full` once; explicit restrictive profiles and identified custom policies remain unchanged.
+Policy state records whether it came from the default, an explicit named profile, or custom overrides. Named profiles are canonical contracts: a stored `full` profile is repaired on load to enable writes, shell execution, unrestricted paths, full parent environment, absolute path output, and the complete tool catalog. Any explicit per-capability narrowing is stored as `custom`. Policy revision 3 refreshes default/migrated state and preserves explicit restrictive/custom profiles.
 
 | Profile | File edits | Direct argv processes | Shell commands | Filesystem scope | Process environment |
 |---|---:|---:|---:|---|---|
@@ -152,6 +152,14 @@ machine-mcp doctor
 
 A successful `diagnose_runtime` response proves that request reached the local daemon. It then reports fixed probes for Machine Bridge policy, private filesystem access, direct process spawning, shell execution, managed-job storage, and registered resources. If the host blocks the tool call before any structured response, the server cannot diagnose that request because it never received it.
 
+Run a real local acceptance test for the canonical `full` contract:
+
+```sh
+machine-mcp full-test --workspace /path/to/project
+```
+
+The test uses a temporary sandbox to perform an outside-workspace read/write, direct process, shell command, parent-environment inheritance, Ed25519 generation, temporary `authorized_keys` write, SSH client check, Google Cloud OS Login command availability check, non-mutating `sudo -n true` probe, and detached managed-job/finally lifecycle. It does not add a cloud key, contact a remote maintenance host, modify a user account, or retain the generated key.
+
 ## Managed jobs and local resources
 
 Long, remote, multi-step, or cleanup-sensitive work should not depend on a sequence of later MCP calls remaining available. `start_job` durably accepts ordered argv steps plus `finally_steps`, then launches an independent local runner. It continues after MCP disconnects or later host-side tool refusals.
@@ -165,6 +173,14 @@ chmod 600 ~/.ssh/example-provider_ed25519
 machine-mcp resource add example-provider-key ~/.ssh/example-provider_ed25519
 machine-mcp resource list
 ```
+
+Generate an Ed25519 key and register its private file in one operation:
+
+```sh
+machine-mcp resource generate-ssh-key example-provider-key ~/.ssh/ai-example-provider-maint-ed25519
+```
+
+Under canonical `full`, an authorized MCP host can invoke `generate_ssh_key_resource` with the same semantics. The tool is idempotent, verifies that existing public/private files match, enforces local file modes where supported, and returns only paths, public fingerprint, key type, and registration status—not private key bytes.
 
 A job refers to the alias rather than the value:
 
@@ -242,6 +258,7 @@ Repository-configured external diff, text conversion, and filesystem-monitor hel
 
 - `diagnose_runtime` — fixed layered probes; no user-controlled command input
 - `list_local_resources` — aliases and validation status without paths or values
+- `generate_ssh_key_resource` — canonical-full-only Ed25519 generation and private-file resource registration without returning private content
 - `stage_job` — persist a validated plan for later local approval without executing it
 - `start_job` — detached ordered argv steps, private temporary files, and finally steps
 - `list_jobs`
@@ -296,7 +313,7 @@ Remote mode supports:
 - Linux `systemd --user`, with best-effort lingering;
 - Windows Scheduled Task at logon.
 
-The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. Background services run at log level `warn`: failures and connection problems are retained, while routine successful tool calls are omitted. Logs are owner-only where supported and bounded by tail trimming.
+The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. Background services run at log level `warn`: relay, protocol, and service problems are retained, while all per-tool success/failure/cancellation/timing events remain debug-only. Logs are owner-only where supported and bounded by tail trimming.
 
 ## Secret rotation
 
@@ -317,7 +334,7 @@ Default state roots:
 
 State/config writes use owner-only temporary files, flushes, and atomic rename. Malformed state is retained as a bounded corrupt backup before reconstruction. Resource source paths are redacted from `status` output. Active managed-job plans are owner-only and are deleted after a terminal result; bounded redacted results are retained temporarily. Uninstall validates markers, canonical paths, active locks, workspace/source exclusions, and known contents before recursive deletion.
 
-Default foreground logs show startup/deployment transitions, relay connectivity, warnings/errors, and successful calls that exceed 30 seconds. Routine successful tool calls and correlation IDs appear only at `--log-level debug` or `--verbose`. Background services use `warn`. Log messages and structured fields are bounded, secret-like keys and known token formats are redacted, and tool arguments/results are not written. See [docs/LOGGING.md](docs/LOGGING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
+Default foreground logs show startup/deployment transitions, relay connectivity, and infrastructure warnings/errors. Every per-tool event—including success, failure, cancellation, and slow-call timing—appears only at `--log-level debug` or `--verbose`. Background services use `warn`, so ordinary tool outcomes never fill daemon logs. Log messages and structured fields are bounded, secret-like keys and known token formats are redacted, and tool arguments/results are not written. See [docs/LOGGING.md](docs/LOGGING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Development and verification
 
@@ -330,7 +347,7 @@ npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```
 
-`npm run check` covers generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, managed-job detachment/resource redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with supported Node versions.
+`npm run check` covers generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, managed-job detachment/resource redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with supported Node versions.
 
 See [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [SECURITY.md](SECURITY.md).
 

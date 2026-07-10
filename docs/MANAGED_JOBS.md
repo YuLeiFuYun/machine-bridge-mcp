@@ -64,6 +64,14 @@ machine-mcp resource remove example-provider-key
 
 Removing an alias affects new jobs. A job already accepted has an owner-only resource snapshot specification and continues independently.
 
+Generate a new Ed25519 resource rather than exposing a private-key creation command through a model-generated shell string:
+
+```sh
+machine-mcp resource generate-ssh-key example-provider-key ~/.ssh/ai-example-provider-maint-ed25519
+```
+
+Canonical-full MCP clients also receive `generate_ssh_key_resource`. It generates or reuses the pair locally, verifies correspondence, registers the private file, and returns no private bytes. Public-key installation in a cloud or remote account should be a separate reviewed step or managed job.
+
 ## Resource injection modes
 
 A managed step is argv-based and supports three local resource modes:

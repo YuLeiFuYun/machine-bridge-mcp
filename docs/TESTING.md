@@ -25,11 +25,14 @@ The suite includes:
 - one-shot timeout, descendant termination, cancellation, and process-session interaction;
 - layered fixed runtime diagnostics for filesystem, direct process, shell, managed-job storage, and resource availability;
 - local resource CLI registration, permission checks, dynamic reload, state-path redaction, and content non-disclosure;
+- real Ed25519 and RSA generation, idempotent reuse, public/private correspondence, mode enforcement, incomplete/mismatched/symlink rejection, and private-content non-disclosure;
+- real-machine canonical-full sandbox acceptance for outside-workspace I/O, direct/shell execution, full environment inheritance, SSH prerequisites, temporary authorized-key writing, and detached cleanup without external state changes;
+- canonical named-profile repair and full-only tool exposure parity between local and Worker policy filters;
 - managed-job staging/local approval/cancel-before-start, detachment, job-scoped temporary files, resource hash verification/redaction, discard capture, finally execution, cancellation escalation, plan scrubbing, and dead-runner recovery;
 - daemon/startup locking and state corruption recovery;
 - guarded state-root removal, schema migration, policy-origin persistence, and legacy implicit-default migration;
 - no filename-based sensitive-file denial under unrestricted policy;
-- log redaction, control-character handling, message/field bounds, default success-log suppression, and service warning-level configuration;
+- log redaction, control-character handling, message/field bounds, suppression of both successful and failed per-tool events outside debug, and service warning-level configuration;
 - CLI parsing, policy profiles, and client configuration boundaries;
 - live stdio MCP initialization, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;
 - live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, dynamic tool advertisement, rich content, daemon replacement, and cancellation.
