@@ -72,6 +72,20 @@ export async function daemonSelfTest() {
       throw new Error("remote daemon omitted debug success correlation");
     }
 
+    logEvents.length = 0;
+    relayMessages.length = 0;
+    restricted.send = (value) => { relayMessages.push(value); return true; };
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" } }));
+    restricted.send = originalSend;
+    const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
+    if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");
+    if (logEvents.some(event => event.level === "warn" && event.message === "tool call failed")) {
+      throw new Error("remote daemon emitted per-tool failure noise at warn level");
+    }
+    if (!logEvents.some(event => event.level === "debug" && event.message === "tool call failed" && event.fields?.tool === "read_file")) {
+      throw new Error("remote daemon omitted debug-only failure telemetry");
+    }
+
     await expectReject(() => restricted.readFile(join(outside, "outside.txt"), 1024), "outside the configured workspace");
     await expectReject(() => restricted.readFile(path.relative(workspace, join(outside, "outside.txt")), 1024), "outside the configured workspace");
 

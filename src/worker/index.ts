@@ -3,7 +3,7 @@ import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.6.0";
+const SERVER_VERSION = "0.6.1";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -991,6 +991,12 @@ function daemonPolicyAllows(availability: unknown, policy: Record<string, unknow
   if (availability === "write") return policy.allowWrite === true;
   if (availability === "direct-exec") return policy.execMode === "direct" || policy.execMode === "shell";
   if (availability === "shell-exec") return policy.execMode === "shell";
+  if (availability === "full") return policy.profile === "full"
+    && policy.allowWrite === true
+    && policy.execMode === "shell"
+    && policy.unrestrictedPaths === true
+    && policy.minimalEnv === false
+    && policy.exposeAbsolutePaths === true;
   return false;
 }
 

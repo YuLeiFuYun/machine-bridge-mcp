@@ -9,9 +9,11 @@ import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
 import { MAX_COMMAND_BYTES, ProcessSessionManager, terminateProcessTree, validateArgv } from "./process-sessions.mjs";
 export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
-import { MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, SERVER_NAME, toolNamesForPolicy } from "./tools.mjs";
+import { allToolNames, assertCanonicalFullPolicy, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, POLICY_PROFILES, SERVER_NAME, toolNamesForPolicy } from "./tools.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { ManagedJobManager } from "./managed-jobs.mjs";
+import { generateRegisteredSshKey } from "./resource-operations.mjs";
+import { expandHome } from "./state.mjs";
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
@@ -33,6 +35,7 @@ export class LocalDaemon {
     this.policy = normalizePolicy(policy);
     this.logger = logger;
     this.onSuperseded = typeof onSuperseded === "function" ? onSuperseded : null;
+    this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
     this.closed = false;
     this.ws = null;
     this.heartbeat = null;
@@ -85,6 +88,11 @@ export class LocalDaemon {
       workspace: this.displayPath(this.workspace),
       workspace_name: basename(this.workspace),
       policy: this.policy,
+      policy_contract: {
+        named_profile_is_canonical: this.policy.profile === "custom" || policyMatchesNamedProfile(this.policy),
+        full_catalog_complete: this.policy.profile === "full" ? isCanonicalFullPolicy(this.policy) && this.tools().length + 1 === allToolNames().length : null,
+        machine_bridge_internal_denials_under_full: this.policy.profile === "full" && isCanonicalFullPolicy(this.policy) ? false : null,
+      },
       enforcement: {
         filesystem_scope: this.policy.unrestrictedPaths ? "local-user-accessible" : "workspace",
         sensitive_filename_filter: false,
@@ -92,6 +100,11 @@ export class LocalDaemon {
         host_policy_is_independent: true,
       },
       tools: ["server_info", ...this.tools()],
+      observability: {
+        per_tool_events: "debug-only",
+        default_logs_include_tool_failures: false,
+        tool_arguments_or_results_logged: false,
+      },
       runtime: {
         environment: this.policy.minimalEnv ? "isolated-minimal" : "full-parent",
         runtime_dir: this.policy.exposeAbsolutePaths ? this.runtimeDir : "<private-runtime-dir>",
@@ -251,14 +264,12 @@ export class LocalDaemon {
       if (this.cancelledCalls.has(id)) throw new Error("tool call cancelled");
       this.send({ type: "tool_result", id, ok: true, result });
       const durationMs = Date.now() - started;
-      if (durationMs >= SLOW_TOOL_CALL_MS) this.logger.info?.("slow tool call completed", { tool, duration_ms: durationMs });
-      else this.logger.debug?.("tool call completed", { call_id: shortCallId(id), tool, duration_ms: durationMs });
+      this.logger.debug?.(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: shortCallId(id), tool, duration_ms: durationMs });
     } catch (error) {
       const safeError = this.safeErrorMessage(error);
       this.send({ type: "tool_result", id, ok: false, error: { message: safeError } });
       const durationMs = Date.now() - started;
-      this.logger.warn?.("tool call failed", { tool, duration_ms: durationMs, error_class: classifyOperationalError(error) });
-      this.logger.debug?.("tool call failure correlation", { call_id: shortCallId(id) });
+      this.logger.debug?.("tool call failed", { call_id: shortCallId(id), tool, duration_ms: durationMs, error_class: classifyOperationalError(error) });
     } finally {
       clearTimeout(deadline);
       this.activeToolCalls -= 1;
@@ -306,6 +317,7 @@ export class LocalDaemon {
       case "git_show": return this.gitShow(args, context);
       case "diagnose_runtime": return this.diagnoseRuntime(context);
       case "list_local_resources": return this.managedJobManager.listResources();
+      case "generate_ssh_key_resource": return this.generateSshKeyResource(args, context);
       case "stage_job": return this.managedJobManager.stage(args);
       case "start_job": return this.managedJobManager.start(args);
       case "list_jobs": return this.managedJobManager.list(args);
@@ -729,6 +741,37 @@ export class LocalDaemon {
     };
   }
 
+  async generateSshKeyResource(args = {}, context = {}) {
+    this.throwIfCancelled(context);
+    assertCanonicalFullPolicy(this.policy);
+    if (!this.resourceStatePath) throw new Error("local resource state is unavailable in this runtime");
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (!home) throw new Error("HOME or USERPROFILE is required to choose a default SSH key path");
+    const target = args.path
+      ? resolve(expandHome(String(args.path)))
+      : resolve(home, ".ssh", `machine-mcp-${args.name}-ed25519`);
+    const key = await generateRegisteredSshKey({
+      workspace: this.workspace,
+      stateDir: stateRootFromProfileStatePath(this.resourceStatePath),
+      name: args.name,
+      targetPath: target,
+      comment: args.comment || `machine-mcp:${args.name}`,
+    });
+    return {
+      name: key.name,
+      created: key.created,
+      registered: key.registered,
+      private_key_path: this.displayPath(key.privateKeyPath),
+      public_key_path: this.displayPath(key.publicKeyPath),
+      fingerprint: key.fingerprint,
+      key_type: key.keyType,
+      private_mode: key.privateMode,
+      public_mode: key.publicMode,
+      private_key_content_exposed: key.privateKeyContentExposed,
+      available_to_new_jobs_immediately: key.availableToNewJobsImmediately,
+    };
+  }
+
   async runDirectProcess(args, context = {}) {
     if (this.policy.execMode !== "direct" && this.policy.execMode !== "shell") throw new Error("run_process is disabled by daemon policy");
     const argv = validateArgv(args.argv);
@@ -929,6 +972,25 @@ export class LocalDaemon {
     await previous;
     try { return await callback(); } finally { release(); }
   }
+}
+
+function policyMatchesNamedProfile(policy) {
+  const named = POLICY_PROFILES[policy.profile];
+  if (!named) return false;
+  return policy.allowWrite === named.allowWrite
+    && policy.execMode === named.execMode
+    && policy.unrestrictedPaths === named.unrestrictedPaths
+    && policy.minimalEnv === named.minimalEnv
+    && policy.exposeAbsolutePaths === named.exposeAbsolutePaths;
+}
+
+function stateRootFromProfileStatePath(statePath) {
+  const absolute = resolve(statePath);
+  if (basename(absolute) !== "state.json") throw new Error("local resource state path is invalid");
+  const profileDir = dirname(absolute);
+  const profilesDir = dirname(profileDir);
+  if (basename(profilesDir) !== "profiles") throw new Error("local resource state path is outside the expected profile layout");
+  return dirname(profilesDir);
 }
 
 function normalizeWorkerUrl(value) {

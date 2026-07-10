@@ -636,6 +636,39 @@
     }
   },
   {
+    "name": "generate_ssh_key_resource",
+    "title": "Generate SSH key resource",
+    "description": "Generate or reuse an Ed25519 SSH key pair on the local machine and register the private key file as a local resource alias. The private key content is never returned; only local paths, public fingerprint, permissions, and registration status are reported. Available only under canonical full policy.",
+    "availability": "full",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "comment": {
+          "type": "string",
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "stage_job",
     "title": "Stage managed job for local approval",
     "description": "Validate and persist a managed-job plan without starting any process. Use this when execution tools are unavailable or local operator review is required; launch later with machine-mcp job approve JOB_ID.",

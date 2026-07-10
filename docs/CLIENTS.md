@@ -118,12 +118,22 @@ Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authoriza
 
 ## Profile guidance
 
-- `full` is the default and prioritizes immediate usability. It exposes shell execution, unrestricted direct filesystem paths, absolute path output, and the full parent environment.
+- `full` is the default and prioritizes immediate usability. It is a canonical contract exposing every catalog tool, shell execution, unrestricted direct filesystem paths, absolute path output, and the full parent environment. Any individual narrowing is represented as `custom`.
 - `agent` retains file mutation and direct process execution but removes shell parsing, confines direct filesystem tools to the workspace, and isolates the process environment.
 - `edit` permits deterministic file mutation without process execution.
 - `review` is read-only and workspace-confined.
 
 A client configuration is an authorization decision. Anyone who controls an authorized host can invoke every tool exposed by the selected profile.
+
+Before connecting a host, verify the local implementation directly:
+
+```sh
+machine-mcp full-test --workspace /path/to/project
+```
+
+A passing result proves that Machine Bridge and the local OS allowed its temporary file/process/shell/key/job probes at that time. It does not prove that a hosted MCP connector will deliver a later request or that a cloud/remote account will authorize it.
+
+For SSH automation, prefer `generate_ssh_key_resource` under canonical full, or `machine-mcp resource generate-ssh-key` from the terminal. The private key remains a local resource; only paths and the public fingerprint are returned. Installation of the public key into Google OS Login or a remote `authorized_keys` file remains an explicit external action.
 
 ## Host-side safety rules
 

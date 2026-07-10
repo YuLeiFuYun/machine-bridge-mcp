@@ -9,7 +9,7 @@ export const MCP_INSTRUCTIONS = Object.freeze(serverMetadata.instructions.map((v
 
 
 export const DEFAULT_POLICY_PROFILE = "full";
-export const DEFAULT_POLICY_REVISION = 2;
+export const DEFAULT_POLICY_REVISION = 3;
 
 export const POLICY_PROFILES = Object.freeze({
   review: Object.freeze({ profile: "review", allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
@@ -34,8 +34,9 @@ export function normalizePolicy(policy = {}) {
       : "off";
   const origin = POLICY_ORIGINS.has(policy.origin) ? policy.origin : "custom";
   const revision = Number.isInteger(policy.revision) && policy.revision > 0 ? policy.revision : DEFAULT_POLICY_REVISION;
-  return {
-    profile: typeof policy.profile === "string" && policy.profile ? policy.profile : "custom",
+  const requestedProfile = typeof policy.profile === "string" && policy.profile ? policy.profile : "custom";
+  const normalized = {
+    profile: requestedProfile,
     origin,
     revision,
     allowWrite: policy.allowWrite === true,
@@ -45,6 +46,38 @@ export function normalizePolicy(policy = {}) {
     minimalEnv: policy.minimalEnv !== false,
     exposeAbsolutePaths: policy.exposeAbsolutePaths === true,
   };
+  if (POLICY_PROFILES[requestedProfile]) {
+    const canonical = POLICY_PROFILES[requestedProfile];
+    normalized.allowWrite = canonical.allowWrite;
+    normalized.allowExec = canonical.execMode !== "off";
+    normalized.execMode = canonical.execMode;
+    normalized.unrestrictedPaths = canonical.unrestrictedPaths;
+    normalized.minimalEnv = canonical.minimalEnv;
+    normalized.exposeAbsolutePaths = canonical.exposeAbsolutePaths;
+  }
+  return normalized;
+}
+
+export function isCanonicalFullPolicy(policy = {}) {
+  return policyCapabilitiesEqual(normalizePolicy(policy), POLICY_PROFILES.full);
+}
+
+export function assertCanonicalFullPolicy(policy = {}) {
+  const normalized = normalizePolicy(policy);
+  if (!isCanonicalFullPolicy(normalized) || normalized.profile !== "full") {
+    throw new Error("full profile invariant failed: full must enable writes, shell execution, unrestricted paths, full parent environment, and absolute paths");
+  }
+  const exposed = toolsForPolicy(normalized);
+  if (exposed.length !== catalog.length) throw new Error("full profile invariant failed: complete tool catalog is not exposed");
+  return normalized;
+}
+
+function policyCapabilitiesEqual(left, right) {
+  return left.allowWrite === right.allowWrite
+    && left.execMode === right.execMode
+    && left.unrestrictedPaths === right.unrestrictedPaths
+    && left.minimalEnv === right.minimalEnv
+    && left.exposeAbsolutePaths === right.exposeAbsolutePaths;
 }
 
 export function toolsForPolicy(policy = {}) {
@@ -92,6 +125,7 @@ function isAvailable(availability, policy) {
   if (availability === "write") return policy.allowWrite;
   if (availability === "direct-exec") return policy.execMode === "direct" || policy.execMode === "shell";
   if (availability === "shell-exec") return policy.execMode === "shell";
+  if (availability === "full") return policy.profile === "full" && isCanonicalFullPolicy(policy);
   return false;
 }
 

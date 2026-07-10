@@ -30,10 +30,10 @@ Remote autostart logs are stored under the state root in `logs/daemon.out.log` a
 Logging is level-based:
 
 ```text
-error  unrecoverable local/transport failures
-warn   failed calls, disconnects, malformed relay events
-info   startup/deploy/connect transitions and calls slower than 30 seconds
-debug  routine successful calls, shortened correlation IDs, cancellation/reconnect details
+error  unrecoverable local/transport/service failures
+warn   relay disconnect/send failures, malformed relay events, supersession and service problems
+info   startup/deploy/connect transitions
+debug  all per-tool starts/successes/failures/cancellations/timing, correlation and reconnect details
 ```
 
 Foreground mode defaults to `info`; autostart uses `warn`. Use `--verbose` or `--log-level debug` only for diagnosis. `--quiet` is an alias for `--log-level error`.
@@ -41,6 +41,24 @@ Foreground mode defaults to `info`; autostart uses `warn`. Use `--verbose` or `-
 Normal logs intentionally omit tool arguments, file/patch/image content, command text and argv, stdin/stdout/stderr, OAuth request bodies, connection credentials, authorization codes, and tokens. Unexpected daemon and Worker failures use coarse error classes rather than raw exception messages. Messages and structured fields are bounded and secret-like fields/token formats are redacted.
 
 See [LOGGING.md](LOGGING.md) for the event contract and MCP-host boundary. Cloudflare observability is sampled and is not a complete audit log.
+
+## Full capability acceptance
+
+Run:
+
+```sh
+machine-mcp full-test --workspace /path/to/project
+```
+
+The command uses disposable local directories and performs actual read/write, process, shell, environment, SSH-key, sandbox authorized-key, SSH-client, managed-job and finally-cleanup operations. It also checks whether the Google Cloud OS Login command exists and whether `sudo -n true` is currently permitted, without changing either system. `ok` covers core Machine Bridge functionality; `operator_workflow_ready` additionally reports the local SSH/Google CLI prerequisites. No external cloud, account, or server change is made.
+
+Generate and register an operator key locally:
+
+```sh
+machine-mcp resource generate-ssh-key NAME [PRIVATE_KEY_PATH]
+```
+
+An authorized canonical-full MCP client can use `generate_ssh_key_resource`. Both paths validate the key pair and return only metadata and a public fingerprint. They do not install the public key in Google, modify `authorized_keys`, or grant remote `sudo`; those remain explicit managed-job/local-operator operations.
 
 ## Managed jobs and local recovery
 
@@ -108,9 +126,9 @@ Defense-in-depth limits include:
 
 ## Upgrade behavior
 
-Version 0.5 records policy origin and revision. A state entry matching the exact legacy implicit-default shape—write enabled, shell enabled, workspace-confined paths, isolated environment, and relative output—is migrated once to the current `full` default. Explicit named profiles and identified custom policies are preserved.
+Policy revision 3 makes named profiles canonical. A state entry labelled `full` is repaired to writes, direct processes, process sessions, shell execution, unrestricted direct filesystem paths, absolute path output, the complete parent environment, and the complete tool catalog. CLI capability overrides are stored as `custom`. The exact pre-0.4 implicit-default shape is still migrated to the current `full` default; explicit restrictive and identified custom profiles remain preserved.
 
-`full` enables writes, direct processes, process sessions, shell execution, unrestricted direct filesystem paths, absolute path output, and the complete parent environment. It does not override operating-system access controls or independent MCP-host/platform policy.
+`full` removes Machine Bridge's own profile/path/environment/shell denials. It does not override operating-system access controls, endpoint security, remote authentication, cloud IAM, `sudo`, or independent MCP-host/platform policy.
 
 Inspect effective policy with:
 
