@@ -9,7 +9,7 @@ import { daemonSelfTest } from "./daemon-self-test.mjs";
 import { formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { daemonArgs, systemdQuote, trimAutostartLogs } from "../src/local/service.mjs";
-import { MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
+import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
 import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
 await daemonSelfTest();
@@ -85,7 +85,7 @@ async function stateSelfTest() {
     policyReload.policy = resolvePolicy({}, policyReload.policy);
     saveState(policyReload);
     const policyPersisted = loadState(workspace, { stateDir: stateRoot });
-    if (policyPersisted.policy.profile !== "full" || policyPersisted.policy.origin !== "migrated" || policyPersisted.policy.revision !== 2) {
+    if (policyPersisted.policy.profile !== "full" || policyPersisted.policy.origin !== "migrated" || policyPersisted.policy.revision !== 3) {
       throw new Error("migrated policy origin/revision was not persisted");
     }
 
@@ -247,6 +247,23 @@ async function resourceCliSelfTest() {
     const addedJson = JSON.parse(added.stdout);
     if (addedJson.contents_exposed !== false || added.stdout.includes("local-value-not-returned")) throw new Error("resource add exposed file contents");
 
+    const generatedKeyPath = join(workspace, "generated-operator-key");
+    const generated = spawnSync(process.execPath, [entry, "resource", "generate-ssh-key", "generated-key", generatedKeyPath, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 30_000,
+    });
+    if (generated.error) throw generated.error;
+    if (generated.status !== 0) throw new Error(`SSH key resource generation failed: ${generated.stderr || generated.stdout}`);
+    const generatedJson = JSON.parse(generated.stdout);
+    if (!generatedJson.created || !generatedJson.registered || generatedJson.private_key_content_exposed !== false || !generatedJson.fingerprint) {
+      throw new Error("SSH key generation result is incomplete or exposed private content");
+    }
+    if (!(await stat(generatedKeyPath)).isFile() || !(await stat(`${generatedKeyPath}.pub`)).isFile()) throw new Error("SSH key pair was not created");
+    if (process.platform !== "win32" && ((await stat(generatedKeyPath)).mode & 0o777) !== 0o600) throw new Error("generated private key mode is not 0600");
+    const generatedAgain = spawnSync(process.execPath, [entry, "resource", "generate-ssh-key", "generated-key", generatedKeyPath, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 30_000,
+    });
+    if (generatedAgain.status !== 0 || JSON.parse(generatedAgain.stdout).created !== false) throw new Error("SSH key resource generation is not idempotent");
+
     const state = loadState(workspace, { stateDir: stateRoot });
     if (state.resources["racknerd-key"]?.path !== resourceFile) throw new Error("resource add did not persist the canonical path");
     const manager = new ManagedJobManager({
@@ -255,14 +272,14 @@ async function resourceCliSelfTest() {
       policy: { allowWrite: true, execMode: "direct", minimalEnv: false, unrestrictedPaths: true },
       resourceStatePath: state.paths.statePath,
     });
-    if (manager.listResources().count !== 1) throw new Error("daemon-style resource reload did not read updated state");
+    if (manager.listResources().count !== 2) throw new Error("daemon-style resource reload did not read updated state");
 
     const listed = spawnSync(process.execPath, [entry, "resource", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
     });
     if (listed.status !== 0) throw new Error(`resource list failed: ${listed.stderr || listed.stdout}`);
     const listedJson = JSON.parse(listed.stdout);
-    if (!listedJson.resources?.["racknerd-key"] || listed.stdout.includes("local-value-not-returned")) throw new Error("resource list omitted the alias or exposed contents");
+    if (!listedJson.resources?.["racknerd-key"] || !listedJson.resources?.["generated-key"] || listed.stdout.includes("local-value-not-returned")) throw new Error("resource list omitted an alias or exposed contents");
 
     const checked = spawnSync(process.execPath, [entry, "resource", "check", "racknerd-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
@@ -366,7 +383,10 @@ async function resourceCliSelfTest() {
       encoding: "utf8", timeout: 10_000,
     });
     if (removed.status !== 0 || JSON.parse(removed.stdout).removed !== true) throw new Error("resource remove failed");
-    if (manager.listResources().count !== 0) throw new Error("resource removal was not visible to new jobs without restart");
+    const resourcesAfterRemoval = manager.listResources();
+    if (resourcesAfterRemoval.count !== 1 || resourcesAfterRemoval.resources[0]?.name !== "generated-key") {
+      throw new Error("resource removal affected the wrong alias or was not visible without restart");
+    }
   } finally {
     await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
     await rm(workspaceRaw, { recursive: true, force: true }).catch(() => {});
@@ -387,6 +407,7 @@ function cliSelfTest() {
   expectThrow(() => validatePositionals("uninstall", { _: ["unexpected"] }), "does not accept positional");
   expectThrow(() => validateCommandOptions("uninstall", { _: [], workspace: "/tmp/project" }), "not valid for uninstall");
   expectThrow(() => validateCommandOptions("doctor", { _: [], fullEnv: true }), "not valid for doctor");
+  validateCommandOptions("full-test", { _: [], workspace: "/tmp/project", json: true });
   validateCommandOptions("start", { _: [], unrestrictedPaths: true, noExec: true, logLevel: "warn" });
   validateLoggingOptions({ logLevel: "warn" });
   expectThrow(() => validateLoggingOptions({ logLevel: "trace" }), "log level must be");
@@ -401,6 +422,8 @@ function cliSelfTest() {
   validatePositionals("stdio", { _: ["/tmp/project"] });
   validatePositionals("client-config", { _: ["codex"] });
   validatePositionals("resource", { _: ["add", "racknerd-key", "/tmp/key"] });
+  validatePositionals("resource", { _: ["generate-ssh-key", "racknerd-key", "/tmp/key"] });
+  validatePositionals("full-test", { _: ["/tmp/project"] });
   validatePositionals("job", { _: ["read", "job_abcdefghijklmnopqrstuvwxyz"] });
   validatePositionals("job", { _: ["submit", "/tmp/plan.json"] });
   validatePositionals("job", { _: ["approve", "job_abcdefghijklmnopqrstuvwxyz"] });
@@ -419,13 +442,20 @@ function cliSelfTest() {
   ) {
     throw new Error("new-workspace default policy is not maximum-permission full mode");
   }
+  assertCanonicalFullPolicy(defaultPolicy);
+  if (toolsForPolicy(defaultPolicy).length !== allToolNames().length) throw new Error("canonical full policy does not expose every tool");
+  const inconsistentFull = resolvePolicy({}, { profile: "full", origin: "explicit", revision: 3, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  if (inconsistentFull.profile !== "full" || !inconsistentFull.allowWrite || inconsistentFull.execMode !== "shell" || !inconsistentFull.unrestrictedPaths || inconsistentFull.minimalEnv || !inconsistentFull.exposeAbsolutePaths) {
+    throw new Error("declared full profile was not repaired to canonical maximum permissions");
+  }
+  assertCanonicalFullPolicy(inconsistentFull);
   const review = resolvePolicy({ profile: "review" }, {});
   const legacy = resolvePolicy({}, { profile: "custom", allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
   if (legacy.profile !== "full" || legacy.origin !== "migrated" || !legacy.unrestrictedPaths || legacy.minimalEnv || !legacy.exposeAbsolutePaths) {
     throw new Error("legacy implicit default policy was not migrated to full");
   }
   const staleDefault = resolvePolicy({}, { profile: "review", origin: "default", revision: 1, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
-  if (staleDefault.profile !== "full" || staleDefault.origin !== "default" || staleDefault.revision !== 2) {
+  if (staleDefault.profile !== "full" || staleDefault.origin !== "default" || staleDefault.revision !== 3) {
     throw new Error("outdated default-origin policy did not follow the current policy revision");
   }
   const staleExplicit = resolvePolicy({}, { profile: "review", origin: "explicit", revision: 1, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });

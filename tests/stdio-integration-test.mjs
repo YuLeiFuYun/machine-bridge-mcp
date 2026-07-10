@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import readline from "node:readline";
@@ -53,7 +53,7 @@ try {
   send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const listed = await responseFor(2);
   const tools = new Map(listed.result.tools.map((tool) => [tool.name, tool]));
-  for (const required of ["server_info", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "diagnose_runtime", "list_local_resources", "stage_job", "start_job", "list_jobs", "read_job", "cancel_job", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
+  for (const required of ["server_info", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "diagnose_runtime", "list_local_resources", "generate_ssh_key_resource", "stage_job", "start_job", "list_jobs", "read_job", "cancel_job", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
     assert(tools.has(required), `stdio default full profile omitted ${required}`);
   }
   assert(tools.get("write_file")?.annotations?.destructiveHint === true, "tool annotations missing");
@@ -108,6 +108,19 @@ try {
   send({ jsonrpc: "2.0", id: 603, method: "tools/call", params: { name: "list_local_resources", arguments: {} } });
   const localResources = await responseFor(603);
   assert(localResources.result?.structuredContent?.count === 0 && localResources.result?.structuredContent?.paths_exposed === false, "empty local resource registry was not reported safely");
+
+  const generatedKeyPath = join(temp, "stdio-operator-key");
+  send({ jsonrpc: "2.0", id: 604, method: "tools/call", params: { name: "generate_ssh_key_resource", arguments: { name: "stdio-key", path: generatedKeyPath, comment: "stdio-integration" } } });
+  const generatedKey = await responseFor(604, 30_000);
+  const generatedContent = generatedKey.result?.structuredContent;
+  assert(generatedKey.result?.isError === false && generatedContent?.registered === true && generatedContent?.private_key_content_exposed === false, "generate_ssh_key_resource failed or exposed private content");
+  assert((await stat(generatedKeyPath)).isFile() && (await stat(`${generatedKeyPath}.pub`)).isFile(), "generate_ssh_key_resource did not create a key pair");
+  if (process.platform !== "win32") assert(((await stat(generatedKeyPath)).mode & 0o777) === 0o600, "generated MCP private key mode is not 0600");
+  const privateBytes = await readFile(generatedKeyPath);
+  assert(!JSON.stringify(generatedKey.result).includes(privateBytes.toString("base64")), "generate_ssh_key_resource returned encoded private key bytes");
+  send({ jsonrpc: "2.0", id: 605, method: "tools/call", params: { name: "list_local_resources", arguments: {} } });
+  const resourcesAfterGeneration = await responseFor(605);
+  assert(resourcesAfterGeneration.result?.structuredContent?.resources?.some((resource) => resource.name === "stdio-key" && resource.available), "generated SSH resource was not immediately visible");
 
   send({ jsonrpc: "2.0", id: 601, method: "tools/call", params: { name: "exec_command", arguments: { command: "printf shell-ok", timeout_seconds: 5 } } });
   const shellResult = await responseFor(601);
@@ -184,6 +197,7 @@ try {
   const exit = await waitForExit(child, 10_000);
   assert(exit.code === 0, `stdio server exited with ${exit.code}: ${stderr}`);
   assert(!stderr.includes("tool call completed"), "default stdio logging emitted per-call success noise");
+  assert(!stderr.includes("tool call failed"), "default stdio logging emitted per-call failure noise");
   await waitForFile(detachedMarker, 10_000);
   await waitForFile(detachedCleanup, 10_000);
   assert(await readFile(detachedMarker, "utf8") === "detached-complete", "managed job did not survive stdio disconnect");

@@ -32,9 +32,9 @@ The Worker is a remote authentication and relay boundary. The local runtime is t
 
 ## Profiles are capability sets, not sandboxes
 
-The default for newly selected workspaces is `full`, which prioritizes ease of use over least privilege.
+The default for newly selected workspaces is `full`, which prioritizes ease of use over least privilege. Named profiles are canonical capability contracts. A stored `full` label is repaired on load to the complete maximum-permission field set and tool catalog; a deliberate per-capability override is represented as `custom`, not as a partially restricted `full`.
 
-- `full` exposes all tools, unrestricted direct filesystem paths, absolute path output, and the complete parent process environment.
+- `full` exposes all tools, unrestricted direct filesystem paths, absolute path output, shell execution, and the complete parent process environment.
 - `agent` exposes file mutation, direct argv execution, and process sessions while keeping direct filesystem tools workspace-confined and the process environment isolated.
 - `edit` exposes read and mutation tools without process execution.
 - `review` exposes read-only workspace/Git/image tools.
@@ -57,6 +57,12 @@ Maximum local policy does not bypass Unix permissions, Windows ACLs, macOS TCC/S
 
 Processes are not confined by the filesystem-tool resolver. They can access paths, networks, processes, credential stores, and devices available to the local user.
 
+## Full-profile verification
+
+`machine-mcp full-test` performs real local operations inside disposable temporary directories: unrestricted file access, direct and shell processes, inherited environment, SSH key generation/matching, a sandbox `authorized_keys` write, SSH client parsing, Google Cloud OS Login command discovery, a non-mutating sudo availability probe, and detached job cleanup. It makes no cloud or remote-server change and cannot prove that an MCP host will deliver a future request. The command verifies the Machine Bridge and local-machine portion of the authority chain only.
+
+A canonical `full` profile guarantees that Machine Bridge itself will not reject a catalogued tool because of its local profile, path scope, environment mode, or shell mode. It cannot override the MCP host/connector, operating-system access controls, endpoint-security policy, remote authentication, cloud IAM, `sudo`, or service-side authorization.
+
 ## Mutation integrity
 
 Writes are bounded, reject symbolic-link/non-regular destinations, use same-directory staging, and commit atomically per file. Create-only commit fails if a concurrent destination appears. Expected hashes and exact edits reduce accidental stale overwrites.
@@ -75,7 +81,7 @@ The default `full` profile passes the complete parent environment. Narrower prof
 
 ## Local resources and managed jobs
 
-Local resources are registered only through the operator-controlled CLI. State stores canonical paths and metadata, not file contents. Unix-like registration rejects group/other-readable files unless explicitly overridden. Portable mode checks do not fully describe Windows ACLs or extended Unix ACLs; the operator remains responsible for platform permissions.
+Local resources are registered through the operator-controlled CLI or, only under canonical `full`, through `generate_ssh_key_resource`. State stores canonical paths and metadata, not file contents. The SSH generator creates or reuses an unencrypted automation key, verifies that the public and private files match, rejects symbolic links/incomplete pairs, applies `0600`/`0644` modes where supported, and returns no private bytes. Unix-like registration rejects group/other-readable private resource files unless explicitly overridden. Portable mode checks do not fully describe Windows ACLs or extended Unix ACLs; the operator remains responsible for platform permissions.
 
 At job acceptance, referenced resources are bounded and hashed. The detached runner reopens and verifies each hash before copying it to a private `0600` runtime file. Resource copies are removed after the finally phase. A changed or unavailable resource fails closed.
 
@@ -131,7 +137,7 @@ Process sessions are interactive and intentionally die with runtime disconnect/r
 
 ## Logs and privacy
 
-Default operational logs record startup/connection transitions, failed calls, slow-call duration, and coarse error classes. Routine successful calls and shortened correlation IDs are debug-only. Tool arguments, command text, stdin, file/patch contents, and outputs are omitted. Messages and fields are bounded; unexpected daemon and Worker exceptions are reduced to error classes. Git author email is omitted from `git_log` unless explicitly requested.
+Default operational logs record startup/deployment, relay, protocol, service, and infrastructure transitions. Every ordinary per-tool event—start, success, failure, cancellation, and duration—is debug-only. Tool arguments, command text, stdin, file/patch contents, and outputs are omitted. Messages and fields are bounded; unexpected daemon and Worker infrastructure exceptions are reduced to error classes. Git author email is omitted from `git_log` unless explicitly requested.
 
 No logging policy can prevent data from being returned to a client that explicitly invokes an enabled tool. The Worker necessarily relays remote tool arguments and results; this is not end-to-end encryption against the user's Cloudflare execution environment. Managed-job result files may contain remote command output and are owner-only local data, not operational logs.
 

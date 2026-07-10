@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.6.1 - 2026-07-10
+
+### Full-profile contract and operator workflows
+
+- Make named profiles canonical capability contracts. A stored `full` label is repaired to writes, shell execution, unrestricted paths, full parent environment, absolute path output, and the complete tool catalog; deliberate individual overrides remain `custom`. Advance the policy revision to 3 and expose the contract in `server_info` and `doctor`.
+- Add `machine-mcp full-test`, a real local-machine acceptance suite using disposable directories. It verifies outside-workspace I/O, direct and shell execution, parent-environment inheritance, SSH key generation, sandbox `authorized_keys`, SSH client parsing, Google OS Login command availability, a non-mutating sudo probe, and detached finally cleanup without changing cloud or remote state.
+- Add `machine-mcp resource generate-ssh-key NAME [PATH]` and the canonical-full-only MCP tool `generate_ssh_key_resource`. Both generate or reuse an Ed25519 pair locally, register the private file as a resource, and return only paths, modes, key type, and public fingerprint.
+
+### Logging
+
+- Remove every ordinary per-tool event from default `info`/`warn` logs. Starts, successes, failures, cancellations, durations, slow calls, tool names, coarse outcome classes, and call correlation are now debug-only in both remote daemon and stdio transports.
+- Keep default logs focused on deployment, connection, protocol, relay, service, and infrastructure health. Tool arguments, command text, inputs, outputs, and results remain omitted at all levels.
+
+### Security, correctness, and portability
+
+- Verify that an existing SSH public key matches its private key and that the private key is usable non-interactively before reuse. Reject incomplete pairs and symbolic links, enforce owner-only private modes where supported, and never return private bytes.
+- Fix the previously untested RSA key-generation argument order and add real RSA coverage.
+- Centralize CLI and MCP key generation/registration in one locked state transaction. Roll back a newly created pair if state persistence fails, handle canonical path aliases, and reapply permissions after cross-filesystem installation.
+- Validate the resource state layout before deriving its root and restrict the MCP key generator to the complete canonical `full` profile.
+- Avoid reading user SSH configuration during `full-test`, canonicalize temporary path aliases, and report sudo/cloud prerequisites separately from core Machine Bridge capability.
+
+### Tests and documentation
+
+- Add real Ed25519/RSA generation, reuse, mismatch, incomplete-pair, symlink, mode, private-content, CLI, stdio, Worker-policy, and real-machine full-profile regression coverage.
+- Update logging, architecture, operations, client, managed-job, security, and testing documentation to match the canonical-full and debug-only per-tool event contracts.
+
 ## 0.6.0 - 2026-07-10
 
 ### Added
