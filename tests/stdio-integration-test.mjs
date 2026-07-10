@@ -12,6 +12,7 @@ const stateDir = join(temp, "state");
 await import("node:fs/promises").then(({ mkdir }) => mkdir(workspace, { recursive: true }));
 await writeFile(join(workspace, "sample.txt"), "one\ntwo\nthree\n", "utf8");
 await writeFile(join(workspace, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=", "base64"));
+await writeFile(join(temp, "passwords.txt"), "stdio-sensitive-name-visible", "utf8");
 const canonicalWorkspace = await realpath(workspace);
 
 const child = spawn(process.execPath, [
@@ -23,6 +24,7 @@ const child = spawn(process.execPath, [
   cwd: root,
   stdio: ["pipe", "pipe", "pipe"],
   windowsHide: true,
+  env: { ...process.env, MBM_STDIO_FULL_ENV_TEST: "visible-through-full-env" },
 });
 
 let stderr = "";
@@ -60,6 +62,10 @@ try {
   assert(read.result?.structuredContent?.path === join(canonicalWorkspace, "sample.txt"), "read_file did not use the default full profile's canonical absolute path output");
   assert(read.result?.structuredContent?.content === "two\n", "read_file line slice was incorrect");
 
+  send({ jsonrpc: "2.0", id: 30, method: "tools/call", params: { name: "read_file", arguments: { path: join(temp, "passwords.txt") } } });
+  const sensitiveNamedRead = await responseFor(30);
+  assert(sensitiveNamedRead.result?.isError === false && sensitiveNamedRead.result?.structuredContent?.content.includes("stdio-sensitive-name-visible"), "default full profile blocked a sensitive-looking filename outside the workspace");
+
   send({ jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "view_image", arguments: { path: "pixel.png" } } });
   const image = await responseFor(31);
   assert(image.result?.content?.[0]?.type === "image", "view_image did not return native MCP image content");
@@ -81,11 +87,17 @@ try {
   const processResult = await responseFor(6);
   assert(processResult.result?.structuredContent?.stdout === "direct-ok", "run_process failed");
 
+  send({ jsonrpc: "2.0", id: 600, method: "tools/call", params: { name: "run_process", arguments: { argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_STDIO_FULL_ENV_TEST || 'missing')"], timeout_seconds: 5 } } });
+  const fullEnvResult = await responseFor(600);
+  assert(fullEnvResult.result?.structuredContent?.stdout === "visible-through-full-env", "default full profile did not inherit the parent environment");
+
   send({ jsonrpc: "2.0", id: 60, method: "tools/call", params: { name: "server_info", arguments: {} } });
   const serverInfo = await responseFor(60);
   const defaultPolicy = serverInfo.result?.structuredContent?.policy;
-  assert(defaultPolicy?.profile === "full", "stdio did not use full as the default profile");
+  assert(defaultPolicy?.profile === "full" && defaultPolicy?.origin === "default", "stdio did not use full as the default profile");
   assert(defaultPolicy?.execMode === "shell" && defaultPolicy?.unrestrictedPaths === true && defaultPolicy?.minimalEnv === false && defaultPolicy?.exposeAbsolutePaths === true, "stdio default full profile is not maximum permission");
+  assert(serverInfo.result?.structuredContent?.enforcement?.sensitive_filename_filter === false, "server_info did not disclose the absence of a sensitive-filename filter");
+  assert(serverInfo.result?.structuredContent?.enforcement?.host_policy_is_independent === true, "server_info did not disclose the independent host-policy boundary");
 
   send({ jsonrpc: "2.0", id: 601, method: "tools/call", params: { name: "exec_command", arguments: { command: "printf shell-ok", timeout_seconds: 5 } } });
   const shellResult = await responseFor(601);
@@ -130,6 +142,7 @@ try {
   child.stdin.end();
   const exit = await waitForExit(child, 10_000);
   assert(exit.code === 0, `stdio server exited with ${exit.code}: ${stderr}`);
+  assert(!stderr.includes("tool call completed"), "default stdio logging emitted per-call success noise");
   console.log("stdio MCP integration test ok");
 } finally {
   if (child.exitCode === null) child.kill("SIGKILL");

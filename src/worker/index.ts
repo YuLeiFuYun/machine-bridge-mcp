@@ -1,10 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import toolCatalog from "../shared/tool-catalog.json";
+import serverMetadata from "../shared/server-metadata.json";
 
-const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.4.2";
-const MCP_PROTOCOL_VERSION = "2025-11-25";
-const MCP_SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
+const SERVER_NAME = String(serverMetadata.name);
+const SERVER_VERSION = "0.5.0";
+const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
+const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
@@ -121,13 +122,8 @@ const allCatalogTools = toolCatalog as ToolDefinition[];
 const serverInfoTool = publicTool(allCatalogTools.find((tool) => tool.name === "server_info")!);
 const workspaceTools = allCatalogTools.filter((tool) => tool.name !== "server_info").map(publicTool);
 
-const MCP_INSTRUCTIONS = [
-  "You are connected to a local workspace through machine-bridge-mcp.",
-  "The Cloudflare Worker authenticates and relays calls; file and command operations execute on the user's local runtime.",
-  "Relative paths use the configured workspace. Direct filesystem tools are workspace-scoped unless unrestricted paths are explicitly enabled.",
-  "run_process avoids shell parsing but is not an OS sandbox. exec_command is only exposed in shell mode and has the local user's authority.",
-  "Prefer read_file line ranges, edit_file, or apply_patch over whole-file replacement, and report commands that were run.",
-].join("\n");
+const MCP_INSTRUCTIONS = serverMetadata.instructions.map((value) => String(value)).join("\n");
+
 
 function publicTool(tool: ToolDefinition): ToolDefinition {
   const { availability: _availability, ...definition } = tool;
@@ -1001,8 +997,14 @@ function daemonPolicyAllows(availability: unknown, policy: Record<string, unknow
 function sanitizeDaemonPolicy(value: unknown): Record<string, unknown> {
   const policy = asObject(value);
   const execMode = policy.execMode === "shell" || policy.execMode === "direct" ? policy.execMode : "off";
+  const origin = sanitizeMetadataText(policy.origin, 32);
+  const revision = Number.isInteger(policy.revision) && Number(policy.revision) > 0
+    ? Math.min(Number(policy.revision), 1_000_000)
+    : 1;
   return {
     profile: sanitizeMetadataText(policy.profile, 32) ?? "custom",
+    origin: ["default", "explicit", "custom", "migrated", "legacy-preserved"].includes(origin ?? "") ? origin : "custom",
+    revision,
     allowWrite: policy.allowWrite === true,
     allowExec: execMode !== "off",
     execMode,

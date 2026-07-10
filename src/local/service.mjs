@@ -6,6 +6,15 @@ import { ensureOwnerOnlyDir, expandHome } from "./state.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
 const WINDOWS_TASK = "MachineBridgeMCP";
+const SERVICE_COMMAND_OUTPUT_BYTES = 64 * 1024;
+
+function serviceRun(command, args) {
+  return run(command, args, {
+    capture: true,
+    allowFailure: true,
+    maxOutputBytes: SERVICE_COMMAND_OUTPUT_BYTES,
+  });
+}
 
 export async function installAutostart({ workspace, stateRoot, entryScript, logger = console }) {
   const spec = serviceSpec({ workspace, stateRoot, entryScript });
@@ -28,14 +37,14 @@ export async function autostartStatus({ logger = console } = {}) {
 
 export async function startAutostart({ logger = console } = {}) {
   if (process.platform === "darwin") return startLaunchd(logger);
-  if (process.platform === "win32") return run("schtasks", ["/Run", "/TN", WINDOWS_TASK], { capture: true, allowFailure: true });
-  return run("systemctl", ["--user", "start", "machine-bridge-mcp.service"], { capture: true, allowFailure: true });
+  if (process.platform === "win32") return serviceRun("schtasks", ["/Run", "/TN", WINDOWS_TASK]);
+  return serviceRun("systemctl", ["--user", "start", "machine-bridge-mcp.service"]);
 }
 
 export async function stopAutostart({ logger = console } = {}) {
   if (process.platform === "darwin") return stopLaunchd(logger);
-  if (process.platform === "win32") return run("schtasks", ["/End", "/TN", WINDOWS_TASK], { capture: true, allowFailure: true });
-  return run("systemctl", ["--user", "stop", "machine-bridge-mcp.service"], { capture: true, allowFailure: true });
+  if (process.platform === "win32") return serviceRun("schtasks", ["/End", "/TN", WINDOWS_TASK]);
+  return serviceRun("systemctl", ["--user", "stop", "machine-bridge-mcp.service"]);
 }
 
 
@@ -50,19 +59,29 @@ export function trimAutostartLogs(stateRoot, options = {}) {
       const info = statSync(file);
       if (info.size > maxBytes) {
         const fd = openSync(file, "r");
+        let buffer;
         try {
           const current = fstatSync(fd);
           const length = Math.min(keepBytes, current.size);
-          const buffer = Buffer.alloc(length);
+          buffer = Buffer.alloc(length);
           readSync(fd, buffer, 0, length, Math.max(0, current.size - length));
-          writeFileSync(file, buffer, { mode: 0o600 });
         } finally {
           closeSync(fd);
         }
+        writeFileSync(file, lineSafeTail(buffer), { mode: 0o600 });
       }
       chmodSync(file, 0o600);
     } catch {}
   }
+}
+
+function lineSafeTail(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return Buffer.alloc(0);
+  let text = buffer.toString("utf8");
+  const firstNewline = text.indexOf("\n");
+  if (firstNewline >= 0 && firstNewline < text.length - 1) text = text.slice(firstNewline + 1);
+  else text = text.replace(/^\uFFFD+/, "");
+  return Buffer.from(text, "utf8");
 }
 
 function serviceSpec({ workspace, stateRoot, entryScript }) {
@@ -92,7 +111,7 @@ export function daemonArgs(spec) {
     "--workspace", spec.workspace,
     "--state-dir", spec.stateRoot,
     "--no-print-credentials",
-    "--quiet",
+    "--log-level", "warn",
   ];
 }
 
@@ -113,9 +132,9 @@ async function startLaunchd(logger) {
   const plistPath = launchdPlistPath();
   const target = `gui/${process.getuid?.() ?? ""}`;
   if (!existsSync(plistPath)) return { ok: false, error: "launchd plist not installed" };
-  await run("launchctl", ["bootout", target, plistPath], { capture: true, allowFailure: true });
-  const boot = await run("launchctl", ["bootstrap", target, plistPath], { capture: true, allowFailure: true });
-  const kick = await run("launchctl", ["kickstart", "-k", `${target}/${LABEL}`], { capture: true, allowFailure: true });
+  await serviceRun("launchctl", ["bootout", target, plistPath]);
+  const boot = await serviceRun("launchctl", ["bootstrap", target, plistPath]);
+  const kick = await serviceRun("launchctl", ["kickstart", "-k", `${target}/${LABEL}`]);
   logger.info?.("launchd service started");
   return { ok: boot.code === 0 || kick.code === 0, bootstrap: boot, kickstart: kick };
 }
@@ -123,7 +142,7 @@ async function startLaunchd(logger) {
 async function stopLaunchd(logger) {
   const plistPath = launchdPlistPath();
   const target = `gui/${process.getuid?.() ?? ""}`;
-  const result = await run("launchctl", ["bootout", target, plistPath], { capture: true, allowFailure: true });
+  const result = await serviceRun("launchctl", ["bootout", target, plistPath]);
   logger.info?.("launchd service stopped");
   return result;
 }
@@ -139,7 +158,7 @@ async function uninstallLaunchd(logger) {
 async function statusLaunchd() {
   const plistPath = launchdPlistPath();
   const target = `gui/${process.getuid?.() ?? ""}/${LABEL}`;
-  const result = await run("launchctl", ["print", target], { capture: true, allowFailure: true });
+  const result = await serviceRun("launchctl", ["print", target]);
   return { ok: existsSync(plistPath), provider: "launchd", installed: existsSync(plistPath), path: plistPath, active: result.code === 0, detail: result.stdout || result.stderr };
 }
 
@@ -173,25 +192,25 @@ async function installSystemd(spec, logger) {
   const servicePath = systemdPath();
   mkdirSync(path.dirname(servicePath), { recursive: true });
   writeFileSync(servicePath, systemdUnit(spec), { mode: 0o644 });
-  const reload = await run("systemctl", ["--user", "daemon-reload"], { capture: true, allowFailure: true });
-  const enable = await run("systemctl", ["--user", "enable", "machine-bridge-mcp.service"], { capture: true, allowFailure: true });
-  const linger = await run("loginctl", ["enable-linger", os.userInfo().username], { capture: true, allowFailure: true });
+  const reload = await serviceRun("systemctl", ["--user", "daemon-reload"]);
+  const enable = await serviceRun("systemctl", ["--user", "enable", "machine-bridge-mcp.service"]);
+  const linger = await serviceRun("loginctl", ["enable-linger", os.userInfo().username]);
   logger.info?.(`Autostart installed: ${servicePath}`);
   return { ok: reload.code === 0 && enable.code === 0, provider: "systemd", path: servicePath, reload, enable, linger };
 }
 
 async function uninstallSystemd(logger) {
-  await run("systemctl", ["--user", "disable", "--now", "machine-bridge-mcp.service"], { capture: true, allowFailure: true });
+  await serviceRun("systemctl", ["--user", "disable", "--now", "machine-bridge-mcp.service"]);
   const servicePath = systemdPath();
   if (existsSync(servicePath)) rmSync(servicePath, { force: true });
-  await run("systemctl", ["--user", "daemon-reload"], { capture: true, allowFailure: true });
+  await serviceRun("systemctl", ["--user", "daemon-reload"]);
   logger.info?.(`Autostart removed: ${servicePath}`);
   return { ok: true, provider: "systemd", path: servicePath };
 }
 
 async function statusSystemd() {
   const servicePath = systemdPath();
-  const result = await run("systemctl", ["--user", "status", "machine-bridge-mcp.service", "--no-pager"], { capture: true, allowFailure: true });
+  const result = await serviceRun("systemctl", ["--user", "status", "machine-bridge-mcp.service", "--no-pager"]);
   return { ok: existsSync(servicePath), provider: "systemd", installed: existsSync(servicePath), path: servicePath, active: result.code === 0, detail: result.stdout || result.stderr };
 }
 
@@ -216,19 +235,19 @@ WantedBy=default.target
 
 async function installWindowsTask(spec, logger) {
   const command = windowsCommand(spec);
-  const result = await run("schtasks", ["/Create", "/TN", WINDOWS_TASK, "/SC", "ONLOGON", "/TR", command, "/F"], { capture: true, allowFailure: true });
+  const result = await serviceRun("schtasks", ["/Create", "/TN", WINDOWS_TASK, "/SC", "ONLOGON", "/TR", command, "/F"]);
   logger.info?.("Windows Scheduled Task installed for logon");
   return { ok: result.code === 0, provider: "schtasks", task: WINDOWS_TASK, result };
 }
 
 async function uninstallWindowsTask(logger) {
-  const result = await run("schtasks", ["/Delete", "/TN", WINDOWS_TASK, "/F"], { capture: true, allowFailure: true });
+  const result = await serviceRun("schtasks", ["/Delete", "/TN", WINDOWS_TASK, "/F"]);
   logger.info?.("Windows Scheduled Task removed");
   return { ok: result.code === 0 || /cannot find/i.test(result.stderr), provider: "schtasks", task: WINDOWS_TASK, result };
 }
 
 async function statusWindowsTask() {
-  const result = await run("schtasks", ["/Query", "/TN", WINDOWS_TASK, "/FO", "LIST"], { capture: true, allowFailure: true });
+  const result = await serviceRun("schtasks", ["/Query", "/TN", WINDOWS_TASK, "/FO", "LIST"]);
   return { ok: result.code === 0, provider: "schtasks", installed: result.code === 0, task: WINDOWS_TASK, active: result.code === 0, detail: result.stdout || result.stderr };
 }
 

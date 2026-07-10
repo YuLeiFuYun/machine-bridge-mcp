@@ -34,7 +34,7 @@
   {
     "name": "list_roots",
     "title": "List workspace roots",
-    "description": "List filesystem roots exposed by the local runtime. Paths are workspace-relative unless absolute-path output is explicitly enabled.",
+    "description": "List filesystem roots exposed by the active local policy. The default full profile exposes local filesystem roots and returns absolute paths.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -100,7 +100,7 @@
   {
     "name": "read_file",
     "title": "Read text file",
-    "description": "Read a UTF-8 file or an inclusive 1-based line range. Filesystem paths are workspace-scoped unless unrestricted paths are explicitly enabled.",
+    "description": "Read a UTF-8 regular file or an inclusive 1-based line range. The server does not block sensitive-looking filenames; access follows the active local policy and operating-system permissions.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,

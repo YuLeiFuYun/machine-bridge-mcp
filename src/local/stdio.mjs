@@ -2,11 +2,12 @@ import readline from "node:readline";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { LocalDaemon } from "./daemon.mjs";
-import { formatFields, sanitizeLogText } from "./log.mjs";
+import { classifyOperationalError, createLogger } from "./log.mjs";
 import {
   MCP_INSTRUCTIONS,
   MCP_PROTOCOL_VERSION,
   MCP_SUPPORTED_PROTOCOL_VERSIONS,
+  SERVER_NAME,
   rpcError,
   rpcResult,
   toolResult,
@@ -14,10 +15,11 @@ import {
 } from "./tools.mjs";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
+const SLOW_TOOL_CALL_MS = 30_000;
 const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version);
 
-export async function runStdioServer({ workspace, policy, verbose = false }) {
-  const logger = stderrLogger(verbose);
+export async function runStdioServer({ workspace, policy, logLevel = "info" }) {
+  const logger = createLogger({ component: "stdio", level: logLevel, stderrOnly: true, color: false });
   const runtime = new LocalDaemon({ workspace, policy, logger });
   const pending = new Map();
   let negotiatedVersion = MCP_PROTOCOL_VERSION;
@@ -40,7 +42,7 @@ export async function runStdioServer({ workspace, policy, verbose = false }) {
       return;
     }
     void handleLine(line).catch((error) => {
-      logger.error("stdio request handler failed", { error: errorMessage(error) });
+      logger.error("stdio request handler failed", { error_class: classifyOperationalError(error) });
     });
   });
 
@@ -74,7 +76,7 @@ export async function runStdioServer({ workspace, policy, verbose = false }) {
         protocolVersion: negotiatedVersion,
         capabilities: { tools: { listChanged: false }, logging: {} },
         serverInfo: {
-          name: "machine-bridge-mcp",
+          name: SERVER_NAME,
           title: "Machine Bridge MCP",
           version: PACKAGE_VERSION,
           description: "Workspace-scoped local coding tools over MCP stdio or authenticated remote relay.",
@@ -128,11 +130,15 @@ export async function runStdioServer({ workspace, policy, verbose = false }) {
       try {
         const result = await runtime.executeTool(name, args, { callId });
         send(rpcResult(message.id, toolResult(result)));
-        logger.info("tool call completed", { call_id: callId.slice(0, 20), tool: name, duration_ms: Date.now() - started, ok: true });
+        const durationMs = Date.now() - started;
+        if (durationMs >= SLOW_TOOL_CALL_MS) logger.info("slow tool call completed", { tool: name, duration_ms: durationMs });
+        else logger.debug("tool call completed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs });
       } catch (error) {
         const safeError = runtime.safeErrorMessage(error);
         send(rpcResult(message.id, toolResult({ error: safeError }, true)));
-        logger.warn("tool call failed", { call_id: callId.slice(0, 20), tool: name, duration_ms: Date.now() - started, ok: false, error_class: classifyError(error) });
+        const durationMs = Date.now() - started;
+        logger.warn("tool call failed", { tool: name, duration_ms: durationMs, error_class: classifyOperationalError(error) });
+        logger.debug("tool call failure correlation", { call_id: callId.slice(0, 20) });
       } finally {
         if (key) pending.delete(key);
         runtime.finishCall(callId);
@@ -161,34 +167,4 @@ function jsonRpcIdKey(value) {
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-
-function classifyError(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/cancel/i.test(message)) return "cancelled";
-  if (/timed out/i.test(message)) return "timeout";
-  if (/outside the configured workspace/i.test(message)) return "path_boundary";
-  if (/disabled|requires .* mode/i.test(message)) return "policy_denied";
-  if (/not found|ENOENT/i.test(message)) return "not_found";
-  if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
-  if (/maximum|exceeds|max_bytes|too many/i.test(message)) return "limit_exceeded";
-  if (/invalid|must|requires|ambiguous|mismatch/i.test(message)) return "invalid_request";
-  return "execution_failed";
-}
-
-function errorMessage(error) {
-  return sanitizeLogText(error instanceof Error ? error.message : String(error)).slice(0, 4096) || "tool call failed";
-}
-
-function stderrLogger(verbose) {
-  const write = (level, message, fields) => {
-    if (level === "debug" && !verbose) return;
-    process.stderr.write(`[${level}] stdio: ${sanitizeLogText(message)}${formatFields(fields)}\n`);
-  };
-  return {
-    info(message, fields) { write("info", message, fields); },
-    warn(message, fields) { write("warn", message, fields); },
-    error(message, fields) { write("error", message, fields); },
-    debug(message, fields) { write("debug", message, fields); },
-  };
 }
