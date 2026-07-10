@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.2 - 2026-07-10
+
+### Fixed
+
+- Retry atomic JSON file replacement with bounded backoff for transient Windows sharing failures (`EPERM`, `EACCES`, `EBUSY`, and `ENOTEMPTY`). State, managed-job manager, and detached runner commits now use one shared implementation.
+- Prevent an intermittent Windows `runner_failed` result caused by a transient status-file replacement failure after the same commit had passed the protected pull-request checks.
+- Preserve immediate failure for non-transient filesystem errors and keep temporary-file cleanup behavior unchanged.
+- Restore corrupt-state backup creation through the shared replacement primitive, add collision-resistant backup names, and verify that recovery preserves the original corrupt bytes.
+
+### Tests and diagnostics
+
+- Add deterministic injected transient/non-transient atomic replacement tests.
+- Run the full real-machine sandbox three consecutive times on Windows, exercising repeated detached runner, status, result, and finally-step commits.
+- Include managed-job error and cleanup classifications in `full-test` output when a lifecycle check fails.
+
 ## 0.6.1 - 2026-07-10
 
 ### Full-profile contract and operator workflows

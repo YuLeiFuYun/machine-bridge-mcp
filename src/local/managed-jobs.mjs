@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
+import { replaceFileSync } from "./atomic-fs.mjs";
 
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
@@ -747,7 +748,7 @@ function atomicWriteJson(file, value, maxBytes) {
   if (Buffer.byteLength(text) > maxBytes) throw new Error(`JSON exceeds ${maxBytes} bytes`);
   const temp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(temp, text, { mode: 0o600, flag: "wx" });
-  renameSync(temp, file);
+  replaceFileSync(temp, file);
   ownerOnlyFile(file);
 }
 

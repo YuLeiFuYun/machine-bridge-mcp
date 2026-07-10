@@ -183,7 +183,7 @@ Pending calls retain their originating socket reference. A stale socket cannot c
 
 ## Persistence
 
-Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. Reads reject symbolic links and use no-follow descriptors where supported. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. State, managed-job manager, and detached runner commits share a bounded retrying atomic-replace primitive for transient Windows `EPERM`, `EACCES`, `EBUSY`, and `ENOTEMPTY` sharing failures. Reads reject symbolic links and use no-follow descriptors where supported. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
 
 Active managed jobs persist an owner-only plan, status, runner PID, and bounded runner diagnostics. Terminal jobs delete the full plan and retain only bounded status/redacted results for up to seven days. This balances crash cleanup with minimization of scripts, stdin, argv, environment overrides, and resource source paths.
 

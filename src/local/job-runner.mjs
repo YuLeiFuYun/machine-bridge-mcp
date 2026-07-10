@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { executionEnv } from "./shell.mjs";
 import { terminateProcessTree } from "./process-sessions.mjs";
+import { replaceFileSync } from "./atomic-fs.mjs";
 
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
 const TEMP_TOKEN = /\{\{temp:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -419,7 +420,7 @@ function writeJson(file, value, maxBytes) {
   if (Buffer.byteLength(text) > maxBytes) throw new Error(`job JSON exceeds ${maxBytes} bytes`);
   const temp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(temp, text, { mode: 0o600, flag: "wx" });
-  renameSync(temp, file);
+  replaceFileSync(temp, file);
   chmodSync(file, 0o600);
 }
 

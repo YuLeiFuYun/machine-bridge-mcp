@@ -145,6 +145,8 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
       && await fileEquals(mainMarker, "main")
       && await fileEquals(cleanupMarker, "cleanup"), {
       status: job.status,
+      error_class: job.error_class ?? job.result?.error_class ?? null,
+      cleanup_error_class: job.result?.cleanup_error_class ?? null,
       cleanup_attempted: true,
     }));
 
