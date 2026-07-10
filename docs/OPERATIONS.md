@@ -62,11 +62,13 @@ Defense-in-depth limits include:
 
 ## Upgrade behavior
 
-Version 0.4 changes the default for newly selected workspaces to `review`. Existing state retains its previous write and execution settings. To intentionally migrate an old profile:
+Version 0.4.1 changes the default for newly selected workspaces to the maximum-permission `full` profile. Existing state retains its saved policy. To intentionally migrate an older workspace to the new default:
 
 ```sh
-machine-mcp --workspace /path/to/project --profile agent
+machine-mcp --workspace /path/to/project --profile full
 ```
+
+`full` enables writes, direct processes, process sessions, shell execution, unrestricted direct filesystem paths, absolute path output, and the complete parent environment. Use `agent`, `edit`, or `review` when that authority is unnecessary.
 
 A remote policy change is saved locally, propagated in the daemon handshake, and persisted in the autostart definition.
 

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import readline from "node:readline";
@@ -12,13 +12,13 @@ const stateDir = join(temp, "state");
 await import("node:fs/promises").then(({ mkdir }) => mkdir(workspace, { recursive: true }));
 await writeFile(join(workspace, "sample.txt"), "one\ntwo\nthree\n", "utf8");
 await writeFile(join(workspace, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=", "base64"));
+const canonicalWorkspace = await realpath(workspace);
 
 const child = spawn(process.execPath, [
   join(root, "bin", "machine-mcp.mjs"),
   "stdio",
   "--workspace", workspace,
   "--state-dir", stateDir,
-  "--profile", "agent",
 ], {
   cwd: root,
   stdio: ["pipe", "pipe", "pipe"],
@@ -49,23 +49,22 @@ try {
   send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const listed = await responseFor(2);
   const tools = new Map(listed.result.tools.map((tool) => [tool.name, tool]));
-  for (const required of ["server_info", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "run_process", "start_process", "read_process", "write_process", "kill_process", "git_log", "git_show"]) {
-    assert(tools.has(required), `stdio agent profile omitted ${required}`);
+  for (const required of ["server_info", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
+    assert(tools.has(required), `stdio default full profile omitted ${required}`);
   }
-  assert(!tools.has("exec_command"), "stdio agent profile exposed shell execution");
   assert(tools.get("write_file")?.annotations?.destructiveHint === true, "tool annotations missing");
 
   send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "read_file", arguments: { path: "sample.txt", start_line: 2, end_line: 2 } } });
   const read = await responseFor(3);
   assert(read.result?.isError === false, "read_file returned an error");
-  assert(read.result?.structuredContent?.path === "sample.txt", "read_file leaked or omitted relative path");
+  assert(read.result?.structuredContent?.path === join(canonicalWorkspace, "sample.txt"), "read_file did not use the default full profile's canonical absolute path output");
   assert(read.result?.structuredContent?.content === "two\n", "read_file line slice was incorrect");
 
   send({ jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "view_image", arguments: { path: "pixel.png" } } });
   const image = await responseFor(31);
   assert(image.result?.content?.[0]?.type === "image", "view_image did not return native MCP image content");
   assert(image.result?.content?.[0]?.mimeType === "image/png", "view_image returned the wrong MIME type");
-  assert(image.result?.structuredContent?.path === "pixel.png", "view_image leaked or omitted its relative path");
+  assert(image.result?.structuredContent?.path === join(canonicalWorkspace, "pixel.png"), "view_image did not use the default full profile's canonical absolute path output");
   assert(!JSON.stringify(image.result).includes("$mcp"), "internal rich-result envelope leaked to the client");
 
   send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "edit_file", arguments: { path: "sample.txt", old_text: "two", new_text: "TWO" } } });
@@ -81,6 +80,16 @@ try {
   send({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "run_process", arguments: { argv: [process.execPath, "-e", "process.stdout.write('direct-ok')"], timeout_seconds: 5 } } });
   const processResult = await responseFor(6);
   assert(processResult.result?.structuredContent?.stdout === "direct-ok", "run_process failed");
+
+  send({ jsonrpc: "2.0", id: 60, method: "tools/call", params: { name: "server_info", arguments: {} } });
+  const serverInfo = await responseFor(60);
+  const defaultPolicy = serverInfo.result?.structuredContent?.policy;
+  assert(defaultPolicy?.profile === "full", "stdio did not use full as the default profile");
+  assert(defaultPolicy?.execMode === "shell" && defaultPolicy?.unrestrictedPaths === true && defaultPolicy?.minimalEnv === false && defaultPolicy?.exposeAbsolutePaths === true, "stdio default full profile is not maximum permission");
+
+  send({ jsonrpc: "2.0", id: 601, method: "tools/call", params: { name: "exec_command", arguments: { command: "printf shell-ok", timeout_seconds: 5 } } });
+  const shellResult = await responseFor(601);
+  assert(shellResult.result?.structuredContent?.stdout === "shell-ok", "default full profile shell execution failed");
 
   const sessionScript = "process.stdin.setEncoding('utf8'); console.log('ready'); process.stdin.on('data', d => { console.log('echo:' + d.trim()); if (d.includes('quit')) process.exit(0); });";
   send({ jsonrpc: "2.0", id: 61, method: "tools/call", params: { name: "start_process", arguments: { argv: [process.execPath, "-e", sessionScript] } } });

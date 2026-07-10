@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1 - 2026-07-10
+
+### Changed
+
+- Make `full` the default policy for newly selected workspaces and generated client configurations, prioritizing immediate usability. The default now enables all tools, unrestricted direct filesystem paths, absolute path output, shell execution, process sessions, and the complete parent environment; existing saved workspace policies remain unchanged.
+- Reframe stdio as an optional local transport rather than a model provider or a replacement for native Claude, Cursor, Codex, or ChatGPT Desktop tooling. Expand client documentation to distinguish the MCP host/model from the Machine Bridge tool server and explain when stdio is redundant or useful.
+- Activate cross-platform GitHub Actions checks on Linux, macOS, and Windows, update official actions to the current major releases, disable checkout credential persistence, and retain production dependency/package auditing.
+
+### Tests and documentation
+
+- Add regression coverage for the maximum-permission default and for `client-config` emitting `full` when no profile is supplied.
+- Update architecture, operations, security, and client guidance for profile-dependent path display, filesystem scope, and environment inheritance.
+
 ## 0.4.0 - 2026-07-10
 
 ### Architecture and compatibility

@@ -351,7 +351,7 @@ const POLICY_PROFILES = Object.freeze({
   review: Object.freeze({ profile: "review", allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
   edit: Object.freeze({ profile: "edit", allowWrite: true, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
   agent: Object.freeze({ profile: "agent", allowWrite: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
-  full: Object.freeze({ profile: "full", allowWrite: true, execMode: "shell", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }),
+  full: Object.freeze({ profile: "full", allowWrite: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }),
 });
 
 export function resolvePolicy(args = {}, stored = {}) {
@@ -368,7 +368,7 @@ export function resolvePolicy(args = {}, stored = {}) {
   } else if (hasStored) {
     base = normalizePolicy(stored);
   } else {
-    base = { ...POLICY_PROFILES.review };
+    base = { ...POLICY_PROFILES.full };
   }
 
   if (!hasExplicit) return normalizePolicy(base);
@@ -404,7 +404,7 @@ async function clientConfigCommand(args) {
   const workspaceArgs = { ...args, _: [] };
   const workspace = await chooseWorkspace(workspaceArgs, { promptOnFirstRun: false, save: false, allowPositional: false });
   const requested = String(args.client || args._[0] || "all").trim().toLowerCase();
-  const profile = String(args.profile || "agent").trim().toLowerCase();
+  const profile = String(args.profile || "full").trim().toLowerCase();
   if (!POLICY_PROFILES[profile]) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
   if (!["all", "claude", "cursor", "codex", "generic"].includes(requested)) throw new Error("client must be all, claude, cursor, codex, or generic");
   const command = process.execPath;
@@ -940,7 +940,7 @@ Start options:
   --no-autostart        Do not install login autostart during start
   --no-print-credentials Redact credentials in console output
   --print-mcp-credentials Print MCP URL/password again for reconnecting ChatGPT apps
-  --profile NAME        Policy profile: review (default for new workspaces), edit, agent, or full
+  --profile NAME        Policy profile: full (default), agent, edit, or review
   --exec-mode MODE      Command mode: off, direct argv, or full shell
   --no-write            Disable write_file, edit_file, and apply_patch
   --no-exec             Disable run_process and exec_command

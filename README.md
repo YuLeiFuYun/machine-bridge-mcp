@@ -23,27 +23,25 @@ Local clients such as Claude Desktop, Cursor, and Codex CLI
 
 The remote Worker authenticates and relays calls. It cannot directly read local files or start local processes. File, Git, image, patch, and process operations execute in the local runtime.
 
-## Security posture first
+## Default behavior and policy profiles
 
-A new workspace starts with the `review` profile:
+A newly selected workspace starts with the maximum-permission `full` profile for low-friction operation:
 
-- read-only filesystem and Git tools;
-- no file mutation;
-- no process execution;
-- workspace-confined filesystem access;
-- relative paths in tool results;
-- no parent shell environment inherited by commands.
+- all read, write, edit, patch, image, Git, direct-process, process-session, and shell tools are available;
+- direct filesystem tools may use paths outside the selected workspace;
+- tool results may return absolute paths;
+- child processes inherit the complete parent environment.
 
-Existing pre-0.4 workspace profiles keep their saved permissions during upgrade. Select a profile explicitly to change them.
+Existing workspace state keeps its saved policy during upgrade. Use `--profile full` to explicitly move an older workspace to the new maximum-permission behavior.
 
-| Profile | File edits | Direct argv processes | Shell commands | Intended use |
-|---|---:|---:|---:|---|
-| `review` | No | No | No | Inspection and review |
-| `edit` | Yes | No | No | Controlled file changes |
-| `agent` | Yes | Yes | No | Coding agents and test commands |
-| `full` | Yes | Yes | Yes | Deliberate full local automation |
+| Profile | File edits | Direct argv processes | Shell commands | Filesystem scope | Process environment |
+|---|---:|---:|---:|---|---|
+| `full` | Yes | Yes | Yes | Unrestricted | Full parent environment |
+| `agent` | Yes | Yes | No | Selected workspace | Isolated environment |
+| `edit` | Yes | No | No | Selected workspace | Isolated environment |
+| `review` | No | No | No | Selected workspace | Isolated environment |
 
-`run_process` and process sessions avoid command-shell parsing, but they are **not an operating-system sandbox**. An allowed executable can still access anything available to the local user. `exec_command` is more exposed because it additionally permits shell syntax and expansion. Use a container, VM, or dedicated low-privilege OS account for hostile repositories or untrusted instructions.
+This default prioritizes usability, not least privilege. `run_process` and process sessions avoid command-shell parsing, but they are **not an operating-system sandbox**. `exec_command` additionally permits shell syntax and expansion. Use `--profile review`, `edit`, or `agent`, or use a container, VM, or dedicated low-privilege OS account when the client, repository, or instructions are not fully trusted.
 
 ## Install
 
@@ -66,7 +64,7 @@ npm install
 Start the bridge from the project directory or select a workspace explicitly:
 
 ```sh
-machine-mcp --workspace /path/to/project --profile review
+machine-mcp --workspace /path/to/project
 ```
 
 On first remote start, the CLI:
@@ -88,30 +86,32 @@ MCP connection password: mcp_password_...
 
 The remote authorization flow uses an authorization code, PKCE S256, exact redirect/resource binding, expiring access tokens stored as hashes, and a token-version value for bulk revocation.
 
-## Local stdio MCP for Claude, Cursor, Codex, and compatible clients
+## Optional local stdio MCP
+
+stdio is a local transport, not a model provider. Claude Desktop, Cursor, Codex CLI, ChatGPT Desktop, or another MCP host supplies its own model/session and launches `machine-bridge-mcp` as a subprocess. The MCP server only exposes tools and returns their results; it does not borrow the model running in ChatGPT web.
+
+Many coding clients already have strong native filesystem and terminal tools, so configuring this stdio server is optional. It is useful when you want the same Machine Bridge tool schemas, patch behavior, process sessions, policy profiles, and logs across several clients, or when you want local access without deploying Cloudflare. If the client's built-in tools already meet your needs, there is no reason to add this server.
 
 Generate ready-to-paste configuration:
 
 ```sh
-machine-mcp client-config --client all --workspace /path/to/project --profile agent
+machine-mcp client-config --client all --workspace /path/to/project
 ```
 
 Or run stdio directly:
 
 ```sh
-machine-mcp stdio --workspace /path/to/project --profile agent
+machine-mcp stdio --workspace /path/to/project
 ```
 
-The stdio server writes only JSON-RPC messages to stdout. Operational logs go to stderr. It supports MCP initialization/version negotiation, tool discovery, calls, cancellation, structured tool output, native image content, and process sessions.
-
-See [docs/CLIENTS.md](docs/CLIENTS.md) for client-specific configuration and remote/local trade-offs.
+The stdio server writes only JSON-RPC messages to stdout and operational logs to stderr. See [docs/CLIENTS.md](docs/CLIENTS.md) for the host/model distinction and transport trade-offs.
 
 ## Policy controls
 
-Profiles can be narrowed with explicit flags:
+The default is `full`. Narrow or customize it with explicit flags:
 
 ```text
---profile review|edit|agent|full
+--profile full|agent|edit|review
 --exec-mode off|direct|shell
 --no-write
 --no-exec
@@ -122,9 +122,10 @@ Profiles can be narrowed with explicit flags:
 
 Important distinctions:
 
-- `--unrestricted-paths` expands direct filesystem tools beyond the selected workspace.
-- `--absolute-paths` changes returned path metadata; it does not grant additional access.
-- `--full-env` passes the complete parent environment to processes. Without it, commands receive an isolated HOME, temp directory, and cache directories plus a small set of platform variables.
+- The default `full` profile already enables unrestricted paths, absolute path output, and the complete parent environment.
+- `--unrestricted-paths=false`, `--absolute-paths=false`, and `--full-env=false` can narrow those individual settings.
+- `--absolute-paths` changes returned path metadata; it does not independently grant additional access.
+- In isolated-environment profiles, commands receive private HOME, temp, and cache directories plus a small set of platform variables.
 - Files with sensitive-looking names are not automatically blocked inside the workspace. A workspace `.env` remains readable when read tools are enabled.
 
 ## Tools
@@ -170,11 +171,11 @@ Process sessions retain bounded stdout/stderr, support offsets and short waits, 
 
 ## Path and write behavior
 
-By default, existing paths are resolved with `realpath` and must remain inside the canonical workspace. New write paths validate the nearest existing ancestor, preventing missing-path writes through escaping symbolic-link directories.
+When workspace confinement is enabled (`agent`, `edit`, `review`, or an explicit override), existing paths are resolved with `realpath` and must remain inside the canonical workspace. New write paths validate the nearest existing ancestor, preventing missing-path writes through escaping symbolic-link directories. The default `full` profile permits direct filesystem paths outside the workspace.
 
 Writes use same-directory temporary files and atomic commit. Create-only writes use an atomic hard-link commit so a concurrent file cannot be silently overwritten. Patch operations are prevalidated, serialized, staged, rechecked, committed with backups, and rolled back on failure.
 
-Returned paths are workspace-relative by default. This reduces unnecessary disclosure of usernames and local directory layouts. Enable `--absolute-paths` only when a client genuinely needs absolute paths.
+The default `full` profile returns absolute paths. The `agent`, `edit`, and `review` profiles return workspace-relative paths to reduce unnecessary disclosure of usernames and local directory layouts.
 
 ## Commands
 
@@ -200,7 +201,7 @@ Remote mode supports:
 - Linux `systemd --user`, with best-effort lingering;
 - Windows Scheduled Task at logon.
 
-The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and fails closed to the `review` profile if policy state is absent. Service logs are owner-only where supported and trimmed before daemon startup.
+The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. Service logs are owner-only where supported and trimmed before daemon startup.
 
 ## Secret rotation
 
@@ -233,7 +234,7 @@ npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```
 
-`npm run check` covers generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. A ready-to-enable GitHub Actions template is included at `docs/examples/github-actions-ci.yml` for Linux, macOS, and Windows with supported Node versions. Activating it requires a GitHub credential authorized to modify workflow files.
+`npm run check` covers generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with supported Node versions.
 
 See [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [SECURITY.md](SECURITY.md).
 

@@ -32,10 +32,12 @@ The Worker is a remote authentication and relay boundary. The local runtime is t
 
 ## Profiles are capability sets, not sandboxes
 
+The default for newly selected workspaces is `full`, which prioritizes ease of use over least privilege.
+
+- `full` exposes all tools, unrestricted direct filesystem paths, absolute path output, and the complete parent process environment.
+- `agent` exposes file mutation, direct argv execution, and process sessions while keeping direct filesystem tools workspace-confined and the process environment isolated.
+- `edit` exposes read and mutation tools without process execution.
 - `review` exposes read-only workspace/Git/image tools.
-- `edit` additionally exposes write, exact edit, and patch tools.
-- `agent` additionally exposes direct argv execution and process sessions.
-- `full` additionally exposes arbitrary shell commands.
 
 `run_process` avoids shell parsing, which removes one injection class, but an executable such as `node`, `python`, a package manager, compiler, test runner, or repository script can execute arbitrary code. Direct mode therefore has effectively broad local-user authority once an attacker controls argv or executed code.
 
@@ -45,9 +47,9 @@ For untrusted repositories or instructions, run the bridge inside a disposable V
 
 ## Filesystem exposure
 
-Direct filesystem tools are confined to the canonical selected workspace by default, including symbolic-link resolution. `--unrestricted-paths` expands this boundary and should be used only deliberately.
+Direct filesystem scope is profile-dependent. The default `full` profile is unrestricted. The `agent`, `edit`, and `review` profiles confine direct filesystem tools to the canonical selected workspace, including symbolic-link resolution.
 
-Returned paths are relative by default to reduce username and directory-layout disclosure. `--absolute-paths` changes metadata exposure without increasing direct access authority.
+The default `full` profile returns absolute paths. Narrower profiles return workspace-relative paths to reduce username and directory-layout disclosure. Path display and access scope remain separate controls.
 
 Sensitive-looking names are not blocked inside the workspace. Files such as `.env`, private keys, credentials, database dumps, and production configuration remain readable when they are in the selected workspace. Choose the narrowest practical workspace.
 
@@ -67,7 +69,7 @@ Local state contains the MCP connection password and daemon secret. State, lock,
 
 First-run or explicit credential output can intentionally display the MCP password. Avoid shared terminal logs, shell recordings, screenshots, CI output, or support tickets. Use `--no-print-credentials` for recorded sessions.
 
-Minimal process environment replaces HOME, temp, and common cache paths and does not pass arbitrary parent variables. It reduces accidental environment-secret leakage; it does not prevent code from explicitly accessing known resources. `--full-env` materially increases exposure.
+The default `full` profile passes the complete parent environment. Narrower profiles replace HOME, temp, and common cache paths and do not pass arbitrary parent variables. The isolated mode reduces accidental environment-secret leakage; it does not prevent code from explicitly accessing known resources.
 
 ## OAuth and public endpoints
 

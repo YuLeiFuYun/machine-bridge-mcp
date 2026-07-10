@@ -13,6 +13,7 @@ import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, 
 await daemonSelfTest();
 await stateSelfTest();
 await activeDaemonPolicyMutationSelfTest();
+await clientConfigDefaultSelfTest();
 await cliSelfTest();
 await logSelfTest();
 await serviceSelfTest();
@@ -156,6 +157,37 @@ async function activeDaemonPolicyMutationSelfTest() {
   }
 }
 
+async function clientConfigDefaultSelfTest() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-client-config-test-"));
+  const workspaceRaw = await mkdtemp(join(tmpdir(), "mbm-client-config-workspace-"));
+  const workspace = await realpath(workspaceRaw);
+  try {
+    const entry = new URL("../bin/machine-mcp.mjs", import.meta.url);
+    const child = spawnSync(process.execPath, [
+      entry.pathname,
+      "client-config",
+      "--client", "all",
+      "--workspace", workspace,
+      "--state-dir", stateRoot,
+      "--json",
+    ], {
+      cwd: workspace,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (child.error) throw child.error;
+    if (child.status !== 0) throw new Error(`client-config failed: ${child.stderr || child.stdout}`);
+    const output = JSON.parse(child.stdout.trim());
+    if (output.profile !== "full") throw new Error("client-config did not default to full profile");
+    const args = output.claude?.mcpServers?.["machine-bridge"]?.args || [];
+    const profileIndex = args.indexOf("--profile");
+    if (profileIndex < 0 || args[profileIndex + 1] !== "full") throw new Error("generated client config did not persist full profile");
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
+    await rm(workspaceRaw, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 function cliSelfTest() {
   const parsed = parseArgs(["--no-write", "/tmp/example", "--unrestricted-paths=false", "--worker-name", "mbm-test"]);
   if (parsed.noWrite !== true || parsed._[0] !== "/tmp/example") throw new Error("boolean option consumed positional workspace");
@@ -177,10 +209,18 @@ function cliSelfTest() {
   validatePositionals("stdio", { _: ["/tmp/project"] });
   validatePositionals("client-config", { _: ["codex"] });
 
-  const review = resolvePolicy({}, {});
-  if (review.profile !== "review" || review.allowWrite || review.execMode !== "off" || review.exposeAbsolutePaths) {
-    throw new Error("new-workspace review profile is not least privilege");
+  const defaultPolicy = resolvePolicy({}, {});
+  if (
+    defaultPolicy.profile !== "full" ||
+    !defaultPolicy.allowWrite ||
+    defaultPolicy.execMode !== "shell" ||
+    !defaultPolicy.unrestrictedPaths ||
+    defaultPolicy.minimalEnv ||
+    !defaultPolicy.exposeAbsolutePaths
+  ) {
+    throw new Error("new-workspace default policy is not maximum-permission full mode");
   }
+  const review = resolvePolicy({ profile: "review" }, {});
   const legacy = resolvePolicy({}, { allowWrite: true, allowExec: true, minimalEnv: true });
   if (!legacy.allowWrite || legacy.execMode !== "shell") throw new Error("legacy execution policy was not preserved");
   const agent = resolvePolicy({ profile: "agent" }, {});
@@ -190,6 +230,8 @@ function cliSelfTest() {
   expectThrow(() => resolvePolicy({ profile: "unsafe" }, {}), "--profile must be one of");
   expectThrow(() => resolvePolicy({ execMode: "maybe" }, {}), "--exec-mode must be");
 
+  const defaultNames = new Set(toolsForPolicy(defaultPolicy).map((tool) => tool.name));
+  if (!defaultNames.has("write_file") || !defaultNames.has("run_process") || !defaultNames.has("exec_command")) throw new Error("default full profile omits maximum tool capabilities");
   const reviewNames = new Set(toolsForPolicy(review).map((tool) => tool.name));
   if (reviewNames.has("write_file") || reviewNames.has("run_process") || reviewNames.has("exec_command")) throw new Error("review profile exposes mutation tools");
   const agentNames = new Set(toolsForPolicy(agent).map((tool) => tool.name));

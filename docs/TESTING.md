@@ -39,7 +39,7 @@ npm pack --dry-run
 npm run version:check
 ```
 
-The repository includes `docs/examples/github-actions-ci.yml`, a ready-to-enable matrix for Linux, macOS, and Windows. Node 22 and 24 are covered on Linux; Node 22 is covered on macOS and Windows. It must be copied to `.github/workflows/ci.yml` with a GitHub credential authorized to modify workflow files. Dependency and GitHub Actions updates are monitored by Dependabot after activation.
+GitHub Actions executes the main suite on Linux, macOS, and Windows. Node 22 and 24 are covered on Linux; Node 22 is covered on macOS and Windows. A separate package-audit job runs production dependency auditing and a dry-run package build. Dependency and GitHub Actions updates are monitored by Dependabot.
 
 ## Test design rules
 

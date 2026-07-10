@@ -104,7 +104,7 @@ Duplicate in-flight JSON-RPC IDs for the same access token are rejected so cance
 
 The workspace is canonicalized once. Existing targets use `realpath`; the result must remain inside the workspace unless unrestricted mode is explicit. New targets walk to the nearest existing ancestor and validate its canonical path.
 
-Results use workspace-relative paths by default. Error strings redact canonical and common platform-alias forms of workspace, runtime, and home paths. Absolute paths are available only through an explicit display policy or unrestricted mode.
+Path behavior is profile-dependent. The default `full` profile permits unrestricted direct filesystem paths and returns absolute paths. The `agent`, `edit`, and `review` profiles enforce canonical workspace containment and return workspace-relative paths. Error strings redact canonical and common platform-alias forms of workspace, runtime, and home paths whenever absolute path display is disabled.
 
 Symbolic-link destinations and non-regular write targets are rejected. Recursive walkers do not follow symbolic-link directories.
 
@@ -132,7 +132,7 @@ This is a process-level transaction, not a filesystem-wide atomic transaction ac
 
 `run_process` and process sessions use argv arrays and do not invoke a shell. `exec_command` invokes the platform shell and is available only in `shell` mode. Both inherit local-user OS authority.
 
-Minimal environment mode creates private runtime HOME, temporary, and cache directories and passes only a small set of path/locale/platform variables. It reduces accidental credential inheritance but cannot prevent explicit access to known filesystem paths, credential stores, network services, or other user resources.
+The default `full` profile passes the complete parent environment. Isolated environment mode, used by the narrower named profiles unless overridden, creates private runtime HOME, temporary, and cache directories and passes only a small set of path/locale/platform variables. It reduces accidental credential inheritance but cannot prevent explicit access to known filesystem paths, credential stores, network services, or other user resources.
 
 One-shot calls have bounded output and timeouts. Process sessions retain bounded byte buffers with monotonic offsets, accept bounded stdin, support short output/exit waits, and are capped per runtime. Valid UTF-8 is returned as text; byte slices that are not valid UTF-8 also include lossless base64 data. Session IDs are random. Sessions are memory-only and are killed on runtime stop, remote disconnect, or daemon replacement.
 
