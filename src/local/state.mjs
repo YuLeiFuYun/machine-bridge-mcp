@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, writeFileSync, chmodSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, writeFileSync, chmodSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
+import { replaceFileSync } from "./atomic-fs.mjs";
 
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const appName = String(serverMetadata.name);
@@ -274,9 +275,9 @@ function readJsonObjectOrBackup(filePath) {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("JSON root must be an object");
     return parsed;
   } catch {
-    const backupPath = `${filePath}.corrupt-${Date.now()}`;
+    const backupPath = `${filePath}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
     try {
-      renameSync(filePath, backupPath);
+      replaceFileSync(filePath, backupPath);
       ownerOnlyFile(backupPath);
       pruneBackups(filePath, 3);
     } catch {}
@@ -425,7 +426,7 @@ function atomicWriteJson(filePath, value) {
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    renameSync(tempPath, filePath);
+    replaceFileSync(tempPath, filePath);
     ownerOnlyFile(filePath);
   } catch (error) {
     if (fd !== undefined) {

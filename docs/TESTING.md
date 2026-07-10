@@ -27,6 +27,7 @@ The suite includes:
 - local resource CLI registration, permission checks, dynamic reload, state-path redaction, and content non-disclosure;
 - real Ed25519 and RSA generation, idempotent reuse, public/private correspondence, mode enforcement, incomplete/mismatched/symlink rejection, and private-content non-disclosure;
 - real-machine canonical-full sandbox acceptance for outside-workspace I/O, direct/shell execution, full environment inheritance, SSH prerequisites, temporary authorized-key writing, and detached cleanup without external state changes;
+- deterministic injected atomic-replace failures and repeated Windows full-sandbox runs to catch transient file-sharing races;
 - canonical named-profile repair and full-only tool exposure parity between local and Worker policy filters;
 - managed-job staging/local approval/cancel-before-start, detachment, job-scoped temporary files, resource hash verification/redaction, discard capture, finally execution, cancellation escalation, plan scrubbing, and dead-runner recovery;
 - daemon/startup locking and state corruption recovery;

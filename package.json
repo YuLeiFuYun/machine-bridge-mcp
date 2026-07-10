@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Cross-client MCP bridge for canonical local automation, files, Git, SSH resources, managed jobs, and processes over stdio or an OAuth-protected remote relay.",
   "type": "module",
   "license": "MIT",
@@ -39,8 +39,8 @@
     "prepublishOnly": "npm run check && npm run version:check && npm run release:check",
     "worker:types": "wrangler types src/worker/worker-configuration.d.ts",
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit",
-    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/patch.mjs && node --check src/local/process-sessions.mjs && node --check src/local/tools.mjs && node --check src/local/stdio.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/log.mjs && node --check src/local/ssh-key.mjs && node --check src/local/resource-operations.mjs && node --check src/local/full-access-test.mjs && node --check src/local/managed-jobs.mjs && node --check src/local/job-runner.mjs && node --check scripts/sync-worker-version.mjs && node --check scripts/github-release.mjs && node --check tests/worker-integration-test.mjs && node --check tests/stdio-integration-test.mjs && node --check tests/catalog-test.mjs && node --check tests/local-self-test.mjs && node --check tests/daemon-self-test.mjs && node --check tests/managed-jobs-test.mjs && node --check tests/ssh-key-test.mjs && node --check tests/full-access-test.mjs",
-    "check": "npm run typecheck && npm run syntax && npm run catalog:test && npm run self-test && npm run ssh-key:test && npm run full-access:test && npm run managed-jobs:test && npm run stdio:integration-test && npm run worker:integration-test",
+    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/patch.mjs && node --check src/local/process-sessions.mjs && node --check src/local/tools.mjs && node --check src/local/stdio.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/log.mjs && node --check src/local/atomic-fs.mjs && node --check src/local/ssh-key.mjs && node --check src/local/resource-operations.mjs && node --check src/local/full-access-test.mjs && node --check src/local/managed-jobs.mjs && node --check src/local/job-runner.mjs && node --check scripts/sync-worker-version.mjs && node --check scripts/github-release.mjs && node --check tests/worker-integration-test.mjs && node --check tests/stdio-integration-test.mjs && node --check tests/catalog-test.mjs && node --check tests/local-self-test.mjs && node --check tests/daemon-self-test.mjs && node --check tests/managed-jobs-test.mjs && node --check tests/ssh-key-test.mjs && node --check tests/full-access-test.mjs && node --check tests/atomic-fs-test.mjs",
+    "check": "npm run typecheck && npm run syntax && npm run catalog:test && npm run self-test && npm run atomic-fs:test && npm run ssh-key:test && npm run full-access:test && npm run managed-jobs:test && npm run stdio:integration-test && npm run worker:integration-test",
     "worker:dry-run": "wrangler deploy --dry-run",
     "worker:integration-test": "node tests/worker-integration-test.mjs",
     "release:check": "node scripts/github-release.mjs --check",
@@ -50,7 +50,8 @@
     "catalog:test": "node tests/catalog-test.mjs",
     "managed-jobs:test": "node tests/managed-jobs-test.mjs",
     "ssh-key:test": "node tests/ssh-key-test.mjs",
-    "full-access:test": "node tests/full-access-test.mjs"
+    "full-access:test": "node tests/full-access-test.mjs",
+    "atomic-fs:test": "node tests/atomic-fs-test.mjs"
   },
   "dependencies": {
     "wrangler": "4.110.0",

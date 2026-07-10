@@ -89,11 +89,16 @@ async function stateSelfTest() {
       throw new Error("migrated policy origin/revision was not persisted");
     }
 
+    const backupsBefore = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
     await writeFile(state.paths.statePath, "{not-json", "utf8");
     const recovered = loadState(workspace, { stateDir: stateRoot });
     if (recovered.workspace.path !== canonicalWorkspace) throw new Error("corrupt state recovery failed");
     const backups = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
-    if (backups.length !== 1) throw new Error("corrupt state backup was not retained exactly once");
+    if (backups.length !== backupsBefore.length + 1) throw new Error("corrupt state recovery did not create exactly one new backup");
+    const newestBackup = backups.find(name => !backupsBefore.includes(name));
+    if (!newestBackup || await readFile(join(state.paths.profileDir, newestBackup), "utf8") !== "{not-json") {
+      throw new Error("corrupt state backup did not preserve the original bytes");
+    }
     const safeRemoval = validateStateRootForRemoval(stateRoot);
     if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed");
 
