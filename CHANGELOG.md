@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 - 2026-07-10
+
+### Fixed
+
+- Keep the healthy daemon active until a replacement connection completes its authenticated `hello` handshake; enforce the candidate deadline with a Durable Object alarm so it survives WebSocket hibernation, and reject stale or non-handshaking candidates without disrupting the active connection.
+- Send the candidate acknowledgement before closing the previous daemon, expire failed acknowledgements, clean up duplicate authenticated sockets on subsequent handshakes, and reject pre-handshake messages without changing active tool metadata.
+
 ## 0.3.1 - 2026-07-10
 
 ### Security

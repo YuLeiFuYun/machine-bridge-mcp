@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.3.1";
+const SERVER_VERSION = "0.3.2";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -10,6 +10,7 @@ const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_BODY_LIMIT_BYTES = 64 * 1024;
 const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
+const DAEMON_HELLO_TIMEOUT_MS = 10_000;
 const OAUTH_UNUSED_CLIENT_TTL_SECONDS = 60 * 60;
 const MAX_OAUTH_CLIENTS = 50;
 const MAX_OAUTH_CLIENTS_PER_IDENTITY = 5;
@@ -93,7 +94,7 @@ interface ValidatedAuthorization {
 }
 
 interface DaemonAttachment {
-  role: "daemon";
+  role: "candidate" | "expired" | "daemon";
   connectedAt: string;
   policy?: Record<string, unknown>;
   tools?: string[];
@@ -325,16 +326,51 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return;
     }
 
+    const socketAttachment = this.socketAttachment(ws);
+    if (!socketAttachment) {
+      try { ws.close(1008, "missing daemon attachment"); } catch {}
+      return;
+    }
+
+    if (socketAttachment.role === "expired") {
+      try { ws.close(1008, "expired daemon candidate"); } catch {}
+      return;
+    }
+
     if (body.type === "hello") {
-      const attachment = this.daemonAttachment(ws);
-      if (attachment) {
-        ws.serializeAttachment({
-          ...attachment,
-          policy: sanitizeDaemonPolicy(body.policy),
-          tools: sanitizeDaemonTools(body.tools),
-        });
+      const previousDaemons = this.daemonSockets().filter((socket) => socket !== ws);
+      if (socketAttachment.role === "candidate") {
+        if (!isFreshDaemonCandidate(socketAttachment.connectedAt)) {
+          try { ws.close(1008, "stale daemon candidate"); } catch {}
+          await this.scheduleCandidateAlarm();
+          return;
+        }
       }
-      ws.send(JSON.stringify({ type: "hello_ack", server: SERVER_NAME, version: SERVER_VERSION }));
+      ws.serializeAttachment({
+        role: "daemon",
+        connectedAt: new Date().toISOString(),
+        policy: sanitizeDaemonPolicy(body.policy),
+        tools: sanitizeDaemonTools(body.tools),
+      } satisfies DaemonAttachment);
+      await this.scheduleCandidateAlarm();
+      try {
+        ws.send(JSON.stringify({ type: "hello_ack", server: SERVER_NAME, version: SERVER_VERSION }));
+      } catch {
+        ws.serializeAttachment({
+          role: "expired",
+          connectedAt: socketAttachment.connectedAt,
+        } satisfies DaemonAttachment);
+        try { ws.close(1011, "daemon hello acknowledgement failed"); } catch {}
+        return;
+      }
+      for (const socket of previousDaemons) {
+        try { socket.close(1012, "replaced by authenticated daemon"); } catch {}
+      }
+      return;
+    }
+
+    if (socketAttachment.role !== "daemon") {
+      try { ws.close(1008, "daemon hello required"); } catch {}
       return;
     }
 
@@ -357,8 +393,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
+    await this.scheduleCandidateAlarm();
     const attachment = this.daemonAttachment(ws);
-    if (attachment?.role !== "daemon") return;
+    if (!attachment) return;
     for (const [id, pending] of this.pending) {
       if (pending.socket !== ws) continue;
       clearTimeout(pending.timeout);
@@ -468,21 +505,18 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const supplied = request.headers.get("X-Bridge-Token") ?? "";
     if (!expected || !(await safeEqual(supplied, expected))) return new Response("Unauthorized daemon", { status: 401 });
 
-    for (const socket of this.daemonSockets()) {
-      try {
-        socket.close(1012, "replaced by newer daemon");
-      } catch {
-        // Ignore stale sockets.
-      }
+    for (const socket of this.nonDaemonSockets()) {
+      try { socket.close(1012, "replaced by newer daemon candidate"); } catch {}
     }
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({
-      role: "daemon",
+      role: "candidate",
       connectedAt: new Date().toISOString(),
     } satisfies DaemonAttachment);
+    await this.ctx.storage.setAlarm(Date.now() + DAEMON_HELLO_TIMEOUT_MS);
     server.send(JSON.stringify({ type: "welcome", server: SERVER_NAME, version: SERVER_VERSION }));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -509,23 +543,79 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   private daemonSockets(): WebSocket[] {
+    return this.ctx.getWebSockets()
+      .filter((socket) => this.daemonAttachment(socket) && socket.readyState === WebSocket.OPEN)
+      .sort((left, right) => {
+        const leftTime = Date.parse(this.daemonAttachment(left)?.connectedAt ?? "") || 0;
+        const rightTime = Date.parse(this.daemonAttachment(right)?.connectedAt ?? "") || 0;
+        return rightTime - leftTime;
+      });
+  }
+
+  private candidateSockets(): WebSocket[] {
+    return this.ctx.getWebSockets().filter((socket) => this.socketAttachment(socket)?.role === "candidate" && socket.readyState === WebSocket.OPEN);
+  }
+
+  private nonDaemonSockets(): WebSocket[] {
     return this.ctx.getWebSockets().filter((socket) => {
-      const attachment = this.daemonAttachment(socket);
-      return attachment?.role === "daemon" && socket.readyState === WebSocket.OPEN;
+      const role = this.socketAttachment(socket)?.role;
+      return role !== "daemon" && socket.readyState === WebSocket.OPEN;
     });
   }
 
-  private daemonAttachment(socket: WebSocket): DaemonAttachment | undefined {
+  private socketAttachment(socket: WebSocket): DaemonAttachment | undefined {
     const raw = socket.deserializeAttachment();
     if (!raw || typeof raw !== "object") return undefined;
     const candidate = raw as Partial<DaemonAttachment>;
-    if (candidate.role !== "daemon") return undefined;
+    if (candidate.role !== "candidate" && candidate.role !== "expired" && candidate.role !== "daemon") return undefined;
     return {
-      role: "daemon",
+      role: candidate.role,
       connectedAt: sanitizeMetadataText(candidate.connectedAt, 64) ?? "",
       policy: sanitizeDaemonPolicy(candidate.policy),
       tools: sanitizeDaemonTools(candidate.tools),
     };
+  }
+
+  private daemonAttachment(socket: WebSocket): DaemonAttachment | undefined {
+    const attachment = this.socketAttachment(socket);
+    return attachment?.role === "daemon" ? attachment : undefined;
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    let nextDeadline = Number.POSITIVE_INFINITY;
+    for (const socket of this.candidateSockets()) {
+      const attachment = this.socketAttachment(socket);
+      const connectedAt = Date.parse(attachment?.connectedAt ?? "");
+      const deadline = connectedAt + DAEMON_HELLO_TIMEOUT_MS;
+      if (!Number.isFinite(connectedAt) || deadline <= now) {
+        socket.serializeAttachment({
+          role: "expired",
+          connectedAt: attachment?.connectedAt ?? new Date(0).toISOString(),
+        } satisfies DaemonAttachment);
+        try { socket.send(JSON.stringify({ type: "error", error: "daemon_hello_timeout" })); } catch {}
+        try { socket.close(1008, "daemon hello timeout"); } catch {}
+        continue;
+      }
+      nextDeadline = Math.min(nextDeadline, deadline);
+    }
+    if (Number.isFinite(nextDeadline)) await this.ctx.storage.setAlarm(nextDeadline);
+    else await this.ctx.storage.deleteAlarm();
+  }
+
+  private async scheduleCandidateAlarm(): Promise<void> {
+    let nextDeadline = Number.POSITIVE_INFINITY;
+    for (const socket of this.candidateSockets()) {
+      const attachment = this.socketAttachment(socket);
+      const connectedAt = Date.parse(attachment?.connectedAt ?? "");
+      if (!Number.isFinite(connectedAt)) {
+        try { socket.close(1008, "invalid daemon candidate timestamp"); } catch {}
+        continue;
+      }
+      nextDeadline = Math.min(nextDeadline, connectedAt + DAEMON_HELLO_TIMEOUT_MS);
+    }
+    if (Number.isFinite(nextDeadline)) await this.ctx.storage.setAlarm(Math.max(Date.now(), nextDeadline));
+    else await this.ctx.storage.deleteAlarm();
   }
 
   private daemonStatus(detail: boolean): Record<string, unknown> {
@@ -927,6 +1017,13 @@ function oauthRedirect(location: string): Response {
   });
 }
 
+function isFreshDaemonCandidate(connectedAt: string): boolean {
+  const timestamp = Date.parse(connectedAt);
+  if (!Number.isFinite(timestamp)) return false;
+  const age = Date.now() - timestamp;
+  return age >= 0 && age <= DAEMON_HELLO_TIMEOUT_MS;
+}
+
 function sanitizeMetadataText(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
@@ -1008,6 +1105,7 @@ async function parseRequestBody(request: Request, limit: number): Promise<Record
   }
   return searchParamsObject(new URLSearchParams(text));
 }
+
 
 async function readBoundedText(request: Request, limit: number): Promise<string> {
   const length = Number(request.headers.get("content-length") ?? "0");

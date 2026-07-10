@@ -195,10 +195,23 @@ async function workerSourceSelfTest() {
     "isJsonRpcId(candidate.id)",
     "pruneRecordByExpiry(store.tokens, MAX_OAUTH_TOKENS)",
     "A valid PKCE S256 challenge is required.",
+    "hmac-sha256:",
+    "DAEMON_HELLO_TIMEOUT_MS",
+    "async alarm()",
+    "storage.setAlarm",
+    'role: "candidate"',
+    'role: "expired"',
+    "daemon_hello_timeout",
+    "replaced by authenticated daemon",
   ]) {
     if (!source.includes(required)) throw new Error(`Worker hardening guard missing: ${required}`);
   }
-  for (const removed of ["/api/mcp/sampling", "/api/daemon/status", "sampling/createMessage"]) {
+  for (const removed of [
+    "/api/mcp/sampling",
+    "/api/daemon/status",
+    "sampling/createMessage",
+    'request.headers.get("User-Agent")',
+  ]) {
     if (source.includes(removed)) throw new Error(`obsolete or public-sensitive Worker route remains: ${removed}`);
   }
 }
