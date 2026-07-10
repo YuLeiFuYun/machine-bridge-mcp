@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonSelfTest } from "./daemon.mjs";
@@ -10,6 +10,7 @@ import { acquireDaemonLock, ensureLocalApiKey, ensureWorkerSecrets, loadState, p
 
 await daemonSelfTest();
 await stateSelfTest();
+await workerSourceSelfTest();
 await apiSelfTest();
 console.log("local daemon/state/api self-test ok");
 
@@ -54,6 +55,21 @@ async function stateSelfTest() {
   } finally {
     await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
     await rm(workspace, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function workerSourceSelfTest() {
+  const source = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const unawaitedAsyncRoutes = [
+    "return this.registerClient(request);",
+    "return this.authorizeSubmit(request, base);",
+    "return this.exchangeToken(request, base);",
+    "return this.acceptDaemonWebSocket(request);",
+    "return this.handleMcp(request, base);",
+    "return this.handleSamplingApi(request);",
+  ].filter((snippet) => source.includes(snippet));
+  if (unawaitedAsyncRoutes.length) {
+    throw new Error(`Worker async routes must be awaited so HttpError is caught: ${unawaitedAsyncRoutes.join(", ")}`);
   }
 }
 

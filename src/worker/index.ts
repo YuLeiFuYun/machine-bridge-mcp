@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.2.4";
+const SERVER_VERSION = "0.2.5";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024;
@@ -253,14 +253,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       if (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname === "/.well-known/oauth-protected-resource/mcp") {
         return json(this.protectedResourceMetadata(base));
       }
-      if (url.pathname === "/oauth/register" && request.method === "POST") return this.registerClient(request);
+      if (url.pathname === "/oauth/register" && request.method === "POST") return await this.registerClient(request);
       if (url.pathname === "/oauth/authorize" && request.method === "GET") return this.authorizePage(request, base);
-      if (url.pathname === "/oauth/authorize" && request.method === "POST") return this.authorizeSubmit(request, base);
-      if (url.pathname === "/oauth/token" && request.method === "POST") return this.exchangeToken(request, base);
-      if (url.pathname === "/daemon/ws") return this.acceptDaemonWebSocket(request);
-      if (url.pathname === "/mcp") return this.handleMcp(request, base);
+      if (url.pathname === "/oauth/authorize" && request.method === "POST") return await this.authorizeSubmit(request, base);
+      if (url.pathname === "/oauth/token" && request.method === "POST") return await this.exchangeToken(request, base);
+      if (url.pathname === "/daemon/ws") return await this.acceptDaemonWebSocket(request);
+      if (url.pathname === "/mcp") return await this.handleMcp(request, base);
       if (url.pathname === "/api/daemon/status") return json(this.daemonStatus(false));
-      if (url.pathname === "/api/mcp/sampling") return this.handleSamplingApi(request);
+      if (url.pathname === "/api/mcp/sampling") return await this.handleSamplingApi(request);
       return json({ error: "not_found" }, 404);
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.code, message: error.message }, error.status);
