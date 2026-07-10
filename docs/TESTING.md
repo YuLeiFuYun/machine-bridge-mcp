@@ -23,12 +23,15 @@ The suite includes:
 - author-email privacy in `git_log`;
 - isolated command HOME/temp/cache behavior;
 - one-shot timeout, descendant termination, cancellation, and process-session interaction;
+- layered fixed runtime diagnostics for filesystem, direct process, shell, managed-job storage, and resource availability;
+- local resource CLI registration, permission checks, dynamic reload, state-path redaction, and content non-disclosure;
+- managed-job staging/local approval/cancel-before-start, detachment, job-scoped temporary files, resource hash verification/redaction, discard capture, finally execution, cancellation escalation, plan scrubbing, and dead-runner recovery;
 - daemon/startup locking and state corruption recovery;
 - guarded state-root removal, schema migration, policy-origin persistence, and legacy implicit-default migration;
 - no filename-based sensitive-file denial under unrestricted policy;
 - log redaction, control-character handling, message/field bounds, default success-log suppression, and service warning-level configuration;
 - CLI parsing, policy profiles, and client configuration boundaries;
-- live stdio MCP initialization, discovery, calls, rich content, sessions, cancellation, and continued responsiveness;
+- live stdio MCP initialization, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;
 - live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, dynamic tool advertisement, rich content, daemon replacement, and cancellation.
 
 ## Additional release checks
@@ -50,5 +53,7 @@ GitHub Actions executes the main suite on Linux, macOS, and Windows. Node 22 and
 - Every bounded resource needs an over-limit test.
 - Every multi-stage mutation needs a no-partial-commit test.
 - Every remote call correlation change needs daemon replacement and cancellation coverage.
+- Every durable workflow needs disconnect, cancellation, cleanup-failure, dead-runner, and plan-scrubbing coverage.
+- Secret-bearing resource tests must assert absence of raw, path, base64, and hex forms from MCP-visible results.
 - Logs and public metadata should be tested for absence of sensitive fields, arguments, outputs, and routine success noise—not only presence of expected fields.
 - Cross-platform tests must avoid shell syntax, URL-path conversion, and executable-shim assumptions specific to one operating system.

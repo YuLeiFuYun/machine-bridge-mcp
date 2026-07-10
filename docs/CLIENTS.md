@@ -35,7 +35,8 @@ The stdio mode exists for narrower cases:
 2. **Transport parity.** The local client can use essentially the same Machine Bridge runtime that remote ChatGPT access uses, without maintaining a second implementation.
 3. **No remote relay for same-machine use.** The host launches the server directly, so no Cloudflare Worker, public URL, OAuth flow, or network round trip is needed.
 4. **Capabilities missing from a particular host.** Exact edit semantics, transactional multi-file patches, retained process sessions, image results, or the project's policy profiles may be useful even when the host has basic shell tools.
-5. **Testing and interoperability.** stdio is a standard MCP transport and provides a direct way to validate the runtime independently of the Worker.
+5. **Durable managed jobs.** The same detached job/resource/finally semantics are available to local and remote hosts, while local CLI remains an operator fallback.
+6. **Testing and interoperability.** stdio is a standard MCP transport and provides a direct way to validate the runtime independently of the Worker.
 
 It is therefore an optional compatibility and reuse surface, not a replacement for the native agent tooling in Claude Desktop, Cursor, or Codex.
 
@@ -128,4 +129,14 @@ A client configuration is an authorization decision. Anyone who controls an auth
 
 The local `full` profile controls Machine Bridge's own tool catalog, path resolver, path display, process environment, and shell availability. It does not control the MCP host's model policy, approval UI, connector gateway, or platform execution filters.
 
-Machine Bridge itself does not block files because their names look sensitive. If `server_info` reports `full` and a direct `read_file` request is still rejected as a “sensitive file” by the execution layer, that refusal comes from the host/platform rather than this server. Changing `--profile`, `--unrestricted-paths`, or `--absolute-paths` cannot override it. Use a trusted local client or an operator-controlled local command only where doing so is consistent with the host's terms and the user's security intent.
+Machine Bridge itself does not block files because their names look sensitive. If `server_info` reports `full` and a direct call is still rejected before a structured tool result, the host/connector may have blocked delivery. If `diagnose_runtime` responds but its fixed process or shell probe fails, the likely source is local OS policy, endpoint-security software, permissions, or shell configuration. Changing `--profile`, `--unrestricted-paths`, or `--absolute-paths` cannot override either layer.
+
+Do not attempt to evade a host refusal by renaming, encoding, or switching to another arbitrary execution tool. Instead:
+
+1. register credentials locally as resource aliases so their values never enter MCP arguments;
+2. submit a complete `start_job` plan before the workflow depends on later cleanup calls, or use `stage_job` plus local `job approve` when execution-class tools are unavailable;
+3. use job-scoped temporary files or remote stdin scripts;
+4. put idempotent cleanup in `finally_steps`;
+5. inspect/cancel through `machine-mcp job ...` if the host later denies tools.
+
+The initial `start_job` request is still subject to host approval. If it is blocked, the operator can review and submit the same JSON plan locally with `machine-mcp job submit plan.json`. See [MANAGED_JOBS.md](MANAGED_JOBS.md).

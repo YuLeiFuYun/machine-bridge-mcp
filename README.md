@@ -21,13 +21,13 @@ Local clients such as Claude Desktop, Cursor, and Codex CLI
              local runtime
 ```
 
-The remote Worker authenticates and relays calls. It cannot directly read local files or start local processes. File, Git, image, patch, and process operations execute in the local runtime.
+The remote Worker authenticates and relays calls. It cannot directly read local files or start local processes. File, Git, image, patch, process, diagnostic, and managed-job operations execute in the local runtime.
 
 ## Default behavior and policy profiles
 
 A newly selected workspace starts with the maximum-permission `full` profile for low-friction operation:
 
-- all read, write, edit, patch, image, Git, direct-process, process-session, and shell tools are available;
+- all read, write, edit, patch, image, Git, diagnostic, direct-process, process-session, managed-job, and shell tools are available;
 - direct filesystem tools may use paths outside the selected workspace;
 - tool results may return absolute paths;
 - child processes inherit the complete parent environment.
@@ -134,6 +134,80 @@ Important distinctions:
 - The server has no filename blacklist. Under `full`, direct read tools may read any UTF-8 regular file that the local OS user can access, including files outside the workspace and names such as `.env`, `passwords.txt`, or private-key files.
 - Maximum local policy does not override operating-system permissions, macOS TCC/SIP, Windows ACLs, container boundaries, or independent safety rules imposed by the MCP host/platform. A host-generated “sensitive file” denial is outside this server's enforcement layer.
 
+## Diagnose host, bridge, and local execution failures
+
+A displayed `full` policy proves only that Machine Bridge has enabled its own capabilities. Execution can still be denied by the MCP host/connector, macOS TCC/SIP, Unix permissions, Windows ACLs, shell policy, or endpoint-security software.
+
+Use:
+
+```text
+diagnose_runtime
+```
+
+or locally:
+
+```sh
+machine-mcp doctor
+```
+
+A successful `diagnose_runtime` response proves that request reached the local daemon. It then reports fixed probes for Machine Bridge policy, private filesystem access, direct process spawning, shell execution, managed-job storage, and registered resources. If the host blocks the tool call before any structured response, the server cannot diagnose that request because it never received it.
+
+## Managed jobs and local resources
+
+Long, remote, multi-step, or cleanup-sensitive work should not depend on a sequence of later MCP calls remaining available. `start_job` durably accepts ordered argv steps plus `finally_steps`, then launches an independent local runner. It continues after MCP disconnects or later host-side tool refusals.
+
+When the host blocks execution-class tools but still permits state mutation, `stage_job` stores the same validated plan without starting any process. The operator can review it with `machine-mcp job inspect JOB_ID` and explicitly authorize execution with `machine-mcp job approve JOB_ID`. Cancelling a staged plan does not run main or finally steps.
+
+Register credential/key files locally without sending their contents through MCP:
+
+```sh
+chmod 600 ~/.ssh/example-provider_ed25519
+machine-mcp resource add example-provider-key ~/.ssh/example-provider_ed25519
+machine-mcp resource list
+```
+
+A job refers to the alias rather than the value:
+
+```json
+{
+  "name": "remote maintenance",
+  "steps": [
+    {
+      "argv": [
+        "ssh",
+        "-i",
+        "{{resource:example-provider-key}}",
+        "root@example",
+        "sh",
+        "-s"
+      ],
+      "stdin": "set -eu\n# remote repair commands\n"
+    }
+  ],
+  "finally_steps": [
+    {
+      "argv": ["ssh", "-i", "{{resource:example-provider-key}}", "root@example", "rm", "-f", "/tmp/helper"],
+      "allow_failure": true
+    }
+  ]
+}
+```
+
+Prefer sending a remote script through stdin so no remote helper file is created. For local helpers, use job-scoped `temporary_files` and `{{temp:name}}`; the private job runtime is removed after cleanup.
+
+Resources can be injected by private copied path (`{{resource:name}}`), `stdin_resource`, or `env_resources`. Use `capture_output: "discard"` for commands that may echo credentials. Exact resource values and common exact encodings are redacted from retained results, but transformed or partial-secret detection is not guaranteed.
+
+If the MCP host later blocks all execution tools, use the local fallback:
+
+```sh
+machine-mcp job list
+machine-mcp job read JOB_ID
+machine-mcp job cancel JOB_ID
+machine-mcp job submit plan.json
+```
+
+Finally steps and restart recovery are best effort and should be idempotent. See [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md) for lifecycle, security limits, plan format, and diagnosis guidance.
+
 ## Tools
 
 The exact `tools/list` response reflects the active local policy. Definitions come from one shared catalog used by both Worker and stdio transports.
@@ -163,6 +237,18 @@ The exact `tools/list` response reflects the active local policy. Definitions co
 - `git_show`
 
 Repository-configured external diff, text conversion, and filesystem-monitor helpers are disabled for bridge Git inspection.
+
+### Diagnostics and durable work
+
+- `diagnose_runtime` — fixed layered probes; no user-controlled command input
+- `list_local_resources` — aliases and validation status without paths or values
+- `stage_job` — persist a validated plan for later local approval without executing it
+- `start_job` — detached ordered argv steps, private temporary files, and finally steps
+- `list_jobs`
+- `read_job`
+- `cancel_job`
+
+Managed jobs are non-interactive and persist independently of the MCP connection. Process sessions remain interactive and memory-only.
 
 ### Processes
 
@@ -194,6 +280,8 @@ machine-mcp service status|install|start|stop|uninstall
 machine-mcp status
 machine-mcp doctor
 machine-mcp rotate-secrets
+machine-mcp resource add|list|check|remove
+machine-mcp job submit|inspect|approve|list|read|cancel
 machine-mcp --print-mcp-credentials
 machine-mcp uninstall [--keep-worker] [--yes]
 ```
@@ -227,7 +315,7 @@ Default state roots:
 - Linux with `XDG_STATE_HOME`: `$XDG_STATE_HOME/machine-bridge-mcp`
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
-State/config writes use owner-only temporary files, flushes, and atomic rename. Malformed state is retained as a bounded corrupt backup before reconstruction. Uninstall validates markers, canonical paths, active locks, workspace/source exclusions, and known contents before recursive deletion.
+State/config writes use owner-only temporary files, flushes, and atomic rename. Malformed state is retained as a bounded corrupt backup before reconstruction. Resource source paths are redacted from `status` output. Active managed-job plans are owner-only and are deleted after a terminal result; bounded redacted results are retained temporarily. Uninstall validates markers, canonical paths, active locks, workspace/source exclusions, and known contents before recursive deletion.
 
 Default foreground logs show startup/deployment transitions, relay connectivity, warnings/errors, and successful calls that exceed 30 seconds. Routine successful tool calls and correlation IDs appear only at `--log-level debug` or `--verbose`. Background services use `warn`. Log messages and structured fields are bounded, secret-like keys and known token formats are redacted, and tool arguments/results are not written. See [docs/LOGGING.md](docs/LOGGING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
@@ -242,9 +330,9 @@ npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```
 
-`npm run check` covers generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with supported Node versions.
+`npm run check` covers generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, managed-job detachment/resource redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with supported Node versions.
 
-See [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [SECURITY.md](SECURITY.md).
+See [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 

@@ -1,0 +1,470 @@
+import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { executionEnv } from "./shell.mjs";
+import { terminateProcessTree } from "./process-sessions.mjs";
+
+const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
+const TEMP_TOKEN = /\{\{temp:([a-z][a-z0-9._-]{0,63})\}\}/g;
+const MAX_RESOURCE_BYTES = 1024 * 1024;
+const MAX_OUTPUT_BYTES = 64 * 1024;
+const MAX_JOB_CAPTURE_BYTES = 256 * 1024;
+const MAX_RESULT_BYTES = 4 * 1024 * 1024;
+const MAX_STATUS_BYTES = 256 * 1024;
+
+const options = parseArgs(process.argv.slice(2));
+const jobDir = resolve(options.jobDir || "");
+if (!jobDir) throw new Error("--job-dir is required");
+const recover = options.recover === true;
+const planFile = join(jobDir, "plan.json");
+const statusFile = join(jobDir, "status.json");
+const resultFile = join(jobDir, "result.json");
+const cancelFile = join(jobDir, "cancel");
+const runtimeDir = join(jobDir, "runtime");
+const resourcesDir = join(runtimeDir, "resources");
+const temporaryFilesDir = join(runtimeDir, "files");
+const runnerPidFile = join(jobDir, "runner.pid");
+
+class JobCancelledError extends Error {
+  constructor() {
+    super("job cancellation requested");
+    this.name = "JobCancelledError";
+  }
+}
+
+
+let activeChild = null;
+let activeChildCancellationAware = false;
+let cancellationEscalation = null;
+let cancelRequested = false;
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.on(signal, () => requestCancellation());
+}
+
+writeFileSync(runnerPidFile, `${process.pid}\n`, { mode: 0o600 });
+if (recover) rmSync(join(jobDir, "recovery.lock"), { force: true });
+try {
+  await main();
+} catch (error) {
+  recordFatalRunnerError(error);
+}
+
+async function main() {
+  const plan = readJson(planFile, 1024 * 1024);
+  const initial = readJson(statusFile, MAX_STATUS_BYTES);
+  const status = {
+    ...initial,
+    runner_pid: process.pid,
+    started_at: initial.started_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    status: recover ? "cleaning" : "running",
+    current_phase: recover ? "recovery-cleanup" : "steps",
+    current_step: null,
+    cleanup_guarantee: "best-effort-finally-and-recovery",
+  };
+  writeJson(statusFile, status, MAX_STATUS_BYTES);
+
+  const mainResults = [];
+  const cleanupResults = [];
+  const captureBudget = { remaining: MAX_JOB_CAPTURE_BYTES };
+  let mainError = null;
+  let cleanupError = null;
+  let resourceContext = { paths: {}, bytes: {}, redactions: {}, temporaryPaths: {} };
+
+  try {
+    resourceContext = materializeResources(plan.resources || {});
+    resourceContext.temporaryPaths = materializeTemporaryFiles(plan.temporary_files || []);
+    if (!recover) {
+      for (let index = 0; index < plan.steps.length; index += 1) {
+        if (isCancellationRequested()) throw new JobCancelledError();
+        updateStatus(status, { status: "running", current_phase: "steps", current_step: index });
+        const result = await runStep(plan.steps[index], index, "steps", plan, resourceContext, true, captureBudget);
+        mainResults.push(result);
+        if (result.timed_out && !plan.steps[index].allow_failure) throw new Error(`step ${index + 1} timed out`);
+        if (result.code !== 0 && !plan.steps[index].allow_failure) throw new Error(`step ${index + 1} exited ${result.code}`);
+      }
+    }
+  } catch (error) {
+    mainError = error;
+  } finally {
+    updateStatus(status, { status: "cleaning", current_phase: recover ? "recovery-cleanup" : "finally_steps", current_step: null });
+    try {
+      for (let index = 0; index < plan.finally_steps.length; index += 1) {
+        updateStatus(status, { status: "cleaning", current_phase: recover ? "recovery-cleanup" : "finally_steps", current_step: index });
+        const result = await runStep(plan.finally_steps[index], index, "finally_steps", plan, resourceContext, false, captureBudget);
+        cleanupResults.push(result);
+        if (result.timed_out && !plan.finally_steps[index].allow_failure && !cleanupError) cleanupError = new Error(`cleanup step ${index + 1} timed out`);
+        if (result.code !== 0 && !plan.finally_steps[index].allow_failure && !cleanupError) cleanupError = new Error(`cleanup step ${index + 1} exited ${result.code}`);
+      }
+    } catch (error) {
+      cleanupError ||= error;
+    }
+    rmSync(runtimeDir, { recursive: true, force: true });
+  }
+
+  const cancelled = mainError instanceof JobCancelledError || existsSync(cancelFile);
+  let finalStatus;
+  if (recover) finalStatus = cleanupError ? "recovery_failed" : "recovered";
+  else if (cancelled) finalStatus = cleanupError ? "cancelled_cleanup_failed" : "cancelled";
+  else if (mainError) finalStatus = cleanupError ? "failed_cleanup_failed" : "failed";
+  else finalStatus = cleanupError ? "succeeded_cleanup_failed" : "succeeded";
+
+  const result = {
+    job_id: status.job_id,
+    name: plan.name,
+    status: finalStatus,
+    recovered: recover,
+    steps: mainResults,
+    finally_steps: cleanupResults,
+    error_class: classifyError(mainError),
+    cleanup_error_class: classifyError(cleanupError),
+    capture_limit_bytes: MAX_JOB_CAPTURE_BYTES,
+    capture_remaining_bytes: captureBudget.remaining,
+    finished_at: new Date().toISOString(),
+  };
+  writeJson(resultFile, result, MAX_RESULT_BYTES);
+  updateStatus(status, {
+    status: finalStatus,
+    current_phase: null,
+    current_step: null,
+    finished_at: result.finished_at,
+    error_class: result.error_class || result.cleanup_error_class,
+  });
+  try { rmSync(planFile, { force: true }); } catch {}
+  try { rmSync(runnerPidFile, { force: true }); } catch {}
+  try { rmSync(cancelFile, { force: true }); } catch {}
+}
+
+function recordFatalRunnerError(error) {
+  rmSync(runtimeDir, { recursive: true, force: true });
+  const now = new Date().toISOString();
+  let status = {};
+  try { status = readJson(statusFile, MAX_STATUS_BYTES); } catch {}
+  const finalStatus = recover ? "recovery_failed" : "runner_failed";
+  const result = {
+    job_id: status.job_id ?? null,
+    name: status.name ?? "managed job",
+    status: finalStatus,
+    recovered: recover,
+    steps: [],
+    finally_steps: [],
+    error_class: classifyError(error),
+    cleanup_error_class: recover ? classifyError(error) : null,
+    finished_at: now,
+  };
+  try { writeJson(resultFile, result, MAX_RESULT_BYTES); } catch {}
+  try {
+    writeJson(statusFile, {
+      ...status,
+      status: finalStatus,
+      current_phase: null,
+      current_step: null,
+      runner_pid: process.pid,
+      updated_at: now,
+      finished_at: now,
+      error_class: result.error_class,
+      cleanup_guarantee: "best-effort-finally-and-recovery",
+    }, MAX_STATUS_BYTES);
+  } catch {}
+  try { rmSync(planFile, { force: true }); } catch {}
+  try { rmSync(runnerPidFile, { force: true }); } catch {}
+  try { rmSync(cancelFile, { force: true }); } catch {}
+}
+
+async function runStep(step, index, phase, plan, resourceContext, cancellationAware, captureBudget) {
+  const argv = step.argv.map((value) => substitute(value, plan, resourceContext));
+  const envOverrides = Object.fromEntries(Object.entries(step.env || {}).map(([key, value]) => [key, substitute(value, plan, resourceContext)]));
+  const envResourceValues = Object.fromEntries(Object.entries(step.env_resources || {}).map(([key, name]) => [key, resourceEnvValue(name, resourceContext.bytes)]));
+  const env = {
+    ...executionEnv(plan.workspace, { fullEnv: plan.full_env === true, runtimeDir }),
+    ...envOverrides,
+    ...envResourceValues,
+  };
+  const input = step.stdin_resource
+    ? readResourceBytes(step.stdin_resource, resourceContext.paths)
+    : step.stdin === null || step.stdin === undefined
+      ? null
+      : Buffer.from(step.stdin, "utf8");
+  const started = Date.now();
+  const raw = await spawnStep(argv, {
+    cwd: step.cwd,
+    env,
+    input,
+    timeoutMs: Number(step.timeout_seconds) * 1000,
+    cancellationAware,
+    captureOutput: step.capture_output !== "discard",
+    captureBudget,
+  });
+  return {
+    index,
+    phase,
+    name: step.name,
+    command: basename(argv[0]),
+    code: raw.code,
+    signal: raw.signal,
+    timed_out: raw.timedOut,
+    duration_ms: Date.now() - started,
+    stdout: step.capture_output === "discard" ? "" : redactOutput(raw.stdout, resourceContext),
+    stderr: step.capture_output === "discard" ? "" : redactOutput(raw.stderr, resourceContext),
+    output_discarded: step.capture_output === "discard",
+    stdout_truncated_bytes: step.capture_output === "discard" ? 0 : raw.stdoutTruncated,
+    stderr_truncated_bytes: step.capture_output === "discard" ? 0 : raw.stderrTruncated,
+    stdout_omitted_bytes: step.capture_output === "discard" ? raw.stdoutTruncated : 0,
+    stderr_omitted_bytes: step.capture_output === "discard" ? raw.stderrTruncated : 0,
+  };
+}
+
+function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget }) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    if (cancellationAware && isCancellationRequested()) return rejectPromise(new JobCancelledError());
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd,
+      env,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    activeChild = child;
+    activeChildCancellationAware = cancellationAware;
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let stdoutTruncated = 0;
+    let stderrTruncated = 0;
+    let timedOut = false;
+    let closed = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminateProcessTree(child, "SIGTERM");
+      const kill = setTimeout(() => terminateProcessTree(child, "SIGKILL"), 2000);
+      kill.unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+    const cancellationPoll = setInterval(() => {
+      if (!cancellationAware || !isCancellationRequested()) return;
+      requestCancellation();
+    }, 250);
+    cancellationPoll.unref?.();
+
+    child.stdout.on("data", (chunk) => {
+      if (!captureOutput) { stdoutTruncated += chunk.length; return; }
+      const next = appendLimited(stdout, chunk, MAX_OUTPUT_BYTES, captureBudget);
+      stdout = next.buffer;
+      stdoutTruncated += next.truncated;
+    });
+    child.stderr.on("data", (chunk) => {
+      if (!captureOutput) { stderrTruncated += chunk.length; return; }
+      const next = appendLimited(stderr, chunk, MAX_OUTPUT_BYTES, captureBudget);
+      stderr = next.buffer;
+      stderrTruncated += next.truncated;
+    });
+    child.on("error", (error) => finish(() => rejectPromise(error)));
+    child.on("close", (code, signal) => finish(() => {
+      if (cancellationAware && isCancellationRequested()) return rejectPromise(new JobCancelledError());
+      resolvePromise({
+        code: Number.isInteger(code) ? code : 1,
+        signal: signal ? String(signal) : null,
+        timedOut,
+        stdout,
+        stderr,
+        stdoutTruncated,
+        stderrTruncated,
+      });
+    }));
+    if (input && input.length) child.stdin.end(input);
+    else child.stdin.end();
+
+    function finish(callback) {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timer);
+      clearInterval(cancellationPoll);
+      activeChild = null;
+      activeChildCancellationAware = false;
+      if (cancellationEscalation) clearTimeout(cancellationEscalation);
+      cancellationEscalation = null;
+      callback();
+    }
+  });
+}
+
+function materializeResources(resources) {
+  mkdirSync(resourcesDir, { recursive: true, mode: 0o700 });
+  chmodSync(resourcesDir, 0o700);
+  const paths = {};
+  const bytes = {};
+  const redactions = {};
+  for (const [name, resource] of Object.entries(resources)) {
+    if (!resource || resource.kind !== "file") throw new Error(`unsupported resource kind: ${name}`);
+    const data = readBoundedFile(resource.path, MAX_RESOURCE_BYTES);
+    const actualHash = createHash("sha256").update(data).digest("hex");
+    if (!resource.sha256 || actualHash !== resource.sha256) throw new Error(`local resource changed after job submission: ${name}`);
+    const target = join(resourcesDir, name);
+    writeFileSync(target, data, { mode: 0o600, flag: "wx" });
+    paths[name] = target;
+    bytes[name] = data;
+    const patterns = [];
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(data);
+      if (text.length > 0) patterns.push(text);
+      const trimmed = text.replace(/[\r\n]+$/, "");
+      if (trimmed.length > 0 && trimmed !== text) patterns.push(trimmed);
+    } catch {}
+    if (data.length > 0 && data.length <= 64 * 1024) {
+      patterns.push(data.toString("base64"), data.toString("hex"));
+    }
+    redactions[name] = [...new Set(patterns.filter((value) => value.length > 0))].sort((a, b) => b.length - a.length);
+  }
+  return { paths, bytes, redactions };
+}
+
+function materializeTemporaryFiles(files) {
+  mkdirSync(temporaryFilesDir, { recursive: true, mode: 0o700 });
+  chmodSync(temporaryFilesDir, 0o700);
+  const paths = {};
+  for (const file of files) {
+    const target = join(temporaryFilesDir, file.name);
+    writeFileSync(target, file.content, { mode: file.executable ? 0o700 : 0o600, flag: "wx" });
+    paths[file.name] = target;
+  }
+  return paths;
+}
+
+function readResourceBytes(name, paths) {
+  const path = paths[name];
+  if (!path) throw new Error(`resource was not materialized: ${name}`);
+  return readBoundedFile(path, MAX_RESOURCE_BYTES);
+}
+
+function resourceEnvValue(name, bytes) {
+  const data = bytes[name];
+  if (!Buffer.isBuffer(data)) throw new Error(`resource was not materialized: ${name}`);
+  if (data.length > 64 * 1024) throw new Error(`resource is too large for an environment variable: ${name}`);
+  let value;
+  try { value = new TextDecoder("utf-8", { fatal: true }).decode(data); } catch {
+    throw new Error(`resource is not UTF-8 text for environment injection: ${name}`);
+  }
+  value = value.replace(/[\r\n]+$/, "");
+  if (value.includes("\0")) throw new Error(`resource contains a NUL byte and cannot be used as an environment variable: ${name}`);
+  return value;
+}
+
+function substitute(value, plan, context) {
+  return String(value)
+    .replaceAll("{{job:runtime}}", runtimeDir)
+    .replaceAll("{{job:workspace}}", plan.workspace)
+    .replace(RESOURCE_TOKEN, (_, name) => {
+      const path = context.paths[name];
+      if (!path) throw new Error(`resource was not materialized: ${name}`);
+      return path;
+    })
+    .replace(TEMP_TOKEN, (_, name) => {
+      const path = context.temporaryPaths[name];
+      if (!path) throw new Error(`temporary file was not materialized: ${name}`);
+      return path;
+    });
+}
+
+function redactOutput(buffer, context) {
+  let text = new TextDecoder("utf-8").decode(buffer);
+  for (const [name, path] of Object.entries(context.paths)) {
+    text = text.split(path).join(`<resource:${name}>`);
+  }
+  for (const [name, path] of Object.entries(context.temporaryPaths)) {
+    text = text.split(path).join(`<temp:${name}>`);
+  }
+  text = text.split(runtimeDir).join("<job-runtime>");
+  for (const [name, patterns] of Object.entries(context.redactions)) {
+    for (const value of patterns) text = text.split(value).join(`<redacted-resource:${name}>`);
+  }
+  return text;
+}
+
+function updateStatus(status, changes) {
+  Object.assign(status, changes, { runner_pid: process.pid, updated_at: new Date().toISOString() });
+  writeJson(statusFile, status, MAX_STATUS_BYTES);
+}
+
+function requestCancellation() {
+  cancelRequested = true;
+  const child = activeChild;
+  if (!child || !activeChildCancellationAware) return;
+  terminateProcessTree(child, "SIGTERM");
+  if (cancellationEscalation) return;
+  cancellationEscalation = setTimeout(() => {
+    if (activeChild === child && activeChildCancellationAware) terminateProcessTree(child, "SIGKILL");
+  }, 2000);
+  cancellationEscalation.unref?.();
+}
+
+function isCancellationRequested() {
+  return cancelRequested || existsSync(cancelFile);
+}
+
+function appendLimited(current, chunk, limit, budget) {
+  const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
+  const streamRemaining = Math.max(0, limit - current.length);
+  const jobRemaining = Math.max(0, Number(budget?.remaining || 0));
+  const acceptedLength = Math.min(input.length, streamRemaining, jobRemaining);
+  const accepted = input.subarray(0, acceptedLength);
+  if (budget) budget.remaining = Math.max(0, jobRemaining - acceptedLength);
+  return {
+    buffer: accepted.length ? (current.length ? Buffer.concat([current, accepted]) : Buffer.from(accepted)) : current,
+    truncated: input.length - accepted.length,
+  };
+}
+
+function writeJson(file, value, maxBytes) {
+  const text = `${JSON.stringify(value, null, 2)}\n`;
+  if (Buffer.byteLength(text) > maxBytes) throw new Error(`job JSON exceeds ${maxBytes} bytes`);
+  const temp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  writeFileSync(temp, text, { mode: 0o600, flag: "wx" });
+  renameSync(temp, file);
+  chmodSync(file, 0o600);
+}
+
+function readJson(file, maxBytes) {
+  return JSON.parse(readBoundedFile(file, maxBytes).toString("utf8"));
+}
+
+function readBoundedFile(file, maxBytes) {
+  const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0);
+  const fd = openSync(file, flags);
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw new Error("path is not a regular file");
+    if (info.size > maxBytes) throw new Error(`file exceeds ${maxBytes} bytes`);
+    const buffer = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const count = readSync(fd, buffer, offset, buffer.length - offset, offset);
+      if (!count) break;
+      offset += count;
+    }
+    return buffer.subarray(0, offset);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function classifyError(error) {
+  if (!error) return null;
+  if (error instanceof JobCancelledError) return "cancelled";
+  const message = String(error?.message || error);
+  if (/timed out/i.test(message)) return "timeout";
+  if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
+  if (/not found|ENOENT/i.test(message)) return "not_found";
+  if (/resource/i.test(message)) return "resource_error";
+  return "execution_failed";
+}
+
+function parseArgs(argv) {
+  const out = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === "--recover") out.recover = true;
+    else if (value === "--job-dir") out.jobDir = argv[++index];
+    else throw new Error(`unknown runner option: ${value}`);
+  }
+  return out;
+}

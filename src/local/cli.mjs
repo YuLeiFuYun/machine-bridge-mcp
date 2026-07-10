@@ -1,12 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
-import path, { resolve } from "node:path";
+import path, { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalDaemon } from "./daemon.mjs";
 import { runStdioServer } from "./stdio.mjs";
 import { DEFAULT_POLICY_PROFILE, DEFAULT_POLICY_REVISION, POLICY_PROFILES, normalizePolicy, policyProfile } from "./tools.mjs";
 import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
+import { activeManagedJobs, inspectResourceFile, loadManagedJobPlan, ManagedJobManager, publicResourceRegistry, validateResourceName } from "./managed-jobs.mjs";
 import { runWrangler } from "./shell.mjs";
 import {
   acquireDaemonLock,
@@ -37,7 +38,7 @@ const BOOLEAN_OPTIONS = new Set([
   "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
   "daemonOnly", "noAutostart", "noPrintCredentials", "printMcpCredentials",
   "printCredentials", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
-  "yes", "keepWorker",
+  "yes", "keepWorker", "allowInsecurePermissions",
 ]);
 const VALUE_OPTIONS = new Set([
   "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel",
@@ -63,6 +64,8 @@ export async function main(argv = process.argv.slice(2)) {
     case "service":
     case "autostart": return serviceCommand(args);
     case "rotate-secrets": return rotateSecretsCommand(args);
+    case "resource": return resourceCommand(args);
+    case "job": return jobCommand(args);
     case "uninstall": return uninstallCommand(args);
     default:
       console.error(`Unknown command: ${command}`);
@@ -85,6 +88,8 @@ const COMMAND_OPTIONS = {
   workspace: new Set(["workspace", "stateDir"]),
   service: new Set(["workspace", "stateDir", "quiet"]),
   autostart: new Set(["workspace", "stateDir", "quiet"]),
+  resource: new Set(["workspace", "stateDir", "allowInsecurePermissions", "json"]),
+  job: new Set(["workspace", "stateDir", "json", "yes"]),
   uninstall: new Set(["stateDir", "keepWorker", "yes"]),
 };
 
@@ -118,8 +123,6 @@ function toKebab(value) {
 
 export function validatePositionals(command, args) {
   const count = args._.length;
-  const conflict = Boolean(args.workspace) && count > (command === "workspace" || command === "service" || command === "autostart" ? 1 : 0);
-  if (conflict) throw new Error("workspace path was provided both positionally and with --workspace");
   if (["start", "stdio", "status", "doctor", "rotate-secrets"].includes(command)) {
     if (count > 1) throw new Error(`${command} accepts at most one positional workspace path`);
     if (args.workspace && count) throw new Error("workspace path was provided both positionally and with --workspace");
@@ -141,6 +144,18 @@ export function validatePositionals(command, args) {
   }
   if (command === "client-config") {
     if (count > 1) throw new Error("client-config accepts at most one positional client name");
+    return;
+  }
+  if (command === "resource") {
+    const action = String(args._[0] || "list");
+    const max = action === "add" ? 3 : action === "remove" || action === "check" ? 2 : 1;
+    if (count > max) throw new Error(`resource ${action} received too many positional arguments`);
+    return;
+  }
+  if (command === "job") {
+    const action = String(args._[0] || "list");
+    const max = action === "read" || action === "inspect" || action === "cancel" || action === "approve" || action === "submit" ? 2 : 1;
+    if (count > max) throw new Error(`job ${action} received too many positional arguments`);
     return;
   }
   if (command === "uninstall" && count) throw new Error("uninstall does not accept positional arguments");
@@ -336,6 +351,9 @@ async function startCommand(args) {
         workspace,
         policy: state.policy,
         logger: createLogger({ level: args.json ? "error" : effectiveLogLevel(args), component: "daemon" }),
+        jobRoot: join(state.paths.profileDir, "jobs"),
+        resources: state.resources,
+        resourceStatePath: state.paths.statePath,
         onSuperseded: () => {
           logger.warn("this daemon was replaced by a newer authenticated instance; exiting without reconnecting");
           lock.release();
@@ -439,7 +457,132 @@ async function stdioCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
   const policy = resolvePolicy(args, state.policy);
-  await runStdioServer({ workspace, policy, logLevel: effectiveLogLevel(args) });
+  await runStdioServer({
+    workspace,
+    policy,
+    logLevel: effectiveLogLevel(args),
+    jobRoot: join(state.paths.profileDir, "jobs"),
+    resources: state.resources,
+    resourceStatePath: state.paths.statePath,
+  });
+}
+
+async function resourceCommand(args) {
+  const action = String(args._[0] || "list").toLowerCase();
+  const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
+  const state = loadState(workspace, { stateDir: args.stateDir });
+  state.resources ||= {};
+
+  if (action === "list") {
+    const resources = publicResourceRegistry(state.resources);
+    if (args.json) console.log(JSON.stringify({ workspace, resources }, null, 2));
+    else if (!Object.keys(resources).length) console.log("No local resources registered.");
+    else for (const [name, value] of Object.entries(resources)) console.log(`${name}	${value.path}	${value.mode || "n/a"}	${value.size ?? "n/a"} bytes`);
+    return;
+  }
+
+  if (action === "add") {
+    const name = validateResourceName(args._[1]);
+    const inputPath = args._[2];
+    if (!inputPath) throw new Error("resource add requires NAME and FILE_PATH");
+    const lock = acquireStartupLock(state);
+    if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
+    try {
+      const latest = loadState(workspace, { stateDir: args.stateDir });
+      latest.resources ||= {};
+      const inspected = inspectResourceFile(expandHome(inputPath), { allowInsecurePermissions: args.allowInsecurePermissions === true });
+      if (!Object.prototype.hasOwnProperty.call(latest.resources, name) && Object.keys(latest.resources).length >= 64) {
+        throw new Error("local resource registry limit reached (64)");
+      }
+      latest.resources[name] = inspected;
+      saveState(latest);
+      const result = { name, ...inspected, contents_exposed: false, available_to_new_jobs_immediately: true };
+      if (args.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(`Registered local resource: ${name}`);
+        console.log(`Path: ${inspected.path}`);
+        console.log(`Mode: ${inspected.mode || "n/a"}; size: ${inspected.size} bytes`);
+        console.log("The resource is available to newly submitted managed jobs immediately.");
+      }
+    } finally {
+      lock.release();
+    }
+    return;
+  }
+
+  if (action === "remove") {
+    const name = validateResourceName(args._[1]);
+    const lock = acquireStartupLock(state);
+    if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
+    try {
+      const latest = loadState(workspace, { stateDir: args.stateDir });
+      latest.resources ||= {};
+      const existed = Object.prototype.hasOwnProperty.call(latest.resources, name);
+      delete latest.resources[name];
+      saveState(latest);
+      const result = { name, removed: existed, affects_new_jobs_immediately: true };
+      if (args.json) console.log(JSON.stringify(result, null, 2));
+      else {
+        console.log(existed ? `Removed local resource: ${name}` : `Local resource was not registered: ${name}`);
+        console.log("The change applies to newly submitted managed jobs immediately.");
+      }
+    } finally {
+      lock.release();
+    }
+    return;
+  }
+
+  if (action === "check") {
+    const name = validateResourceName(args._[1]);
+    const resource = state.resources[name];
+    if (!resource) throw new Error(`local resource is not registered: ${name}`);
+    const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
+    const result = { name, ...inspected, contents_exposed: false };
+    if (args.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(`${name}: available (${inspected.mode || "n/a"}, ${inspected.size} bytes)`);
+    return;
+  }
+
+  throw new Error(`Unknown resource action: ${action}`);
+}
+
+async function jobCommand(args) {
+  const action = String(args._[0] || "list").toLowerCase();
+  const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
+  const state = loadState(workspace, { stateDir: args.stateDir });
+  const manager = new ManagedJobManager({
+    jobRoot: join(state.paths.profileDir, "jobs"),
+    workspace,
+    policy: resolvePolicy({}, state.policy),
+    resources: state.resources,
+    resourceStatePath: state.paths.statePath,
+    logger: createLogger({ level: "warn", component: "job" }),
+  });
+  let result;
+  if (action === "list") result = manager.list({ limit: 50 });
+  else if (action === "read") result = manager.read({ job_id: args._[1] });
+  else if (action === "inspect") result = manager.inspectLocal({ job_id: args._[1] });
+  else if (action === "cancel") result = manager.cancel({ job_id: args._[1] });
+  else if (action === "approve") {
+    if (args.json && !args.yes) throw new Error("job approve --json requires --yes");
+    const inspection = manager.inspectLocal({ job_id: args._[1] });
+    if (!args.yes) {
+      console.log(JSON.stringify(inspection, null, 2));
+      const approved = await confirm(`Approve and execute managed job ${args._[1]}?`, false);
+      if (!approved) {
+        console.log("Managed job approval cancelled. Re-run with --yes after review to skip confirmation.");
+        return;
+      }
+    }
+    result = manager.approve({ job_id: args._[1] }, { localOperator: true });
+  }
+  else if (action === "submit") {
+    const planPath = args._[1];
+    if (!planPath) throw new Error("job submit requires a JSON plan file");
+    const plan = loadManagedJobPlan(expandHome(planPath));
+    result = manager.start(plan);
+  } else throw new Error(`Unknown job action: ${action}`);
+  console.log(JSON.stringify(result, null, 2));
 }
 
 async function clientConfigCommand(args) {
@@ -743,9 +886,32 @@ async function doctorCommand(args) {
   checks.push({ name: "policy", ok: true, detail: formatPolicySummary(state.policy) });
   const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
   checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
+  const diagnosticRuntime = new LocalDaemon({
+    workspace,
+    policy: state.policy,
+    logger: createLogger({ level: "error", component: "doctor" }),
+    jobRoot: join(state.paths.profileDir, "jobs"),
+    resources: state.resources,
+    resourceStatePath: state.paths.statePath,
+    recoverJobs: false,
+  });
+  let runtimeDiagnostics;
+  try {
+    runtimeDiagnostics = await diagnosticRuntime.diagnoseRuntime();
+  } finally {
+    diagnosticRuntime.stop();
+  }
+  for (const check of runtimeDiagnostics.checks) {
+    checks.push({
+      name: `runtime:${check.layer}`,
+      ok: check.skipped === true || check.ok === true,
+      detail: check.skipped ? `skipped (${check.error_class || "not applicable"})` : check.ok ? "ok" : check.error_class || "failed",
+    });
+  }
   console.log(JSON.stringify({
     ok: checks.every(check => check.ok),
     checks,
+    runtimeDiagnostics,
     policyMigrationPending: !storedPolicyOrigin && state.policy.origin === "migrated",
     state: redactState(state),
   }, null, 2));
@@ -847,6 +1013,12 @@ async function uninstallCommand(args) {
     console.log("Uninstall cancelled. Re-run with `machine-mcp uninstall --yes` to skip confirmation.");
     return;
   }
+  const activeJobs = activeStateJobs(stateRoot);
+  if (activeJobs.length) {
+    const detail = activeJobs.slice(0, 5).map((item) => `${item.job_id}:${item.status}`).join(", ");
+    const suffix = activeJobs.length > 5 ? `, and ${activeJobs.length - 5} more` : "";
+    throw new Error(`refusing to uninstall while managed jobs are active (${detail}${suffix}); inspect or cancel them with machine-mcp job list/cancel`);
+  }
   const autostartRemoved = await removeAutostartBestEffort(stateRoot);
   if (!autostartRemoved) throw new Error("autostart removal failed; state and Worker were kept so the uninstall can be retried safely");
   await sleep(500);
@@ -916,6 +1088,19 @@ async function removeAutostartBestEffort(stateRoot) {
     console.warn(`Autostart removal skipped or failed (${classifyOperationalError(error)}). Run machine-mcp service status for details.`);
     return false;
   }
+}
+
+function activeStateJobs(stateRoot) {
+  const profiles = resolve(expandHome(stateRoot), "profiles");
+  if (!existsSync(profiles)) return [];
+  const active = [];
+  for (const profile of readdirSync(profiles, { withFileTypes: true })) {
+    if (!profile.isDirectory()) continue;
+    for (const job of activeManagedJobs(resolve(profiles, profile.name, "jobs"))) {
+      active.push({ profile: profile.name, ...job });
+    }
+  }
+  return active;
 }
 
 function activeStateLocks(stateRoot) {
@@ -1027,6 +1212,8 @@ Start options:
   --log-level LEVEL     error, warn, info (default), or debug
   --verbose             Alias for --log-level debug; includes per-tool success/correlation logs
   --quiet               Alias for --log-level error
+  --allow-insecure-permissions
+                        Permit resource registration when a file is group/other-readable
 
 Uninstall options:
   --keep-worker         Do not delete deployed Worker(s) during uninstall

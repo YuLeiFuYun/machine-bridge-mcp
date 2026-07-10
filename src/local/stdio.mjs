@@ -18,9 +18,9 @@ const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const SLOW_TOOL_CALL_MS = 30_000;
 const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version);
 
-export async function runStdioServer({ workspace, policy, logLevel = "info" }) {
+export async function runStdioServer({ workspace, policy, logLevel = "info", jobRoot = "", resources = {}, resourceStatePath = "" }) {
   const logger = createLogger({ component: "stdio", level: logLevel, stderrOnly: true, color: false });
-  const runtime = new LocalDaemon({ workspace, policy, logger });
+  const runtime = new LocalDaemon({ workspace, policy, logger, jobRoot, resources, resourceStatePath });
   const pending = new Map();
   let negotiatedVersion = MCP_PROTOCOL_VERSION;
   let initialized = false;

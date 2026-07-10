@@ -53,7 +53,7 @@ The default `full` profile returns absolute paths. Narrower profiles return work
 
 The server does not maintain a sensitive-filename blacklist. Under `full`, direct read tools may access any UTF-8 regular file available to the local OS user, including files outside the selected workspace and names such as `.env`, password stores, private keys, credentials, database dumps, and production configuration. Narrower profiles confine direct filesystem tools but do not classify names inside that boundary.
 
-Maximum local policy does not bypass Unix permissions, Windows ACLs, macOS TCC/SIP, container/VM boundaries, or security decisions made by the MCP host/platform. A host-side “sensitive file” refusal is independent of Machine Bridge and cannot be disabled by local policy configuration.
+Maximum local policy does not bypass Unix permissions, Windows ACLs, macOS TCC/SIP, container/VM boundaries, endpoint-security controls, shell restrictions, or security decisions made by the MCP host/platform. A host-side refusal is independent of Machine Bridge and cannot be disabled by local policy configuration. `diagnose_runtime` and `machine-mcp doctor` use fixed probes to distinguish requests that reached the daemon from local filesystem/process/shell failures; they cannot inspect a call blocked before delivery.
 
 Processes are not confined by the filesystem-tool resolver. They can access paths, networks, processes, credential stores, and devices available to the local user.
 
@@ -72,6 +72,32 @@ Local state contains the MCP connection password and daemon secret. State, lock,
 First-run or explicit reconnect output can intentionally display the MCP connection password. JSON output and standalone secret rotation redact credentials by default; printing requires the explicit reconnect flag. The daemon secret is never printed in full. Avoid shared terminal logs, shell recordings, screenshots, CI output, or support tickets.
 
 The default `full` profile passes the complete parent environment. Narrower profiles replace HOME, temp, and common cache paths and do not pass arbitrary parent variables. The isolated mode reduces accidental environment-secret leakage; it does not prevent code from explicitly accessing known resources.
+
+## Local resources and managed jobs
+
+Local resources are registered only through the operator-controlled CLI. State stores canonical paths and metadata, not file contents. Unix-like registration rejects group/other-readable files unless explicitly overridden. Portable mode checks do not fully describe Windows ACLs or extended Unix ACLs; the operator remains responsible for platform permissions.
+
+At job acceptance, referenced resources are bounded and hashed. The detached runner reopens and verifies each hash before copying it to a private `0600` runtime file. Resource copies are removed after the finally phase. A changed or unavailable resource fails closed.
+
+Resource injection modes have different exposure:
+
+- private file-path substitution is generally preferred;
+- stdin avoids process arguments and environment variables;
+- environment injection can be visible to same-user process inspection and inherited child processes.
+
+Managed jobs accept arbitrary argv and therefore retain local-user authority. They are a durability mechanism, not a sandbox or an authorization bypass. A running job snapshots execution authority and environment mode at acceptance. Later profile changes affect new jobs but do not silently revoke an accepted running job; explicitly cancel active jobs when revoking authority. The initial job submission remains subject to MCP-host approval and platform safety policy; each child remains subject to local OS and endpoint-security policy.
+
+`stage_job` is non-executing and requires write capability. Local `machine-mcp job approve` is a separate operator authorization and may launch a staged plan even when the MCP profile itself has no execution capability. Operators must review the stored plan before approval. Cancelling before approval runs neither main nor finally steps.
+
+Active plans are owner-only and may temporarily contain argv, non-secret stdin, temporary helper content, environment overrides, and resource source paths for crash recovery. A terminal runner deletes the full plan. Status and bounded results remain for up to seven days/50 jobs. If a runner crashes before terminal commit, the plan remains until recovery or retention cleanup.
+
+Exact resource paths, exact resource bytes interpreted as text, and bounded exact base64/hex forms are redacted from retained output. This cannot detect partial, transformed, encrypted, compressed, or application-specific encodings. It also cannot redact unrelated secrets inherited through the full parent environment. Use `capture_output: "discard"` whenever a process may echo credentials, and never place a secret directly in argv, ordinary env, stdin, temporary-file content, or a JSON plan.
+
+`finally_steps` run after ordinary success, failure, timeout, and cancellation. Cancellation uses an owner-only marker rather than signaling the runner process itself, so the coordinator remains alive to execute cleanup consistently across platforms. A dead runner is detected on the next daemon or local job-CLI start; stale private resource copies are removed and cleanup is retried. This is best effort. Power loss, disk failure, permanent loss of credentials/network access, SIGKILL without later recovery, or security software denying the cleanup executable can prevent cleanup. Finally steps must be idempotent and safe to repeat. Automatic recovery is capped at three attempts so persistent endpoint-security or executable-policy denial cannot create an endless launch loop. Uninstall refuses to remove local state while managed jobs are active; operators must inspect or cancel them first.
+
+Job-scoped `temporary_files` should be used instead of loose helper scripts. They are materialized only below the private job runtime. Remote scripts should preferably be sent through a process stdin instead of written to the remote filesystem.
+
+Runner diagnostic logs are owner-only and do not receive child stdout/stderr. Step output is stored only in bounded job results according to the selected capture mode.
 
 ## OAuth and public endpoints
 
@@ -97,6 +123,8 @@ Process-session IDs are random and valid only inside one runtime. Output buffers
 
 Sessions use pipes, not a PTY. Do not assume terminal-oriented programs will behave safely or correctly. Process output may contain secrets; it is returned to the authorized client but is not intentionally written to operational logs.
 
+Process sessions are interactive and intentionally die with runtime disconnect/replacement. Managed jobs are separate detached processes with owner-only persistent state and best-effort finally/recovery semantics.
+
 ## Images and rich content
 
 `view_image` accepts only signature-validated PNG, JPEG, GIF, and WebP under the size cap. SVG is intentionally excluded because it is active document content rather than a simple raster image. Image bytes pass through the Worker in remote mode and are visible to the authorized MCP client.
@@ -105,7 +133,7 @@ Sessions use pipes, not a PTY. Do not assume terminal-oriented programs will beh
 
 Default operational logs record startup/connection transitions, failed calls, slow-call duration, and coarse error classes. Routine successful calls and shortened correlation IDs are debug-only. Tool arguments, command text, stdin, file/patch contents, and outputs are omitted. Messages and fields are bounded; unexpected daemon and Worker exceptions are reduced to error classes. Git author email is omitted from `git_log` unless explicitly requested.
 
-No logging policy can prevent data from being returned to a client that explicitly invokes an enabled tool. The Worker necessarily relays remote tool arguments and results; this is not end-to-end encryption against the user's Cloudflare execution environment.
+No logging policy can prevent data from being returned to a client that explicitly invokes an enabled tool. The Worker necessarily relays remote tool arguments and results; this is not end-to-end encryption against the user's Cloudflare execution environment. Managed-job result files may contain remote command output and are owner-only local data, not operational logs.
 
 ## Hardening checklist
 
@@ -130,9 +158,11 @@ Also:
 - inspect client names and OAuth redirect URIs;
 - rotate secrets after suspected disclosure;
 - inspect `status`, `doctor`, and service status;
+- register credential files as local resources instead of reading them into a model conversation;
+- use `capture_output: "discard"` for credential-consuming steps and idempotent finally steps for cleanup;
 - remove the Worker and state when remote access is no longer needed;
 - use external OS isolation for untrusted code.
 
 ## Out of scope
 
-The project cannot prevent an authorized client from requesting data accessible to enabled tools, make arbitrary local executables safe, identify all sensitive content, or neutralize model prompt injection. Operator approval and narrow capability selection remain primary controls.
+The project cannot prevent an authorized client from requesting data accessible to enabled tools, make arbitrary local executables safe, identify all sensitive content, guarantee cleanup across every power/storage/security failure, override MCP-host or endpoint-security policy, or neutralize model prompt injection. Operator approval, local resource hygiene, idempotent cleanup, and narrow capability selection remain primary controls.

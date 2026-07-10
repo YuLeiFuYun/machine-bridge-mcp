@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,14 +7,16 @@ import { run } from "../src/local/shell.mjs";
 import { parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals } from "../src/local/cli.mjs";
 import { daemonSelfTest } from "./daemon-self-test.mjs";
 import { formatFields, sanitizeLogText } from "../src/local/log.mjs";
+import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { daemonArgs, systemdQuote, trimAutostartLogs } from "../src/local/service.mjs";
 import { MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
-import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, previewSecret, redactState, removeStateRoot, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
+import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
 await daemonSelfTest();
 await stateSelfTest();
 await activeDaemonPolicyMutationSelfTest();
 await clientConfigDefaultSelfTest();
+await resourceCliSelfTest();
 await cliSelfTest();
 await logSelfTest();
 await serviceSelfTest();
@@ -26,10 +28,11 @@ async function stateSelfTest() {
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-state-test-"));
   const workspace = await mkdtemp(join(tmpdir(), "mbm-state-workspace-"));
   try {
+    const canonicalWorkspace = resolveWorkspace(workspace);
     setSelectedWorkspace(workspace, stateRoot);
-    if (selectedWorkspace(stateRoot) !== workspace) throw new Error("selected workspace was not persisted");
+    if (selectedWorkspace(stateRoot) !== canonicalWorkspace) throw new Error("selected workspace was not persisted canonically");
     const state = loadState(workspace, { stateDir: stateRoot });
-    if (state.schemaVersion !== 4) throw new Error("unexpected state schema version");
+    if (state.schemaVersion !== 5) throw new Error("unexpected state schema version");
     ensureWorkerSecrets(state, { rotateSecrets: true });
     state.oversized = "x".repeat(2 * 1024 * 1024 + 1);
     expectThrow(() => saveState(state), "state JSON exceeds");
@@ -61,6 +64,9 @@ async function stateSelfTest() {
     if (redacted.worker.daemonSecret !== "<redacted>") throw new Error("daemonSecret was not fully redacted");
     if (redacted.worker.oauthTokenVersion !== "<redacted>") throw new Error("oauthTokenVersion was not fully redacted");
     if (previewSecret(state.worker.oauthPassword) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
+    state.resources = { "private-key": { kind: "file", path: join(workspace, "private-key"), size: 10, mode: "0600" } };
+    const resourceRedacted = redactState(state);
+    if (resourceRedacted.resources["private-key"].path !== "<local-resource-path>") throw new Error("redacted state exposed a local resource path");
 
     state.localApi = {
       apiKey: "old-local-api-key",
@@ -85,7 +91,7 @@ async function stateSelfTest() {
 
     await writeFile(state.paths.statePath, "{not-json", "utf8");
     const recovered = loadState(workspace, { stateDir: stateRoot });
-    if (recovered.workspace.path !== workspace) throw new Error("corrupt state recovery failed");
+    if (recovered.workspace.path !== canonicalWorkspace) throw new Error("corrupt state recovery failed");
     const backups = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
     if (backups.length !== 1) throw new Error("corrupt state backup was not retained exactly once");
     const safeRemoval = validateStateRootForRemoval(stateRoot);
@@ -100,6 +106,27 @@ async function stateSelfTest() {
       removeStateRoot(legacyStateRoot);
     } finally {
       await rm(legacyStateRoot, { recursive: true, force: true }).catch(() => {});
+    }
+
+    const aliasStateRoot = await mkdtemp(join(tmpdir(), "mbm-alias-state-"));
+    try {
+      const legacyHash = "a".repeat(24);
+      const legacyProfile = join(aliasStateRoot, "profiles", legacyHash);
+      await mkdir(legacyProfile, { recursive: true });
+      await writeFile(join(legacyProfile, "state.json"), `${JSON.stringify({
+        schemaVersion: 4,
+        workspace: { path: workspace, hash: legacyHash },
+        worker: { oauthPassword: "legacy-password", daemonSecret: "legacy-daemon", oauthTokenVersion: "legacy-version" },
+        policy: {},
+      }, null, 2)}
+`, { mode: 0o600 });
+      const adoptedAlias = loadState(canonicalWorkspace, { stateDir: aliasStateRoot });
+      if (await realpath(adoptedAlias.paths.profileDir) !== await realpath(legacyProfile) || adoptedAlias.workspace.hash !== legacyHash || adoptedAlias.worker.oauthPassword !== "legacy-password") {
+        throw new Error("canonical workspace did not reuse a matching legacy alias profile");
+      }
+      removeStateRoot(aliasStateRoot);
+    } finally {
+      await rm(aliasStateRoot, { recursive: true, force: true }).catch(() => {});
     }
 
     const lookalike = await mkdtemp(join(tmpdir(), "mbm-lookalike-state-"));
@@ -203,6 +230,149 @@ async function clientConfigDefaultSelfTest() {
   }
 }
 
+async function resourceCliSelfTest() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-resource-cli-state-"));
+  const workspaceRaw = await mkdtemp(join(tmpdir(), "mbm-resource-cli-workspace-"));
+  const workspace = await realpath(workspaceRaw);
+  const resourceFile = join(workspace, "credential-file.txt");
+  await writeFile(resourceFile, "local-value-not-returned", { mode: 0o600 });
+  if (process.platform !== "win32") await chmod(resourceFile, 0o600);
+  const entry = fileURLToPath(new URL("../bin/machine-mcp.mjs", import.meta.url));
+  try {
+    const added = spawnSync(process.execPath, [entry, "resource", "add", "example-provider-key", resourceFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (added.error) throw added.error;
+    if (added.status !== 0) throw new Error(`resource add failed: ${added.stderr || added.stdout}`);
+    const addedJson = JSON.parse(added.stdout);
+    if (addedJson.contents_exposed !== false || added.stdout.includes("local-value-not-returned")) throw new Error("resource add exposed file contents");
+
+    const state = loadState(workspace, { stateDir: stateRoot });
+    if (state.resources["example-provider-key"]?.path !== resourceFile) throw new Error("resource add did not persist the canonical path");
+    const manager = new ManagedJobManager({
+      jobRoot: join(state.paths.profileDir, "jobs"),
+      workspace,
+      policy: { allowWrite: true, execMode: "direct", minimalEnv: false, unrestrictedPaths: true },
+      resourceStatePath: state.paths.statePath,
+    });
+    if (manager.listResources().count !== 1) throw new Error("daemon-style resource reload did not read updated state");
+
+    const listed = spawnSync(process.execPath, [entry, "resource", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (listed.status !== 0) throw new Error(`resource list failed: ${listed.stderr || listed.stdout}`);
+    const listedJson = JSON.parse(listed.stdout);
+    if (!listedJson.resources?.["example-provider-key"] || listed.stdout.includes("local-value-not-returned")) throw new Error("resource list omitted the alias or exposed contents");
+
+    const checked = spawnSync(process.execPath, [entry, "resource", "check", "example-provider-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (checked.status !== 0 || JSON.parse(checked.stdout).contents_exposed !== false) throw new Error("resource check failed or exposed contents");
+
+    const jobs = spawnSync(process.execPath, [entry, "job", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (jobs.status !== 0 || !Array.isArray(JSON.parse(jobs.stdout).jobs)) throw new Error("local job list fallback failed");
+
+    const approvedMarker = join(workspace, "approved-by-cli.txt");
+    const stagedForCli = manager.stage({
+      name: "CLI approval",
+      steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'cli-approved')", approvedMarker], env_resources: { MBM_REVIEW_ONLY: "example-provider-key" }, timeout_seconds: 10 }],
+    });
+    const inspectedPlan = spawnSync(process.execPath, [entry, "job", "inspect", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (inspectedPlan.status !== 0) throw new Error(`local job inspect failed: ${inspectedPlan.stderr || inspectedPlan.stdout}`);
+    const inspectionJson = JSON.parse(inspectedPlan.stdout);
+    const reviewedResource = inspectionJson.review_plan?.resources?.["example-provider-key"];
+    if (!inspectionJson.review_plan || !reviewedResource || "path" in reviewedResource || "sha256" in reviewedResource || JSON.stringify(inspectionJson).includes(resourceFile)) {
+      throw new Error("local plan inspection omitted the plan or exposed a resource source path/hash");
+    }
+    const cliApproved = spawnSync(process.execPath, [entry, "job", "approve", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json", "--yes"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (cliApproved.status !== 0 || JSON.parse(cliApproved.stdout).approval !== "local-operator") throw new Error(`local job approve failed: ${cliApproved.stderr || cliApproved.stdout}`);
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (await existsForSelfTest(approvedMarker)) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    if (await readFile(approvedMarker, "utf8") !== "cli-approved") throw new Error("local job approve did not execute the staged job");
+
+    const submittedMarker = join(workspace, "submitted-by-cli.txt");
+    const planFile = join(workspace, "managed-plan.json");
+    await writeFile(planFile, JSON.stringify({
+      name: "local CLI fallback",
+      steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'submitted')", submittedMarker], timeout_seconds: 10 }],
+    }), "utf8");
+    if (process.platform !== "win32") {
+      const linkedPlan = join(workspace, "linked-plan.json");
+      await symlink(planFile, linkedPlan);
+      const linked = spawnSync(process.execPath, [entry, "job", "submit", linkedPlan, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+        encoding: "utf8", timeout: 10_000,
+      });
+      if (linked.status === 0 || !String(linked.stderr).includes("must not be a symbolic link")) {
+        throw new Error("local job submit accepted a symbolic-link plan file");
+      }
+    }
+    const submitted = spawnSync(process.execPath, [entry, "job", "submit", planFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (submitted.status !== 0) throw new Error(`local job submit failed: ${submitted.stderr || submitted.stdout}`);
+    const submittedId = JSON.parse(submitted.stdout).job_id;
+    let submittedStatus = "";
+    const submittedTerminal = new Set(["succeeded", "failed", "cancelled", "runner_failed", "runner_launch_failed", "recovery_failed", "recovery_exhausted", "succeeded_cleanup_failed", "failed_cleanup_failed", "cancelled_cleanup_failed"]);
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const read = spawnSync(process.execPath, [entry, "job", "read", submittedId, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+        encoding: "utf8", timeout: 10_000,
+      });
+      if (read.status !== 0) throw new Error(`local job read failed: ${read.stderr || read.stdout}`);
+      submittedStatus = JSON.parse(read.stdout).status;
+      if (submittedTerminal.has(submittedStatus)) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    if (submittedStatus !== "succeeded" || await readFile(submittedMarker, "utf8").catch(() => "") !== "submitted") {
+      const currentState = loadState(workspace, { stateDir: stateRoot });
+      const jobDir = join(currentState.paths.profileDir, "jobs", submittedId);
+      const diagnostics = {};
+      for (const name of ["status.json", "result.json", "runner.out.log", "runner.err.log"]) {
+        try { diagnostics[name] = await readFile(join(jobDir, name), "utf8"); } catch {}
+      }
+      throw new Error(`local CLI fallback job did not complete: ${submittedStatus}; diagnostics=${JSON.stringify(diagnostics)}`);
+    }
+
+    const activeJob = manager.start({
+      name: "block uninstall while active",
+      steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},30000)"], timeout_seconds: 60 }],
+    });
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const value = manager.read({ job_id: activeJob.job_id });
+      if (value.status === "running") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    const uninstallBlocked = spawnSync(process.execPath, [entry, "uninstall", "--state-dir", stateRoot, "--keep-worker", "--yes"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (uninstallBlocked.status === 0 || !String(uninstallBlocked.stderr).includes("managed jobs are active")) {
+      throw new Error(`uninstall did not refuse an active managed job: ${uninstallBlocked.stderr || uninstallBlocked.stdout}`);
+    }
+    manager.cancel({ job_id: activeJob.job_id });
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const value = manager.read({ job_id: activeJob.job_id });
+      if (!["queued", "running", "cleaning", "interrupted"].includes(value.status)) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+
+    const removed = spawnSync(process.execPath, [entry, "resource", "remove", "example-provider-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (removed.status !== 0 || JSON.parse(removed.stdout).removed !== true) throw new Error("resource remove failed");
+    if (manager.listResources().count !== 0) throw new Error("resource removal was not visible to new jobs without restart");
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
+    await rm(workspaceRaw, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 function cliSelfTest() {
   const parsed = parseArgs(["--no-write", "/tmp/example", "--unrestricted-paths=false", "--worker-name", "mbm-test"]);
   if (parsed.noWrite !== true || parsed._[0] !== "/tmp/example") throw new Error("boolean option consumed positional workspace");
@@ -224,10 +394,18 @@ function cliSelfTest() {
   expectThrow(() => validateLoggingOptions({ logLevel: "warn", verbose: true }), "cannot be combined");
   validateCommandOptions("stdio", { _: [], profile: "agent", execMode: "direct" });
   validateCommandOptions("client-config", { _: [], client: "cursor", profile: "review" });
+  validateCommandOptions("resource", { _: ["add", "key", "/tmp/key"], allowInsecurePermissions: true, json: true });
+  validateCommandOptions("job", { _: ["read", "job_abcdefghijklmnopqrstuvwxyz"], json: true });
   validatePositionals("workspace", { _: ["set", "/tmp/project"] });
   validatePositionals("service", { _: ["install", "/tmp/project"] });
   validatePositionals("stdio", { _: ["/tmp/project"] });
   validatePositionals("client-config", { _: ["codex"] });
+  validatePositionals("resource", { _: ["add", "example-provider-key", "/tmp/key"] });
+  validatePositionals("job", { _: ["read", "job_abcdefghijklmnopqrstuvwxyz"] });
+  validatePositionals("job", { _: ["submit", "/tmp/plan.json"] });
+  validatePositionals("job", { _: ["approve", "job_abcdefghijklmnopqrstuvwxyz"] });
+  validatePositionals("job", { _: ["inspect", "job_abcdefghijklmnopqrstuvwxyz"] });
+  expectThrow(() => validatePositionals("resource", { _: ["add", "name", "path", "extra"] }), "too many positional");
 
   const defaultPolicy = resolvePolicy({}, {});
   if (
@@ -266,11 +444,11 @@ function cliSelfTest() {
   expectThrow(() => resolvePolicy({ execMode: "maybe" }, {}), "--exec-mode must be");
 
   const defaultNames = new Set(toolsForPolicy(defaultPolicy).map((tool) => tool.name));
-  if (!defaultNames.has("write_file") || !defaultNames.has("run_process") || !defaultNames.has("exec_command")) throw new Error("default full profile omits maximum tool capabilities");
+  if (!defaultNames.has("write_file") || !defaultNames.has("run_process") || !defaultNames.has("exec_command") || !defaultNames.has("stage_job") || !defaultNames.has("start_job") || !defaultNames.has("diagnose_runtime")) throw new Error("default full profile omits maximum tool capabilities");
   const reviewNames = new Set(toolsForPolicy(review).map((tool) => tool.name));
   if (reviewNames.has("write_file") || reviewNames.has("run_process") || reviewNames.has("exec_command")) throw new Error("review profile exposes mutation tools");
   const agentNames = new Set(toolsForPolicy(agent).map((tool) => tool.name));
-  if (!agentNames.has("apply_patch") || !agentNames.has("run_process") || agentNames.has("exec_command")) throw new Error("agent profile tool inventory is incorrect");
+  if (!agentNames.has("apply_patch") || !agentNames.has("run_process") || !agentNames.has("start_job") || agentNames.has("exec_command")) throw new Error("agent profile tool inventory is incorrect");
   if (MCP_PROTOCOL_VERSION !== "2025-11-25") throw new Error("MCP protocol version drifted");
 }
 
@@ -385,6 +563,10 @@ async function workerSourceSelfTest() {
   ]) {
     if (source.includes(removed)) throw new Error(`obsolete or public-sensitive Worker route remains: ${removed}`);
   }
+}
+
+async function existsForSelfTest(file) {
+  try { await stat(file); return true; } catch { return false; }
 }
 
 function expectThrow(callback, pattern) {
