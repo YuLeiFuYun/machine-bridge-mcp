@@ -10,10 +10,12 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true
   },
   "include": [
     "src/worker/**/*.ts",
-    "src/worker/**/*.d.ts"
+    "src/worker/**/*.d.ts",
+    "src/shared/**/*.json"
   ]
 }

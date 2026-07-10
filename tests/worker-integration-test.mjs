@@ -46,6 +46,11 @@ try {
   assert(health.server === "machine-bridge-mcp", "health server name mismatch");
   assert(health.version === pkg.version, `health version mismatch: ${health.version} != ${pkg.version}`);
   assert(!("daemon" in health), "public health response leaked daemon state");
+  const publicMetadata = await fetchJson(`${base}/.well-known/mcp.json`);
+  assert(publicMetadata.response.status === 200, "public MCP metadata failed");
+  assert(!("tools" in publicMetadata.body), "public MCP metadata exposed potential local tools");
+  assert(!("instructions" in publicMetadata.body), "public MCP metadata exposed operational instructions");
+  assert(publicMetadata.body.protocolVersions?.includes("2025-11-25"), "public MCP metadata omitted supported versions");
   const wrongHealthMethod = await stableFetch(`${base}/healthz`, { method: "POST" });
   assert(wrongHealthMethod.status === 405, "health endpoint accepted an unsupported method");
   assert(wrongHealthMethod.headers.get("allow") === "GET", "method rejection omitted the Allow header");
@@ -198,17 +203,41 @@ try {
       "content-type": "application/json",
       authorization: `Bearer ${token.body.access_token}`,
     },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "integration", version: "1" } },
+    }),
   });
   assert(initialized.response.status === 200, `authenticated initialize failed: ${initialized.response.status}`);
+  assert(initialized.body.result?.protocolVersion === "2025-11-25", "initialize did not negotiate the latest supported protocol");
   assert(initialized.body.result?.serverInfo?.version === pkg.version, "initialize returned the wrong Worker version");
+  assert(initialized.body.result?.capabilities?.tools, "initialize omitted tools capability");
+
+  const unsupportedProtocol = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+      "mcp-protocol-version": "1900-01-01",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping", params: {} }),
+  });
+  assert(unsupportedProtocol.response.status === 400, "unsupported MCP protocol header was accepted");
+  assert(unsupportedProtocol.body.error?.data?.supported?.includes("2025-11-25"), "unsupported protocol response omitted supported versions");
+
+  const toolsWithoutDaemon = await callToolsList(base, token.body.access_token, 3);
+  assert(toolsWithoutDaemon.length === 1 && toolsWithoutDaemon[0].name === "server_info", "disconnected Worker advertised unavailable local tools");
 
   const firstDaemon = await connectDaemon(base);
   daemonSockets.push(firstDaemon);
-  await sendDaemonHello(firstDaemon, ["read_file"]);
+  await sendDaemonHello(firstDaemon, ["read_file", "write_file", "exec_command"]);
   const firstStatus = await callServerInfo(base, token.body.access_token, 21);
   assert(firstStatus.daemon?.connected === true, "first daemon did not become active after hello");
   assert(firstStatus.daemon?.tools?.includes("read_file"), "first daemon tools were not advertised");
+  assert(!firstStatus.daemon?.tools?.includes("write_file"), "review policy did not filter write_file");
+  assert(!firstStatus.daemon?.tools?.includes("exec_command"), "review policy did not filter exec_command");
 
   const timedOutCandidate = await connectDaemon(base);
   daemonSockets.push(timedOutCandidate);
@@ -241,13 +270,96 @@ try {
   assert(statusBeforeHello.daemon?.tools?.includes("read_file"), "candidate connection changed active tools before hello");
 
   const firstClosed = waitForWsClose(firstDaemon);
-  await sendDaemonHello(candidateDaemon, ["list_dir"]);
+  await sendDaemonHello(candidateDaemon, ["list_dir", "view_image", "run_process", "exec_command"], { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
   const closeInfo = await firstClosed;
   assert(closeInfo.code === 1012, `replaced daemon closed with unexpected code ${closeInfo.code}`);
   const statusAfterHello = await callServerInfo(base, token.body.access_token, 25);
   assert(statusAfterHello.daemon?.count === 1, `expected one active daemon after replacement, got ${statusAfterHello.daemon?.count}`);
   assert(statusAfterHello.daemon?.tools?.includes("list_dir"), "candidate daemon did not become active after hello");
+  assert(statusAfterHello.daemon?.tools?.includes("view_image"), "candidate daemon image tool was not advertised");
+  assert(statusAfterHello.daemon?.tools?.includes("run_process"), "agent policy did not retain direct process execution");
+  assert(!statusAfterHello.daemon?.tools?.includes("exec_command"), "agent policy did not filter shell execution");
   assert(!statusAfterHello.daemon?.tools?.includes("read_file"), "replaced daemon tools remained active");
+  const activeTools = await callToolsList(base, token.body.access_token, 26);
+  assert(activeTools.some((tool) => tool.name === "server_info"), "active tool list omitted server_info");
+  assert(activeTools.some((tool) => tool.name === "list_dir"), "active tool list omitted daemon-advertised tool");
+  assert(!activeTools.some((tool) => tool.name === "read_file"), "active tool list retained a replaced daemon tool");
+  assert(activeTools.find((tool) => tool.name === "list_dir")?.annotations?.readOnlyHint === true, "tool annotations were not returned");
+
+  const remoteImageCall = fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 76, method: "tools/call", params: { name: "view_image", arguments: { path: "pixel.png" } } }),
+  });
+  const relayedImageCall = await waitForWsMessage(candidateDaemon, "tool_call");
+  assert(relayedImageCall.tool === "view_image", "Worker relayed the wrong rich-content tool");
+  candidateDaemon.send(JSON.stringify({
+    type: "tool_result",
+    id: relayedImageCall.id,
+    ok: true,
+    result: {
+      $mcp: {
+        content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+        structuredContent: { path: "pixel.png", size: 8, mime_type: "image/png" },
+      },
+    },
+  }));
+  const remoteImage = await remoteImageCall;
+  assert(remoteImage.response.status === 200, "rich image tools/call failed");
+  assert(remoteImage.body.result?.content?.[0]?.type === "image", "Worker flattened native MCP image content");
+  assert(remoteImage.body.result?.structuredContent?.path === "pixel.png", "Worker omitted rich structuredContent");
+  assert(!JSON.stringify(remoteImage.body.result).includes("$mcp"), "Worker leaked the internal rich-result envelope");
+
+  const relayTimeoutCall = fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 75, method: "tools/call", params: { name: "run_process", arguments: { argv: ["never-runs"], timeout_seconds: 1 } } }),
+  });
+  const timedRelay = await waitForWsMessage(candidateDaemon, "tool_call");
+  assert(timedRelay.tool === "run_process", "Worker did not relay timeout test call");
+  const relayTimeoutCancel = await waitForWsMessage(candidateDaemon, "cancel_call", 10_000);
+  assert(relayTimeoutCancel.id === timedRelay.id, "Worker timeout cancellation targeted the wrong daemon call");
+  const relayTimeoutResult = await relayTimeoutCall;
+  assert(relayTimeoutResult.response.status === 200, "timed-out tools/call did not settle cleanly");
+  assert(relayTimeoutResult.body.result?.isError === true, "timed-out tools/call was not marked as an error");
+  assert(JSON.stringify(relayTimeoutResult.body.result).includes("timed out"), "timed-out tools/call returned the wrong error");
+
+  const remoteCall = fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 77, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  });
+  const relayedCall = await waitForWsMessage(candidateDaemon, "tool_call");
+  assert(relayedCall.tool === "list_dir", "Worker relayed the wrong tool");
+  const cancelNotice = waitForWsMessage(candidateDaemon, "cancel_call");
+  const cancelled = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 77, reason: "integration test" } }),
+  });
+  assert(cancelled.status === 202, `cancellation notification returned ${cancelled.status}`);
+  const cancelledRelay = await cancelNotice;
+  assert(cancelledRelay.id === relayedCall.id, "Worker cancellation targeted the wrong daemon call");
+  const cancelledResult = await remoteCall;
+  assert(cancelledResult.response.status === 200, "cancelled tools/call did not settle cleanly");
+  assert(cancelledResult.body.result?.isError === true, "cancelled tools/call was not marked as an error");
+  assert(JSON.stringify(cancelledResult.body.result).includes("cancelled"), "cancelled tools/call returned the wrong error");
 
   for (let index = 0; index < 4; index += 1) {
     const extraRegistration = await stableFetch(`${base}/oauth/register`, {
@@ -309,12 +421,13 @@ async function connectDaemon(origin) {
   return socket;
 }
 
-async function sendDaemonHello(socket, tools) {
+async function sendDaemonHello(socket, tools, policy = { profile: "review", allowWrite: false, allowExec: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }) {
   const acknowledged = waitForWsMessage(socket, "hello_ack");
   socket.send(JSON.stringify({
     type: "hello",
     tools,
-    policy: { allowWrite: true, allowExec: false, unrestrictedPaths: false, minimalEnv: true },
+    policy,
+    protocol_versions: ["2025-11-25", "2025-06-18", "2025-03-26"],
   }));
   await acknowledged;
 }
@@ -352,13 +465,27 @@ function waitForWsClose(socket, timeoutMs = 5000) {
 async function callServerInfo(origin, accessToken, id) {
   const response = await fetchJson(`${origin}/mcp`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}`, "mcp-protocol-version": "2025-11-25" },
     body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "server_info", arguments: {} } }),
   });
   assert(response.response.status === 200, `server_info call failed: ${response.response.status}`);
   const text = response.body.result?.content?.[0]?.text;
+  const structured = response.body.result?.structuredContent;
   assert(typeof text === "string", "server_info result did not contain text");
-  return JSON.parse(text);
+  assert(structured && typeof structured === "object", "server_info result omitted structuredContent");
+  assert(JSON.stringify(structured) === JSON.stringify(JSON.parse(text)), "server_info text and structuredContent diverged");
+  return structured;
+}
+
+async function callToolsList(origin, accessToken, id) {
+  const response = await fetchJson(`${origin}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}`, "mcp-protocol-version": "2025-11-25" },
+    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/list", params: {} }),
+  });
+  assert(response.response.status === 200, `tools/list failed: ${response.response.status}`);
+  assert(Array.isArray(response.body.result?.tools), "tools/list did not return an array");
+  return response.body.result.tools;
 }
 
 function withTimeout(promise, timeoutMs, label) {

@@ -1,15 +1,18 @@
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { run } from "./shell.mjs";
-import { parseArgs, validateCommandOptions, validatePositionals } from "./cli.mjs";
-import { daemonSelfTest } from "./daemon.mjs";
-import { formatFields, redactSecret, sanitizeLogText } from "./log.mjs";
-import { systemdQuote, trimAutostartLogs } from "./service.mjs";
-import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, previewSecret, redactState, removeStateRoot, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "./state.mjs";
+import { run } from "../src/local/shell.mjs";
+import { parseArgs, resolvePolicy, validateCommandOptions, validatePositionals } from "../src/local/cli.mjs";
+import { daemonSelfTest } from "./daemon-self-test.mjs";
+import { formatFields, redactSecret, sanitizeLogText } from "../src/local/log.mjs";
+import { daemonArgs, systemdQuote, trimAutostartLogs } from "../src/local/service.mjs";
+import { MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
+import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, previewSecret, redactState, removeStateRoot, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
 await daemonSelfTest();
 await stateSelfTest();
+await activeDaemonPolicyMutationSelfTest();
 await cliSelfTest();
 await logSelfTest();
 await serviceSelfTest();
@@ -24,7 +27,7 @@ async function stateSelfTest() {
     setSelectedWorkspace(workspace, stateRoot);
     if (selectedWorkspace(stateRoot) !== workspace) throw new Error("selected workspace was not persisted");
     const state = loadState(workspace, { stateDir: stateRoot });
-    if (state.schemaVersion !== 2) throw new Error("unexpected state schema version");
+    if (state.schemaVersion !== 3) throw new Error("unexpected state schema version");
     ensureWorkerSecrets(state, { rotateSecrets: true });
     const lock = acquireDaemonLock(state);
     if (!lock.acquired) throw new Error("first daemon lock acquisition failed");
@@ -108,6 +111,51 @@ async function stateSelfTest() {
   }
 }
 
+async function activeDaemonPolicyMutationSelfTest() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-policy-lock-test-"));
+  const workspaceRaw = await mkdtemp(join(tmpdir(), "mbm-policy-lock-workspace-"));
+  const workspace = await realpath(workspaceRaw);
+  try {
+    const state = loadState(workspace, { stateDir: stateRoot });
+    state.policy = resolvePolicy({ profile: "review" }, {});
+    saveState(state);
+    const daemonLock = acquireDaemonLock(state);
+    if (!daemonLock.acquired) throw new Error("policy mutation test could not acquire daemon lock");
+    try {
+      const entry = new URL("../bin/machine-mcp.mjs", import.meta.url);
+      const child = spawnSync(process.execPath, [
+        entry.pathname,
+        "start",
+        "--daemon-only",
+        "--workspace", workspace,
+        "--state-dir", stateRoot,
+        "--profile", "full",
+        "--json",
+        "--no-print-credentials",
+      ], {
+        cwd: workspace,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      if (child.error) throw child.error;
+      if (child.status !== 0) throw new Error(`locked start failed unexpectedly: ${child.stderr || child.stdout}`);
+      const output = JSON.parse(child.stdout.trim());
+      if (output.requested_changes_applied !== false || !String(output.notice || "").includes("not applied")) {
+        throw new Error("locked JSON start did not report that policy changes were rejected");
+      }
+      const unchanged = loadState(workspace, { stateDir: stateRoot });
+      if (unchanged.policy.profile !== "review" || unchanged.policy.allowWrite || unchanged.policy.execMode !== "off") {
+        throw new Error("active daemon lock allowed persisted policy mutation");
+      }
+    } finally {
+      daemonLock.release();
+    }
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
+    await rm(workspaceRaw, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 function cliSelfTest() {
   const parsed = parseArgs(["--no-write", "/tmp/example", "--unrestricted-paths=false", "--worker-name", "mbm-test"]);
   if (parsed.noWrite !== true || parsed._[0] !== "/tmp/example") throw new Error("boolean option consumed positional workspace");
@@ -122,8 +170,31 @@ function cliSelfTest() {
   expectThrow(() => validateCommandOptions("uninstall", { _: [], workspace: "/tmp/project" }), "not valid for uninstall");
   expectThrow(() => validateCommandOptions("doctor", { _: [], fullEnv: true }), "not valid for doctor");
   validateCommandOptions("start", { _: [], unrestrictedPaths: true, noExec: true });
+  validateCommandOptions("stdio", { _: [], profile: "agent", execMode: "direct" });
+  validateCommandOptions("client-config", { _: [], client: "cursor", profile: "review" });
   validatePositionals("workspace", { _: ["set", "/tmp/project"] });
   validatePositionals("service", { _: ["install", "/tmp/project"] });
+  validatePositionals("stdio", { _: ["/tmp/project"] });
+  validatePositionals("client-config", { _: ["codex"] });
+
+  const review = resolvePolicy({}, {});
+  if (review.profile !== "review" || review.allowWrite || review.execMode !== "off" || review.exposeAbsolutePaths) {
+    throw new Error("new-workspace review profile is not least privilege");
+  }
+  const legacy = resolvePolicy({}, { allowWrite: true, allowExec: true, minimalEnv: true });
+  if (!legacy.allowWrite || legacy.execMode !== "shell") throw new Error("legacy execution policy was not preserved");
+  const agent = resolvePolicy({ profile: "agent" }, {});
+  if (!agent.allowWrite || agent.execMode !== "direct") throw new Error("agent profile is incorrect");
+  const restrictedAgent = resolvePolicy({ profile: "agent", noExec: true, absolutePaths: true }, {});
+  if (restrictedAgent.profile !== "custom" || restrictedAgent.execMode !== "off" || restrictedAgent.exposeAbsolutePaths !== true) throw new Error("policy overrides are incorrect");
+  expectThrow(() => resolvePolicy({ profile: "unsafe" }, {}), "--profile must be one of");
+  expectThrow(() => resolvePolicy({ execMode: "maybe" }, {}), "--exec-mode must be");
+
+  const reviewNames = new Set(toolsForPolicy(review).map((tool) => tool.name));
+  if (reviewNames.has("write_file") || reviewNames.has("run_process") || reviewNames.has("exec_command")) throw new Error("review profile exposes mutation tools");
+  const agentNames = new Set(toolsForPolicy(agent).map((tool) => tool.name));
+  if (!agentNames.has("apply_patch") || !agentNames.has("run_process") || agentNames.has("exec_command")) throw new Error("agent profile tool inventory is incorrect");
+  if (MCP_PROTOCOL_VERSION !== "2025-11-25") throw new Error("MCP protocol version drifted");
 }
 
 function logSelfTest() {
@@ -151,6 +222,10 @@ async function serviceSelfTest() {
     if ((await stat(file)).size > 1024) throw new Error("autostart log trimming failed");
     const quoted = systemdQuote("path with space/%value'\n");
     if (!quoted.startsWith('"') || !quoted.includes("%%") || !quoted.includes("\\n")) throw new Error("systemd argument quoting failed");
+    const args = daemonArgs({ entryScript: "/package/bin/machine-mcp.mjs", workspace: "/workspace", stateRoot: "/state" });
+    if (args.some((value) => ["--profile", "--exec-mode", "--no-write", "--full-env", "--unrestricted-paths", "--absolute-paths"].includes(value))) {
+      throw new Error("autostart duplicated policy outside owner-only state");
+    }
   } finally {
     await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
   }
@@ -173,7 +248,7 @@ async function shellSelfTest() {
 }
 
 async function workerSourceSelfTest() {
-  const source = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const unawaitedAsyncRoutes = [
     "return this.registerClient(request);",
     "return this.authorizeSubmit(request, base);",
@@ -203,6 +278,10 @@ async function workerSourceSelfTest() {
     'role: "expired"',
     "daemon_hello_timeout",
     "replaced by authenticated daemon",
+    "MCP_PROTOCOL_VERSION = \"2025-11-25\"",
+    "notifications/cancelled",
+    "structuredContent",
+    "../shared/tool-catalog.json",
   ]) {
     if (!source.includes(required)) throw new Error(`Worker hardening guard missing: ${required}`);
   }

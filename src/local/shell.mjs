@@ -111,12 +111,29 @@ export function workspaceShellCommand(command) {
 }
 
 export function executionEnv(workspace, options = {}) {
-  // Keep environment small to avoid accidental dependence on the launching shell,
-  // but do not hide filesystem contents. Operators can opt into full env when desired.
+  // Minimal mode deliberately replaces user home/temp/cache locations so common
+  // toolchains do not inherit credential-bearing configuration by accident.
   if (options.fullEnv || process.env.MBM_PASS_ENV === "true") return { ...process.env, MBM_WORKSPACE: workspace };
-  const allowed = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR"];
-  const env = { MBM_WORKSPACE: workspace };
-  for (const key of allowed) if (process.env[key]) env[key] = process.env[key];
+  const runtimeDir = options.runtimeDir ? path.resolve(String(options.runtimeDir)) : "";
+  if (!runtimeDir) throw new Error("minimal execution environment requires a runtime directory");
+  const runtimeHome = path.join(runtimeDir, "home");
+  const runtimeTmp = path.join(runtimeDir, "tmp");
+  const runtimeCache = path.join(runtimeDir, "cache");
+  const env = {
+    MBM_WORKSPACE: workspace,
+    HOME: runtimeHome,
+    USERPROFILE: runtimeHome,
+    TMPDIR: runtimeTmp,
+    TMP: runtimeTmp,
+    TEMP: runtimeTmp,
+    XDG_CACHE_HOME: runtimeCache,
+    npm_config_cache: path.join(runtimeCache, "npm"),
+    PIP_CACHE_DIR: path.join(runtimeCache, "pip"),
+    CARGO_HOME: path.join(runtimeCache, "cargo"),
+  };
+  for (const key of ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"]) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
   if (!env.PATH) env.PATH = process.env.PATH || "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
   return env;
 }

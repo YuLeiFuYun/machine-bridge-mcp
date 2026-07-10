@@ -7,8 +7,8 @@ import { ensureOwnerOnlyDir, expandHome } from "./state.mjs";
 const LABEL = "dev.machine-bridge-mcp.daemon";
 const WINDOWS_TASK = "MachineBridgeMCP";
 
-export async function installAutostart({ workspace, stateRoot, entryScript, policy, logger = console }) {
-  const spec = serviceSpec({ workspace, stateRoot, entryScript, policy });
+export async function installAutostart({ workspace, stateRoot, entryScript, logger = console }) {
+  const spec = serviceSpec({ workspace, stateRoot, entryScript });
   if (process.platform === "darwin") return installLaunchd(spec, logger);
   if (process.platform === "win32") return installWindowsTask(spec, logger);
   return installSystemd(spec, logger);
@@ -65,7 +65,7 @@ export function trimAutostartLogs(stateRoot, options = {}) {
   }
 }
 
-function serviceSpec({ workspace, stateRoot, entryScript, policy = {} }) {
+function serviceSpec({ workspace, stateRoot, entryScript }) {
   const root = expandHome(stateRoot);
   const logs = path.join(root, "logs");
   ensureOwnerOnlyDir(root);
@@ -81,17 +81,11 @@ function serviceSpec({ workspace, stateRoot, entryScript, policy = {} }) {
     node: process.execPath,
     stdout: path.join(logs, "daemon.out.log"),
     stderr: path.join(logs, "daemon.err.log"),
-    policy: {
-      allowWrite: policy.allowWrite !== false,
-      allowExec: policy.allowExec !== false,
-      minimalEnv: policy.minimalEnv !== false,
-      unrestrictedPaths: policy.unrestrictedPaths === true,
-    },
   };
 }
 
-function daemonArgs(spec) {
-  const args = [
+export function daemonArgs(spec) {
+  return [
     spec.entryScript,
     "start",
     "--daemon-only",
@@ -100,11 +94,6 @@ function daemonArgs(spec) {
     "--no-print-credentials",
     "--quiet",
   ];
-  if (spec.policy.allowWrite === false) args.push("--no-write");
-  if (spec.policy.allowExec === false) args.push("--no-exec");
-  if (spec.policy.minimalEnv === false) args.push("--full-env");
-  if (spec.policy.unrestrictedPaths === true) args.push("--unrestricted-paths");
-  return args;
 }
 
 function launchdPlistPath() {

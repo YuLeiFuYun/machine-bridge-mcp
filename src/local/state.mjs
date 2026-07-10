@@ -96,7 +96,7 @@ export function loadState(workspace, options = {}) {
     ownerOnlyFile(statePath);
     state = readJsonObjectOrBackup(statePath);
   }
-  state.schemaVersion = 2;
+  state.schemaVersion = 3;
   state.workspace = {
     path: workspace,
     hash: workspaceHash(workspace),

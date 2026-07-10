@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
+import toolCatalog from "../shared/tool-catalog.json";
 
 const SERVER_NAME = "machine-bridge-mcp";
-const SERVER_VERSION = "0.3.3";
-const MCP_PROTOCOL_VERSION = "2025-06-18";
+const SERVER_VERSION = "0.4.0";
+const MCP_PROTOCOL_VERSION = "2025-11-25";
+const MCP_SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
@@ -105,132 +107,32 @@ interface PendingCall {
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
   socket: WebSocket;
+  clientRequestKey?: string;
 }
 
-const serverInfoTool = {
-  name: "server_info",
-  description: "Return bridge metadata, OAuth endpoint details, daemon connection status, and available tools.",
-  inputSchema: { type: "object", additionalProperties: true },
-} as const;
+interface AuthorizedToken {
+  tokenKey: string;
+  clientId: string;
+}
 
-const workspaceTools = [
-  {
-    name: "project_overview",
-    description: "Summarize the connected local workspace and daemon policy.",
-    inputSchema: { type: "object", additionalProperties: true },
-  },
-  {
-    name: "list_roots",
-    description: "List workspace roots exposed by the local daemon.",
-    inputSchema: { type: "object", additionalProperties: true },
-  },
-  {
-    name: "list_dir",
-    description: "List direct children of a workspace directory.",
-    inputSchema: {
-      type: "object",
-      properties: { path: { type: "string", default: "." } },
-      additionalProperties: true,
-    },
-  },
-  {
-    name: "list_files",
-    description: "Recursively list files under a workspace path.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string", default: "." },
-        max_files: { type: "integer", minimum: 1, maximum: 10000, default: 1000 },
-      },
-      additionalProperties: true,
-    },
-  },
-  {
-    name: "read_file",
-    description: "Read a UTF-8 file. Relative paths use the daemon workspace; paths outside the workspace require the daemon to be started with --unrestricted-paths.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        max_bytes: { type: "integer", minimum: 1, maximum: 5242880, default: 1048576 },
-      },
-      required: ["path"],
-      additionalProperties: true,
-    },
-  },
-  {
-    name: "write_file",
-    description: "Atomically write a UTF-8 file up to 5 MiB. Paths outside the workspace require --unrestricted-paths; symbolic-link destinations are rejected. Enabled by default.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        content: { type: "string" },
-        create_only: { type: "boolean", default: false },
-        expected_sha256: { type: "string" },
-      },
-      required: ["path", "content"],
-      additionalProperties: true,
-    },
-  },
-  {
-    name: "search_text",
-    description: "Search plain text files under a workspace path for a substring.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string" },
-        path: { type: "string", default: "." },
-        max_matches: { type: "integer", minimum: 1, maximum: 1000, default: 100 },
-        max_files: { type: "integer", minimum: 1, maximum: 100000, default: 10000 },
-      },
-      required: ["query"],
-      additionalProperties: true,
-    },
-  },
-  {
-    name: "git_status",
-    description: "Run git status --short for the repository containing a workspace path.",
-    inputSchema: {
-      type: "object",
-      properties: { path: { type: "string", default: "." } },
-      additionalProperties: true,
-    },
-  },
-  {
-    name: "git_diff",
-    description: "Run git diff for the local workspace and return bounded output.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string", default: "." },
-        max_bytes: { type: "integer", minimum: 1, maximum: 5242880, default: 1048576 },
-      },
-      additionalProperties: true,
-    },
-  },
-  {
-    name: "exec_command",
-    description: "Execute a shell command with cwd set to the daemon workspace. Enabled by default; environment is intentionally minimal unless the daemon is started with full env.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        command: { type: "string" },
-        timeout_seconds: { type: "integer", minimum: 1, maximum: 600, default: 120 },
-      },
-      required: ["command"],
-      additionalProperties: true,
-    },
-  },
-] as const;
+type ToolDefinition = Record<string, unknown> & { name: string; availability?: string };
+
+const allCatalogTools = toolCatalog as ToolDefinition[];
+const serverInfoTool = publicTool(allCatalogTools.find((tool) => tool.name === "server_info")!);
+const workspaceTools = allCatalogTools.filter((tool) => tool.name !== "server_info").map(publicTool);
 
 const MCP_INSTRUCTIONS = [
   "You are connected to a local workspace through machine-bridge-mcp.",
-  "The Worker is only a relay. File and command operations run on the user's local daemon.",
-  "Relative paths use the configured workspace as cwd; filesystem access is workspace-scoped unless the daemon was started with --unrestricted-paths.",
-  "Writes and shell execution are enabled by default; use --no-write and --no-exec for read-only sessions.",
-  "Prefer inspecting files before editing, make minimal changes, and report commands you ran.",
+  "The Cloudflare Worker authenticates and relays calls; file and command operations execute on the user's local runtime.",
+  "Relative paths use the configured workspace. Direct filesystem tools are workspace-scoped unless unrestricted paths are explicitly enabled.",
+  "run_process avoids shell parsing but is not an OS sandbox. exec_command is only exposed in shell mode and has the local user's authority.",
+  "Prefer read_file line ranges, edit_file, or apply_patch over whole-file replacement, and report commands that were run.",
 ].join("\n");
+
+function publicTool(tool: ToolDefinition): ToolDefinition {
+  const { availability: _availability, ...definition } = tool;
+  return structuredClone(definition) as ToolDefinition;
+}
 
 export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new Map<string, PendingCall>();
@@ -300,7 +202,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return json({ error: "not_found" }, 404);
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.code, message: error.message }, error.status);
-      console.error(JSON.stringify({ level: "error", message: "request_failed", path: url.pathname, error: errorMessage(error) }));
+      console.error(JSON.stringify({ level: "error", message: "request_failed", path: url.pathname, error_class: workerErrorClass(error) }));
       return json({ error: "internal_server_error" }, 500);
     }
   }
@@ -346,11 +248,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           return;
         }
       }
+      const daemonPolicy = sanitizeDaemonPolicy(body.policy);
       ws.serializeAttachment({
         role: "daemon",
         connectedAt: new Date().toISOString(),
-        policy: sanitizeDaemonPolicy(body.policy),
-        tools: sanitizeDaemonTools(body.tools),
+        policy: daemonPolicy,
+        tools: sanitizeDaemonTools(body.tools, daemonPolicy),
       } satisfies DaemonAttachment);
       await this.scheduleCandidateAlarm();
       try {
@@ -428,21 +331,37 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const body = await parseJsonRequest(request, this.bodyLimitBytes());
     if (isJsonRpcResponse(body)) return new Response(null, { status: 202 });
     if (!isJsonRpcRequest(body)) return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
-    const response = await this.dispatchJsonRpc(body, base);
+    const protocolError = validateProtocolVersionHeader(request, body);
+    if (protocolError) return json(protocolError, 400);
+    const response = await this.dispatchJsonRpc(body, base, authorized);
     if (response === null) return new Response(null, { status: 202 });
     return json(response);
   }
 
-  private async dispatchJsonRpc(request: JsonRpcRequest, base: string): Promise<Record<string, unknown> | null> {
+  private async dispatchJsonRpc(request: JsonRpcRequest, base: string, authorized: AuthorizedToken): Promise<Record<string, unknown> | null> {
     if (request.method === "initialize") {
+      const requested = asObject(request.params).protocolVersion;
+      const protocolVersion = typeof requested === "string" && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested as typeof MCP_SUPPORTED_PROTOCOL_VERSIONS[number])
+        ? requested
+        : MCP_PROTOCOL_VERSION;
       return rpcResult(request.id, {
-        protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+        protocolVersion,
+        capabilities: { tools: { listChanged: false }, logging: {} },
+        serverInfo: {
+          name: SERVER_NAME,
+          title: "Machine Bridge MCP",
+          version: SERVER_VERSION,
+          description: "Workspace-scoped local coding tools over authenticated remote relay.",
+        },
         instructions: MCP_INSTRUCTIONS,
       });
     }
     if (request.method === "notifications/initialized") return null;
+    if (request.method === "notifications/cancelled") {
+      this.cancelClientRequest(clientRequestKey(authorized, asObject(request.params).requestId));
+      return null;
+    }
+    if (request.method === "logging/setLevel") return rpcResult(request.id, {});
     if (request.method === "ping") return rpcResult(request.id, {});
     if (request.method === "tools/list") return rpcResult(request.id, { tools: this.allTools() });
     if (request.method === "tools/call") {
@@ -450,7 +369,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const name = requiredString(params, "name");
       const args = asObject(params.arguments);
       try {
-        const result = await this.callTool(name, args, base);
+        const result = await this.callTool(name, args, base, clientRequestKey(authorized, request.id));
         return rpcResult(request.id, textToolResult(result));
       } catch (error) {
         return rpcResult(request.id, textToolResult({ error: errorMessage(error) }, true));
@@ -459,7 +378,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return rpcError(request.id, -32601, `Method not found: ${request.method}`);
   }
 
-  private async callTool(name: string, args: Record<string, unknown>, base: string): Promise<unknown> {
+  private async callTool(name: string, args: Record<string, unknown>, base: string, requestKey?: string): Promise<unknown> {
     if (name === "server_info") {
       return {
         name: SERVER_NAME,
@@ -472,23 +391,27 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!this.daemonToolEnabled(name)) throw new Error(`tool disabled by local daemon policy: ${name}`);
-      return this.callDaemonTool(name, args);
+      return this.callDaemonTool(name, args, requestKey);
     }
     throw new Error(`unknown tool: ${name}`);
   }
 
-  private async callDaemonTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  private async callDaemonTool(name: string, args: Record<string, unknown>, requestKey?: string): Promise<unknown> {
     const socket = this.daemonSockets()[0];
     if (!socket) throw new Error("local daemon is not connected; keep the CLI start command running");
     if (this.pending.size >= MAX_PENDING_CALLS) throw new Error("too many concurrent daemon tool calls");
+    if (requestKey && [...this.pending.values()].some((pending) => pending.clientRequestKey === requestKey)) {
+      throw new Error("duplicate in-flight JSON-RPC request id for this access token");
+    }
     const id = randomToken("call");
     const timeoutMs = daemonToolTimeoutMs(name, args);
     return await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
+        try { socket.send(JSON.stringify({ type: "cancel_call", id })); } catch {}
         reject(new Error(`daemon tool timed out: ${name}`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timeout, socket });
+      this.pending.set(id, { resolve, reject, timeout, socket, clientRequestKey: requestKey });
       try {
         socket.send(JSON.stringify({ type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutMs }));
       } catch (error) {
@@ -497,6 +420,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         reject(new Error(`failed to send daemon tool call: ${errorMessage(error)}`));
       }
     });
+  }
+
+  private cancelClientRequest(requestKey?: string): void {
+    if (!requestKey) return;
+    for (const [id, pending] of this.pending) {
+      if (pending.clientRequestKey !== requestKey) continue;
+      clearTimeout(pending.timeout);
+      this.pending.delete(id);
+      try { pending.socket.send(JSON.stringify({ type: "cancel_call", id })); } catch {}
+      pending.reject(new Error("tool call cancelled by client"));
+    }
   }
 
   private async acceptDaemonWebSocket(request: Request): Promise<Response> {
@@ -523,20 +457,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private allTools(): Array<Record<string, unknown>> {
     const advertised = this.daemonAdvertisedTools();
-    const localTools = advertised
-      ? workspaceTools.filter((tool) => advertised.has(tool.name))
-      : workspaceTools;
-    return [serverInfoTool, ...localTools].map((tool) => ({ ...tool }));
+    const localTools = workspaceTools.filter((tool) => advertised.has(tool.name));
+    return [serverInfoTool, ...localTools].map((tool) => structuredClone(tool));
   }
 
   private daemonToolEnabled(name: string): boolean {
-    const advertised = this.daemonAdvertisedTools();
-    return !advertised || advertised.has(name);
+    return this.daemonAdvertisedTools().has(name);
   }
 
-  private daemonAdvertisedTools(): Set<string> | null {
+  private daemonAdvertisedTools(): Set<string> {
     const socket = this.daemonSockets()[0];
-    if (!socket) return null;
+    if (!socket) return new Set();
     const attachment = this.daemonAttachment(socket);
     if (!attachment?.tools) return new Set();
     return new Set(attachment.tools);
@@ -568,11 +499,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!raw || typeof raw !== "object") return undefined;
     const candidate = raw as Partial<DaemonAttachment>;
     if (candidate.role !== "candidate" && candidate.role !== "expired" && candidate.role !== "daemon") return undefined;
+    const policy = sanitizeDaemonPolicy(candidate.policy);
     return {
       role: candidate.role,
       connectedAt: sanitizeMetadataText(candidate.connectedAt, 64) ?? "",
-      policy: sanitizeDaemonPolicy(candidate.policy),
-      tools: sanitizeDaemonTools(candidate.tools),
+      policy,
+      tools: sanitizeDaemonTools(candidate.tools, policy),
     };
   }
 
@@ -641,10 +573,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       name: SERVER_NAME,
       version: SERVER_VERSION,
       protocolVersion: MCP_PROTOCOL_VERSION,
+      protocolVersions: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
       transport: { type: "streamable-http", url: `${base}/mcp` },
-      auth: { type: "oauth" },
-      tools: [serverInfoTool, ...workspaceTools].map((tool) => tool.name),
-      instructions: MCP_INSTRUCTIONS,
+      auth: { type: "oauth", authorization_servers: [base] },
     };
   }
 
@@ -910,22 +841,22 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     });
   }
 
-  private async verifyAccessToken(token: string, base: string): Promise<boolean> {
+  private async verifyAccessToken(token: string, base: string): Promise<AuthorizedToken | null> {
     return this.withOAuthLock(async () => {
-      if (!token) return false;
+      if (!token) return null;
       const store = await this.oauthStore();
       const key = `sha256:${await sha256Hex(token)}`;
       const record = store.tokens[key];
-      if (!record) return false;
+      if (!record) return null;
       if (record.expires_at <= Math.floor(Date.now() / 1000)) {
         delete store.tokens[key];
         await this.ctx.storage.put("oauth", store);
-        return false;
+        return null;
       }
       const currentVersion = this.env.OAUTH_TOKEN_VERSION ?? "";
-      if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return false;
-      if (record.resource !== `${base}/mcp`) return false;
-      return true;
+      if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
+      if (record.resource !== `${base}/mcp`) return null;
+      return { tokenKey: key, clientId: record.client_id };
     });
   }
 
@@ -985,12 +916,30 @@ function rpcResult(id: JsonRpcId | undefined, result: unknown): Record<string, u
   return { jsonrpc: JSONRPC_VERSION, id, result };
 }
 
-function rpcError(id: JsonRpcId | undefined, code: number, message: string): Record<string, unknown> {
-  return { jsonrpc: JSONRPC_VERSION, id: id ?? null, error: { code, message } };
+function rpcError(id: JsonRpcId | undefined, code: number, message: string, data?: unknown): Record<string, unknown> {
+  const error: Record<string, unknown> = { code, message };
+  if (data !== undefined) error.data = data;
+  return { jsonrpc: JSONRPC_VERSION, id: id ?? null, error };
 }
 
 function textToolResult(value: unknown, isError = false): Record<string, unknown> {
-  return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }], isError };
+  const special = asObject(value).$mcp;
+  if (special && typeof special === "object" && !Array.isArray(special)) {
+    const specialObject = special as Record<string, unknown>;
+    if (Array.isArray(specialObject.content)) {
+      const result: Record<string, unknown> = { content: specialObject.content, isError };
+      if (specialObject.structuredContent && typeof specialObject.structuredContent === "object" && !Array.isArray(specialObject.structuredContent)) {
+        result.structuredContent = specialObject.structuredContent;
+      }
+      return result;
+    }
+  }
+  const result: Record<string, unknown> = {
+    content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
+    isError,
+  };
+  if (value && typeof value === "object" && !Array.isArray(value)) result.structuredContent = value;
+  return result;
 }
 
 function methodNotAllowed(allow: string): Response {
@@ -1031,19 +980,35 @@ function sanitizeMetadataText(value: unknown, maxLength: number): string | undef
 }
 
 
-function sanitizeDaemonTools(value: unknown): string[] {
+function sanitizeDaemonTools(value: unknown, policy: Record<string, unknown>): string[] {
   if (!Array.isArray(value)) return [];
-  const known = new Set<string>(workspaceTools.map((tool) => tool.name));
-  return [...new Set(value.filter((item): item is string => typeof item === "string" && known.has(item)))];
+  const definitions = new Map(allCatalogTools.map((tool) => [tool.name, tool]));
+  return [...new Set(value.filter((item): item is string => {
+    if (typeof item !== "string" || item === "server_info") return false;
+    const definition = definitions.get(item);
+    return Boolean(definition && daemonPolicyAllows(definition.availability, policy));
+  }))];
+}
+
+function daemonPolicyAllows(availability: unknown, policy: Record<string, unknown>): boolean {
+  if (availability === "always") return true;
+  if (availability === "write") return policy.allowWrite === true;
+  if (availability === "direct-exec") return policy.execMode === "direct" || policy.execMode === "shell";
+  if (availability === "shell-exec") return policy.execMode === "shell";
+  return false;
 }
 
 function sanitizeDaemonPolicy(value: unknown): Record<string, unknown> {
   const policy = asObject(value);
+  const execMode = policy.execMode === "shell" || policy.execMode === "direct" ? policy.execMode : "off";
   return {
+    profile: sanitizeMetadataText(policy.profile, 32) ?? "custom",
     allowWrite: policy.allowWrite === true,
-    allowExec: policy.allowExec === true,
+    allowExec: execMode !== "off",
+    execMode,
     unrestrictedPaths: policy.unrestrictedPaths === true,
     minimalEnv: policy.minimalEnv !== false,
+    exposeAbsolutePaths: policy.exposeAbsolutePaths === true,
   };
 }
 
@@ -1164,9 +1129,25 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
 }
 
 function daemonToolTimeoutMs(name: string, args: Record<string, unknown>): number {
-  if (name !== "exec_command") return 60_000;
+  if (name !== "exec_command" && name !== "run_process") return 60_000;
   const seconds = clampNumber(args.timeout_seconds, 120, 1, 600);
   return Math.min((seconds + 5) * 1000, 610_000);
+}
+
+function validateProtocolVersionHeader(request: Request, body: JsonRpcRequest): Record<string, unknown> | null {
+  if (body.method === "initialize") return null;
+  const version = request.headers.get("MCP-Protocol-Version");
+  if (!version) return null;
+  if (MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(version as typeof MCP_SUPPORTED_PROTOCOL_VERSIONS[number])) return null;
+  return rpcError(body.id, -32602, "Unsupported MCP protocol version", {
+    requested: version,
+    supported: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
+  });
+}
+
+function clientRequestKey(authorized: AuthorizedToken, requestId: unknown): string | undefined {
+  if (requestId === null || (typeof requestId !== "string" && typeof requestId !== "number")) return undefined;
+  return `${authorized.tokenKey}:${typeof requestId}:${String(requestId)}`;
 }
 
 function validateAuthorizationRequest(
@@ -1377,6 +1358,14 @@ function normalizeDisplayText(value: string, maxLength: number): string {
 
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+}
+
+function workerErrorClass(error: unknown): string {
+  if (error instanceof HttpError) return error.code;
+  if (error instanceof TypeError) return "type_error";
+  if (error instanceof RangeError) return "range_error";
+  if (error instanceof Error) return error.name.replace(/[^A-Za-z0-9_-]/g, "_").toLowerCase().slice(0, 64) || "error";
+  return "unknown_error";
 }
 
 function errorMessage(error: unknown): string {

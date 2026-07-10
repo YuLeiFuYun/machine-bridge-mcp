@@ -1,7 +1,7 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.3.3",
-  "description": "One-command hosted Remote MCP bridge to a local machine daemon.",
+  "version": "0.4.0",
+  "description": "Cross-client MCP bridge for policy-controlled local files, Git, images, patches, and processes over stdio or OAuth-protected remote relay.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -17,6 +17,7 @@
     "mbm.cmd",
     "bin",
     "src/local",
+    "src/shared",
     "src/worker/index.ts",
     "scripts/sync-worker-version.mjs",
     "wrangler.jsonc",
@@ -30,7 +31,7 @@
   "scripts": {
     "start": "node bin/machine-mcp.mjs start",
     "doctor": "node bin/machine-mcp.mjs doctor",
-    "self-test": "node src/local/self-test.mjs",
+    "self-test": "node tests/local-self-test.mjs",
     "version:sync": "node scripts/sync-worker-version.mjs",
     "version:check": "node scripts/sync-worker-version.mjs --check",
     "version": "node scripts/sync-worker-version.mjs && git add package.json package-lock.json src/worker/index.ts",
@@ -38,13 +39,15 @@
     "prepublishOnly": "npm run check && npm run version:check && npm run release:check",
     "worker:types": "wrangler types src/worker/worker-configuration.d.ts",
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit",
-    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/self-test.mjs && node --check src/local/log.mjs && node --check scripts/sync-worker-version.mjs && node --check scripts/github-release.mjs && node --check scripts/worker-integration-test.mjs",
-    "check": "npm run typecheck && npm run syntax && npm run self-test && npm run worker:integration-test",
+    "syntax": "sh -n mbm && node --check bin/machine-mcp.mjs && node --check src/local/cli.mjs && node --check src/local/daemon.mjs && node --check src/local/patch.mjs && node --check src/local/process-sessions.mjs && node --check src/local/tools.mjs && node --check src/local/stdio.mjs && node --check src/local/state.mjs && node --check src/local/shell.mjs && node --check src/local/service.mjs && node --check src/local/log.mjs && node --check scripts/sync-worker-version.mjs && node --check scripts/github-release.mjs && node --check tests/worker-integration-test.mjs && node --check tests/stdio-integration-test.mjs && node --check tests/catalog-test.mjs && node --check tests/local-self-test.mjs && node --check tests/daemon-self-test.mjs",
+    "check": "npm run typecheck && npm run syntax && npm run catalog:test && npm run self-test && npm run stdio:integration-test && npm run worker:integration-test",
     "worker:dry-run": "wrangler deploy --dry-run",
-    "worker:integration-test": "node scripts/worker-integration-test.mjs",
+    "worker:integration-test": "node tests/worker-integration-test.mjs",
     "release:check": "node scripts/github-release.mjs --check",
     "release:publish": "node scripts/github-release.mjs --publish",
-    "release:backfill": "node scripts/github-release.mjs --backfill"
+    "release:backfill": "node scripts/github-release.mjs --backfill",
+    "stdio:integration-test": "node tests/stdio-integration-test.mjs",
+    "catalog:test": "node tests/catalog-test.mjs"
   },
   "dependencies": {
     "wrangler": "^4.110.0",
@@ -60,7 +63,11 @@
     "cloudflare-workers",
     "durable-objects",
     "wrangler",
-    "local-machine"
+    "local-machine",
+    "stdio",
+    "coding-agent",
+    "oauth",
+    "cross-platform"
   ],
   "repository": {
     "type": "git",

@@ -1,102 +1,169 @@
 # Architecture
 
+## Design goal
+
+The system separates three questions that are often conflated:
+
+1. **Who may request a tool?** Remote OAuth or local process ownership.
+2. **Which tools exist?** The selected local policy profile.
+3. **What authority does a tool have?** Canonical workspace boundaries for direct filesystem tools and local-user authority for processes.
+
+No transport is treated as a sandbox. Both transports invoke the same local runtime.
+
 ## Components
 
-### CLI
+### Shared tool catalog
 
-The CLI selects a canonical workspace, manages per-workspace state and secrets, serializes startup/deploy/rotation work with a startup lock, deploys the Worker, installs an optional login service, acquires the daemon lock, and starts the daemon. Worker deployment is content-hashed; a hash is persisted only after the expected Worker version passes health checks.
+`src/shared/tool-catalog.json` is the single source of truth for tool names, descriptions, input schemas, annotations, and policy availability. The Worker and stdio runtime import it directly. A catalog test rejects duplicate names, unknown availability classes, open schemas, missing annotations, profile drift, and a second hand-maintained Worker catalog.
+
+### CLI and state layer
+
+The CLI canonicalizes workspaces, resolves policy profiles, maintains per-workspace state and credentials, serializes startup/deploy/rotation with locks, deploys the Worker, installs optional platform-native autostart, and starts either remote daemon or stdio mode.
+
+A canonical workspace receives an independent profile, Worker name, secret set, daemon/startup locks, and state file. State schema version 3 removes obsolete local API state and records the expanded policy model.
+
+### Local runtime
+
+`LocalDaemon` is transport-independent despite its historical name. It owns:
+
+- canonical path resolution and display-path privacy;
+- file, text search, image, patch, and Git operations;
+- direct and shell process execution;
+- process-session buffers and stdin lifecycle;
+- mutation serialization;
+- child-process tracking and cancellation;
+- output, traversal, concurrency, and time limits.
+
+Remote mode attaches WebSocket connection/reconnect behavior. Stdio mode invokes the same runtime directly.
+
+### Stdio MCP server
+
+The stdio server implements newline-delimited JSON-RPC over stdin/stdout. It negotiates supported MCP versions, advertises policy-filtered tools, returns text plus structured content, supports native image content, maps cancellation notifications to runtime call IDs, and sends logs only to stderr.
 
 ### Cloudflare Worker and Durable Object
 
-All requests for one deployed Worker route to a named Durable Object. OAuth metadata mutations are serialized through an explicit in-object critical section so concurrent registration, authorization, token exchange, and token verification cannot overwrite one another. The object owns:
+All requests for a deployed Worker route to one named Durable Object. It owns:
 
-- OAuth client, authorization-code, access-token, and throttling metadata;
-- the active daemon WebSocket and a minimal attachment containing connection time, enabled tools, and policy booleans;
-- the bounded in-memory map of pending daemon calls.
+- OAuth clients, authorization codes, hashed access-token records, and throttling metadata;
+- one active authenticated daemon WebSocket plus bounded candidate sockets;
+- policy/tool metadata attached to the active socket;
+- a bounded in-memory map of pending daemon calls.
 
-The daemon attachment deliberately omits the local workspace name, path hash, and process ID.
+The Worker verifies OAuth, validates MCP envelopes and optional protocol headers, converts `tools/call` into WebSocket messages, correlates cancellation by access-token hash and JSON-RPC ID, and formats text/structured/image results. It has no local filesystem or process API.
 
-The Worker authenticates MCP HTTP requests and converts `tools/call` requests into daemon WebSocket messages. It does not have local filesystem or process access.
+The daemon attachment deliberately omits workspace path/name/hash and process ID. Explicit authenticated tools may return workspace metadata according to local path-display policy.
 
-### Local daemon
+### Autostart layer
 
-The daemon validates that the Worker endpoint is a credential-free HTTPS origin, then creates an outbound authenticated WebSocket. It advertises only tools enabled by policy, validates every incoming call envelope, resolves filesystem paths, executes local operations, and returns bounded results.
-
-### Autostart provider
-
-The service layer emits platform-native definitions for launchd, systemd user services, or Windows Scheduled Tasks. It stores no credential in the service definition; the daemon loads credentials from owner-only local state.
+The service layer emits launchd, systemd-user, or Windows Scheduled Task definitions. Credentials are not embedded in service definitions; the daemon loads owner-only state. The exact policy is stored in owner-only state; platform service definitions contain only the workspace and state-root selectors.
 
 ## Trust boundaries
 
 ```mermaid
 flowchart LR
-  C[Remote MCP client] -->|HTTPS + OAuth bearer token| W[Worker]
-  W -->|Durable Object storage| O[OAuth metadata]
-  W -->|authenticated WebSocket tool call| D[Local daemon]
-  D -->|workspace-scoped file operations| F[Selected workspace]
-  D -->|optional shell execution| P[User processes / OS]
-  L[CLI] --> W
-  L --> D
-  L --> S[Autostart provider]
+  C[Remote MCP client] -->|HTTPS + OAuth bearer token| W[Worker / Durable Object]
+  W -->|authenticated bounded WebSocket calls| R[Local runtime]
+  L[Local MCP client] -->|stdio JSON-RPC| R
+  R -->|canonical workspace tools| F[Selected workspace]
+  R -->|optional direct/shell processes| P[Local user / OS / network]
+  CLI[CLI + state] --> W
+  CLI --> R
+  CLI --> S[Autostart provider]
 ```
 
-The OAuth boundary determines which remote client may call tools. The daemon policy determines which tools exist. The workspace path resolver determines the default filesystem boundary. Shell execution is intentionally outside the filesystem-tool sandbox and inherits the local user's authority.
+Remote OAuth determines which client may call tools. Local stdio access relies on the local process and configuration boundary. Policy determines which tools are advertised. Canonical resolution limits direct filesystem tools. Processes retain local-user authority and can escape workspace constraints through their own code or system calls.
 
-## Request lifecycle
+## Remote request lifecycle
 
-1. The MCP client discovers OAuth and protected-resource metadata.
+1. The MCP client discovers protected-resource and authorization-server metadata.
 2. It dynamically registers bounded redirect metadata.
-3. The authorization request is validated before a password form is shown.
-4. The user verifies the client and redirect URI and supplies the connection password.
-5. A five-minute authorization code bound to client, redirect, resource, scope, and PKCE challenge is created.
-6. A valid verifier exchanges the code for a hashed, expiring access-token record.
-7. An authenticated `tools/call` is assigned a random call ID and bound to the current daemon socket.
-8. The daemon validates the envelope, executes the enabled tool, and returns a bounded result.
-9. The Durable Object accepts the result only from the same socket that received the call.
+3. The Worker validates authorization parameters before displaying a password form.
+4. The user verifies client name and redirect URI and enters the connection password.
+5. The Worker creates a five-minute code bound to client, redirect, resource, scope, and PKCE challenge.
+6. A valid verifier exchanges the one-time code for an expiring bearer token; only its hash is stored.
+7. The MCP client initializes and negotiates a supported protocol version.
+8. `tools/list` is derived from the active daemon handshake; without a daemon, only `server_info` is advertised.
+9. `tools/call` receives a random relay call ID and is bound to the current socket and authenticated client request key.
+10. The runtime validates policy and arguments, executes the tool, and returns a bounded result.
+11. The Durable Object accepts a result only from the socket that received that call.
+12. A matching cancellation notification removes the pending call, tells the daemon to cancel, and terminates any child processes bound to it.
 
-Browser requests are same-origin unless an exact origin is configured. Configured origins receive bounded CORS preflight and response headers; loopback OAuth callback permission is evaluated separately and never acts as a browser-origin wildcard.
+Duplicate in-flight JSON-RPC IDs for the same access token are rejected so cancellation cannot ambiguously target multiple calls.
 
-## Filesystem resolution
+## Stdio request lifecycle
 
-The workspace is canonicalized at daemon construction. Existing read/list/search/Git targets are canonicalized with `realpath`; the canonical result must remain inside the workspace unless unrestricted mode is explicit. New write targets walk to the nearest existing ancestor and validate that ancestor, preventing a missing-path write through an escaping symbolic-link directory.
+1. The local client launches `machine-mcp stdio` with a workspace and profile.
+2. The server negotiates one of the supported MCP versions.
+3. Tool discovery is generated from the same catalog and policy used by remote mode.
+4. Each call receives an internal random call ID used only for cancellation and process tracking.
+5. Results are emitted as JSON-RPC on stdout; logs remain on stderr.
+6. Duplicate in-flight request IDs are rejected.
+7. Closing stdin cancels pending calls, terminates active processes, and removes the isolated runtime directory.
 
-Writes use a same-directory temporary file and rename, preserving the existing mode when replacing a regular file. Bridge Git commands disable repository-configured external diff, text conversion, and filesystem-monitor hooks to avoid executing repository-local helpers during status/diff inspection. Symbolic-link destinations and non-regular targets are rejected.
+## Filesystem resolution and privacy
 
-## Reconnect and replacement
+The workspace is canonicalized once. Existing targets use `realpath`; the result must remain inside the workspace unless unrestricted mode is explicit. New targets walk to the nearest existing ancestor and validate its canonical path.
 
-The daemon sends heartbeats and reconnects after a close using bounded exponential backoff with jitter. The handshake advertises only enabled tools and policy; it does not transmit a workspace path/name/hash or stable daemon identifier. Closing the current relay socket terminates active child processes so disconnected callers cannot leave long-running commands behind. The Worker permits one active daemon. A replacement remains a bounded candidate until it completes the authenticated `hello` handshake; its deadline is enforced by a Durable Object alarm that survives WebSocket hibernation; only then is the older active socket closed. Pending calls retain their originating socket reference. Closing an old socket rejects only calls assigned to that socket and cannot affect calls sent to the replacement. Active child processes associated with a lost/replaced connection receive termination with forced escalation when needed.
+Results use workspace-relative paths by default. Error strings redact canonical and common platform-alias forms of workspace, runtime, and home paths. Absolute paths are available only through an explicit display policy or unrestricted mode.
 
-## Limits
+Symbolic-link destinations and non-regular write targets are rejected. Recursive walkers do not follow symbolic-link directories.
 
-Limits are defense-in-depth and are intentionally below platform maxima:
+## Mutation model
 
-- Worker MCP body: configurable, default 8 MiB, hard cap 16 MiB.
-- OAuth body: 64 KiB.
-- Local WebSocket message: 8 MiB.
-- `write_file` content: 5 MiB.
-- `exec_command` command text: 64 KiB.
-- Direct directory results: 10,000 entries and 4 MiB of path metadata.
-- Recursive walks: 200,000 visited entries; path-list results are capped at 4 MiB.
-- Captured process output: 512 KiB per stream by default.
-- Local simultaneous tool calls: 16.
-- Worker pending daemon calls: 32.
-- Command timeout: 1-600 seconds.
-- Dynamic clients, redirect URIs, codes, tokens, failed login identities, and per-client records: bounded constants in Worker source.
+All bridge mutations are serialized in one runtime queue.
+
+### Whole-file write
+
+A same-directory temporary file is created with restrictive permissions. Existing mode is preserved when replacing a regular file. Expected hashes are rechecked immediately before commit. Create-only uses a hard-link commit that fails atomically if the destination appeared concurrently.
+
+### Exact edit
+
+The current UTF-8 content is hashed. The old fragment must exist and, unless `replace_all` is set, occur exactly once. The resulting file is bounded and committed only if the original hash is unchanged.
+
+### Patch transaction
+
+The patch parser accepts a strict Begin/End envelope with add, update, move, and delete operations. It rejects malformed hunks, absent or ambiguous context, duplicate textual paths, and different paths that resolve to the same filesystem location.
+
+Before commit, all sources and targets are resolved and validated, updated content is computed, and temporary files are staged. Source hashes and destination absence are rechecked. Existing sources are renamed to backups, staged files are committed, and any failure rolls back committed operations in reverse order. Backups are deleted only after full success.
+
+This is a process-level transaction, not a filesystem-wide atomic transaction across multiple directories. Sudden power loss can still interrupt a multi-file commit; retained backup/temp naming makes recovery identifiable.
+
+## Process model
+
+`run_process` and process sessions use argv arrays and do not invoke a shell. `exec_command` invokes the platform shell and is available only in `shell` mode. Both inherit local-user OS authority.
+
+Minimal environment mode creates private runtime HOME, temporary, and cache directories and passes only a small set of path/locale/platform variables. It reduces accidental credential inheritance but cannot prevent explicit access to known filesystem paths, credential stores, network services, or other user resources.
+
+One-shot calls have bounded output and timeouts. Process sessions retain bounded byte buffers with monotonic offsets, accept bounded stdin, support short output/exit waits, and are capped per runtime. Valid UTF-8 is returned as text; byte slices that are not valid UTF-8 also include lossless base64 data. Session IDs are random. Sessions are memory-only and are killed on runtime stop, remote disconnect, or daemon replacement.
+
+Child processes run in a separate process group where supported. Timeout, cancellation, disconnect, and replacement send termination to the process tree, with forced escalation for timeout/disconnect paths.
+
+## Daemon reconnect and replacement
+
+The daemon sends heartbeats and reconnects with bounded exponential backoff and jitter. Only one socket is active. A new connection is a bounded candidate until it authenticates and completes `hello`; a Durable Object alarm enforces the deadline across hibernation. Only a completed candidate replaces the old socket.
+
+Pending calls retain their originating socket reference. A stale socket cannot complete or cancel replacement-socket calls. Closing a socket rejects only calls assigned to it.
 
 ## Persistence
 
-The local state schema is versioned. A custom state root is adopted only when empty or when it contains a recognizable legacy layout; legacy text markers are migrated, and removal validates the marker, contents, canonical path, active locks, and workspace/source-tree exclusions. JSON state and global config are written to owner-only temporary files, flushed, and atomically renamed. A malformed state file is renamed to a bounded corrupt backup before a clean state object is reconstructed. State roots carry an owner-only marker; uninstall validates the target and refuses dangerous or unrecognized recursive deletion.
+Local state and global config are owner-only, versioned, and written through temporary files, flushes, and atomic rename. Malformed state becomes a bounded `.corrupt-*` backup. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
 
-OAuth metadata is pruned on access. Expired codes and tokens, old throttling records, and inactive clients without active credentials are removed. Registration and password-throttling identities use a deployment-keyed HMAC of the Cloudflare source address rather than storing an address or reversible unsalted hash.
+Removal validates the state marker, canonical target, known contents, active locks, filesystem root/home/current/package/workspace/source exclusions, and Worker deletion outcome before recursive deletion.
 
-Cross-origin browser access is denied unless the exact origin is configured; allowed origins receive bounded preflight and response headers. Same-origin requests remain allowed.
+OAuth metadata is pruned on access. Expired codes/tokens, old throttling records, and inactive clients without active credentials are removed. Source identities are deployment-keyed HMAC values, not stored source addresses or reversible unsalted hashes.
 
-## Observability and privacy
+## Observability
 
-Public health output contains only server identity and version. Worker observability uses a 10% head-sampling rate. Live daemon details are available through the authenticated `server_info` tool. Local structured logging redacts sensitive key names and known credential formats, bounds nested values, handles cycles, and escapes control characters. Doctor output does not echo Wrangler account identity when authentication succeeds.
+Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status. Local operational logs record tool identity, shortened random call ID, duration, outcome, and coarse error class, but not arguments or outputs. Worker unexpected-error logs contain endpoint and error class, not raw exception text.
 
-Service logs are owner-only where supported and are tail-trimmed before daemon startup. Cloudflare observability sampling defaults to 10% rather than retaining every invocation. This is size control, not an audit log. The project deliberately does not log file contents, command strings, OAuth passwords, access tokens, or daemon secrets as structured operational events.
+Cloudflare sampling is size control rather than an audit log. The project intentionally does not claim complete forensic logging.
 
-## Removed local API
+## Explicit non-goals
 
-The experimental local OpenAI-compatible `/v1` API and MCP sampling proxy were removed. They introduced a second local request surface and depended on client-side sampling behavior that was not a reliable backend contract. The supported interface is the authenticated Remote MCP endpoint.
+- operating-system sandboxing of arbitrary executables;
+- preventing an authorized client from requesting data available to enabled tools;
+- automatically deciding which workspace files are sensitive;
+- surviving daemon restart with process sessions;
+- PTY/terminal emulation;
+- model-level prompt-injection prevention;
+- multi-user tenancy in one Worker deployment.

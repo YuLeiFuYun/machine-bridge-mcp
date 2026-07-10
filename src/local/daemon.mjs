@@ -1,46 +1,34 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, opendir, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmod, link, lstat, mkdir, opendir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import path, { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import path, { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import WebSocket from "ws";
+import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
+import { MAX_COMMAND_BYTES, ProcessSessionManager, terminateProcessTree, validateArgv } from "./process-sessions.mjs";
+export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
+import { MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, toolNamesForPolicy } from "./tools.mjs";
 
-const MAX_WRITE_BYTES = 5 * 1024 * 1024;
+export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_CONCURRENT_TOOL_CALLS = 16;
-const MAX_COMMAND_BYTES = 64 * 1024;
 const MAX_DIRECTORY_ENTRIES = 10_000;
 const MAX_PATH_RESULT_BYTES = 4 * 1024 * 1024;
 const MAX_WALK_ENTRIES = 200_000;
-
-const ALL_TOOL_NAMES = [
-  "project_overview",
-  "list_roots",
-  "list_dir",
-  "list_files",
-  "read_file",
-  "write_file",
-  "search_text",
-  "git_status",
-  "git_diff",
-  "exec_command",
-];
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 export class LocalDaemon {
-  constructor({ workerUrl, secret, workspace, policy, logger = console }) {
-    this.workerUrl = normalizeWorkerUrl(workerUrl);
-    if (typeof secret !== "string" || secret.length < 16) throw new Error("daemon secret is missing or too short");
-    this.secret = secret;
-    this.workspace = realpathSync(resolve(workspace || process.cwd()));
-    this.policy = {
-      allowWrite: policy?.allowWrite !== false,
-      allowExec: policy?.allowExec !== false,
-      unrestrictedPaths: policy?.unrestrictedPaths === true,
-      minimalEnv: policy?.minimalEnv !== false,
-    };
+  constructor({ workerUrl = "", secret = "", workspace, policy, logger = console, onSuperseded = null }) {
+    this.workerUrl = workerUrl ? normalizeWorkerUrl(workerUrl) : "";
+    if (this.workerUrl && (typeof secret !== "string" || secret.length < 16)) throw new Error("daemon secret is missing or too short");
+    this.secret = secret || "";
+    this.workspaceInput = resolve(workspace || process.cwd());
+    this.workspace = realpathSync(this.workspaceInput);
+    this.policy = normalizePolicy(policy);
     this.logger = logger;
+    this.onSuperseded = typeof onSuperseded === "function" ? onSuperseded : null;
     this.closed = false;
     this.ws = null;
     this.heartbeat = null;
@@ -50,18 +38,50 @@ export class LocalDaemon {
     this.connectedOnceReject = null;
     this.activeToolCalls = 0;
     this.activeProcesses = new Set();
+    this.callProcesses = new Map();
+    this.cancelledCalls = new Set();
     this.reconnectAttempt = 0;
-  }
-
-  tools() {
-    return ALL_TOOL_NAMES.filter(name => {
-      if (name === "write_file") return this.policy.allowWrite;
-      if (name === "exec_command") return this.policy.allowExec;
-      return true;
+    this.mutationQueue = Promise.resolve();
+    this.runtimeDir = createRuntimeDir();
+    this.processSessionManager = new ProcessSessionManager({
+      workspace: this.workspace,
+      policy: this.policy,
+      runtimeDir: this.runtimeDir,
+      activeProcesses: this.activeProcesses,
+      callProcesses: this.callProcesses,
+      resolveCwd: async (input) => {
+        const cwd = await this.resolveExistingPath(input);
+        if (!(await stat(cwd)).isDirectory()) throw new Error("cwd is not a directory");
+        return cwd;
+      },
+      displayPath: (value) => this.displayPath(value),
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
   }
 
+  tools() {
+    return toolNamesForPolicy(this.policy).filter((name) => name !== "server_info");
+  }
+
+  runtimeInfo() {
+    return {
+      name: "machine-bridge-mcp",
+      protocol_version: MCP_PROTOCOL_VERSION,
+      supported_protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
+      workspace: this.displayPath(this.workspace),
+      workspace_name: basename(this.workspace),
+      policy: this.policy,
+      tools: ["server_info", ...this.tools()],
+      runtime: {
+        environment: this.policy.minimalEnv ? "isolated-minimal" : "full-parent",
+        runtime_dir: this.policy.exposeAbsolutePaths ? this.runtimeDir : "<private-runtime-dir>",
+        process_sessions: this.processSessionManager.status(),
+      },
+    };
+  }
+
   start() {
+    if (!this.workerUrl || !this.secret) throw new Error("remote daemon start requires a Worker URL and daemon secret");
     this.closed = false;
     this.connectedOnce = new Promise((resolvePromise, rejectPromise) => {
       this.connectedOnceResolve = resolvePromise;
@@ -80,18 +100,16 @@ export class LocalDaemon {
     this.ws?.close();
     this.ws = null;
     this.terminateActiveProcesses("SIGKILL");
+    this.processSessionManager.clear();
     this.reconnectAttempt = 0;
+    rmSync(this.runtimeDir, { recursive: true, force: true });
   }
 
   connect() {
     if (this.closed) return;
     const wsUrl = `${this.workerUrl.replace(/^http/i, "ws")}/daemon/ws`;
-    this.logger.info?.(`connecting daemon websocket: ${wsUrl}`);
-    const socket = new WebSocket(wsUrl, {
-      headers: {
-        "X-Bridge-Token": this.secret,
-      },
-    });
+    this.logger.info?.("connecting daemon websocket", { endpoint: redactUrl(wsUrl) });
+    const socket = new WebSocket(wsUrl, { headers: { "X-Bridge-Token": this.secret } });
     this.ws = socket;
 
     socket.on("open", () => {
@@ -101,11 +119,7 @@ export class LocalDaemon {
       }
       this.reconnectAttempt = 0;
       this.logger.info?.("daemon websocket connected");
-      this.send({
-        type: "hello",
-        tools: this.tools(),
-        policy: this.policy,
-      });
+      this.send({ type: "hello", tools: this.tools(), policy: this.policy, protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS });
       if (this.connectedOnceResolve) {
         this.connectedOnceResolve(true);
         this.connectedOnceResolve = null;
@@ -123,7 +137,7 @@ export class LocalDaemon {
         return;
       }
       void this.handleMessage(raw).catch(error => {
-        this.logger.error?.(`daemon message handler failed: ${error.message}`);
+        this.logger.error?.("daemon message handler failed", { error: this.safeErrorMessage(error) });
       });
     });
 
@@ -133,9 +147,22 @@ export class LocalDaemon {
       this.terminateActiveProcesses("SIGTERM", true);
       if (this.heartbeat) clearInterval(this.heartbeat);
       this.heartbeat = null;
-      const text = `daemon websocket closed: ${code} ${String(reason || "")}`;
-      if (this.closed) this.logger.info?.(text);
-      else this.logger.warn?.(text);
+      const reasonText = String(reason || "").slice(0, 128);
+      const fields = { code, reason: reasonText };
+      if (isSupersededClose(code, reasonText)) {
+        this.closed = true;
+        this.terminateActiveProcesses("SIGKILL");
+        this.processSessionManager.clear();
+        this.logger.warn?.("daemon connection permanently superseded", fields);
+        queueMicrotask(() => {
+          try { this.onSuperseded?.(); } catch (error) {
+            this.logger.error?.("daemon superseded callback failed", { error_class: classifyError(error) });
+          }
+        });
+        return;
+      }
+      if (this.closed) this.logger.info?.("daemon websocket closed", fields);
+      else this.logger.warn?.("daemon websocket disconnected", fields);
       if (!this.closed) {
         const delay = reconnectDelay(this.reconnectAttempt++);
         this.logger.debug?.("scheduling daemon reconnect", { delay_ms: delay });
@@ -146,10 +173,8 @@ export class LocalDaemon {
 
     socket.on("error", error => {
       if (this.ws !== socket) return;
-      // Do not reject the first-connection promise: the close handler schedules
-      // reconnects, and first deploy propagation can briefly race WebSocket setup.
-      if (this.closed) this.logger.info?.(`daemon websocket closed during shutdown: ${error.message}`);
-      else this.logger.error?.(`daemon websocket error: ${error.message}`);
+      if (this.closed) this.logger.info?.("daemon websocket closed during shutdown", { error: boundedErrorMessage(error) });
+      else this.logger.error?.("daemon websocket error", { error: boundedErrorMessage(error) });
     });
   }
 
@@ -159,95 +184,146 @@ export class LocalDaemon {
       this.ws.send(JSON.stringify(value));
       return true;
     } catch (error) {
-      this.logger.warn?.(`daemon websocket send failed: ${boundedErrorMessage(error)}`);
+      this.logger.warn?.("daemon websocket send failed", { error: boundedErrorMessage(error) });
       return false;
     }
   }
 
   async handleMessage(raw) {
     let message;
-    try {
-      message = JSON.parse(raw);
-    } catch {
+    try { message = JSON.parse(raw); } catch {
       this.logger.warn?.("invalid websocket JSON");
       return;
     }
     if (message.type === "welcome" || message.type === "hello_ack" || message.type === "pong") return;
+    if (message.type === "cancel_call") {
+      if (typeof message.id === "string") this.cancelCall(message.id, "remote cancellation");
+      return;
+    }
     if (message.type !== "tool_call") {
-      this.logger.warn?.(`unknown websocket message: ${message.type}`);
+      this.logger.warn?.("unknown websocket message", { type: String(message.type || "") });
       return;
     }
 
     const id = typeof message.id === "string" ? message.id : "";
-    if (!id || typeof message.tool !== "string") {
+    const tool = typeof message.tool === "string" ? message.tool : "";
+    const argumentsValue = message.arguments === undefined ? {} : message.arguments;
+    if (!id || id.length > 256 || !tool || tool.length > 128 || !isPlainRecord(argumentsValue)) {
       this.logger.warn?.("invalid tool_call envelope");
+      if (id && id.length <= 256) this.send({ type: "tool_result", id, ok: false, error: { message: "invalid tool_call envelope" } });
       return;
     }
     if (this.activeToolCalls >= MAX_CONCURRENT_TOOL_CALLS) {
       this.send({ type: "tool_result", id, ok: false, error: { message: "too many concurrent tool calls" } });
       return;
     }
+
+    const relayTimeoutMs = clampInt(message.timeout_ms, 60_000, 1000, 610_000);
+    const deadline = setTimeout(() => this.cancelCall(id, "relay deadline exceeded"), relayTimeoutMs);
+    deadline.unref?.();
     this.activeToolCalls += 1;
+    const started = Date.now();
+    this.logger.debug?.("tool call started", { call_id: shortCallId(id), tool });
     try {
-      const result = await this.executeTool(message.tool, message.arguments || {});
+      const result = await this.executeTool(tool, argumentsValue, { callId: id });
+      if (this.cancelledCalls.has(id)) throw new Error("tool call cancelled");
       this.send({ type: "tool_result", id, ok: true, result });
+      this.logger.info?.("tool call completed", { call_id: shortCallId(id), tool, duration_ms: Date.now() - started, ok: true });
     } catch (error) {
-      this.send({ type: "tool_result", id, ok: false, error: { message: boundedErrorMessage(error) } });
+      const safeError = this.safeErrorMessage(error);
+      this.send({ type: "tool_result", id, ok: false, error: { message: safeError } });
+      this.logger.warn?.("tool call failed", { call_id: shortCallId(id), tool, duration_ms: Date.now() - started, ok: false, error_class: classifyError(error) });
     } finally {
+      clearTimeout(deadline);
       this.activeToolCalls -= 1;
+      this.finishCall(id);
     }
   }
 
-  async executeTool(tool, args) {
+  finishCall(callId) {
+    if (!callId) return;
+    this.cancelledCalls.delete(callId);
+    this.callProcesses.delete(callId);
+  }
+
+  cancelCall(callId, reason = "cancelled") {
+    this.cancelledCalls.add(callId);
+    this.processSessionManager.notifyCancellation();
+    for (const child of this.callProcesses.get(callId) || []) terminateProcessTree(child, "SIGTERM");
+    const children = [...(this.callProcesses.get(callId) || [])];
+    if (children.length) {
+      const timer = setTimeout(() => {
+        for (const child of children) if (this.activeProcesses.has(child)) terminateProcessTree(child, "SIGKILL");
+      }, 2000);
+      timer.unref?.();
+    }
+    this.logger.info?.("tool call cancellation requested", { call_id: shortCallId(callId), reason });
+  }
+
+  async executeTool(tool, args, context = {}) {
+    if (!["server_info", ...this.tools()].includes(tool)) throw new Error(`tool disabled or unknown: ${tool}`);
     switch (tool) {
-      case "project_overview": return this.projectOverview();
+      case "server_info": return this.runtimeInfo();
+      case "project_overview": return this.projectOverview(context);
       case "list_roots": return this.listRoots();
-      case "list_dir": return this.listDir(args.path || ".");
-      case "list_files": return this.listFiles(args.path || ".", clampInt(args.max_files, 1000, 1, 10000));
-      case "read_file": return this.readFile(args.path, clampInt(args.max_bytes, 1024 * 1024, 1, 5 * 1024 * 1024));
-      case "write_file": return this.writeFile(args);
-      case "search_text": return this.searchText(args);
-      case "git_status": return this.gitStatus(args);
-      case "git_diff": return this.gitDiff(args);
-      case "exec_command": return this.execCommand(args.command, clampInt(args.timeout_seconds, 120, 1, 600));
+      case "list_dir": return this.listDir(args.path || ".", context);
+      case "list_files": return this.listFiles(args.path || ".", clampInt(args.max_files, 1000, 1, 10000), context);
+      case "read_file": return this.readFile(args, context);
+      case "view_image": return this.viewImage(args, context);
+      case "write_file": return this.writeFile(args, context);
+      case "edit_file": return this.editFile(args, context);
+      case "apply_patch": return this.applyPatch(args, context);
+      case "search_text": return this.searchText(args, context);
+      case "git_status": return this.gitStatus(args, context);
+      case "git_diff": return this.gitDiff(args, context);
+      case "git_log": return this.gitLog(args, context);
+      case "git_show": return this.gitShow(args, context);
+      case "run_process": return this.runDirectProcess(args, context);
+      case "start_process": return this.processSessionManager.start(args, context);
+      case "read_process": return this.processSessionManager.read(args, context);
+      case "write_process": return this.processSessionManager.write(args, context);
+      case "kill_process": return this.processSessionManager.kill(args, context);
+      case "exec_command": return this.execCommand(args.command, clampInt(args.timeout_seconds, 120, 1, 600), context);
       default: throw new Error(`unknown daemon tool: ${tool}`);
     }
   }
 
-  async projectOverview() {
-    const top = await this.listDir(".").catch(error => ({ error: error.message, entries: [] }));
-    const git = await this.runProcess("git", ["-C", this.workspace, "rev-parse", "--show-toplevel"], 10_000, true);
+  async projectOverview(context = {}) {
+    this.throwIfCancelled(context);
+    const top = await this.listDir(".", context).catch(error => ({ error: this.safeErrorMessage(error), entries: [] }));
+    const git = await this.runProcess("git", ["-c", "core.fsmonitor=false", "-C", this.workspace, "rev-parse", "--show-toplevel"], 10_000, true, 512 * 1024, context);
     return {
-      workspace: this.workspace,
+      workspace: this.displayPath(this.workspace),
       workspaceName: basename(this.workspace),
-      gitRoot: git.code === 0 ? git.stdout.trim() : "",
+      gitRoot: git.code === 0 ? this.displayPath(git.stdout.trim()) : "",
       policy: this.policy,
-      tools: this.tools(),
+      tools: ["server_info", ...this.tools()],
       topLevel: top.entries || [],
     };
   }
 
   listRoots() {
-    const roots = [{ name: basename(this.workspace), path: this.workspace, default: true }];
+    const roots = [{ name: basename(this.workspace), path: this.displayPath(this.workspace), default: true }];
     if (this.policy.unrestrictedPaths) {
-      const home = process.env.HOME;
-      if (home && home !== this.workspace) roots.push({ name: "home", path: home, default: false });
-      roots.push({ name: "filesystem-root", path: path.parse(this.workspace).root, default: false });
+      const home = process.env.HOME || process.env.USERPROFILE;
+      if (home && home !== this.workspace) roots.push({ name: "home", path: this.displayPath(resolve(home)), default: false });
+      roots.push({ name: "filesystem-root", path: this.displayPath(path.parse(this.workspace).root), default: false });
     }
     return { roots };
   }
 
-  async listDir(inputPath) {
+  async listDir(inputPath, context = {}) {
     const full = await this.resolveExistingPath(inputPath);
     const entries = [];
     let resultBytes = 0;
     let truncated = false;
     for await (const entry of await opendir(full)) {
+      this.throwIfCancelled(context);
       const entryPath = resolve(full, entry.name);
       const info = await lstat(entryPath).catch(() => null);
       const item = {
         name: entry.name,
-        path: entryPath,
+        path: this.displayPath(entryPath),
         type: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
         size: info?.size ?? 0,
       };
@@ -260,70 +336,189 @@ export class LocalDaemon {
       resultBytes += itemBytes;
     }
     entries.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
-    return { path: full, entries, truncated };
+    return { path: this.displayPath(full), entries, truncated };
   }
 
-  async listFiles(inputPath, maxFiles) {
+  async listFiles(inputPath, maxFiles, context = {}) {
     const root = await this.resolveExistingPath(inputPath);
     const info = await stat(root);
-    if (info.isFile()) return { path: root, files: [root], truncated: false };
+    if (info.isFile()) return { path: this.displayPath(root), files: [this.displayPath(root)], truncated: false };
     if (!info.isDirectory()) throw new Error("path is not a file or directory");
     const files = [];
     let resultBytes = 0;
     const walkResult = await this.walk(root, async full => {
-      const pathBytes = Buffer.byteLength(full) + 8;
+      this.throwIfCancelled(context);
+      const shown = this.displayPath(full);
+      const pathBytes = Buffer.byteLength(shown) + 8;
       if (files.length >= maxFiles || resultBytes + pathBytes > MAX_PATH_RESULT_BYTES) return false;
-      files.push(full);
+      files.push(shown);
       resultBytes += pathBytes;
       return true;
-    });
-    return { path: root, files, truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated };
+    }, context);
+    return { path: this.displayPath(root), files, truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated };
   }
 
-  async readFile(inputPath, maxBytes) {
-    if (!inputPath) throw new Error("path is required");
-    const full = await this.resolveExistingPath(inputPath);
+  async readFile(args, context = {}) {
+    if (typeof args === "string") {
+      args = { path: args, max_bytes: typeof context === "number" ? context : undefined };
+      context = {};
+    }
+    if (!args.path) throw new Error("path is required");
+    const full = await this.resolveExistingPath(args.path);
     const info = await stat(full);
     if (!info.isFile()) throw new Error("path is not a file");
-    if (info.size > maxBytes) throw new Error(`file exceeds max_bytes (${info.size} > ${maxBytes})`);
+    if (info.size > MAX_WRITE_BYTES) throw new Error(`file exceeds maximum readable text size (${info.size} > ${MAX_WRITE_BYTES})`);
+    this.throwIfCancelled(context);
     const content = await readUtf8File(full);
-    return { path: full, size: info.size, sha256: sha256(content), content };
+    this.throwIfCancelled(context);
+    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
+    const startLine = args.start_line === undefined ? 1 : clampInt(args.start_line, 1, 1, Number.MAX_SAFE_INTEGER);
+    const rawLines = content.split(/\r?\n/);
+    const totalLines = content.endsWith("\n") ? Math.max(1, rawLines.length - 1) : rawLines.length;
+    const endLine = args.end_line === undefined ? totalLines : clampInt(args.end_line, totalLines, 1, Number.MAX_SAFE_INTEGER);
+    if (endLine < startLine) throw new Error("end_line must be greater than or equal to start_line");
+    if (startLine > totalLines) throw new Error(`start_line exceeds total lines (${startLine} > ${totalLines})`);
+    const selectedEnd = Math.min(endLine, totalLines);
+    let selected = rawLines.slice(startLine - 1, selectedEnd).join("\n");
+    if (selectedEnd < totalLines || content.endsWith("\n")) selected += "\n";
+    const selectedBytes = Buffer.byteLength(selected);
+    if (selectedBytes > maxBytes) throw new Error(`selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`);
+    return {
+      path: this.displayPath(full),
+      size: info.size,
+      sha256: sha256(content),
+      content: selected,
+      start_line: startLine,
+      end_line: selectedEnd,
+      total_lines: totalLines,
+      complete: startLine === 1 && selectedEnd === totalLines,
+    };
   }
 
-  async writeFile(args) {
-    if (!this.policy.allowWrite) throw new Error("write_file is disabled by daemon policy");
+  async viewImage(args, context = {}) {
     if (!args.path) throw new Error("path is required");
-    const content = String(args.content ?? "");
-    const bytes = Buffer.byteLength(content);
-    if (bytes > MAX_WRITE_BYTES) throw new Error(`content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
-    const full = await this.resolveWritePath(args.path);
-    const existing = await lstat(full).catch(() => null);
-    if (existing?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
-    if (args.create_only && existing) throw new Error("file exists and create_only=true");
-    if (existing && !existing.isFile()) throw new Error("path is not a regular file");
-    if (args.expected_sha256) {
-      if (!existing) throw new Error("expected_sha256 requires an existing file");
-      const current = await readUtf8File(full);
-      if (sha256(current) !== String(args.expected_sha256)) throw new Error("expected_sha256 mismatch");
-    }
-    await mkdir(dirname(full), { recursive: true });
-    if (args.create_only) {
-      await writeFile(full, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    } else {
-      const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-      try {
-        await writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: existing ? existing.mode & 0o777 : 0o600 });
-        if (existing) await chmod(temp, existing.mode & 0o777).catch(() => {});
-        await rename(temp, full);
-      } catch (error) {
-        await rm(temp, { force: true }).catch(() => {});
-        throw error;
-      }
-    }
-    return { ok: true, path: full, sha256: sha256(content), bytes };
+    const full = await this.resolveExistingPath(args.path);
+    const info = await stat(full);
+    if (!info.isFile()) throw new Error("path is not a file");
+    if (info.size > MAX_IMAGE_BYTES) throw new Error(`image exceeds maximum size (${info.size} > ${MAX_IMAGE_BYTES})`);
+    this.throwIfCancelled(context);
+    const buffer = await readFile(full);
+    this.throwIfCancelled(context);
+    const mimeType = detectImageMime(buffer);
+    if (!mimeType) throw new Error("unsupported image format; expected PNG, JPEG, GIF, or WebP");
+    return {
+      $mcp: {
+        content: [{ type: "image", data: buffer.toString("base64"), mimeType }],
+        structuredContent: {
+          path: this.displayPath(full),
+          size: info.size,
+          sha256: createHash("sha256").update(buffer).digest("hex"),
+          mime_type: mimeType,
+        },
+      },
+    };
   }
 
-  async searchText(args) {
+  async writeFile(args, context = {}) {
+    return this.withMutationLock(async () => {
+      this.throwIfCancelled(context);
+      if (!this.policy.allowWrite) throw new Error("write_file is disabled by daemon policy");
+      if (!args.path) throw new Error("path is required");
+      const content = String(args.content ?? "");
+      const bytes = Buffer.byteLength(content);
+      if (bytes > MAX_WRITE_BYTES) throw new Error(`content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
+      const full = await this.resolveWritePath(args.path);
+      const existing = await lstat(full).catch(() => null);
+      if (existing?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
+      if (args.create_only && existing) throw new Error("file exists and create_only=true");
+      if (existing && !existing.isFile()) throw new Error("path is not a regular file");
+      if (args.expected_sha256) {
+        if (!existing) throw new Error("expected_sha256 requires an existing file");
+        const current = await readUtf8File(full);
+        if (sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new Error("expected_sha256 mismatch");
+      }
+      this.throwIfCancelled(context);
+      await atomicWriteText(full, content, existing, {
+        createOnly: args.create_only === true,
+        expectedHash: args.expected_sha256 ? String(args.expected_sha256).toLowerCase() : undefined,
+      });
+      return { ok: true, path: this.displayPath(full), sha256: sha256(content), bytes };
+    });
+  }
+
+  async editFile(args, context = {}) {
+    return this.withMutationLock(async () => {
+      this.throwIfCancelled(context);
+      if (!this.policy.allowWrite) throw new Error("edit_file is disabled by daemon policy");
+      if (!args.path) throw new Error("path is required");
+      const oldText = String(args.old_text ?? "");
+      const newText = String(args.new_text ?? "");
+      if (!oldText) throw new Error("old_text must not be empty");
+      const full = await this.resolveExistingPath(args.path);
+      const info = await lstat(full);
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error("path is not a regular non-symbolic-link file");
+      const current = await readUtf8File(full);
+      if (args.expected_sha256 && sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new Error("expected_sha256 mismatch");
+      const occurrences = countOccurrences(current, oldText);
+      if (occurrences === 0) throw new Error("old_text was not found");
+      if (!args.replace_all && occurrences !== 1) throw new Error(`old_text occurs ${occurrences} times; provide a unique fragment or set replace_all=true`);
+      const updated = args.replace_all ? current.split(oldText).join(newText) : current.replace(oldText, newText);
+      const bytes = Buffer.byteLength(updated);
+      if (bytes > MAX_WRITE_BYTES) throw new Error(`edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
+      this.throwIfCancelled(context);
+      await atomicWriteText(full, updated, info, { expectedHash: sha256(current) });
+      return { ok: true, path: this.displayPath(full), replacements: args.replace_all ? occurrences : 1, sha256: sha256(updated), bytes };
+    });
+  }
+
+  async applyPatch(args, context = {}) {
+    return this.withMutationLock(async () => {
+      this.throwIfCancelled(context);
+      if (!this.policy.allowWrite) throw new Error("apply_patch is disabled by daemon policy");
+      const patchText = String(args.patch ?? "");
+      if (!patchText) throw new Error("patch is required");
+      if (Buffer.byteLength(patchText) > MAX_WRITE_BYTES) throw new Error("patch exceeds maximum size");
+      const parsed = parsePatchEnvelope(patchText);
+      const prepared = [];
+      for (const operation of parsed) {
+        this.throwIfCancelled(context);
+        if (operation.kind === "add") {
+          const target = await this.resolveWritePath(operation.path);
+          if (await lstat(target).catch(() => null)) throw new Error(`add target already exists: ${operation.path}`);
+          assertTextSize(operation.content, operation.path);
+          prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
+          continue;
+        }
+        const source = await this.resolveExistingPath(operation.path);
+        const sourceInfo = await lstat(source);
+        if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error(`patch source is not a regular file: ${operation.path}`);
+        const original = await readUtf8File(source);
+        if (operation.kind === "delete") {
+          prepared.push({ kind: "delete", source, target: null, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
+          continue;
+        }
+        const content = applyUpdateHunks(original, operation.hunks, operation.path);
+        assertTextSize(content, operation.path);
+        const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo) : source;
+        if (target !== source && await lstat(target).catch(() => null)) throw new Error(`move target already exists: ${operation.moveTo}`);
+        prepared.push({ kind: operation.moveTo ? "move" : "update", source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
+      }
+      assertNoResolvedPatchCollisions(prepared);
+      this.throwIfCancelled(context);
+      await commitPatchTransaction(prepared);
+      return {
+        ok: true,
+        files: prepared.map((item) => ({
+          operation: item.kind,
+          path: this.displayPath(item.target || item.source),
+          from: item.kind === "move" ? this.displayPath(item.source) : undefined,
+          sha256: item.content === undefined ? undefined : sha256(item.content),
+        })),
+      };
+    });
+  }
+
+  async searchText(args, context = {}) {
     const query = String(args.query || "");
     if (!query) throw new Error("query is required");
     const root = await this.resolveExistingPath(args.path || ".");
@@ -333,20 +528,22 @@ export class LocalDaemon {
     const matches = [];
     const rootInfo = await stat(root);
     if (rootInfo.isFile()) {
-      await this.searchOneFile(root, query, matches, max);
-      return { query, root, matches, visited_files: 1, truncated: matches.length >= max };
+      await this.searchOneFile(root, query, matches, max, context);
+      return { query, root: this.displayPath(root), matches, visited_files: 1, truncated: matches.length >= max };
     }
     if (!rootInfo.isDirectory()) throw new Error("path is not a file or directory");
     const walkResult = await this.walk(root, async full => {
+      this.throwIfCancelled(context);
       if (matches.length >= max || visitedFiles >= maxFiles) return false;
       visitedFiles += 1;
-      await this.searchOneFile(full, query, matches, max);
+      await this.searchOneFile(full, query, matches, max, context);
       return matches.length < max && visitedFiles < maxFiles;
-    });
-    return { query, root, matches, visited_files: visitedFiles, truncated: matches.length >= max || visitedFiles >= maxFiles || walkResult.truncated };
+    }, context);
+    return { query, root: this.displayPath(root), matches, visited_files: visitedFiles, truncated: matches.length >= max || visitedFiles >= maxFiles || walkResult.truncated };
   }
 
-  async searchOneFile(full, query, matches, max) {
+  async searchOneFile(full, query, matches, max, context = {}) {
+    this.throwIfCancelled(context);
     const info = await stat(full).catch(() => null);
     if (!info?.isFile() || info.size > 1024 * 1024) return;
     const buffer = await readFile(full).catch(() => null);
@@ -357,51 +554,89 @@ export class LocalDaemon {
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       if (lines[index].includes(query)) {
-        matches.push({ path: full, line: index + 1, text: lines[index].slice(0, 500) });
+        matches.push({ path: this.displayPath(full), line: index + 1, text: lines[index].slice(0, 500) });
         if (matches.length >= max) break;
       }
     }
   }
 
-  async gitStatus(args = {}) {
-    const context = await this.gitContext(args.path || ".");
-    if (!context.ok) return context.result;
-    const commandArgs = ["-c", "core.fsmonitor=false", "-C", context.root, "status", "--short"];
-    if (context.pathspec) commandArgs.push("--", context.pathspec);
-    return this.runProcess("git", commandArgs, 30_000, true);
+  async gitStatus(args = {}, context = {}) {
+    const git = await this.gitContext(args.path || ".", context);
+    if (!git.ok) return git.result;
+    const commandArgs = ["-c", "core.fsmonitor=false", "-C", git.root, "status", "--short", "--branch"];
+    if (git.pathspec) commandArgs.push("--", git.pathspec);
+    const result = await this.runProcess("git", commandArgs, 30_000, true, 512 * 1024, context);
+    return { ...result, path: this.displayPath(git.target), gitRoot: this.displayPath(git.root) };
   }
 
-  async gitDiff(args = {}) {
-    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, 5 * 1024 * 1024);
-    const context = await this.gitContext(args.path || ".");
-    if (!context.ok) return { ...context.result, path: context.target };
-    const commandArgs = ["-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", context.root, "diff", "--no-ext-diff", "--no-textconv"];
-    if (context.pathspec) commandArgs.push("--", context.pathspec);
-    const result = await this.runProcess("git", commandArgs, 60_000, true, maxBytes);
-    return { ...result, path: context.target, gitRoot: context.root };
+  async gitDiff(args = {}, context = {}) {
+    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
+    const git = await this.gitContext(args.path || ".", context);
+    if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
+    const commandArgs = ["-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", git.root, "diff", "--no-ext-diff", "--no-textconv"];
+    if (args.staged) commandArgs.push("--cached");
+    if (git.pathspec) commandArgs.push("--", git.pathspec);
+    const result = await this.runProcess("git", commandArgs, 60_000, true, maxBytes, context);
+    return { ...result, path: this.displayPath(git.target), gitRoot: this.displayPath(git.root), staged: args.staged === true };
   }
 
-  async gitContext(inputPath) {
+  async gitLog(args = {}, context = {}) {
+    const git = await this.gitContext(args.path || ".", context);
+    if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
+    const maxCount = clampInt(args.max_count, 20, 1, 100);
+    const format = "%H%x1f%h%x1f%aI%x1f%an%x1f%ae%x1f%s%x1e";
+    const commandArgs = ["-c", "core.fsmonitor=false", "-C", git.root, "log", `--max-count=${maxCount}`, `--format=${format}`];
+    if (git.pathspec) commandArgs.push("--", git.pathspec);
+    const result = await this.runProcess("git", commandArgs, 30_000, true, 1024 * 1024, context);
+    const commits = result.stdout.split("\x1e").map((record) => record.trim()).filter(Boolean).map((record) => {
+      const [hash, short, authored_at, author_name, author_email, subject] = record.split("\x1f");
+      const commit = { hash, short, authored_at, author_name, subject };
+      if (args.include_author_email === true) commit.author_email = author_email;
+      return commit;
+    });
+    return { code: result.code, stderr: result.stderr, commits, path: this.displayPath(git.target), gitRoot: this.displayPath(git.root) };
+  }
+
+  async gitShow(args = {}, context = {}) {
+    const git = await this.gitContext(args.path || ".", context);
+    if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
+    const revision = validateRevision(args.revision || "HEAD");
+    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
+    const commandArgs = ["-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", git.root, "show", "--no-ext-diff", "--no-textconv", "--decorate=no", revision];
+    if (git.pathspec) commandArgs.push("--", git.pathspec);
+    const result = await this.runProcess("git", commandArgs, 60_000, true, maxBytes, context);
+    return { ...result, revision, path: this.displayPath(git.target), gitRoot: this.displayPath(git.root) };
+  }
+
+  async gitContext(inputPath, context = {}) {
     const target = await this.resolveExistingPath(inputPath);
     const info = await stat(target);
     const cwd = info.isDirectory() ? target : dirname(target);
-    const result = await this.runProcess("git", ["-c", "core.fsmonitor=false", "-C", cwd, "rev-parse", "--show-toplevel"], 10_000, true);
+    const result = await this.runProcess("git", ["-c", "core.fsmonitor=false", "-C", cwd, "rev-parse", "--show-toplevel"], 10_000, true, 512 * 1024, context);
     if (result.code !== 0) return { ok: false, result, target };
     const root = result.stdout.trim();
-    const relative = path.relative(root, target);
-    if (relative.startsWith(`..${sep}`) || relative === ".." || isAbsolute(relative)) {
+    const repoRelative = relative(root, target);
+    if (repoRelative.startsWith(`..${sep}`) || repoRelative === ".." || isAbsolute(repoRelative)) {
       return { ok: false, target, result: { code: 128, stdout: "", stderr: "target is outside the detected git repository" } };
     }
-    return { ok: true, target, root, pathspec: relative || "" };
+    return { ok: true, target, root, pathspec: repoRelative || "" };
   }
 
-  async execCommand(command, timeoutSeconds) {
-    if (!this.policy.allowExec) throw new Error("exec_command is disabled by daemon policy");
+  async runDirectProcess(args, context = {}) {
+    if (this.policy.execMode !== "direct" && this.policy.execMode !== "shell") throw new Error("run_process is disabled by daemon policy");
+    const argv = validateArgv(args.argv);
+    const cwd = await this.resolveExistingPath(args.cwd || ".");
+    if (!(await stat(cwd)).isDirectory()) throw new Error("cwd is not a directory");
+    return this.runProcess(argv[0], argv.slice(1), clampInt(args.timeout_seconds, 120, 1, 600) * 1000, false, 512 * 1024, context, cwd);
+  }
+
+  async execCommand(command, timeoutSeconds, context = {}) {
+    if (this.policy.execMode !== "shell") throw new Error("exec_command requires shell execution mode");
     if (!command || typeof command !== "string") throw new Error("command is required");
     if (command.includes("\0")) throw new Error("command contains a NUL byte");
     if (Buffer.byteLength(command) > MAX_COMMAND_BYTES) throw new Error(`command exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
     const shell = workspaceShellCommand(command);
-    return this.runProcess(shell.cmd, shell.args, clampInt(timeoutSeconds, 120, 1, 600) * 1000);
+    return this.runProcess(shell.cmd, shell.args, clampInt(timeoutSeconds, 120, 1, 600) * 1000, false, 512 * 1024, context);
   }
 
   terminateActiveProcesses(signal = "SIGTERM", escalate = false) {
@@ -409,23 +644,27 @@ export class LocalDaemon {
     for (const child of children) terminateProcessTree(child, signal);
     if (escalate && signal !== "SIGKILL" && children.length) {
       const timer = setTimeout(() => {
-        for (const child of children) {
-          if (this.activeProcesses.has(child)) terminateProcessTree(child, "SIGKILL");
-        }
+        for (const child of children) if (this.activeProcesses.has(child)) terminateProcessTree(child, "SIGKILL");
       }, 2000);
       timer.unref?.();
     }
   }
 
-  async runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024) {
+  async runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024, context = {}, cwd = this.workspace) {
+    this.throwIfCancelled(context);
     return new Promise((resolvePromise, reject) => {
       const child = spawn(cmd, args, {
-        cwd: this.workspace,
-        env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false }),
+        cwd,
+        env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false, runtimeDir: this.runtimeDir }),
         detached: process.platform !== "win32",
         windowsHide: true,
       });
       this.activeProcesses.add(child);
+      if (context.callId) {
+        const set = this.callProcesses.get(context.callId) || new Set();
+        set.add(child);
+        this.callProcesses.set(context.callId, set);
+      }
       let stdout = "";
       let stderr = "";
       let stdoutTruncated = 0;
@@ -444,6 +683,11 @@ export class LocalDaemon {
         clearTimeout(timer);
         if (killTimer && !timedOut) clearTimeout(killTimer);
         this.activeProcesses.delete(child);
+        if (context.callId) {
+          const set = this.callProcesses.get(context.callId);
+          set?.delete(child);
+          if (!set?.size) this.callProcesses.delete(context.callId);
+        }
       };
       const finish = callback => {
         if (settled) return;
@@ -467,6 +711,10 @@ export class LocalDaemon {
       }));
       child.on("close", code => finish(() => {
         const result = { code, stdout: finalizeOutput(stdout, stdoutTruncated), stderr: finalizeOutput(stderr, stderrTruncated) };
+        if (context.callId && this.cancelledCalls.has(context.callId)) {
+          reject(new Error("tool call cancelled"));
+          return;
+        }
         if (timedOut) {
           reject(new Error(`command timed out after ${timeoutMs}ms`));
           return;
@@ -477,14 +725,16 @@ export class LocalDaemon {
     });
   }
 
-  async walk(root, onFile) {
+  async walk(root, onFile, context = {}) {
     const stack = [root];
     let visitedEntries = 0;
     while (stack.length) {
+      this.throwIfCancelled(context);
       const current = stack.pop();
       const entries = await opendir(current).catch(() => null);
       if (!entries) continue;
       for await (const entry of entries) {
+        this.throwIfCancelled(context);
         visitedEntries += 1;
         if (visitedEntries > MAX_WALK_ENTRIES) return { truncated: true, visitedEntries };
         const full = resolve(current, entry.name);
@@ -501,8 +751,7 @@ export class LocalDaemon {
   resolvePath(inputPath = ".") {
     const raw = String(inputPath || ".");
     if (raw.includes("\0")) throw new Error("path contains a NUL byte");
-    const candidate = isAbsolute(raw) ? resolve(raw) : resolve(this.workspace, raw);
-    return candidate;
+    return isAbsolute(raw) ? resolve(raw) : resolve(this.workspace, raw);
   }
 
   async resolveExistingPath(inputPath = ".") {
@@ -525,6 +774,37 @@ export class LocalDaemon {
     assertContainedPath(this.workspace, canonicalAncestor);
     return candidate;
   }
+
+  displayPath(fullPath) {
+    const absolute = resolve(fullPath);
+    if (this.policy.exposeAbsolutePaths || this.policy.unrestrictedPaths) return absolute;
+    assertContainedPath(this.workspace, absolute);
+    const shown = relative(this.workspace, absolute);
+    return shown ? shown.split(sep).join("/") : ".";
+  }
+
+  safeErrorMessage(error) {
+    let message = boundedErrorMessage(error);
+    if (!this.policy.exposeAbsolutePaths) {
+      for (const prefix of equivalentPathPrefixes(this.workspace, this.workspaceInput)) message = replacePathPrefix(message, prefix, ".");
+      for (const prefix of equivalentPathPrefixes(this.runtimeDir)) message = replacePathPrefix(message, prefix, "<runtime>");
+      const home = process.env.HOME || process.env.USERPROFILE;
+      if (home) message = replacePathPrefix(message, resolve(home), "<home>");
+    }
+    return message;
+  }
+
+  throwIfCancelled(context = {}) {
+    if (context.callId && this.cancelledCalls.has(context.callId)) throw new Error("tool call cancelled");
+  }
+
+  async withMutationLock(callback) {
+    const previous = this.mutationQueue;
+    let release = () => {};
+    this.mutationQueue = new Promise((resolvePromise) => { release = resolvePromise; });
+    await previous;
+    try { return await callback(); } finally { release(); }
+  }
 }
 
 function normalizeWorkerUrl(value) {
@@ -536,40 +816,134 @@ function normalizeWorkerUrl(value) {
   return url.origin;
 }
 
+export function isSupersededClose(code, reason) {
+  return Number(code) === 1012 && String(reason || "") === "replaced by authenticated daemon";
+}
+
 function reconnectDelay(attempt) {
   const base = Math.min(3000 * (2 ** Math.min(attempt, 4)), 60_000);
   return base + Math.floor(Math.random() * 1000);
 }
 
-function terminateProcessTree(child, signal) {
-  if (!child?.pid) return;
-  if (process.platform === "win32") {
-    try {
-      const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-      killer.unref();
-      return;
-    } catch {}
-  }
-  try {
-    process.kill(-child.pid, signal);
-  } catch {
-    try { child.kill(signal); } catch {}
-  }
-}
 
 function assertContainedPath(root, target) {
-  const relative = path.relative(root, target);
-  if (relative === "" || (!relative.startsWith(`..${sep}`) && relative !== ".." && !isAbsolute(relative))) return;
+  const rel = relative(root, target);
+  if (rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel))) return;
   throw new Error("path is outside the configured workspace; restart with --unrestricted-paths to allow it");
 }
 
 async function readUtf8File(filePath) {
   const buffer = await readFile(filePath);
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-  } catch {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
     throw new Error("file is not valid UTF-8 text");
   }
+}
+
+async function atomicWriteText(full, content, existing = null, options = {}) {
+  await mkdir(dirname(full), { recursive: true });
+  const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    await writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: existing ? existing.mode & 0o777 : 0o600 });
+    if (existing) await chmod(temp, existing.mode & 0o777).catch(() => {});
+    if (options.expectedHash) {
+      const current = await readUtf8File(full).catch(() => null);
+      if (current === null || sha256(current) !== options.expectedHash) throw new Error("file changed before atomic commit");
+    }
+    if (options.createOnly) {
+      await link(temp, full);
+      await rm(temp, { force: true });
+    } else {
+      await rename(temp, full);
+    }
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function assertNoResolvedPatchCollisions(operations) {
+  const owners = new Map();
+  for (const operation of operations) {
+    const paths = operation.source === operation.target
+      ? [operation.source]
+      : [operation.source, operation.target].filter(Boolean);
+    for (const full of paths) {
+      const key = process.platform === "win32" ? String(full).toLowerCase() : String(full);
+      const previous = owners.get(key);
+      if (previous && previous !== operation) throw new Error(`patch operations resolve to the same path: ${full}`);
+      owners.set(key, operation);
+    }
+  }
+}
+
+async function commitPatchTransaction(operations) {
+  const staged = [];
+  const committed = [];
+  try {
+    for (const operation of operations) {
+      if (operation.content === undefined) continue;
+      await mkdir(dirname(operation.target), { recursive: true });
+      const temp = join(dirname(operation.target), `.${basename(operation.target)}.mbm-patch-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+      await writeFile(temp, operation.content, { encoding: "utf8", flag: "wx", mode: operation.mode });
+      await chmod(temp, operation.mode).catch(() => {});
+      staged.push({ operation, temp });
+    }
+
+    for (const operation of operations) {
+      if (operation.source) {
+        const current = await readUtf8File(operation.source);
+        if (sha256(current) !== operation.originalHash) throw new Error(`patch source changed during apply: ${operation.source}`);
+      }
+      if (operation.kind === "add" || operation.kind === "move") {
+        if (await lstat(operation.target).catch(() => null)) throw new Error(`patch target appeared during apply: ${operation.target}`);
+      }
+    }
+
+    for (const operation of operations) {
+      let backup = null;
+      if (operation.source) {
+        backup = join(dirname(operation.source), `.${basename(operation.source)}.mbm-backup-${process.pid}-${randomBytes(6).toString("hex")}`);
+        await rename(operation.source, backup);
+      }
+      const record = { operation, backup, targetCreated: false };
+      committed.push(record);
+      const stage = staged.find((item) => item.operation === operation);
+      if (stage) {
+        await rename(stage.temp, operation.target);
+        record.targetCreated = true;
+      }
+    }
+  } catch (error) {
+    for (const item of committed.reverse()) {
+      if (item.targetCreated) await rm(item.operation.target, { force: true }).catch(() => {});
+      if (item.backup) await rename(item.backup, item.operation.source).catch(() => {});
+    }
+    throw error;
+  } finally {
+    for (const item of staged) await rm(item.temp, { force: true }).catch(() => {});
+  }
+  for (const item of committed) if (item.backup) await rm(item.backup, { force: true }).catch(() => {});
+}
+
+function assertTextSize(content, label) {
+  const bytes = Buffer.byteLength(content);
+  if (bytes > MAX_WRITE_BYTES) throw new Error(`patched file exceeds maximum size for ${label} (${bytes} > ${MAX_WRITE_BYTES})`);
+}
+
+function countOccurrences(content, needle) {
+  let count = 0;
+  let offset = 0;
+  while ((offset = content.indexOf(needle, offset)) !== -1) {
+    count += 1;
+    offset += needle.length;
+  }
+  return count;
+}
+
+function validateRevision(value) {
+  const revision = String(value || "HEAD");
+  if (!revision || revision.length > 256 || revision.startsWith("-") || revision.includes("\0") || /[\r\n]/.test(revision)) throw new Error("invalid Git revision");
+  return revision;
 }
 
 function boundedErrorMessage(error) {
@@ -600,134 +974,56 @@ function clampInt(value, fallback, min, max) {
   return Math.min(Math.max(number, min), max);
 }
 
-export async function daemonSelfTest() {
-  const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
-  const outside = await mkdtemp(join(tmpdir(), "mbm-daemon-outside-"));
-  const logger = { info() {}, warn() {}, error() {} };
-  const restricted = new LocalDaemon({
-    workerUrl: "https://example.invalid",
-    secret: "test-secret-value-123456",
-    workspace,
-    policy: { allowWrite: true, allowExec: true },
-    logger,
-  });
-  const unrestricted = new LocalDaemon({
-    workerUrl: "https://example.invalid",
-    secret: "test-secret-value-123456",
-    workspace,
-    policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true },
-    logger,
-  });
-  const previousSecret = process.env.MBM_DAEMON_SELFTEST_SECRET;
-  process.env.MBM_DAEMON_SELFTEST_SECRET = "should-not-leak";
-  try {
-    await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
-    await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
-    await writeFile(join(outside, "outside.txt"), "outside-needle", "utf8");
-
-    const envFile = await restricted.readFile(".env", 1024);
-    if (!envFile.content.includes("SECRET=visible")) throw new Error("workspace .env should remain readable");
-
-    await expectReject(() => restricted.readFile(join(outside, "outside.txt"), 1024), "outside the configured workspace");
-    await expectReject(() => restricted.readFile(path.relative(workspace, join(outside, "outside.txt")), 1024), "outside the configured workspace");
-
-    const outsideFile = await unrestricted.readFile(join(outside, "outside.txt"), 1024);
-    if (!outsideFile.content.includes("outside-needle")) throw new Error("unrestricted absolute read failed");
-
-    const linkPath = join(workspace, "outside-link");
-    try {
-      await symlink(outside, linkPath, "dir");
-      await expectReject(() => restricted.readFile(join(linkPath, "outside.txt"), 1024), "outside the configured workspace");
-      await expectReject(() => restricted.writeFile({ path: linkPath, content: "replace" }), "outside the configured workspace");
-    } catch (error) {
-      if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
-    }
-
-    const written = await restricted.writeFile({ path: "nested/written.txt", content: "written", create_only: true });
-    if (written.bytes !== 7) throw new Error("write_file byte count is incorrect");
-    await expectReject(() => restricted.writeFile({ path: "nested/written.txt", content: "again", create_only: true }), "file exists");
-    await expectReject(() => restricted.writeFile({ path: "nested/written.txt", content: "again", expected_sha256: "bad" }), "expected_sha256 mismatch");
-    await restricted.writeFile({ path: "nested/written.txt", content: "updated", expected_sha256: sha256("written") });
-    if (await readFile(join(workspace, "nested/written.txt"), "utf8") !== "updated") throw new Error("atomic update failed");
-    await expectReject(() => restricted.writeFile({ path: "too-large.txt", content: "x".repeat(MAX_WRITE_BYTES + 1) }), "maximum write size");
-
-    await writeFile(join(workspace, "invalid.bin"), Buffer.from([0xff, 0xfe]));
-    await expectReject(() => restricted.readFile("invalid.bin", 1024), "not valid UTF-8");
-    const binarySearch = await restricted.searchText({ path: workspace, query: "needle", max_files: 100, max_matches: 10 });
-    if (!binarySearch.matches.some(match => match.path.endsWith("visible.txt"))) throw new Error("search_text missed UTF-8 file");
-
-    const cappedSearch = await restricted.searchText({ path: workspace, query: "definitely-not-present", max_files: 1, max_matches: 10 });
-    if (cappedSearch.visited_files !== 1 || cappedSearch.truncated !== true) throw new Error("search_text max_files cap did not apply");
-
-    const repo = join(workspace, "nested-repo");
-    await mkdir(repo);
-    await restricted.runProcess("git", ["init", "-q", repo], 10_000);
-    await writeFile(join(repo, "tracked.txt"), "one\n", "utf8");
-    await restricted.runProcess("git", ["-C", repo, "add", "tracked.txt"], 10_000);
-    await restricted.runProcess("git", ["-C", repo, "config", "diff.external", "definitely-not-a-real-diff-command"], 10_000);
-    await restricted.runProcess("git", ["-C", repo, "config", "core.fsmonitor", "definitely-not-a-real-fsmonitor-command"], 10_000);
-    await writeFile(join(repo, "tracked.txt"), "two\n", "utf8");
-    const diff = await restricted.gitDiff({ path: "nested-repo" });
-    if (diff.code !== 0 || !diff.stdout.includes("tracked.txt") || diff.gitRoot !== await realpath(repo)) throw new Error("nested git diff detection failed");
-    const status = await restricted.gitStatus({ path: "nested-repo" });
-    if (status.code !== 0 || !status.stdout.includes("tracked.txt")) throw new Error("nested git status detection failed");
-
-    const command = await restricted.execCommand("printf ${MBM_DAEMON_SELFTEST_SECRET-unset}", 5);
-    if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
-    await expectReject(() => restricted.execCommand(`printf '${"x".repeat(MAX_COMMAND_BYTES)}'`, 5), "maximum size");
-    await expectReject(() => restricted.execCommand("printf 'x\0y'", 5), "NUL byte");
-    if (process.platform !== "win32") {
-      await expectReject(() => restricted.execCommand("sleep 5", 1), "command timed out");
-      const interrupted = restricted.runProcess("sleep", ["30"], 60_000);
-      await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
-      restricted.terminateActiveProcesses("SIGTERM");
-      await expectReject(() => interrupted, "exited");
-      if (restricted.activeProcesses.size !== 0) throw new Error("terminated process remained tracked");
-
-      const descendantPidFile = join(workspace, "timeout-descendant.pid");
-      const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
-      await expectReject(() => restricted.execCommand(descendantCommand, 1), "command timed out");
-      await new Promise(resolvePromise => setTimeout(resolvePromise, 2500));
-      const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
-      if (isProcessAlive(descendantPid)) {
-        try { process.kill(descendantPid, "SIGKILL"); } catch {}
-        throw new Error("timeout escalation left a SIGTERM-ignoring descendant running");
-      }
-    }
-
-    const restrictedRoots = restricted.listRoots();
-    if (restrictedRoots.roots.length !== 1 || restrictedRoots.roots[0].path !== await realpath(workspace)) throw new Error("restricted roots exposed paths outside workspace");
-    const unrestrictedRoots = unrestricted.listRoots();
-    if (!unrestrictedRoots.roots.some(root => root.path === path.parse(workspace).root)) throw new Error("unrestricted filesystem root missing");
-  } finally {
-    if (previousSecret === undefined) delete process.env.MBM_DAEMON_SELFTEST_SECRET;
-    else process.env.MBM_DAEMON_SELFTEST_SECRET = previousSecret;
-    await rm(workspace, { recursive: true, force: true }).catch(() => {});
-    await rm(outside, { recursive: true, force: true }).catch(() => {});
-  }
-  return true;
+function createRuntimeDir() {
+  const root = mkdtempSync(join(tmpdir(), "machine-bridge-mcp-"));
+  for (const name of ["home", "tmp", "cache"]) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
+  return root;
 }
 
-function shellQuote(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
+function detectImageMime(buffer) {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer.length >= 6 && ["GIF87a", "GIF89a"].includes(buffer.subarray(0, 6).toString("ascii"))) return "image/gif";
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return "";
 }
 
-function isProcessAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-async function expectReject(callback, pattern) {
-  try {
-    await callback();
-  } catch (error) {
-    if (String(error?.message || error).includes(pattern)) return;
-    throw error;
+function classifyError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/cancel/i.test(message)) return "cancelled";
+  if (/timed out/i.test(message)) return "timeout";
+  if (/outside the configured workspace/i.test(message)) return "path_boundary";
+  if (/disabled by daemon policy|requires .* mode/i.test(message)) return "policy_denied";
+  if (/not found|ENOENT/i.test(message)) return "not_found";
+  if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
+  if (/maximum|exceeds|max_bytes|too many/i.test(message)) return "limit_exceeded";
+  if (/invalid|must|requires|ambiguous|mismatch/i.test(message)) return "invalid_request";
+  return "execution_failed";
+}
+
+function equivalentPathPrefixes(...values) {
+  const prefixes = new Set(values.filter(Boolean).map((value) => String(value)));
+  for (const value of [...prefixes]) {
+    if (value.startsWith("/private/")) prefixes.add(value.slice("/private".length));
+    else if (value.startsWith("/") && ["/var/", "/tmp/", "/etc/"].some((prefix) => value.startsWith(prefix))) prefixes.add(`/private${value}`);
   }
-  throw new Error(`expected rejection containing: ${pattern}`);
+  return [...prefixes].sort((left, right) => right.length - left.length);
+}
+
+function replacePathPrefix(message, pathValue, replacement) {
+  if (!pathValue) return message;
+  const normalized = String(pathValue);
+  return message.split(normalized).join(replacement);
+}
+
+function shortCallId(value) {
+  return String(value || "").slice(0, 20);
+}
+
+function redactUrl(value) {
+  try { return new URL(value).origin; } catch { return "<invalid-url>"; }
 }

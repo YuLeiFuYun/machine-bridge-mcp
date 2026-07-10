@@ -1,0 +1,220 @@
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path, { join } from "node:path";
+import { isSupersededClose, LocalDaemon, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/daemon.mjs";
+
+export async function daemonSelfTest() {
+  if (!isSupersededClose(1012, "replaced by authenticated daemon")) throw new Error("authenticated daemon replacement was not treated as permanent");
+  if (isSupersededClose(1012, "service restart") || isSupersededClose(1006, "replaced by authenticated daemon")) throw new Error("transient daemon close was treated as superseded");
+  const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
+  const outside = await mkdtemp(join(tmpdir(), "mbm-daemon-outside-"));
+  const logger = { info() {}, warn() {}, error() {} };
+  const restricted = new LocalDaemon({
+    workerUrl: "https://example.invalid",
+    secret: "test-secret-value-123456",
+    workspace,
+    policy: { allowWrite: true, allowExec: true },
+    logger,
+  });
+  const unrestricted = new LocalDaemon({
+    workerUrl: "https://example.invalid",
+    secret: "test-secret-value-123456",
+    workspace,
+    policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true },
+    logger,
+  });
+  const previousSecret = process.env.MBM_DAEMON_SELFTEST_SECRET;
+  process.env.MBM_DAEMON_SELFTEST_SECRET = "should-not-leak";
+  try {
+    const relayMessages = [];
+    const originalSend = restricted.send.bind(restricted);
+    const originalExecuteTool = restricted.executeTool.bind(restricted);
+    restricted.send = (value) => { relayMessages.push(value); return true; };
+    restricted.executeTool = async (_tool, _args, context) => {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 1100));
+      restricted.throwIfCancelled(context);
+      return { unexpected: true };
+    };
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "deadline-call", tool: "read_file", arguments: {}, timeout_ms: 1000 }));
+    const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
+    if (deadlineResult?.ok !== false || !String(deadlineResult.error?.message || "").includes("cancelled")) throw new Error("relay deadline did not cancel the local call");
+    relayMessages.length = 0;
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [] }));
+    const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
+    if (invalidEnvelope?.ok !== false || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
+    restricted.send = originalSend;
+    restricted.executeTool = originalExecuteTool;
+
+    await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
+    await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
+    await writeFile(join(outside, "outside.txt"), "outside-needle", "utf8");
+
+    const envFile = await restricted.readFile(".env", 1024);
+    if (!envFile.content.includes("SECRET=visible")) throw new Error("workspace .env should remain readable");
+
+    await expectReject(() => restricted.readFile(join(outside, "outside.txt"), 1024), "outside the configured workspace");
+    await expectReject(() => restricted.readFile(path.relative(workspace, join(outside, "outside.txt")), 1024), "outside the configured workspace");
+
+    const outsideFile = await unrestricted.readFile(join(outside, "outside.txt"), 1024);
+    if (!outsideFile.content.includes("outside-needle")) throw new Error("unrestricted absolute read failed");
+
+    const linkPath = join(workspace, "outside-link");
+    try {
+      await symlink(outside, linkPath, "dir");
+      await expectReject(() => restricted.readFile(join(linkPath, "outside.txt"), 1024), "outside the configured workspace");
+      await expectReject(() => restricted.writeFile({ path: linkPath, content: "replace" }), "outside the configured workspace");
+    } catch (error) {
+      if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
+    }
+
+    const written = await restricted.writeFile({ path: "nested/written.txt", content: "written", create_only: true });
+    if (written.bytes !== 7) throw new Error("write_file byte count is incorrect");
+    await expectReject(() => restricted.writeFile({ path: "nested/written.txt", content: "again", create_only: true }), "file exists");
+    await expectReject(() => restricted.writeFile({ path: "nested/written.txt", content: "again", expected_sha256: "bad" }), "expected_sha256 mismatch");
+    await restricted.writeFile({ path: "nested/written.txt", content: "updated\nsecond\nthird\n", expected_sha256: sha256("written") });
+    const slice = await restricted.readFile({ path: "nested/written.txt", start_line: 2, end_line: 3, max_bytes: 1024 });
+    if (slice.content !== "second\nthird\n" || slice.start_line !== 2 || slice.total_lines !== 3) throw new Error("read_file line range failed");
+    const edited = await restricted.editFile({ path: "nested/written.txt", old_text: "second", new_text: "SECOND", expected_sha256: slice.sha256 });
+    if (edited.replacements !== 1 || !(await readFile(join(workspace, "nested/written.txt"), "utf8")).includes("SECOND")) throw new Error("edit_file failed");
+    const patch = await restricted.applyPatch({ patch: `*** Begin Patch
+*** Update File: nested/written.txt
+@@
+ updated
+-SECOND
++second-again
+ third
+*** Add File: nested/added.txt
++added
+*** End Patch` });
+    if (!patch.ok || await readFile(join(workspace, "nested/added.txt"), "utf8") !== "added\n") throw new Error("apply_patch add/update failed");
+    if (!(await readFile(join(workspace, "nested/written.txt"), "utf8")).includes("second-again")) throw new Error("apply_patch update failed");
+    const beforeFailedPatch = await readFile(join(workspace, "nested/written.txt"), "utf8");
+    await expectReject(() => restricted.applyPatch({ patch: `*** Begin Patch
+*** Update File: nested/written.txt
+@@
+ updated
+-second-again
++should-not-commit
+*** Update File: nested/added.txt
+@@
+ missing-context
+*** End Patch` }), "context not found");
+    if (await readFile(join(workspace, "nested/written.txt"), "utf8") !== beforeFailedPatch) throw new Error("failed patch partially committed");
+    await expectReject(() => restricted.applyPatch({ patch: `*** Begin Patch
+*** Add File: nested/collision.txt
++one
+*** Add File: nested/../nested/collision.txt
++two
+*** End Patch` }), "same path");
+    if (await lstat(join(workspace, "nested/collision.txt")).catch(() => null)) throw new Error("canonical patch collision created a file");
+    const moved = await restricted.applyPatch({ patch: `*** Begin Patch
+*** Update File: nested/added.txt
+*** Move to: nested/moved.txt
+@@
+ added
+*** End Patch` });
+    if (!moved.ok || await readFile(join(workspace, "nested/moved.txt"), "utf8") !== "added\n") throw new Error("apply_patch move failed");
+    if (await lstat(join(workspace, "nested/added.txt")).catch(() => null)) throw new Error("apply_patch move left the source file");
+    await restricted.applyPatch({ patch: `*** Begin Patch
+*** Delete File: nested/moved.txt
+*** End Patch` });
+    if (await lstat(join(workspace, "nested/moved.txt")).catch(() => null)) throw new Error("apply_patch delete failed");
+    await expectReject(() => restricted.writeFile({ path: "too-large.txt", content: "x".repeat(MAX_WRITE_BYTES + 1) }), "maximum write size");
+
+    await writeFile(join(workspace, "invalid.bin"), Buffer.from([0xff, 0xfe]));
+    await expectReject(() => restricted.readFile("invalid.bin", 1024), "not valid UTF-8");
+    const binarySearch = await restricted.searchText({ path: workspace, query: "needle", max_files: 100, max_matches: 10 });
+    if (!binarySearch.matches.some(match => match.path.endsWith("visible.txt"))) throw new Error("search_text missed UTF-8 file");
+
+    const cappedSearch = await restricted.searchText({ path: workspace, query: "definitely-not-present", max_files: 1, max_matches: 10 });
+    if (cappedSearch.visited_files !== 1 || cappedSearch.truncated !== true) throw new Error("search_text max_files cap did not apply");
+
+    const repo = join(workspace, "nested-repo");
+    await mkdir(repo);
+    await restricted.runProcess("git", ["init", "-q", repo], 10_000);
+    await writeFile(join(repo, "tracked.txt"), "one\n", "utf8");
+    await restricted.runProcess("git", ["-C", repo, "add", "tracked.txt"], 10_000);
+    await restricted.runProcess("git", ["-C", repo, "config", "user.name", "Machine Bridge Test"], 10_000);
+    await restricted.runProcess("git", ["-C", repo, "config", "user.email", "private-test@example.invalid"], 10_000);
+    await restricted.runProcess("git", ["-C", repo, "commit", "-qm", "initial"], 10_000);
+    const logWithoutEmail = await restricted.gitLog({ path: "nested-repo", max_count: 5 });
+    if (logWithoutEmail.commits.length !== 1 || "author_email" in logWithoutEmail.commits[0]) throw new Error("git_log leaked author email by default");
+    const logWithEmail = await restricted.gitLog({ path: "nested-repo", max_count: 5, include_author_email: true });
+    if (logWithEmail.commits[0]?.author_email !== "private-test@example.invalid") throw new Error("git_log explicit email option failed");
+    const shown = await restricted.gitShow({ path: "nested-repo", revision: "HEAD", max_bytes: 1024 * 1024 });
+    if (shown.code !== 0 || !shown.stdout.includes("initial")) throw new Error("git_show failed");
+    await expectReject(() => restricted.gitShow({ path: "nested-repo", revision: "--help" }), "invalid Git revision");
+    await restricted.runProcess("git", ["-C", repo, "config", "diff.external", "definitely-not-a-real-diff-command"], 10_000);
+    await restricted.runProcess("git", ["-C", repo, "config", "core.fsmonitor", "definitely-not-a-real-fsmonitor-command"], 10_000);
+    await writeFile(join(repo, "tracked.txt"), "two\n", "utf8");
+    const diff = await restricted.gitDiff({ path: "nested-repo" });
+    if (diff.code !== 0 || !diff.stdout.includes("tracked.txt") || diff.gitRoot !== "nested-repo") throw new Error("nested git diff detection failed");
+    const status = await restricted.gitStatus({ path: "nested-repo" });
+    if (status.code !== 0 || !status.stdout.includes("tracked.txt")) throw new Error("nested git status detection failed");
+
+    const command = await restricted.execCommand("printf ${MBM_DAEMON_SELFTEST_SECRET-unset}", 5);
+    if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
+    const isolatedHome = await restricted.runDirectProcess({ argv: [process.execPath, "-e", "process.stdout.write(process.env.HOME || '')"], timeout_seconds: 5 });
+    if (!isolatedHome.stdout.includes("machine-bridge-mcp-") || isolatedHome.stdout === process.env.HOME) throw new Error("minimal command environment did not isolate HOME");
+    await expectReject(() => restricted.execCommand(`printf '${"x".repeat(MAX_COMMAND_BYTES)}'`, 5), "maximum size");
+    await expectReject(() => restricted.execCommand("printf 'x\0y'", 5), "NUL byte");
+    if (process.platform !== "win32") {
+      await expectReject(() => restricted.execCommand("sleep 5", 1), "command timed out");
+      const interrupted = restricted.runProcess("sleep", ["30"], 60_000);
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+      restricted.terminateActiveProcesses("SIGTERM");
+      await expectReject(() => interrupted, "exited");
+      if (restricted.activeProcesses.size !== 0) throw new Error("terminated process remained tracked");
+
+      const descendantPidFile = join(workspace, "timeout-descendant.pid");
+      const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
+      await expectReject(() => restricted.execCommand(descendantCommand, 1), "command timed out");
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 2500));
+      const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
+      if (isProcessAlive(descendantPid)) {
+        try { process.kill(descendantPid, "SIGKILL"); } catch {}
+        throw new Error("timeout escalation left a SIGTERM-ignoring descendant running");
+      }
+    }
+
+    const redactedPathError = restricted.safeErrorMessage(new Error(`failure at ${join(workspace, "secret.txt")} and ${restricted.runtimeDir}`));
+    if (redactedPathError.includes(workspace) || redactedPathError.includes(restricted.runtimeDir)) throw new Error("tool error path redaction failed");
+
+    const restrictedRoots = restricted.listRoots();
+    if (restrictedRoots.roots.length !== 1 || restrictedRoots.roots[0].path !== ".") throw new Error("restricted roots did not preserve relative-path privacy");
+    const unrestrictedRoots = unrestricted.listRoots();
+    if (!unrestrictedRoots.roots.some(root => root.path === path.parse(workspace).root)) throw new Error("unrestricted filesystem root missing");
+  } finally {
+    restricted.stop();
+    unrestricted.stop();
+    if (previousSecret === undefined) delete process.env.MBM_DAEMON_SELFTEST_SECRET;
+    else process.env.MBM_DAEMON_SELFTEST_SECRET = previousSecret;
+    await rm(workspace, { recursive: true, force: true }).catch(() => {});
+    await rm(outside, { recursive: true, force: true }).catch(() => {});
+  }
+  return true;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+async function expectReject(callback, pattern) {
+  try {
+    await callback();
+  } catch (error) {
+    if (String(error?.message || error).includes(pattern)) return;
+    throw error;
+  }
+  throw new Error(`expected rejection containing: ${pattern}`);
+}

@@ -1,0 +1,638 @@
+[
+  {
+    "name": "server_info",
+    "title": "Server information",
+    "description": "Return bridge/runtime metadata, active policy, protocol versions, and available tools.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "project_overview",
+    "title": "Project overview",
+    "description": "Summarize the connected workspace, repository root, local policy, and top-level entries.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_roots",
+    "title": "List workspace roots",
+    "description": "List filesystem roots exposed by the local runtime. Paths are workspace-relative unless absolute-path output is explicitly enabled.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_dir",
+    "title": "List directory",
+    "description": "List direct children of a workspace directory.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_files",
+    "title": "List files",
+    "description": "Recursively list files under a workspace path with bounded traversal and output.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "max_files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 1000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "read_file",
+    "title": "Read text file",
+    "description": "Read a UTF-8 file or an inclusive 1-based line range. Filesystem paths are workspace-scoped unless unrestricted paths are explicitly enabled.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5242880,
+          "default": 1048576
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "view_image",
+    "title": "View image",
+    "description": "Read a bounded PNG, JPEG, GIF, or WebP image from the workspace and return native MCP image content.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "write_file",
+    "title": "Write text file",
+    "description": "Atomically write a UTF-8 file up to 5 MiB. Supports create-only and optimistic SHA-256 checks; symbolic-link destinations are rejected.",
+    "availability": "write",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "create_only": {
+          "type": "boolean",
+          "default": false
+        },
+        "expected_sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "edit_file",
+    "title": "Edit text file",
+    "description": "Atomically replace an exact text fragment in one UTF-8 file. By default the old text must occur exactly once.",
+    "availability": "write",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "old_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "new_text": {
+          "type": "string"
+        },
+        "replace_all": {
+          "type": "boolean",
+          "default": false
+        },
+        "expected_sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "old_text",
+        "new_text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "apply_patch",
+    "title": "Apply structured patch",
+    "description": "Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete file operations. All paths are prevalidated and mutations are serialized.",
+    "availability": "write",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5242880
+        }
+      },
+      "required": [
+        "patch"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "search_text",
+    "title": "Search text",
+    "description": "Search UTF-8 text files under a workspace path for a literal substring.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "max_matches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 100
+        },
+        "max_files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 10000
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_status",
+    "title": "Git status",
+    "description": "Return bounded Git porcelain status for the repository containing a workspace path.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_diff",
+    "title": "Git diff",
+    "description": "Return bounded unified Git diff with external diff, text conversion, and filesystem monitor helpers disabled.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "staged": {
+          "type": "boolean",
+          "default": false
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5242880,
+          "default": 1048576
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_log",
+    "title": "Git log",
+    "description": "Return recent commits in a bounded, machine-readable format. Author email addresses are omitted unless explicitly requested.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "max_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        "include_author_email": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "git_show",
+    "title": "Git show",
+    "description": "Return bounded metadata and patch output for one revision without running repository-configured external helpers.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "revision": {
+          "type": "string",
+          "default": "HEAD"
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5242880,
+          "default": 1048576
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "run_process",
+    "title": "Run process directly",
+    "description": "Execute an argv array without a command shell. This avoids shell parsing but does not sandbox the executable or code it launches.",
+    "availability": "direct-exec",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 256
+        },
+        "cwd": {
+          "type": "string",
+          "default": "."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600,
+          "default": 120
+        }
+      },
+      "required": [
+        "argv"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "start_process",
+    "title": "Start process session",
+    "description": "Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls.",
+    "availability": "direct-exec",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 256
+        },
+        "cwd": {
+          "type": "string",
+          "default": "."
+        }
+      },
+      "required": [
+        "argv"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "read_process",
+    "title": "Read process session",
+    "description": "Read bounded stdout and stderr deltas from a server-managed process session, optionally waiting briefly for new output.",
+    "availability": "direct-exec",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "stdout_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "stderr_offset": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144,
+          "default": 65536
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000,
+          "default": 0
+        },
+        "wait_for_exit": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "write_process",
+    "title": "Write process stdin",
+    "description": "Write bounded UTF-8 data to a live process session and optionally close its stdin stream.",
+    "availability": "direct-exec",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "close_stdin": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "kill_process",
+    "title": "Terminate process session",
+    "description": "Terminate a live server-managed process tree with graceful or forced termination.",
+    "availability": "direct-exec",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "force": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "exec_command",
+    "title": "Execute shell command",
+    "description": "Execute a shell command with workspace cwd. This is not a sandbox and has the operating-system authority of the local user.",
+    "availability": "shell-exec",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600,
+          "default": 120
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

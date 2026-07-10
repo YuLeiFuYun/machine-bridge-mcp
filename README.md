@@ -1,103 +1,188 @@
 # machine-bridge-mcp
 
-`machine-bridge-mcp` exposes a selected local workspace to Remote MCP clients through a Cloudflare Worker relay and an outbound-only local daemon.
+`machine-bridge-mcp` exposes a selected local workspace to MCP clients through one shared, policy-controlled runtime.
+
+It supports two transports:
 
 ```text
-Remote MCP client -> HTTPS/OAuth -> Cloudflare Worker + Durable Object
-                                      ^
-                                      | outbound WebSocket
-                                      |
-                               local daemon -> workspace/files/shell
+Remote clients such as ChatGPT
+        HTTPS + OAuth 2.1 / PKCE
+                  |
+       Cloudflare Worker + Durable Object
+                  ^
+                  | outbound authenticated WebSocket
+                  |
+             local runtime
+
+Local clients such as Claude Desktop, Cursor, and Codex CLI
+                  |
+                 stdio
+                  |
+             local runtime
 ```
 
-No inbound port is opened on the local machine. The Worker does not read local files or execute commands; it authenticates MCP clients and relays bounded tool calls to the daemon.
+The remote Worker authenticates and relays calls. It cannot directly read local files or start local processes. File, Git, image, patch, and process operations execute in the local runtime.
 
-## Install and start
+## Security posture first
 
-Recommended global installation:
+A new workspace starts with the `review` profile:
 
-```zsh
+- read-only filesystem and Git tools;
+- no file mutation;
+- no process execution;
+- workspace-confined filesystem access;
+- relative paths in tool results;
+- no parent shell environment inherited by commands.
+
+Existing pre-0.4 workspace profiles keep their saved permissions during upgrade. Select a profile explicitly to change them.
+
+| Profile | File edits | Direct argv processes | Shell commands | Intended use |
+|---|---:|---:|---:|---|
+| `review` | No | No | No | Inspection and review |
+| `edit` | Yes | No | No | Controlled file changes |
+| `agent` | Yes | Yes | No | Coding agents and test commands |
+| `full` | Yes | Yes | Yes | Deliberate full local automation |
+
+`run_process` and process sessions avoid command-shell parsing, but they are **not an operating-system sandbox**. An allowed executable can still access anything available to the local user. `exec_command` is more exposed because it additionally permits shell syntax and expansion. Use a container, VM, or dedicated low-privilege OS account for hostile repositories or untrusted instructions.
+
+## Install
+
+Node.js 22 or newer is required.
+
+```sh
 npm install -g machine-bridge-mcp@latest
-machine-mcp
-```
-
-Without a global installation:
-
-```zsh
-npx machine-bridge-mcp@latest
 ```
 
 From a source checkout:
 
-```zsh
+```sh
 npm install
-./mbm          # macOS/Linux
-.\mbm.cmd      # Windows cmd
+./mbm                 # macOS/Linux
+.\mbm.cmd             # Windows cmd
 ```
 
-On first run, the CLI:
+## Remote MCP for ChatGPT
 
-1. Selects and remembers a workspace.
-2. Generates an MCP connection password, daemon secret, and OAuth token version.
-3. Authenticates Wrangler if required.
-4. Deploys a per-workspace Worker.
-5. Installs a login autostart entry unless `--no-autostart` is used.
-6. Starts the outbound local daemon.
-7. Prints the Remote MCP URL and connection password.
+Start the bridge from the project directory or select a workspace explicitly:
 
-Keep the foreground process running for the current session. The installed service handles later logins.
+```sh
+machine-mcp --workspace /path/to/project --profile review
+```
 
-## Connect an MCP client
+On first remote start, the CLI:
 
-Use the values printed by `machine-mcp`:
+1. canonicalizes and remembers the workspace;
+2. creates independent credentials and state for that workspace;
+3. signs in to Cloudflare Wrangler when needed;
+4. deploys a per-workspace Worker;
+5. installs a platform-native login service unless `--no-autostart` is used;
+6. starts an outbound-only daemon connection;
+7. prints the Remote MCP URL and connection password.
+
+Use the printed values in the MCP client:
 
 ```text
 MCP Server URL: https://<worker>.<account>.workers.dev/mcp
 MCP connection password: mcp_password_...
 ```
 
-The password is shown on first setup, after secret rotation, when the MCP URL changes, or with `--print-mcp-credentials`. Use `--no-print-credentials` to redact it in terminal output.
+The remote authorization flow uses an authorization code, PKCE S256, exact redirect/resource binding, expiring access tokens stored as hashes, and a token-version value for bulk revocation.
 
-The former experimental local OpenAI-compatible `/v1` API has been removed. Use the Remote MCP endpoint directly.
+## Local stdio MCP for Claude, Cursor, Codex, and compatible clients
 
-## Security defaults
+Generate ready-to-paste configuration:
 
-Version 0.3.0 changes the default filesystem boundary:
-
-- Relative paths are resolved from the selected workspace.
-- Reads, writes, directory traversal, searches, and Git operations are confined to that workspace by default.
-- Symbolic links cannot be used to escape the workspace boundary.
-- `write_file` and `exec_command` remain enabled by default.
-- Shell commands receive a minimal environment by default.
-- `write_file` is limited to 5 MiB, writes atomically, and refuses to overwrite symbolic links.
-- Files that look sensitive, including `.env` and key files, are readable when they are inside the selected workspace. The bridge does not infer sensitivity from filenames.
-
-A narrower session:
-
-```zsh
-machine-mcp --no-write --no-exec
+```sh
+machine-mcp client-config --client all --workspace /path/to/project --profile agent
 ```
 
-Explicitly permit filesystem paths outside the workspace:
+Or run stdio directly:
 
-```zsh
-machine-mcp --unrestricted-paths
+```sh
+machine-mcp stdio --workspace /path/to/project --profile agent
 ```
 
-Pass the complete parent process environment to shell commands only when required:
+The stdio server writes only JSON-RPC messages to stdout. Operational logs go to stderr. It supports MCP initialization/version negotiation, tool discovery, calls, cancellation, structured tool output, native image content, and process sessions.
 
-```zsh
-machine-mcp --full-env
+See [docs/CLIENTS.md](docs/CLIENTS.md) for client-specific configuration and remote/local trade-offs.
+
+## Policy controls
+
+Profiles can be narrowed with explicit flags:
+
+```text
+--profile review|edit|agent|full
+--exec-mode off|direct|shell
+--no-write
+--no-exec
+--full-env
+--unrestricted-paths
+--absolute-paths
 ```
 
-`--unrestricted-paths` and `--full-env` materially increase the data-exposure boundary. See [SECURITY.md](SECURITY.md) before enabling them.
+Important distinctions:
+
+- `--unrestricted-paths` expands direct filesystem tools beyond the selected workspace.
+- `--absolute-paths` changes returned path metadata; it does not grant additional access.
+- `--full-env` passes the complete parent environment to processes. Without it, commands receive an isolated HOME, temp directory, and cache directories plus a small set of platform variables.
+- Files with sensitive-looking names are not automatically blocked inside the workspace. A workspace `.env` remains readable when read tools are enabled.
+
+## Tools
+
+The exact `tools/list` response reflects the active local policy. Definitions come from one shared catalog used by both Worker and stdio transports.
+
+### Workspace and content
+
+- `server_info`
+- `project_overview`
+- `list_roots`
+- `list_dir`
+- `list_files`
+- `read_file` — whole UTF-8 files or bounded line ranges
+- `view_image` — bounded PNG, JPEG, GIF, or WebP as native MCP image content
+- `search_text`
+
+### Mutation
+
+- `write_file` — atomic whole-file write with create-only and SHA-256 checks
+- `edit_file` — exact text replacement with ambiguity rejection
+- `apply_patch` — bounded multi-file add/update/move/delete transaction with rollback
+
+### Git
+
+- `git_status`
+- `git_diff` — working tree or staged
+- `git_log` — structured commits; author email omitted unless explicitly requested
+- `git_show`
+
+Repository-configured external diff, text conversion, and filesystem-monitor helpers are disabled for bridge Git inspection.
+
+### Processes
+
+- `run_process` — one-shot argv execution without a shell
+- `start_process`
+- `read_process`
+- `write_process`
+- `kill_process`
+- `exec_command` — shell execution, available only in `shell` mode
+
+Process sessions retain bounded stdout/stderr, support offsets and short waits, accept stdin, and are killed when the daemon connection is lost or replaced. They are pipe-based and do not emulate a terminal/PTY.
+
+## Path and write behavior
+
+By default, existing paths are resolved with `realpath` and must remain inside the canonical workspace. New write paths validate the nearest existing ancestor, preventing missing-path writes through escaping symbolic-link directories.
+
+Writes use same-directory temporary files and atomic commit. Create-only writes use an atomic hard-link commit so a concurrent file cannot be silently overwritten. Patch operations are prevalidated, serialized, staged, rechecked, committed with backups, and rolled back on failure.
+
+Returned paths are workspace-relative by default. This reduces unnecessary disclosure of usernames and local directory layouts. Enable `--absolute-paths` only when a client genuinely needs absolute paths.
 
 ## Commands
 
 ```text
 machine-mcp [start options]
-machine-mcp workspace show
-machine-mcp workspace set [PATH]
+machine-mcp stdio [options]
+machine-mcp client-config [all|claude|cursor|codex|generic]
+machine-mcp workspace show|set|reset
 machine-mcp service status|install|start|stop|uninstall
 machine-mcp status
 machine-mcp doctor
@@ -105,82 +190,28 @@ machine-mcp rotate-secrets
 machine-mcp uninstall [--keep-worker] [--yes]
 ```
 
-Important start options:
-
-```text
---workspace PATH
---worker-name NAME
---force-worker
---rotate-secrets
---daemon-only
---no-autostart
---no-print-credentials
---print-mcp-credentials
---no-write
---no-exec
---full-env
---unrestricted-paths
---state-dir DIR
---json
-```
-
-Unknown, duplicate, malformed, and command-inapplicable options are rejected. Boolean options do not consume a following positional workspace path; use `--option=false` when an explicit false value is needed.
-
-## Workspace selection
-
-```zsh
-machine-mcp workspace set
-machine-mcp workspace set /path/to/project
-machine-mcp workspace show
-machine-mcp workspace reset
-```
-
-Each canonical workspace path receives an independent profile, Worker name, secret set, and daemon lock.
+Each canonical workspace has an independent profile, Worker name, credential set, state file, startup lock, and daemon lock.
 
 ## Autostart
 
-Supported providers:
+Remote mode supports:
 
-- macOS: user LaunchAgent
-- Linux: `systemd --user`, with best-effort user lingering
-- Windows: Scheduled Task at logon
+- macOS user LaunchAgent;
+- Linux `systemd --user`, with best-effort lingering;
+- Windows Scheduled Task at logon.
 
-```zsh
-machine-mcp service status
-machine-mcp service install
-machine-mcp service start
-machine-mcp service stop
-machine-mcp service uninstall
-```
-
-Autostart runs `--daemon-only --no-print-credentials --quiet`. The selected write, execution, environment, and path-boundary policies are persisted in the service definition. Service log files are owner-only where supported and are trimmed at daemon startup to prevent unbounded growth.
+The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and fails closed to the `review` profile if policy state is absent. Service logs are owner-only where supported and trimmed before daemon startup.
 
 ## Secret rotation
 
-```zsh
-machine-mcp rotate-secrets
+```sh
+machine-mcp rotate-secrets --no-print-credentials
 machine-mcp
 ```
 
-The first command stops the installed autostart service, refuses to proceed if another foreground daemon remains active, and then rotates the MCP password, daemon secret, and OAuth token version in local state. The second redeploys the Worker; previously issued OAuth access tokens then fail validation.
+Rotation stops the installed service, refuses to proceed while another foreground daemon owns the workspace lock, rotates the MCP password, daemon secret, and OAuth token version, and requires redeployment. Previously issued access tokens then fail validation.
 
-## MCP tools
-
-- `server_info`
-- `project_overview`
-- `list_roots`
-- `list_dir`
-- `list_files`
-- `read_file`
-- `write_file`
-- `search_text`
-- `git_status`
-- `git_diff`
-- `exec_command`
-
-Tool availability reflects daemon policy after the daemon handshake. `git_status` and `git_diff` detect the repository containing the requested path, including nested repositories.
-
-## State and logs
+## State and observability
 
 Default state roots:
 
@@ -188,78 +219,33 @@ Default state roots:
 - Linux with `XDG_STATE_HOME`: `$XDG_STATE_HOME/machine-bridge-mcp`
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
-Override the root with `--state-dir DIR`. A new custom root must be empty; a non-empty unmarked root must contain recognizable legacy Machine Bridge state before it is adopted. Legacy text markers are migrated to the current structured marker. Uninstall refuses to recursively delete filesystem roots, the home directory, the current/package directory, source trees, recorded workspaces, unrelated files, or an unrecognized state root.
+State/config writes use owner-only temporary files, flushes, and atomic rename. Malformed state is retained as a bounded corrupt backup before reconstruction. Uninstall validates markers, canonical paths, active locks, workspace/source exclusions, and known contents before recursive deletion.
 
-State contains credentials and therefore uses owner-only permissions where supported. State/config writes use temporary files, `fsync`, and atomic rename. Corrupt state files are retained as bounded `.corrupt-*` backups rather than silently overwritten. Status and doctor output redact secrets and personal Wrangler output; structured logs fully redact credential-like fields and neutralize control characters.
+Operational logs record bounded metadata such as component, tool name, shortened call ID, duration, outcome, and error class. They do not intentionally log file contents, patch bodies, command strings, stdin, OAuth passwords, access tokens, or daemon secrets. See [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
-Temporary Wrangler secret files are created under the owner-only profile directory and removed in a `finally` block. Stale files older than one hour are cleaned before deployment.
+## Development and verification
 
-## Worker protections
-
-The Worker currently enforces:
-
-- OAuth authorization code flow with PKCE S256.
-- Hashed access-token storage and token-version revocation.
-- Exact resource, client, and redirect URI binding.
-- Bounded registration metadata, clients, authorization codes, tokens, and failed-login records.
-- Per-source dynamic-client registration limits and password-failure throttling.
-- A consent page that displays the validated client and redirect URI.
-- Request-body and concurrent daemon-call limits.
-- Same-origin browser access by default, exact configured-origin CORS/preflight support, and rejection of unlisted cross-origin requests.
-- `no-store`, content-type protection, CSP, frame denial, and referrer suppression on authorization responses.
-- Minimal public health output; live daemon/workspace details require an authenticated MCP call.
-
-Browser requests are same-origin by default. Additional browser origins can be listed exactly in `MBM_ALLOWED_ORIGINS`; the Worker then returns matching CORS preflight and response headers. Loopback OAuth redirect URIs do not implicitly authorize loopback browser origins. Do not use wildcards or `null`.
-
-## Uninstall
-
-Delete known Workers, autostart entries, and local state:
-
-```zsh
-machine-mcp uninstall
-```
-
-Non-interactive:
-
-```zsh
-machine-mcp uninstall --yes
-```
-
-Keep deployed Workers while removing local state and autostart:
-
-```zsh
-machine-mcp uninstall --keep-worker
-```
-
-Remove a global npm installation separately:
-
-```zsh
-npm uninstall -g machine-bridge-mcp
-```
-
-## Architecture and failure behavior
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for trust boundaries, request lifecycles, limits, reconnect behavior, and the rationale for the Worker/Durable Object/daemon split.
-
-Operationally:
-
-- A newer daemon connection replaces the older socket. The relay handshake does not upload the local workspace name, path hash, or process ID.
-- Pending calls are bound to the socket that received them, so a stale socket cannot complete or cancel calls on the replacement connection; active child processes are terminated when that connection is lost or replaced.
-- The daemon reconnects after transient Worker/network failures using bounded exponential backoff with jitter, and terminates active child processes when the active relay socket closes.
-- Tool calls and Wrangler subprocesses have bounded execution time and output; timed-out commands terminate their process tree where the platform permits.
-- Separate per-workspace startup and daemon locks prevent overlapping deploy/rotation operations and duplicate local daemons.
-- Uninstall stops and removes autostart first, refuses to proceed while an active startup or daemon process owns a lock, and preserves local state when Worker deletion fails so the operation can be retried.
-- Worker health checks verify the expected package/Worker version before a deployment hash is accepted.
-
-## Development
-
-```zsh
+```sh
 npm ci
 npm run check
 npm run worker:dry-run
 npm audit --omit=dev --audit-level=high
+npm pack --dry-run
 ```
 
-`npm run check` generates Worker types, type-checks the Worker, checks all local JavaScript entry points, and runs regression tests for path confinement, symbolic-link escapes, atomic writes, UTF-8 handling, nested Git repositories, minimal environments, daemon locking, CLI parsing, state recovery/removal guards, log redaction, log trimming, Worker hardening guards, and a live local OAuth/MCP flow through Wrangler.
+`npm run check` covers generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. A ready-to-enable GitHub Actions template is included at `docs/examples/github-actions-ci.yml` for Linux, macOS, and Windows with supported Node versions. Activating it requires a GitHub credential authorized to modify workflow files.
 
-The release checks are validated on Node.js 22 and 24. Node.js 22 or newer is required by the current Wrangler toolchain. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+See [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [SECURITY.md](SECURITY.md).
+
+## Uninstall
+
+```sh
+machine-mcp uninstall
+npm uninstall -g machine-bridge-mcp
+```
+
+Use `--keep-worker` to retain deployed Workers while removing local state and autostart.
+
+## License
+
+MIT
