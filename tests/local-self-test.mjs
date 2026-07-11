@@ -20,6 +20,7 @@ await resourceCliSelfTest();
 await cliSelfTest();
 await logSelfTest();
 await serviceSelfTest();
+await ciBootstrapSelfTest();
 await shellSelfTest();
 await workerSourceSelfTest();
 console.log("local daemon/state/cli/log/service/worker self-test ok");
@@ -590,6 +591,24 @@ async function serviceSelfTest() {
     }
   } finally {
     await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function ciBootstrapSelfTest() {
+  const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const lines = workflow.split("\n");
+  const setupIndexes = lines.flatMap((line, index) => line.includes("uses: actions/setup-node@v6") ? [index] : []);
+  if (setupIndexes.length !== 2) throw new Error("CI must contain exactly two setup-node bootstrap blocks");
+  for (const index of setupIndexes) {
+    const setupWindow = lines.slice(index, index + 6).join("\n");
+    if (!setupWindow.includes("package-manager-cache: false")) {
+      throw new Error("setup-node automatic package-manager cache must stay disabled until npm 12 is installed");
+    }
+  }
+  const temporaryDirectoryCount = lines.filter((line) => line.includes("working-directory: ${{ runner.temp }}")).length;
+  const npmUpgradeCount = lines.filter((line) => line.includes("npm install --global npm@12.0.1")).length;
+  if (temporaryDirectoryCount !== 2 || npmUpgradeCount !== 2) {
+    throw new Error("CI must bootstrap npm 12 from the runner temporary directory in both jobs");
   }
 }
 

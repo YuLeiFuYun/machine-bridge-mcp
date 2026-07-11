@@ -30,6 +30,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - name: Upgrade npm
         working-directory: ${{ runner.temp }}
         run: npm install --global npm@12.0.1
@@ -47,6 +48,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - name: Upgrade npm
         working-directory: ${{ runner.temp }}
         run: npm install --global npm@12.0.1
