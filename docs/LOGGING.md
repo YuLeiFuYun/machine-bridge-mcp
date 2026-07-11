@@ -97,6 +97,8 @@ logs/daemon.err.log
 
 Existing files are opened without following symbolic links where supported and tail-trimmed on UTF-8/line boundaries before startup. Background services use `warn`, so ordinary tool traffic and brief relay interruptions do not cause sustained growth.
 
+The log format has an explicit schema marker. When the schema changes, the daemon copies a bounded tail of each prior active log to an owner-only `daemon.out.legacy.log` or `daemon.err.legacy.log` snapshot, clears the active file, and advances the marker. The migration is idempotent and keeps historical transport-format lines visibly separate from current behavior.
+
 Each managed job has owner-only runner diagnostic logs. Child-step output is retained only in bounded, redacted job results according to `capture_output`; it is not copied into daemon or runner operational logs.
 
 ## MCP host boundary

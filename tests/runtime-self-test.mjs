@@ -70,6 +70,12 @@ export async function runtimeSelfTest() {
     if (!envFile.content.includes("SECRET=visible")) throw new Error("workspace .env should remain readable");
 
     logEvents.length = 0;
+    await restricted.handleMessage(JSON.stringify({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1" }));
+    if (logEvents.some(event => event.level === "warn" && event.message === "unknown websocket message")) {
+      throw new Error("valid relay welcome message was treated as an unknown warning");
+    }
+
+    logEvents.length = 0;
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" } }));
     if (logEvents.some(event => event.level === "info" && event.message === "tool call completed")) {
       throw new Error("remote daemon emitted routine success at info level");

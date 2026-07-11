@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.1 - 2026-07-11
+
+### Fixed
+
+- Recognize and validate the Worker's pre-handshake `welcome` control message instead of reporting it as an unknown WebSocket warning. A valid welcome remains debug-only and does not imply authenticated readiness; identity or version mismatch still fails immediately.
+- Add a versioned autostart-log schema migration. On the first daemon start after this logging-format change, bounded prior logs are copied to owner-only `daemon.*.legacy.log` snapshots and the active logs are cleared, preventing historical raw close-code lines from appearing to be current behavior.
+
+### Tests and documentation
+
+- Add relay/runtime regression coverage for valid welcome handling and welcome metadata validation, plus service tests for one-time bounded legacy-log migration and schema-marker idempotence.
+- Record the protocol producer/consumer contract rule and document how current and legacy daemon logs are separated.
+
 ## 0.8.0 - 2026-07-11
 
 ### Architecture

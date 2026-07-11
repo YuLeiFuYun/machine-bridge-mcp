@@ -563,8 +563,9 @@ async function serviceSelfTest() {
     await writeFile(join(stateRoot, "placeholder"), "", "utf8");
     await import("node:fs/promises").then(({ mkdir }) => mkdir(logs, { recursive: true }));
     const file = join(logs, "daemon.err.log");
+    await writeFile(join(logs, ".log-schema"), "7\n", "utf8");
     await writeFile(file, `${"discarded-line\n".repeat(300)}kept-unicode-日志\nlast-line\n`, "utf8");
-    trimAutostartLogs(stateRoot, { maxBytes: 2048, keepBytes: 1024 });
+    trimAutostartLogs(stateRoot, { maxBytes: 2048, keepBytes: 1024, schemaVersion: 7 });
     const trimmed = await readFile(file, "utf8");
     if ((await stat(file)).size > 1024 || trimmed.startsWith("�") || !trimmed.endsWith("last-line\n")) {
       throw new Error("autostart log tail trimming was not line/UTF-8 safe");
@@ -575,7 +576,7 @@ async function serviceSelfTest() {
       await writeFile(outsideTarget, "must-remain-unchanged", "utf8");
       try {
         await symlink(outsideTarget, linkedLog);
-        trimAutostartLogs(stateRoot, { maxBytes: 1024, keepBytes: 1024 });
+        trimAutostartLogs(stateRoot, { maxBytes: 1024, keepBytes: 1024, schemaVersion: 7 });
         if (await readFile(outsideTarget, "utf8") !== "must-remain-unchanged") {
           throw new Error("autostart log trimming followed a symbolic link");
         }
@@ -583,6 +584,30 @@ async function serviceSelfTest() {
         if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
       }
     }
+    const migrationRoot = await mkdtemp(join(tmpdir(), "mbm-log-schema-test-"));
+    try {
+      const migrationLogs = join(migrationRoot, "logs");
+      await mkdir(migrationLogs, { recursive: true });
+      const currentLog = join(migrationLogs, "daemon.err.log");
+      await writeFile(join(migrationLogs, ".log-schema"), "1\n", "utf8");
+      await writeFile(currentLog, "legacy-close-line\nlegacy-tail\n", "utf8");
+      trimAutostartLogs(migrationRoot, { maxBytes: 2048, keepBytes: 1024, schemaVersion: 2 });
+      const legacyLog = join(migrationLogs, "daemon.err.legacy.log");
+      if (await readFile(currentLog, "utf8") !== "" || !(await readFile(legacyLog, "utf8")).includes("legacy-tail")) {
+        throw new Error("autostart log schema migration did not archive and clear the prior format");
+      }
+      if ((await readFile(join(migrationLogs, ".log-schema"), "utf8")).trim() !== "2") {
+        throw new Error("autostart log schema marker was not updated");
+      }
+      await writeFile(currentLog, "current-format-line\n", "utf8");
+      trimAutostartLogs(migrationRoot, { maxBytes: 2048, keepBytes: 1024, schemaVersion: 2 });
+      if (await readFile(currentLog, "utf8") !== "current-format-line\n") {
+        throw new Error("autostart log migration repeated after the schema marker was current");
+      }
+    } finally {
+      await rm(migrationRoot, { recursive: true, force: true });
+    }
+
     const nodeBin = join(stateRoot, "node-bin");
     await mkdir(nodeBin, { recursive: true });
     const nodeTarget = join(nodeBin, process.platform === "win32" ? "node-target.exe" : "node-target");

@@ -94,6 +94,19 @@ export class RelayConnection {
     return this.sendOnSocket(this.socket, value);
   }
 
+  observeWelcome(message = {}) {
+    const socket = this.socket;
+    if (this.closed || this.ready || !this.isSocketOpen(socket)) return false;
+    const mismatch = welcomeMismatch(message, this.expectedServer, this.expectedVersion);
+    if (mismatch) {
+      this.logger.debug?.("remote relay welcome rejected", { reason: mismatch });
+      this.failPermanently("relay_protocol_mismatch");
+      return false;
+    }
+    this.logger.debug?.("remote relay welcome received");
+    return true;
+  }
+
   acknowledge(message = {}) {
     const socket = this.socket;
     if (this.closed || this.ready || !this.isSocketOpen(socket)) return false;
@@ -433,6 +446,15 @@ function relayCloseUserCause(category) {
     superseded: "connection superseded",
   };
   return causes[String(category || "")] || "connection interrupted";
+}
+
+export function welcomeMismatch(message, expectedServer = "", expectedVersion = "") {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return "invalid_welcome";
+  if (message.type !== "welcome") return "unexpected_welcome_type";
+  if (expectedServer && message.server !== expectedServer) return "server_identity_mismatch";
+  if (expectedVersion && message.version !== expectedVersion) return "server_version_mismatch";
+  if (typeof message.server !== "string" || !message.server || typeof message.version !== "string" || !message.version) return "incomplete_welcome";
+  return "";
 }
 
 export function acknowledgementMismatch(message, expectedServer = "", expectedVersion = "") {

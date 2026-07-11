@@ -32,6 +32,7 @@ Rules:
 - Transport lifecycle, domain execution, persistence, and presentation are separate modules.
 - Pure classification and normalization functions are exported and tested directly when practical.
 - Adapters may translate data but should not duplicate policy or schemas.
+- Every protocol control message emitted by one side must be explicitly accepted, rejected, or version-gated by the other side, with an end-to-end contract test covering the message name and semantics.
 - State transitions are explicit; readiness is not inferred from a lower-level event. For example, an open WebSocket is not an authenticated relay until `hello_ack` is received.
 - Every externally controlled input is bounded before expensive allocation, traversal, parsing, storage, or execution.
 - Repository text must not contain invisible ASCII controls other than tab, CR, and LF; architecture tests enforce this even when JavaScript syntax remains valid.

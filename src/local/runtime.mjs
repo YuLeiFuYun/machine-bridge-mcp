@@ -188,6 +188,10 @@ export class LocalRuntime {
   }
 
   handleRelayControlMessage(message) {
+    if (message.type === "welcome") {
+      this.relay?.observeWelcome(message);
+      return true;
+    }
     if (message.type === "hello_ack") {
       this.relay?.acknowledge(message);
       return true;

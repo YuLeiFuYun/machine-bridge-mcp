@@ -4,10 +4,12 @@ import path from "node:path";
 import { run } from "./shell.mjs";
 import { ensureOwnerOnlyDir, expandHome, ownerOnlyFile } from "./state.mjs";
 import { replaceFileSync } from "./atomic-fs.mjs";
+import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
 const WINDOWS_TASK = "MachineBridgeMCP";
 const SERVICE_COMMAND_OUTPUT_BYTES = 64 * 1024;
+const AUTOSTART_LOG_SCHEMA_VERSION = 2;
 
 function serviceRun(command, args) {
   return run(command, args, {
@@ -53,33 +55,67 @@ export function trimAutostartLogs(stateRoot, options = {}) {
   const root = expandHome(stateRoot);
   const maxBytes = Number.isFinite(Number(options.maxBytes)) ? Math.max(1024, Number(options.maxBytes)) : 2 * 1024 * 1024;
   const keepBytes = Math.min(maxBytes, Number.isFinite(Number(options.keepBytes)) ? Math.max(1024, Number(options.keepBytes)) : 1024 * 1024);
+  const schemaVersion = String(Number.isInteger(Number(options.schemaVersion)) && Number(options.schemaVersion) > 0
+    ? Number(options.schemaVersion)
+    : AUTOSTART_LOG_SCHEMA_VERSION);
   const logs = path.join(root, "logs");
+  const schemaFile = path.join(logs, ".log-schema");
+  const migrate = readLogSchema(schemaFile) !== schemaVersion;
+  let migrationComplete = true;
+
   for (const name of ["daemon.out.log", "daemon.err.log"]) {
     const file = path.join(logs, name);
     let fd;
     try {
       if (!existsSync(file)) continue;
       const before = lstatSync(file);
-      if (before.isSymbolicLink() || !before.isFile()) continue;
+      if (before.isSymbolicLink() || !before.isFile()) {
+        if (migrate) migrationComplete = false;
+        continue;
+      }
       const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
       fd = openSync(file, Number(fsConstants.O_RDWR) | noFollow);
       const info = fstatSync(fd);
-      if (!info.isFile()) continue;
-      if (info.size > maxBytes) {
-        const length = Math.min(keepBytes, info.size);
-        const buffer = Buffer.alloc(length);
-        readSync(fd, buffer, 0, length, Math.max(0, info.size - length));
-        const tail = lineSafeTail(buffer);
+      if (!info.isFile()) {
+        if (migrate) migrationComplete = false;
+        continue;
+      }
+      if (migrate && info.size > 0) {
+        const legacy = readLogTail(fd, info.size, maxBytes);
+        if (legacy.length) writePrivateServiceFile(path.join(logs, legacyLogName(name)), legacy);
+        ftruncateSync(fd, 0);
+      } else if (info.size > maxBytes) {
+        const tail = readLogTail(fd, info.size, keepBytes);
         ftruncateSync(fd, 0);
         if (tail.length) writeSync(fd, tail, 0, tail.length, 0);
       }
       try { chmodSync(file, 0o600); } catch {}
     } catch {
+      if (migrate) migrationComplete = false;
       // Operational log maintenance is best effort and must not stop startup.
     } finally {
       if (fd !== undefined) try { closeSync(fd); } catch {}
     }
   }
+
+  if (migrate && migrationComplete) {
+    try { writePrivateServiceFile(schemaFile, `${schemaVersion}\n`); } catch {}
+  }
+}
+
+function readLogSchema(file) {
+  try { return readBoundedRegularFileSync(file, 64).toString("utf8").trim(); } catch { return ""; }
+}
+
+function readLogTail(fd, size, limit) {
+  const length = Math.min(limit, size);
+  const buffer = Buffer.alloc(length);
+  readSync(fd, buffer, 0, length, Math.max(0, size - length));
+  return lineSafeTail(buffer);
+}
+
+function legacyLogName(name) {
+  return name.endsWith(".log") ? `${name.slice(0, -4)}.legacy.log` : `${name}.legacy`;
 }
 
 function lineSafeTail(buffer) {

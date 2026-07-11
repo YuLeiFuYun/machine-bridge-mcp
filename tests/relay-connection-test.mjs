@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { acknowledgementMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory } from "../src/local/relay-connection.mjs";
+import { acknowledgementMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, welcomeMismatch } from "../src/local/relay-connection.mjs";
 
 class FakeSocket extends EventEmitter {
   static CONNECTING = 0;
@@ -117,7 +117,7 @@ connection = new RelayConnection({
   outageWarnRepeatMs: 50,
   helloMessage: () => ({ type: "hello", tools: ["server_info"] }),
   expectedServer: "machine-bridge-mcp",
-  expectedVersion: "0.8.0",
+  expectedVersion: "0.8.1",
 });
 
 const started = connection.start();
@@ -125,7 +125,9 @@ assert(sockets.length === 1, "relay did not create the initial socket");
 sockets[0].open();
 assert(events.every((event) => event.level !== "info"), "transport open was incorrectly reported as authenticated readiness");
 assert(JSON.parse(sockets[0].sent[0]).type === "hello", "relay did not send hello after transport open");
-connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.0" });
+assert(connection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1" }), "valid relay welcome was rejected");
+assert(events.every((event) => event.level !== "warn"), "valid relay welcome emitted a warning");
+connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 await started;
 assert(events.some((event) => event.level === "info" && event.message === "remote relay connected"), "relay did not report initial authenticated readiness");
 
@@ -134,7 +136,7 @@ sockets[0].remoteClose(1006, "");
 scheduler.advance(5);
 assert(sockets.length === 2, "relay did not schedule a reconnect");
 sockets[1].open();
-connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.0" });
+connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 assert(countLevel(events, "warn") === warningCountBeforeBriefClose, "brief interruption emitted a warning");
 assert(events.some((event) => event.level === "debug" && event.message.includes("brief interruption")), "brief recovery was not available at debug level");
 assert(!events.some((event) => event.level !== "debug" && hasRawCloseFields(event.fields)), "raw close fields escaped debug logging");
@@ -148,7 +150,7 @@ assert(outageWarning, "sustained outage did not escalate to a warning");
 assert(outageWarning.fields?.cause === "connection interrupted", "sustained outage warning omitted the meaningful cause");
 assert(!hasRawCloseFields(outageWarning.fields), "sustained outage warning exposed raw WebSocket close fields");
 sockets[2].open();
-connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.0" });
+connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 const restored = events.find((event) => event.level === "info" && event.message === "remote relay connection restored");
 assert(restored?.fields?.attempts >= 1 && restored.fields.outage_seconds >= 1, "restored connection summary was incomplete");
 
@@ -256,7 +258,7 @@ const mismatchConnection = new RelayConnection({
   now: () => mismatchScheduler.now,
   reconnectDelay: () => 5,
   expectedServer: "machine-bridge-mcp",
-  expectedVersion: "0.8.0",
+  expectedVersion: "0.8.1",
   outageWarnAfterMs: 10,
 });
 const mismatchStart = mismatchConnection.start();
@@ -270,8 +272,10 @@ assert(mismatchSockets.length === 1, "non-transient relay mismatch entered the r
 assert(!mismatchEvents.some((event) => event.level === "error"), "initial relay mismatch logged before the CLI handled the rejected start");
 assert(mismatchError.message.includes("upgrade and redeploy"), "relay mismatch rejection did not provide corrective action");
 mismatchConnection.stop();
-assert(acknowledgementMismatch({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.0" }, "machine-bridge-mcp", "0.8.0") === "", "valid relay acknowledgement was rejected");
-assert(acknowledgementMismatch({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.7.1" }, "machine-bridge-mcp", "0.8.0") === "server_version_mismatch", "relay version mismatch was not classified");
+assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1" }, "machine-bridge-mcp", "0.8.1") === "", "valid relay welcome metadata was rejected");
+assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version: "0.7.1" }, "machine-bridge-mcp", "0.8.1") === "server_version_mismatch", "relay welcome version mismatch was not classified");
+assert(acknowledgementMismatch({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" }, "machine-bridge-mcp", "0.8.1") === "", "valid relay acknowledgement was rejected");
+assert(acknowledgementMismatch({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.7.1" }, "machine-bridge-mcp", "0.8.1") === "server_version_mismatch", "relay version mismatch was not classified");
 
 let fatalCallback = false;
 const fatalScheduler = new ManualScheduler();
