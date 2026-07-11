@@ -54,7 +54,7 @@ npm run version:check
 npm run release-impact:check
 ```
 
-GitHub Actions executes the main suite on Linux, macOS, and Windows using the pinned Node 26/npm 12 baseline. Because Node 26 currently bundles npm 11, CI explicitly disables setup-node's automatic package-manager cache and upgrades npm from the runner temporary directory before any project-local npm command can trigger strict `devEngines`. Checkout fetches version tags so the release-impact gate can compare the branch with the latest release. A separate package-audit job audits both the complete dependency graph and the production-only graph, verifies registry signatures and attestations, validates a CycloneDX SBOM, then performs a dry-run package build. Dependency and GitHub Actions updates are monitored by Dependabot.
+GitHub Actions executes the main suite on Linux, macOS, and Windows using the pinned Node 26/npm 12 baseline. Because Node 26 currently bundles npm 11, CI explicitly disables setup-node's automatic package-manager cache and upgrades npm from the runner temporary directory before any project-local npm command can trigger strict `devEngines`. Checkout fetches version tags so the release-impact gate can compare the branch with the latest release. A separate package-audit job audits both the complete dependency graph and the production-only graph, verifies registry signatures and attestations, validates a CycloneDX SBOM written under the runner temporary directory, then performs a dry-run package build. Dependency and GitHub Actions updates are monitored by Dependabot.
 
 ## Test design rules
 

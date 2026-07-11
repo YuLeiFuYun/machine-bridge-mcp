@@ -56,6 +56,6 @@ jobs:
       - run: npm audit --audit-level=high
       - run: npm audit --omit=dev --audit-level=high
       - run: npm audit signatures
-      - run: npm sbom --sbom-format cyclonedx > sbom.json
-      - run: node -e "const b=require('./sbom.json'); if(b.bomFormat!=='CycloneDX' || !Array.isArray(b.components)) process.exit(1)"
+      - run: npm sbom --sbom-format cyclonedx > "$RUNNER_TEMP/sbom.json"
+      - run: node -e "const b=require(process.env.RUNNER_TEMP + '/sbom.json'); if(b.bomFormat!=='CycloneDX' || !Array.isArray(b.components)) process.exit(1)"
       - run: npm pack --dry-run

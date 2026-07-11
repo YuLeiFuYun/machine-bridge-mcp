@@ -610,6 +610,9 @@ async function ciBootstrapSelfTest() {
   if (temporaryDirectoryCount !== 2 || npmUpgradeCount !== 2) {
     throw new Error("CI must bootstrap npm 12 from the runner temporary directory in both jobs");
   }
+  if (workflow.includes("> sbom.json") || !workflow.includes('> "$RUNNER_TEMP/sbom.json"')) {
+    throw new Error("CI SBOM output must stay outside the repository publication surface");
+  }
 }
 
 async function shellSelfTest() {
