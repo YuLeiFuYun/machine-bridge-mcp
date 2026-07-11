@@ -85,7 +85,7 @@ The daemon attachment deliberately omits workspace path/name/hash and process ID
 
 ### Autostart layer
 
-The service layer emits launchd, systemd-user, or Windows Scheduled Task definitions. Credentials are not embedded in service definitions; the daemon loads owner-only state. The exact policy is stored in owner-only state; platform service definitions contain only the workspace/state-root selectors and a `warn` log-level setting.
+The service layer emits launchd, systemd-user, or Windows Scheduled Task definitions. Credentials are not embedded in service definitions; the daemon loads owner-only state. The exact policy is stored in owner-only state. launchd/systemd definitions contain the workspace/state-root selectors, a `warn` log-level setting, and a sanitized absolute-only PATH captured at installation so background `full` mode can resolve the same developer tools without accepting relative PATH entries.
 
 ## Trust boundaries
 

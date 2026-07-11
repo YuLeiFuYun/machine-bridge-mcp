@@ -1,14 +1,14 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
-import { parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals } from "../src/local/cli.mjs";
+import { isSupportedNodeVersion, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals } from "../src/local/cli.mjs";
 import { daemonSelfTest } from "./daemon-self-test.mjs";
 import { formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { daemonArgs, stableNodeExecutable, systemdQuote, trimAutostartLogs } from "../src/local/service.mjs";
+import { daemonArgs, launchdPlist, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
 import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
@@ -463,6 +463,10 @@ function cliSelfTest() {
   validatePositionals("job", { _: ["inspect", "job_abcdefghijklmnopqrstuvwxyz"] });
   expectThrow(() => validatePositionals("resource", { _: ["add", "name", "path", "extra"] }), "too many positional");
 
+  if (isSupportedNodeVersion("25.9.0") || !isSupportedNodeVersion("26.0.0") || !isSupportedNodeVersion("27.1.0") || isSupportedNodeVersion("invalid")) {
+    throw new Error("Node runtime baseline predicate is incorrect");
+  }
+
   const defaultPolicy = resolvePolicy({}, {});
   if (
     defaultPolicy.profile !== "full" ||
@@ -587,6 +591,25 @@ async function serviceSelfTest() {
     } else if (stableNodeExecutable({ execPath: nodeTarget, pathEnv: nodeBin }) !== nodeTarget) {
       throw new Error("autostart Node fallback changed the active Windows executable");
     }
+
+    const customBin = join(stateRoot, "custom-bin");
+    const entryScript = join(stateRoot, "package", "bin", "machine-mcp.mjs");
+    const servicePath = serviceEnvironmentPath({
+      node: process.platform === "win32" ? nodeTarget : nodeAlias,
+      entryScript,
+      pathEnv: [nodeBin, "relative-bin", customBin, nodeBin].join(delimiter),
+    });
+    const servicePathEntries = servicePath.split(delimiter);
+    if (!servicePathEntries.includes(nodeBin) || !servicePathEntries.includes(customBin) || servicePathEntries.includes("relative-bin")) {
+      throw new Error("autostart service PATH did not retain absolute command directories or reject relative entries");
+    }
+    if (servicePathEntries.filter((entry) => entry === nodeBin).length !== 1) throw new Error("autostart service PATH retained duplicates");
+    const plist = launchdPlist({ args: [nodeAlias, entryScript], pathEnv: servicePath, stdout: "/tmp/out", stderr: "/tmp/err" });
+    if (!plist.includes("<key>EnvironmentVariables</key>") || !plist.includes(`<key>PATH</key><string>${servicePath}</string>`)) {
+      throw new Error("launchd definition omitted the explicit service PATH");
+    }
+    const unit = systemdUnit({ node: nodeAlias, entryScript, workspace: "/workspace", stateRoot: "/state", pathEnv: servicePath, stdout: "/tmp/out", stderr: "/tmp/err" });
+    if (!unit.includes(`Environment=${systemdQuote(`PATH=${servicePath}`)}`)) throw new Error("systemd definition omitted the explicit service PATH");
 
     const quoted = systemdQuote("path with space/%value'\n");
     if (!quoted.startsWith('"') || !quoted.includes("%%") || !quoted.includes("\\n")) throw new Error("systemd argument quoting failed");

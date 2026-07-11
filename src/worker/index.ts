@@ -3,7 +3,7 @@ import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.7.0";
+const SERVER_VERSION = "0.7.1";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";

@@ -94,14 +94,17 @@ function lineSafeTail(buffer) {
 function serviceSpec({ workspace, stateRoot, entryScript }) {
   const root = expandHome(stateRoot);
   const logs = path.join(root, "logs");
+  const resolvedEntryScript = path.resolve(entryScript);
+  const node = stableNodeExecutable();
   ensureOwnerOnlyDir(root);
   ensureOwnerOnlyDir(logs);
   for (const file of [path.join(logs, "daemon.out.log"), path.join(logs, "daemon.err.log")]) ensurePrivateLogFile(file);
   return {
     workspace,
     stateRoot: root,
-    entryScript: path.resolve(entryScript),
-    node: stableNodeExecutable(),
+    entryScript: resolvedEntryScript,
+    node,
+    pathEnv: serviceEnvironmentPath({ node, entryScript: resolvedEntryScript }),
     stdout: path.join(logs, "daemon.out.log"),
     stderr: path.join(logs, "daemon.err.log"),
   };
@@ -129,6 +132,36 @@ export function stableNodeExecutable(options = {}) {
     } catch {}
   }
   return execPath;
+}
+
+export function serviceEnvironmentPath(options = {}) {
+  const platform = String(options.platform || process.platform);
+  const delimiter = String(options.delimiter || (platform === "win32" ? ";" : ":"));
+  const pathEnv = String(options.pathEnv ?? process.env.PATH ?? "");
+  const node = String(options.node || process.execPath || "");
+  const entryScript = String(options.entryScript || "");
+  const defaults = platform === "darwin"
+    ? ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    : platform === "win32"
+      ? []
+      : ["/usr/local/bin", "/usr/bin", "/bin", "/usr/local/sbin", "/usr/sbin", "/sbin"];
+  const candidates = [
+    node ? path.dirname(path.resolve(node)) : "",
+    entryScript ? path.dirname(path.resolve(entryScript)) : "",
+    ...pathEnv.split(delimiter),
+    ...defaults,
+  ];
+  const seen = new Set();
+  const entries = [];
+  for (const raw of candidates) {
+    if (!raw || !path.isAbsolute(raw)) continue;
+    const normalized = path.resolve(raw);
+    const key = platform === "win32" ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push(normalized);
+  }
+  return entries.join(delimiter);
 }
 
 export function daemonArgs(spec) {
@@ -183,7 +216,7 @@ async function installLaunchd(spec, logger) {
   const plistPath = launchdPlistPath();
   mkdirSync(path.dirname(plistPath), { recursive: true });
   const args = [spec.node, ...daemonArgs(spec)];
-  writePrivateServiceFile(plistPath, launchdPlist({ args, stdout: spec.stdout, stderr: spec.stderr }));
+  writePrivateServiceFile(plistPath, launchdPlist({ args, pathEnv: spec.pathEnv, stdout: spec.stdout, stderr: spec.stderr }));
   logger.info?.("Autostart installed for next login.");
   return { ok: true, provider: "launchd", path: plistPath };
 }
@@ -222,7 +255,7 @@ async function statusLaunchd() {
   return { ok: existsSync(plistPath), provider: "launchd", installed: existsSync(plistPath), path: plistPath, active: result.code === 0, detail: result.stdout || result.stderr };
 }
 
-function launchdPlist({ args, stdout, stderr }) {
+export function launchdPlist({ args, pathEnv, stdout, stderr }) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -232,6 +265,10 @@ function launchdPlist({ args, stdout, stderr }) {
   <array>
 ${args.map(arg => `    <string>${escapeXml(arg)}</string>`).join("\n")}
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>${escapeXml(pathEnv)}</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
   <dict>
@@ -274,7 +311,7 @@ async function statusSystemd() {
   return { ok: existsSync(servicePath), provider: "systemd", installed: existsSync(servicePath), path: servicePath, active: result.code === 0, detail: result.stdout || result.stderr };
 }
 
-function systemdUnit(spec) {
+export function systemdUnit(spec) {
   const execArgs = [spec.node, ...daemonArgs(spec)].map(systemdQuote).join(" ");
   return `[Unit]
 Description=Machine Bridge MCP daemon
@@ -283,6 +320,7 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=${execArgs}
+Environment=${systemdQuote(`PATH=${spec.pathEnv}`)}
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:${spec.stdout}

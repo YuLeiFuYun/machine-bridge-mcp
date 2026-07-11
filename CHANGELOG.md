@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.1 - 2026-07-11
+
+### Fixed
+
+- Persist a sanitized absolute-only command `PATH` in launchd and systemd service definitions, always including the stable Node and CLI directories plus platform defaults. This restores Homebrew/npm/git command resolution for background canonical `full` daemons without accepting empty or relative PATH entries.
+- Align `doctor` with the declared sole runtime baseline by requiring Node.js 26 instead of reporting Node.js 22-25 as supported.
+
+### Tests and documentation
+
+- Add service-definition regression tests for PATH preservation, duplicate removal, relative-entry rejection, and launchd/systemd emission; document why `machine-mcp service install` should be rerun after PATH layout changes.
+
 ## 0.7.0 - 2026-07-11
 
 ### Runtime and dependencies

@@ -314,7 +314,7 @@ Remote mode supports:
 - Linux `systemd --user`, with best-effort lingering;
 - Windows Scheduled Task at logon.
 
-The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. Background services run at log level `warn`: relay, protocol, and service problems are retained, while all per-tool success/failure/cancellation/timing events remain debug-only. Logs are owner-only where supported and bounded by tail trimming.
+The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. launchd/systemd definitions persist a sanitized absolute-only PATH captured during installation, including the stable Node/CLI directories, so background `full` mode does not lose Homebrew or other developer command locations. Background services run at log level `warn`: relay, protocol, and service problems are retained, while all per-tool success/failure/cancellation/timing events remain debug-only. Logs are owner-only where supported and bounded by tail trimming.
 
 ## Secret rotation
 

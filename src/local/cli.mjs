@@ -948,7 +948,7 @@ async function statusCommand(args) {
 async function doctorCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const checks = [];
-  checks.push({ name: "node", ok: Number(process.versions.node.split(".")[0]) >= 22, detail: process.version });
+  checks.push({ name: "node", ok: isSupportedNodeVersion(), detail: process.version });
   const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true });
   checks.push({ name: "wrangler", ok: wrangler.code === 0, detail: (wrangler.stdout || wrangler.stderr).trim() });
   const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
@@ -1251,9 +1251,13 @@ function validateWorkerName(value) {
   return name;
 }
 
+export function isSupportedNodeVersion(version = process.versions.node) {
+  const major = Number(String(version || "").split(".")[0]);
+  return Number.isInteger(major) && major >= 26;
+}
+
 function assertNodeVersion() {
-  const major = Number(process.versions.node.split(".")[0]);
-  if (major < 26) throw new Error(`Node.js >=26 is required; current ${process.version}`);
+  if (!isSupportedNodeVersion()) throw new Error(`Node.js >=26 is required; current ${process.version}`);
 }
 
 function usage() {
