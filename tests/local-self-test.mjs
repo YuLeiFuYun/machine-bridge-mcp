@@ -613,6 +613,10 @@ async function ciBootstrapSelfTest() {
   if (workflow.includes("> sbom.json") || !workflow.includes('> "$RUNNER_TEMP/sbom.json"')) {
     throw new Error("CI SBOM output must stay outside the repository publication surface");
   }
+  const packageTest = await readFile(new URL("./package-test.mjs", import.meta.url), "utf8");
+  if (!packageTest.includes("process.env.npm_execpath") || packageTest.includes('spawnSync(npm')) {
+    throw new Error("package manifest test must execute the npm CLI through Node for Windows portability");
+  }
 }
 
 async function shellSelfTest() {

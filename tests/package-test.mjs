@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const output = mkdtempSync(join(tmpdir(), "mbm-package-test-"));
 try {
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  const result = spawnSync(npm, ["pack", "--silent", "--dry-run", "--json", "--pack-destination", output], {
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli) throw new Error("package test must run through an npm lifecycle so npm_execpath is available");
+  const result = spawnSync(process.execPath, [npmCli, "pack", "--silent", "--dry-run", "--json", "--pack-destination", output], {
     cwd: root,
     encoding: "utf8",
+    env: process.env,
     windowsHide: true,
   });
   if (result.error) throw result.error;
