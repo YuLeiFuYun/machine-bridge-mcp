@@ -30,8 +30,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
-          cache: npm
-      - run: npm install --global npm@12.0.1
+      - name: Upgrade npm
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@12.0.1
       - run: npm ci
       - run: npm run check
 
@@ -46,8 +47,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
-          cache: npm
-      - run: npm install --global npm@12.0.1
+      - name: Upgrade npm
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@12.0.1
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm audit --omit=dev --audit-level=high

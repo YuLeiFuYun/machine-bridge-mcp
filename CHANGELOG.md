@@ -4,7 +4,7 @@
 
 ### Runtime and dependencies
 
-- Raise the sole supported runtime baseline to Node.js 26 and npm 12, add exact local version files and strict engine checks, update Node type definitions to 26.1.1, and run the cross-platform CI suite on Node 26.
+- Raise the sole supported runtime baseline to Node.js 26 and npm 12, add exact local version files and strict engine checks, update Node type definitions to 26.1.1, and run the cross-platform CI suite on Node 26, and bootstrap npm 12 outside the repository before strict project engine checks apply.
 - Confirm Wrangler 4.110.0, ws 8.21.0, and TypeScript 7.0.2 are current; retain exact reviewed dependency versions and zero known audit findings.
 - Accept both legacy array and npm 12 keyed-object `npm pack --json` metadata so package verification and GitHub release asset creation remain functional after the npm upgrade.
 
