@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { runNetworkCommand } from "./network-retry.mjs";
+import { tagSyncError } from "./release-state.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -149,13 +150,12 @@ function assertCoreSync({ requireReleaseAsset }) {
   }
 
   const localCommit = localTagCommit(tag);
-  if (localCommit !== head) {
-    fail(`${tag} does not point to HEAD ${head}`);
-  }
+  const localTagError = tagSyncError({ scope: "local", tag, head, commit: localCommit });
+  if (localTagError) fail(localTagError);
+
   const remoteCommit = remoteTagCommit(tag);
-  if (remoteCommit !== head) {
-    fail(`remote ${tag} does not point to HEAD ${head}`);
-  }
+  const remoteTagError = tagSyncError({ scope: "remote", tag, head, commit: remoteCommit });
+  if (remoteTagError) fail(remoteTagError);
 
   const release = releaseInfo(tag);
   if (!release || release.isDraft || release.isPrerelease) {

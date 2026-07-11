@@ -13,6 +13,7 @@ The repository requires Node.js 26 and npm 12. `.node-version`, `.nvmrc`, `packa
 The suite includes:
 
 - release-impact enforcement requiring a new package version and CHANGELOG section for release-relevant changes;
+- release-state diagnostics distinguishing missing local/remote version tags from tags that point to the wrong commit, including the required publication order;
 - generated Cloudflare Worker types and strict TypeScript checking, including unused-local and unused-parameter rejection;
 - syntax validation for every shipped JavaScript entry point;
 - shared tool-catalog schema, annotation, and profile-inventory checks;

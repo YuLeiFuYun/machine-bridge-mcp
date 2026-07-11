@@ -25,10 +25,12 @@ These are release-operator or machine-operator actions, not implicit parts of a 
 
 ## Standard release handoff
 
-The repository owner publishes the reviewed version to npm. After publication, the owner runs:
+The release operator performs these steps from a clean `main` worktree:
 
 ```bash
+npm run release:publish
+npm publish --access public
 npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest && machine-mcp
 ```
 
-The npm command updates the global CLI. The normal `machine-mcp` startup then checks the recorded Worker deployment hash, expected package version, and Worker health; it redeploys when required and reconciles the normal daemon/autostart flow. A coding agent must not preempt this handoff unless the user explicitly requests live release or machine operations.
+`release:publish` creates or verifies the annotated version tag, pushes it, creates or updates the GitHub Release, and uploads the npm tarball. `npm publish` then passes the fail-closed GitHub synchronization check and publishes the package. The final npm command updates the global CLI. Normal `machine-mcp` startup checks the recorded Worker deployment hash, expected package version, and Worker health; it redeploys when required and reconciles the normal daemon/autostart flow. A coding agent must not preempt this handoff unless the user explicitly requests live release or machine operations.
