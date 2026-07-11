@@ -508,7 +508,9 @@ export function redactState(state) {
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = "<redacted>";
   if (clone.resources && typeof clone.resources === "object") {
     for (const value of Object.values(clone.resources)) {
-      if (value && typeof value === "object" && value.path) value.path = "<local-resource-path>";
+      if (!value || typeof value !== "object") continue;
+      if (value.path) value.path = "<local-resource-path>";
+      delete value.pathAliases;
     }
   }
   return clone;

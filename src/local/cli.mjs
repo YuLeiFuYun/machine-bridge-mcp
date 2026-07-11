@@ -605,14 +605,17 @@ async function resourceCommand(args) {
 }
 
 function publicResourceInspection(name, inspected, { includePath = false, ...extra } = {}) {
-  const { path: localPath, ...metadata } = inspected;
   return {
     name,
-    ...metadata,
+    kind: inspected.kind,
+    size: inspected.size ?? null,
+    mode: inspected.mode ?? null,
+    updated_at: inspected.updatedAt ?? null,
+    allow_insecure_permissions: inspected.allowInsecurePermissions === true,
     ...extra,
     paths_exposed: includePath,
     contents_exposed: false,
-    ...(includePath ? { path: localPath } : {}),
+    ...(includePath ? { path: inspected.path } : {}),
   };
 }
 

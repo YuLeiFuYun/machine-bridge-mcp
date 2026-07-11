@@ -325,7 +325,10 @@ function materializeResources(resources) {
     const target = join(resourcesDir, name);
     writeFileSync(target, data, { mode: 0o600, flag: "wx" });
     paths[name] = target;
-    sourcePaths[name] = resourcePathVariants(resource.path);
+    sourcePaths[name] = [...new Set([
+      ...resourcePathVariants(resource.path),
+      ...(Array.isArray(resource.pathAliases) ? resource.pathAliases.flatMap(resourcePathVariants) : []),
+    ])].sort((left, right) => right.length - left.length);
     bytes[name] = data;
     const patterns = [];
     try {

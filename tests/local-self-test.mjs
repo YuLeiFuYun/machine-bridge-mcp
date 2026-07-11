@@ -255,8 +255,17 @@ async function resourceCliSelfTest() {
     if (added.error) throw added.error;
     if (added.status !== 0) throw new Error(`resource add failed: ${added.stderr || added.stdout}`);
     const addedJson = JSON.parse(added.stdout);
-    if (addedJson.contents_exposed !== false || addedJson.paths_exposed !== false || "path" in addedJson || added.stdout.includes(resourceFile) || added.stdout.includes("local-value-not-returned")) {
+    if (addedJson.contents_exposed !== false || addedJson.paths_exposed !== false || "path" in addedJson || "pathAliases" in addedJson || added.stdout.includes(resourceFile) || added.stdout.includes("local-value-not-returned")) {
       throw new Error("resource add exposed file contents or local path by default");
+    }
+
+    const status = spawnSync(process.execPath, [entry, "status", "--workspace", workspace, "--state-dir", stateRoot], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    if (status.error) throw status.error;
+    if (status.status !== 0) throw new Error(`status after resource add failed: ${status.stderr || status.stdout}`);
+    if (status.stdout.includes(resourceFile) || status.stdout.includes("pathAliases")) {
+      throw new Error("status exposed a resource path alias");
     }
 
     const generatedKeyPath = join(workspace, "generated-operator-key");

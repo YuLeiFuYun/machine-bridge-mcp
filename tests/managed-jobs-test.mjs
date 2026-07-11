@@ -23,6 +23,8 @@ await writeFile(helperFile, "temporary", "utf8");
 
 try {
   const resource = inspectResourceFile(secretFile);
+  const sourcePathAlias = `${secretFile}.registration-alias`;
+  resource.pathAliases = [...new Set([...(resource.pathAliases || []), sourcePathAlias])];
   const manager = new ManagedJobManager({
     jobRoot,
     workspace,
@@ -166,7 +168,7 @@ try {
     }, {
       name: "consume local resource",
       argv: [process.execPath, "-e", script, "{{resource:test-secret}}"],
-      env: { MBM_SOURCE_PATH: secretFile },
+      env: { MBM_SOURCE_PATH: sourcePathAlias },
       env_resources: { MBM_JOB_SECRET: "test-secret" },
       stdin_resource: "test-secret",
       timeout_seconds: 20,
@@ -185,7 +187,7 @@ try {
   assert(!serialized.includes(secret), "job result exposed raw resource content");
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("base64")), "job result exposed base64 resource content");
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("hex")), "job result exposed hex resource content");
-  assert(!serialized.includes(secretFile), "job result exposed the registered resource path");
+  assert(!serialized.includes(secretFile) && !serialized.includes(sourcePathAlias), "job result exposed a registered resource path alias");
   const expectedRedactionMarkers = ["redacted-resource:test-secret", "resource:test-secret", "resource-source:test-secret"];
   const missingRedactionMarkers = expectedRedactionMarkers.filter((marker) => !serialized.includes(marker));
   assert(missingRedactionMarkers.length === 0, `job result did not mark redacted values and paths: ${missingRedactionMarkers.join(", ")}`);

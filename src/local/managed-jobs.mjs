@@ -461,6 +461,7 @@ export function inspectResourceFile(inputPath, { allowInsecurePermissions = fals
   return {
     kind: "file",
     path: canonical,
+    pathAliases: normalizeResourcePathAliases([path, canonical]),
     size: info.size,
     mode: process.platform === "win32" ? null : `0${(info.mode & 0o777).toString(8)}`,
     updatedAt: new Date().toISOString(),
@@ -597,7 +598,11 @@ function referencedResources(steps, registry) {
     const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true, includeHash: true });
     totalBytes += inspected.size;
     if (totalBytes > MAX_JOB_RESOURCE_BYTES) throw new Error(`job resources exceed ${MAX_JOB_RESOURCE_BYTES} bytes`);
-    out[name] = { ...inspected, allowInsecurePermissions: resource.allowInsecurePermissions === true };
+    out[name] = {
+      ...inspected,
+      pathAliases: normalizeResourcePathAliases([...(resource.pathAliases || []), ...(inspected.pathAliases || [])]),
+      allowInsecurePermissions: resource.allowInsecurePermissions === true,
+    };
   }
   return out;
 }
@@ -611,6 +616,7 @@ function normalizeResourceRegistry(resources) {
     out[name] = {
       kind: "file",
       path: resolve(rawValue.path),
+      pathAliases: normalizeResourcePathAliases([rawValue.path, ...(Array.isArray(rawValue.pathAliases) ? rawValue.pathAliases : [])]),
       size: Number.isFinite(Number(rawValue.size)) ? Number(rawValue.size) : null,
       mode: rawValue.mode ?? null,
       updatedAt: rawValue.updatedAt ?? null,
@@ -618,6 +624,17 @@ function normalizeResourceRegistry(resources) {
     };
   }
   return out;
+}
+
+function normalizeResourcePathAliases(values) {
+  const aliases = [];
+  for (const value of values) {
+    if (typeof value !== "string" || !value || value.includes("\0") || value.length > 4096) continue;
+    const absolute = resolve(value);
+    if (!aliases.includes(absolute)) aliases.push(absolute);
+    if (aliases.length >= 8) break;
+  }
+  return aliases;
 }
 
 function resolveJobCwd(value, workspace, unrestrictedPaths) {
