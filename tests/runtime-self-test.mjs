@@ -1,11 +1,9 @@
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { isSupersededClose, LocalDaemon, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/daemon.mjs";
+import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/runtime.mjs";
 
-export async function daemonSelfTest() {
-  if (!isSupersededClose(1012, "replaced by authenticated daemon")) throw new Error("authenticated daemon replacement was not treated as permanent");
-  if (isSupersededClose(1012, "service restart") || isSupersededClose(1006, "replaced by authenticated daemon")) throw new Error("transient daemon close was treated as superseded");
+export async function runtimeSelfTest() {
   const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
   const outside = await mkdtemp(join(tmpdir(), "mbm-daemon-outside-"));
   const jobState = await mkdtemp(join(tmpdir(), "mbm-daemon-jobs-"));
@@ -16,7 +14,7 @@ export async function daemonSelfTest() {
     error(message, fields) { logEvents.push({ level: "error", message, fields }); },
     debug(message, fields) { logEvents.push({ level: "debug", message, fields }); },
   };
-  const restricted = new LocalDaemon({
+  const restricted = new LocalRuntime({
     workerUrl: "https://example.invalid",
     secret: "test-secret-value-123456",
     workspace,
@@ -24,7 +22,7 @@ export async function daemonSelfTest() {
     logger,
     jobRoot: join(jobState, "restricted"),
   });
-  const unrestricted = new LocalDaemon({
+  const unrestricted = new LocalRuntime({
     workerUrl: "https://example.invalid",
     secret: "test-secret-value-123456",
     workspace,
@@ -32,7 +30,7 @@ export async function daemonSelfTest() {
     logger,
     jobRoot: join(jobState, "unrestricted"),
   });
-  const unrestrictedVisible = new LocalDaemon({
+  const unrestrictedVisible = new LocalRuntime({
     workerUrl: "https://example.invalid",
     secret: "test-secret-value-123456",
     workspace,

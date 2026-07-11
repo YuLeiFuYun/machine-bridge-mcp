@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
 import { replaceFileSync } from "./atomic-fs.mjs";
+import { readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
 
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
@@ -327,39 +328,10 @@ export class ManagedJobManager {
       if (Number.isInteger(pid) && pid > 0 && isPidAlive(pid)) return;
       const recoveryAttempts = Number(status.recovery_attempts || 0);
       if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
-        const now = new Date().toISOString();
-        status.status = "recovery_exhausted";
-        status.updated_at = now;
-        status.finished_at = now;
-        status.error_class = "recovery_exhausted";
-        status.current_phase = null;
-        status.current_step = null;
-        atomicWriteJson(file, status, 256 * 1024);
-        atomicWriteJson(join(dir, "result.json"), {
-          job_id: status.job_id,
-          name: status.name,
-          status: status.status,
-          recovered: true,
-          steps: [],
-          finally_steps: [],
-          error_class: "recovery_exhausted",
-          cleanup_error_class: "recovery_exhausted",
-          recovery_attempts: recoveryAttempts,
-          finished_at: now,
-        }, 4 * 1024 * 1024);
-        rmSync(join(dir, "runtime"), { recursive: true, force: true });
-        scrubFinishedPlan(dir, status);
+        markRecoveryExhausted(dir, file, status, recoveryAttempts);
         return;
       }
-      status.status = "interrupted";
-      status.updated_at = new Date().toISOString();
-      status.finished_at = status.updated_at;
-      status.error_class = "runner_interrupted";
-      status.recovery_attempts = recoveryAttempts + 1;
-      atomicWriteJson(file, status, 256 * 1024);
-      rmSync(join(dir, "runtime"), { recursive: true, force: true });
-      rmSync(join(dir, "runner.pid"), { force: true });
-      const runnerPid = launchRunner(dir, true);
+      const runnerPid = relaunchInterruptedJob(dir, file, status, recoveryAttempts);
       recoveryLock.handoff(runnerPid);
       handedOff = true;
     } finally {
@@ -454,7 +426,7 @@ export function validateResourceName(value) {
 export function inspectResourceFile(inputPath, { allowInsecurePermissions = false, includeHash = false } = {}) {
   const path = resolve(String(inputPath || ""));
   const canonical = realpathFile(path);
-  const { buffer: content, info } = readBoundedFileWithInfo(canonical, MAX_RESOURCE_BYTES);
+  const { buffer: content, info } = readBoundedRegularFileWithInfoSync(canonical, MAX_RESOURCE_BYTES);
   if (process.platform !== "win32" && !allowInsecurePermissions && (info.mode & 0o077) !== 0) {
     throw new Error("resource file is readable by group or others; restrict permissions or use --allow-insecure-permissions");
   }
@@ -674,29 +646,47 @@ function failRunnerLaunch(dir, status, error) {
   scrubFinishedPlan(dir, failed);
 }
 
+function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
+  const now = new Date().toISOString();
+  Object.assign(status, {
+    status: "recovery_exhausted",
+    updated_at: now,
+    finished_at: now,
+    error_class: "recovery_exhausted",
+    current_phase: null,
+    current_step: null,
+  });
+  atomicWriteJson(statusFile, status, 256 * 1024);
+  atomicWriteJson(join(dir, "result.json"), {
+    job_id: status.job_id,
+    name: status.name,
+    status: status.status,
+    recovered: true,
+    steps: [],
+    finally_steps: [],
+    error_class: "recovery_exhausted",
+    cleanup_error_class: "recovery_exhausted",
+    recovery_attempts: recoveryAttempts,
+    finished_at: now,
+  }, 4 * 1024 * 1024);
+  rmSync(join(dir, "runtime"), { recursive: true, force: true });
+  scrubFinishedPlan(dir, status);
+}
+
+function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts) {
+  status.status = "interrupted";
+  status.updated_at = new Date().toISOString();
+  status.finished_at = status.updated_at;
+  status.error_class = "runner_interrupted";
+  status.recovery_attempts = recoveryAttempts + 1;
+  atomicWriteJson(statusFile, status, 256 * 1024);
+  rmSync(join(dir, "runtime"), { recursive: true, force: true });
+  rmSync(join(dir, "runner.pid"), { force: true });
+  return launchRunner(dir, true);
+}
+
 function acquireRecoveryLock(dir) {
-  const file = join(dir, "recovery.lock");
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      writeFileSync(file, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
-      return {
-        handoff(pid) {
-          if (Number.isInteger(pid) && pid > 0) writeFileSync(file, `${pid}\n`, { mode: 0o600 });
-        },
-        release() { rmSync(file, { force: true }); },
-      };
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      let owner = 0;
-      try { owner = Number.parseInt(readBoundedFile(file, 64).toString("utf8").trim(), 10); } catch {}
-      const age = Date.now() - safeMtime(file);
-      const ownerAlive = owner > 0 && isPidAlive(owner);
-      const definitelyStale = age >= 5 * 60_000 || (!ownerAlive && age >= 60_000);
-      if (!definitelyStale) return null;
-      rmSync(file, { force: true });
-    }
-  }
-  return null;
+  return acquirePidLock(join(dir, "recovery.lock"), { allowHandoff: true });
 }
 
 function planSha256(plan) {
@@ -713,11 +703,21 @@ function assertPlanIntegrity(plan, status) {
 }
 
 function acquireJobTransitionLock(dir) {
-  const file = join(dir, "transition.lock");
+  return acquirePidLock(join(dir, "transition.lock"));
+}
+
+function acquirePidLock(file, { allowHandoff = false } = {}) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       writeFileSync(file, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
-      return { release() { rmSync(file, { force: true }); } };
+      return {
+        ...(allowHandoff ? {
+          handoff(pid) {
+            if (Number.isInteger(pid) && pid > 0) writeFileSync(file, `${pid}\n`, { mode: 0o600 });
+          },
+        } : {}),
+        release() { rmSync(file, { force: true }); },
+      };
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       let owner = 0;
@@ -835,27 +835,7 @@ function readRequiredJson(file, maxBytes, label) {
 }
 
 function readBoundedFile(file, maxBytes) {
-  return readBoundedFileWithInfo(file, maxBytes).buffer;
-}
-
-function readBoundedFileWithInfo(file, maxBytes) {
-  const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0);
-  const fd = openSync(file, flags);
-  try {
-    const info = fstatSync(fd);
-    if (!info.isFile()) throw new Error("path is not a regular file");
-    if (info.size > maxBytes) throw new Error(`file exceeds ${maxBytes} bytes`);
-    const buffer = Buffer.alloc(info.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const count = readSync(fd, buffer, offset, buffer.length - offset, offset);
-      if (!count) break;
-      offset += count;
-    }
-    return { buffer: buffer.subarray(0, offset), info };
-  } finally {
-    closeSync(fd);
-  }
+  return readBoundedRegularFileSync(file, maxBytes);
 }
 
 function openPrivateAppendFile(file) {

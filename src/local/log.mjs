@@ -71,6 +71,8 @@ export function classifyOperationalError(error) {
   const message = error instanceof Error ? error.message : String(error ?? "");
   if (/cancel/i.test(message)) return "cancelled";
   if (/timed out/i.test(message)) return "timeout";
+  if (/unauthorized|forbidden|authentication|\b401\b|\b403\b/i.test(message)) return "authentication_failed";
+  if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|socket hang up|network|websocket|TLS|SSL/i.test(message)) return "network_error";
   if (/outside the configured workspace/i.test(message)) return "path_boundary";
   if (/disabled|requires .* mode/i.test(message)) return "policy_denied";
   if (/not found|ENOENT/i.test(message)) return "not_found";

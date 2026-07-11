@@ -6,3 +6,4 @@ npm-debug.log*
 *.local
 src/worker/worker-configuration.d.ts
 .privacy-denylist
+.project-local/

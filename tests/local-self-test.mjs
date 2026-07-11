@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
-import { isSupportedNodeVersion, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals } from "../src/local/cli.mjs";
-import { daemonSelfTest } from "./daemon-self-test.mjs";
-import { formatFields, sanitizeLogText } from "../src/local/log.mjs";
+import { isSupportedNodeVersion, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { runtimeSelfTest } from "./runtime-self-test.mjs";
+import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { daemonArgs, launchdPlist, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
 import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
-await daemonSelfTest();
+await runtimeSelfTest();
 await stateSelfTest();
 await activeDaemonPolicyMutationSelfTest();
 await clientConfigDefaultSelfTest();
@@ -466,6 +466,9 @@ function cliSelfTest() {
   if (isSupportedNodeVersion("25.9.0") || !isSupportedNodeVersion("26.0.0") || !isSupportedNodeVersion("27.1.0") || isSupportedNodeVersion("invalid")) {
     throw new Error("Node runtime baseline predicate is incorrect");
   }
+  if (workerHealthUserReason("version_mismatch:0.1.0!=0.2.0") !== "deployed version does not match the local package" || workerHealthUserReason("network_error") !== "network request failed") {
+    throw new Error("Worker health user-facing reason mapping is incorrect");
+  }
 
   const defaultPolicy = resolvePolicy({}, {});
   if (
@@ -537,6 +540,9 @@ function logSelfTest() {
     throw new Error("structured log local-path redaction failed");
   }
   const syntheticAwsKey = `AK${"IA"}${"A".repeat(16)}`;
+  if (classifyOperationalError(new Error("Unexpected server response: 401")) !== "authentication_failed") {
+    throw new Error("HTTP authentication error classification failed");
+  }
   const sensitiveText = sanitizeLogText(`contact person@example.com at ${privateHome}/project ${syntheticAwsKey} abc\u202Etxt`);
   if (sensitiveText.includes("person@example.com") || sensitiveText.includes(privateHome) || sensitiveText.includes(syntheticAwsKey) || sensitiveText.includes("\u202E")) {
     throw new Error("free-form log privacy redaction failed");
@@ -644,6 +650,10 @@ async function ciBootstrapSelfTest() {
   }
   if (workflow.includes("> sbom.json") || !workflow.includes('> "$RUNNER_TEMP/sbom.json"')) {
     throw new Error("CI SBOM output must stay outside the repository publication surface");
+  }
+  const installSmokeCount = lines.filter((line) => line.includes("npm run install:test")).length;
+  if (installSmokeCount !== 2) {
+    throw new Error("CI must exercise the documented global installation in package-audit and on macOS");
   }
   const packageTest = await readFile(new URL("./package-test.mjs", import.meta.url), "utf8");
   if (!packageTest.includes("process.env.npm_execpath") || packageTest.includes('spawnSync(npm')) {

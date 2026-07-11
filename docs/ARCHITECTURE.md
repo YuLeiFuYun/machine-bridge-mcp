@@ -24,7 +24,7 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 
 ### Local runtime
 
-`LocalDaemon` is transport-independent despite its historical name. It owns:
+`LocalRuntime` is the transport-independent local tool engine. It owns:
 
 - canonical path resolution and display-path privacy;
 - file, text search, image, patch, and Git operations;
@@ -36,7 +36,7 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 - child-process tracking and cancellation;
 - output, traversal, concurrency, and time limits.
 
-Remote mode attaches WebSocket connection/reconnect behavior. Stdio mode invokes the same runtime directly.
+`RelayConnection` owns remote WebSocket transport, authenticated `hello_ack` readiness, heartbeat liveness, reconnect backoff, and outage logging. Stdio mode invokes `LocalRuntime` directly without that adapter.
 
 ### Managed job runner
 
@@ -177,13 +177,15 @@ Managed jobs use the same argv/environment primitives but a different lifecycle.
 
 ## Daemon reconnect and replacement
 
-The daemon sends heartbeats and reconnects with bounded exponential backoff and jitter. Only one socket is active. A new connection is a bounded candidate until it authenticates and completes `hello`; a Durable Object alarm enforces the deadline across hibernation. Only a completed candidate replaces the old socket.
+The local `RelayConnection` treats transport open, authenticated readiness, and outage recovery as separate states. It sends `hello` after WebSocket open and reports readiness only after `hello_ack`. A missing acknowledgement reaches a local handshake deadline and the candidate is terminated. Once ready, application heartbeats require inbound activity; a silent half-open socket is terminated and reconnected.
 
-Pending calls retain their originating socket reference. A stale socket cannot complete or cancel replacement-socket calls. Closing a socket rejects only calls assigned to it.
+Reconnect uses bounded exponential backoff with jitter. Brief self-healing interruptions are debug-only. An unresolved outage is promoted to a rate-limited warning after a grace period, and recovery produces one summary. Raw close codes and reason strings remain debug-only.
+
+The Worker also treats a new connection as a bounded candidate until it authenticates and completes `hello`; a Durable Object alarm enforces the deadline across hibernation. Only a completed candidate replaces the old socket. Pending calls retain their originating socket reference. A stale socket cannot complete or cancel replacement-socket calls. Closing a socket rejects only calls assigned to it.
 
 ## Persistence
 
-Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. State, managed-job manager, and detached runner commits share a bounded retrying atomic-replace primitive for transient Windows `EPERM`, `EACCES`, `EBUSY`, and `ENOTEMPTY` sharing failures. Reads reject symbolic links and use no-follow descriptors where supported. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. State, managed-job manager, and detached runner commits share a bounded retrying atomic-replace primitive for transient Windows `EPERM`, `EACCES`, `EBUSY`, and `ENOTEMPTY` sharing failures. Managed-job manager and detached runner use one shared no-follow, size-bounded regular-file reader; transition and recovery locks use one PID-lock primitive with bounded stale-lock reclamation and optional runner handoff. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
 
 Active managed jobs persist an owner-only plan, status, runner PID, and bounded runner diagnostics. Terminal jobs delete the full plan and retain only bounded status/redacted results for up to seven days. This balances crash cleanup with minimization of scripts, stdin, argv, environment overrides, and resource source paths.
 
@@ -195,7 +197,7 @@ OAuth metadata is pruned on access. Expired codes/tokens, old throttling records
 
 Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status, policy origin/revision, managed-job counts, resource alias names without paths or values, and the daemon/relay-advertised tool counts. It explicitly reports that the host-exposed subset is unknown to the server. `diagnose_runtime` runs fixed local probes and explicitly reports that its own request reached the daemon.
 
-Foreground logging defaults to `info`; autostart uses `warn`. All per-tool starts, successes, failures, cancellations, durations, and shortened random correlation IDs are debug-only. Normal logs retain deployment, connection, protocol, service, and infrastructure events rather than duplicating MCP tool outcomes. Unexpected local and Worker infrastructure errors are reduced to classes. Messages, strings, arrays, object depth/key counts, and serialized fields are bounded.
+Foreground logging defaults to `info`; autostart uses `warn`. Authenticated readiness, persistent degradation, and recovery are user-visible state transitions. Brief relay interruptions, raw transport close details, retry timing, and all per-tool starts/successes/failures/cancellations/durations are debug-only. Unexpected local and Worker infrastructure errors are reduced to classes. Messages, strings, arrays, object depth/key counts, and serialized fields are bounded.
 
 Cloudflare sampling is size control rather than an audit log. The project intentionally does not claim complete forensic logging. See [LOGGING.md](LOGGING.md).
 

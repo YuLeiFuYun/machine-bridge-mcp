@@ -3,7 +3,7 @@ import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.7.1";
+const SERVER_VERSION = "0.8.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -293,13 +293,20 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
+    await this.cleanupDaemonSocket(ws, "daemon disconnected");
+  }
+
+  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
+    console.error(JSON.stringify({ level: "warn", message: "daemon_websocket_error", error_class: workerErrorClass(error) }));
+    await this.cleanupDaemonSocket(ws, "daemon transport error");
+  }
+
+  private async cleanupDaemonSocket(ws: WebSocket, message: string): Promise<void> {
     await this.scheduleCandidateAlarm();
-    const attachment = this.daemonAttachment(ws);
-    if (!attachment) return;
     for (const [id, pending] of this.pending) {
       if (pending.socket !== ws) continue;
       clearTimeout(pending.timeout);
-      pending.reject(new Error("daemon disconnected"));
+      pending.reject(new Error(message));
       this.pending.delete(id);
     }
   }

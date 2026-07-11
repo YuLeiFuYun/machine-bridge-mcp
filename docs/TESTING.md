@@ -37,6 +37,8 @@ The suite includes:
 - guarded state-root removal, schema migration, policy-origin persistence, and legacy implicit-default migration;
 - no filename-based sensitive-file denial under unrestricted policy;
 - log redaction, control-character handling, message/field bounds, suppression of both successful and failed per-tool events outside debug, and service warning-level configuration;
+- deterministic relay connection lifecycle coverage for transport construction/error, authenticated `hello_ack` readiness, identity/version mismatch, handshake and heartbeat timeout, brief-outage suppression, sustained-outage escalation, recovery summaries, and supersession;
+- shared no-follow bounded-file reads for normal files, over-limit data, directories, and symbolic links;
 - CLI parsing, policy profiles, and client configuration boundaries;
 - live stdio MCP initialization, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;
 - live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, dynamic tool advertisement, rich content, daemon replacement, and cancellation.
@@ -54,7 +56,7 @@ npm run version:check
 npm run release-impact:check
 ```
 
-GitHub Actions executes the main suite on Linux, macOS, and Windows using the pinned Node 26/npm 12 baseline. Because Node 26 currently bundles npm 11, CI explicitly disables setup-node's automatic package-manager cache and upgrades npm from the runner temporary directory before any project-local npm command can trigger strict `devEngines`. Checkout fetches version tags so the release-impact gate can compare the branch with the latest release. A separate package-audit job audits both the complete dependency graph and the production-only graph, verifies registry signatures and attestations, validates a CycloneDX SBOM written under the runner temporary directory, then performs a dry-run package build. Dependency and GitHub Actions updates are monitored by Dependabot.
+GitHub Actions executes the main suite on Linux, macOS, and Windows using the pinned Node 26/npm 12 baseline. Because Node 26 currently bundles npm 11, CI explicitly disables setup-node's automatic package-manager cache and upgrades npm from the runner temporary directory before any project-local npm command can trigger strict `devEngines`. Checkout fetches version tags so the release-impact gate can compare the branch with the latest release. A separate package-audit job audits both the complete dependency graph and the production-only graph, verifies registry signatures and attestations, validates a CycloneDX SBOM written under the runner temporary directory, exercises the documented isolated global installation, then performs a dry-run package build. The macOS matrix job also runs the installation smoke test because Wrangler's optional `fsevents` resolution is platform-specific. Dependency and GitHub Actions updates are monitored by Dependabot.
 
 ## Test design rules
 
@@ -74,6 +76,10 @@ Run `npm run privacy:check` before committing and before packaging. Developers s
 
 ## Package manifest
 
-`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, and verifies that privacy guidance, contribution/release discipline, and both privacy/release-impact checkers are present in the published package.
+`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, and verifies that privacy/engineering guidance, the runtime/relay/secure-file modules, contribution discipline, and privacy/release-impact checkers are present in the published package. `npm run install:test` packs the real tarball, installs it into an isolated global prefix with the documented npm 12 options, rejects blocked-script warnings, confirms optional `fsevents` is absent, and runs the installed CLI.
 
 The stdio integration test also sends an oversized line, verifies bounded rejection, and confirms that the next valid request is still processed.
+
+## Architecture and documentation regression checks
+
+`npm run architecture:test` rejects local-module dependency cycles, missing relative imports, obsolete `LocalDaemon`/`daemon.mjs` naming, broken relative Markdown links, invisible ASCII control bytes in repository text, removal of the owner-required default-`full` engineering invariant, and accidental publication of `.project-local/` notes.

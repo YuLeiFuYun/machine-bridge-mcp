@@ -21,6 +21,12 @@ chmod 600 .privacy-denylist
 
 Add one identifier per line. The denylist is deliberately local and must never be committed. CI still runs the built-in generic checks; a developer's local check adds their private vocabulary.
 
+## Local maintenance notes
+
+Machine-specific operational notes may be kept under the ignored `.project-local/` directory. Use it for temporary environment state and one-machine recovery observations, not for reusable engineering decisions. General lessons belong in tracked documentation such as `ENGINEERING.md`.
+
+Ignored does not mean safe for secrets: do not store passwords, tokens, private keys, authorization URLs, or copied secret-bearing logs there. `.privacy-denylist` remains the dedicated local vocabulary gate.
+
 ## Review rules
 
 Before committing or publishing:

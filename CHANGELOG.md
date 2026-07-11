@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.0 - 2026-07-11
+
+### Architecture
+
+- Rename the transport-independent tool engine from `LocalDaemon`/`daemon.mjs` to `LocalRuntime`/`runtime.mjs`, reserving daemon terminology for the background process and relay attachment.
+- Extract authenticated WebSocket lifecycle into `relay-connection.mjs`, separating transport state, handshake readiness, heartbeat liveness, reconnect backoff, and outage observability from local file/Git/process execution.
+- Add `docs/ENGINEERING.md` as the normative record for product invariants, architectural boundaries, logging semantics, resilience, testing, documentation, and public-versus-local project knowledge. Record the owner-required default `full` profile as an explicit invariant.
+
+### Logging and operator experience
+
+- Replace raw default-level relay close output such as `{"code":1006,"reason":""}` with a state-transition policy: brief self-healing interruptions are debug-only, sustained outages produce one rate-limited actionable warning, and recovery produces one duration/attempt summary.
+- Keep WebSocket close codes, reason strings, retry delays, heartbeat details, and brief recoveries at debug level. Expand coarse operational error classification for network and authentication failures; treat authentication and relay identity/version mismatch as immediate actionable fatal errors rather than retryable network outages.
+- Add an ignored `.project-local/` area for machine-specific maintenance notes while keeping reusable decisions in tracked documentation and credentials out of both.
+
+### Reliability and correctness
+
+- Treat a WebSocket `open` event only as transport availability; authenticated relay readiness now requires `hello_ack`. Remove the startup path that printed `Remote MCP bridge is ready` after a timeout even when authentication had not completed.
+- Terminate and retry candidates that do not acknowledge the daemon handshake, detect silent half-open connections through inbound heartbeat timeouts, and preserve bounded exponential reconnect backoff.
+- Handle Cloudflare Durable Object `webSocketError` as well as `webSocketClose`, immediately rejecting pending calls bound to the failed socket through one idempotent cleanup path.
+- Consolidate managed-job transition/recovery locking into one stale-PID-aware primitive and manager/runner regular-file reads into one no-follow bounded helper, with direct regression tests.
+- Replace mechanical runtime/CLI switch and conditional routing with catalog-checked handler tables and named command phases while preserving explicit patch, runner, and recovery state machines.
+- Replace technical Worker health warning details at default level with a user-facing reason while retaining the raw health code at debug.
+
+### Installation, tests, and documentation
+
+- Use the empirically verified npm 12 global install command with `--omit=optional` and the reviewed `esbuild,workerd,sharp,fsevents` script names. Add an isolated tarball/global-install smoke test that rejects blocked-script warnings, verifies `fsevents` is absent from the installed runtime, and executes the installed CLI.
+- Add deterministic relay lifecycle tests for authenticated readiness, brief-interruption suppression, persistent-outage escalation, recovery summaries, handshake/heartbeat timeout, transport construction/error paths, supersession, acknowledgement identity/version mismatch, and close-code classification. Add architecture/documentation regression checks for module cycles, obsolete naming, broken links, invisible ASCII controls, and retained engineering invariants.
+- Update architecture, operations, logging, privacy, testing, contribution, README, and CLI guidance to match the implemented behavior.
+
 ## 0.7.1 - 2026-07-11
 
 ### Fixed

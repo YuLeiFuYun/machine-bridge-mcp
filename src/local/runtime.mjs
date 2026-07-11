@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { chmod, link, lstat, mkdir, open, opendir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import WebSocket from "ws";
+import { RelayConnection } from "./relay-connection.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
 import { MAX_COMMAND_BYTES, ProcessSessionManager, terminateProcessTree, validateArgv } from "./process-sessions.mjs";
@@ -24,11 +24,46 @@ const MAX_WALK_ENTRIES = 200_000;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const SLOW_TOOL_CALL_MS = 30_000;
 
-export class LocalDaemon {
-  constructor({ workerUrl = "", secret = "", workspace, policy, logger = console, onSuperseded = null, jobRoot = "", resources = {}, resourceStatePath = "", recoverJobs = true }) {
-    this.workerUrl = workerUrl ? normalizeWorkerUrl(workerUrl) : "";
-    if (this.workerUrl && (typeof secret !== "string" || secret.length < 16)) throw new Error("daemon secret is missing or too short");
-    this.secret = secret || "";
+const RUNTIME_TOOL_HANDLERS = Object.freeze({
+  server_info: (runtime) => runtime.runtimeInfo(),
+  project_overview: (runtime, _args, context) => runtime.projectOverview(context),
+  list_roots: (runtime) => runtime.listRoots(),
+  list_dir: (runtime, args, context) => runtime.listDir(args.path || ".", context),
+  list_files: (runtime, args, context) => runtime.listFiles(args.path || ".", clampInt(args.max_files, 1000, 1, 10000), context),
+  read_file: (runtime, args, context) => runtime.readFile(args, context),
+  view_image: (runtime, args, context) => runtime.viewImage(args, context),
+  write_file: (runtime, args, context) => runtime.writeFile(args, context),
+  edit_file: (runtime, args, context) => runtime.editFile(args, context),
+  apply_patch: (runtime, args, context) => runtime.applyPatch(args, context),
+  search_text: (runtime, args, context) => runtime.searchText(args, context),
+  git_status: (runtime, args, context) => runtime.gitStatus(args, context),
+  git_diff: (runtime, args, context) => runtime.gitDiff(args, context),
+  git_log: (runtime, args, context) => runtime.gitLog(args, context),
+  git_show: (runtime, args, context) => runtime.gitShow(args, context),
+  diagnose_runtime: (runtime, _args, context) => runtime.diagnoseRuntime(context),
+  list_local_resources: (runtime) => runtime.managedJobManager.listResources(),
+  generate_ssh_key_resource: (runtime, args, context) => runtime.generateSshKeyResource(args, context),
+  stage_job: (runtime, args) => runtime.managedJobManager.stage(args),
+  start_job: (runtime, args) => runtime.managedJobManager.start(args),
+  list_jobs: (runtime, args) => runtime.managedJobManager.list(args),
+  read_job: (runtime, args) => runtime.managedJobManager.read(args),
+  cancel_job: (runtime, args) => runtime.managedJobManager.cancel(args),
+  run_process: (runtime, args, context) => runtime.runDirectProcess(args, context),
+  start_process: (runtime, args, context) => runtime.processSessionManager.start(args, context),
+  read_process: (runtime, args, context) => runtime.processSessionManager.read(args, context),
+  write_process: (runtime, args, context) => runtime.processSessionManager.write(args, context),
+  kill_process: (runtime, args, context) => runtime.processSessionManager.kill(args, context),
+  exec_command: (runtime, args, context) => runtime.execCommand(args.command, clampInt(args.timeout_seconds, 120, 1, 600), context),
+});
+
+export function runtimeToolHandlerNames() {
+  return Object.keys(RUNTIME_TOOL_HANDLERS);
+}
+
+export class LocalRuntime {
+  constructor({ workerUrl = "", secret = "", expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", resources = {}, resourceStatePath = "", recoverJobs = true }) {
+    const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
+    const remoteSecret = secret || "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
     this.workspaceCanonicalPromise = null;
@@ -36,18 +71,10 @@ export class LocalDaemon {
     this.logger = logger;
     this.onSuperseded = typeof onSuperseded === "function" ? onSuperseded : null;
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
-    this.closed = false;
-    this.ws = null;
-    this.heartbeat = null;
-    this.reconnectTimer = null;
-    this.connectedOnce = null;
-    this.connectedOnceResolve = null;
-    this.connectedOnceReject = null;
     this.activeToolCalls = 0;
     this.activeProcesses = new Set();
     this.callProcesses = new Map();
     this.cancelledCalls = new Set();
-    this.reconnectAttempt = 0;
     this.mutationQueue = Promise.resolve();
     this.runtimeDir = createRuntimeDir();
     if (typeof jobRoot !== "string" || !jobRoot.trim()) throw new Error("persistent managed-job root is required");
@@ -73,6 +100,12 @@ export class LocalDaemon {
       },
       displayPath: (value) => this.displayPath(value),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
+    });
+    this.relay = createRelayConnection(this, {
+      workerUrl: remoteWorkerUrl,
+      secret: remoteSecret,
+      expectedVersion: expectedRelayVersion,
+      onFatal,
     });
   }
 
@@ -107,6 +140,9 @@ export class LocalDaemon {
       },
       tools: ["server_info", ...this.tools()],
       observability: {
+        relay_readiness: "authenticated-hello-acknowledged",
+        brief_relay_interruptions: "debug-only",
+        raw_transport_details: "debug-only",
         per_tool_events: "debug-only",
         default_logs_include_tool_failures: false,
         tool_arguments_or_results_logged: false,
@@ -122,112 +158,19 @@ export class LocalDaemon {
   }
 
   start() {
-    if (!this.workerUrl || !this.secret) throw new Error("remote daemon start requires a Worker URL and daemon secret");
-    this.closed = false;
-    this.connectedOnce = new Promise((resolvePromise, rejectPromise) => {
-      this.connectedOnceResolve = resolvePromise;
-      this.connectedOnceReject = rejectPromise;
-    });
-    this.connect();
-    return this.connectedOnce;
+    if (!this.relay) throw new Error("remote daemon start requires a Worker URL and daemon secret");
+    return this.relay.start();
   }
 
   stop() {
-    this.closed = true;
-    if (this.heartbeat) clearInterval(this.heartbeat);
-    this.heartbeat = null;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
-    this.ws?.close();
-    this.ws = null;
+    this.relay?.stop();
     this.terminateActiveProcesses("SIGKILL");
     this.processSessionManager.clear();
-    this.reconnectAttempt = 0;
     rmSync(this.runtimeDir, { recursive: true, force: true });
   }
 
-  connect() {
-    if (this.closed) return;
-    const wsUrl = `${this.workerUrl.replace(/^http/i, "ws")}/daemon/ws`;
-    this.logger.debug?.("connecting to remote relay", { endpoint: redactUrl(wsUrl) });
-    const socket = new WebSocket(wsUrl, { headers: { "X-Bridge-Token": this.secret }, maxPayload: MAX_WS_MESSAGE_BYTES });
-    this.ws = socket;
-
-    socket.on("open", () => {
-      if (this.ws !== socket || this.closed) {
-        socket.close();
-        return;
-      }
-      this.reconnectAttempt = 0;
-      this.logger.info?.("remote relay connected");
-      this.send({ type: "hello", tools: this.tools(), policy: this.policy, protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS });
-      if (this.connectedOnceResolve) {
-        this.connectedOnceResolve(true);
-        this.connectedOnceResolve = null;
-        this.connectedOnceReject = null;
-      }
-      if (this.heartbeat) clearInterval(this.heartbeat);
-      this.heartbeat = setInterval(() => this.send({ type: "heartbeat", ts: Date.now() }), 25_000);
-      this.heartbeat.unref?.();
-    });
-
-    socket.on("message", data => {
-      const raw = String(data);
-      if (Buffer.byteLength(raw) > MAX_WS_MESSAGE_BYTES) {
-        this.logger.warn?.("oversized websocket message rejected");
-        return;
-      }
-      void this.handleMessage(raw).catch(error => {
-        this.logger.error?.("daemon message handler failed", { error_class: classifyOperationalError(error) });
-      });
-    });
-
-    socket.on("close", (code, reason) => {
-      if (this.ws !== socket) return;
-      this.ws = null;
-      this.terminateActiveProcesses("SIGTERM", true);
-      if (this.heartbeat) clearInterval(this.heartbeat);
-      this.heartbeat = null;
-      const reasonText = String(reason || "").slice(0, 128);
-      const fields = { code, reason: reasonText };
-      if (isSupersededClose(code, reasonText)) {
-        this.closed = true;
-        this.terminateActiveProcesses("SIGKILL");
-        this.processSessionManager.clear();
-        this.logger.warn?.("daemon connection permanently superseded", fields);
-        queueMicrotask(() => {
-          try { this.onSuperseded?.(); } catch (error) {
-            this.logger.error?.("daemon superseded callback failed", { error_class: classifyOperationalError(error) });
-          }
-        });
-        return;
-      }
-      if (this.closed) this.logger.debug?.("remote relay closed", fields);
-      else this.logger.warn?.("remote relay disconnected", fields);
-      if (!this.closed) {
-        const delay = reconnectDelay(this.reconnectAttempt++);
-        this.logger.debug?.("scheduling daemon reconnect", { delay_ms: delay });
-        this.reconnectTimer = setTimeout(() => this.connect(), delay);
-        this.reconnectTimer.unref?.();
-      }
-    });
-
-    socket.on("error", error => {
-      if (this.ws !== socket) return;
-      if (this.closed) this.logger.debug?.("remote relay closed during shutdown", { error_class: classifyOperationalError(error) });
-      else this.logger.error?.("remote relay error", { error_class: classifyOperationalError(error) });
-    });
-  }
-
   send(value) {
-    if (this.ws?.readyState !== WebSocket.OPEN) return false;
-    try {
-      this.ws.send(JSON.stringify(value));
-      return true;
-    } catch (error) {
-      this.logger.warn?.("remote relay send failed", { error_class: classifyOperationalError(error) });
-      return false;
-    }
+    return this.relay?.send(value) === true;
   }
 
   async handleMessage(raw) {
@@ -236,50 +179,59 @@ export class LocalDaemon {
       this.logger.warn?.("invalid websocket JSON");
       return;
     }
-    if (message.type === "welcome" || message.type === "hello_ack" || message.type === "pong") return;
-    if (message.type === "cancel_call") {
-      if (typeof message.id === "string") this.cancelCall(message.id, "remote cancellation");
-      return;
-    }
+    if (this.handleRelayControlMessage(message)) return;
     if (message.type !== "tool_call") {
       this.logger.warn?.("unknown websocket message", { type: String(message.type || "") });
       return;
     }
+    await this.handleRelayToolCall(message);
+  }
 
-    const id = typeof message.id === "string" ? message.id : "";
-    const tool = typeof message.tool === "string" ? message.tool : "";
-    const argumentsValue = message.arguments === undefined ? {} : message.arguments;
-    if (!id || id.length > 256 || !tool || tool.length > 128 || !isPlainRecord(argumentsValue)) {
+  handleRelayControlMessage(message) {
+    if (message.type === "hello_ack") {
+      this.relay?.acknowledge(message);
+      return true;
+    }
+    if (message.type === "pong") return true;
+    if (message.type === "cancel_call") {
+      if (typeof message.id === "string") this.cancelCall(message.id, "remote cancellation");
+      return true;
+    }
+    return false;
+  }
+
+  async handleRelayToolCall(message) {
+    const envelope = normalizeRelayToolCall(message);
+    if (!envelope.ok) {
       this.logger.warn?.("invalid tool_call envelope");
-      if (id && id.length <= 256) this.send({ type: "tool_result", id, ok: false, error: { message: "invalid tool_call envelope" } });
+      if (envelope.id) this.send({ type: "tool_result", id: envelope.id, ok: false, error: { message: "invalid tool_call envelope" } });
       return;
     }
     if (this.activeToolCalls >= MAX_CONCURRENT_TOOL_CALLS) {
-      this.send({ type: "tool_result", id, ok: false, error: { message: "too many concurrent tool calls" } });
+      this.send({ type: "tool_result", id: envelope.id, ok: false, error: { message: "too many concurrent tool calls" } });
       return;
     }
 
-    const relayTimeoutMs = clampInt(message.timeout_ms, 60_000, 1000, 610_000);
-    const deadline = setTimeout(() => this.cancelCall(id, "relay deadline exceeded"), relayTimeoutMs);
+    const deadline = setTimeout(() => this.cancelCall(envelope.id, "relay deadline exceeded"), envelope.timeoutMs);
     deadline.unref?.();
     this.activeToolCalls += 1;
     const started = Date.now();
-    this.logger.debug?.("tool call started", { call_id: shortCallId(id), tool });
+    this.logger.debug?.("tool call started", { call_id: shortCallId(envelope.id), tool: envelope.tool });
     try {
-      const result = await this.executeTool(tool, argumentsValue, { callId: id });
-      if (this.cancelledCalls.has(id)) throw new Error("tool call cancelled");
-      this.send({ type: "tool_result", id, ok: true, result });
+      const result = await this.executeTool(envelope.tool, envelope.arguments, { callId: envelope.id });
+      if (this.cancelledCalls.has(envelope.id)) throw new Error("tool call cancelled");
+      this.send({ type: "tool_result", id: envelope.id, ok: true, result });
       const durationMs = Date.now() - started;
-      this.logger.debug?.(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: shortCallId(id), tool, duration_ms: durationMs });
+      this.logger.debug?.(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: shortCallId(envelope.id), tool: envelope.tool, duration_ms: durationMs });
     } catch (error) {
-      const safeError = this.safeErrorMessage(error, argumentsValue);
-      this.send({ type: "tool_result", id, ok: false, error: { message: safeError } });
+      const safeError = this.safeErrorMessage(error, envelope.arguments);
+      this.send({ type: "tool_result", id: envelope.id, ok: false, error: { message: safeError } });
       const durationMs = Date.now() - started;
-      this.logger.debug?.("tool call failed", { call_id: shortCallId(id), tool, duration_ms: durationMs, error_class: classifyOperationalError(error) });
+      this.logger.debug?.("tool call failed", { call_id: shortCallId(envelope.id), tool: envelope.tool, duration_ms: durationMs, error_class: classifyOperationalError(error) });
     } finally {
       clearTimeout(deadline);
       this.activeToolCalls -= 1;
-      this.finishCall(id);
+      this.finishCall(envelope.id);
     }
   }
 
@@ -305,38 +257,9 @@ export class LocalDaemon {
 
   async executeTool(tool, args, context = {}) {
     if (!["server_info", ...this.tools()].includes(tool)) throw new Error(`tool disabled or unknown: ${tool}`);
-    switch (tool) {
-      case "server_info": return this.runtimeInfo();
-      case "project_overview": return this.projectOverview(context);
-      case "list_roots": return this.listRoots();
-      case "list_dir": return this.listDir(args.path || ".", context);
-      case "list_files": return this.listFiles(args.path || ".", clampInt(args.max_files, 1000, 1, 10000), context);
-      case "read_file": return this.readFile(args, context);
-      case "view_image": return this.viewImage(args, context);
-      case "write_file": return this.writeFile(args, context);
-      case "edit_file": return this.editFile(args, context);
-      case "apply_patch": return this.applyPatch(args, context);
-      case "search_text": return this.searchText(args, context);
-      case "git_status": return this.gitStatus(args, context);
-      case "git_diff": return this.gitDiff(args, context);
-      case "git_log": return this.gitLog(args, context);
-      case "git_show": return this.gitShow(args, context);
-      case "diagnose_runtime": return this.diagnoseRuntime(context);
-      case "list_local_resources": return this.managedJobManager.listResources();
-      case "generate_ssh_key_resource": return this.generateSshKeyResource(args, context);
-      case "stage_job": return this.managedJobManager.stage(args);
-      case "start_job": return this.managedJobManager.start(args);
-      case "list_jobs": return this.managedJobManager.list(args);
-      case "read_job": return this.managedJobManager.read(args);
-      case "cancel_job": return this.managedJobManager.cancel(args);
-      case "run_process": return this.runDirectProcess(args, context);
-      case "start_process": return this.processSessionManager.start(args, context);
-      case "read_process": return this.processSessionManager.read(args, context);
-      case "write_process": return this.processSessionManager.write(args, context);
-      case "kill_process": return this.processSessionManager.kill(args, context);
-      case "exec_command": return this.execCommand(args.command, clampInt(args.timeout_seconds, 120, 1, 600), context);
-      default: throw new Error(`unknown daemon tool: ${tool}`);
-    }
+    const handler = RUNTIME_TOOL_HANDLERS[tool];
+    if (!handler) throw new Error(`runtime handler is missing for tool: ${tool}`);
+    return handler(this, args, context);
   }
 
   async projectOverview(context = {}) {
@@ -1009,25 +932,6 @@ function stateRootFromProfileStatePath(statePath) {
   return dirname(profilesDir);
 }
 
-function normalizeWorkerUrl(value) {
-  let url;
-  try { url = new URL(String(value || "")); } catch { throw new Error("invalid Worker URL"); }
-  if (url.protocol !== "https:") throw new Error("Worker URL must use HTTPS");
-  if (url.username || url.password) throw new Error("Worker URL must not contain credentials");
-  if (url.pathname !== "/" || url.search || url.hash) throw new Error("Worker URL must be an origin without a path, query, or fragment");
-  return url.origin;
-}
-
-export function isSupersededClose(code, reason) {
-  return Number(code) === 1012 && String(reason || "") === "replaced by authenticated daemon";
-}
-
-function reconnectDelay(attempt) {
-  const base = Math.min(3000 * (2 ** Math.min(attempt, 4)), 60_000);
-  return base + Math.floor(Math.random() * 1000);
-}
-
-
 function assertContainedPath(root, target) {
   const rel = relative(root, target);
   if (rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel))) return;
@@ -1213,6 +1117,59 @@ function detectImageMime(buffer) {
   return "";
 }
 
+function createRelayConnection(runtime, { workerUrl, secret, expectedVersion, onFatal }) {
+  if (!workerUrl) return null;
+  return new RelayConnection({
+    workerUrl,
+    secret,
+    logger: runtime.logger,
+    maxPayload: MAX_WS_MESSAGE_BYTES,
+    expectedServer: SERVER_NAME,
+    expectedVersion: String(expectedVersion || ""),
+    helloMessage: () => ({
+      type: "hello",
+      tools: runtime.tools(),
+      policy: runtime.policy,
+      protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
+    }),
+    onMessage: (data) => handleRelayData(runtime, data),
+    onDisconnect: () => runtime.terminateActiveProcesses("SIGTERM", true),
+    onSuperseded: () => {
+      runtime.terminateActiveProcesses("SIGKILL");
+      runtime.processSessionManager.clear();
+      runtime.onSuperseded?.();
+    },
+    onFatal: (error) => {
+      runtime.terminateActiveProcesses("SIGKILL");
+      runtime.processSessionManager.clear();
+      onFatal?.(error);
+    },
+  });
+}
+
+function handleRelayData(runtime, data) {
+  const raw = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
+  if (Buffer.byteLength(raw) > MAX_WS_MESSAGE_BYTES) {
+    runtime.logger.warn?.("oversized websocket message rejected");
+    return;
+  }
+  return runtime.handleMessage(raw);
+}
+
+function normalizeRelayToolCall(message) {
+  const id = typeof message.id === "string" && message.id.length <= 256 ? message.id : "";
+  const tool = typeof message.tool === "string" && message.tool.length <= 128 ? message.tool : "";
+  const argumentsValue = message.arguments === undefined ? {} : message.arguments;
+  if (!id || !tool || !isPlainRecord(argumentsValue)) return { ok: false, id };
+  return {
+    ok: true,
+    id,
+    tool,
+    arguments: argumentsValue,
+    timeoutMs: clampInt(message.timeout_ms, 60_000, 1000, 610_000),
+  };
+}
+
 function isPlainRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -1256,8 +1213,4 @@ function replacePathPrefix(message, pathValue, replacement) {
 
 function shortCallId(value) {
   return String(value || "").slice(0, 20);
-}
-
-function redactUrl(value) {
-  try { return new URL(value).origin; } catch { return "<invalid-url>"; }
 }

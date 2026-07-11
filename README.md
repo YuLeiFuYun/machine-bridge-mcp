@@ -48,10 +48,10 @@ This default prioritizes usability, not least privilege. `run_process` and proce
 Node.js 26 or newer and npm 12 or newer are required. The repository pins the active development versions in `.node-version`, `.nvmrc`, and `packageManager`; project installs fail on older Node runtimes.
 
 ```sh
-npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest
+npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
 ```
 
-Recent npm releases may otherwise warn that Wrangler's native dependencies (`esbuild`, `workerd`, and `sharp`) have install scripts awaiting approval. The scoped command above approves only those packages for this installation; it does not change the user's global npm policy. A plain install can still work when compatible prebuilt artifacts are already available, but `machine-mcp doctor` is the authoritative runtime check.
+Recent npm releases may otherwise warn that Wrangler's native dependencies (`esbuild`, `workerd`, and `sharp`) have install scripts awaiting approval. The scoped command approves the reviewed native script names that npm 12 evaluates during global resolution while `--omit=optional` keeps optional `fsevents` out of the installed runtime. `fsevents` is used for development-time filesystem watching rather than Machine Bridge runtime or deployment. It does not change the user's global npm policy. `machine-mcp doctor` remains the authoritative runtime check.
 
 From a source checkout, the checked-in exact-version `allowScripts` policy approves the reviewed native dependencies:
 
@@ -335,7 +335,7 @@ Default state roots:
 
 State/config writes use owner-only temporary files, flushes, and atomic rename. Malformed state is retained as a bounded corrupt backup before reconstruction. Resource source paths are redacted from `status` output. Active managed-job plans are owner-only and are deleted after a terminal result; bounded redacted results are retained temporarily. Uninstall validates markers, canonical paths, active locks, workspace/source exclusions, and known contents before recursive deletion.
 
-Default foreground logs show startup/deployment transitions, relay connectivity, and infrastructure warnings/errors. Every per-tool event—including success, failure, cancellation, and slow-call timing—appears only at `--log-level debug` or `--verbose`. Background services use `warn`, so ordinary tool outcomes never fill daemon logs. Log messages and structured fields are bounded, secret-like keys and known token formats are redacted, and tool arguments/results are not written. See [docs/LOGGING.md](docs/LOGGING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
+Default foreground logs report authenticated relay readiness, persistent degradation, and recovery summaries rather than raw WebSocket callbacks. Brief self-healing disconnects and close codes/reasons are debug-only. Every per-tool event—including success, failure, cancellation, and slow-call timing—also appears only at `--log-level debug` or `--verbose`. Background services use `warn`, so ordinary tool outcomes and brief network changes do not fill daemon logs. Log messages and structured fields are bounded, secret-like keys and known token formats are redacted, and tool arguments/results are not written. See [docs/LOGGING.md](docs/LOGGING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Development and verification
 
@@ -348,9 +348,9 @@ npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```
 
-`npm run check` covers privacy and release-impact gates, generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/sensitive-artifact check, managed-job detachment/resource redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline.
+`npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, JavaScript syntax, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, local path/write/process/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/sensitive-artifact check, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline; macOS and package-audit jobs also exercise the documented isolated global installation.
 
-See [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [SECURITY.md](SECURITY.md).
+See [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), and [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 

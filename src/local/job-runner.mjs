@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { executionEnv } from "./shell.mjs";
 import { terminateProcessTree } from "./process-sessions.mjs";
 import { replaceFileSync } from "./atomic-fs.mjs";
+import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
 const TEMP_TOKEN = /\{\{temp:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -486,23 +487,7 @@ function readJson(file, maxBytes) {
 }
 
 function readBoundedFile(file, maxBytes) {
-  const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0);
-  const fd = openSync(file, flags);
-  try {
-    const info = fstatSync(fd);
-    if (!info.isFile()) throw new Error("path is not a regular file");
-    if (info.size > maxBytes) throw new Error(`file exceeds ${maxBytes} bytes`);
-    const buffer = Buffer.alloc(info.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const count = readSync(fd, buffer, offset, buffer.length - offset, offset);
-      if (!count) break;
-      offset += count;
-    }
-    return buffer.subarray(0, offset);
-  } finally {
-    closeSync(fd);
-  }
+  return readBoundedRegularFileSync(file, maxBytes);
 }
 
 function classifyError(error) {

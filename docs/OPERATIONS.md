@@ -24,6 +24,12 @@ machine-mcp service status
 
 A successful diagnostic result applies only to that probe. An MCP host can still deny a later call based on its own request context. This is expected layering, not a defect in the `full` profile: `full` removes Machine Bridge's own denials, while host delivery remains independent.
 
+### Relay interruption messages
+
+A brief relay interruption is retried automatically and is visible only with `--verbose`. Default logs do not print raw WebSocket values such as `code=1006` with an empty reason. If a transient outage persists for 10 seconds, one warning is emitted and repeated warnings are rate-limited; a later recovery produces one summary with outage duration and attempt count. Identity/version mismatch and authentication rejection are not retried as ordinary network faults: the daemon emits an immediate actionable error and exits, requiring upgrade/redeployment or credential repair.
+
+Use `--verbose` only when close codes, close reasons, heartbeat timeouts, and retry delays are needed for diagnosis. A close code of 1006 means the transport ended without a normal close handshake; it does not by itself identify the cause.
+
 ## Logs
 
 Remote autostart definitions prefer a stable PATH alias that resolves to the currently running Node executable and persist a sanitized absolute-only service `PATH` containing the Node/CLI directories, the installer's absolute PATH entries, and platform defaults. This avoids versioned Homebrew-style paths becoming invalid after upgrades and prevents launchd/systemd from falling back to a minimal system-only PATH. Re-run `machine-mcp service install` after changing Node installation families or PATH layout. Autostart logs are stored under the state root in `logs/daemon.out.log` and `logs/daemon.err.log`. Files are owner-only where supported and tail-trimmed before daemon startup.

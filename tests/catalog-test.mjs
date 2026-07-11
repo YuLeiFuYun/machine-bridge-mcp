@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { allToolNames, MCP_INSTRUCTIONS, toolResult, toolsForPolicy } from "../src/local/tools.mjs";
+import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
@@ -18,6 +19,7 @@ const unique = new Set(names);
 assert(names.length === unique.size, "tool catalog contains duplicate names");
 assert(names[0] === "server_info", "server_info must remain the first catalog tool");
 assert(JSON.stringify(names) === JSON.stringify(allToolNames()), "runtime tool inventory differs from catalog");
+assert(JSON.stringify([...runtimeToolHandlerNames()].sort()) === JSON.stringify([...names].sort()), "local runtime handler inventory differs from catalog");
 
 for (const tool of catalog) {
   assert(typeof tool.name === "string" && /^[a-z][a-z0-9_]*$/.test(tool.name), `invalid tool name: ${tool.name}`);

@@ -21,3 +21,11 @@ A privacy or security correction is always release-relevant. Removing a private 
 ## Privacy
 
 Use only synthetic names, reserved example domains, and generic paths. Maintain private local identifiers in the ignored `.privacy-denylist` and run `npm run privacy:check` before committing.
+
+## Engineering standards
+
+Read [docs/ENGINEERING.md](docs/ENGINEERING.md) before changing architecture, policy, logging, persistence, transport lifecycle, or release behavior. The default `full` profile is an explicit product invariant and must not be narrowed by an unrelated change.
+
+A log change is behavior: test its level, repetition policy, privacy fields, and recovery message. A transport change must distinguish low-level connectivity from authenticated readiness and test timeout/reconnect branches deterministically.
+
+Reusable decisions belong in tracked documentation. Keep only machine-specific observations in the ignored `.project-local/` directory, and never store credentials there.

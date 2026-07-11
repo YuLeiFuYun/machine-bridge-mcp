@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import path, { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
-import { LocalDaemon } from "./daemon.mjs";
+import { LocalRuntime } from "./runtime.mjs";
 import { runStdioServer } from "./stdio.mjs";
 import { assertCanonicalFullPolicy, DEFAULT_POLICY_PROFILE, DEFAULT_POLICY_REVISION, POLICY_PROFILES, normalizePolicy, policyProfile, toolsForPolicy } from "./tools.mjs";
 import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
@@ -46,6 +46,22 @@ const VALUE_OPTIONS = new Set([
   "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel",
 ]);
 
+const COMMAND_HANDLERS = Object.freeze({
+  start: startCommand,
+  stdio: stdioCommand,
+  "client-config": clientConfigCommand,
+  status: statusCommand,
+  doctor: doctorCommand,
+  "full-test": fullTestCommand,
+  workspace: workspaceCommand,
+  service: serviceCommand,
+  autostart: serviceCommand,
+  "rotate-secrets": rotateSecretsCommand,
+  resource: resourceCommand,
+  job: jobCommand,
+  uninstall: uninstallCommand,
+});
+
 export async function main(argv = process.argv.slice(2)) {
   const [command, rest] = normalizeCommand(argv);
   const args = parseArgs(rest);
@@ -55,26 +71,11 @@ export async function main(argv = process.argv.slice(2)) {
   validateCommandOptions(command, args);
   validatePositionals(command, args);
   validateLoggingOptions(args);
-
-  switch (command) {
-    case "start": return startCommand(args);
-    case "stdio": return stdioCommand(args);
-    case "client-config": return clientConfigCommand(args);
-    case "status": return statusCommand(args);
-    case "doctor": return doctorCommand(args);
-    case "full-test": return fullTestCommand(args);
-    case "workspace": return workspaceCommand(args);
-    case "service":
-    case "autostart": return serviceCommand(args);
-    case "rotate-secrets": return rotateSecretsCommand(args);
-    case "resource": return resourceCommand(args);
-    case "job": return jobCommand(args);
-    case "uninstall": return uninstallCommand(args);
-    default:
-      console.error(`Unknown command: ${command}`);
-      usage();
-      process.exitCode = 2;
-  }
+  const handler = COMMAND_HANDLERS[command];
+  if (handler) return handler(args);
+  console.error(`Unknown command: ${command}`);
+  usage();
+  process.exitCode = 2;
 }
 
 const COMMAND_OPTIONS = {
@@ -125,44 +126,55 @@ function toKebab(value) {
   return String(value).replace(/[A-Z]/g, (ch) => `-${ch.toLowerCase()}`);
 }
 
+const SINGLE_WORKSPACE_POSITIONAL_COMMANDS = new Set(["start", "stdio", "status", "doctor", "full-test", "rotate-secrets"]);
+const STATIC_POSITIONAL_RULES = Object.freeze({
+  "client-config": Object.freeze({ max: 1, tooMany: "client-config accepts at most one positional client name" }),
+  uninstall: Object.freeze({ max: 0, tooMany: "uninstall does not accept positional arguments" }),
+});
+const RESOURCE_POSITIONAL_LIMITS = Object.freeze({ add: 3, "generate-ssh-key": 3, remove: 2, check: 2 });
+const JOB_POSITIONAL_LIMITS = Object.freeze({ read: 2, inspect: 2, cancel: 2, approve: 2, submit: 2 });
+const ACTION_POSITIONAL_RULES = Object.freeze({
+  workspace(args) {
+    const action = String(args._[0] || "show");
+    return { max: action === "set" || action === "select" ? 2 : 1, tooMany: `workspace ${action} received too many positional arguments`, workspaceConflictAfter: 1 };
+  },
+  service(args) {
+    const action = String(args._[0] || "status");
+    return { max: action === "install" ? 2 : 1, tooMany: `service ${action} received too many positional arguments`, workspaceConflictAfter: 1 };
+  },
+  autostart(args) {
+    return ACTION_POSITIONAL_RULES.service(args);
+  },
+  resource(args) {
+    const action = String(args._[0] || "list");
+    return { max: RESOURCE_POSITIONAL_LIMITS[action] ?? 1, tooMany: `resource ${action} received too many positional arguments` };
+  },
+  job(args) {
+    const action = String(args._[0] || "list");
+    return { max: JOB_POSITIONAL_LIMITS[action] ?? 1, tooMany: `job ${action} received too many positional arguments` };
+  },
+});
+
 export function validatePositionals(command, args) {
   const count = args._.length;
-  if (["start", "stdio", "status", "doctor", "full-test", "rotate-secrets"].includes(command)) {
-    if (count > 1) throw new Error(`${command} accepts at most one positional workspace path`);
-    if (args.workspace && count) throw new Error("workspace path was provided both positionally and with --workspace");
-    return;
+  const rule = positionalRule(command, args);
+  if (!rule) return;
+  if (count > rule.max) throw new Error(rule.tooMany);
+  if (args.workspace && Number.isInteger(rule.workspaceConflictAfter) && count > rule.workspaceConflictAfter) {
+    throw new Error("workspace path was provided both positionally and with --workspace");
   }
-  if (command === "workspace") {
-    const action = String(args._[0] || "show");
-    const max = action === "set" || action === "select" ? 2 : 1;
-    if (count > max) throw new Error(`workspace ${action} received too many positional arguments`);
-    if (args.workspace && count > 1) throw new Error("workspace path was provided both positionally and with --workspace");
-    return;
+}
+
+function positionalRule(command, args) {
+  if (SINGLE_WORKSPACE_POSITIONAL_COMMANDS.has(command)) {
+    return {
+      max: 1,
+      tooMany: `${command} accepts at most one positional workspace path`,
+      workspaceConflictAfter: 0,
+    };
   }
-  if (command === "service" || command === "autostart") {
-    const action = String(args._[0] || "status");
-    const max = action === "install" ? 2 : 1;
-    if (count > max) throw new Error(`service ${action} received too many positional arguments`);
-    if (args.workspace && count > 1) throw new Error("workspace path was provided both positionally and with --workspace");
-    return;
-  }
-  if (command === "client-config") {
-    if (count > 1) throw new Error("client-config accepts at most one positional client name");
-    return;
-  }
-  if (command === "resource") {
-    const action = String(args._[0] || "list");
-    const max = action === "add" || action === "generate-ssh-key" ? 3 : action === "remove" || action === "check" ? 2 : 1;
-    if (count > max) throw new Error(`resource ${action} received too many positional arguments`);
-    return;
-  }
-  if (command === "job") {
-    const action = String(args._[0] || "list");
-    const max = action === "read" || action === "inspect" || action === "cancel" || action === "approve" || action === "submit" ? 2 : 1;
-    if (count > max) throw new Error(`job ${action} received too many positional arguments`);
-    return;
-  }
-  if (command === "uninstall" && count) throw new Error("uninstall does not accept positional arguments");
+  if (STATIC_POSITIONAL_RULES[command]) return STATIC_POSITIONAL_RULES[command];
+  return ACTION_POSITIONAL_RULES[command]?.(args) || null;
 }
 
 function normalizeCommand(argv) {
@@ -300,138 +312,173 @@ async function startCommand(args) {
   }
 
   try {
-    if (args.daemonOnly) {
-      const { trimAutostartLogs } = await import("./service.mjs");
-      trimAutostartLogs(state.paths.stateRoot);
-    } else {
-      // Stop an installed service before acquiring the runtime lock. If a
-      // foreground daemon owns the lock, no new policy or secret state is saved.
-      await stopAutostartBestEffort(logger);
-    }
-
-    const lock = acquireDaemonLock(state);
-    if (!lock.acquired) {
-      const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
-      logger.warn(`local daemon already running for this workspace (${pid}); requested changes were not applied`);
-      if (args.json) printStartJson(state, {
-        showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
-        requestedChangesApplied: false,
-        notice: "local daemon already running; requested changes were not applied",
-      });
-      else printMcpConnection(state, {
-        noPrintCredentials: Boolean(args.noPrintCredentials),
-        includeCredentials: Boolean(args.printMcpCredentials || args.printCredentials),
-        quiet: Boolean(args.quiet),
-        verbose: Boolean(args.verbose),
-      });
+    await prepareStartMode(args, state, logger);
+    const daemonLock = acquireDaemonLock(state);
+    if (!daemonLock.acquired) {
+      reportExistingDaemon(args, state, daemonLock.owner, logger);
       return;
     }
-
-    let daemon = null;
-    try {
-      const previousMcpServerUrl = state.worker?.mcpServerUrl || "";
-      const firstMcpConnection = !previousMcpServerUrl || !state.worker?.oauthPassword;
-      const workerName = validateWorkerName(args.workerName);
-      ensureWorkerSecrets(state, { rotateSecrets: Boolean(args.rotateSecrets), workerName });
-      const previousPolicyOrigin = state.policy?.origin;
-      state.policy = resolvePolicy(args, state.policy);
-      const policyMigrated = !previousPolicyOrigin && state.policy.origin === "migrated";
-      state.policy.updatedAt = new Date().toISOString();
-      saveState(state);
-
-      if (!args.daemonOnly) await ensureWorker(state, args);
-      else if (!state.worker.url) throw new Error("--daemon-only requires an existing worker URL in state; run start once without --daemon-only");
-
-      const mcpConnectionChanged = previousMcpServerUrl && previousMcpServerUrl !== state.worker.mcpServerUrl;
-      const shouldPrintMcpCredentials = Boolean(args.printMcpCredentials || args.printCredentials || firstMcpConnection || args.rotateSecrets || mcpConnectionChanged);
-
-      if (!args.daemonOnly && !args.noAutostart) {
-        await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
-      }
-
-      daemon = new LocalDaemon({
-        workerUrl: state.worker.url,
-        secret: state.worker.daemonSecret,
-        workspace,
-        policy: state.policy,
-        logger: createLogger({ level: args.json ? "error" : effectiveLogLevel(args), component: "daemon" }),
-        jobRoot: join(state.paths.profileDir, "jobs"),
-        resources: state.resources,
-        resourceStatePath: state.paths.statePath,
-        onSuperseded: () => {
-          logger.warn("this daemon was replaced by a newer authenticated instance; exiting without reconnecting");
-          lock.release();
-          process.exit(0);
-        },
-      });
-
-      const waitForConnect = daemon.start();
-      await waitForConnectWithNotice(waitForConnect, 20_000, logger);
-      if (args.json) printStartJson(state, {
-        showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
-        notice: policyMigrated ? "legacy implicit policy migrated to full access" : "",
-      });
-      else {
-        printMcpConnection(state, {
-          noPrintCredentials: Boolean(args.noPrintCredentials),
-          includeCredentials: shouldPrintMcpCredentials,
-          quiet: Boolean(args.quiet),
-          verbose: Boolean(args.verbose),
-          policyMigrated,
-        });
-      }
-      keepProcessAlive({ daemon, lock, logger });
-    } catch (error) {
-      try { daemon?.stop?.(); } catch {}
-      lock.release();
-      throw error;
-    }
+    await startRemoteRuntime({ args, workspace, state, daemonLock, logger });
   } finally {
     startupLock.release();
   }
+}
+
+async function prepareStartMode(args, state, logger) {
+  if (args.daemonOnly) {
+    const { trimAutostartLogs } = await import("./service.mjs");
+    trimAutostartLogs(state.paths.stateRoot);
+    return;
+  }
+  // Stop an installed service before acquiring the runtime lock. If a
+  // foreground daemon owns the lock, no new policy or secret state is saved.
+  await stopAutostartBestEffort(logger);
+}
+
+function reportExistingDaemon(args, state, owner, logger) {
+  const pid = owner?.pid ? `pid ${owner.pid}` : "unknown pid";
+  logger.warn(`local daemon already running for this workspace (${pid}); requested changes were not applied`);
+  if (args.json) {
+    printStartJson(state, {
+      showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
+      requestedChangesApplied: false,
+      notice: "local daemon already running; requested changes were not applied",
+    });
+    return;
+  }
+  printMcpConnection(state, {
+    noPrintCredentials: Boolean(args.noPrintCredentials),
+    includeCredentials: Boolean(args.printMcpCredentials || args.printCredentials),
+    quiet: Boolean(args.quiet),
+    verbose: Boolean(args.verbose),
+  });
+}
+
+async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }) {
+  let runtime = null;
+  try {
+    const readiness = await prepareRemoteState({ args, workspace, state, logger });
+    runtime = createRemoteRuntime({ args, workspace, state, daemonLock, logger });
+    await runtime.start();
+    reportRemoteReady(args, state, readiness);
+    keepProcessAlive({ daemon: runtime, lock: daemonLock, logger });
+  } catch (error) {
+    try { runtime?.stop?.(); } catch {}
+    daemonLock.release();
+    throw error;
+  }
+}
+
+async function prepareRemoteState({ args, workspace, state, logger }) {
+  const previousMcpServerUrl = state.worker?.mcpServerUrl || "";
+  const firstMcpConnection = !previousMcpServerUrl || !state.worker?.oauthPassword;
+  const workerName = validateWorkerName(args.workerName);
+  ensureWorkerSecrets(state, { rotateSecrets: Boolean(args.rotateSecrets), workerName });
+  const previousPolicyOrigin = state.policy?.origin;
+  state.policy = resolvePolicy(args, state.policy);
+  const policyMigrated = !previousPolicyOrigin && state.policy.origin === "migrated";
+  state.policy.updatedAt = new Date().toISOString();
+  saveState(state);
+
+  if (!args.daemonOnly) await ensureWorker(state, args);
+  else if (!state.worker.url) throw new Error("--daemon-only requires an existing worker URL in state; run start once without --daemon-only");
+
+  if (!args.daemonOnly && !args.noAutostart) {
+    await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
+  }
+  const mcpConnectionChanged = Boolean(previousMcpServerUrl && previousMcpServerUrl !== state.worker.mcpServerUrl);
+  return {
+    policyMigrated,
+    shouldPrintMcpCredentials: Boolean(args.printMcpCredentials || args.printCredentials || firstMcpConnection || args.rotateSecrets || mcpConnectionChanged),
+  };
+}
+
+function createRemoteRuntime({ args, workspace, state, daemonLock, logger }) {
+  return new LocalRuntime({
+    workerUrl: state.worker.url,
+    secret: state.worker.daemonSecret,
+    expectedRelayVersion: currentPackageVersion(),
+    workspace,
+    policy: state.policy,
+    logger: createLogger({ level: args.json ? "error" : effectiveLogLevel(args), component: "daemon" }),
+    jobRoot: join(state.paths.profileDir, "jobs"),
+    resources: state.resources,
+    resourceStatePath: state.paths.statePath,
+    onSuperseded: () => {
+      daemonLock.release();
+      process.exit(0);
+    },
+    onFatal: () => {
+      daemonLock.release();
+      process.exit(1);
+    },
+  });
+}
+
+function reportRemoteReady(args, state, readiness) {
+  if (args.json) {
+    printStartJson(state, {
+      showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
+      notice: readiness.policyMigrated ? "legacy implicit policy migrated to full access" : "",
+    });
+    return;
+  }
+  printMcpConnection(state, {
+    noPrintCredentials: Boolean(args.noPrintCredentials),
+    includeCredentials: readiness.shouldPrintMcpCredentials,
+    quiet: Boolean(args.quiet),
+    verbose: Boolean(args.verbose),
+    policyMigrated: readiness.policyMigrated,
+  });
 }
 
 export function resolvePolicy(args = {}, stored = {}) {
   const hasStored = stored && typeof stored === "object" && (
     typeof stored.allowWrite === "boolean" || typeof stored.allowExec === "boolean" || typeof stored.execMode === "string"
   );
-  const explicitKeys = ["profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths"];
+  const explicitKeys = ["profile", ...POLICY_OVERRIDE_KEYS];
   const hasExplicit = explicitKeys.some((key) => Object.prototype.hasOwnProperty.call(args, key));
-  let base;
-
-  if (args.profile !== undefined) {
-    const profile = String(args.profile).trim().toLowerCase();
-    if (!POLICY_PROFILES[profile]) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
-    base = policyProfile(profile, "explicit");
-  } else if (hasStored) {
-    base = migrateLegacyPolicy(stored);
-  } else {
-    base = policyProfile(DEFAULT_POLICY_PROFILE, "default");
-  }
-
+  const base = selectPolicyBase(args, stored, hasStored);
   if (!hasExplicit) return normalizePolicy(base);
-  if (args.execMode !== undefined) {
-    const execMode = String(args.execMode).trim().toLowerCase();
-    if (!["off", "direct", "shell"].includes(execMode)) throw new Error("--exec-mode must be off, direct, or shell");
-    base.execMode = execMode;
-  }
-  if (args.noWrite === true) base.allowWrite = false;
-  if (args.noWrite === false) base.allowWrite = true;
-  if (args.noExec === true) base.execMode = "off";
-  if (args.noExec === false && base.execMode === "off") base.execMode = "direct";
-  if (args.fullEnv === true) base.minimalEnv = false;
-  if (args.fullEnv === false) base.minimalEnv = true;
-  if (args.unrestrictedPaths === true) base.unrestrictedPaths = true;
-  if (args.unrestrictedPaths === false) base.unrestrictedPaths = false;
-  if (args.absolutePaths === true) base.exposeAbsolutePaths = true;
-  if (args.absolutePaths === false) base.exposeAbsolutePaths = false;
-  const overrideKeys = ["execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths"];
-  if (args.profile === undefined || overrideKeys.some((key) => Object.prototype.hasOwnProperty.call(args, key))) {
+  applyPolicyOverrides(base, args);
+  if (args.profile === undefined || POLICY_OVERRIDE_KEYS.some((key) => Object.prototype.hasOwnProperty.call(args, key))) {
     base.profile = "custom";
     base.origin = "custom";
     base.revision = DEFAULT_POLICY_REVISION;
   }
   return normalizePolicy(base);
+}
+
+const POLICY_OVERRIDE_KEYS = Object.freeze(["execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths"]);
+
+function selectPolicyBase(args, stored, hasStored) {
+  if (args.profile !== undefined) {
+    const profile = String(args.profile).trim().toLowerCase();
+    if (!POLICY_PROFILES[profile]) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
+    return policyProfile(profile, "explicit");
+  }
+  if (hasStored) return migrateLegacyPolicy(stored);
+  return policyProfile(DEFAULT_POLICY_PROFILE, "default");
+}
+
+function applyPolicyOverrides(policy, args) {
+  if (args.execMode !== undefined) {
+    const execMode = String(args.execMode).trim().toLowerCase();
+    if (!["off", "direct", "shell"].includes(execMode)) throw new Error("--exec-mode must be off, direct, or shell");
+    policy.execMode = execMode;
+  }
+  applyBooleanOverride(args, "noWrite", (enabled) => { policy.allowWrite = !enabled; });
+  applyBooleanOverride(args, "noExec", (enabled) => {
+    if (enabled) policy.execMode = "off";
+    else if (policy.execMode === "off") policy.execMode = "direct";
+  });
+  applyBooleanOverride(args, "fullEnv", (enabled) => { policy.minimalEnv = !enabled; });
+  applyBooleanOverride(args, "unrestrictedPaths", (enabled) => { policy.unrestrictedPaths = enabled; });
+  applyBooleanOverride(args, "absolutePaths", (enabled) => { policy.exposeAbsolutePaths = enabled; });
+}
+
+function applyBooleanOverride(args, key, apply) {
+  if (typeof args[key] === "boolean") apply(args[key]);
 }
 
 function migrateLegacyPolicy(stored = {}) {
@@ -471,137 +518,147 @@ async function stdioCommand(args) {
   });
 }
 
+const RESOURCE_ACTION_HANDLERS = Object.freeze({
+  list: resourceListAction,
+  add: resourceAddAction,
+  "generate-ssh-key": resourceGenerateSshKeyAction,
+  remove: resourceRemoveAction,
+  check: resourceCheckAction,
+});
+
 async function resourceCommand(args) {
   const action = String(args._[0] || "list").toLowerCase();
+  const handler = RESOURCE_ACTION_HANDLERS[action];
+  if (!handler) throw new Error(`Unknown resource action: ${action}`);
   const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
   const state = loadState(workspace, { stateDir: args.stateDir });
   state.resources ||= {};
+  return handler({ args, workspace, state });
+}
 
-  if (action === "list") {
-    const includePaths = args.showPaths === true;
-    const resources = publicResourceRegistry(state.resources, { includePaths });
-    if (args.json) console.log(JSON.stringify({
+function resourceListAction({ args, workspace, state }) {
+  const includePaths = args.showPaths === true;
+  const resources = publicResourceRegistry(state.resources, { includePaths });
+  if (args.json) {
+    console.log(JSON.stringify({
       workspace: includePaths ? workspace : "<local-workspace>",
       paths_exposed: includePaths,
       resources,
     }, null, 2));
-    else if (!Object.keys(resources).length) console.log("No local resources registered.");
-    else for (const [name, value] of Object.entries(resources)) {
-      const fields = [name, value.mode || "n/a", `${value.size ?? "n/a"} bytes`];
-      if (includePaths) fields.splice(1, 0, value.path);
-      console.log(fields.join("\t"));
-    }
     return;
   }
-
-  if (action === "add") {
-    const name = validateResourceName(args._[1]);
-    const inputPath = args._[2];
-    if (!inputPath) throw new Error("resource add requires NAME and FILE_PATH");
-    const lock = acquireStartupLock(state);
-    if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
-    try {
-      const latest = loadState(workspace, { stateDir: args.stateDir });
-      latest.resources ||= {};
-      const inspected = inspectResourceFile(expandHome(inputPath), { allowInsecurePermissions: args.allowInsecurePermissions === true });
-      if (!Object.prototype.hasOwnProperty.call(latest.resources, name) && Object.keys(latest.resources).length >= 64) {
-        throw new Error("local resource registry limit reached (64)");
-      }
-      latest.resources[name] = inspected;
-      saveState(latest);
-      const result = publicResourceInspection(name, inspected, {
-        includePath: args.showPaths === true,
-        available_to_new_jobs_immediately: true,
-      });
-      if (args.json) console.log(JSON.stringify(result, null, 2));
-      else {
-        console.log(`Registered local resource: ${name}`);
-        if (args.showPaths === true) console.log(`Path: ${inspected.path}`);
-        console.log(`Mode: ${inspected.mode || "n/a"}; size: ${inspected.size} bytes`);
-        console.log("The resource is available to newly submitted managed jobs immediately.");
-      }
-    } finally {
-      lock.release();
-    }
+  if (!Object.keys(resources).length) {
+    console.log("No local resources registered.");
     return;
   }
+  for (const [name, value] of Object.entries(resources)) {
+    const fields = [name, value.mode || "n/a", `${value.size ?? "n/a"} bytes`];
+    if (includePaths) fields.splice(1, 0, value.path);
+    console.log(fields.join("	"));
+  }
+}
 
-  if (action === "generate-ssh-key") {
-    const name = validateResourceName(args._[1]);
-    const home = process.env.HOME || process.env.USERPROFILE;
-    if (!home) throw new Error("HOME or USERPROFILE is required to choose a default SSH key path");
-    const requestedPath = args._[2] ? expandHome(args._[2]) : join(home, ".ssh", `machine-mcp-${name}-ed25519`);
-    const key = await generateRegisteredSshKey({
-      workspace,
-      stateDir: args.stateDir,
-      name,
-      targetPath: requestedPath,
-      comment: `machine-mcp:${name}`,
+function resourceAddAction({ args, workspace, state }) {
+  const name = validateResourceName(args._[1]);
+  const inputPath = args._[2];
+  if (!inputPath) throw new Error("resource add requires NAME and FILE_PATH");
+  const lock = acquireStartupLock(state);
+  if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
+  try {
+    const latest = loadState(workspace, { stateDir: args.stateDir });
+    latest.resources ||= {};
+    const inspected = inspectResourceFile(expandHome(inputPath), { allowInsecurePermissions: args.allowInsecurePermissions === true });
+    if (!Object.prototype.hasOwnProperty.call(latest.resources, name) && Object.keys(latest.resources).length >= 64) {
+      throw new Error("local resource registry limit reached (64)");
+    }
+    latest.resources[name] = inspected;
+    saveState(latest);
+    const result = publicResourceInspection(name, inspected, {
+      includePath: args.showPaths === true,
+      available_to_new_jobs_immediately: true,
     });
-    const includePaths = args.showPaths === true;
-    const result = {
-      name: key.name,
-      created: key.created,
-      fingerprint: key.fingerprint,
-      key_type: key.keyType,
-      private_mode: key.privateMode,
-      public_mode: key.publicMode,
-      private_key_content_exposed: key.privateKeyContentExposed,
-      registered: key.registered,
-      available_to_new_jobs_immediately: key.availableToNewJobsImmediately,
-      paths_exposed: includePaths,
-      ...(includePaths ? { private_key_path: key.privateKeyPath, public_key_path: key.publicKeyPath } : {}),
-    };
     if (args.json) console.log(JSON.stringify(result, null, 2));
     else {
-      console.log(`${key.created ? "Generated and registered" : "Reused and registered"} SSH key resource: ${name}`);
-      if (includePaths) {
-        console.log(`Private key: ${key.privateKeyPath}`);
-        console.log(`Public key: ${key.publicKeyPath}`);
-      }
-      console.log(`Fingerprint: ${key.fingerprint}`);
-      console.log("Private key content was not printed or sent through MCP.");
+      console.log(`Registered local resource: ${name}`);
+      if (args.showPaths === true) console.log(`Path: ${inspected.path}`);
+      console.log(`Mode: ${inspected.mode || "n/a"}; size: ${inspected.size} bytes`);
+      console.log("The resource is available to newly submitted managed jobs immediately.");
     }
-    return;
+  } finally {
+    lock.release();
   }
+}
 
-  if (action === "remove") {
-    const name = validateResourceName(args._[1]);
-    const lock = acquireStartupLock(state);
-    if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
-    try {
-      const latest = loadState(workspace, { stateDir: args.stateDir });
-      latest.resources ||= {};
-      const existed = Object.prototype.hasOwnProperty.call(latest.resources, name);
-      delete latest.resources[name];
-      saveState(latest);
-      const result = { name, removed: existed, affects_new_jobs_immediately: true };
-      if (args.json) console.log(JSON.stringify(result, null, 2));
-      else {
-        console.log(existed ? `Removed local resource: ${name}` : `Local resource was not registered: ${name}`);
-        console.log("The change applies to newly submitted managed jobs immediately.");
-      }
-    } finally {
-      lock.release();
+async function resourceGenerateSshKeyAction({ args, workspace }) {
+  const name = validateResourceName(args._[1]);
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (!home) throw new Error("HOME or USERPROFILE is required to choose a default SSH key path");
+  const requestedPath = args._[2] ? expandHome(args._[2]) : join(home, ".ssh", `machine-mcp-${name}-ed25519`);
+  const key = await generateRegisteredSshKey({
+    workspace,
+    stateDir: args.stateDir,
+    name,
+    targetPath: requestedPath,
+    comment: `machine-mcp:${name}`,
+  });
+  const includePaths = args.showPaths === true;
+  const result = {
+    name: key.name,
+    created: key.created,
+    fingerprint: key.fingerprint,
+    key_type: key.keyType,
+    private_mode: key.privateMode,
+    public_mode: key.publicMode,
+    private_key_content_exposed: key.privateKeyContentExposed,
+    registered: key.registered,
+    available_to_new_jobs_immediately: key.availableToNewJobsImmediately,
+    paths_exposed: includePaths,
+    ...(includePaths ? { private_key_path: key.privateKeyPath, public_key_path: key.publicKeyPath } : {}),
+  };
+  if (args.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`${key.created ? "Generated and registered" : "Reused and registered"} SSH key resource: ${name}`);
+    if (includePaths) {
+      console.log(`Private key: ${key.privateKeyPath}`);
+      console.log(`Public key: ${key.publicKeyPath}`);
     }
-    return;
+    console.log(`Fingerprint: ${key.fingerprint}`);
+    console.log("Private key content was not printed or sent through MCP.");
   }
+}
 
-  if (action === "check") {
-    const name = validateResourceName(args._[1]);
-    const resource = state.resources[name];
-    if (!resource) throw new Error(`local resource is not registered: ${name}`);
-    const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
-    const result = publicResourceInspection(name, inspected, { includePath: args.showPaths === true });
+function resourceRemoveAction({ args, workspace, state }) {
+  const name = validateResourceName(args._[1]);
+  const lock = acquireStartupLock(state);
+  if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
+  try {
+    const latest = loadState(workspace, { stateDir: args.stateDir });
+    latest.resources ||= {};
+    const existed = Object.prototype.hasOwnProperty.call(latest.resources, name);
+    delete latest.resources[name];
+    saveState(latest);
+    const result = { name, removed: existed, affects_new_jobs_immediately: true };
     if (args.json) console.log(JSON.stringify(result, null, 2));
     else {
-      const pathDetail = args.showPaths === true ? ` at ${inspected.path}` : "";
-      console.log(`${name}: available${pathDetail} (${inspected.mode || "n/a"}, ${inspected.size} bytes)`);
+      console.log(existed ? `Removed local resource: ${name}` : `Local resource was not registered: ${name}`);
+      console.log("The change applies to newly submitted managed jobs immediately.");
     }
-    return;
+  } finally {
+    lock.release();
   }
+}
 
-  throw new Error(`Unknown resource action: ${action}`);
+function resourceCheckAction({ args, state }) {
+  const name = validateResourceName(args._[1]);
+  const resource = state.resources[name];
+  if (!resource) throw new Error(`local resource is not registered: ${name}`);
+  const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
+  const result = publicResourceInspection(name, inspected, { includePath: args.showPaths === true });
+  if (args.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    const pathDetail = args.showPaths === true ? ` at ${inspected.path}` : "";
+    console.log(`${name}: available${pathDetail} (${inspected.mode || "n/a"}, ${inspected.size} bytes)`);
+  }
 }
 
 function publicResourceInspection(name, inspected, { includePath = false, ...extra } = {}) {
@@ -700,7 +757,8 @@ async function ensureWorker(state, args) {
       logger.success("Worker unchanged and healthy", { url: state.worker.url });
       return state.worker;
     }
-    logger.warn("Worker health check failed; redeploying", { error: health.error });
+    logger.warn("Worker is not healthy at the expected version; redeploying automatically", { reason: workerHealthUserReason(health.error) });
+    logger.debug("Worker health check detail", { health_error: health.error });
   }
 
   logger.info("Checking Cloudflare Wrangler login");
@@ -824,6 +882,18 @@ async function workerHealth(workerUrl, expectedVersion = currentPackageVersion()
   }
 }
 
+export function workerHealthUserReason(value) {
+  const reason = String(value || "");
+  if (reason.startsWith("version_mismatch:")) return "deployed version does not match the local package";
+  if (/^HTTP \d+$/.test(reason)) return "health endpoint returned an HTTP error";
+  if (reason === "unexpected_health_response") return "health endpoint returned an unexpected response";
+  if (reason === "timeout") return "health check timed out";
+  if (reason === "tls_error") return "TLS validation failed";
+  if (reason === "network_error") return "network request failed";
+  if (reason === "missing_worker_url") return "Worker URL is missing";
+  return "health check failed";
+}
+
 function workerHealthError(error) {
   const message = String(error?.message || error || "");
   if (/timeout|aborted/i.test(message)) return "timeout";
@@ -848,17 +918,6 @@ function extractWorkerUrl(text = "") {
   const anyHttps = [...String(text).matchAll(/https:\/\/[^\s"'<>]+/g)];
   return anyHttps.find(match => /workers\.dev|\/healthz|\/mcp/.test(match[0]))?.[0]?.replace(/[),.]+$/, "") || "";
 }
-
-async function waitForConnectWithNotice(promise, timeoutMs, logger) {
-  let timeout;
-  const timed = new Promise(resolvePromise => {
-    timeout = setTimeout(() => resolvePromise("timeout"), timeoutMs);
-  });
-  const result = await Promise.race([promise.then(() => "connected"), timed]);
-  clearTimeout(timeout);
-  if (result === "timeout") logger.warn("Still connecting; the process will keep retrying");
-}
-
 
 function printStartJson(state, { showCredentials = false, requestedChangesApplied = true, notice = "" } = {}) {
   createLogger({ component: "ready" }).json({
@@ -967,7 +1026,7 @@ async function doctorCommand(args) {
   }
   const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
   checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
-  const diagnosticRuntime = new LocalDaemon({
+  const diagnosticRuntime = new LocalRuntime({
     workspace,
     policy: state.policy,
     logger: createLogger({ level: "error", component: "doctor" }),
@@ -1264,7 +1323,7 @@ function usage() {
   console.log(`machine-bridge-mcp
 
 Usage:
-  npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest && machine-mcp
+  npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
   npx machine-bridge-mcp@latest                  # no global install; autostart may rely on npm cache
   ./mbm                                          # from source checkout
   .\\mbm.cmd                                      # from source checkout on Windows cmd

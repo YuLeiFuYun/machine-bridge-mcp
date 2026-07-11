@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
-import { LocalDaemon } from "./daemon.mjs";
+import { LocalRuntime } from "./runtime.mjs";
 import { generateSshKeyPair } from "./ssh-key.mjs";
 import { run } from "./shell.mjs";
 import { allToolNames, assertCanonicalFullPolicy, policyProfile } from "./tools.mjs";
@@ -29,7 +29,7 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
   let runtime;
 
   try {
-    runtime = new LocalDaemon({
+    runtime = new LocalRuntime({
       workspace: resolve(workspace),
       policy: canonicalPolicy,
       jobRoot,

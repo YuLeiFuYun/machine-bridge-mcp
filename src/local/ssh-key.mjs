@@ -7,44 +7,62 @@ import { run } from "./shell.mjs";
 const KEY_TYPES = new Set(["ed25519", "rsa"]);
 
 export async function generateSshKeyPair(options = {}) {
+  const request = normalizeKeyRequest(options);
+  await mkdir(request.parent, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") await chmod(request.parent, 0o700);
+
+  const existing = await inspectExistingKeyFiles(request.privateKeyPath, request.publicKeyPath);
+  if (existing) {
+    await secureKeyModes(request.privateKeyPath, request.publicKeyPath);
+    return inspectSshKeyPair(request.privateKeyPath, request.publicKeyPath, false);
+  }
+  return createSshKeyPair(request);
+}
+
+function normalizeKeyRequest(options) {
   const privateKeyPath = resolve(String(options.privateKeyPath || ""));
   if (!privateKeyPath || privateKeyPath === resolve(".")) throw new Error("private key path is required");
-  const publicKeyPath = `${privateKeyPath}.pub`;
   const type = String(options.type || "ed25519").toLowerCase();
   if (!KEY_TYPES.has(type)) throw new Error("SSH key type must be ed25519 or rsa");
-  const comment = boundedComment(options.comment || `machine-mcp:${basename(privateKeyPath)}`);
-  const parent = dirname(privateKeyPath);
-  await mkdir(parent, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") await chmod(parent, 0o700);
+  return {
+    privateKeyPath,
+    publicKeyPath: `${privateKeyPath}.pub`,
+    parent: dirname(privateKeyPath),
+    type,
+    bits: options.bits,
+    comment: boundedComment(options.comment || `machine-mcp:${basename(privateKeyPath)}`),
+  };
+}
 
+async function inspectExistingKeyFiles(privateKeyPath, publicKeyPath) {
   const privateInfo = await safeLstat(privateKeyPath);
   const publicInfo = await safeLstat(publicKeyPath);
   if (privateInfo?.isSymbolicLink() || publicInfo?.isSymbolicLink()) throw new Error("SSH key path must not be a symbolic link");
-  if (privateInfo || publicInfo) {
-    if (!privateInfo?.isFile() || !publicInfo?.isFile()) throw new Error("SSH key pair is incomplete or not a pair of regular files");
-    await secureKeyModes(privateKeyPath, publicKeyPath);
-    return inspectSshKeyPair(privateKeyPath, publicKeyPath, false);
-  }
+  if (!privateInfo && !publicInfo) return false;
+  if (!privateInfo?.isFile() || !publicInfo?.isFile()) throw new Error("SSH key pair is incomplete or not a pair of regular files");
+  return true;
+}
 
+async function createSshKeyPair(request) {
   const suffix = `${process.pid}-${randomBytes(8).toString("hex")}`;
-  const tempPrivate = resolve(parent, `.${basename(privateKeyPath)}.mbm-${suffix}`);
+  const tempPrivate = resolve(request.parent, `.${basename(request.privateKeyPath)}.mbm-${suffix}`);
   const tempPublic = `${tempPrivate}.pub`;
   try {
-    const args = ["-q", "-t", type];
-    if (type === "rsa") args.push("-b", String(normalizeRsaBits(options.bits)));
-    args.push("-N", "", "-f", tempPrivate, "-C", comment);
+    const args = ["-q", "-t", request.type];
+    if (request.type === "rsa") args.push("-b", String(normalizeRsaBits(request.bits)));
+    args.push("-N", "", "-f", tempPrivate, "-C", request.comment);
     const generated = await run("ssh-keygen", args, { capture: true, timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
     if (generated.code !== 0) throw new Error("ssh-keygen failed");
     await secureKeyModes(tempPrivate, tempPublic);
-    await installNoReplace(tempPrivate, privateKeyPath);
+    await installNoReplace(tempPrivate, request.privateKeyPath);
     try {
-      await installNoReplace(tempPublic, publicKeyPath);
+      await installNoReplace(tempPublic, request.publicKeyPath);
     } catch (error) {
-      await rm(privateKeyPath, { force: true });
+      await rm(request.privateKeyPath, { force: true });
       throw error;
     }
-    await secureKeyModes(privateKeyPath, publicKeyPath);
-    return inspectSshKeyPair(privateKeyPath, publicKeyPath, true);
+    await secureKeyModes(request.privateKeyPath, request.publicKeyPath);
+    return inspectSshKeyPair(request.privateKeyPath, request.publicKeyPath, true);
   } finally {
     await rm(tempPrivate, { force: true });
     await rm(tempPublic, { force: true });

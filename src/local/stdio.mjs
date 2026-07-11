@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { LocalDaemon } from "./daemon.mjs";
+import { LocalRuntime } from "./runtime.mjs";
 import { classifyOperationalError, createLogger } from "./log.mjs";
 import {
   MCP_INSTRUCTIONS,
@@ -19,7 +19,7 @@ const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../../package.js
 
 export async function runStdioServer({ workspace, policy, logLevel = "info", jobRoot = "", resources = {}, resourceStatePath = "" }) {
   const logger = createLogger({ component: "stdio", level: logLevel, stderrOnly: true, color: false });
-  const runtime = new LocalDaemon({ workspace, policy, logger, jobRoot, resources, resourceStatePath });
+  const runtime = new LocalRuntime({ workspace, policy, logger, jobRoot, resources, resourceStatePath });
   const pending = new Map();
   let negotiatedVersion = MCP_PROTOCOL_VERSION;
   let initialized = false;
@@ -50,100 +50,116 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
   runtime.stop();
 
   async function handleLine(line) {
-    let message;
-    try { message = JSON.parse(line); } catch {
-      send(rpcError(null, -32700, "Parse error"));
+    const message = parseJsonRpcLine(line, send);
+    if (!message || typeof message.method !== "string") return;
+    if (handleControlMessage(message)) return;
+    if (!initialized) {
+      send(rpcError(message.id, -32002, "Server is not initialized"));
       return;
     }
-    if (!isJsonRpcMessage(message)) {
-      send(rpcError(null, -32600, "Invalid JSON-RPC message"));
-      return;
-    }
-    if (typeof message.method !== "string") return;
+    await handleInitializedMessage(message);
+  }
 
+  function handleControlMessage(message) {
     if (message.method === "initialize") {
       const requested = asObject(message.params).protocolVersion;
       negotiatedVersion = typeof requested === "string" && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
         ? requested
         : MCP_PROTOCOL_VERSION;
       initialized = true;
-      send(rpcResult(message.id, {
-        protocolVersion: negotiatedVersion,
-        capabilities: { tools: { listChanged: false }, logging: {} },
-        serverInfo: {
-          name: SERVER_NAME,
-          title: "Machine Bridge MCP",
-          version: PACKAGE_VERSION,
-          description: "Workspace-scoped local coding tools over MCP stdio or authenticated remote relay.",
-        },
-        instructions: MCP_INSTRUCTIONS,
-      }));
-      return;
+      send(rpcResult(message.id, initializationResult(negotiatedVersion)));
+      return true;
     }
-
-    if (message.method === "notifications/initialized") return;
+    if (message.method === "notifications/initialized") return true;
     if (message.method === "notifications/cancelled") {
       const requestId = asObject(message.params).requestId;
-      const key = jsonRpcIdKey(requestId);
-      const callId = pending.get(key);
+      const callId = pending.get(jsonRpcIdKey(requestId));
       if (callId) runtime.cancelCall(callId, "MCP cancellation notification");
-      return;
+      return true;
     }
-    if (message.method === "logging/setLevel") {
+    if (message.method === "logging/setLevel" || message.method === "ping") {
       send(rpcResult(message.id, {}));
-      return;
+      return true;
     }
-    if (message.method === "ping") {
-      send(rpcResult(message.id, {}));
-      return;
-    }
-    if (!initialized) {
-      send(rpcError(message.id, -32002, "Server is not initialized"));
-      return;
-    }
+    return false;
+  }
+
+  async function handleInitializedMessage(message) {
     if (message.method === "tools/list") {
       send(rpcResult(message.id, { tools: toolsForPolicy(policy) }));
       return;
     }
     if (message.method === "tools/call") {
-      if (!("id" in message) || message.id === null) {
-        send(rpcError(null, -32600, "tools/call requires a non-null request id"));
-        return;
-      }
-      const params = asObject(message.params);
-      const name = typeof params.name === "string" ? params.name : "";
-      if (!name) {
-        send(rpcError(message.id, -32602, "tools/call requires a tool name"));
-        return;
-      }
-      const args = asObject(params.arguments);
-      const callId = `stdio_${randomBytes(16).toString("hex")}`;
-      const key = jsonRpcIdKey(message.id);
-      if (key && pending.has(key)) {
-        send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
-        return;
-      }
-      if (key) pending.set(key, callId);
-      const started = Date.now();
-      logger.debug("tool call started", { call_id: callId.slice(0, 20), tool: name });
-      try {
-        const result = await runtime.executeTool(name, args, { callId });
-        send(rpcResult(message.id, toolResult(result)));
-        const durationMs = Date.now() - started;
-        logger.debug(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs });
-      } catch (error) {
-        const safeError = runtime.safeErrorMessage(error, args);
-        send(rpcResult(message.id, toolResult({ error: safeError }, true)));
-        const durationMs = Date.now() - started;
-        logger.debug("tool call failed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs, error_class: classifyOperationalError(error) });
-      } finally {
-        if (key) pending.delete(key);
-        runtime.finishCall(callId);
-      }
+      await handleToolCall(message);
       return;
     }
     send(rpcError(message.id, -32601, `Method not found: ${message.method}`));
   }
+
+  async function handleToolCall(message) {
+    if (!("id" in message) || message.id === null) {
+      send(rpcError(null, -32600, "tools/call requires a non-null request id"));
+      return;
+    }
+    const params = asObject(message.params);
+    const name = typeof params.name === "string" ? params.name : "";
+    if (!name) {
+      send(rpcError(message.id, -32602, "tools/call requires a tool name"));
+      return;
+    }
+    const args = asObject(params.arguments);
+    const callId = `stdio_${randomBytes(16).toString("hex")}`;
+    const key = jsonRpcIdKey(message.id);
+    if (key && pending.has(key)) {
+      send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
+      return;
+    }
+    if (key) pending.set(key, callId);
+    const started = Date.now();
+    logger.debug("tool call started", { call_id: callId.slice(0, 20), tool: name });
+    try {
+      const result = await runtime.executeTool(name, args, { callId });
+      send(rpcResult(message.id, toolResult(result)));
+      const durationMs = Date.now() - started;
+      logger.debug(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs });
+    } catch (error) {
+      const safeError = runtime.safeErrorMessage(error, args);
+      send(rpcResult(message.id, toolResult({ error: safeError }, true)));
+      const durationMs = Date.now() - started;
+      logger.debug("tool call failed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs, error_class: classifyOperationalError(error) });
+    } finally {
+      if (key) pending.delete(key);
+      runtime.finishCall(callId);
+    }
+  }
+
+}
+
+function parseJsonRpcLine(line, send) {
+  let message;
+  try { message = JSON.parse(line); } catch {
+    send(rpcError(null, -32700, "Parse error"));
+    return null;
+  }
+  if (!isJsonRpcMessage(message)) {
+    send(rpcError(null, -32600, "Invalid JSON-RPC message"));
+    return null;
+  }
+  return message;
+}
+
+function initializationResult(protocolVersion) {
+  return {
+    protocolVersion,
+    capabilities: { tools: { listChanged: false }, logging: {} },
+    serverInfo: {
+      name: SERVER_NAME,
+      title: "Machine Bridge MCP",
+      version: PACKAGE_VERSION,
+      description: "Workspace-scoped local coding tools over MCP stdio or authenticated remote relay.",
+    },
+    instructions: MCP_INSTRUCTIONS,
+  };
 }
 
 function consumeBoundedJsonLines(stream, { maxLineBytes, onLine, onOversize }) {
