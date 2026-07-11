@@ -8,8 +8,11 @@ The project treats transport, authorization, local authority, and state removal 
 npm run check
 ```
 
+The repository requires Node.js 26 and npm 12. `.node-version`, `.nvmrc`, `packageManager`, `devEngines`, and strict engine checks keep local and CI execution on the same baseline.
+
 The suite includes:
 
+- release-impact enforcement requiring a new package version and CHANGELOG section for release-relevant changes;
 - generated Cloudflare Worker types and strict TypeScript checking;
 - syntax validation for every shipped JavaScript entry point;
 - shared tool-catalog schema, annotation, and profile-inventory checks;
@@ -44,11 +47,14 @@ The suite includes:
 npm run worker:dry-run
 npm audit --audit-level=high
 npm audit --omit=dev --audit-level=high
+npm audit signatures
+npm sbom --sbom-format cyclonedx
 npm pack --dry-run
 npm run version:check
+npm run release-impact:check
 ```
 
-GitHub Actions executes the main suite on Linux, macOS, and Windows. Node 22 and 24 are covered on Linux; Node 22 is covered on macOS and Windows. A separate package-audit job audits both the complete dependency graph and the production-only graph, then performs a dry-run package build. Dependency and GitHub Actions updates are monitored by Dependabot.
+GitHub Actions executes the main suite on Linux, macOS, and Windows using the pinned Node 26/npm 12 baseline. Checkout fetches version tags so the release-impact gate can compare the branch with the latest release. A separate package-audit job audits both the complete dependency graph and the production-only graph, verifies registry signatures and attestations, validates a CycloneDX SBOM, then performs a dry-run package build. Dependency and GitHub Actions updates are monitored by Dependabot.
 
 ## Test design rules
 
@@ -61,3 +67,13 @@ GitHub Actions executes the main suite on Linux, macOS, and Windows. Node 22 and
 - Secret-bearing resource tests must assert absence of raw, path, base64, and hex forms from MCP-visible results.
 - Logs and public metadata should be tested for absence of sensitive fields, arguments, outputs, and routine success noise—not only presence of expected fields.
 - Cross-platform tests must avoid shell syntax, URL-path conversion, and executable-shim assumptions specific to one operating system.
+
+## Privacy hygiene
+
+Run `npm run privacy:check` before committing and before packaging. Developers should maintain an ignored owner-only `.privacy-denylist` for machine aliases, usernames, internal codenames, and other private identifiers that a generic scanner cannot know. See [Repository privacy hygiene](PRIVACY.md).
+
+## Package manifest
+
+`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, and verifies that privacy guidance, contribution/release discipline, and both privacy/release-impact checkers are present in the published package.
+
+The stdio integration test also sends an oversized line, verifies bounded rejection, and confirms that the next valid request is still processed.

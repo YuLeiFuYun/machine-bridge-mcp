@@ -105,7 +105,7 @@ flowchart LR
   CLI --> S[Autostart provider]
 ```
 
-Remote OAuth determines which client may call tools. Local stdio access relies on the local process and configuration boundary. Policy determines which tools are advertised. Canonical resolution limits direct filesystem tools. Processes retain local-user authority and can escape workspace constraints through their own code or system calls.
+Remote OAuth determines which client may call tools. Local stdio access relies on the local process and configuration boundary. Policy determines which tools the local daemon and relay advertise. A connector host can independently present a smaller tool subset to a session; this post-relay filtering is outside the protocol state visible to Machine Bridge. Canonical resolution limits direct filesystem tools. Processes retain local-user authority and can escape workspace constraints through their own code or system calls.
 
 ## Remote request lifecycle
 
@@ -131,15 +131,15 @@ Duplicate in-flight JSON-RPC IDs for the same access token are rejected so cance
 2. The server negotiates one of the supported MCP versions.
 3. Tool discovery is generated from the same catalog and policy used by remote mode.
 4. Each call receives an internal random call ID used only for cancellation and process tracking.
-5. Results are emitted as JSON-RPC on stdout; logs remain on stderr.
-6. Duplicate in-flight request IDs are rejected.
+5. Input is parsed as incrementally bounded newline-delimited JSON-RPC, so an oversized line is discarded before unbounded buffering and the next line can still be processed. Results are emitted as JSON-RPC on stdout; logs remain on stderr.
+6. Duplicate in-flight request IDs are rejected, and `tools/call` requires a non-null request ID so write or execution calls cannot run as unacknowledged JSON-RPC notifications.
 7. Closing stdin cancels pending calls, terminates ordinary active processes/process sessions, and removes the transport runtime directory. Previously accepted managed jobs continue in their persistent per-workspace job directories.
 
 ## Filesystem resolution and privacy
 
 The workspace is canonicalized and compared with targets through consistent platform-native/async `realpath` representations. Existing targets must remain inside the workspace unless the active policy is unrestricted. New targets walk to the nearest existing ancestor, validate its canonical path, and reconstruct the destination below that canonical ancestor.
 
-Path behavior is profile-dependent. The default `full` profile permits unrestricted direct filesystem paths and returns absolute paths. The `agent`, `edit`, and `review` profiles enforce canonical workspace containment and return workspace-relative paths. Error strings redact canonical and common platform-alias forms of workspace, runtime, and home paths whenever absolute path display is disabled.
+Path behavior is profile-dependent. The default `full` profile permits unrestricted direct filesystem paths and returns absolute paths. The `agent`, `edit`, and `review` profiles enforce canonical workspace containment and return workspace-relative paths. Error strings redact canonical and common platform-alias forms of workspace, runtime, and home paths whenever absolute path display is disabled. Access scope and path display are independent: unrestricted access with path display disabled returns relative workspace paths and opaque external-path identifiers.
 
 Symbolic-link destinations and non-regular write targets are rejected. Recursive walkers do not follow symbolic-link directories.
 
@@ -193,7 +193,7 @@ OAuth metadata is pruned on access. Expired codes/tokens, old throttling records
 
 ## Observability
 
-Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status, policy origin/revision, managed-job counts, and resource alias names without paths or values. `diagnose_runtime` runs fixed local probes and explicitly reports that its own request reached the daemon.
+Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status, policy origin/revision, managed-job counts, resource alias names without paths or values, and the daemon/relay-advertised tool counts. It explicitly reports that the host-exposed subset is unknown to the server. `diagnose_runtime` runs fixed local probes and explicitly reports that its own request reached the daemon.
 
 Foreground logging defaults to `info`; autostart uses `warn`. All per-tool starts, successes, failures, cancellations, durations, and shortened random correlation IDs are debug-only. Normal logs retain deployment, connection, protocol, service, and infrastructure events rather than duplicating MCP tool outcomes. Unexpected local and Worker infrastructure errors are reduced to classes. Messages, strings, arrays, object depth/key counts, and serialized fields are bounded.
 

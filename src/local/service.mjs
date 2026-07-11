@@ -1,8 +1,9 @@
-import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "./shell.mjs";
-import { ensureOwnerOnlyDir, expandHome } from "./state.mjs";
+import { ensureOwnerOnlyDir, expandHome, ownerOnlyFile } from "./state.mjs";
+import { replaceFileSync } from "./atomic-fs.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
 const WINDOWS_TASK = "MachineBridgeMCP";
@@ -55,23 +56,29 @@ export function trimAutostartLogs(stateRoot, options = {}) {
   const logs = path.join(root, "logs");
   for (const name of ["daemon.out.log", "daemon.err.log"]) {
     const file = path.join(logs, name);
+    let fd;
     try {
-      const info = statSync(file);
+      if (!existsSync(file)) continue;
+      const before = lstatSync(file);
+      if (before.isSymbolicLink() || !before.isFile()) continue;
+      const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
+      fd = openSync(file, Number(fsConstants.O_RDWR) | noFollow);
+      const info = fstatSync(fd);
+      if (!info.isFile()) continue;
       if (info.size > maxBytes) {
-        const fd = openSync(file, "r");
-        let buffer;
-        try {
-          const current = fstatSync(fd);
-          const length = Math.min(keepBytes, current.size);
-          buffer = Buffer.alloc(length);
-          readSync(fd, buffer, 0, length, Math.max(0, current.size - length));
-        } finally {
-          closeSync(fd);
-        }
-        writeFileSync(file, lineSafeTail(buffer), { mode: 0o600 });
+        const length = Math.min(keepBytes, info.size);
+        const buffer = Buffer.alloc(length);
+        readSync(fd, buffer, 0, length, Math.max(0, info.size - length));
+        const tail = lineSafeTail(buffer);
+        ftruncateSync(fd, 0);
+        if (tail.length) writeSync(fd, tail, 0, tail.length, 0);
       }
-      chmodSync(file, 0o600);
-    } catch {}
+      try { chmodSync(file, 0o600); } catch {}
+    } catch {
+      // Operational log maintenance is best effort and must not stop startup.
+    } finally {
+      if (fd !== undefined) try { closeSync(fd); } catch {}
+    }
   }
 }
 
@@ -89,18 +96,39 @@ function serviceSpec({ workspace, stateRoot, entryScript }) {
   const logs = path.join(root, "logs");
   ensureOwnerOnlyDir(root);
   ensureOwnerOnlyDir(logs);
-  for (const file of [path.join(logs, "daemon.out.log"), path.join(logs, "daemon.err.log")]) {
-    writeFileSync(file, "", { flag: "a", mode: 0o600 });
-    try { chmodSync(file, 0o600); } catch {}
-  }
+  for (const file of [path.join(logs, "daemon.out.log"), path.join(logs, "daemon.err.log")]) ensurePrivateLogFile(file);
   return {
     workspace,
     stateRoot: root,
     entryScript: path.resolve(entryScript),
-    node: process.execPath,
+    node: stableNodeExecutable(),
     stdout: path.join(logs, "daemon.out.log"),
     stderr: path.join(logs, "daemon.err.log"),
   };
+}
+
+export function stableNodeExecutable(options = {}) {
+  const platform = String(options.platform || process.platform);
+  const execPath = path.resolve(String(options.execPath || process.execPath));
+  const pathEnv = String(options.pathEnv ?? process.env.PATH ?? "");
+  let canonicalExec;
+  try { canonicalExec = realpathSync(execPath); } catch { return execPath; }
+  const executableName = platform === "win32" ? "node.exe" : "node";
+  for (const directory of pathEnv.split(path.delimiter).filter(Boolean)) {
+    const candidate = path.resolve(directory, executableName);
+    try {
+      const info = lstatSync(candidate);
+      if (!info.isFile() && !info.isSymbolicLink()) continue;
+      const candidateCanonical = realpathSync(candidate);
+      const sameExecutable = platform === "win32"
+        ? candidateCanonical.toLowerCase() === canonicalExec.toLowerCase()
+        : candidateCanonical === canonicalExec;
+      if (!sameExecutable) continue;
+      if (platform !== "win32" && (statSync(candidate).mode & 0o111) === 0) continue;
+      return candidate;
+    } catch {}
+  }
+  return execPath;
 }
 
 export function daemonArgs(spec) {
@@ -115,6 +143,38 @@ export function daemonArgs(spec) {
   ];
 }
 
+function ensurePrivateLogFile(file) {
+  if (existsSync(file)) {
+    const info = lstatSync(file);
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error("autostart log path must be a regular non-symbolic-link file");
+  }
+  const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
+  const fd = openSync(file, Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND) | noFollow, 0o600);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error("autostart log path is not a regular file");
+  } finally {
+    closeSync(fd);
+  }
+  ownerOnlyFile(file);
+}
+
+function writePrivateServiceFile(file, content) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  if (existsSync(file)) {
+    const info = lstatSync(file);
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error("autostart configuration path must be a regular non-symbolic-link file");
+  }
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(temporary, content, { mode: 0o600, flag: "wx" });
+    replaceFileSync(temporary, file);
+    ownerOnlyFile(file);
+  } catch (error) {
+    try { rmSync(temporary, { force: true }); } catch {}
+    throw error;
+  }
+}
+
 function launchdPlistPath() {
   return path.join(os.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
 }
@@ -123,8 +183,8 @@ async function installLaunchd(spec, logger) {
   const plistPath = launchdPlistPath();
   mkdirSync(path.dirname(plistPath), { recursive: true });
   const args = [spec.node, ...daemonArgs(spec)];
-  writeFileSync(plistPath, launchdPlist({ args, stdout: spec.stdout, stderr: spec.stderr }), { mode: 0o644 });
-  logger.info?.(`Autostart installed for next login: ${plistPath}`);
+  writePrivateServiceFile(plistPath, launchdPlist({ args, stdout: spec.stdout, stderr: spec.stderr }));
+  logger.info?.("Autostart installed for next login.");
   return { ok: true, provider: "launchd", path: plistPath };
 }
 
@@ -151,7 +211,7 @@ async function uninstallLaunchd(logger) {
   await stopLaunchd(logger).catch(() => {});
   const plistPath = launchdPlistPath();
   if (existsSync(plistPath)) rmSync(plistPath, { force: true });
-  logger.info?.(`Autostart removed: ${plistPath}`);
+  logger.info?.("Autostart removed.");
   return { ok: true, provider: "launchd", path: plistPath };
 }
 
@@ -191,11 +251,11 @@ function systemdPath() {
 async function installSystemd(spec, logger) {
   const servicePath = systemdPath();
   mkdirSync(path.dirname(servicePath), { recursive: true });
-  writeFileSync(servicePath, systemdUnit(spec), { mode: 0o644 });
+  writePrivateServiceFile(servicePath, systemdUnit(spec));
   const reload = await serviceRun("systemctl", ["--user", "daemon-reload"]);
   const enable = await serviceRun("systemctl", ["--user", "enable", "machine-bridge-mcp.service"]);
   const linger = await serviceRun("loginctl", ["enable-linger", os.userInfo().username]);
-  logger.info?.(`Autostart installed: ${servicePath}`);
+  logger.info?.("Autostart installed.");
   return { ok: reload.code === 0 && enable.code === 0, provider: "systemd", path: servicePath, reload, enable, linger };
 }
 
@@ -204,7 +264,7 @@ async function uninstallSystemd(logger) {
   const servicePath = systemdPath();
   if (existsSync(servicePath)) rmSync(servicePath, { force: true });
   await serviceRun("systemctl", ["--user", "daemon-reload"]);
-  logger.info?.(`Autostart removed: ${servicePath}`);
+  logger.info?.("Autostart removed.");
   return { ok: true, provider: "systemd", path: servicePath };
 }
 

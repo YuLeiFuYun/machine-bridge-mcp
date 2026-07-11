@@ -17,6 +17,12 @@ Do not open a public issue for an undisclosed vulnerability. Use GitHub private 
 
 Do not include live MCP passwords, daemon secrets, OAuth tokens, Cloudflare credentials, private keys, or unrelated local files. Rotate credentials used in a reproduction.
 
+## Repository and documentation privacy
+
+Tests, examples, documentation, release notes, and package metadata are publication surfaces. Use only synthetic hostnames, resource aliases, usernames, paths, and project names. Run `npm run privacy:check` before committing or publishing, and maintain private local identifiers in the ignored `.privacy-denylist`; the scanner never prints matched values. See [Repository privacy hygiene](docs/PRIVACY.md).
+
+Removing a value from the current branch does not remove it from Git history, caches, forks, or an already published npm package. Rotate any exposed credential immediately and coordinate destructive history rewriting separately when its risk is justified.
+
 ## Core trust model
 
 Trusted components are:
@@ -53,7 +59,7 @@ The default `full` profile returns absolute paths. Narrower profiles return work
 
 The server does not maintain a sensitive-filename blacklist. Under `full`, direct read tools may access any UTF-8 regular file available to the local OS user, including files outside the selected workspace and names such as `.env`, password stores, private keys, credentials, database dumps, and production configuration. Narrower profiles confine direct filesystem tools but do not classify names inside that boundary.
 
-Maximum local policy does not bypass Unix permissions, Windows ACLs, macOS TCC/SIP, container/VM boundaries, endpoint-security controls, shell restrictions, or security decisions made by the MCP host/platform. A host-side refusal is independent of Machine Bridge and cannot be disabled by local policy configuration. `diagnose_runtime` and `machine-mcp doctor` use fixed probes to distinguish requests that reached the daemon from local filesystem/process/shell failures; they cannot inspect a call blocked before delivery.
+Maximum local policy does not bypass Unix permissions, Windows ACLs, macOS TCC/SIP, container/VM boundaries, endpoint-security controls, shell restrictions, or security decisions made by the MCP host/platform. `full` guarantees the complete local daemon and relay-advertised catalog, not the set a connector host chooses to expose to one session. The server cannot observe that host-side subset. A host-side refusal is independent of Machine Bridge and cannot be disabled by local policy configuration. `diagnose_runtime` and `machine-mcp doctor` use fixed probes to distinguish requests that reached the daemon from local filesystem/process/shell failures; they cannot inspect a call blocked before delivery.
 
 Processes are not confined by the filesystem-tool resolver. They can access paths, networks, processes, credential stores, and devices available to the local user.
 
@@ -67,9 +73,7 @@ A canonical `full` profile guarantees that Machine Bridge itself will not reject
 
 Writes are bounded, reject symbolic-link/non-regular destinations, use same-directory staging, and commit atomically per file. Create-only commit fails if a concurrent destination appears. Expected hashes and exact edits reduce accidental stale overwrites.
 
-Patch operations prevalidate all paths/content, reject canonical collisions, recheck source hashes and destination absence, serialize bridge mutations, maintain backups, and roll back on ordinary commit errors.
-
-These controls do not defend against a malicious process running under the same user racing filesystem metadata, nor do they make a multi-directory patch power-loss atomic.
+Patch operations prevalidate all paths/content, reject canonical collisions, recheck source hashes and destination absence, serialize bridge mutations, maintain backups, and roll back on ordinary commit errors. On platforms without descriptor-relative path traversal, a malicious process running as the same local account can still race filesystem or parent-directory replacement between validation and commit. These controls do not claim protection against a hostile same-user namespace, nor do they make a multi-directory patch power-loss atomic.
 
 ## Credential exposure
 
@@ -81,7 +85,7 @@ The default `full` profile passes the complete parent environment. Narrower prof
 
 ## Local resources and managed jobs
 
-Local resources are registered through the operator-controlled CLI or, only under canonical `full`, through `generate_ssh_key_resource`. State stores canonical paths and metadata, not file contents. The SSH generator creates or reuses an unencrypted automation key, verifies that the public and private files match, rejects symbolic links/incomplete pairs, applies `0600`/`0644` modes where supported, and returns no private bytes. Unix-like registration rejects group/other-readable private resource files unless explicitly overridden. Portable mode checks do not fully describe Windows ACLs or extended Unix ACLs; the operator remains responsible for platform permissions.
+Local resources are registered through the operator-controlled CLI or, only under canonical `full`, through `generate_ssh_key_resource`. State stores canonical paths and metadata, not file contents. The SSH generator creates or reuses an unencrypted automation key, verifies that the public and private files match, rejects symbolic links/incomplete pairs, applies `0600`/`0644` modes where supported, and returns no private bytes. Resource CLI output and `generate_ssh_key_resource` omit local paths by default; path disclosure requires `--show-paths` or `expose_paths=true`. Unix-like registration rejects group/other-readable private resource files unless explicitly overridden. Portable mode checks do not fully describe Windows ACLs or extended Unix ACLs; the operator remains responsible for platform permissions.
 
 At job acceptance, referenced resources are bounded and hashed. The detached runner reopens and verifies each hash before copying it to a private `0600` runtime file. Resource copies are removed after the finally phase. A changed or unavailable resource fails closed.
 
@@ -157,7 +161,7 @@ machine-mcp --workspace /narrow/project --profile edit --no-print-credentials
 
 Also:
 
-- patch the OS and use supported Node.js releases;
+- patch the OS and use the repository-pinned Node.js 26/npm 12 baseline;
 - enable MFA on Cloudflare, GitHub, and npm accounts;
 - do not configure broad CORS origins;
 - select `agent`, `edit`, or `review` instead of the default `full` when broad authority is unnecessary;

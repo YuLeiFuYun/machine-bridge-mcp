@@ -81,14 +81,17 @@ try {
   });
   assert(invalidRegistration.status === 400, "non-loopback HTTP redirect URI was accepted");
 
-  const redirectUri = "http://127.0.0.1/callback";
+  const redirectUriInput = "http://LOCALHOST:80/callback/../callback";
   const registration = await fetchJson(`${base}/oauth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_name: "Integration <Client>", redirect_uris: [redirectUri] }),
+    body: JSON.stringify({ client_name: "Integration\u202e <Client>\u200b", redirect_uris: [redirectUriInput] }),
   });
   assert(registration.response.status === 200, `client registration failed: ${registration.response.status}`);
   assert(typeof registration.body.client_id === "string", "registration did not return client_id");
+  assert(registration.body.client_name === "Integration <Client>", "registration retained Unicode display-control characters");
+  assert(registration.body.redirect_uris?.[0] === "http://localhost/callback", "registration did not canonicalize redirect URI");
+  const redirectUri = registration.body.redirect_uris[0];
 
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -103,15 +106,16 @@ try {
     state: "integration-state",
   };
 
-  const unknownPage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, client_id: "unknown" })}`);
+  const unknownPage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, client_id: "unknown", resource: `https://safe.example/\u202eresource` })}`);
   const unknownHtml = await unknownPage.text();
   assert(unknownPage.status === 400, "unknown OAuth client did not fail on GET authorization");
   assert(!unknownHtml.includes('name="login_token"'), "invalid authorization request displayed a password form");
+  assert(!unknownHtml.includes("\u202e"), "invalid authorization page retained a Unicode display control in resource text");
 
   const page = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams(authorization)}`);
   const pageHtml = await page.text();
   assert(page.status === 200, `authorization page failed: ${page.status}`);
-  assert(pageHtml.includes("Integration &lt;Client&gt;"), "authorization page omitted or failed to escape client name");
+  assert(pageHtml.includes("Integration &lt;Client&gt;") && !pageHtml.includes("\u202e") && !pageHtml.includes("\u200b"), "authorization page omitted, failed to escape, or retained display controls in client name");
   assert(pageHtml.includes(redirectUri), "authorization page omitted redirect URI");
   assert(page.headers.get("content-security-policy")?.includes("frame-ancestors 'none'"), "authorization page lacks CSP frame protection");
   assert(page.headers.get("cache-control") === "no-store", "authorization page is cacheable");
@@ -238,6 +242,8 @@ try {
   assert(firstStatus.daemon?.tools?.includes("read_file"), "first daemon tools were not advertised");
   assert(!firstStatus.daemon?.tools?.includes("write_file"), "review policy did not filter write_file");
   assert(!firstStatus.daemon?.tools?.includes("exec_command"), "review policy did not filter exec_command");
+  assert(firstStatus.tool_delivery?.host_exposed_tools_known_to_server === false, "Worker server_info incorrectly claimed host tool visibility");
+  assert(firstStatus.tool_delivery?.host_may_expose_subset === true, "Worker server_info omitted host-side filtering boundary");
 
   const timedOutCandidate = await connectDaemon(base);
   daemonSockets.push(timedOutCandidate);
@@ -280,6 +286,17 @@ try {
   assert(statusAfterHello.daemon?.tools?.includes("run_process"), "agent policy did not retain direct process execution");
   assert(!statusAfterHello.daemon?.tools?.includes("exec_command"), "agent policy did not filter shell execution");
   assert(!statusAfterHello.daemon?.tools?.includes("read_file"), "replaced daemon tools remained active");
+  const idlessToolCall = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "tools/call", params: { name: "server_info", arguments: {} } }),
+  });
+  assert(idlessToolCall.response.status === 200 && idlessToolCall.body.error?.code === -32600, "Worker accepted tools/call without a request id");
+
   const activeTools = await callToolsList(base, token.body.access_token, 26);
   assert(activeTools.some((tool) => tool.name === "server_info"), "active tool list omitted server_info");
   assert(activeTools.some((tool) => tool.name === "list_dir"), "active tool list omitted daemon-advertised tool");

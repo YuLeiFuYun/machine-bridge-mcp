@@ -13,10 +13,13 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_JOB_CAPTURE_BYTES = 256 * 1024;
 const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 const MAX_STATUS_BYTES = 256 * 1024;
+const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 
 const options = parseArgs(process.argv.slice(2));
-const jobDir = resolve(options.jobDir || "");
-if (!jobDir) throw new Error("--job-dir is required");
+const jobDirInput = typeof options.jobDir === "string" ? options.jobDir.trim() : "";
+if (!jobDirInput) throw new Error("--job-dir is required");
+const jobDir = resolve(jobDirInput);
+if (!JOB_ID.test(basename(jobDir))) throw new Error("--job-dir must name a managed job directory");
 const recover = options.recover === true;
 const planFile = join(jobDir, "plan.json");
 const statusFile = join(jobDir, "status.json");
@@ -43,17 +46,19 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => requestCancellation());
 }
 
-writeFileSync(runnerPidFile, `${process.pid}\n`, { mode: 0o600 });
+const initial = readJson(statusFile, MAX_STATUS_BYTES);
+assertLaunchState(initial);
+writeFileSync(runnerPidFile, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
 if (recover) rmSync(join(jobDir, "recovery.lock"), { force: true });
 try {
-  await main();
+  const plan = readJson(planFile, 1024 * 1024);
+  assertPlanIntegrity(plan, initial);
+  await main(plan, initial);
 } catch (error) {
   recordFatalRunnerError(error);
 }
 
-async function main() {
-  const plan = readJson(planFile, 1024 * 1024);
-  const initial = readJson(statusFile, MAX_STATUS_BYTES);
+async function main(plan, initial) {
   const status = {
     ...initial,
     runner_pid: process.pid,
@@ -135,6 +140,20 @@ async function main() {
   try { rmSync(planFile, { force: true }); } catch {}
   try { rmSync(runnerPidFile, { force: true }); } catch {}
   try { rmSync(cancelFile, { force: true }); } catch {}
+}
+
+function assertLaunchState(status) {
+  if (!status || typeof status !== "object" || Array.isArray(status)) throw new Error("job status is unavailable or invalid");
+  const expected = recover ? "interrupted" : "queued";
+  if (status.status !== expected) throw new Error(`runner cannot start job in status: ${status.status}`);
+  if (status.approval === "pending-local-operator" || !status.approval) throw new Error("runner cannot start an unapproved managed job");
+}
+
+function assertPlanIntegrity(plan, status) {
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) throw new Error("job plan is unavailable or invalid");
+  const expected = String(status?.plan_sha256 || "");
+  const actual = createHash("sha256").update(JSON.stringify(plan)).digest("hex");
+  if (!/^[a-f0-9]{64}$/.test(expected) || actual !== expected) throw new Error("managed job plan integrity check failed");
 }
 
 function recordFatalRunnerError(error) {
@@ -234,11 +253,12 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
     let stderrTruncated = 0;
     let timedOut = false;
     let closed = false;
+    let killTimer = null;
     const timer = setTimeout(() => {
       timedOut = true;
       terminateProcessTree(child, "SIGTERM");
-      const kill = setTimeout(() => terminateProcessTree(child, "SIGKILL"), 2000);
-      kill.unref?.();
+      killTimer = setTimeout(() => terminateProcessTree(child, "SIGKILL"), 2000);
+      killTimer.unref?.();
     }, timeoutMs);
     timer.unref?.();
     const cancellationPoll = setInterval(() => {
@@ -279,6 +299,7 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
       if (closed) return;
       closed = true;
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       clearInterval(cancellationPoll);
       activeChild = null;
       activeChildCancellationAware = false;
@@ -293,6 +314,7 @@ function materializeResources(resources) {
   mkdirSync(resourcesDir, { recursive: true, mode: 0o700 });
   chmodSync(resourcesDir, 0o700);
   const paths = {};
+  const sourcePaths = {};
   const bytes = {};
   const redactions = {};
   for (const [name, resource] of Object.entries(resources)) {
@@ -303,6 +325,7 @@ function materializeResources(resources) {
     const target = join(resourcesDir, name);
     writeFileSync(target, data, { mode: 0o600, flag: "wx" });
     paths[name] = target;
+    sourcePaths[name] = resourcePathVariants(resource.path);
     bytes[name] = data;
     const patterns = [];
     try {
@@ -316,7 +339,7 @@ function materializeResources(resources) {
     }
     redactions[name] = [...new Set(patterns.filter((value) => value.length > 0))].sort((a, b) => b.length - a.length);
   }
-  return { paths, bytes, redactions };
+  return { paths, sourcePaths, bytes, redactions };
 }
 
 function materializeTemporaryFiles(files) {
@@ -366,10 +389,20 @@ function substitute(value, plan, context) {
     });
 }
 
+function resourcePathVariants(value) {
+  const canonical = resolve(value);
+  const variants = new Set([canonical]);
+  if (process.platform === "darwin" && canonical.startsWith("/private/")) variants.add(canonical.slice("/private".length));
+  return [...variants].sort((left, right) => right.length - left.length);
+}
+
 function redactOutput(buffer, context) {
   let text = new TextDecoder("utf-8").decode(buffer);
   for (const [name, path] of Object.entries(context.paths)) {
     text = text.split(path).join(`<resource:${name}>`);
+  }
+  for (const [name, paths] of Object.entries(context.sourcePaths || {})) {
+    for (const path of paths) text = text.split(path).join(`<resource-source:${name}>`);
   }
   for (const [name, path] of Object.entries(context.temporaryPaths)) {
     text = text.split(path).join(`<temp:${name}>`);

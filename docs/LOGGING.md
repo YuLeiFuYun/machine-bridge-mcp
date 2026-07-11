@@ -71,3 +71,7 @@ Each managed job also has owner-only `runner.out.log` and `runner.err.log` files
 Machine Bridge does not classify filenames as sensitive and does not block `.env`, password, key, or credential-looking names. The active local policy, local OS permissions, and endpoint-security controls determine what the server itself can read or execute.
 
 An MCP host, model provider, desktop application, or platform execution layer may independently deny a request involving credentials or sensitive files. Such a denial occurs before or outside Machine Bridge's file resolver and cannot be disabled by selecting the local `full` profile. Use `server_info`, `machine-mcp status`, and `machine-mcp doctor` to distinguish the active local policy from host-side enforcement.
+
+## Privacy filtering
+
+Structured fields whose names indicate a local path, workspace, working directory, home, or state root are replaced with `<local-path>`. Free-form log text removes known home-directory prefixes, email addresses, common bearer/cloud/API token forms, private-key headers, control characters, and Unicode bidirectional/zero-width formatting controls. Explicit command output and JSON command results are not operational logs and retain their documented opt-in disclosure semantics.

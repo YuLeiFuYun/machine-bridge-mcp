@@ -159,7 +159,7 @@ function writeNotesFile(directory, version) {
 function packReleaseAsset(directory, pkg) {
   const result = run(
     "npm",
-    ["pack", "--json", "--pack-destination", directory],
+    ["pack", "--silent", "--json", "--pack-destination", directory],
     { capture: true },
   );
   let records;
@@ -168,7 +168,8 @@ function packReleaseAsset(directory, pkg) {
   } catch {
     fail("npm pack did not return valid JSON");
   }
-  const filename = records?.[0]?.filename;
+  const record = normalizePackRecord(records, pkg.name);
+  const filename = record?.filename;
   if (typeof filename !== "string") fail("npm pack did not report a filename");
   const path = join(directory, filename);
   const expected = `${pkg.name.replaceAll("/", "-").replace(/^@/, "")}-${pkg.version}.tgz`;
@@ -176,6 +177,13 @@ function packReleaseAsset(directory, pkg) {
     fail(`unexpected npm package filename ${filename}; expected ${expected}`);
   }
   return path;
+}
+
+function normalizePackRecord(value, packageName) {
+  if (Array.isArray(value)) return value[0] ?? null;
+  if (!value || typeof value !== "object") return null;
+  if (value[packageName] && typeof value[packageName] === "object") return value[packageName];
+  return Object.values(value).find((item) => item && typeof item === "object") ?? null;
 }
 
 function ensureRelease(tag, version, assetPath, latest) {

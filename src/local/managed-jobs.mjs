@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
@@ -95,36 +95,44 @@ export class ManagedJobManager {
   approve(args = {}, { localOperator = false } = {}) {
     if (!localOperator) this.assertEnabled("approve_job");
     const dir = this.jobDir(args.job_id);
-    const statusFile = join(dir, "status.json");
-    const status = readRequiredJson(statusFile, 256 * 1024, "job status");
-    if (status.status !== "staged") throw new Error(`job is not staged: ${status.status}`);
-    readRequiredJson(join(dir, "plan.json"), MAX_PLAN_BYTES, "job plan");
-    status.status = "queued";
-    status.updated_at = new Date().toISOString();
-    status.approved_at = status.updated_at;
-    status.approval = localOperator ? "local-operator" : "mcp";
-    status.cleanup_guarantee = "best-effort-finally-and-recovery";
-    atomicWriteJson(statusFile, status, 256 * 1024);
+    const transition = acquireJobTransitionLock(dir);
+    if (!transition) throw new Error("job state is being modified by another process; retry after inspecting its current status");
     try {
-      launchRunner(dir);
-    } catch (error) {
-      failRunnerLaunch(dir, status, error);
-      throw error;
+      const statusFile = join(dir, "status.json");
+      const status = readRequiredJson(statusFile, 256 * 1024, "job status");
+      if (status.status !== "staged") throw new Error(`job is not staged: ${status.status}`);
+      const plan = readRequiredJson(join(dir, "plan.json"), MAX_PLAN_BYTES, "job plan");
+      assertPlanIntegrity(plan, status);
+      status.status = "queued";
+      status.updated_at = new Date().toISOString();
+      status.approved_at = status.updated_at;
+      status.approval = localOperator ? "local-operator" : "mcp";
+      status.cleanup_guarantee = "best-effort-finally-and-recovery";
+      atomicWriteJson(statusFile, status, 256 * 1024);
+      try {
+        launchRunner(dir);
+      } catch (error) {
+        failRunnerLaunch(dir, status, error);
+        throw error;
+      }
+      return {
+        accepted: true,
+        job_id: status.job_id,
+        name: status.name,
+        status: "queued",
+        detached: true,
+        continues_without_mcp_connection: true,
+        approval: status.approval,
+        plan_sha256: status.plan_sha256,
+        cleanup: {
+          resource_copies: "best-effort",
+          finally_steps: "best-effort-if-declared",
+          restart_recovery: "best-effort-on-next-runtime-or-cli-start",
+        },
+      };
+    } finally {
+      transition.release();
     }
-    return {
-      accepted: true,
-      job_id: status.job_id,
-      name: status.name,
-      status: "queued",
-      detached: true,
-      continues_without_mcp_connection: true,
-      approval: status.approval,
-      cleanup: {
-        resource_copies: "best-effort",
-        finally_steps: "best-effort-if-declared",
-        restart_recovery: "best-effort-on-next-runtime-or-cli-start",
-      },
-    };
   }
 
   createJob(args, { launch }) {
@@ -225,48 +233,55 @@ export class ManagedJobManager {
     this.reconcileStatus(dir);
     const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
     const plan = readJson(join(dir, "plan.json"), MAX_PLAN_BYTES);
+    if (plan) assertPlanIntegrity(plan, status);
     return {
       ...publicStatus(status),
+      plan_integrity_verified: Boolean(plan),
       ...(plan ? { review_plan: reviewablePlan(plan) } : {}),
     };
   }
 
   cancel(args = {}) {
     const dir = this.jobDir(args.job_id);
-    this.reconcileStatus(dir);
-    const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
-    if (status.status === "staged") {
-      const now = new Date().toISOString();
-      status.status = "cancelled_before_start";
-      status.updated_at = now;
-      status.finished_at = now;
-      status.error_class = "cancelled";
-      status.cleanup_guarantee = "not-started";
-      atomicWriteJson(join(dir, "status.json"), status, 256 * 1024);
-      atomicWriteJson(join(dir, "result.json"), {
-        job_id: status.job_id,
-        name: status.name,
-        status: status.status,
-        steps: [],
-        finally_steps: [],
-        error_class: "cancelled",
-        cleanup_error_class: null,
-        finished_at: now,
-      }, 4 * 1024 * 1024);
-      scrubFinishedPlan(dir, status);
-      return { ...publicStatus(status), cancellation_requested: true, cleanup_will_run: false, execution_started: false };
+    const transition = acquireJobTransitionLock(dir);
+    if (!transition) throw new Error("job state is being modified by another process; retry after inspecting its current status");
+    try {
+      this.reconcileStatus(dir);
+      const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+      if (status.status === "staged") {
+        const now = new Date().toISOString();
+        status.status = "cancelled_before_start";
+        status.updated_at = now;
+        status.finished_at = now;
+        status.error_class = "cancelled";
+        status.cleanup_guarantee = "not-started";
+        atomicWriteJson(join(dir, "status.json"), status, 256 * 1024);
+        atomicWriteJson(join(dir, "result.json"), {
+          job_id: status.job_id,
+          name: status.name,
+          status: status.status,
+          steps: [],
+          finally_steps: [],
+          error_class: "cancelled",
+          cleanup_error_class: null,
+          finished_at: now,
+        }, 4 * 1024 * 1024);
+        scrubFinishedPlan(dir, status);
+        return { ...publicStatus(status), cancellation_requested: true, cleanup_will_run: false, execution_started: false };
+      }
+      if (!ACTIVE_JOB_STATES.has(status.status)) {
+        return { ...publicStatus(status), cancellation_requested: false, already_finished: true };
+      }
+      writeFileSync(join(dir, "cancel"), `${new Date().toISOString()}\n`, { mode: 0o600 });
+      return {
+        ...publicStatus(status),
+        cancellation_requested: true,
+        cancellation_delivery: "runner-poll",
+        cleanup_will_run: true,
+      };
+    } finally {
+      transition.release();
     }
-    if (!ACTIVE_JOB_STATES.has(status.status)) {
-      return { ...publicStatus(status), cancellation_requested: false, already_finished: true };
-    }
-    writeFileSync(join(dir, "cancel"), `${new Date().toISOString()}\n`, { mode: 0o600 });
-    return {
-      ...publicStatus(status),
-      cancellation_requested: true,
-      cancellation_delivery: "runner-poll",
-      cleanup_will_run: true,
-    };
-
   }
 
   currentResources() {
@@ -343,6 +358,7 @@ export class ManagedJobManager {
       status.recovery_attempts = recoveryAttempts + 1;
       atomicWriteJson(file, status, 256 * 1024);
       rmSync(join(dir, "runtime"), { recursive: true, force: true });
+      rmSync(join(dir, "runner.pid"), { force: true });
       const runnerPid = launchRunner(dir, true);
       recoveryLock.handoff(runnerPid);
       handedOff = true;
@@ -453,15 +469,16 @@ export function inspectResourceFile(inputPath, { allowInsecurePermissions = fals
   };
 }
 
-export function publicResourceRegistry(resources = {}) {
+export function publicResourceRegistry(resources = {}, { includePaths = false } = {}) {
   const normalized = normalizeResourceRegistry(resources);
   return Object.fromEntries(Object.entries(normalized).map(([name, value]) => [name, {
     kind: value.kind,
-    path: value.path,
     size: value.size ?? null,
     mode: value.mode ?? null,
     updatedAt: value.updatedAt ?? null,
     allowInsecurePermissions: value.allowInsecurePermissions === true,
+    paths_exposed: includePaths,
+    ...(includePaths ? { path: value.path } : {}),
   }]));
 }
 
@@ -656,7 +673,42 @@ function acquireRecoveryLock(dir) {
       let owner = 0;
       try { owner = Number.parseInt(readBoundedFile(file, 64).toString("utf8").trim(), 10); } catch {}
       const age = Date.now() - safeMtime(file);
-      if ((owner > 0 && isPidAlive(owner)) || age < 60_000) return null;
+      const ownerAlive = owner > 0 && isPidAlive(owner);
+      const definitelyStale = age >= 5 * 60_000 || (!ownerAlive && age >= 60_000);
+      if (!definitelyStale) return null;
+      rmSync(file, { force: true });
+    }
+  }
+  return null;
+}
+
+function planSha256(plan) {
+  return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
+}
+
+function assertPlanIntegrity(plan, status) {
+  const expected = String(status?.plan_sha256 || "");
+  const actual = planSha256(plan);
+  if (!/^[a-f0-9]{64}$/.test(expected) || actual !== expected) {
+    throw new Error("managed job plan integrity check failed; inspect the plan and do not approve it");
+  }
+  return actual;
+}
+
+function acquireJobTransitionLock(dir) {
+  const file = join(dir, "transition.lock");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      writeFileSync(file, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
+      return { release() { rmSync(file, { force: true }); } };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      let owner = 0;
+      try { owner = Number.parseInt(readBoundedFile(file, 64).toString("utf8").trim(), 10); } catch {}
+      const age = Date.now() - safeMtime(file);
+      const ownerAlive = owner > 0 && isPidAlive(owner);
+      const definitelyStale = age >= 5 * 60_000 || (!ownerAlive && age >= 60_000);
+      if (!definitelyStale) return null;
       rmSync(file, { force: true });
     }
   }
@@ -670,18 +722,20 @@ function launchRunner(dir, recover = false) {
   const stderrFile = join(dir, "runner.err.log");
   trimDiagnosticFile(stdoutFile);
   trimDiagnosticFile(stderrFile);
-  const stdoutFd = openSync(stdoutFile, "a", 0o600);
-  const stderrFd = openSync(stderrFile, "a", 0o600);
+  let stdoutFd;
+  let stderrFd;
   let child;
   try {
+    stdoutFd = openPrivateAppendFile(stdoutFile);
+    stderrFd = openPrivateAppendFile(stderrFile);
     child = spawn(process.execPath, args, {
       detached: true,
       stdio: ["ignore", stdoutFd, stderrFd],
       windowsHide: true,
     });
   } finally {
-    closeSync(stdoutFd);
-    closeSync(stderrFd);
+    if (stdoutFd !== undefined) closeSync(stdoutFd);
+    if (stderrFd !== undefined) closeSync(stderrFd);
   }
   ownerOnlyFile(stdoutFile);
   ownerOnlyFile(stderrFile);
@@ -704,6 +758,7 @@ function scrubFinishedPlan(dir, status) {
   rmSync(join(dir, "plan.json"), { force: true });
   rmSync(join(dir, "runner.pid"), { force: true });
   rmSync(join(dir, "recovery.lock"), { force: true });
+  rmSync(join(dir, "transition.lock"), { force: true });
 }
 
 function reviewablePlan(plan) {
@@ -786,10 +841,27 @@ function readBoundedFileWithInfo(file, maxBytes) {
   }
 }
 
+function openPrivateAppendFile(file) {
+  if (existsSync(file)) {
+    const info = lstatSync(file);
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error("runner diagnostic path must be a regular file and not a symbolic link");
+  }
+  const flags = Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND) | Number(fsConstants.O_NOFOLLOW || 0);
+  const fd = openSync(file, flags, 0o600);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error("runner diagnostic path is not a regular file");
+    chmodSync(file, 0o600);
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
 function trimDiagnosticFile(file, maxBytes = 64 * 1024, keepBytes = 32 * 1024) {
   let fd;
   try {
-    const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0);
+    const flags = Number(fsConstants.O_RDWR) | Number(fsConstants.O_NOFOLLOW || 0);
     fd = openSync(file, flags);
     const info = fstatSync(fd);
     if (!info.isFile() || info.size <= maxBytes) return;
@@ -804,9 +876,9 @@ function trimDiagnosticFile(file, maxBytes = 64 * 1024, keepBytes = 32 * 1024) {
     let tail = buffer.subarray(0, offset);
     const newline = tail.indexOf(0x0a);
     if (newline >= 0 && newline < tail.length - 1) tail = tail.subarray(newline + 1);
-    closeSync(fd);
-    fd = undefined;
-    writeFileSync(file, tail, { mode: 0o600 });
+    ftruncateSync(fd, 0);
+    if (tail.length) writeSync(fd, tail, 0, tail.length, 0);
+    try { chmodSync(file, 0o600); } catch {}
   } catch {
   } finally {
     if (fd !== undefined) try { closeSync(fd); } catch {}

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ const cleanupMarker = join(workspace, "cleanup-marker.txt");
 const cancelMarker = join(workspace, "cancel-cleanup-marker.txt");
 const recoveryMarker = join(workspace, "recovery-cleanup-marker.txt");
 const secret = "managed-job-secret-value-42";
+const runnerEntry = fileURLToPath(new URL("../src/local/job-runner.mjs", import.meta.url));
 
 await mkdir(workspace, { recursive: true });
 await writeFile(secretFile, `${secret}\n`, { mode: 0o600 });
@@ -51,13 +52,77 @@ try {
   assert(stagedStatus.status === "staged" && await exists(join(jobRoot, staged.job_id, "plan.json")), "staged plan was not retained for approval");
   const stagedInspection = manager.inspectLocal({ job_id: staged.job_id });
   const stagedInspectionText = JSON.stringify(stagedInspection);
-  assert(stagedInspection.review_plan?.steps?.length === 1 && stagedInspection.plan_sha256 === staged.plan_sha256, "local staged-plan inspection is incomplete");
+  assert(stagedInspection.review_plan?.steps?.length === 1 && stagedInspection.plan_sha256 === staged.plan_sha256 && stagedInspection.plan_integrity_verified === true, "local staged-plan inspection is incomplete");
   const inspectedResource = stagedInspection.review_plan?.resources?.["test-secret"];
   assert(!stagedInspectionText.includes(secretFile) && inspectedResource && !("path" in inspectedResource) && !("sha256" in inspectedResource), "local staged-plan inspection exposed a resource source path/hash");
   const approved = manager.approve({ job_id: staged.job_id }, { localOperator: true });
   assert(approved.status === "queued" && approved.approval === "local-operator", "local approval did not launch the staged job");
   const approvedResult = await waitForJob(manager, staged.job_id);
   assert(approvedResult.status === "succeeded" && await readFile(stagedMarker, "utf8") === "approved", "approved staged job did not execute");
+
+  const tamperedMarker = join(workspace, "tampered-plan-ran.txt");
+  const tampered = manager.stage({
+    name: "tamper detection",
+    steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'unexpected')", tamperedMarker] }],
+  });
+  const tamperedPlanFile = join(jobRoot, tampered.job_id, "plan.json");
+  const tamperedPlan = JSON.parse(await readFile(tamperedPlanFile, "utf8"));
+  tamperedPlan.name = "modified after review";
+  await writeFile(tamperedPlanFile, `${JSON.stringify(tamperedPlan, null, 2)}\n`, { mode: 0o600 });
+  expectThrow(() => manager.inspectLocal({ job_id: tampered.job_id }), "plan integrity check failed");
+  expectThrow(() => manager.approve({ job_id: tampered.job_id }, { localOperator: true }), "plan integrity check failed");
+  assert(!(await exists(tamperedMarker)), "tampered staged plan executed");
+  manager.cancel({ job_id: tampered.job_id });
+
+  const directMarker = join(workspace, "direct-staged-runner.txt");
+  const directStaged = manager.stage({
+    name: "direct staged runner rejection",
+    steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'unexpected')", directMarker] }],
+  });
+  const directRunner = spawn(process.execPath, [runnerEntry, "--job-dir", join(jobRoot, directStaged.job_id)], { stdio: "ignore", windowsHide: true });
+  const directExit = await new Promise((resolvePromise, rejectPromise) => {
+    directRunner.once("close", (code) => resolvePromise(code));
+    directRunner.once("error", rejectPromise);
+  });
+  assert(directExit !== 0, "runner accepted an unapproved staged job");
+  const directStatus = manager.read({ job_id: directStaged.job_id });
+  assert(directStatus.status === "staged" && !(await exists(directMarker)), "direct runner changed or executed a staged job");
+  assert(!(await exists(join(jobRoot, directStaged.job_id, "runner.pid"))), "rejected staged runner left a PID claim");
+  manager.cancel({ job_id: directStaged.job_id });
+
+  const locked = manager.stage({
+    name: "transition lock",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  const transitionLock = join(jobRoot, locked.job_id, "transition.lock");
+  await writeFile(transitionLock, `${process.pid}\n`, { mode: 0o600 });
+  expectThrow(() => manager.approve({ job_id: locked.job_id }, { localOperator: true }), "job state is being modified");
+  await rm(transitionLock, { force: true });
+  manager.cancel({ job_id: locked.job_id });
+
+  const staleReusedPid = manager.stage({
+    name: "stale reused pid transition lock",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  const staleTransitionLock = join(jobRoot, staleReusedPid.job_id, "transition.lock");
+  await writeFile(staleTransitionLock, `${process.pid}\n`, { mode: 0o600 });
+  const oldTime = new Date(Date.now() - 10 * 60_000);
+  await utimes(staleTransitionLock, oldTime, oldTime);
+  const staleApproval = manager.approve({ job_id: staleReusedPid.job_id }, { localOperator: true });
+  assert(staleApproval.accepted === true, "stale transition lock with a reused live PID was not reclaimed");
+  await waitForJob(manager, staleReusedPid.job_id);
+
+  if (process.platform !== "win32") {
+    const logTarget = join(root, "runner-log-symlink-target.txt");
+    await writeFile(logTarget, "unchanged", "utf8");
+    const logSymlinkJob = manager.stage({
+      name: "runner log symlink rejection",
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    });
+    await symlink(logTarget, join(jobRoot, logSymlinkJob.job_id, "runner.out.log"));
+    expectThrow(() => manager.approve({ job_id: logSymlinkJob.job_id }, { localOperator: true }), "symbolic link");
+    assert(await readFile(logTarget, "utf8") === "unchanged", "runner diagnostics followed a symbolic link");
+  }
 
   const neverRunMarker = join(workspace, "staged-cancelled.txt");
   const stagedCancelled = manager.stage({
@@ -84,7 +149,7 @@ try {
     " const p=process.argv[1];",
     " const file=fs.readFileSync(p);",
     " const stdin=Buffer.concat(chunks);",
-    " process.stdout.write(file.toString()+process.env.MBM_JOB_SECRET+'\\n'+stdin.toString()+file.toString('base64')+'\\n'+file.toString('hex')+'\\n'+p+'\\n');",
+    " process.stdout.write(file.toString()+process.env.MBM_JOB_SECRET+'\\n'+stdin.toString()+file.toString('base64')+'\\n'+file.toString('hex')+'\\n'+p+'\\n'+process.env.MBM_SOURCE_PATH+'\\n');",
     " process.exit(7);",
     "});",
   ].join("");
@@ -100,6 +165,7 @@ try {
     }, {
       name: "consume local resource",
       argv: [process.execPath, "-e", script, "{{resource:test-secret}}"],
+      env: { MBM_SOURCE_PATH: secretFile },
       env_resources: { MBM_JOB_SECRET: "test-secret" },
       stdin_resource: "test-secret",
       timeout_seconds: 20,
@@ -119,7 +185,7 @@ try {
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("base64")), "job result exposed base64 resource content");
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("hex")), "job result exposed hex resource content");
   assert(!serialized.includes(secretFile), "job result exposed the registered resource path");
-  assert(serialized.includes("redacted-resource:test-secret") && serialized.includes("resource:test-secret"), "job result did not mark redacted values and paths");
+  assert(serialized.includes("redacted-resource:test-secret") && serialized.includes("resource:test-secret") && serialized.includes("resource-source:test-secret"), "job result did not mark redacted values and paths");
   assert(serialized.includes("temporary-helper-ok"), "job-scoped temporary helper did not run");
   assert(!(await exists(join(jobRoot, accepted.job_id, "runtime"))), "job runtime resource copies and temporary files were not removed");
   assert(!(await exists(join(jobRoot, accepted.job_id, "plan.json"))), "finished job retained scripts, stdin, argv, or resource source paths in plan.json");
@@ -202,6 +268,11 @@ try {
   });
   await writeFile(statusFile, `${JSON.stringify(stale, null, 2)}
 `, { mode: 0o600 });
+  const staleRecoveryLock = join(recoverableDir, "recovery.lock");
+  await writeFile(staleRecoveryLock, `${process.pid}
+`, { mode: 0o600 });
+  const oldRecoveryTime = new Date(Date.now() - 10 * 60_000);
+  await utimes(staleRecoveryLock, oldRecoveryTime, oldRecoveryTime);
   const recoveryManager = new ManagedJobManager({
     jobRoot,
     workspace,
@@ -256,11 +327,12 @@ try {
     job_id: "job_abcdefghijklmnopqrstuvwxyz123456",
     name: "corrupt plan",
     status: "queued",
+    approval: "mcp",
+    plan_sha256: "0".repeat(64),
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   })}
 `, { mode: 0o600 });
-  const runnerEntry = fileURLToPath(new URL("../src/local/job-runner.mjs", import.meta.url));
   const corruptRunner = spawn(process.execPath, [runnerEntry, "--job-dir", corruptDir], { stdio: "ignore", windowsHide: true });
   await new Promise((resolvePromise, rejectPromise) => {
     corruptRunner.once("close", resolvePromise);

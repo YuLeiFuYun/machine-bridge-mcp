@@ -638,7 +638,7 @@
   {
     "name": "generate_ssh_key_resource",
     "title": "Generate SSH key resource",
-    "description": "Generate or reuse an Ed25519 SSH key pair on the local machine and register the private key file as a local resource alias. The private key content is never returned; only local paths, public fingerprint, permissions, and registration status are reported. Available only under canonical full policy.",
+    "description": "Generate or reuse an Ed25519 SSH key pair on the local machine and register the private key file as a local resource alias. Private key content is never returned. Local paths are omitted unless expose_paths=true; fingerprint, permissions, and registration status are returned. Available only under canonical full policy.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -660,6 +660,10 @@
         "comment": {
           "type": "string",
           "maxLength": 256
+        },
+        "expose_paths": {
+          "type": "boolean",
+          "description": "Return local private/public key paths. Defaults to false."
         }
       },
       "required": [

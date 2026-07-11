@@ -46,10 +46,11 @@ A successful diagnostic response proves that particular request reached the loca
 Secrets and other local-only files should be registered from the user's terminal, not read into the model context:
 
 ```sh
-chmod 600 ~/.ssh/example-provider_ed25519
-machine-mcp resource add example-provider-key ~/.ssh/example-provider_ed25519
-machine-mcp resource list
-machine-mcp resource check example-provider-key
+chmod 600 ~/.ssh/example_maintenance_ed25519
+machine-mcp resource add maintenance-key ~/.ssh/example_maintenance_ed25519
+machine-mcp resource list                 # paths omitted by default
+machine-mcp resource list --show-paths    # explicit local-only disclosure
+machine-mcp resource check maintenance-key
 ```
 
 Registration stores only canonical path and bounded metadata in owner-only state. It reads the file locally to validate accessibility and size but does not print or send its contents. New jobs see registry changes immediately; the daemon does not need a restart.
@@ -59,7 +60,7 @@ Unix-like systems reject group/other-readable resource files by default. `--allo
 Remove an alias with:
 
 ```sh
-machine-mcp resource remove example-provider-key
+machine-mcp resource remove maintenance-key
 ```
 
 Removing an alias affects new jobs. A job already accepted has an owner-only resource snapshot specification and continues independently.
@@ -67,10 +68,10 @@ Removing an alias affects new jobs. A job already accepted has an owner-only res
 Generate a new Ed25519 resource rather than exposing a private-key creation command through a model-generated shell string:
 
 ```sh
-machine-mcp resource generate-ssh-key example-provider-key ~/.ssh/ai-example-provider-maint-ed25519
+machine-mcp resource generate-ssh-key maintenance-key ~/.ssh/machine-mcp-example-maint-ed25519
 ```
 
-Canonical-full MCP clients also receive `generate_ssh_key_resource`. It generates or reuses the pair locally, verifies correspondence, registers the private file, and returns no private bytes. Public-key installation in a cloud or remote account should be a separate reviewed step or managed job.
+Canonical-full MCP clients also receive `generate_ssh_key_resource`. It generates or reuses the pair locally, verifies correspondence, registers the private file, and returns neither private bytes nor local paths by default. Set `expose_paths=true` only for an explicit path-retrieval operation. Public-key installation in a cloud or remote account should be a separate reviewed step or managed job.
 
 ## Resource injection modes
 
@@ -80,7 +81,7 @@ A managed step is argv-based and supports three local resource modes:
 
 ```json
 {
-  "argv": ["ssh", "-i", "{{resource:example-provider-key}}", "root@example", "true"]
+  "argv": ["ssh", "-i", "{{resource:maintenance-key}}", "admin@server.example", "true"]
 }
 ```
 
@@ -152,8 +153,8 @@ For a remote shell program, avoid a remote helper entirely when possible:
       "argv": [
         "ssh",
         "-i",
-        "{{resource:example-provider-key}}",
-        "root@example",
+        "{{resource:maintenance-key}}",
+        "admin@server.example",
         "sh",
         "-s"
       ],
@@ -174,12 +175,12 @@ A job can contain ordered main steps and ordered `finally_steps`:
   "name": "remote maintenance",
   "steps": [
     {
-      "argv": ["ssh", "root@example", "perform-maintenance"]
+      "argv": ["ssh", "admin@server.example", "perform-maintenance"]
     }
   ],
   "finally_steps": [
     {
-      "argv": ["ssh", "root@example", "rm", "-f", "/tmp/maintenance-helper"],
+      "argv": ["ssh", "admin@server.example", "rm", "-f", "/tmp/maintenance-helper"],
       "allow_failure": true
     }
   ]
@@ -207,7 +208,7 @@ machine-mcp job approve JOB_ID
 machine-mcp job approve JOB_ID --yes
 ```
 
-`job inspect` displays the reviewable plan, including argv, ordinary environment overrides, stdin, temporary helper content, and finally steps, while omitting registered resource source paths and per-resource hashes. The overall `plan_sha256` can be compared with the value returned by `stage_job`.
+`job inspect` displays the reviewable plan, including argv, ordinary environment overrides, stdin, temporary helper content, and finally steps, while omitting registered resource source paths and per-resource hashes. The overall `plan_sha256` is displayed for review and is revalidated atomically during approval and again by the runner before execution. A modified staged plan is rejected.
 
 Local approval is a new operator authorization. It intentionally does not depend on the current MCP execution profile: a plan staged under a write-capable profile can be reviewed and approved from the terminal even when the connector is not allowed to execute. The plan retains the filesystem scope and environment mode captured when it was staged.
 

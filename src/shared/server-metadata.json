@@ -12,6 +12,7 @@
     "Filesystem scope and path display follow the active local policy; the default full profile is unrestricted.",
     "Filename sensitivity is not classified by this server; the MCP host, connector gateway, local OS, or endpoint-security software may enforce additional independent rules.",
     "A named full profile is canonical: it always enables writes, shell execution, unrestricted paths, the full parent environment, absolute paths, and the complete tool catalog. Any explicit narrowing is stored as custom.",
+    "The full catalog is what the local daemon and relay advertise. A connector host or platform can expose only a subset to a particular session; Machine Bridge cannot observe, authorize, or override that host-side filtering.",
     "Use diagnose_runtime to distinguish a request that reached the daemon from local filesystem, process-spawn, shell, managed-job-storage, and resource failures. A tool call blocked before any response cannot be diagnosed by the server.",
     "Never request or return secret-file contents when a local resource alias can be used. Resources are registered through the local machine-mcp CLI; under canonical full policy, generate_ssh_key_resource can generate and register an Ed25519 key without returning private content and may be injected by path, stdin, or environment without entering MCP arguments.",
     "If execution-class tools are unavailable but write access remains, use stage_job to persist a reviewed plan without running it; the operator can launch it locally with machine-mcp job approve JOB_ID.",

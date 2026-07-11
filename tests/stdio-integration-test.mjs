@@ -50,6 +50,22 @@ try {
   assert(initialized.result?.capabilities?.tools, "stdio initialize omitted tools capability");
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
+  const notificationMarker = join(workspace, "notification-must-not-write.txt");
+  send({ jsonrpc: "2.0", method: "tools/call", params: { name: "write_file", arguments: { path: notificationMarker, content: "must-not-run" } } });
+  const rejectedNotification = await responseFor(null);
+  assert(rejectedNotification.error?.code === -32600, "stdio accepted tools/call without a request id");
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
+  let notificationExecuted = false;
+  try { await stat(notificationMarker); notificationExecuted = true; } catch {}
+  assert(!notificationExecuted, "stdio silently executed a tools/call notification");
+
+  child.stdin.write(`${"x".repeat(8 * 1024 * 1024 + 1024)}\n`);
+  const oversizedLine = await responseFor(null, 15_000);
+  assert(oversizedLine.error?.code === -32600 && oversizedLine.error?.message.includes("maximum size"), "stdio did not reject an oversized line incrementally");
+  send({ jsonrpc: "2.0", id: 199, method: "ping" });
+  const pingAfterOversize = await responseFor(199);
+  assert(pingAfterOversize.result && typeof pingAfterOversize.result === "object", "stdio did not recover after discarding an oversized line");
+
   send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const listed = await responseFor(2);
   const tools = new Map(listed.result.tools.map((tool) => [tool.name, tool]));
@@ -100,6 +116,8 @@ try {
   assert(defaultPolicy?.execMode === "shell" && defaultPolicy?.unrestrictedPaths === true && defaultPolicy?.minimalEnv === false && defaultPolicy?.exposeAbsolutePaths === true, "stdio default full profile is not maximum permission");
   assert(serverInfo.result?.structuredContent?.enforcement?.sensitive_filename_filter === false, "server_info did not disclose the absence of a sensitive-filename filter");
   assert(serverInfo.result?.structuredContent?.enforcement?.host_policy_is_independent === true, "server_info did not disclose the independent host-policy boundary");
+  assert(serverInfo.result?.structuredContent?.tool_delivery?.host_exposed_tools_known_to_server === false, "server_info incorrectly claimed visibility into host-exposed tools");
+  assert(serverInfo.result?.structuredContent?.tool_delivery?.host_may_expose_subset === true, "server_info did not disclose host-side tool filtering");
 
   send({ jsonrpc: "2.0", id: 602, method: "tools/call", params: { name: "diagnose_runtime", arguments: {} } });
   const diagnostics = await responseFor(602, 10_000);
@@ -114,6 +132,7 @@ try {
   const generatedKey = await responseFor(604, 30_000);
   const generatedContent = generatedKey.result?.structuredContent;
   assert(generatedKey.result?.isError === false && generatedContent?.registered === true && generatedContent?.private_key_content_exposed === false, "generate_ssh_key_resource failed or exposed private content");
+  assert(generatedContent?.paths_exposed === false && !("private_key_path" in generatedContent) && !JSON.stringify(generatedKey.result).includes(generatedKeyPath), "generate_ssh_key_resource exposed local paths by default");
   assert((await stat(generatedKeyPath)).isFile() && (await stat(`${generatedKeyPath}.pub`)).isFile(), "generate_ssh_key_resource did not create a key pair");
   if (process.platform !== "win32") assert(((await stat(generatedKeyPath)).mode & 0o777) === 0o600, "generated MCP private key mode is not 0600");
   const privateBytes = await readFile(generatedKeyPath);
@@ -121,6 +140,11 @@ try {
   send({ jsonrpc: "2.0", id: 605, method: "tools/call", params: { name: "list_local_resources", arguments: {} } });
   const resourcesAfterGeneration = await responseFor(605);
   assert(resourcesAfterGeneration.result?.structuredContent?.resources?.some((resource) => resource.name === "stdio-key" && resource.available), "generated SSH resource was not immediately visible");
+
+  send({ jsonrpc: "2.0", id: 606, method: "tools/call", params: { name: "generate_ssh_key_resource", arguments: { name: "stdio-key", path: generatedKeyPath, comment: "stdio-integration", expose_paths: true } } });
+  const generatedWithPaths = await responseFor(606, 30_000);
+  const generatedWithPathsContent = generatedWithPaths.result?.structuredContent;
+  assert(generatedWithPathsContent?.paths_exposed === true && generatedWithPathsContent?.private_key_path === generatedKeyPath && generatedWithPathsContent?.public_key_path === `${generatedKeyPath}.pub`, "generate_ssh_key_resource did not honor explicit expose_paths");
 
   send({ jsonrpc: "2.0", id: 601, method: "tools/call", params: { name: "exec_command", arguments: { command: "printf shell-ok", timeout_seconds: 5 } } });
   const shellResult = await responseFor(601);

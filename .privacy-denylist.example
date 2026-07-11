@@ -1,0 +1,4 @@
+# Copy to .privacy-denylist and add one private identifier per line.
+# The real file is ignored by Git and should remain owner-readable only.
+private-host-alias
+personal-project-codename

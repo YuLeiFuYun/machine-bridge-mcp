@@ -131,9 +131,9 @@ Before connecting a host, verify the local implementation directly:
 machine-mcp full-test --workspace /path/to/project
 ```
 
-A passing result proves that Machine Bridge and the local OS allowed its temporary file/process/shell/key/job probes at that time. It does not prove that a hosted MCP connector will deliver a later request or that a cloud/remote account will authorize it.
+A passing result proves that Machine Bridge and the local OS allowed its temporary file/process/shell/key/job probes at that time. It does not prove that a hosted MCP connector will expose every relay-advertised tool, deliver a later request, or that a cloud/remote account will authorize it.
 
-For SSH automation, prefer `generate_ssh_key_resource` under canonical full, or `machine-mcp resource generate-ssh-key` from the terminal. The private key remains a local resource; only paths and the public fingerprint are returned. Installation of the public key into Google OS Login or a remote `authorized_keys` file remains an explicit external action.
+For SSH automation, prefer `generate_ssh_key_resource` under canonical full, or `machine-mcp resource generate-ssh-key` from the terminal. The private key remains a local resource; private bytes and local paths are omitted by default, while metadata and the bare public fingerprint are returned. Paths require an explicit disclosure option. Installation of the public key into Google OS Login or a remote `authorized_keys` file remains an explicit external action.
 
 ## Host-side safety rules
 

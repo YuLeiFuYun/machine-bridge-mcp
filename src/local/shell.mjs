@@ -85,7 +85,7 @@ function finalizeOutput(value, truncated) {
   return truncated > 0 ? `${value}\n\n[truncated ${truncated} bytes]` : value;
 }
 
-export function findWranglerCommand() {
+function findWranglerCommand() {
   const suffix = process.platform === "win32" ? ".cmd" : "";
   const local = path.join(packageRoot, "node_modules", ".bin", `wrangler${suffix}`);
   if (existsSync(local)) return { cmd: local, argsPrefix: [] };

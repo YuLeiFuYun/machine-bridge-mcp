@@ -40,7 +40,7 @@ const BOOLEAN_OPTIONS = new Set([
   "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
   "daemonOnly", "noAutostart", "noPrintCredentials", "printMcpCredentials",
   "printCredentials", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
-  "yes", "keepWorker", "allowInsecurePermissions",
+  "yes", "keepWorker", "allowInsecurePermissions", "showPaths",
 ]);
 const VALUE_OPTIONS = new Set([
   "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel",
@@ -92,7 +92,7 @@ const COMMAND_OPTIONS = {
   workspace: new Set(["workspace", "stateDir"]),
   service: new Set(["workspace", "stateDir", "quiet"]),
   autostart: new Set(["workspace", "stateDir", "quiet"]),
-  resource: new Set(["workspace", "stateDir", "allowInsecurePermissions", "json"]),
+  resource: new Set(["workspace", "stateDir", "allowInsecurePermissions", "showPaths", "json"]),
   job: new Set(["workspace", "stateDir", "json", "yes"]),
   uninstall: new Set(["stateDir", "keepWorker", "yes"]),
 };
@@ -478,10 +478,19 @@ async function resourceCommand(args) {
   state.resources ||= {};
 
   if (action === "list") {
-    const resources = publicResourceRegistry(state.resources);
-    if (args.json) console.log(JSON.stringify({ workspace, resources }, null, 2));
+    const includePaths = args.showPaths === true;
+    const resources = publicResourceRegistry(state.resources, { includePaths });
+    if (args.json) console.log(JSON.stringify({
+      workspace: includePaths ? workspace : "<local-workspace>",
+      paths_exposed: includePaths,
+      resources,
+    }, null, 2));
     else if (!Object.keys(resources).length) console.log("No local resources registered.");
-    else for (const [name, value] of Object.entries(resources)) console.log(`${name}	${value.path}	${value.mode || "n/a"}	${value.size ?? "n/a"} bytes`);
+    else for (const [name, value] of Object.entries(resources)) {
+      const fields = [name, value.mode || "n/a", `${value.size ?? "n/a"} bytes`];
+      if (includePaths) fields.splice(1, 0, value.path);
+      console.log(fields.join("\t"));
+    }
     return;
   }
 
@@ -500,11 +509,14 @@ async function resourceCommand(args) {
       }
       latest.resources[name] = inspected;
       saveState(latest);
-      const result = { name, ...inspected, contents_exposed: false, available_to_new_jobs_immediately: true };
+      const result = publicResourceInspection(name, inspected, {
+        includePath: args.showPaths === true,
+        available_to_new_jobs_immediately: true,
+      });
       if (args.json) console.log(JSON.stringify(result, null, 2));
       else {
         console.log(`Registered local resource: ${name}`);
-        console.log(`Path: ${inspected.path}`);
+        if (args.showPaths === true) console.log(`Path: ${inspected.path}`);
         console.log(`Mode: ${inspected.mode || "n/a"}; size: ${inspected.size} bytes`);
         console.log("The resource is available to newly submitted managed jobs immediately.");
       }
@@ -526,11 +538,10 @@ async function resourceCommand(args) {
       targetPath: requestedPath,
       comment: `machine-mcp:${name}`,
     });
+    const includePaths = args.showPaths === true;
     const result = {
       name: key.name,
       created: key.created,
-      private_key_path: key.privateKeyPath,
-      public_key_path: key.publicKeyPath,
       fingerprint: key.fingerprint,
       key_type: key.keyType,
       private_mode: key.privateMode,
@@ -538,12 +549,16 @@ async function resourceCommand(args) {
       private_key_content_exposed: key.privateKeyContentExposed,
       registered: key.registered,
       available_to_new_jobs_immediately: key.availableToNewJobsImmediately,
+      paths_exposed: includePaths,
+      ...(includePaths ? { private_key_path: key.privateKeyPath, public_key_path: key.publicKeyPath } : {}),
     };
     if (args.json) console.log(JSON.stringify(result, null, 2));
     else {
       console.log(`${key.created ? "Generated and registered" : "Reused and registered"} SSH key resource: ${name}`);
-      console.log(`Private key: ${key.privateKeyPath}`);
-      console.log(`Public key: ${key.publicKeyPath}`);
+      if (includePaths) {
+        console.log(`Private key: ${key.privateKeyPath}`);
+        console.log(`Public key: ${key.publicKeyPath}`);
+      }
       console.log(`Fingerprint: ${key.fingerprint}`);
       console.log("Private key content was not printed or sent through MCP.");
     }
@@ -577,13 +592,28 @@ async function resourceCommand(args) {
     const resource = state.resources[name];
     if (!resource) throw new Error(`local resource is not registered: ${name}`);
     const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
-    const result = { name, ...inspected, contents_exposed: false };
+    const result = publicResourceInspection(name, inspected, { includePath: args.showPaths === true });
     if (args.json) console.log(JSON.stringify(result, null, 2));
-    else console.log(`${name}: available (${inspected.mode || "n/a"}, ${inspected.size} bytes)`);
+    else {
+      const pathDetail = args.showPaths === true ? ` at ${inspected.path}` : "";
+      console.log(`${name}: available${pathDetail} (${inspected.mode || "n/a"}, ${inspected.size} bytes)`);
+    }
     return;
   }
 
   throw new Error(`Unknown resource action: ${action}`);
+}
+
+function publicResourceInspection(name, inspected, { includePath = false, ...extra } = {}) {
+  const { path: localPath, ...metadata } = inspected;
+  return {
+    name,
+    ...metadata,
+    ...extra,
+    paths_exposed: includePath,
+    contents_exposed: false,
+    ...(includePath ? { path: localPath } : {}),
+  };
 }
 
 async function jobCommand(args) {
@@ -1220,7 +1250,7 @@ function validateWorkerName(value) {
 
 function assertNodeVersion() {
   const major = Number(process.versions.node.split(".")[0]);
-  if (major < 22) throw new Error(`Node.js >=22 is required; current ${process.version}`);
+  if (major < 26) throw new Error(`Node.js >=26 is required; current ${process.version}`);
 }
 
 function usage() {
@@ -1274,6 +1304,7 @@ Start options:
   --quiet               Alias for --log-level error
   --allow-insecure-permissions
                         Permit resource registration when a file is group/other-readable
+  --show-paths          Include local absolute paths in resource command output
 
 Uninstall options:
   --keep-worker         Do not delete deployed Worker(s) during uninstall

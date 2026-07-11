@@ -45,7 +45,7 @@ This default prioritizes usability, not least privilege. `run_process` and proce
 
 ## Install
 
-Node.js 22 or newer is required.
+Node.js 26 or newer and npm 12 or newer are required. The repository pins the active development versions in `.node-version`, `.nvmrc`, and `packageManager`; project installs fail on older Node runtimes.
 
 ```sh
 npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest
@@ -132,7 +132,7 @@ Important distinctions:
 - `--absolute-paths` changes returned path metadata; it does not independently grant additional access.
 - In isolated-environment profiles, commands receive private HOME, temp, and cache directories plus a small set of platform variables.
 - The server has no filename blacklist. Under `full`, direct read tools may read any UTF-8 regular file that the local OS user can access, including files outside the workspace and names such as `.env`, `passwords.txt`, or private-key files.
-- Maximum local policy does not override operating-system permissions, macOS TCC/SIP, Windows ACLs, container boundaries, or independent safety rules imposed by the MCP host/platform. A host-generated “sensitive file” denial is outside this server's enforcement layer.
+- Maximum local policy does not override operating-system permissions, macOS TCC/SIP, Windows ACLs, container boundaries, or independent safety rules imposed by the MCP host/platform. `full` means the local daemon and relay advertise the complete catalog; a connector may still expose only a subset to a particular session. Machine Bridge cannot observe or override that host-side subset. A host-generated “sensitive file” denial is outside this server's enforcement layer.
 
 ## Diagnose host, bridge, and local execution failures
 
@@ -169,18 +169,19 @@ When the host blocks execution-class tools but still permits state mutation, `st
 Register credential/key files locally without sending their contents through MCP:
 
 ```sh
-chmod 600 ~/.ssh/example-provider_ed25519
-machine-mcp resource add example-provider-key ~/.ssh/example-provider_ed25519
-machine-mcp resource list
+chmod 600 ~/.ssh/example_maintenance_ed25519
+machine-mcp resource add maintenance-key ~/.ssh/example_maintenance_ed25519
+machine-mcp resource list                 # paths omitted by default
+machine-mcp resource list --show-paths    # explicit local-only path disclosure
 ```
 
 Generate an Ed25519 key and register its private file in one operation:
 
 ```sh
-machine-mcp resource generate-ssh-key example-provider-key ~/.ssh/ai-example-provider-maint-ed25519
+machine-mcp resource generate-ssh-key maintenance-key ~/.ssh/machine-mcp-example-maint-ed25519
 ```
 
-Under canonical `full`, an authorized MCP host can invoke `generate_ssh_key_resource` with the same semantics. The tool is idempotent, verifies that existing public/private files match, enforces local file modes where supported, and returns only paths, public fingerprint, key type, and registration status—not private key bytes.
+Under canonical `full`, an authorized MCP host can invoke `generate_ssh_key_resource` with the same semantics. The tool is idempotent, verifies that existing public/private files match, enforces local file modes where supported, and returns the public fingerprint, key type, and registration status—not private key bytes or local paths. Pass `expose_paths=true` only when the caller genuinely needs those paths.
 
 A job refers to the alias rather than the value:
 
@@ -192,8 +193,8 @@ A job refers to the alias rather than the value:
       "argv": [
         "ssh",
         "-i",
-        "{{resource:example-provider-key}}",
-        "root@example",
+        "{{resource:maintenance-key}}",
+        "admin@server.example",
         "sh",
         "-s"
       ],
@@ -202,7 +203,7 @@ A job refers to the alias rather than the value:
   ],
   "finally_steps": [
     {
-      "argv": ["ssh", "-i", "{{resource:example-provider-key}}", "root@example", "rm", "-f", "/tmp/helper"],
+      "argv": ["ssh", "-i", "{{resource:maintenance-key}}", "admin@server.example", "rm", "-f", "/tmp/helper"],
       "allow_failure": true
     }
   ]
@@ -258,7 +259,7 @@ Repository-configured external diff, text conversion, and filesystem-monitor hel
 
 - `diagnose_runtime` — fixed layered probes; no user-controlled command input
 - `list_local_resources` — aliases and validation status without paths or values
-- `generate_ssh_key_resource` — canonical-full-only Ed25519 generation and private-file resource registration without returning private content
+- `generate_ssh_key_resource` — canonical-full-only Ed25519 generation and private-file registration; private bytes and local paths are omitted by default
 - `stage_job` — persist a validated plan for later local approval without executing it
 - `start_job` — detached ordered argv steps, private temporary files, and finally steps
 - `list_jobs`
@@ -347,7 +348,7 @@ npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```
 
-`npm run check` covers generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, managed-job detachment/resource redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with supported Node versions.
+`npm run check` covers privacy and release-impact gates, generated Worker types, TypeScript, JavaScript syntax, the shared tool catalog, local path/write/process/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/sensitive-artifact check, managed-job detachment/resource redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline.
 
 See [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [SECURITY.md](SECURITY.md).
 
@@ -363,3 +364,5 @@ Use `--keep-worker` to retain deployed Workers while removing local state and au
 ## License
 
 MIT
+
+See [repository privacy hygiene](docs/PRIVACY.md) and [contribution/release discipline](CONTRIBUTING.md) before committing. Every release-relevant code, test, script, configuration, or documentation change must be pushed to GitHub with a new version and followed by a matching npm release.

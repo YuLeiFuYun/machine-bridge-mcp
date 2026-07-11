@@ -14,6 +14,7 @@ machine-mcp service status
 
 | Result | Interpretation |
 |---|---|
+| `server_info` reports full and all relay tools, but the current session UI exposes fewer tools | Host/connector post-relay filtering; Machine Bridge cannot enumerate or override that subset |
 | No structured result because the host rejects the call | Host/connector approval or safety layer, or transport before daemon delivery |
 | `mcp-host-to-daemon` passes but `local-filesystem` fails | Local state/runtime permissions, disk policy, sandbox, or endpoint security |
 | Filesystem passes but `local-process-spawn` fails | Local executable policy, endpoint security, OS permissions, or damaged Node runtime |
@@ -21,11 +22,11 @@ machine-mcp service status
 | `managed-job-storage` fails | Owner-only profile/job directory cannot be used |
 | Registered resource is unavailable | File moved, permissions changed, size exceeded, or local access denied |
 
-A successful diagnostic result applies only to that probe. An MCP host can still deny a later call based on its own request context.
+A successful diagnostic result applies only to that probe. An MCP host can still deny a later call based on its own request context. This is expected layering, not a defect in the `full` profile: `full` removes Machine Bridge's own denials, while host delivery remains independent.
 
 ## Logs
 
-Remote autostart logs are stored under the state root in `logs/daemon.out.log` and `logs/daemon.err.log`. Files are owner-only where supported and tail-trimmed before daemon startup.
+Remote autostart definitions prefer a stable PATH alias that resolves to the currently running Node executable; this avoids versioned Homebrew-style paths becoming invalid after upgrades. Re-run `machine-mcp service install` after changing Node installation families or PATH layout. Autostart logs are stored under the state root in `logs/daemon.out.log` and `logs/daemon.err.log`. Files are owner-only where supported and tail-trimmed before daemon startup.
 
 Logging is level-based:
 
@@ -58,7 +59,7 @@ Generate and register an operator key locally:
 machine-mcp resource generate-ssh-key NAME [PRIVATE_KEY_PATH]
 ```
 
-An authorized canonical-full MCP client can use `generate_ssh_key_resource`. Both paths validate the key pair and return only metadata and a public fingerprint. They do not install the public key in Google, modify `authorized_keys`, or grant remote `sudo`; those remain explicit managed-job/local-operator operations.
+An authorized canonical-full MCP client can use `generate_ssh_key_resource`. Both paths validate the key pair and return only metadata and the bare public fingerprint. Local paths are omitted unless `--show-paths` or `expose_paths=true` is explicitly requested; public-key comments are not included in the returned fingerprint. They do not install the public key in Google, modify `authorized_keys`, or grant remote `sudo`; those remain explicit managed-job/local-operator operations.
 
 ## Managed jobs and local recovery
 
@@ -66,7 +67,8 @@ Register local-only resources from the terminal:
 
 ```sh
 machine-mcp resource add NAME FILE_PATH
-machine-mcp resource list
+machine-mcp resource list                 # paths omitted by default
+machine-mcp resource list --show-paths    # explicit local-only disclosure
 machine-mcp resource check NAME
 machine-mcp resource remove NAME
 ```
@@ -102,8 +104,9 @@ Pending calls are bound to the socket that received them. Results from another s
 Defense-in-depth limits include:
 
 - Worker MCP body: 8 MiB by default, hard cap 16 MiB;
+- stdio JSON-RPC line: 8 MiB, enforced incrementally while reading;
 - OAuth body: 64 KiB;
-- daemon WebSocket message: 8 MiB;
+- daemon WebSocket message: 8 MiB, enforced by the local WebSocket parser before string conversion;
 - text writes and patch envelopes: 5 MiB;
 - images: 4 MiB before base64 encoding;
 - shell/argv envelope: 64 KiB;
@@ -128,7 +131,7 @@ Defense-in-depth limits include:
 
 Policy revision 3 makes named profiles canonical. A state entry labelled `full` is repaired to writes, direct processes, process sessions, shell execution, unrestricted direct filesystem paths, absolute path output, the complete parent environment, and the complete tool catalog. CLI capability overrides are stored as `custom`. The exact pre-0.4 implicit-default shape is still migrated to the current `full` default; explicit restrictive and identified custom profiles remain preserved.
 
-`full` removes Machine Bridge's own profile/path/environment/shell denials. It does not override operating-system access controls, endpoint security, remote authentication, cloud IAM, `sudo`, or independent MCP-host/platform policy.
+`full` removes Machine Bridge's own profile/path/environment/shell denials and makes the complete catalog available to the relay. It does not force a connector host to expose every relayed tool, and the server cannot see the host's final subset. It also does not override operating-system access controls, endpoint security, remote authentication, cloud IAM, `sudo`, or independent MCP-host/platform policy.
 
 Inspect effective policy with:
 

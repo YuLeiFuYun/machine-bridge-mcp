@@ -86,7 +86,7 @@ export class LocalDaemon {
       protocol_version: MCP_PROTOCOL_VERSION,
       supported_protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
       workspace: this.displayPath(this.workspace),
-      workspace_name: basename(this.workspace),
+      workspace_name: this.policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace",
       policy: this.policy,
       policy_contract: {
         named_profile_is_canonical: this.policy.profile === "custom" || policyMatchesNamedProfile(this.policy),
@@ -98,6 +98,12 @@ export class LocalDaemon {
         sensitive_filename_filter: false,
         operating_system_permissions_apply: true,
         host_policy_is_independent: true,
+      },
+      tool_delivery: {
+        full_profile_scope: "local-daemon-and-relay-advertisement",
+        daemon_advertised_tool_count: this.tools().length + 1,
+        host_exposed_tools_known_to_server: false,
+        host_may_expose_subset: true,
       },
       tools: ["server_info", ...this.tools()],
       observability: {
@@ -144,7 +150,7 @@ export class LocalDaemon {
     if (this.closed) return;
     const wsUrl = `${this.workerUrl.replace(/^http/i, "ws")}/daemon/ws`;
     this.logger.debug?.("connecting to remote relay", { endpoint: redactUrl(wsUrl) });
-    const socket = new WebSocket(wsUrl, { headers: { "X-Bridge-Token": this.secret } });
+    const socket = new WebSocket(wsUrl, { headers: { "X-Bridge-Token": this.secret }, maxPayload: MAX_WS_MESSAGE_BYTES });
     this.ws = socket;
 
     socket.on("open", () => {
@@ -266,7 +272,7 @@ export class LocalDaemon {
       const durationMs = Date.now() - started;
       this.logger.debug?.(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: shortCallId(id), tool, duration_ms: durationMs });
     } catch (error) {
-      const safeError = this.safeErrorMessage(error);
+      const safeError = this.safeErrorMessage(error, argumentsValue);
       this.send({ type: "tool_result", id, ok: false, error: { message: safeError } });
       const durationMs = Date.now() - started;
       this.logger.debug?.("tool call failed", { call_id: shortCallId(id), tool, duration_ms: durationMs, error_class: classifyOperationalError(error) });
@@ -339,7 +345,7 @@ export class LocalDaemon {
     const git = await this.runProcess("git", ["-c", "core.fsmonitor=false", "-C", this.workspace, "rev-parse", "--show-toplevel"], 10_000, true, 512 * 1024, context);
     return {
       workspace: this.displayPath(this.workspace),
-      workspaceName: basename(this.workspace),
+      workspaceName: this.policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace",
       gitRoot: git.code === 0 ? this.displayPath(git.stdout.trim()) : "",
       policy: this.policy,
       tools: ["server_info", ...this.tools()],
@@ -348,7 +354,7 @@ export class LocalDaemon {
   }
 
   listRoots() {
-    const roots = [{ name: basename(this.workspace), path: this.displayPath(this.workspace), default: true }];
+    const roots = [{ name: this.policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace", path: this.displayPath(this.workspace), default: true }];
     if (this.policy.unrestrictedPaths) {
       const home = process.env.HOME || process.env.USERPROFILE;
       if (home && home !== this.workspace) roots.push({ name: "home", path: this.displayPath(resolve(home)), default: false });
@@ -757,18 +763,22 @@ export class LocalDaemon {
       targetPath: target,
       comment: args.comment || `machine-mcp:${args.name}`,
     });
+    const exposePaths = args.expose_paths === true;
     return {
       name: key.name,
       created: key.created,
       registered: key.registered,
-      private_key_path: this.displayPath(key.privateKeyPath),
-      public_key_path: this.displayPath(key.publicKeyPath),
       fingerprint: key.fingerprint,
       key_type: key.keyType,
       private_mode: key.privateMode,
       public_mode: key.publicMode,
       private_key_content_exposed: key.privateKeyContentExposed,
       available_to_new_jobs_immediately: key.availableToNewJobsImmediately,
+      paths_exposed: exposePaths,
+      ...(exposePaths ? {
+        private_key_path: resolve(key.privateKeyPath),
+        public_key_path: resolve(key.publicKeyPath),
+      } : {}),
     };
   }
 
@@ -831,7 +841,7 @@ export class LocalDaemon {
       timer.unref?.();
       const cleanup = () => {
         clearTimeout(timer);
-        if (killTimer && !timedOut) clearTimeout(killTimer);
+        if (killTimer) clearTimeout(killTimer);
         this.activeProcesses.delete(child);
         if (context.callId) {
           const set = this.callProcesses.get(context.callId);
@@ -944,19 +954,25 @@ export class LocalDaemon {
 
   displayPath(fullPath) {
     const absolute = resolve(fullPath);
-    if (this.policy.exposeAbsolutePaths || this.policy.unrestrictedPaths) return absolute;
-    assertContainedPath(this.workspace, absolute);
+    if (this.policy.exposeAbsolutePaths) return absolute;
     const shown = relative(this.workspace, absolute);
-    return shown ? shown.split(sep).join("/") : ".";
+    const insideWorkspace = shown === "" || (!shown.startsWith(`..${sep}`) && shown !== ".." && !isAbsolute(shown));
+    if (insideWorkspace) return shown ? shown.split(sep).join("/") : ".";
+    return `<external-path:${sha256(absolute).slice(0, 12)}>`;
   }
 
-  safeErrorMessage(error) {
+  safeErrorMessage(error, toolArgs = {}) {
     let message = boundedErrorMessage(error);
     if (!this.policy.exposeAbsolutePaths) {
       for (const prefix of equivalentPathPrefixes(this.workspace, this.workspaceInput)) message = replacePathPrefix(message, prefix, ".");
       for (const prefix of equivalentPathPrefixes(this.runtimeDir)) message = replacePathPrefix(message, prefix, "<runtime>");
       const home = process.env.HOME || process.env.USERPROFILE;
       if (home) message = replacePathPrefix(message, resolve(home), "<home>");
+      for (const candidate of collectToolPathCandidates(error, toolArgs, this.workspaceInput)) {
+        const absolute = isAbsolute(candidate) ? resolve(candidate) : resolve(this.workspaceInput, candidate);
+        const replacement = this.displayPath(absolute);
+        for (const prefix of equivalentPathPrefixes(candidate, absolute)) message = replacePathPrefix(message, prefix, replacement);
+      }
     }
     return message;
   }
@@ -1201,6 +1217,27 @@ function isPlainRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+
+function collectToolPathCandidates(error, toolArgs, workspace) {
+  const candidates = new Set();
+  for (const value of [error?.path, error?.dest]) if (typeof value === "string" && value) candidates.add(value);
+  const visit = (value, key = "", depth = 0) => {
+    if (depth > 5 || value === null || value === undefined) return;
+    if (typeof value === "string") {
+      if (/(?:^|[_-])(?:path|cwd|workspace|root|directory|dir)(?:$|[_-])/i.test(key) && value && !value.includes("\0")) candidates.add(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 64)) visit(item, key, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+    for (const [childKey, child] of Object.entries(value).slice(0, 128)) visit(child, childKey, depth + 1);
+  };
+  visit(toolArgs);
+  candidates.delete(workspace);
+  return [...candidates].sort((left, right) => right.length - left.length);
+}
 
 function equivalentPathPrefixes(...values) {
   const prefixes = new Set(values.filter(Boolean).map((value) => String(value)));

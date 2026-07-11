@@ -6,8 +6,12 @@ import { generateSshKeyPair, inspectSshKeyPair } from "../src/local/ssh-key.mjs"
 const root = await mkdtemp(join(tmpdir(), "mbm-ssh-key-test-"));
 try {
   const edPath = join(root, "operator-ed25519");
-  const ed = await generateSshKeyPair({ privateKeyPath: edPath, comment: "test-ed25519" });
-  assert(ed.created && ed.publicKeyType === "ssh-ed25519" && ed.fingerprint, "Ed25519 generation failed");
+  const privateCommentMarker = "private-operator-label";
+  const ed = await generateSshKeyPair({ privateKeyPath: edPath, comment: `${privateCommentMarker}\u202e` });
+  assert(ed.created && ed.publicKeyType === "ssh-ed25519" && /^SHA256:[A-Za-z0-9+/=]+$/.test(ed.fingerprint), "Ed25519 generation failed");
+  assert(!ed.fingerprint.includes(privateCommentMarker) && !ed.fingerprint.includes("\u202e"), "SSH fingerprint result exposed the public-key comment or display controls");
+  const publicText = await readFile(`${edPath}.pub`, "utf8");
+  assert(!publicText.includes("\u202e"), "SSH key comment retained a Unicode display control");
   const privateBytes = await readFile(edPath);
   assert(!JSON.stringify(ed).includes(privateBytes.toString("base64")), "SSH result exposed encoded private key bytes");
   if (process.platform !== "win32") assert(((await stat(edPath)).mode & 0o777) === 0o600, "Ed25519 private key mode is not 0600");

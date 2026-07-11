@@ -5,3 +5,4 @@ npm-debug.log*
 .dev.vars
 *.local
 src/worker/worker-configuration.d.ts
+.privacy-denylist

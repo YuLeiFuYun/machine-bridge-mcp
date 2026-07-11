@@ -72,13 +72,15 @@ export async function inspectSshKeyPair(privateKeyPath, publicKeyPath = `${priva
     timeoutMs: 15_000,
     maxOutputBytes: 64 * 1024,
   });
+  const fingerprintValue = fingerprint.stdout.trim().split(/\s+/)[1] || "";
+  if (!/^SHA256:[A-Za-z0-9+/=]+$/.test(fingerprintValue)) throw new Error("SSH key fingerprint output is invalid");
   return {
     created,
     privateKeyPath: resolve(privateKeyPath),
     publicKeyPath: resolve(publicKeyPath),
     privateMode: process.platform === "win32" ? null : `0${(privateInfo.mode & 0o777).toString(8)}`,
     publicMode: process.platform === "win32" ? null : `0${(publicInfo.mode & 0o777).toString(8)}`,
-    fingerprint: fingerprint.stdout.trim(),
+    fingerprint: fingerprintValue,
     publicKeyType: publicLine.split(/\s+/, 1)[0],
   };
 }
@@ -112,7 +114,7 @@ async function safeLstat(path) {
 }
 
 function boundedComment(value) {
-  const comment = String(value || "").replace(/[\r\n\0]/g, " ").trim();
+  const comment = String(value || "").replace(/[\r\n\0\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
   if (!comment) return "machine-mcp";
   if (Buffer.byteLength(comment) > 256) throw new Error("SSH key comment exceeds 256 bytes");
   return comment;

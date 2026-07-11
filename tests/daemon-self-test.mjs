@@ -28,9 +28,17 @@ export async function daemonSelfTest() {
     workerUrl: "https://example.invalid",
     secret: "test-secret-value-123456",
     workspace,
-    policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true },
+    policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true, exposeAbsolutePaths: false },
     logger,
     jobRoot: join(jobState, "unrestricted"),
+  });
+  const unrestrictedVisible = new LocalDaemon({
+    workerUrl: "https://example.invalid",
+    secret: "test-secret-value-123456",
+    workspace,
+    policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true, exposeAbsolutePaths: true },
+    logger,
+    jobRoot: join(jobState, "unrestricted-visible"),
   });
   const previousSecret = process.env.MBM_DAEMON_SELFTEST_SECRET;
   process.env.MBM_DAEMON_SELFTEST_SECRET = "should-not-leak";
@@ -225,14 +233,31 @@ export async function daemonSelfTest() {
 
     const redactedPathError = restricted.safeErrorMessage(new Error(`failure at ${join(workspace, "secret.txt")} and ${restricted.runtimeDir}`));
     if (redactedPathError.includes(workspace) || redactedPathError.includes(restricted.runtimeDir)) throw new Error("tool error path redaction failed");
+    const externalMissing = join(outside, "private-missing-file.txt");
+    let externalError;
+    try { await unrestricted.readFile({ path: externalMissing }); } catch (error) { externalError = error; }
+    const redactedExternalError = unrestricted.safeErrorMessage(externalError, { path: externalMissing });
+    if (redactedExternalError.includes(externalMissing) || !redactedExternalError.includes("<external-path:")) {
+      throw new Error("tool error leaked an explicitly requested external path while absolute-path display was disabled");
+    }
 
     const restrictedRoots = restricted.listRoots();
     if (restrictedRoots.roots.length !== 1 || restrictedRoots.roots[0].path !== ".") throw new Error("restricted roots did not preserve relative-path privacy");
     const unrestrictedRoots = unrestricted.listRoots();
-    if (!unrestrictedRoots.roots.some(root => root.path === path.parse(workspace).root)) throw new Error("unrestricted filesystem root missing");
+    if (unrestrictedRoots.roots.some(root => root.path.includes(workspace) || root.path === path.parse(workspace).root)) {
+      throw new Error("unrestricted access leaked absolute paths while path exposure was disabled");
+    }
+    if (!unrestrictedRoots.roots.some(root => /^<external-path:[a-f0-9]{12}>$/.test(root.path))) {
+      throw new Error("unrestricted hidden roots did not use opaque external-path identifiers");
+    }
+    if (unrestricted.runtimeInfo().workspace_name !== "workspace") throw new Error("hidden runtime info exposed workspace basename");
+    const visibleRoots = unrestrictedVisible.listRoots();
+    if (!visibleRoots.roots.some(root => root.path === path.parse(workspace).root)) throw new Error("explicit absolute-path mode omitted filesystem root");
+    if (unrestrictedVisible.runtimeInfo().workspace_name !== path.basename(workspace)) throw new Error("explicit absolute-path mode omitted workspace basename");
   } finally {
     restricted.stop();
     unrestricted.stop();
+    unrestrictedVisible.stop();
     if (previousSecret === undefined) delete process.env.MBM_DAEMON_SELFTEST_SECRET;
     else process.env.MBM_DAEMON_SELFTEST_SECRET = previousSecret;
     await rm(workspace, { recursive: true, force: true }).catch(() => {});

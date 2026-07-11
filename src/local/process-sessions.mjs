@@ -4,11 +4,11 @@ import { basename } from "node:path";
 import { executionEnv } from "./shell.mjs";
 
 export const MAX_COMMAND_BYTES = 64 * 1024;
-export const MAX_ARGV_ITEMS = 256;
-export const MAX_PROCESS_SESSIONS = 8;
-export const MAX_SESSION_OUTPUT_BYTES = 1024 * 1024;
-export const MAX_PROCESS_STDIN_BYTES = 64 * 1024;
-export const PROCESS_SESSION_RETENTION_MS = 30 * 60 * 1000;
+const MAX_ARGV_ITEMS = 256;
+const MAX_PROCESS_SESSIONS = 8;
+const MAX_SESSION_OUTPUT_BYTES = 1024 * 1024;
+const MAX_PROCESS_STDIN_BYTES = 64 * 1024;
+const PROCESS_SESSION_RETENTION_MS = 30 * 60 * 1000;
 
 export class ProcessSessionManager {
   constructor({ workspace, policy, runtimeDir, activeProcesses, callProcesses, resolveCwd, displayPath, throwIfCancelled }) {

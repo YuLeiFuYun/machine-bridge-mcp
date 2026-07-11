@@ -80,7 +80,7 @@ export function removeStateRoot(stateRoot = defaultStateRoot()) {
   return true;
 }
 
-export function workspaceHash(workspace) {
+function workspaceHash(workspace) {
   const canonical = resolveWorkspace(workspace);
   const identity = process.platform === "win32" ? canonical.toLowerCase() : canonical;
   return createHash("sha256").update(identity).digest("hex").slice(0, 24);
@@ -160,7 +160,7 @@ export function daemonLockPathForState(state) {
   return lockPathForState(state, "daemon.lock");
 }
 
-export function startupLockPathForState(state) {
+function startupLockPathForState(state) {
   return lockPathForState(state, "startup.lock");
 }
 
@@ -362,7 +362,7 @@ function assertValidStateMarker(marker, options = {}) {
 
 function hasOnlyStateEntries(entries) {
   const allowed = new Set([STATE_MARKER, "config.json", "profiles", "logs"]);
-  return entries.every((entry) => allowed.has(entry) || /^config\.json\.corrupt-\d+$/.test(entry));
+  return entries.every((entry) => allowed.has(entry) || /^config\.json\.corrupt-\d+(?:-[a-f0-9]{8})?$/.test(entry));
 }
 
 function looksLikeSourceTree(root) {
@@ -484,7 +484,7 @@ function randomToken(prefix) {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
 }
 
-export function sha256(value) {
+function sha256(value) {
   return createHash("sha256").update(String(value)).digest("hex");
 }
 

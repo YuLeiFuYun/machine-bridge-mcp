@@ -8,9 +8,9 @@ import { parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOption
 import { daemonSelfTest } from "./daemon-self-test.mjs";
 import { formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { daemonArgs, systemdQuote, trimAutostartLogs } from "../src/local/service.mjs";
+import { daemonArgs, stableNodeExecutable, systemdQuote, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
-import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
+import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
 await daemonSelfTest();
 await stateSelfTest();
@@ -99,8 +99,12 @@ async function stateSelfTest() {
     if (!newestBackup || await readFile(join(state.paths.profileDir, newestBackup), "utf8") !== "{not-json") {
       throw new Error("corrupt state backup did not preserve the original bytes");
     }
+    await writeFile(join(stateRoot, "config.json"), "{invalid-config", { mode: 0o600 });
+    loadGlobalConfig(stateRoot);
+    const configBackups = (await readdir(stateRoot)).filter(name => /^config\.json\.corrupt-/.test(name));
+    if (configBackups.length !== 1) throw new Error("corrupt global config did not create one bounded backup");
     const safeRemoval = validateStateRootForRemoval(stateRoot);
-    if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed");
+    if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed after corrupt config recovery");
 
     const legacyStateRoot = await mkdtemp(join(tmpdir(), "mbm-legacy-state-"));
     try {
@@ -244,13 +248,15 @@ async function resourceCliSelfTest() {
   if (process.platform !== "win32") await chmod(resourceFile, 0o600);
   const entry = fileURLToPath(new URL("../bin/machine-mcp.mjs", import.meta.url));
   try {
-    const added = spawnSync(process.execPath, [entry, "resource", "add", "example-provider-key", resourceFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+    const added = spawnSync(process.execPath, [entry, "resource", "add", "test-key", resourceFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
     });
     if (added.error) throw added.error;
     if (added.status !== 0) throw new Error(`resource add failed: ${added.stderr || added.stdout}`);
     const addedJson = JSON.parse(added.stdout);
-    if (addedJson.contents_exposed !== false || added.stdout.includes("local-value-not-returned")) throw new Error("resource add exposed file contents");
+    if (addedJson.contents_exposed !== false || addedJson.paths_exposed !== false || "path" in addedJson || added.stdout.includes(resourceFile) || added.stdout.includes("local-value-not-returned")) {
+      throw new Error("resource add exposed file contents or local path by default");
+    }
 
     const generatedKeyPath = join(workspace, "generated-operator-key");
     const generated = spawnSync(process.execPath, [entry, "resource", "generate-ssh-key", "generated-key", generatedKeyPath, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
@@ -259,8 +265,8 @@ async function resourceCliSelfTest() {
     if (generated.error) throw generated.error;
     if (generated.status !== 0) throw new Error(`SSH key resource generation failed: ${generated.stderr || generated.stdout}`);
     const generatedJson = JSON.parse(generated.stdout);
-    if (!generatedJson.created || !generatedJson.registered || generatedJson.private_key_content_exposed !== false || !generatedJson.fingerprint) {
-      throw new Error("SSH key generation result is incomplete or exposed private content");
+    if (!generatedJson.created || !generatedJson.registered || generatedJson.private_key_content_exposed !== false || !generatedJson.fingerprint || generatedJson.paths_exposed !== false || "private_key_path" in generatedJson || generated.stdout.includes(generatedKeyPath)) {
+      throw new Error("SSH key generation result is incomplete or exposed private content/path by default");
     }
     if (!(await stat(generatedKeyPath)).isFile() || !(await stat(`${generatedKeyPath}.pub`)).isFile()) throw new Error("SSH key pair was not created");
     if (process.platform !== "win32" && ((await stat(generatedKeyPath)).mode & 0o777) !== 0o600) throw new Error("generated private key mode is not 0600");
@@ -270,7 +276,7 @@ async function resourceCliSelfTest() {
     if (generatedAgain.status !== 0 || JSON.parse(generatedAgain.stdout).created !== false) throw new Error("SSH key resource generation is not idempotent");
 
     const state = loadState(workspace, { stateDir: stateRoot });
-    if (state.resources["example-provider-key"]?.path !== resourceFile) throw new Error("resource add did not persist the canonical path");
+    if (state.resources["test-key"]?.path !== resourceFile) throw new Error("resource add did not persist the canonical path");
     const manager = new ManagedJobManager({
       jobRoot: join(state.paths.profileDir, "jobs"),
       workspace,
@@ -284,12 +290,24 @@ async function resourceCliSelfTest() {
     });
     if (listed.status !== 0) throw new Error(`resource list failed: ${listed.stderr || listed.stdout}`);
     const listedJson = JSON.parse(listed.stdout);
-    if (!listedJson.resources?.["example-provider-key"] || !listedJson.resources?.["generated-key"] || listed.stdout.includes("local-value-not-returned")) throw new Error("resource list omitted an alias or exposed contents");
-
-    const checked = spawnSync(process.execPath, [entry, "resource", "check", "example-provider-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+    if (!listedJson.resources?.["test-key"] || !listedJson.resources?.["generated-key"] || listedJson.paths_exposed !== false || listedJson.workspace !== "<local-workspace>" || "path" in listedJson.resources["test-key"] || listed.stdout.includes(resourceFile) || listed.stdout.includes(generatedKeyPath) || listed.stdout.includes("local-value-not-returned")) {
+      throw new Error("resource list omitted an alias or exposed contents/paths by default");
+    }
+    const listedWithPaths = spawnSync(process.execPath, [entry, "resource", "list", "--show-paths", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
     });
-    if (checked.status !== 0 || JSON.parse(checked.stdout).contents_exposed !== false) throw new Error("resource check failed or exposed contents");
+    const listedWithPathsJson = JSON.parse(listedWithPaths.stdout);
+    if (listedWithPaths.status !== 0 || listedWithPathsJson.paths_exposed !== true || listedWithPathsJson.resources?.["test-key"]?.path !== resourceFile) {
+      throw new Error("resource list did not honor explicit --show-paths");
+    }
+
+    const checked = spawnSync(process.execPath, [entry, "resource", "check", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    const checkedJson = JSON.parse(checked.stdout);
+    if (checked.status !== 0 || checkedJson.contents_exposed !== false || checkedJson.paths_exposed !== false || "path" in checkedJson || checked.stdout.includes(resourceFile)) {
+      throw new Error("resource check failed or exposed contents/path by default");
+    }
 
     const jobs = spawnSync(process.execPath, [entry, "job", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
@@ -299,14 +317,14 @@ async function resourceCliSelfTest() {
     const approvedMarker = join(workspace, "approved-by-cli.txt");
     const stagedForCli = manager.stage({
       name: "CLI approval",
-      steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'cli-approved')", approvedMarker], env_resources: { MBM_REVIEW_ONLY: "example-provider-key" }, timeout_seconds: 10 }],
+      steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'cli-approved')", approvedMarker], env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: 10 }],
     });
     const inspectedPlan = spawnSync(process.execPath, [entry, "job", "inspect", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
     });
     if (inspectedPlan.status !== 0) throw new Error(`local job inspect failed: ${inspectedPlan.stderr || inspectedPlan.stdout}`);
     const inspectionJson = JSON.parse(inspectedPlan.stdout);
-    const reviewedResource = inspectionJson.review_plan?.resources?.["example-provider-key"];
+    const reviewedResource = inspectionJson.review_plan?.resources?.["test-key"];
     if (!inspectionJson.review_plan || !reviewedResource || "path" in reviewedResource || "sha256" in reviewedResource || JSON.stringify(inspectionJson).includes(resourceFile)) {
       throw new Error("local plan inspection omitted the plan or exposed a resource source path/hash");
     }
@@ -384,7 +402,7 @@ async function resourceCliSelfTest() {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
     }
 
-    const removed = spawnSync(process.execPath, [entry, "resource", "remove", "example-provider-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+    const removed = spawnSync(process.execPath, [entry, "resource", "remove", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
     });
     if (removed.status !== 0 || JSON.parse(removed.stdout).removed !== true) throw new Error("resource remove failed");
@@ -420,14 +438,14 @@ function cliSelfTest() {
   expectThrow(() => validateLoggingOptions({ logLevel: "warn", verbose: true }), "cannot be combined");
   validateCommandOptions("stdio", { _: [], profile: "agent", execMode: "direct" });
   validateCommandOptions("client-config", { _: [], client: "cursor", profile: "review" });
-  validateCommandOptions("resource", { _: ["add", "key", "/tmp/key"], allowInsecurePermissions: true, json: true });
+  validateCommandOptions("resource", { _: ["add", "key", "/tmp/key"], allowInsecurePermissions: true, showPaths: true, json: true });
   validateCommandOptions("job", { _: ["read", "job_abcdefghijklmnopqrstuvwxyz"], json: true });
   validatePositionals("workspace", { _: ["set", "/tmp/project"] });
   validatePositionals("service", { _: ["install", "/tmp/project"] });
   validatePositionals("stdio", { _: ["/tmp/project"] });
   validatePositionals("client-config", { _: ["codex"] });
-  validatePositionals("resource", { _: ["add", "example-provider-key", "/tmp/key"] });
-  validatePositionals("resource", { _: ["generate-ssh-key", "example-provider-key", "/tmp/key"] });
+  validatePositionals("resource", { _: ["add", "test-key", "/tmp/key"] });
+  validatePositionals("resource", { _: ["generate-ssh-key", "test-key", "/tmp/key"] });
   validatePositionals("full-test", { _: ["/tmp/project"] });
   validatePositionals("job", { _: ["read", "job_abcdefghijklmnopqrstuvwxyz"] });
   validatePositionals("job", { _: ["submit", "/tmp/plan.json"] });
@@ -499,6 +517,16 @@ function logSelfTest() {
   if (rendered.includes("\nforged")) throw new Error("structured log newline injection was not escaped");
   if (sanitizeLogText("ok\n[error] forged").includes("\n[error]")) throw new Error("log message newline injection was not escaped");
   if (sanitizeLogText("x".repeat(10_000)).length > 2048) throw new Error("log message length was not bounded");
+  const privateHome = process.env.HOME || process.env.USERPROFILE || "/home/test-user";
+  const privateFields = formatFields({ workspace: `${privateHome}/private-workspace`, cwd: `${privateHome}/private-workspace/subdir`, ordinary: "visible" });
+  if (privateFields.includes(privateHome) || !privateFields.includes("<local-path>") || !privateFields.includes("visible")) {
+    throw new Error("structured log local-path redaction failed");
+  }
+  const syntheticAwsKey = `AK${"IA"}${"A".repeat(16)}`;
+  const sensitiveText = sanitizeLogText(`contact person@example.com at ${privateHome}/project ${syntheticAwsKey} abc\u202Etxt`);
+  if (sensitiveText.includes("person@example.com") || sensitiveText.includes(privateHome) || sensitiveText.includes(syntheticAwsKey) || sensitiveText.includes("\u202E")) {
+    throw new Error("free-form log privacy redaction failed");
+  }
   const hostileFields = {};
   Object.defineProperty(hostileFields, "broken", { enumerable: true, get() { throw new Error("getter failed"); } });
   if (!formatFields(hostileFields).includes("fields_unavailable")) throw new Error("logging failed closed on hostile structured fields");
@@ -521,6 +549,35 @@ async function serviceSelfTest() {
     if ((await stat(file)).size > 1024 || trimmed.startsWith("�") || !trimmed.endsWith("last-line\n")) {
       throw new Error("autostart log tail trimming was not line/UTF-8 safe");
     }
+    if (process.platform !== "win32") {
+      const outsideTarget = join(stateRoot, "outside-log-target");
+      const linkedLog = join(logs, "daemon.out.log");
+      await writeFile(outsideTarget, "must-remain-unchanged", "utf8");
+      try {
+        await symlink(outsideTarget, linkedLog);
+        trimAutostartLogs(stateRoot, { maxBytes: 1024, keepBytes: 1024 });
+        if (await readFile(outsideTarget, "utf8") !== "must-remain-unchanged") {
+          throw new Error("autostart log trimming followed a symbolic link");
+        }
+      } catch (error) {
+        if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
+      }
+    }
+    const nodeBin = join(stateRoot, "node-bin");
+    await mkdir(nodeBin, { recursive: true });
+    const nodeTarget = join(nodeBin, process.platform === "win32" ? "node-target.exe" : "node-target");
+    const nodeAlias = join(nodeBin, process.platform === "win32" ? "node.exe" : "node");
+    await writeFile(nodeTarget, "node-fixture", "utf8");
+    if (process.platform !== "win32") {
+      await chmod(nodeTarget, 0o755);
+      await symlink(nodeTarget, nodeAlias);
+      if (stableNodeExecutable({ execPath: nodeTarget, pathEnv: nodeBin }) !== nodeAlias) {
+        throw new Error("autostart did not prefer a stable PATH alias for the active Node binary");
+      }
+    } else if (stableNodeExecutable({ execPath: nodeTarget, pathEnv: nodeBin }) !== nodeTarget) {
+      throw new Error("autostart Node fallback changed the active Windows executable");
+    }
+
     const quoted = systemdQuote("path with space/%value'\n");
     if (!quoted.startsWith('"') || !quoted.includes("%%") || !quoted.includes("\\n")) throw new Error("systemd argument quoting failed");
     const args = daemonArgs({ entryScript: "/package/bin/machine-mcp.mjs", workspace: "/workspace", stateRoot: "/state" });

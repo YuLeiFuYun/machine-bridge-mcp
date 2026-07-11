@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.7.0 - 2026-07-11
+
+### Runtime and dependencies
+
+- Raise the sole supported runtime baseline to Node.js 26 and npm 12, add exact local version files and strict engine checks, update Node type definitions to 26.1.1, and run the cross-platform CI suite on Node 26.
+- Confirm Wrangler 4.110.0, ws 8.21.0, and TypeScript 7.0.2 are current; retain exact reviewed dependency versions and zero known audit findings.
+- Accept both legacy array and npm 12 keyed-object `npm pack --json` metadata so package verification and GitHub release asset creation remain functional after the npm upgrade.
+
+### Security and privacy
+
+- Replace private environment-derived aliases in public examples with synthetic identifiers and add a repository privacy gate covering tracked and unignored new files, file names, common credential forms, local home paths, SSH host identifiers, and an ignored machine-specific denylist without echoing matched values. Reject publication-surface symbolic links instead of following their targets.
+- Hide local resource and generated-key paths by default; require explicit `--show-paths` or `expose_paths=true`, return only bare SSH fingerprints, and broaden operational-log redaction for paths, email addresses, token forms, key headers, and Unicode display controls.
+- Separate unrestricted filesystem access from absolute-path display, dynamically redact requested external paths from tool errors, harden autostart files/logs against permissive modes and symbolic links, canonicalize OAuth redirect URIs, and remove bidirectional/zero-width controls from authorization-page display text.
+
+### Correctness and durability
+
+- Verify staged managed-job hashes during inspection, approval, and runner startup; serialize approve/cancel transitions and reclaim stale transition/recovery locks even after PID reuse; reject direct execution of unapproved staged plans; remove stale runner claims during recovery; and redact registered-resource source-path aliases from retained output.
+- Clear delayed force-kill timers after process exit, enforce the stdio line limit during incremental reads, reject oversized local WebSocket payloads before string conversion, reject ID-less `tools/call` notifications instead of silently executing them, and accept actual collision-suffixed corrupt-config backups during guarded state removal.
+- Make autostart prefer a stable PATH alias that resolves to the active Node executable instead of a versioned package-manager Cellar path, preventing minor Node upgrades from leaving launchd/systemd definitions pointing at removed binaries.
+- Open and trim managed-job runner diagnostic logs through no-follow file descriptors, rejecting symbolic-link targets instead of following them.
+
+### Release governance and diagnostics
+
+- Add a release-impact gate requiring a newer package version and matching CHANGELOG section for every tracked or nonignored repository change after the latest version tag. Document that reviewed changes must be pushed to GitHub and followed by a matching npm release.
+- Clarify in `server_info`, runtime diagnostics, and operations documentation that canonical `full` controls the local daemon and relay catalog only. A connector host can expose a smaller subset, and that host-side subset is not observable or overrideable by Machine Bridge.
+
+### Tests and documentation
+
+- Add regression coverage for privacy scanning of new files, clean/parseable package manifests and sensitive-artifact exclusion, default path omission and explicit disclosure, hidden unrestricted paths, plan tampering, direct staged-runner invocation, transition locks, source-path redaction, symlink log targets, corrupt-state cleanup, Unicode authorization spoofing, oversized stdio recovery, ID-less tool calls, and comment-free SSH fingerprints.
+- Make release packaging resilient to lifecycle output by using silent JSON mode, and document repository privacy incident response, immutable history/package limitations, explicit path disclosure, plan integrity enforcement, same-user filesystem race residuals, and privacy checks in the release process.
+
 ## 0.6.2 - 2026-07-10
 
 ### Fixed

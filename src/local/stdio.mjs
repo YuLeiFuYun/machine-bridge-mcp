@@ -1,4 +1,3 @@
-import readline from "node:readline";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { LocalDaemon } from "./daemon.mjs";
@@ -25,30 +24,26 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
   let negotiatedVersion = MCP_PROTOCOL_VERSION;
   let initialized = false;
 
-  const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
   const writes = new Set();
   const send = (message) => {
     if (message === null || message === undefined) return;
     const line = `${JSON.stringify(message)}\n`;
     const promise = new Promise((resolvePromise, rejectPromise) => {
       process.stdout.write(line, (error) => error ? rejectPromise(error) : resolvePromise());
+    }).catch((error) => {
+      logger.warn("stdio output write failed", { error_class: classifyOperationalError(error) });
     }).finally(() => writes.delete(promise));
     writes.add(promise);
   };
 
-  rl.on("line", (line) => {
-    if (Buffer.byteLength(line) > MAX_LINE_BYTES) {
-      send(rpcError(null, -32600, "JSON-RPC message exceeds maximum size"));
-      return;
-    }
-    void handleLine(line).catch((error) => {
-      logger.error("stdio request handler failed", { error_class: classifyOperationalError(error) });
-    });
-  });
-
-  await new Promise((resolvePromise, rejectPromise) => {
-    rl.once("close", resolvePromise);
-    rl.once("error", rejectPromise);
+  await consumeBoundedJsonLines(process.stdin, {
+    maxLineBytes: MAX_LINE_BYTES,
+    onOversize() { send(rpcError(null, -32600, "JSON-RPC message exceeds maximum size")); },
+    onLine(line) {
+      void handleLine(line).catch((error) => {
+        logger.error("stdio request handler failed", { error_class: classifyOperationalError(error) });
+      });
+    },
   });
   for (const callId of pending.values()) runtime.cancelCall(callId, "stdio input closed");
   await Promise.allSettled([...writes]);
@@ -111,6 +106,10 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
       return;
     }
     if (message.method === "tools/call") {
+      if (!("id" in message) || message.id === null) {
+        send(rpcError(null, -32600, "tools/call requires a non-null request id"));
+        return;
+      }
       const params = asObject(message.params);
       const name = typeof params.name === "string" ? params.name : "";
       if (!name) {
@@ -133,7 +132,7 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
         const durationMs = Date.now() - started;
         logger.debug(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs });
       } catch (error) {
-        const safeError = runtime.safeErrorMessage(error);
+        const safeError = runtime.safeErrorMessage(error, args);
         send(rpcResult(message.id, toolResult({ error: safeError }, true)));
         const durationMs = Date.now() - started;
         logger.debug("tool call failed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs, error_class: classifyOperationalError(error) });
@@ -145,6 +144,67 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
     }
     send(rpcError(message.id, -32601, `Method not found: ${message.method}`));
   }
+}
+
+function consumeBoundedJsonLines(stream, { maxLineBytes, onLine, onOversize }) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let chunks = [];
+    let bytes = 0;
+    let discarding = false;
+    let settled = false;
+
+    const resetLine = () => { chunks = []; bytes = 0; };
+    const emitLine = () => {
+      let line = bytes ? Buffer.concat(chunks, bytes) : Buffer.alloc(0);
+      if (line.length && line[line.length - 1] === 13) line = line.subarray(0, line.length - 1);
+      resetLine();
+      onLine(line.toString("utf8"));
+    };
+    const onData = (input) => {
+      const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input);
+      let offset = 0;
+      while (offset < buffer.length) {
+        const newline = buffer.indexOf(10, offset);
+        const end = newline === -1 ? buffer.length : newline;
+        const segment = buffer.subarray(offset, end);
+        if (discarding) {
+          if (newline !== -1) discarding = false;
+        } else if (bytes + segment.length > maxLineBytes) {
+          resetLine();
+          onOversize();
+          if (newline === -1) discarding = true;
+        } else {
+          if (segment.length) chunks.push(segment);
+          bytes += segment.length;
+          if (newline !== -1) emitLine();
+        }
+        offset = newline === -1 ? buffer.length : newline + 1;
+      }
+    };
+    const cleanup = () => {
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      stream.off("close", onEnd);
+      stream.off("error", onError);
+    };
+    const onEnd = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (!discarding && bytes > 0) emitLine();
+      resolvePromise();
+    };
+    const onError = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectPromise(error);
+    };
+    stream.on("data", onData);
+    stream.once("end", onEnd);
+    stream.once("close", onEnd);
+    stream.once("error", onError);
+  });
 }
 
 function isJsonRpcMessage(value) {

@@ -3,7 +3,7 @@ import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.6.2";
+const SERVER_VERSION = "0.7.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -27,6 +27,7 @@ const AUTH_FAILURE_WINDOW_SECONDS = 10 * 60;
 const AUTH_BLOCK_SECONDS = 15 * 60;
 const AUTH_FAILURE_LIMIT = 10;
 const AUTHORIZATION_FIELDS = new Set(["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "scope", "resource", "state"]);
+const UNSAFE_DISPLAY_CONTROLS = /[\u0000-\u001f\u007f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
 interface BridgeEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
@@ -361,6 +362,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (request.method === "ping") return rpcResult(request.id, {});
     if (request.method === "tools/list") return rpcResult(request.id, { tools: this.allTools() });
     if (request.method === "tools/call") {
+      if (request.id === undefined || request.id === null) return rpcError(null, -32600, "tools/call requires a non-null request id");
       const params = asObject(request.params);
       const name = requiredString(params, "name");
       const args = asObject(params.arguments);
@@ -376,13 +378,22 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async callTool(name: string, args: Record<string, unknown>, base: string, requestKey?: string): Promise<unknown> {
     if (name === "server_info") {
+      const daemon = this.daemonStatus(true);
+      const tools = this.allTools().map((tool) => tool.name);
       return {
         name: SERVER_NAME,
         version: SERVER_VERSION,
         mcp_url: `${base}/mcp`,
         oauth: this.authorizationServerMetadata(base),
-        daemon: this.daemonStatus(true),
-        tools: this.allTools().map((tool) => tool.name),
+        daemon,
+        tools,
+        tool_delivery: {
+          full_profile_scope: "local-daemon-and-relay-advertisement",
+          daemon_advertised_tool_count: daemon.tool_count,
+          relay_advertised_tool_count: tools.length,
+          host_exposed_tools_known_to_server: false,
+          host_may_expose_subset: true,
+        },
       };
     }
     if (workspaceTools.some((tool) => tool.name === name)) {
@@ -657,13 +668,15 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (redirectUris.length > 5) {
       return json({ error: "invalid_client_metadata", error_description: "redirect_uris must contain at most 5 entries" }, 400);
     }
-    const normalized = [...new Set(redirectUris.map((item) => String(item)))];
-    if (normalized.some((item) => item.length > 1024)) {
+    const suppliedRedirectUris = redirectUris.map((item) => String(item));
+    if (suppliedRedirectUris.some((item) => item.length > 1024)) {
       return json({ error: "invalid_client_metadata", error_description: "redirect_uri is too long" }, 400);
     }
-    if (!normalized.every(isAllowedRedirectUri)) {
-      return json({ error: "invalid_client_metadata", error_description: "redirect_uris must be https or local http" }, 400);
+    const canonicalRedirectUris = suppliedRedirectUris.map(normalizeRedirectUri);
+    if (canonicalRedirectUris.some((item) => item === null)) {
+      return json({ error: "invalid_client_metadata", error_description: "redirect_uris must be canonicalizable https or local http URLs without credentials or fragments" }, 400);
     }
+    const normalized = [...new Set(canonicalRedirectUris as string[])];
 
     return this.withOAuthLock(async () => {
       const store = await this.oauthStore();
@@ -725,7 +738,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       .filter(([key]) => AUTHORIZATION_FIELDS.has(key))
       .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(String(value))}">`)
       .join("\n");
-    const resource = authorization?.requestedResource ?? String(submitted?.resource ?? url.searchParams.get("resource") ?? `${base}/mcp`);
+    const resource = normalizeDisplayText(
+      authorization?.requestedResource ?? String(submitted?.resource ?? url.searchParams.get("resource") ?? `${base}/mcp`),
+      1024,
+      `${base}/mcp`,
+    );
     const clientBlock = authorization
       ? `<p><strong>Client:</strong> ${escapeHtml(authorization.client.client_name)}</p>
     <p><strong>Redirect URI:</strong> <code>${escapeHtml(authorization.redirectUri)}</code></p>`
@@ -971,7 +988,7 @@ function isFreshDaemonCandidate(connectedAt: string): boolean {
 
 function sanitizeMetadataText(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
-  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  const normalized = value.replace(UNSAFE_DISPLAY_CONTROLS, " ").replace(/\s+/g, " ").trim();
   return normalized ? normalized.slice(0, maxLength) : undefined;
 }
 
@@ -1272,15 +1289,15 @@ async function pkceS256(verifier: string): Promise<string> {
   return base64Url(new Uint8Array(digest));
 }
 
-function isAllowedRedirectUri(value: string): boolean {
+function normalizeRedirectUri(value: string): string | null {
   try {
     const url = new URL(value);
-    if (url.username || url.password || url.hash) return false;
-    if (url.protocol === "https:" && url.hostname) return true;
-    if (url.protocol === "http:" && isLoopbackHost(url.hostname)) return true;
-    return false;
+    if (url.username || url.password || url.hash) return null;
+    if (url.protocol === "https:" && url.hostname) return url.toString();
+    if (url.protocol === "http:" && isLoopbackHost(url.hostname)) return url.toString();
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -1359,9 +1376,9 @@ function searchParamsObject(params: URLSearchParams): Record<string, unknown> {
   return out;
 }
 
-function normalizeDisplayText(value: string, maxLength: number): string {
-  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-  return (normalized || "MCP Client").slice(0, maxLength);
+function normalizeDisplayText(value: string, maxLength: number, fallback = "MCP Client"): string {
+  const normalized = value.replace(UNSAFE_DISPLAY_CONTROLS, " ").replace(/\s+/g, " ").trim();
+  return (normalized || fallback).slice(0, maxLength);
 }
 
 function escapeHtml(value: string): string {
