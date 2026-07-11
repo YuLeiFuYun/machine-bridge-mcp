@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { runNetworkCommand } from "./network-retry.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -37,6 +38,30 @@ function run(command, args, options = {}) {
     fail(`${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
   }
   return result;
+}
+
+
+function runNetwork(command, args, options = {}) {
+  const result = runNetworkCommand(command, args, { cwd: root, env: process.env });
+  if (!options.capture) {
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+  }
+  if (result.error && !options.allowFailure) {
+    fail(`${command} could not be started: ${result.error.message}`);
+  }
+  if (result.status !== 0 && !options.allowFailure) failCommandResult(command, args, result);
+  return result;
+}
+
+function outputNetwork(command, args, options = {}) {
+  const result = runNetwork(command, args, { ...options, capture: true });
+  return (result.stdout ?? "").trim();
+}
+
+function failCommandResult(command, args, result) {
+  const detail = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  fail(`${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
 }
 
 function output(command, args, options = {}) {
@@ -72,7 +97,7 @@ function ensureClean() {
 }
 
 function fetchRemote() {
-  run("git", ["fetch", "origin", "main", "--tags", "--prune"]);
+  runNetwork("git", ["fetch", "origin", "main", "--tags", "--prune"]);
 }
 
 function localTagCommit(tag) {
@@ -84,7 +109,7 @@ function localTagCommit(tag) {
 }
 
 function remoteTagCommit(tag) {
-  const text = output("git", [
+  const text = outputNetwork("git", [
     "ls-remote",
     "--tags",
     "origin",
@@ -99,7 +124,7 @@ function remoteTagCommit(tag) {
 }
 
 function releaseInfo(tag) {
-  const result = run(
+  const result = runNetwork(
     "gh",
     [
       "release",
@@ -205,9 +230,10 @@ function ensureRelease(tag, version, assetPath, latest) {
     ];
     if (notes) args.push("--notes-file", notes);
     else args.push("--generate-notes");
-    run("gh", args);
+    const created = runNetwork("gh", args, { allowFailure: true });
+    if (created.status !== 0 && !releaseInfo(tag)) failCommandResult("gh", args, created);
   } else {
-    run("gh", [
+    runNetwork("gh", [
       "release",
       "edit",
       tag,
@@ -216,7 +242,7 @@ function ensureRelease(tag, version, assetPath, latest) {
       latest ? "--latest" : "--latest=false",
       ...(notes ? ["--notes-file", notes] : []),
     ]);
-    run("gh", ["release", "upload", tag, assetPath, "--clobber"]);
+    runNetwork("gh", ["release", "upload", tag, assetPath, "--clobber"]);
   }
 }
 
@@ -247,7 +273,7 @@ function publishCurrent() {
     if (ancestor.status !== 0) {
       fail("origin/main is not an ancestor of HEAD; refusing a non-fast-forward release");
     }
-    run("git", ["push", "origin", "HEAD:main"]);
+    runNetwork("git", ["push", "origin", "HEAD:main"]);
   }
 
   const existingLocal = localTagCommit(tag);
@@ -263,7 +289,7 @@ function publishCurrent() {
     fail(`remote ${tag} points to ${existingRemote}, not ${head}`);
   }
   if (!existingRemote) {
-    run("git", ["push", "origin", tag]);
+    runNetwork("git", ["push", "origin", tag]);
   }
 
   const temp = mkdtempSync(join(tmpdir(), "machine-bridge-mcp-release-"));
@@ -285,7 +311,7 @@ function backfillMissingReleases() {
   const tags = output("git", ["tag", "--sort=version:refname"])
     .split("\n")
     .filter((tag) => /^v\d+\.\d+\.\d+$/.test(tag));
-  const releases = JSON.parse(output("gh", [
+  const releases = JSON.parse(outputNetwork("gh", [
     "release",
     "list",
     "--limit",
@@ -318,7 +344,8 @@ function backfillMissingReleases() {
       ];
       if (notes) args.push("--notes-file", notes);
       else args.push("--generate-notes");
-      run("gh", args);
+      const created = runNetwork("gh", args, { allowFailure: true });
+      if (created.status !== 0 && !releaseInfo(tag)) failCommandResult("gh", args, created);
     }
   } finally {
     rmSync(temp, { recursive: true, force: true });

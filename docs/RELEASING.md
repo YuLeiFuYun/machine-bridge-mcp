@@ -34,7 +34,7 @@ From a clean `main` worktree:
 npm run release:publish
 ```
 
-The command validates the project, including repository privacy checks, fast-forwards `origin/main`, creates or verifies the annotated version tag, pushes it, builds the npm tarball, creates or updates the GitHub Release, uploads the tarball, and verifies the resulting state.
+The command validates the project, including repository privacy checks, fast-forwards `origin/main`, creates or verifies the annotated version tag, pushes it, builds the npm tarball, creates or updates the GitHub Release, uploads the tarball, and verifies the resulting state. Read-only GitHub operations, Git pushes, and idempotent release updates use bounded retries only for classified transient network failures; ambiguous Release creation responses are resolved by querying server state before continuing.
 
 To verify without changing anything:
 

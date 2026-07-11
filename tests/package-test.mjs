@@ -30,6 +30,7 @@ try {
   if (!record.files.some((item) => item.path === "docs/PRIVACY.md")) throw new Error("npm package omitted privacy guidance");
   if (!record.files.some((item) => item.path === "scripts/privacy-check.mjs")) throw new Error("npm package omitted the privacy checker");
   if (!record.files.some((item) => item.path === "scripts/release-impact-check.mjs")) throw new Error("npm package omitted the release-impact checker");
+  if (!record.files.some((item) => item.path === "scripts/network-retry.mjs")) throw new Error("npm package omitted the network retry helper");
   if (!record.files.some((item) => item.path === "CONTRIBUTING.md")) throw new Error("npm package omitted contribution/release discipline");
   console.log(`npm package manifest test ok (${record.files.length} files)`);
 } finally {
