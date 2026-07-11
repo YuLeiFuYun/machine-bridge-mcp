@@ -9,7 +9,7 @@ import { readBoundedRegularFileSync } from "./secure-file.mjs";
 const LABEL = "dev.machine-bridge-mcp.daemon";
 const WINDOWS_TASK = "MachineBridgeMCP";
 const SERVICE_COMMAND_OUTPUT_BYTES = 64 * 1024;
-const AUTOSTART_LOG_SCHEMA_VERSION = 2;
+const AUTOSTART_LOG_SCHEMA_VERSION = 3;
 
 function serviceRun(command, args) {
   return run(command, args, {

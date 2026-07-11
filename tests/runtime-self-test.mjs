@@ -75,6 +75,24 @@ export async function runtimeSelfTest() {
       throw new Error("valid relay welcome message was treated as an unknown warning");
     }
 
+    const relayProtocolErrors = [];
+    const originalHandleServerError = restricted.relay.handleServerError.bind(restricted.relay);
+    restricted.relay.handleServerError = (message) => { relayProtocolErrors.push(message.error); return true; };
+    await restricted.handleMessage(JSON.stringify({ type: "error", error: "daemon_hello_timeout" }));
+    await restricted.handleMessage("null");
+    await restricted.handleMessage("{");
+    await restricted.handleMessage(JSON.stringify({ type: "future_server_message" }));
+    restricted.relay.handleServerError = originalHandleServerError;
+    if (JSON.stringify(relayProtocolErrors) !== JSON.stringify([
+      "daemon_hello_timeout",
+      "invalid_server_message",
+      "invalid_server_json",
+      "unexpected_server_message_type",
+    ])) throw new Error(`relay protocol errors were not normalized consistently: ${JSON.stringify(relayProtocolErrors)}`);
+    if (logEvents.some(event => event.message === "unknown websocket message")) {
+      throw new Error("structured relay error was still reported as an unknown websocket message");
+    }
+
     logEvents.length = 0;
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" } }));
     if (logEvents.some(event => event.level === "info" && event.message === "tool call completed")) {

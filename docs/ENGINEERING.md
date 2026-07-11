@@ -13,6 +13,12 @@ This document records project-wide decisions that must survive individual fixes,
 
 A proposed change that conflicts with an invariant requires an explicit owner decision and corresponding documentation update. It must not be hidden inside an unrelated refactor.
 
+## Change and release-operation ownership
+
+Repository changes and live release operations are separate responsibilities. Unless the current task explicitly authorizes a broader scope, coding automation may edit source, tests, documentation, package metadata, and changelog entries; run repository-local checks; commit; and push to GitHub. It must not publish or alter npm releases, create tags or GitHub Releases, install the package globally, deploy or reconfigure a Cloudflare Worker, rotate credentials, mutate live deployment state, or start/stop/install/remove the daemon or autostart service.
+
+The normal handoff is: the repository owner publishes the reviewed npm version, then runs `npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest && machine-mcp`. The npm command updates the global CLI. The subsequent normal startup validates the Worker deployment hash, expected version, and health, redeploys when necessary, and reconciles the daemon/autostart flow. Live operations require explicit authorization even when they appear to be the obvious next release step.
+
 ## Architectural boundaries
 
 The preferred dependency direction is:

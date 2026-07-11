@@ -41,10 +41,12 @@ Brief network interruptions are expected on laptop network changes, Worker deplo
 
 - the raw close code, close reason, error class, connected duration, and retry delay are debug-only;
 - a brief interruption that reconnects within the grace period produces no `info` or `warn` line;
-- an outage that remains unresolved for 10 seconds produces one rate-limited warning stating that automatic reconnection is in progress;
-- relay identity/version mismatch and authentication rejection are non-transient: they produce an immediate actionable error and terminate that daemon instead of entering the reconnect loop;
-- repeated warnings are rate-limited;
-- recovery after a visible outage produces one information summary with outage duration and attempt count;
+- an outage that remains unresolved for 10 seconds produces a user-readable warning stating the duration, reconnect attempt count, classified cause, and automatic recovery behavior;
+- while the outage remains unresolved, reminders are scheduled independently of reconnect callbacks and use exponential backoff capped at 15 minutes;
+- a WebSocket that remains in `CONNECTING` beyond its deadline is terminated so one stalled network attempt cannot freeze the reconnect loop;
+- relay identity/version mismatch, authentication rejection, and unexpected protocol messages are non-transient: they produce an immediate actionable error and terminate that daemon instead of entering the reconnect loop;
+- a Worker `daemon_hello_timeout` error is transient and follows the normal reconnect path rather than being misclassified as authentication rejection;
+- recovery after a visible outage produces one information summary with a human-readable duration and attempt count; exact seconds and error classes remain debug-only;
 - an authenticated replacement is a distinct warning and permanently stops the older daemon;
 - failure to receive `hello_ack` within the handshake deadline terminates the candidate socket and retries;
 - lack of inbound heartbeat activity terminates a half-open socket and reconnects.
@@ -55,11 +57,11 @@ Examples:
 
 ```text
 [info] daemon: remote relay connected
-[warn] daemon: remote relay is unavailable; automatic reconnection is still in progress {"outage_seconds":12,"attempts":3,"cause":"connection interrupted"}
-[info] daemon: remote relay connection restored {"outage_seconds":18,"attempts":4}
+[warn] daemon: remote relay unavailable for 12 seconds; reconnecting automatically (3 reconnect attempts; connection interrupted).
+[info] daemon: remote relay connection restored after 18 seconds (4 reconnect attempts)
 ```
 
-With `--verbose`, the same incident may additionally include bounded transport diagnostics.
+With `--verbose`, the same incident additionally includes bounded structured fields such as exact seconds, coarse error class, retry delay, and transport close diagnostics.
 
 ## Tool events
 

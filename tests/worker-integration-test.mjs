@@ -269,6 +269,25 @@ try {
   assert(statusAfterInvalidCandidate.daemon?.connected === true, "invalid candidate displaced the active daemon");
   assert(statusAfterInvalidCandidate.daemon?.tools?.includes("read_file"), "invalid candidate changed active daemon tools");
 
+  const invalidJsonCandidate = await connectDaemon(base);
+  daemonSockets.push(invalidJsonCandidate);
+  const invalidJsonNotice = waitForWsMessage(invalidJsonCandidate, "error");
+  const invalidJsonClosed = waitForWsClose(invalidJsonCandidate);
+  invalidJsonCandidate.send("{");
+  assert((await invalidJsonNotice).error === "invalid_json", "invalid daemon JSON returned the wrong protocol error");
+  assert((await invalidJsonClosed).code === 1007, "invalid daemon JSON did not close with invalid-payload status");
+
+  const nonObjectCandidate = await connectDaemon(base);
+  daemonSockets.push(nonObjectCandidate);
+  const nonObjectNotice = waitForWsMessage(nonObjectCandidate, "error");
+  const nonObjectClosed = waitForWsClose(nonObjectCandidate);
+  nonObjectCandidate.send("null");
+  assert((await nonObjectNotice).error === "invalid_message", "non-object daemon JSON returned the wrong protocol error");
+  assert((await nonObjectClosed).code === 1002, "non-object daemon JSON did not close with protocol-error status");
+  const statusAfterMalformedCandidates = await callServerInfo(base, token.body.access_token, 231);
+  assert(statusAfterMalformedCandidates.daemon?.connected === true, "malformed candidate displaced the active daemon");
+  assert(statusAfterMalformedCandidates.daemon?.tools?.includes("read_file"), "malformed candidate changed active daemon tools");
+
   const candidateDaemon = await connectDaemon(base);
   daemonSockets.push(candidateDaemon);
   const statusBeforeHello = await callServerInfo(base, token.body.access_token, 24);
@@ -410,6 +429,24 @@ try {
     redirect: "manual",
   });
   assert(blockedLogin.status === 429, "blocked source could immediately retry with the correct password");
+
+  const duplicateHelloDaemon = await connectDaemon(base);
+  daemonSockets.push(duplicateHelloDaemon);
+  await sendDaemonHello(duplicateHelloDaemon, ["list_dir"]);
+  const duplicateHelloNotice = waitForWsMessage(duplicateHelloDaemon, "error");
+  const duplicateHelloClosed = waitForWsClose(duplicateHelloDaemon);
+  duplicateHelloDaemon.send(JSON.stringify({ type: "hello", tools: ["list_dir"], policy: {} }));
+  assert((await duplicateHelloNotice).error === "duplicate_hello", "duplicate daemon hello returned the wrong protocol error");
+  assert((await duplicateHelloClosed).code === 1002, "duplicate daemon hello did not close with protocol-error status");
+
+  const unknownMessageDaemon = await connectDaemon(base);
+  daemonSockets.push(unknownMessageDaemon);
+  await sendDaemonHello(unknownMessageDaemon, ["list_dir"]);
+  const unknownMessageNotice = waitForWsMessage(unknownMessageDaemon, "error");
+  const unknownMessageClosed = waitForWsClose(unknownMessageDaemon);
+  unknownMessageDaemon.send(JSON.stringify({ type: "future_daemon_message" }));
+  assert((await unknownMessageNotice).error === "unknown_message_type", "unknown daemon message returned the wrong protocol error");
+  assert((await unknownMessageClosed).code === 1002, "unknown daemon message did not close with protocol-error status");
 
   assert(!logs.includes("Uncaught TypeError"), "wrangler reported an uncaught runtime TypeError");
   console.log("worker OAuth/MCP integration test ok");

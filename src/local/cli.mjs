@@ -337,6 +337,10 @@ async function prepareStartMode(args, state, logger) {
 
 function reportExistingDaemon(args, state, owner, logger) {
   const pid = owner?.pid ? `pid ${owner.pid}` : "unknown pid";
+  if (isIdempotentDaemonOnlyStart(args)) {
+    logger.debug?.("local daemon already running; daemon-only start completed as an idempotent no-op", { owner_pid_known: Boolean(owner?.pid) });
+    return;
+  }
   logger.warn(`local daemon already running for this workspace (${pid}); requested changes were not applied`);
   if (args.json) {
     printStartJson(state, {
@@ -352,6 +356,24 @@ function reportExistingDaemon(args, state, owner, logger) {
     quiet: Boolean(args.quiet),
     verbose: Boolean(args.verbose),
   });
+}
+
+function isIdempotentDaemonOnlyStart(args) {
+  if (!args.daemonOnly || args.json) return false;
+  return !Boolean(
+    args.profile
+    || args.execMode
+    || args.rotateSecrets
+    || args.forceWorker
+    || args.workerName
+    || args.noWrite
+    || args.noExec
+    || args.fullEnv
+    || args.unrestrictedPaths
+    || args.absolutePaths
+    || args.printMcpCredentials
+    || args.printCredentials
+  );
 }
 
 async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }) {

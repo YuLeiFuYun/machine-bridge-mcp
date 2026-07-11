@@ -177,11 +177,11 @@ Managed jobs use the same argv/environment primitives but a different lifecycle.
 
 ## Daemon reconnect and replacement
 
-The local `RelayConnection` treats transport open, authenticated readiness, and outage recovery as separate states. It sends `hello` after WebSocket open and reports readiness only after `hello_ack`. A missing acknowledgement reaches a local handshake deadline and the candidate is terminated. Once ready, application heartbeats require inbound activity; a silent half-open socket is terminated and reconnected.
+The local `RelayConnection` treats transport construction, transport open, authenticated readiness, and outage recovery as separate states. A connection-attempt deadline terminates sockets stuck in `CONNECTING`; after WebSocket open it sends `hello` and reports readiness only after `hello_ack`. A missing acknowledgement reaches a distinct handshake deadline and the candidate is terminated. Once ready, application heartbeats require inbound activity; a silent half-open socket is terminated and reconnected. Outage reminders run on their own exponential-backoff timer rather than depending on another transport callback.
 
 Reconnect uses bounded exponential backoff with jitter. Brief self-healing interruptions are debug-only. An unresolved outage is promoted to a rate-limited warning after a grace period, and recovery produces one summary. Raw close codes and reason strings remain debug-only.
 
-The Worker also treats a new connection as a bounded candidate until it authenticates and completes `hello`; a Durable Object alarm enforces the deadline across hibernation. Only a completed candidate replaces the old socket. Pending calls retain their originating socket reference. A stale socket cannot complete or cancel replacement-socket calls. Closing a socket rejects only calls assigned to it.
+The Worker also treats a new connection as a bounded candidate until it authenticates and completes `hello`; a Durable Object alarm enforces the deadline across hibernation. Only a completed candidate replaces the old socket. Daemon messages must be valid JSON objects, duplicate `hello` and unknown message types are rejected with explicit protocol errors, and protocol violations close with standard WebSocket status codes. Pending calls retain their originating socket reference. A stale socket cannot complete or cancel replacement-socket calls. Closing a socket rejects only calls assigned to it.
 
 ## Persistence
 

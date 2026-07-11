@@ -4,15 +4,23 @@ This repository treats every Git-tracked or nonignored repository file as releas
 
 ## Required for every release-relevant change
 
-Before a change is merged to `main`:
+Before the reviewed code is pushed to `main`:
 
 1. bump `package.json` to a version newer than the latest reachable `v*` tag;
 2. add the matching dated section to `CHANGELOG.md`;
 3. run `npm run check`, `npm audit`, `npm audit --omit=dev`, and `npm run worker:dry-run`;
 4. inspect the complete diff and the npm package manifest;
-5. push the reviewed commit to GitHub;
-6. create the matching Git tag and GitHub Release;
-7. publish the same version to npm.
+5. commit and push the reviewed change to GitHub.
+
+The release operator then creates the matching Git tag and GitHub Release and publishes the same version to npm. These release actions are not implicit coding-agent tasks. Unless the user explicitly requests them in the current task, automation must not publish or alter npm versions, create tags or releases, install the CLI globally, deploy the Worker, rotate credentials, mutate live deployment state, or start/stop/install/remove the daemon or autostart service. See [AGENTS.md](AGENTS.md) for the repository automation contract.
+
+After npm publication, the standard machine update is:
+
+```bash
+npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest && machine-mcp
+```
+
+The npm command updates the global CLI. Normal `machine-mcp` startup checks the Worker deployment hash, expected version, and health, redeploys when necessary, and reconciles the daemon/autostart flow.
 
 `npm run release-impact:check` enforces the version and changelog parts. It fails when release-relevant files changed after the latest version tag but the package version was not advanced.
 

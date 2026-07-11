@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.2 - 2026-07-11
+
+### Relay reliability and protocol correctness
+
+- Add a deadline for WebSocket connection establishment so a transport stuck in `CONNECTING` cannot freeze automatic reconnection indefinitely. Sustained-outage reminders now run on an independent exponential-backoff timer capped at 15 minutes instead of appearing only when another reconnect event happens.
+- Handle Worker `{type:"error"}` messages explicitly. A daemon hello timeout is classified as transient and retried; unknown protocol errors, duplicate hello messages, identity/version mismatch, and authentication rejection terminate with actionable guidance instead of becoming an `unknown websocket message` warning.
+- Validate daemon WebSocket JSON as a non-array object before field access. Invalid JSON closes with code 1007, non-object/unknown/duplicate protocol messages close with code 1002, and active daemon replacement semantics remain unchanged.
+
+### Logging, tests, and documentation
+
+- Replace default outage/recovery JSON field dumps with readable duration, attempt, cause, automatic-recovery, and long-outage action text. Exact seconds, error classes, retry delays, and raw transport details remain debug-only. Advance the autostart log schema so historical 0.8.1-format lines are separated into the bounded owner-only legacy snapshot. Treat a service-style daemon-only start that finds the workspace daemon already running as a silent idempotent success, preventing repeated lock warnings and duplicate readiness output from accumulating in service logs.
+- Add deterministic tests for stalled connection attempts, autonomous reminder backoff, retryable versus fatal relay error messages, close-reason classification, and runtime control-message routing. Extend live Worker integration coverage to invalid JSON, non-object messages, duplicate hello, and unknown authenticated messages. Enable TypeScript unused-local and unused-parameter checks to prevent dead Worker code from accumulating.
+- Update architecture, operations, logging, testing, and README guidance to match the implemented state machine and operator-facing behavior. Add a repository automation contract separating code/test/commit/push work from npm publication, global CLI installation, Worker deployment, credential rotation, and daemon/service operations; the owner performs those live release steps explicitly.
+
 ## 0.8.1 - 2026-07-11
 
 ### Fixed

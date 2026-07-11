@@ -3,7 +3,7 @@ import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.8.1";
+const SERVER_VERSION = "0.8.2";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -217,13 +217,18 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       try { ws.close(1007, "invalid UTF-8"); } catch {}
       return;
     }
-    let body: Record<string, unknown>;
+    let parsed: unknown;
     try {
-      body = JSON.parse(text) as Record<string, unknown>;
+      parsed = JSON.parse(text);
     } catch {
-      ws.send(JSON.stringify({ type: "error", error: "invalid_json" }));
+      rejectDaemonMessage(ws, "invalid_json", 1007, "invalid JSON");
       return;
     }
+    if (!isObjectRecord(parsed)) {
+      rejectDaemonMessage(ws, "invalid_message", 1002, "daemon message must be an object");
+      return;
+    }
+    const body = parsed;
 
     const socketAttachment = this.socketAttachment(ws);
     if (!socketAttachment) {
@@ -237,6 +242,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
 
     if (body.type === "hello") {
+      if (socketAttachment.role === "daemon") {
+        rejectDaemonMessage(ws, "duplicate_hello", 1002, "duplicate daemon hello");
+        return;
+      }
       const previousDaemons = this.daemonSockets().filter((socket) => socket !== ws);
       if (socketAttachment.role === "candidate") {
         if (!isFreshDaemonCandidate(socketAttachment.connectedAt)) {
@@ -280,7 +289,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
 
     if (body.type !== "tool_result" || typeof body.id !== "string") {
-      ws.send(JSON.stringify({ type: "error", error: "unknown_message_type" }));
+      rejectDaemonMessage(ws, "unknown_message_type", 1002, "unknown daemon message type");
       return;
     }
 
@@ -911,6 +920,15 @@ export default {
     return stub.fetch(request);
   },
 } satisfies ExportedHandler<BridgeEnv>;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function rejectDaemonMessage(ws: WebSocket, error: string, closeCode: number, closeReason: string): void {
+  try { ws.send(JSON.stringify({ type: "error", error })); } catch {}
+  try { ws.close(closeCode, closeReason); } catch {}
+}
 
 function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;

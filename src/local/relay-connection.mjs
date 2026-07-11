@@ -3,10 +3,13 @@ import { classifyOperationalError } from "./log.mjs";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 75_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const DEFAULT_OUTAGE_WARN_AFTER_MS = 10_000;
 const DEFAULT_OUTAGE_WARN_REPEAT_MS = 60_000;
+const DEFAULT_OUTAGE_WARN_MAX_REPEAT_MS = 15 * 60_000;
 const MAX_CLOSE_REASON_CHARS = 128;
+const MAX_PROTOCOL_ERROR_CODE_CHARS = 64;
 
 const DEFAULT_SCHEDULER = Object.freeze({
   setTimeout: (callback, delay) => setTimeout(callback, delay),
@@ -35,9 +38,14 @@ export class RelayConnection {
     this.maxPayload = boundedPositiveInteger(options.maxPayload, 8 * 1024 * 1024);
     this.heartbeatIntervalMs = boundedPositiveInteger(options.heartbeatIntervalMs, DEFAULT_HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimeoutMs = boundedPositiveInteger(options.heartbeatTimeoutMs, DEFAULT_HEARTBEAT_TIMEOUT_MS);
+    this.connectTimeoutMs = boundedPositiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     this.handshakeTimeoutMs = boundedPositiveInteger(options.handshakeTimeoutMs, DEFAULT_HANDSHAKE_TIMEOUT_MS);
     this.outageWarnAfterMs = boundedPositiveInteger(options.outageWarnAfterMs, DEFAULT_OUTAGE_WARN_AFTER_MS);
     this.outageWarnRepeatMs = boundedPositiveInteger(options.outageWarnRepeatMs, DEFAULT_OUTAGE_WARN_REPEAT_MS);
+    this.outageWarnMaxRepeatMs = Math.max(
+      this.outageWarnRepeatMs,
+      boundedPositiveInteger(options.outageWarnMaxRepeatMs, DEFAULT_OUTAGE_WARN_MAX_REPEAT_MS),
+    );
 
     this.closed = true;
     this.socket = null;
@@ -47,12 +55,14 @@ export class RelayConnection {
     this.lastInboundAt = 0;
     this.reconnectAttempt = 0;
     this.reconnectTimer = null;
+    this.connectTimer = null;
     this.heartbeatTimer = null;
     this.handshakeTimer = null;
     this.outageWarnTimer = null;
     this.outageStartedAt = 0;
     this.outageAttempts = 0;
     this.outageNoticeEmitted = false;
+    this.outageWarningCount = 0;
     this.lastOutageWarnAt = 0;
     this.lastCloseCategory = "connection_interrupted";
     this.lastTransportErrorClass = "";
@@ -77,6 +87,7 @@ export class RelayConnection {
     this.closed = true;
     this.ready = false;
     this.clearTimer("heartbeatTimer", "clearInterval");
+    this.clearTimer("connectTimer", "clearTimeout");
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.clearTimer("reconnectTimer", "clearTimeout");
     this.clearTimer("outageWarnTimer", "clearTimeout");
@@ -128,7 +139,8 @@ export class RelayConnection {
     } else if (this.outageStartedAt > 0) {
       const outageMs = Math.max(0, this.connectedAt - this.outageStartedAt);
       if (this.outageNoticeEmitted) {
-        this.logger.info?.("remote relay connection restored", {
+        this.logger.info?.(`remote relay connection restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`);
+        this.logger.debug?.("remote relay outage recovery details", {
           outage_seconds: roundSeconds(outageMs),
           attempts: this.outageAttempts,
         });
@@ -150,6 +162,20 @@ export class RelayConnection {
     return true;
   }
 
+  handleServerError(message = {}) {
+    const errorCode = sanitizeProtocolErrorCode(message?.error);
+    this.logger.debug?.("remote relay reported a protocol error", { error_code: errorCode });
+    if (errorCode === "daemon_hello_timeout" && !this.ready) {
+      const socket = this.socket;
+      if (this.closed || !socket) return true;
+      this.pendingCloseCategory = "relay_handshake_timeout";
+      terminateSocket(socket);
+      return true;
+    }
+    this.failPermanently("relay_protocol_error");
+    return true;
+  }
+
   connect() {
     if (this.closed || this.socket) return;
     const wsUrl = `${this.workerUrl.replace(/^http/i, "ws")}/daemon/ws`;
@@ -167,8 +193,17 @@ export class RelayConnection {
       return;
     }
     this.socket = socket;
+    this.clearTimer("connectTimer", "clearTimeout");
+    this.connectTimer = this.scheduler.setTimeout(() => {
+      if (this.socket !== socket || this.closed || this.isSocketOpen(socket)) return;
+      this.logger.debug?.("remote relay transport connection timed out", { timeout_ms: this.connectTimeoutMs });
+      this.pendingCloseCategory = "relay_connect_timeout";
+      terminateSocket(socket);
+    }, this.connectTimeoutMs);
+    this.connectTimer?.unref?.();
 
     socket.on("open", () => {
+      this.clearTimer("connectTimer", "clearTimeout");
       if (this.socket !== socket || this.closed) {
         try { socket.close(1000, "stale daemon connection"); } catch {}
         return;
@@ -204,6 +239,7 @@ export class RelayConnection {
       const wasReady = this.ready;
       this.socket = null;
       this.ready = false;
+      this.clearTimer("connectTimer", "clearTimeout");
       this.clearTimer("heartbeatTimer", "clearInterval");
       this.clearTimer("handshakeTimer", "clearTimeout");
       const reasonText = sanitizeCloseReason(reason);
@@ -265,6 +301,7 @@ export class RelayConnection {
     this.closed = true;
     this.ready = false;
     this.socket = null;
+    this.clearTimer("connectTimer", "clearTimeout");
     this.clearTimer("heartbeatTimer", "clearInterval");
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.clearTimer("reconnectTimer", "clearTimeout");
@@ -286,7 +323,8 @@ export class RelayConnection {
       reject(error);
       return;
     }
-    this.logger.error?.(message, { cause: relayCloseUserCause(category) });
+    this.logger.error?.(message);
+    this.logger.debug?.("remote relay fatal details", { category, cause: relayCloseUserCause(category) });
     queueMicrotask(() => {
       try { this.onFatal(error); } catch (callbackError) {
         this.logger.error?.("relay fatal callback failed", { error_class: classifyOperationalError(callbackError) });
@@ -299,7 +337,6 @@ export class RelayConnection {
     this.recordOutage(category);
     const delay = this.reconnectDelay(this.reconnectAttempt++);
     this.scheduleOutageWarning();
-    this.maybeRepeatOutageWarning();
     this.logger.debug?.("scheduling daemon reconnect", { delay_ms: delay, attempt: this.outageAttempts });
     this.reconnectTimer = this.scheduler.setTimeout(() => {
       this.reconnectTimer = null;
@@ -352,31 +389,39 @@ export class RelayConnection {
   }
 
   scheduleOutageWarning() {
-    if (this.outageNoticeEmitted || this.outageWarnTimer || this.outageStartedAt === 0) return;
-    const elapsed = Math.max(0, this.now() - this.outageStartedAt);
-    const delay = Math.max(0, this.outageWarnAfterMs - elapsed);
+    if (this.outageWarnTimer || this.outageStartedAt === 0 || this.closed || this.ready) return;
+    const dueAt = this.outageNoticeEmitted
+      ? this.lastOutageWarnAt + this.nextOutageWarningDelay()
+      : this.outageStartedAt + this.outageWarnAfterMs;
+    const delay = Math.max(0, dueAt - this.now());
     this.outageWarnTimer = this.scheduler.setTimeout(() => {
       this.outageWarnTimer = null;
       if (this.closed || this.ready || this.outageStartedAt === 0) return;
       this.emitOutageWarning();
+      this.scheduleOutageWarning();
     }, delay);
     this.outageWarnTimer?.unref?.();
   }
 
-  maybeRepeatOutageWarning() {
-    if (!this.outageNoticeEmitted || this.lastOutageWarnAt === 0) return;
-    if (this.now() - this.lastOutageWarnAt < this.outageWarnRepeatMs) return;
-    this.emitOutageWarning();
+  nextOutageWarningDelay() {
+    const exponent = Math.max(0, Math.min(this.outageWarningCount - 1, 20));
+    return Math.min(this.outageWarnRepeatMs * (2 ** exponent), this.outageWarnMaxRepeatMs);
   }
 
   emitOutageWarning() {
     const outageMs = Math.max(0, this.now() - this.outageStartedAt);
     this.outageNoticeEmitted = true;
+    this.outageWarningCount += 1;
     this.lastOutageWarnAt = this.now();
-    this.logger.warn?.(relayOutageWarningMessage(), {
+    const cause = relayCloseUserCause(this.lastCloseCategory);
+    const action = outageMs >= 5 * 60_000
+      ? " If this persists, check internet access and the deployed Worker."
+      : "";
+    this.logger.warn?.(`remote relay unavailable for ${formatDuration(outageMs)}; reconnecting automatically (${formatAttempts(this.outageAttempts)}; ${cause}).${action}`);
+    this.logger.debug?.("remote relay outage details", {
       outage_seconds: roundSeconds(outageMs),
       attempts: this.outageAttempts,
-      cause: relayCloseUserCause(this.lastCloseCategory),
+      cause,
       ...(this.lastTransportErrorClass ? { error_class: this.lastTransportErrorClass } : {}),
     });
   }
@@ -386,6 +431,7 @@ export class RelayConnection {
     this.outageStartedAt = 0;
     this.outageAttempts = 0;
     this.outageNoticeEmitted = false;
+    this.outageWarningCount = 0;
     this.lastOutageWarnAt = 0;
     this.lastCloseCategory = "connection_interrupted";
     this.lastTransportErrorClass = "";
@@ -406,10 +452,15 @@ export class RelayConnection {
 
 export function relayCloseCategory(code, reason = "") {
   const numeric = Number(code);
-  if (isSupersededClose(numeric, reason)) return "superseded";
+  const reasonText = String(reason || "");
+  if (isSupersededClose(numeric, reasonText)) return "superseded";
+  if (numeric === 1008 && reasonText === "daemon hello timeout") return "relay_handshake_timeout";
+  if (numeric === 1008 && ["stale daemon candidate", "expired daemon candidate"].includes(reasonText)) return "relay_restarting_or_unavailable";
+  if (numeric === 1008 && ["daemon hello required", "missing daemon attachment", "invalid daemon candidate timestamp"].includes(reasonText)) return "relay_protocol_error";
   if (numeric === 1000) return "normal_close";
   if (numeric === 1001 || numeric === 1012 || numeric === 1013) return "relay_restarting_or_unavailable";
   if (numeric === 1006) return "connection_interrupted";
+  if (numeric === 1002) return "relay_protocol_error";
   if (numeric === 1007) return "invalid_transport_payload";
   if (numeric === 1008) return "relay_policy_rejected";
   if (numeric === 1009) return "message_too_large";
@@ -421,11 +472,10 @@ function relayFatalMessage(category) {
   if (category === "relay_protocol_mismatch") {
     return "remote relay identity or version does not match this daemon; upgrade and redeploy both components";
   }
+  if (category === "relay_protocol_error") {
+    return "remote relay protocol error; upgrade and redeploy both components, then restart the daemon";
+  }
   return "remote relay rejected the daemon connection; verify credentials or redeploy the Worker";
-}
-
-function relayOutageWarningMessage() {
-  return "remote relay is unavailable; automatic reconnection is still in progress";
 }
 
 function relayCloseUserCause(category) {
@@ -436,9 +486,11 @@ function relayCloseUserCause(category) {
     relay_internal_error: "relay internal error",
     relay_protocol_mismatch: "relay identity or version mismatch",
     relay_authentication_failed: "relay authentication failed",
+    relay_connect_timeout: "relay connection attempt timed out",
     relay_handshake_timeout: "relay authentication acknowledgement timed out",
     relay_heartbeat_timeout: "relay stopped responding",
     relay_transport_error: "relay transport error",
+    relay_protocol_error: "relay protocol error",
     invalid_transport_payload: "invalid transport payload",
     message_too_large: "message exceeded the relay limit",
     normal_close: "connection closed",
@@ -510,6 +562,37 @@ function redactUrl(value) {
 function boundedPositiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
+function sanitizeProtocolErrorCode(value) {
+  const code = String(value || "unknown_error").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, MAX_PROTOCOL_ERROR_CODE_CHARS);
+  return code || "unknown_error";
+}
+
+function formatAttempts(value) {
+  const attempts = Math.max(1, Math.floor(Number(value) || 1));
+  return `${attempts} reconnect attempt${attempts === 1 ? "" : "s"}`;
+}
+
+function formatDuration(milliseconds) {
+  let seconds = Math.max(1, Math.round(Number(milliseconds) / 1000));
+  const units = [
+    ["day", 86_400],
+    ["hour", 3_600],
+    ["minute", 60],
+    ["second", 1],
+  ];
+  const parts = [];
+  for (const [label, size] of units) {
+    if (seconds < size && parts.length === 0) continue;
+    const amount = Math.floor(seconds / size);
+    if (amount > 0) {
+      parts.push(`${amount} ${label}${amount === 1 ? "" : "s"}`);
+      seconds -= amount * size;
+    }
+    if (parts.length === 2) break;
+  }
+  return parts.join(" ") || "1 second";
 }
 
 function roundSeconds(milliseconds) {

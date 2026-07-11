@@ -176,12 +176,16 @@ export class LocalRuntime {
   async handleMessage(raw) {
     let message;
     try { message = JSON.parse(raw); } catch {
-      this.logger.warn?.("invalid websocket JSON");
+      this.handleRelayProtocolViolation("invalid_server_json");
+      return;
+    }
+    if (!isPlainRecord(message)) {
+      this.handleRelayProtocolViolation("invalid_server_message");
       return;
     }
     if (this.handleRelayControlMessage(message)) return;
     if (message.type !== "tool_call") {
-      this.logger.warn?.("unknown websocket message", { type: String(message.type || "") });
+      this.handleRelayProtocolViolation("unexpected_server_message_type");
       return;
     }
     await this.handleRelayToolCall(message);
@@ -197,11 +201,23 @@ export class LocalRuntime {
       return true;
     }
     if (message.type === "pong") return true;
+    if (message.type === "error") {
+      this.relay?.handleServerError(message);
+      return true;
+    }
     if (message.type === "cancel_call") {
       if (typeof message.id === "string") this.cancelCall(message.id, "remote cancellation");
       return true;
     }
     return false;
+  }
+
+  handleRelayProtocolViolation(errorCode) {
+    if (this.relay) {
+      this.relay.handleServerError({ type: "error", error: errorCode });
+      return;
+    }
+    this.logger.error?.("remote relay protocol error; upgrade and redeploy both components, then restart the daemon");
   }
 
   async handleRelayToolCall(message) {
@@ -1154,7 +1170,7 @@ function createRelayConnection(runtime, { workerUrl, secret, expectedVersion, on
 function handleRelayData(runtime, data) {
   const raw = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
   if (Buffer.byteLength(raw) > MAX_WS_MESSAGE_BYTES) {
-    runtime.logger.warn?.("oversized websocket message rejected");
+    runtime.handleRelayProtocolViolation("server_message_too_large");
     return;
   }
   return runtime.handleMessage(raw);

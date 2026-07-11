@@ -174,6 +174,24 @@ async function activeDaemonPolicyMutationSelfTest() {
     if (!daemonLock.acquired) throw new Error("policy mutation test could not acquire daemon lock");
     try {
       const entry = fileURLToPath(new URL("../bin/machine-mcp.mjs", import.meta.url));
+      const idempotentServiceStart = spawnSync(process.execPath, [
+        entry,
+        "start",
+        "--daemon-only",
+        "--workspace", workspace,
+        "--state-dir", stateRoot,
+        "--no-print-credentials",
+        "--log-level", "warn",
+      ], {
+        cwd: workspace,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      if (idempotentServiceStart.error) throw idempotentServiceStart.error;
+      if (idempotentServiceStart.status !== 0 || idempotentServiceStart.stdout !== "" || idempotentServiceStart.stderr !== "") {
+        throw new Error(`idempotent daemon-only lock conflict was noisy or unsuccessful: ${idempotentServiceStart.stderr || idempotentServiceStart.stdout}`);
+      }
+
       const child = spawnSync(process.execPath, [
         entry,
         "start",
@@ -606,6 +624,23 @@ async function serviceSelfTest() {
       }
     } finally {
       await rm(migrationRoot, { recursive: true, force: true });
+    }
+
+    const defaultSchemaRoot = await mkdtemp(join(tmpdir(), "mbm-current-log-schema-test-"));
+    try {
+      const defaultSchemaLogs = join(defaultSchemaRoot, "logs");
+      await mkdir(defaultSchemaLogs, { recursive: true });
+      await writeFile(join(defaultSchemaLogs, ".log-schema"), "2\n", "utf8");
+      await writeFile(join(defaultSchemaLogs, "daemon.err.log"), "0.8.1-format-line\n", "utf8");
+      trimAutostartLogs(defaultSchemaRoot, { maxBytes: 2048, keepBytes: 1024 });
+      if ((await readFile(join(defaultSchemaLogs, ".log-schema"), "utf8")).trim() !== "3") {
+        throw new Error("current autostart log schema version did not advance to 3");
+      }
+      if (await readFile(join(defaultSchemaLogs, "daemon.err.log"), "utf8") !== "") {
+        throw new Error("current autostart log schema migration did not clear the old active log");
+      }
+    } finally {
+      await rm(defaultSchemaRoot, { recursive: true, force: true });
     }
 
     const nodeBin = join(stateRoot, "node-bin");

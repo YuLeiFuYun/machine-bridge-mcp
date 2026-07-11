@@ -145,14 +145,20 @@ sockets[1].remoteClose(1006, "");
 scheduler.advance(5);
 assert(sockets.length === 3, "second reconnect socket was not created");
 scheduler.advance(10);
-const outageWarning = events.find((event) => event.level === "warn" && event.message === "remote relay is unavailable; automatic reconnection is still in progress");
+const outageWarning = events.find((event) => event.level === "warn" && event.message.startsWith("remote relay unavailable for "));
 assert(outageWarning, "sustained outage did not escalate to a warning");
-assert(outageWarning.fields?.cause === "connection interrupted", "sustained outage warning omitted the meaningful cause");
-assert(!hasRawCloseFields(outageWarning.fields), "sustained outage warning exposed raw WebSocket close fields");
+assert(outageWarning.message.includes("reconnecting automatically") && outageWarning.message.includes("connection interrupted"), "sustained outage warning omitted recovery behavior or the meaningful cause");
+assert(outageWarning.fields === undefined, "default outage warning retained machine-oriented JSON fields");
+const outageDebug = events.find((event) => event.level === "debug" && event.message === "remote relay outage details");
+assert(outageDebug?.fields?.cause === "connection interrupted", "debug outage details omitted the classified cause");
+assert(!hasRawCloseFields(outageDebug?.fields), "outage diagnostics exposed raw WebSocket close fields outside the transport-close event");
 sockets[2].open();
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
-const restored = events.find((event) => event.level === "info" && event.message === "remote relay connection restored");
-assert(restored?.fields?.attempts >= 1 && restored.fields.outage_seconds >= 1, "restored connection summary was incomplete");
+const restored = events.find((event) => event.level === "info" && event.message.startsWith("remote relay connection restored after "));
+assert(restored?.message.includes("reconnect attempt"), "restored connection summary was incomplete or not user-readable");
+assert(restored.fields === undefined, "default recovery summary retained machine-oriented JSON fields");
+const restoredDebug = events.find((event) => event.level === "debug" && event.message === "remote relay outage recovery details");
+assert(restoredDebug?.fields?.attempts >= 1 && restoredDebug.fields.outage_seconds >= 1, "debug recovery details were incomplete");
 
 sockets[2].remoteClose(1006, "");
 scheduler.advance(5);
@@ -240,6 +246,97 @@ constructorConnection.start();
 constructorScheduler.advance(5);
 assert(constructorAttempts === 2 && constructorSockets.length === 1, "synchronous WebSocket construction failure did not use reconnect backoff");
 constructorConnection.stop();
+
+const connectingScheduler = new ManualScheduler();
+const connectingSockets = [];
+const connectingEvents = [];
+const connectingConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger(connectingEvents),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      connectingSockets.push(this);
+    }
+  },
+  scheduler: connectingScheduler,
+  now: () => connectingScheduler.now,
+  reconnectDelay: () => 5,
+  connectTimeoutMs: 10,
+  outageWarnAfterMs: 100,
+});
+connectingConnection.start();
+connectingScheduler.advance(10);
+assert(connectingSockets[0].terminated, "a WebSocket stuck in CONNECTING was not terminated at the connection deadline");
+connectingScheduler.advance(5);
+assert(connectingSockets.length === 2, "a timed-out CONNECTING socket did not enter reconnect backoff");
+assert(connectingEvents.some((event) => event.level === "debug" && event.message === "remote relay transport connection timed out"), "connection-attempt timeout was not diagnosable at debug level");
+connectingConnection.stop();
+
+const repeatScheduler = new ManualScheduler();
+const repeatSockets = [];
+const repeatEvents = [];
+const repeatConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger(repeatEvents),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      repeatSockets.push(this);
+    }
+  },
+  scheduler: repeatScheduler,
+  now: () => repeatScheduler.now,
+  reconnectDelay: () => 1_000,
+  connectTimeoutMs: 1_000,
+  outageWarnAfterMs: 10,
+  outageWarnRepeatMs: 20,
+  outageWarnMaxRepeatMs: 40,
+});
+repeatConnection.start();
+repeatSockets[0].open();
+repeatConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+repeatSockets[0].remoteClose(1006, "");
+repeatScheduler.advance(10);
+assert(countLevel(repeatEvents, "warn") === 1, "first sustained-outage warning did not fire on its own timer");
+repeatScheduler.advance(20);
+assert(countLevel(repeatEvents, "warn") === 2, "repeated outage warning depended on a new reconnect event");
+repeatScheduler.advance(39);
+assert(countLevel(repeatEvents, "warn") === 2, "outage warning backoff fired too early");
+repeatScheduler.advance(1);
+assert(countLevel(repeatEvents, "warn") === 3, "outage warning backoff did not double to the configured cap");
+repeatConnection.stop();
+
+const handshakeErrorScheduler = new ManualScheduler();
+const handshakeErrorSockets = [];
+let handshakeErrorFatal = false;
+const handshakeErrorConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      handshakeErrorSockets.push(this);
+    }
+  },
+  scheduler: handshakeErrorScheduler,
+  now: () => handshakeErrorScheduler.now,
+  reconnectDelay: () => 5,
+  connectTimeoutMs: 100,
+  handshakeTimeoutMs: 100,
+  outageWarnAfterMs: 100,
+  onFatal: () => { handshakeErrorFatal = true; },
+});
+handshakeErrorConnection.start();
+handshakeErrorSockets[0].open();
+handshakeErrorConnection.handleServerError({ type: "error", error: "daemon_hello_timeout" });
+assert(handshakeErrorSockets[0].terminated, "relay handshake-timeout error did not terminate the stale candidate");
+handshakeErrorScheduler.advance(5);
+assert(handshakeErrorSockets.length === 2 && !handshakeErrorFatal, "relay handshake-timeout error was misclassified as a fatal policy rejection");
+handshakeErrorConnection.stop();
 
 const mismatchScheduler = new ManualScheduler();
 const mismatchSockets = [];
@@ -340,6 +437,37 @@ policyScheduler.advance(100_000);
 assert(policySockets.length === 1, "policy close entered the reconnect loop");
 policyConnection.stop();
 
+let protocolFatalCallback = false;
+const protocolScheduler = new ManualScheduler();
+const protocolSockets = [];
+const protocolEvents = [];
+const protocolConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger(protocolEvents),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      protocolSockets.push(this);
+    }
+  },
+  scheduler: protocolScheduler,
+  now: () => protocolScheduler.now,
+  onFatal: () => { protocolFatalCallback = true; },
+});
+const protocolReady = protocolConnection.start();
+protocolSockets[0].open();
+protocolConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+await protocolReady;
+protocolConnection.handleServerError({ type: "error", error: "unknown_message_type" });
+await Promise.resolve();
+assert(protocolFatalCallback, "server protocol error did not invoke the fatal callback");
+assert(protocolSockets[0].terminated, "server protocol error did not terminate the connection");
+assert(protocolEvents.some((event) => event.level === "error" && event.message.includes("upgrade and redeploy")), "server protocol error was not actionable");
+protocolScheduler.advance(100_000);
+assert(protocolSockets.length === 1, "server protocol error incorrectly entered the reconnect loop");
+protocolConnection.stop();
+
 let superseded = false;
 const supersededScheduler = new ManualScheduler();
 const supersededSockets = [];
@@ -367,6 +495,8 @@ assert(superseded, "authenticated replacement callback was not invoked");
 assert(supersededEvents.some((event) => event.level === "warn" && event.message.includes("replaced by a newer authenticated instance")), "replacement warning was not actionable");
 assert(isSupersededClose(1012, "replaced by authenticated daemon"), "replacement close classification failed");
 assert(relayCloseCategory(1006, "") === "connection_interrupted", "1006 close classification was not meaningful");
+assert(relayCloseCategory(1002, "protocol error") === "relay_protocol_error", "1002 close classification failed");
+assert(relayCloseCategory(1008, "daemon hello timeout") === "relay_handshake_timeout", "daemon hello timeout was misclassified as an authentication failure");
 assert(relayCloseCategory(1011, "") === "relay_internal_error", "1011 close classification failed");
 assert(reconnectDelay(0, () => 0) === 3000 && reconnectDelay(99, () => 0) === 60_000, "reconnect backoff bounds changed");
 

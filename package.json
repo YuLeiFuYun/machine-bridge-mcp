@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Cross-client MCP bridge for canonical local automation, files, Git, SSH resources, managed jobs, and processes over stdio or an OAuth-protected remote relay.",
   "type": "module",
   "license": "MIT",

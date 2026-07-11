@@ -13,7 +13,7 @@ The repository requires Node.js 26 and npm 12. `.node-version`, `.nvmrc`, `packa
 The suite includes:
 
 - release-impact enforcement requiring a new package version and CHANGELOG section for release-relevant changes;
-- generated Cloudflare Worker types and strict TypeScript checking;
+- generated Cloudflare Worker types and strict TypeScript checking, including unused-local and unused-parameter rejection;
 - syntax validation for every shipped JavaScript entry point;
 - shared tool-catalog schema, annotation, and profile-inventory checks;
 - canonical path and symbolic-link escape tests;
@@ -37,11 +37,11 @@ The suite includes:
 - guarded state-root removal, schema migration, policy-origin persistence, and legacy implicit-default migration;
 - no filename-based sensitive-file denial under unrestricted policy;
 - log redaction, control-character handling, message/field bounds, suppression of both successful and failed per-tool events outside debug, service warning-level configuration, and idempotent bounded migration of legacy log formats;
-- deterministic relay connection lifecycle coverage for transport construction/error, pre-handshake `welcome` validation, authenticated `hello_ack` readiness, identity/version mismatch, handshake and heartbeat timeout, brief-outage suppression, sustained-outage escalation, recovery summaries, and supersession;
+- deterministic relay connection lifecycle coverage for transport construction/error/deadline, pre-handshake `welcome` validation, authenticated `hello_ack` readiness, identity/version mismatch, retryable Worker handshake errors, fatal protocol errors, autonomous outage-reminder backoff, handshake and heartbeat timeout, brief-outage suppression, sustained-outage escalation, recovery summaries, and supersession;
 - shared no-follow bounded-file reads for normal files, over-limit data, directories, and symbolic links;
 - CLI parsing, policy profiles, and client configuration boundaries;
 - live stdio MCP initialization, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;
-- live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, dynamic tool advertisement, rich content, daemon replacement, and cancellation.
+- live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, dynamic tool advertisement, rich content, daemon replacement, cancellation, malformed daemon JSON/non-object rejection, duplicate hello rejection, and unknown-message closure.
 
 ## Additional release checks
 
