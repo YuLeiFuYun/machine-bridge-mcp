@@ -149,7 +149,8 @@ try {
     " const p=process.argv[1];",
     " const file=fs.readFileSync(p);",
     " const stdin=Buffer.concat(chunks);",
-    " process.stdout.write(file.toString()+process.env.MBM_JOB_SECRET+'\\n'+stdin.toString()+file.toString('base64')+'\\n'+file.toString('hex')+'\\n'+p+'\\n'+process.env.MBM_SOURCE_PATH+'\\n');",
+    " const alt=v=>process.platform==='win32'?v.replaceAll('\\\\','/'):v.replaceAll('/','\\\\');",
+    " process.stdout.write(file.toString()+process.env.MBM_JOB_SECRET+'\\n'+stdin.toString()+file.toString('base64')+'\\n'+file.toString('hex')+'\\n'+p+'\\n'+alt(p)+'\\n'+process.env.MBM_SOURCE_PATH+'\\n'+alt(process.env.MBM_SOURCE_PATH)+'\\n');",
     " process.exit(7);",
     "});",
   ].join("");
@@ -185,7 +186,9 @@ try {
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("base64")), "job result exposed base64 resource content");
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("hex")), "job result exposed hex resource content");
   assert(!serialized.includes(secretFile), "job result exposed the registered resource path");
-  assert(serialized.includes("redacted-resource:test-secret") && serialized.includes("resource:test-secret") && serialized.includes("resource-source:test-secret"), "job result did not mark redacted values and paths");
+  const expectedRedactionMarkers = ["redacted-resource:test-secret", "resource:test-secret", "resource-source:test-secret"];
+  const missingRedactionMarkers = expectedRedactionMarkers.filter((marker) => !serialized.includes(marker));
+  assert(missingRedactionMarkers.length === 0, `job result did not mark redacted values and paths: ${missingRedactionMarkers.join(", ")}`);
   assert(serialized.includes("temporary-helper-ok"), "job-scoped temporary helper did not run");
   assert(!(await exists(join(jobRoot, accepted.job_id, "runtime"))), "job runtime resource copies and temporary files were not removed");
   assert(!(await exists(join(jobRoot, accepted.job_id, "plan.json"))), "finished job retained scripts, stdin, argv, or resource source paths in plan.json");
