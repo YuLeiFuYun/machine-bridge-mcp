@@ -30,6 +30,33 @@ A brief relay interruption is retried automatically and is visible only with `--
 
 Use `--verbose` only when close codes, close reasons, heartbeat timeouts, and retry delays are needed for diagnosis. A close code of 1006 means the transport ended without a normal close handshake; it does not by itself identify the cause.
 
+## Browser extension setup and diagnosis
+
+The full-profile daemon starts the loopback browser broker automatically. Install/pair the packaged extension once:
+
+```sh
+machine-mcp browser setup
+machine-mcp browser status
+```
+
+`browser setup` prints the unpacked-extension path and opens the local pairing page. Load that directory from the Chromium extensions page with Developer mode enabled. The pairing page contains the token only in non-cacheable loopback HTML; the CLI and MCP result do not print it. A first pairing is automatic. When local pairing state was reset or moved, click the extension icon on the active pairing page to authorize replacing the extension's previous broker configuration.
+
+Diagnosis:
+
+| Result | Interpretation |
+|---|---|
+| broker not reachable | no full-profile runtime owns the machine broker, state is stale, or a local security product blocked loopback listening |
+| broker running, extension disconnected | extension not loaded/enabled, pairing not completed, browser profile not running, or MV3 worker reconnect failed |
+| tab list works but page action fails | restricted browser-internal page, inaccessible frame, stale selector, page navigation, enterprise policy, or page script interference |
+| `frame_id` action fails | frame was replaced or is not accessible; inspect frames again |
+| resource-backed upload fails | resource unavailable/too large, input is not `type=file`, page replaced the input, or the site rejects the file |
+
+The machine-level broker permits multiple workspace daemons/stdio clients to share one extension. A second runtime becomes an authenticated broker client rather than selecting a new port or replacing the extension. Its owner-only `browser-bridge.json` pairing record is a recognized state-root entry, so validated uninstall can remove the complete Machine Bridge state root without treating the pairing record as unrelated data. Restarting every runtime is not normally required after adding a skill or changing a form page; capability and DOM discovery are live.
+
+## macOS application automation
+
+Application UI inspection/actions require Accessibility permission for the Node/Machine Bridge process. Grant it in macOS Privacy & Security, then retry `inspect_local_application`. Opening applications does not require the same Accessibility authority. If an app changes UI hierarchy or localizes labels, inspect again and use role/identifier/index selectors instead of assuming a stale title.
+
 ## Logs
 
 Remote autostart definitions prefer a stable PATH alias that resolves to the currently running Node executable and persist a sanitized absolute-only service `PATH` containing the Node/CLI directories, the installer's absolute PATH entries, and platform defaults. This avoids versioned Homebrew-style paths becoming invalid after upgrades and prevents launchd/systemd from falling back to a minimal system-only PATH. Re-run `machine-mcp service install` after changing Node installation families or PATH layout. A service-style `--daemon-only` start that finds the same workspace daemon already running is an idempotent no-op: it exits successfully without repeating warnings or readiness output; explicit policy/secret/change requests still report that changes were not applied. Autostart logs are stored under the state root in `logs/daemon.out.log` and `logs/daemon.err.log`. Files are owner-only where supported and tail-trimmed before daemon startup. On a logging-schema upgrade, bounded prior content is moved into `daemon.out.legacy.log` and `daemon.err.legacy.log`; use the active filenames when diagnosing current behavior.
@@ -131,6 +158,9 @@ Defense-in-depth limits include:
 - managed-job timeout: 1–3,600 seconds per step;
 - managed-job output: 64 KiB per stream and 256 KiB total captured across one job;
 - registered resources: 64, 1 MiB each, 8 MiB referenced per job;
+- browser source: 4 MiB; browser WebSocket messages: 8 MiB; pending browser requests: 32 per runtime;
+- browser forms: 200 fields, 128 KiB per text value, and 4 MiB aggregate text; upload: eight resources and 5 MiB total;
+- application Accessibility inspection: 500 elements and depth 12; action text: 4,000 characters;
 - job-scoped temporary files: 16 files, 512 KiB total content.
 
 ## Upgrade behavior

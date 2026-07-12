@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import readline from "node:readline";
@@ -11,7 +11,11 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temp = await mkdtemp(join(tmpdir(), "mbm-stdio-test-"));
 const workspace = join(temp, "workspace");
 const stateDir = join(temp, "state");
-await import("node:fs/promises").then(({ mkdir }) => mkdir(workspace, { recursive: true }));
+const home = join(temp, "home");
+await mkdir(workspace, { recursive: true });
+await mkdir(join(home, ".config", "machine-bridge-mcp"), { recursive: true });
+await writeFile(join(home, "MODEL.md"), "stdio global model instructions\n", "utf8");
+await writeFile(join(home, ".config", "machine-bridge-mcp", "agent.json"), JSON.stringify({ version: 1, model_instructions_file: "MODEL.md" }, null, 2), "utf8");
 await writeFile(join(workspace, "sample.txt"), "one\ntwo\nthree\n", "utf8");
 await writeFile(join(workspace, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=", "base64"));
 await writeFile(join(temp, "passwords.txt"), "stdio-sensitive-name-visible", "utf8");
@@ -26,7 +30,7 @@ const child = spawn(process.execPath, [
   cwd: root,
   stdio: ["pipe", "pipe", "pipe"],
   windowsHide: true,
-  env: { ...process.env, MBM_STDIO_FULL_ENV_TEST: "visible-through-full-env" },
+  env: { ...process.env, HOME: home, USERPROFILE: home, MBM_STDIO_FULL_ENV_TEST: "visible-through-full-env" },
 });
 
 let stderr = "";
@@ -48,6 +52,7 @@ try {
   const initialized = await responseFor(1);
   assert(initialized.result?.protocolVersion === "2025-11-25", "stdio protocol negotiation failed");
   assert(initialized.result?.capabilities?.tools, "stdio initialize omitted tools capability");
+  assert(initialized.result?.instructions?.includes("stdio global model instructions"), "stdio initialize did not inject model_instructions_file into the session context");
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
   const notificationMarker = join(workspace, "notification-must-not-write.txt");
@@ -69,10 +74,18 @@ try {
   send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const listed = await responseFor(2);
   const tools = new Map(listed.result.tools.map((tool) => [tool.name, tool]));
-  for (const required of ["server_info", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "diagnose_runtime", "list_local_resources", "generate_ssh_key_resource", "stage_job", "start_job", "list_jobs", "read_job", "cancel_job", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
+  for (const required of ["server_info", "session_bootstrap", "resolve_task_capabilities", "agent_context", "list_local_skills", "list_local_commands", "list_local_applications", "browser_status", "pair_browser_extension", "browser_get_source", "browser_fill_form", "browser_upload_files", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "diagnose_runtime", "list_local_resources", "generate_ssh_key_resource", "stage_job", "start_job", "list_jobs", "read_job", "cancel_job", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
     assert(tools.has(required), `stdio default full profile omitted ${required}`);
   }
   assert(tools.get("write_file")?.annotations?.destructiveHint === true, "tool annotations missing");
+
+  send({ jsonrpc: "2.0", id: 201, method: "tools/call", params: { name: "session_bootstrap", arguments: { path: "." } } });
+  const bootstrap = await responseFor(201);
+  assert(bootstrap.result?.structuredContent?.instructions?.includes("stdio global model instructions"), "session_bootstrap omitted global model instructions");
+  send({ jsonrpc: "2.0", id: 202, method: "tools/call", params: { name: "resolve_task_capabilities", arguments: { path: ".", task: "inspect browser form and edit source files" } } });
+  const capabilities = await responseFor(202);
+  assert(capabilities.result?.structuredContent?.recommended_tools?.includes("browser_fill_form"), "task capability resolver omitted browser form tools");
+  assert(capabilities.result?.structuredContent?.refresh?.strategy === "rescan-on-every-call", "task capability resolver did not advertise live refresh semantics");
 
   send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "read_file", arguments: { path: "sample.txt", start_line: 2, end_line: 2 } } });
   const read = await responseFor(3);

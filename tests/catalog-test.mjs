@@ -41,7 +41,11 @@ const full = new Set(toolsForPolicy({ profile: "full", origin: "explicit", revis
 assert(review.has("read_file") && !review.has("write_file") && !review.has("run_process"), "review profile inventory is invalid");
 assert(edit.has("apply_patch") && !edit.has("run_process"), "edit profile inventory is invalid");
 assert(agent.has("run_process") && !agent.has("exec_command") && !agent.has("generate_ssh_key_resource"), "agent profile inventory is invalid");
+for (const fullOnly of ["list_local_applications", "operate_local_application", "browser_status", "browser_action", "browser_fill_form", "browser_upload_files"]) {
+  assert(!review.has(fullOnly) && !edit.has(fullOnly) && !agent.has(fullOnly), `${fullOnly} escaped full-only policy`);
+}
 assert(full.has("run_process") && full.has("exec_command") && full.has("generate_ssh_key_resource"), "full profile inventory is invalid");
+assert(full.has("browser_action") && full.has("operate_local_application"), "full profile omitted local automation tools");
 assert(full.size === catalog.length, "full profile must expose the complete catalog");
 
 const result = toolResult({ ok: true, nested: { value: 1 } });

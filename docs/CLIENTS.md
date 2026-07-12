@@ -52,6 +52,14 @@ It is therefore an optional compatibility and reuse surface, not a replacement f
 
 The MCP specification defines stdio and Streamable HTTP as standard transports. In stdio, the host launches the server as a subprocess and exchanges newline-delimited JSON-RPC through stdin/stdout. Streamable HTTP runs the server independently behind an HTTP endpoint.
 
+## Automatic capability selection
+
+MCP server instructions and `resolve_task_capabilities` give the host a current view of global/project instructions, skills, registered commands, applications, and browser capability. The resolver rescans rather than relying on a stale dynamic tool list and can return the best matching skill instructions in one call.
+
+The host still owns the agent loop. ChatGPT web may use the recommendation automatically, ask for confirmation, expose only part of the catalog, or ignore server instructions. No MCP implementation can guarantee automatic invocation from the server side. Machine Bridge models that limitation explicitly instead of treating a recommendation as execution.
+
+For browser tasks, the remote host reaches the local extension through the Worker and daemon. The extension controls the existing Chromium profile; it is not a separate Playwright profile.
+
 ## Generate local configuration
 
 The default profile is `full`:

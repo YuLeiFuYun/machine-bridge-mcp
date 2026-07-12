@@ -32,20 +32,35 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 - process-session buffers and stdin lifecycle;
 - layered fixed runtime diagnostics;
 - local resource aliases and detached managed-job coordination;
-- agent-context discovery and registered-command execution coordination;
+- session/bootstrap instruction discovery, live capability ranking, and registered-command execution coordination;
+- structured local application and existing-profile browser automation coordination;
 - mutation serialization;
 - child-process tracking and cancellation;
 - output, traversal, concurrency, and time limits.
 
 `RelayConnection` owns remote WebSocket transport, authenticated `hello_ack` readiness, heartbeat liveness, reconnect backoff, and outage logging. Stdio mode invokes `LocalRuntime` directly without that adapter.
 
-### Agent context manager
+### Agent context and capability resolver
 
-`AgentContextManager` is a local domain module beneath `LocalRuntime`. It discovers the nearest Git/workspace scope, applies optional user configuration and hierarchical `.machine-bridge/agent.json` files, selects the first non-empty instruction candidate in each global/root-to-target scope, discovers bounded Codex-style `.agents/skills` metadata, and resolves registered commands. The runtime remains responsible for canonical path policy and process execution.
+`AgentContextManager` discovers the nearest Git/workspace scope, applies the user configuration and hierarchical `.machine-bridge/agent.json` files, selects global/root-to-target instructions, discovers bounded filesystem skills, and resolves registered commands. A global `model_instructions_file` is a separate user-designated session source and cannot be overridden by a project.
 
-The MCP surface is deliberately static: `agent_context`, `list_local_skills`, `load_local_skill`, `list_local_commands`, and `run_local_command`. Skills and commands do not become dynamically named MCP tools. This avoids host-side catalog caching/filtering problems and keeps one schema contract across Worker and stdio transports. Initial skill delivery is metadata-only and budgeted; loading a skill is read-only and execution requires a separate ordinary tool call. Registered commands use direct argv spawning and inherit the active runtime environment policy.
+`session_bootstrap` is requested during both stdio and remote MCP initialization. The Worker delegates this read to the connected daemon with a short bounded timeout; failure falls back to static server instructions rather than blocking initialization indefinitely. `resolve_task_capabilities` performs a fresh deterministic scan and ranks skill/command metadata for the current task. Application and browser capability metadata is added by `LocalRuntime`.
 
-See [Agent context, local skills, and registered commands](AGENT_CONTEXT.md) for precedence and configuration semantics.
+The MCP catalog remains static: local skills and commands do not become dynamically named tools. This avoids stale host catalog caches and keeps Worker/stdio schema parity. Progressive disclosure separates discovery, instruction loading, and execution authority. A refresh fingerprint is descriptive rather than a cache-validity guarantee.
+
+See [Session instructions, skills, commands, and capability discovery](AGENT_CONTEXT.md).
+
+### Application automation manager
+
+`AppAutomationManager` owns installed-application discovery, OS launching, and structured UI automation. macOS inspection/actions execute fixed JXA implementation code through `osascript` and expose only typed selectors/actions. The caller cannot provide script source. OS Accessibility/TCC remains an independent boundary.
+
+### Browser extension and machine broker
+
+`BrowserBridgeManager` owns a loopback HTTP/WebSocket broker. The first runtime for the machine-level state root becomes broker owner; additional workspaces and stdio runtimes authenticate to `/runtime` and proxy through the same extension socket. This preserves one extension pairing while allowing multiple local MCP runtimes.
+
+The packaged Manifest V3 extension runs in the user's existing Chromium profile. Its service worker is transport/orchestration only; a fixed packaged `page-automation.js` module is injected into selected frames to expose DOM operations in the correct execution world. It supports accessible frames, open Shadow DOM roots, structured actions, multi-field forms, resource-backed file inputs, and screenshots. The extension never receives arbitrary caller-provided code. The broker validates loopback hostnames, extension origin, bearer subprotocols, message sizes, concurrency, and timeouts. Pairing material is owner-only and omitted from MCP/log output.
+
+See [Local application and browser automation](LOCAL_AUTOMATION.md).
 
 ### Managed job runner
 
@@ -105,6 +120,9 @@ flowchart LR
   L[Local MCP client] -->|stdio JSON-RPC| R
   R -->|canonical workspace tools| F[Selected workspace]
   R -->|optional direct/shell processes| P[Local user / OS / network]
+  R -->|structured Accessibility actions| A[Local applications]
+  R -->|authenticated loopback broker| B[Existing-profile browser extension]
+  B -->|DOM and visible UI authority| WB[Web pages and browser tabs]
   R -->|durable accepted plan| J[Detached managed-job runner]
   J -->|private copies| LR[Local resource files]
   J -->|argv/stdin/env| P
@@ -124,7 +142,7 @@ Remote OAuth determines which client may call tools. Local stdio access relies o
 4. The user verifies client name and redirect URI and enters the connection password.
 5. The Worker creates a five-minute code bound to client, redirect, resource, scope, and PKCE challenge.
 6. A valid verifier exchanges the one-time code for an expiring bearer token; only its hash is stored.
-7. The MCP client initializes and negotiates a supported protocol version.
+7. The MCP client initializes and negotiates a supported protocol version. When the daemon advertises `session_bootstrap`, the Worker requests bounded local instructions and appends them to the initialization result; failure degrades to static instructions.
 8. `tools/list` is derived from the active daemon handshake; without a daemon, only `server_info` is advertised.
 9. `tools/call` receives a random relay call ID and is bound to the current socket and authenticated client request key.
 10. The runtime validates policy and arguments, executes the tool, and returns a bounded result.
@@ -137,7 +155,7 @@ Duplicate in-flight JSON-RPC IDs for the same access token are rejected so cance
 ## Stdio request lifecycle
 
 1. The local client launches `machine-mcp stdio` with a workspace and profile.
-2. The server negotiates one of the supported MCP versions.
+2. The server negotiates one of the supported MCP versions and appends bounded local `session_bootstrap` instructions when available.
 3. Tool discovery is generated from the same catalog and policy used by remote mode.
 4. Each call receives an internal random call ID used only for cancellation and process tracking.
 5. Input is parsed as incrementally bounded newline-delimited JSON-RPC, so an oversized line is discarded before unbounded buffering and the next line can still be processed. Results are emitted as JSON-RPC on stdout; logs remain on stderr.
@@ -194,7 +212,7 @@ The Worker also treats a new connection as a bounded candidate until it authenti
 
 ## Persistence
 
-Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. State, managed-job manager, and detached runner commits share a bounded retrying atomic-replace primitive for transient Windows `EPERM`, `EACCES`, `EBUSY`, and `ENOTEMPTY` sharing failures. Managed-job manager and detached runner use one shared no-follow, size-bounded regular-file reader; transition and recovery locks use one PID-lock primitive with bounded stale-lock reclamation and optional runner handoff. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. Machine-level browser pairing state is owner-only and shared across workspace runtimes through the local broker; its bearer token is not part of workspace state responses. State, managed-job manager, and detached runner commits share a bounded retrying atomic-replace primitive for transient Windows `EPERM`, `EACCES`, `EBUSY`, and `ENOTEMPTY` sharing failures. Managed-job manager and detached runner use one shared no-follow, size-bounded regular-file reader; transition and recovery locks use one PID-lock primitive with bounded stale-lock reclamation and optional runner handoff. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
 
 Active managed jobs persist an owner-only plan, status, runner PID, and bounded runner diagnostics. Terminal jobs delete the full plan and retain only bounded status/redacted results for up to seven days. This balances crash cleanup with minimization of scripts, stdin, argv, environment overrides, and resource source paths.
 
@@ -219,5 +237,7 @@ Cloudflare sampling is size control rather than an audit log. The project intent
 - guaranteed finally cleanup across permanent power, disk, credential, network, or endpoint-security failure;
 - bypassing MCP-host, connector, operating-system, or endpoint-security policy;
 - PTY/terminal emulation;
-- model-level prompt-injection prevention;
+- model-level prompt-injection prevention or semantic validation of browser/application actions;
+- universal desktop UI automation beyond the implemented OS Accessibility backend;
+- scripting browser-internal/enterprise-blocked pages or inaccessible cross-origin frames;
 - multi-user tenancy in one Worker deployment.

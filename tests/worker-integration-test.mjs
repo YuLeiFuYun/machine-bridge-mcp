@@ -295,7 +295,7 @@ try {
   assert(statusBeforeHello.daemon?.tools?.includes("read_file"), "candidate connection changed active tools before hello");
 
   const firstClosed = waitForWsClose(firstDaemon);
-  await sendDaemonHello(candidateDaemon, ["list_dir", "view_image", "run_process", "exec_command"], { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  await sendDaemonHello(candidateDaemon, ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command"], { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
   const closeInfo = await firstClosed;
   assert(closeInfo.code === 1012, `replaced daemon closed with unexpected code ${closeInfo.code}`);
   const statusAfterHello = await callServerInfo(base, token.body.access_token, 25);
@@ -305,6 +305,25 @@ try {
   assert(statusAfterHello.daemon?.tools?.includes("run_process"), "agent policy did not retain direct process execution");
   assert(!statusAfterHello.daemon?.tools?.includes("exec_command"), "agent policy did not filter shell execution");
   assert(!statusAfterHello.daemon?.tools?.includes("read_file"), "replaced daemon tools remained active");
+  const initializedWithDaemonPromise = fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 251,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "integration-reinitialize", version: "1" } },
+    }),
+  });
+  const bootstrapCall = await waitForWsMessage(candidateDaemon, "tool_call");
+  assert(bootstrapCall.tool === "session_bootstrap", "Worker did not request local session bootstrap during initialize");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: bootstrapCall.id, ok: true, result: { instructions: "worker injected global model instructions" } }));
+  const initializedWithDaemon = await initializedWithDaemonPromise;
+  assert(initializedWithDaemon.body.result?.instructions?.includes("worker injected global model instructions"), "Worker initialize did not append daemon session instructions");
+
   const idlessToolCall = await fetchJson(`${base}/mcp`, {
     method: "POST",
     headers: {
@@ -319,6 +338,7 @@ try {
   const activeTools = await callToolsList(base, token.body.access_token, 26);
   assert(activeTools.some((tool) => tool.name === "server_info"), "active tool list omitted server_info");
   assert(activeTools.some((tool) => tool.name === "list_dir"), "active tool list omitted daemon-advertised tool");
+  assert(activeTools.some((tool) => tool.name === "session_bootstrap"), "active tool list omitted session bootstrap");
   assert(!activeTools.some((tool) => tool.name === "read_file"), "active tool list retained a replaced daemon tool");
   assert(activeTools.find((tool) => tool.name === "list_dir")?.annotations?.readOnlyHint === true, "tool annotations were not returned");
 

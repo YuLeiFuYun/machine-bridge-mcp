@@ -3,7 +3,7 @@ import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.9.0";
+const SERVER_VERSION = "0.10.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -357,6 +357,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const protocolVersion = typeof requested === "string" && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested as typeof MCP_SUPPORTED_PROTOCOL_VERSIONS[number])
         ? requested
         : MCP_PROTOCOL_VERSION;
+      const bootstrap = this.daemonToolEnabled("session_bootstrap")
+        ? await this.callDaemonTool("session_bootstrap", { path: "." }).catch(() => null)
+        : null;
+      const localInstructions = sessionInstructionText(bootstrap);
       return rpcResult(request.id, {
         protocolVersion,
         capabilities: { tools: { listChanged: false }, logging: {} },
@@ -366,7 +370,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           version: SERVER_VERSION,
           description: "Workspace-scoped local coding tools over authenticated remote relay.",
         },
-        instructions: MCP_INSTRUCTIONS,
+        instructions: localInstructions ? `${MCP_INSTRUCTIONS}\n\n--- LOCAL SESSION INSTRUCTIONS ---\n${localInstructions}` : MCP_INSTRUCTIONS,
       });
     }
     if (request.method === "notifications/initialized") return null;
@@ -1179,9 +1183,25 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
 }
 
 function daemonToolTimeoutMs(name: string, args: Record<string, unknown>): number {
-  if (name !== "exec_command" && name !== "run_process") return 60_000;
-  const seconds = clampNumber(args.timeout_seconds, 120, 1, 600);
+  if (name === "session_bootstrap") return 10_000;
+  const configurable = new Set([
+    "exec_command", "run_process", "run_local_command", "open_local_application",
+    "inspect_local_application", "operate_local_application", "browser_list_tabs",
+    "browser_get_source", "browser_inspect_page", "browser_action", "browser_fill_form",
+    "browser_screenshot", "browser_upload_files",
+  ]);
+  if (!configurable.has(name)) return 60_000;
+  const seconds = clampNumber(args.timeout_seconds, name === "browser_fill_form" ? 60 : 120, 1, 600);
   return Math.min((seconds + 5) * 1000, 610_000);
+}
+
+function sessionInstructionText(value: unknown): string {
+  const object = asObject(value);
+  const instructions = typeof object.instructions === "string" ? object.instructions : "";
+  if (!instructions) return "";
+  const bytes = new TextEncoder().encode(instructions);
+  if (bytes.byteLength > 3 * 1024 * 1024) return "";
+  return instructions;
 }
 
 function validateProtocolVersionHeader(request: Request, body: JsonRpcRequest): Record<string, unknown> | null {

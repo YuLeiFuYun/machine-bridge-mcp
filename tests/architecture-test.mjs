@@ -53,6 +53,63 @@ for (const name of repositoryFiles) {
   }
 }
 
+const localAutomationFiles = [
+  join(root, "src", "local", "app-automation.mjs"),
+  join(root, "src", "local", "browser-bridge.mjs"),
+  join(root, "browser-extension", "service-worker.js"),
+  join(root, "browser-extension", "page-automation.js"),
+  join(root, "browser-extension", "pairing.js"),
+];
+for (const file of localAutomationFiles) {
+  const source = readFileSync(file, "utf8");
+  if (/\beval\s*\(|new\s+Function\s*\(/.test(source)) {
+    throw new Error(`arbitrary evaluation returned in ${relative(root, file)}`);
+  }
+}
+const extensionManifest = JSON.parse(readFileSync(join(root, "browser-extension", "manifest.json"), "utf8"));
+if (extensionManifest.manifest_version !== 3 || !extensionManifest.permissions?.includes("scripting") || !extensionManifest.permissions?.includes("alarms")) {
+  throw new Error("packaged browser extension is missing required Manifest V3 capabilities");
+}
+if (!extensionManifest.host_permissions?.includes("<all_urls>")) {
+  throw new Error("browser extension no longer declares the generic page access documented by the security model");
+}
+const serviceWorkerSource = readFileSync(join(root, "browser-extension", "service-worker.js"), "utf8");
+const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
+const appAutomationSource = readFileSync(join(root, "src", "local", "app-automation.mjs"), "utf8");
+const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
+const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+
+if (!workerSource.includes('"browser_screenshot", "browser_upload_files"')) {
+  throw new Error("Worker timeout classification omits browser_upload_files");
+}
+if (!cliSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
+  throw new Error("browser CLI pairing state read is not bounded");
+}
+if (!appAutomationSource.includes("matchesList[payload.selector.index]")) {
+  throw new Error("application UI selector index is not applied to the filtered match list");
+}
+if (!appAutomationSource.includes("item.role === 'AXSecureTextField'") || !appAutomationSource.includes("includeValues && !item.sensitive")) {
+  throw new Error("application UI inspection does not suppress secure field values");
+}
+if (!serviceWorkerSource.includes('files: ["page-automation.js"]')) {
+  throw new Error("browser service worker does not inject the fixed page automation module");
+}
+for (const obsolete of ["func: inspectDocument", "func: performAction", "func: performFormFill", "func: performFileUpload"]) {
+  if (serviceWorkerSource.includes(obsolete)) throw new Error(`browser service worker retained cross-world helper reference: ${obsolete}`);
+}
+if (!pageAutomationSource.includes("__machineBridgePageAutomation") || !pageAutomationSource.includes("shadowRoot")) {
+  throw new Error("browser page automation module is missing its fixed API or open Shadow DOM traversal");
+}
+if (!serviceWorkerSource.includes("requires_manual_repair") || !serviceWorkerSource.includes("chrome.action.onClicked")) {
+  throw new Error("browser extension no longer requires a user gesture to replace established pairing");
+}
+if (!serviceWorkerSource.includes("pairingUrlFromEndpoint") || !serviceWorkerSource.includes("setConnectionState") || !serviceWorkerSource.includes("setBadgeText")) {
+  throw new Error("browser extension lost action-click pairing access or connection status UX");
+}
+if (!pageAutomationSource.includes("isSensitiveElement") || !pageAutomationSource.includes("one-time-code")) {
+  throw new Error("browser page inspection lost broad sensitive-field redaction");
+}
+
 const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
 if (!engineering.includes("default profile is intentionally `full`") || !engineering.includes("`.project-local/`")) {
   throw new Error("engineering invariants omitted the owner-required full default or local-knowledge boundary");

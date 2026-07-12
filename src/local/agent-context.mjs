@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -21,7 +22,8 @@ const MAX_COMMANDS = 128;
 const MAX_COMMAND_ARGV = 128;
 const MAX_COMMAND_ARGUMENT_BYTES = 256 * 1024;
 const COMMAND_NAME_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
-const CONFIG_KEYS = new Set(["version", "instruction_files", "instruction_max_bytes", "skill_roots", "commands"]);
+const TOKEN_STOP_WORDS = new Set(["the", "and", "for", "with", "from", "this", "that", "use", "using", "into", "of", "to", "a", "an", "in", "on", "is", "are", "or", "及", "和", "的", "了", "在", "用", "使用", "进行", "根据"]);
+const CONFIG_KEYS = new Set(["version", "model_instructions_file", "instruction_files", "instruction_max_bytes", "skill_roots", "commands"]);
 const COMMAND_KEYS = new Set(["description", "argv", "cwd", "timeout_seconds", "allow_extra_args"]);
 
 export class AgentContextManager {
@@ -46,6 +48,12 @@ export class AgentContextManager {
       scope_root: this.displayPath(state.scopeRoot),
       precedence: "global guidance first, then scope root to target directory; each directory contributes the first non-empty instruction_files candidate; later directories have higher precedence",
       config_files: state.configFiles.map((file) => this.displayPath(file)),
+      model_instructions_file: state.modelInstructions ? {
+        path: this.displayPath(state.modelInstructions.path),
+        bytes: state.modelInstructions.bytes,
+        sha256: state.modelInstructions.sha256,
+        ...(includeContent ? { content: state.modelInstructions.content } : {}),
+      } : null,
       instruction_files: state.instructions.map((item) => ({
         scope: item.scope,
         path: this.displayPath(item.path),
@@ -65,8 +73,82 @@ export class AgentContextManager {
         "Prefer run_local_command for registered repeatable commands. Use run_process or exec_command only when no registered command fits and policy permits it.",
       ],
     };
-    if (includeContent) result.effective_instructions = renderEffectiveInstructions(state.instructions, this.displayPath);
+    if (includeContent) result.effective_instructions = renderEffectiveInstructions([...(state.modelInstructions ? [state.modelInstructions] : []), ...state.instructions], this.displayPath);
     return result;
+  }
+
+
+  async sessionBootstrap(args = {}, context = {}) {
+    const state = await this.discoverState(args.path || ".", context);
+    const fingerprint = capabilityFingerprint(state, []);
+    return {
+      target: this.displayPath(state.target),
+      instructions: renderEffectiveInstructions([...(state.modelInstructions ? [state.modelInstructions] : []), ...state.instructions], this.displayPath),
+      model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path) : null,
+      capability_refresh: {
+        strategy: "resolve_task_capabilities-rescans-on-every-call",
+        instruction_and_command_fingerprint: fingerprint,
+        skills_scanned: false,
+        generated_at: new Date().toISOString(),
+      },
+      guidance: [
+        "Call resolve_task_capabilities with the current user task before substantive local work or at the start of a reused-host conversation.",
+        "The resolver returns the effective instructions again and rescans skill and command metadata on every call; the runtime supplements application and browser capability metadata.",
+      ],
+    };
+  }
+
+  async resolveTaskCapabilities(args = {}, context = {}) {
+    const task = requiredString(args.task, "task");
+    if (task.length > 20_000) throw new Error("task exceeds 20000 characters");
+    const state = await this.discoverState(args.path || ".", context);
+    const discovered = await this.discoverSkills(state, { maxResults: MAX_SKILL_RESULTS }, context);
+    const maxSkills = clampInt(args.max_skills, 10, 1, 50);
+    const skillMatches = discovered.skills
+      .map((skill) => ({ skill, score: relevanceScore(task, `${skill.name} ${skill.description}`) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name))
+      .slice(0, maxSkills);
+    const commandMatches = [...state.commands.values()]
+      .map((command) => ({ command, score: relevanceScore(task, `${command.name} ${command.description} ${command.argv.join(" ")}`) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.command.name.localeCompare(b.command.name))
+      .slice(0, 20);
+    const selected = skillMatches[0]?.score >= 3 ? skillMatches[0].skill : null;
+    let selectedSkill = null;
+    if (selected && args.include_selected_skill !== false) {
+      const content = await readRegularUtf8(selected.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
+      selectedSkill = { ...publicSkill(selected, this.displayPath), instructions: content.text };
+    }
+    const recommendedTools = recommendTools(task, commandMatches.length > 0, skillMatches.length > 0);
+    const refresh = capabilityFingerprint(state, discovered.skills);
+    return {
+      task,
+      target: this.displayPath(state.target),
+      effective_instructions: renderEffectiveInstructions([...(state.modelInstructions ? [state.modelInstructions] : []), ...state.instructions], this.displayPath),
+      model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path) : null,
+      instruction_files: state.instructions.map((item) => ({ path: this.displayPath(item.path), scope: item.scope, bytes: item.bytes, sha256: item.sha256, precedence: item.precedence })),
+      instructions_truncated: state.instructionsTruncated,
+      refresh: { strategy: "rescan-on-every-call", fingerprint: refresh, generated_at: new Date().toISOString() },
+      selected_skill: selectedSkill,
+      skill_matches: skillMatches.map(({ skill, score }) => ({ ...publicSkill(skill, this.displayPath), score })),
+      command_matches: commandMatches.map(({ command, score }) => ({ ...publicCommands(new Map([[command.name, command]]), this.displayPath)[0], score })),
+      recommended_tools: recommendedTools,
+      host_semantics: "Machine Bridge can discover, rank, and load capabilities automatically. The MCP host remains responsible for deciding whether to call the recommended tools.",
+      warnings: publicSkillWarnings(discovered.warnings, this.displayPath),
+      truncated: discovered.truncated,
+    };
+  }
+
+  async collectModelInstructions(state, context) {
+    this.throwIfCancelled(context);
+    const path = state.modelInstructionsFile;
+    const info = await lstat(path).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+    if (!info) throw new Error(`model_instructions_file does not exist: ${path}`);
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error(`model_instructions_file must be a regular non-symbolic-link file: ${path}`);
+    const content = await readRegularUtf8(path, MAX_INSTRUCTION_FILE_BYTES, "model instructions file");
+    if (!content.text.trim()) throw new Error(`model_instructions_file is empty: ${path}`);
+    state.modelInstructions = { scope: "model", path, bytes: content.bytes, sha256: sha256(content.text), content: content.text, precedence: 0 };
   }
 
   async listLocalSkills(args = {}, context = {}) {
@@ -150,31 +232,44 @@ export class AgentContextManager {
       instructionMaxBytes: DEFAULT_INSTRUCTION_MAX_BYTES,
       skillRoots: defaultSkillRoots(directories, this.home, this.policy.unrestrictedPaths === true),
       commands: new Map(),
+      modelInstructionsFile: "",
+      modelInstructions: null,
       configFiles: [],
       instructions: [],
       instructionBytes: 0,
       instructionsTruncated: false,
     };
 
-    if (this.policy.unrestrictedPaths === true && this.home) {
+    if (this.home) {
       const globalConfig = join(this.home, GLOBAL_CONFIG_RELATIVE_PATH);
       const config = await readOptionalConfig(globalConfig, this.home, false);
-      if (config) this.applyConfig(state, config, globalConfig, this.home);
-      if (this.codexHome) await this.collectDirectoryInstruction(state, this.codexHome, context, "global");
+      if (config) {
+        if (this.policy.unrestrictedPaths === true) this.applyConfig(state, config, globalConfig, this.home, { global: true });
+        else {
+          state.configFiles.push(globalConfig);
+          if (config.modelInstructionsFile) state.modelInstructionsFile = resolveConfiguredPath(config.modelInstructionsFile, this.home, this.home, this.workspace, true);
+        }
+      }
+      if (state.modelInstructionsFile) await this.collectModelInstructions(state, context);
+      if (this.policy.unrestrictedPaths === true && this.codexHome) await this.collectDirectoryInstruction(state, this.codexHome, context, "global");
     }
 
     for (const directory of directories) {
       this.throwIfCancelled(context);
       const configPath = join(directory, CONFIG_RELATIVE_PATH);
       const config = await readOptionalConfig(configPath, directory, true);
-      if (config) this.applyConfig(state, config, configPath, directory);
+      if (config) this.applyConfig(state, config, configPath, directory, { global: false });
       await this.collectDirectoryInstruction(state, directory, context, "project");
     }
     return state;
   }
 
-  applyConfig(state, config, configPath, baseDir) {
+  applyConfig(state, config, configPath, baseDir, { global = false } = {}) {
     state.configFiles.push(configPath);
+    if (config.modelInstructionsFile) {
+      if (!global) throw new Error(`model_instructions_file is only allowed in the global agent config: ${configPath}`);
+      state.modelInstructionsFile = resolveConfiguredPath(config.modelInstructionsFile, baseDir, this.home, this.workspace, true);
+    }
     if (config.instructionFiles) state.instructionFiles = [...config.instructionFiles];
     if (config.instructionMaxBytes !== null) {
       state.instructionMaxBytes = config.instructionMaxBytes;
@@ -385,7 +480,10 @@ function normalizeConfig(value, configPath) {
   if (!isPlainRecord(value)) throw new Error(`agent config must be a JSON object: ${configPath}`);
   for (const key of Object.keys(value)) if (!CONFIG_KEYS.has(key)) throw new Error(`unknown agent config field '${key}': ${configPath}`);
   if (value.version !== 1) throw new Error(`agent config version must be 1: ${configPath}`);
-  const result = { instructionFiles: null, instructionMaxBytes: null, skillRoots: null, commands: new Map() };
+  const result = { modelInstructionsFile: null, instructionFiles: null, instructionMaxBytes: null, skillRoots: null, commands: new Map() };
+  if (value.model_instructions_file !== undefined) {
+    result.modelInstructionsFile = requiredString(value.model_instructions_file, "model_instructions_file");
+  }
   if (value.instruction_files !== undefined) {
     result.instructionFiles = validateInstructionFiles(value.instruction_files, configPath);
   }
@@ -556,6 +654,62 @@ async function listSkillFiles(root, maxFiles, context, throwIfCancelled) {
   return { files, truncated };
 }
 
+function capabilityFingerprint(state, skills) {
+  return sha256(JSON.stringify({
+    configs: state.configFiles,
+    instructions: [state.modelInstructions?.sha256 || "", ...state.instructions.map((item) => item.sha256)],
+    skills: skills.map((skill) => [skill.id, skill.sha256]),
+    commands: [...state.commands.values()].map((command) => [command.name, command.argv]),
+  }));
+}
+
+function relevanceScore(task, candidate) {
+  const taskTokens = tokenize(task);
+  const candidateTokens = tokenize(candidate);
+  if (!taskTokens.size || !candidateTokens.size) return 0;
+  let score = 0;
+  for (const token of taskTokens) {
+    if (candidateTokens.has(token)) score += token.length >= 6 ? 2 : 1;
+  }
+  const taskLower = task.toLowerCase();
+  const candidateLower = candidate.toLowerCase();
+  if (candidateLower.includes(taskLower) || taskLower.includes(candidateLower)) score += 4;
+  return score;
+}
+
+function tokenize(value) {
+  const text = String(value || "").toLowerCase();
+  const tokens = new Set();
+  for (const raw of text.match(/[a-z0-9_][a-z0-9_.-]{1,}/g) || []) {
+    const token = raw.replace(/^[.-]+|[.-]+$/g, "");
+    if (token.length >= 2 && !TOKEN_STOP_WORDS.has(token)) tokens.add(token);
+  }
+  for (const sequence of text.match(/[\p{Script=Han}]{1,}/gu) || []) {
+    if (!TOKEN_STOP_WORDS.has(sequence)) tokens.add(sequence);
+    const minimumSize = sequence.length === 1 ? 1 : 2;
+    for (let size = minimumSize; size <= Math.min(3, sequence.length); size += 1) {
+      for (let index = 0; index + size <= sequence.length; index += 1) {
+        const token = sequence.slice(index, index + size);
+        if (!TOKEN_STOP_WORDS.has(token)) tokens.add(token);
+      }
+    }
+  }
+  return tokens;
+}
+
+function recommendTools(task, hasCommands, hasSkills) {
+  const lower = task.toLowerCase();
+  const tools = ["agent_context"];
+  if (hasSkills) tools.push("load_local_skill");
+  if (hasCommands) tools.push("run_local_command");
+  if (/browser|chrome|edge|brave|网页|浏览器|表单|网站/.test(lower)) tools.push("browser_status", "browser_list_tabs", "browser_inspect_page", "browser_action", "browser_fill_form");
+  if (/app|application|gui|window|应用|软件|窗口|界面/.test(lower)) tools.push("list_local_applications", "inspect_local_application", "operate_local_application");
+  if (/git|commit|branch|diff|仓库|提交|分支/.test(lower)) tools.push("git_status", "git_diff");
+  if (/test|build|lint|command|terminal|测试|构建|命令|终端/.test(lower)) tools.push(hasCommands ? "run_local_command" : "run_process");
+  if (/file|code|source|edit|write|文件|代码|源码|修改|写入/.test(lower)) tools.push("read_file", "search_text", "edit_file", "apply_patch");
+  return [...new Set(tools)];
+}
+
 function publicSkill(skill, displayPath) {
   return {
     id: skill.id,
@@ -626,7 +780,7 @@ async function readOptionalRegularUtf8(filePath, maxBytes, label) {
 }
 
 async function readRegularUtf8(filePath, maxBytes, label) {
-  const handle = await open(filePath, "r");
+  const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0));
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new Error(`${label} is not a regular file: ${filePath}`);

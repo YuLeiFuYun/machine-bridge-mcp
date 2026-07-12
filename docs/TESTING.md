@@ -17,7 +17,8 @@ The suite includes:
 - generated Cloudflare Worker types and strict TypeScript checking, including unused-local and unused-parameter rejection;
 - syntax validation for every shipped JavaScript entry point;
 - shared tool-catalog schema, annotation, and profile-inventory checks;
-- hierarchical agent-context precedence, custom instruction ordering, local skill discovery/loading, command override/removal, direct argv argument handling, timeout ceilings, and execution-profile denial;
+- global `model_instructions_file` injection in stdio/remote initialization, hierarchical agent-context precedence, live skill rescanning/fingerprints, automatic task ranking/loading, command override/removal, direct argv handling, timeout ceilings, and execution-profile denial;
+- machine-level browser-broker ownership/client proxying, authenticated extension origin/subprotocol, non-cacheable local pairing, pairing-token non-disclosure, resource-backed upload routing, and broker result redaction;
 - canonical path and symbolic-link escape tests;
 - relative-path privacy and error-path redaction tests;
 - atomic create/update, optimistic hash, exact edit, and patch transaction tests;
@@ -42,8 +43,8 @@ The suite includes:
 - deterministic relay connection lifecycle coverage for transport construction/error/deadline, pre-handshake `welcome` validation, authenticated `hello_ack` readiness, identity/version mismatch, retryable Worker handshake errors, fatal protocol errors, autonomous outage-reminder backoff, handshake and heartbeat timeout, brief-outage suppression, sustained-outage escalation, recovery summaries, and supersession;
 - shared no-follow bounded-file reads for normal files, over-limit data, directories, and symbolic links;
 - CLI parsing, policy profiles, and client configuration boundaries;
-- live stdio MCP initialization, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;
-- live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, dynamic tool advertisement, rich content, daemon replacement, cancellation, malformed daemon JSON/non-object rejection, duplicate hello rejection, and unknown-message closure.
+- live stdio MCP initialization with session instructions, capability resolution, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;
+- live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, daemon-backed session bootstrap, dynamic tool advertisement, rich content, daemon replacement, cancellation, malformed daemon JSON/non-object rejection, duplicate hello rejection, and unknown-message closure.
 
 ## Additional release checks
 
@@ -63,7 +64,7 @@ GitHub Actions executes the main suite on Linux, macOS, and Windows using the pi
 ## Test design rules
 
 - Tests should exercise the public boundary rather than only helper functions when practical.
-- Every permission-expanding feature needs a denial test.
+- Every permission-expanding feature needs a denial test. Browser/application features also require a token/value/content non-disclosure assertion.
 - Every bounded resource needs an over-limit test.
 - Every multi-stage mutation needs a no-partial-commit test.
 - Every remote call correlation change needs daemon replacement and cancellation coverage.
@@ -78,7 +79,7 @@ Run `npm run privacy:check` before committing and before packaging. Developers s
 
 ## Package manifest
 
-`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, and verifies that privacy/engineering guidance, the runtime/relay/secure-file modules, contribution discipline, and privacy/release-impact checkers are present in the published package. `npm run install:test` packs the real tarball, installs it into an isolated global prefix with the documented npm 12 options, rejects blocked-script warnings, confirms optional `fsevents` is absent, and runs the installed CLI.
+`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, and verifies that privacy/engineering guidance, the runtime/relay/secure-file/browser/app modules, packaged browser extension, contribution discipline, and privacy/release-impact checkers are present in the published package. `npm run install:test` packs the real tarball, installs it into an isolated global prefix with the documented npm 12 options, rejects blocked-script warnings, confirms optional `fsevents` is absent, and runs the installed CLI.
 
 The stdio integration test also sends an oversized line, verifies bounded rejection, and confirms that the next valid request is still processed.
 

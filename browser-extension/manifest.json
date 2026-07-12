@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Machine Bridge Browser",
+  "version": "0.10.0",
+  "description": "Connects the current Chromium browser profile to the local Machine Bridge runtime for user-authorized automation.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "pairing.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Machine Bridge Browser"
+  },
+  "version_name": "0.10.0"
+}

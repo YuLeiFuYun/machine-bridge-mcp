@@ -1,30 +1,47 @@
-# Agent context, local skills, and registered commands
+# Session instructions, skills, commands, and capability discovery
 
-The default compatibility target is the current OpenAI Codex guidance for repository instructions and filesystem skills.
+Machine Bridge provides a static MCP bootstrap surface for Codex-style instructions and filesystem skills. The catalog remains stable while local instructions, skills, commands, applications, and browser state are discovered at call time.
 
-Machine Bridge exposes a stable agent bootstrap layer so an MCP client can use repository instructions and local workflows without requiring one dynamically named MCP tool per skill or command.
+This approximates a local coding agent without pretending that the MCP server owns the model loop. The host can filter tools, require confirmation, truncate context, or decline calls before they reach Machine Bridge.
 
-The default discovery rules intentionally track current Codex conventions where practical. Machine Bridge also adds a JSON manifest for custom instruction priority, additional skill roots, and named local commands.
+## MCP tools
 
-This does not make a remote MCP session identical to a locally installed coding agent. The MCP host can independently filter tools, require confirmation, truncate results, or decline calls before they reach Machine Bridge. The bridge cannot alter or bypass those host decisions.
+- `session_bootstrap` returns the current global/session instruction text and refresh fingerprint.
+- `agent_context` returns the complete target-specific instruction chain, skill summaries, and command registry.
+- `resolve_task_capabilities` rescans and ranks skills/commands for the current task, optionally loading the best skill; the runtime also adds application and browser capability metadata.
+- `list_local_skills` searches discovered `SKILL.md` bundles.
+- `load_local_skill` returns one skill entrypoint and bounded file inventory without execution.
+- `list_local_commands` returns effective registered commands.
+- `run_local_command` executes a registered direct-argv command when policy permits.
 
-## Tool model
+Both stdio and remote Worker connection initialization attempt `session_bootstrap`. Its instruction text is appended to the MCP `initialize` result. Because a host may reuse one MCP connection across conversations, the explicit tool and per-task `resolve_task_capabilities` call remain necessary to refresh and reapply instructions reliably.
 
-Five tools form the agent-context surface:
+## Global `model_instructions_file`
 
-- `agent_context` discovers effective instructions, skill summaries, and registered commands for a target path;
-- `list_local_skills` searches discovered `SKILL.md` or `skill.md` bundles;
-- `load_local_skill` returns one skill entrypoint plus a bounded relative file inventory;
-- `list_local_commands` returns the effective command registry;
-- `run_local_command` executes one registered command as a direct argv process.
+The user-level configuration is:
 
-The server instructions tell MCP clients to call `agent_context` before substantive workspace work. This is behavioral guidance, not a protocol-enforced precondition. Every file, Git, mutation, and process tool therefore retains its own policy enforcement.
+```text
+~/.config/machine-bridge-mcp/agent.json
+```
 
-## Instruction scope and precedence
+Example:
 
-For a target path, Machine Bridge chooses the nearest ancestor containing `.git` as the project scope root. If no Git marker is found, a target inside the configured workspace uses the workspace root; an unrestricted target outside the workspace uses the target directory.
+```json
+{
+  "version": 1,
+  "model_instructions_file": "~/.config/machine-bridge-mcp/MODEL.md"
+}
+```
 
-The default instruction candidates, in priority order, are:
+The file is loaded before repository guidance for every session and every target path. It must be a non-empty, regular, non-symbolic-link UTF-8 file and is bounded by the hard instruction-file limit. Relative values are resolved from the user's home directory.
+
+`model_instructions_file` is global-only. A project `.machine-bridge/agent.json` cannot set or override it. It is read even under workspace-confined profiles because the user explicitly designated it as session configuration. Under those profiles, other user-manifest fields that would widen filesystem/skill/command scope are ignored; project instruction and command policy remains confined.
+
+In remote mode, the selected instruction text necessarily traverses the user's Cloudflare Worker and the authorized MCP host as part of initialization. Do not put credentials or private data in an instruction file.
+
+## Repository instruction precedence
+
+For a target path, Machine Bridge chooses the nearest Git ancestor as scope root, falling back to the configured workspace or target directory. The default candidate priority in each directory is:
 
 ```json
 [
@@ -33,42 +50,18 @@ The default instruction candidates, in priority order, are:
 ]
 ```
 
-Discovery then works as follows:
+Order:
 
-1. under unrestricted policy, read the first non-empty candidate in `CODEX_HOME` or `~/.codex`;
-2. walk from the project scope root to the target directory;
-3. in each directory, apply its optional `.machine-bridge/agent.json` first;
-4. select only the first non-empty instruction candidate in that directory;
-5. concatenate selected files from global to root to leaf, so later directories have higher precedence.
+1. `model_instructions_file`, when configured;
+2. under unrestricted policy, the first non-empty candidate in `CODEX_HOME` or `~/.codex`;
+3. project scope root through the target directory;
+4. in each directory, apply `.machine-bridge/agent.json`, then select its first non-empty candidate.
 
-Empty candidates are skipped. Only one instruction file is selected per directory. This matches the important Codex override behavior: `AGENTS.override.md` suppresses `AGENTS.md` in the same directory, while deeper directories override broader guidance.
+Only one candidate contributes per directory. Deeper files have higher precedence. Empty files are skipped. The repository/global candidate budget defaults to 32 KiB and can be configured up to the hard 2 MiB ceiling. The separately designated model-instructions file retains its own file-size ceiling.
 
-The combined instruction budget defaults to 32 KiB. Once the budget would be exceeded, discovery stops and returns `instructions_truncated: true`. A manifest can raise or lower the budget within the hard 2 MiB ceiling.
+## Project manifest
 
-Global instruction discovery is disabled under workspace-confined profiles because reading `~/.codex` would otherwise bypass the profile's direct-filesystem boundary. Project instructions still work in every profile.
-
-## Custom instruction priority
-
-A manifest may replace the candidate list. The list is priority order, not a list of files to concatenate from the same directory:
-
-```json
-{
-  "version": 1,
-  "instruction_files": [
-    "LOCAL.override.md",
-    "AGENTS.override.md",
-    "AGENTS.md",
-    ".github/agent-guidance.md"
-  ],
-  "instruction_max_bytes": 65536
-}
-```
-
-For each directory, Machine Bridge selects the first non-empty file in that list. Candidate paths must be relative and their canonical targets must remain inside the directory being inspected.
-
-## Configuration format
-
-A project configuration lives at `.machine-bridge/agent.json`. Relative skill roots and command working directories are resolved against the directory containing `.machine-bridge`, not against the hidden configuration directory itself.
+A project manifest lives at `.machine-bridge/agent.json`:
 
 ```json
 {
@@ -85,122 +78,63 @@ A project configuration lives at `.machine-bridge/agent.json`. Relative skill ro
   ],
   "commands": {
     "check": {
-      "description": "Run the repository validation suite.",
+      "description": "Run repository validation.",
       "argv": ["npm", "run", "check"],
       "cwd": ".",
       "timeout_seconds": 600,
       "allow_extra_args": false
-    },
-    "test-file": {
-      "description": "Run one test file selected by the caller.",
-      "argv": ["node", "--test"],
-      "cwd": ".",
-      "timeout_seconds": 120,
-      "allow_extra_args": true
     }
   }
 }
 ```
 
-Supported top-level fields are:
+Supported project fields are `version`, `instruction_files`, `instruction_max_bytes`, `skill_roots`, and `commands`. Unknown fields fail closed. Deeper manifests replace inherited instruction/skill settings, override commands by name, and can delete a command with `null`.
 
-- `version`: required and currently fixed at `1`;
-- `instruction_files`: non-empty priority-ordered relative candidates;
-- `instruction_max_bytes`: combined instruction budget from 1 KiB through 2 MiB;
-- `skill_roots`: explicit skill directories; when present, this replaces inherited/default roots;
-- `commands`: named command definitions merged with inherited commands.
+## Skill discovery and live refresh
 
-Configuration is evaluated from global to project root to target directory. A deeper definition replaces the inherited value. A deeper command value of `null` removes that command:
+Without explicit `skill_roots`, discovery scans:
 
-```json
-{
-  "version": 1,
-  "commands": {
-    "deploy": null
-  }
-}
-```
-
-Unknown fields are rejected so misspellings do not silently weaken the intended workflow.
-
-Under unrestricted policy only, `~/.config/machine-bridge-mcp/agent.json` acts as the initial user-level manifest. Relative paths in that file are resolved from the user's home directory.
-
-## Skill discovery
-
-Without an explicit `skill_roots` setting, Machine Bridge uses Codex-compatible filesystem locations:
-
-- `<target>/.agents/skills`;
-- every ancestor's `.agents/skills` through the project root;
+- target-to-root `.agents/skills` directories;
 - under unrestricted policy, `~/.agents/skills`;
 - under unrestricted policy on Unix-like systems, `/etc/codex/skills`.
 
-An explicit `skill_roots` list can add compatibility with other layouts, such as `.codex/skills`, or narrow discovery to selected directories.
-
-Machine Bridge recursively finds directories containing `SKILL.md` or `skill.md`. The entrypoint must contain simple YAML front matter with non-empty `name` and `description` fields:
+A skill directory contains `SKILL.md` or `skill.md` with simple front matter:
 
 ```markdown
 ---
 name: release-review
 description: Review a release without publishing it.
 ---
-
-# Workflow
-
-...
 ```
 
-Invalid skills are skipped and reported in `skill_warnings` or `warnings`; one malformed bundle does not prevent valid skills from loading.
+The entrypoint requires non-empty `name` and `description`. Invalid bundles are skipped with bounded warnings. Symlinked skill directories are followed after canonical policy validation; symbolic-link entrypoint files are rejected. Traversal, depth, entries, summaries, content, and inventory are bounded.
 
-Symlinked skill folders are followed, matching Codex behavior. Under workspace-confined profiles, the canonical symlink target must remain inside the workspace. Skill entrypoint files themselves may not be symbolic links. Directory traversal, cycles, entry count, depth, content, and returned file inventory are bounded.
+No persistent skill index is trusted as authoritative. `agent_context`, `list_local_skills`, and `resolve_task_capabilities` rescan the effective roots. A refresh fingerprint changes when instruction hashes, skill hashes, command definitions, or relevant configuration changes. Newly created or edited skills are therefore visible without restarting the daemon or changing the MCP tool catalog.
 
-## Progressive disclosure
+## Progressive disclosure and task selection
 
-`agent_context` initially returns only skill metadata: name, description, path, ID, size, and hash. Its skill summary list has an 8,000-character budget and a caller-selected count limit. Descriptions are shortened first and excess skills are omitted with `skills_truncated: true`.
+`agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions and command names/descriptions/argv, returns matches with scores, and loads the leading skill only when its relevance threshold is met.
 
-`load_local_skill` accepts a stable opaque ID, an unambiguous exact name, or a displayed entrypoint path. It returns:
+This ranking is deterministic local assistance, not semantic certainty. The model must still evaluate whether the selected skill applies. Machine Bridge does not execute skill scripts implicitly and does not fabricate a dynamically named MCP tool per skill.
 
-- the full bounded UTF-8 `SKILL.md` content;
-- metadata and a content hash;
-- a bounded relative inventory of files in the skill directory.
+## Registered commands
 
-Loading a skill never executes its scripts. The model must inspect the instructions and then invoke an ordinary bridge tool, a registered command, or a managed job. This keeps documentation loading separate from executable authority.
+`run_local_command` uses direct argv spawning rather than a shell. The manifest controls working directory, timeout ceiling, and whether caller arguments are accepted. A caller may reduce but not increase the timeout.
 
-## Registered command execution
+Registered commands are workflow aliases, not an approval boundary or sandbox. Package scripts, interpreters, compilers, and executables retain local-user authority. Use `review` or `edit`, or external VM/container isolation, for untrusted content.
 
-`run_local_command` is available only when direct process execution is enabled (`agent` or `full`, including equivalent custom policies). It does not invoke a shell. Manifest `argv` elements and caller-supplied arguments remain distinct process arguments, so characters such as `;`, `$()`, pipes, and redirections are not interpreted by a shell.
+## Recommended host workflow
 
-The manifest remains authoritative:
+1. consume MCP initialization instructions;
+2. call `resolve_task_capabilities` with the complete user task and target path;
+3. apply returned global/project instructions;
+4. follow the selected skill only after checking relevance;
+5. prefer registered commands for stable workflows;
+6. use structured application/browser tools where applicable;
+7. inspect before mutation or submission and report operations performed.
 
-- caller arguments are rejected unless `allow_extra_args` is true;
-- a caller can reduce the timeout but cannot increase it beyond `timeout_seconds`;
-- the working directory is canonicalized and remains subject to active path policy;
-- the command receives the isolated or full environment selected by the Machine Bridge profile.
-
-Registered commands are workflow aliases, not a sandbox or approval boundary. Repository-controlled package scripts, interpreters, compilers, and executables can run arbitrary code with the local user's authority. Use `edit` or `review`, or external VM/container isolation, for untrusted repositories.
-
-For arbitrary one-off execution, existing tools remain available according to policy:
-
-- `run_process` for direct argv execution;
-- `exec_command` for shell syntax under shell-enabled policy;
-- `start_job` for durable multi-step work;
-- `stage_job` for local operator review and later approval.
-
-## Recommended remote workflow
-
-A remote coding task should normally follow this sequence:
-
-1. call `agent_context` with the file or directory being changed;
-2. apply returned instructions in precedence order;
-3. load only skills relevant to the task;
-4. inspect files before editing;
-5. prefer a registered command for validation or a standard workflow;
-6. use direct or shell execution only when the registry does not cover the operation;
-7. report files changed and commands run.
-
-This approximates local coding-agent context loading while keeping MCP transport, local policy, and host policy as explicit independent boundaries.
+Machine Bridge can automatically discover, refresh, rank, and load capabilities. Actual invocation remains a host/model decision. This boundary cannot be removed by server architecture alone.
 
 ## Security and failure behavior
 
-Agent configuration, instruction content, skill traversal, skill summaries, skill inventory, command count, argv size, timeouts, and process output are bounded. Invalid JSON, unknown fields, escaping paths, ambiguous skill names, invalid skill metadata, and missing commands fail explicitly or produce bounded warnings.
-
-Instruction and skill contents are untrusted operational text. They may contain prompt injection or unsafe command guidance. Machine Bridge exposes the content; it does not certify or approve it.
+Instruction and skill text is untrusted operational content and may contain prompt injection or destructive guidance. The bridge exposes it but does not certify it. Paths, files, roots, counts, byte budgets, argv, timeouts, and result sizes are bounded. Escaping paths, ambiguous skill names, malformed metadata, invalid configuration, and missing commands fail explicitly or produce bounded warnings.

@@ -34,7 +34,8 @@ Before committing or publishing:
 - inspect the complete staged diff, including tests, snapshots, examples, release notes, and generated metadata;
 - use reserved example domains and neutral aliases;
 - run `npm run privacy:check`, `npm run check`, and `npm pack --dry-run`;
-- treat paths, host aliases, usernames, and codenames as private metadata even when they are not authentication secrets.
+- treat paths, host aliases, usernames, codenames, real browser URLs/page captures, application names tied to a user, and form data as private metadata even when they are not authentication secrets;
+- keep browser pairing-state files and captured source/screenshots out of fixtures, documentation, support logs, and release assets.
 
 The scanner is heuristic. It cannot identify every personal or organizational name, transformed value, image, archive, binary fixture, or data already present in Git history.
 

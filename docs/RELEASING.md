@@ -6,7 +6,7 @@ The release invariant is:
 - `v<package version>` points to that same commit locally and on GitHub.
 - A final GitHub Release exists for the tag.
 - The GitHub Release contains the npm tarball generated from that commit.
-- `package.json`, `package-lock.json`, and the Worker-reported version agree.
+- `package.json`, `package-lock.json`, the Worker-reported version, and `browser-extension/manifest.json` (`version`/`version_name`) agree.
 - Every release-relevant change since the prior version tag has a higher package version and matching CHANGELOG section.
 - The same reviewed change is present on GitHub and in a new npm version.
 
@@ -14,7 +14,7 @@ The release invariant is:
 
 ## Prepare a version
 
-1. Set the new version without creating an automatic npm tag:
+1. Set the new version without creating an automatic npm tag. The npm version hook synchronizes the Worker and packaged browser-extension versions:
 
    ```sh
    npm version <version> --no-git-tag-version

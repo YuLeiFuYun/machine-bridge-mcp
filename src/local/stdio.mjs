@@ -17,9 +17,9 @@ const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const SLOW_TOOL_CALL_MS = 30_000;
 const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version);
 
-export async function runStdioServer({ workspace, policy, logLevel = "info", jobRoot = "", resources = {}, resourceStatePath = "" }) {
+export async function runStdioServer({ workspace, policy, logLevel = "info", jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "" }) {
   const logger = createLogger({ component: "stdio", level: logLevel, stderrOnly: true, color: false });
-  const runtime = new LocalRuntime({ workspace, policy, logger, jobRoot, resources, resourceStatePath });
+  const runtime = new LocalRuntime({ workspace, policy, logger, jobRoot, resources, resourceStatePath, browserStateRoot });
   const pending = new Map();
   let negotiatedVersion = MCP_PROTOCOL_VERSION;
   let initialized = false;
@@ -52,7 +52,7 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
   async function handleLine(line) {
     const message = parseJsonRpcLine(line, send);
     if (!message || typeof message.method !== "string") return;
-    if (handleControlMessage(message)) return;
+    if (await handleControlMessage(message)) return;
     if (!initialized) {
       send(rpcError(message.id, -32002, "Server is not initialized"));
       return;
@@ -60,14 +60,14 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
     await handleInitializedMessage(message);
   }
 
-  function handleControlMessage(message) {
+  async function handleControlMessage(message) {
     if (message.method === "initialize") {
       const requested = asObject(message.params).protocolVersion;
       negotiatedVersion = typeof requested === "string" && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
         ? requested
         : MCP_PROTOCOL_VERSION;
       initialized = true;
-      send(rpcResult(message.id, initializationResult(negotiatedVersion)));
+      send(rpcResult(message.id, await initializationResult(negotiatedVersion, runtime)));
       return true;
     }
     if (message.method === "notifications/initialized") return true;
@@ -148,7 +148,12 @@ function parseJsonRpcLine(line, send) {
   return message;
 }
 
-function initializationResult(protocolVersion) {
+async function initializationResult(protocolVersion, runtime) {
+  const bootstrap = await runtime.sessionBootstrap({ path: "." }).catch((error) => {
+    runtime.logger?.debug?.("session bootstrap unavailable during initialize", { error_class: classifyOperationalError(error) });
+    return null;
+  });
+  const localInstructions = bootstrap?.instructions ? `\n\n--- LOCAL SESSION INSTRUCTIONS ---\n${bootstrap.instructions}` : "";
   return {
     protocolVersion,
     capabilities: { tools: { listChanged: false }, logging: {} },
@@ -158,7 +163,7 @@ function initializationResult(protocolVersion) {
       version: PACKAGE_VERSION,
       description: "Workspace-scoped local coding tools over MCP stdio or authenticated remote relay.",
     },
-    instructions: MCP_INSTRUCTIONS,
+    instructions: `${MCP_INSTRUCTIONS}${localInstructions}`,
   };
 }
 

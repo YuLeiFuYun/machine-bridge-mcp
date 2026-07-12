@@ -73,6 +73,8 @@ Follow the sample workflow.
     workspace,
     policy: { profile: "agent", origin: "explicit", revision: 3 },
     jobRoot: jobs,
+    agentHome: root,
+    codexHome: join(root, "empty-codex-home"),
     recoverJobs: false,
   });
   try {
@@ -93,6 +95,36 @@ Follow the sample workflow.
     assert(loaded.instructions.includes("Follow the sample workflow"), "load_local_skill omitted SKILL.md content");
     assert(loaded.files.some((item) => item.path === "scripts/run.mjs"), "load_local_skill omitted the skill file inventory");
     assert(loaded.execution_semantics.includes("does not execute"), "skill loading semantics are ambiguous");
+
+    const resolved = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "Follow the sample local workflow and run the repository command" });
+    assert(resolved.selected_skill?.name === "sample-skill", "task capability resolver did not automatically select the relevant skill");
+    assert(resolved.effective_instructions.includes("root project") && resolved.effective_instructions.includes("nested local"), "task capability resolver omitted effective instructions for a reused host session");
+    assert(resolved.recommended_tools.includes("run_local_command"), "task capability resolver did not recommend the registered command surface");
+    const previousFingerprint = resolved.refresh.fingerprint;
+    await mkdir(join(workspace, ".codex", "skills", "fresh"), { recursive: true });
+    await writeFile(join(workspace, ".codex", "skills", "fresh", "SKILL.md"), `---
+name: fresh-skill
+description: Handles freshly discovered deployment workflows.
+---
+
+Use the fresh workflow.
+`, "utf8");
+    const refreshed = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "Use the freshly discovered deployment workflow", include_selected_skill: true });
+    assert(refreshed.skill_matches.some((skill) => skill.name === "fresh-skill"), "task capability resolver did not rescan newly added skills");
+    assert(refreshed.refresh.fingerprint !== previousFingerprint, "capability refresh fingerprint did not change after skill discovery changed");
+
+    await mkdir(join(workspace, ".codex", "skills", "chinese"), { recursive: true });
+    await writeFile(join(workspace, ".codex", "skills", "chinese", "SKILL.md"), `---
+name: deployment-review
+description: 审查部署流程并验证发布配置。
+---
+
+检查部署流程。
+`, "utf8");
+    const chineseRelevant = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "请审查部署流程并检查配置" });
+    assert(chineseRelevant.selected_skill?.name === "deployment-review", "Chinese task matching did not select the relevant skill");
+    const chineseUnrelated = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "在浏览器里填写新闻表单" });
+    assert(chineseUnrelated.selected_skill === null, "Chinese task matching selected an unrelated skill from weak single-character overlap");
 
     const commands = await runtime.executeTool("list_local_commands", { path: "packages/example" });
     assert(commands.commands.length === 1 && commands.commands[0].timeout_seconds === 7, "list_local_commands did not apply nearest manifest precedence");
@@ -121,6 +153,8 @@ Follow the sample workflow.
     workspace,
     policy: { profile: "edit", origin: "explicit", revision: 3 },
     jobRoot: join(root, "edit-jobs"),
+    agentHome: root,
+    codexHome: join(root, "empty-codex-home"),
     recoverJobs: false,
   });
   try {
@@ -147,6 +181,9 @@ Follow the sample workflow.
   const compatWorkspace = join(root, "compat-workspace");
   const compatSubdir = join(compatWorkspace, "services", "example");
   const codexHome = join(root, "codex-home");
+  await mkdir(join(root, ".config", "machine-bridge-mcp"), { recursive: true });
+  await writeFile(join(root, "MODEL.md"), "global model instructions\n", "utf8");
+  await writeFile(join(root, ".config", "machine-bridge-mcp", "agent.json"), JSON.stringify({ version: 1, model_instructions_file: "MODEL.md" }, null, 2), "utf8");
   await mkdir(join(compatWorkspace, ".git"), { recursive: true });
   await mkdir(join(compatSubdir, ".agents", "skills"), { recursive: true });
   await mkdir(codexHome, { recursive: true });
@@ -181,6 +218,8 @@ Use the linked workflow.
     resolveExistingPath: async (value) => value === "." ? compatWorkspace : join(compatWorkspace, value),
   });
   const projectCompatContext = await projectCompatManager.agentContext({ path: "services/example" });
+  assert(projectCompatContext.model_instructions_file?.content === "global model instructions\n", "global model_instructions_file was not loaded under a workspace-confined profile");
+  assert(projectCompatContext.effective_instructions.indexOf("global model instructions") < projectCompatContext.effective_instructions.indexOf("root override"), "global model instructions did not precede project guidance");
   assert(projectCompatContext.instruction_files.length === 2, "project-only Codex instruction chain is incomplete");
   assert(projectCompatContext.instruction_files[0].content === "root override\n", "project AGENTS.override.md did not win");
   assert(projectCompatContext.instruction_files[1].content === "nested base\n", "empty nested override did not fall back to AGENTS.md");
@@ -204,6 +243,9 @@ Use the linked workflow.
   assert(compatContext.instruction_files[0].content === "global override\n", "global AGENTS.override.md did not win");
   assert(compatContext.instruction_files[1].content === "root override\n", "project AGENTS.override.md did not win");
   assert(compatContext.instruction_files[2].content === "nested base\n", "nested AGENTS.md was not loaded");
+  const bootstrap = await compatManager.sessionBootstrap({ path: "services/example" });
+  assert(bootstrap.instructions.includes("global model instructions") && bootstrap.model_instructions_file === join(root, "MODEL.md"), "session bootstrap omitted the configured global model instructions");
+  assert(bootstrap.capability_refresh.skills_scanned === false, "session bootstrap performed an unnecessary full skill scan");
 
 
   const limitedWorkspace = join(root, "limited-workspace");

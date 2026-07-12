@@ -361,7 +361,7 @@ function assertValidStateMarker(marker, options = {}) {
 }
 
 function hasOnlyStateEntries(entries) {
-  const allowed = new Set([STATE_MARKER, "config.json", "profiles", "logs"]);
+  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "profiles", "logs"]);
   return entries.every((entry) => allowed.has(entry) || /^config\.json\.corrupt-\d+(?:-[a-f0-9]{8})?$/.test(entry));
 }
 

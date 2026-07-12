@@ -108,36 +108,37 @@ machine-mcp stdio --workspace /path/to/project
 
 The stdio server writes only JSON-RPC messages to stdout and operational logs to stderr. See [docs/CLIENTS.md](docs/CLIENTS.md) for the host/model distinction and transport trade-offs.
 
-## Agent instructions, local skills, and command registry
+## Session instructions, local skills, commands, apps, and browser
 
-For substantive workspace tasks, clients can call `agent_context` for the relevant file or directory. Its default instruction discovery mirrors Codex: under unrestricted policy it first checks `CODEX_HOME` or `~/.codex`, then walks from the project root to the target directory, selecting the first non-empty `AGENTS.override.md` or `AGENTS.md` in each scope. Deeper guidance has higher precedence, and the default combined budget is 32 KiB.
-
-Skill discovery also follows Codex-style progressive disclosure. By default, Machine Bridge scans `.agents/skills` from the target directory through the project root; unrestricted policy additionally enables `~/.agents/skills` and, on Unix-like systems, `/etc/codex/skills`. `agent_context` initially returns bounded metadata, while `load_local_skill` returns the selected `SKILL.md` and file inventory without executing anything implicitly.
-
-A project can add custom instruction candidates, explicit skill roots, and registered commands with `.machine-bridge/agent.json`:
+Machine Bridge loads a user-selected global instruction file and repository-specific guidance without changing the static MCP catalog. Configure the global file in `~/.config/machine-bridge-mcp/agent.json`:
 
 ```json
 {
   "version": 1,
-  "instruction_files": [
-    "PROJECT.override.md",
-    "AGENTS.override.md",
-    "AGENTS.md"
-  ],
-  "instruction_max_bytes": 65536,
-  "commands": {
-    "check": {
-      "description": "Run repository validation.",
-      "argv": ["npm", "run", "check"],
-      "cwd": ".",
-      "timeout_seconds": 600,
-      "allow_extra_args": false
-    }
-  }
+  "model_instructions_file": "~/.config/machine-bridge-mcp/MODEL.md"
 }
 ```
 
-`instruction_files` is a priority list: each directory contributes only its first non-empty candidate. Deeper manifests override earlier settings and can remove an inherited command with `null`. `run_local_command` executes registered commands as direct argv processes without shell parsing and is available only when direct execution is enabled. See [Agent context, local skills, and registered commands](docs/AGENT_CONTEXT.md) for the complete contract.
+The file is prepended to MCP initialization instructions for every new stdio or remote session when the local runtime is reachable. `session_bootstrap` exposes the same material explicitly. `agent_context` adds target-specific `AGENTS.override.md`/`AGENTS.md` precedence, and `resolve_task_capabilities` rescans skills and registered commands for the current task, ranks matches, optionally loads the best skill, and recommends relevant local tools.
+
+Skill discovery follows Codex-style progressive disclosure. Default roots are target-to-project `.agents/skills`; unrestricted policy also enables user/admin roots. Newly added or edited skills are found on the next resolver/list call without restarting the daemon. A project can customize instruction candidates, skill roots, and direct-argv registered commands with `.machine-bridge/agent.json`. See [Session instructions, skills, commands, and capability discovery](docs/AGENT_CONTEXT.md).
+
+Under canonical `full`, Machine Bridge also exposes structured local automation:
+
+- installed application discovery/opening and macOS Accessibility inspection/actions;
+- a packaged Chromium extension that controls the user's existing daily browser profile, active tabs, login state, and windows;
+- current DOM source and frame/open-Shadow-DOM inspection, structured page actions, complex multi-field forms, resource-backed secret fields, resource-backed file uploads, and screenshots.
+
+One-time browser setup:
+
+```sh
+machine-mcp browser setup
+machine-mcp browser status
+```
+
+Load the printed unpacked-extension directory once in Chrome, Edge, Brave, Vivaldi, or another compatible Chromium browser. The extension badge reports connection state, and clicking it opens the saved local pairing page. The local pairing token remains in owner-only state and the loopback pairing page; it is not returned through MCP. For a mass-market release, distribute the same extension as a signed browser-store build rather than asking end users to enable Developer mode. See [Local application and browser automation](docs/LOCAL_AUTOMATION.md).
+
+Machine Bridge can discover, refresh, rank, and load capabilities automatically. The ChatGPT/MCP host still owns tool selection and approval, so the server cannot force a host to expose or invoke a recommended skill, command, app, or browser operation.
 
 ## Policy controls
 
@@ -264,7 +265,9 @@ The exact `tools/list` response reflects the active local policy. Definitions co
 
 - `server_info`
 - `project_overview`
+- `session_bootstrap` — session/global instructions and capability refresh metadata
 - `agent_context` — effective instructions, skill summaries, and registered commands for a target path
+- `resolve_task_capabilities` — live skill/command ranking and local automation recommendations
 - `list_local_skills`
 - `load_local_skill` — load instructions and file inventory without implicit execution
 - `list_local_commands`
@@ -274,6 +277,23 @@ The exact `tools/list` response reflects the active local policy. Definitions co
 - `read_file` — whole UTF-8 files or bounded line ranges
 - `view_image` — bounded PNG, JPEG, GIF, or WebP as native MCP image content
 - `search_text`
+
+### Local applications and browser (`full`)
+
+- `list_local_applications`
+- `open_local_application`
+- `inspect_local_application` — bounded macOS Accessibility tree
+- `operate_local_application` — structured Accessibility action, no arbitrary script source
+- `browser_status`
+- `pair_browser_extension`
+- `browser_list_tabs`
+- `browser_get_source` — bounded current DOM HTML, including selected frames
+- `browser_inspect_page`
+- `browser_action`
+- `browser_fill_form`
+- `browser_upload_files` — registered local resources to file inputs
+- `browser_screenshot`
+
 
 ### Mutation
 
@@ -335,6 +355,7 @@ machine-mcp status
 machine-mcp doctor
 machine-mcp rotate-secrets
 machine-mcp resource add|list|check|remove
+machine-mcp browser status|setup|pair|path
 machine-mcp job submit|inspect|approve|list|read|cancel
 machine-mcp --print-mcp-credentials
 machine-mcp uninstall [--keep-worker] [--yes]
@@ -386,7 +407,7 @@ npm pack --dry-run
 
 `npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, JavaScript syntax, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, local path/write/process/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/sensitive-artifact check, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline; macOS and package-audit jobs also exercise the documented isolated global installation.
 
-See [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), and [SECURITY.md](SECURITY.md).
+See [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), and [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 

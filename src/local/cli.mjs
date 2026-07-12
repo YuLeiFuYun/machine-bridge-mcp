@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import path, { join, resolve } from "node:path";
@@ -11,6 +12,7 @@ import { activeManagedJobs, inspectResourceFile, loadManagedJobPlan, ManagedJobM
 import { runWrangler } from "./shell.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
+import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import {
   acquireDaemonLock,
   acquireStartupLock,
@@ -58,6 +60,7 @@ const COMMAND_HANDLERS = Object.freeze({
   autostart: serviceCommand,
   "rotate-secrets": rotateSecretsCommand,
   resource: resourceCommand,
+  browser: browserCommand,
   job: jobCommand,
   uninstall: uninstallCommand,
 });
@@ -94,6 +97,7 @@ const COMMAND_OPTIONS = {
   service: new Set(["workspace", "stateDir", "quiet"]),
   autostart: new Set(["workspace", "stateDir", "quiet"]),
   resource: new Set(["workspace", "stateDir", "allowInsecurePermissions", "showPaths", "json"]),
+  browser: new Set(["workspace", "stateDir", "json"]),
   job: new Set(["workspace", "stateDir", "json", "yes"]),
   uninstall: new Set(["stateDir", "keepWorker", "yes"]),
 };
@@ -148,6 +152,10 @@ const ACTION_POSITIONAL_RULES = Object.freeze({
   resource(args) {
     const action = String(args._[0] || "list");
     return { max: RESOURCE_POSITIONAL_LIMITS[action] ?? 1, tooMany: `resource ${action} received too many positional arguments` };
+  },
+  browser(args) {
+    const action = String(args._[0] || "status");
+    return { max: 1, tooMany: `browser ${action} received too many positional arguments` };
   },
   job(args) {
     const action = String(args._[0] || "list");
@@ -426,6 +434,7 @@ function createRemoteRuntime({ args, workspace, state, daemonLock, logger }) {
     jobRoot: join(state.paths.profileDir, "jobs"),
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
+    browserStateRoot: state.paths.stateRoot,
     onSuperseded: () => {
       daemonLock.release();
       process.exit(0);
@@ -537,6 +546,7 @@ async function stdioCommand(args) {
     jobRoot: join(state.paths.profileDir, "jobs"),
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
+    browserStateRoot: state.paths.stateRoot,
   });
 }
 
@@ -696,6 +706,78 @@ function publicResourceInspection(name, inspected, { includePath = false, ...ext
     contents_exposed: false,
     ...(includePath ? { path: inspected.path } : {}),
   };
+}
+
+async function browserCommand(args) {
+  const action = String(args._[0] || "status").toLowerCase();
+  const extensionPath = resolve(packageRoot, "browser-extension");
+  if (action === "path") {
+    if (args.json) console.log(JSON.stringify({ extension_path: extensionPath }, null, 2));
+    else console.log(extensionPath);
+    return;
+  }
+  if (!["status", "setup", "pair"].includes(action)) throw new Error(`Unknown browser action: ${action}`);
+  const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
+  const state = loadState(workspace, { stateDir: args.stateDir });
+  const pairingFile = join(state.paths.stateRoot, "browser-bridge.json");
+  if (!existsSync(pairingFile)) {
+    throw new Error("browser bridge is not initialized; start machine-mcp once, then run this command again");
+  }
+  ownerOnlyFile(pairingFile);
+  let pairing;
+  try {
+    pairing = JSON.parse(readBoundedRegularFileSync(pairingFile, 64 * 1024).toString("utf8"));
+  } catch {
+    throw new Error("browser bridge state is invalid; restart machine-mcp to repair it");
+  }
+  const port = Number(pairing.port);
+  if (!/^[A-Za-z0-9_-]{32,100}$/.test(String(pairing.token || ""))) throw new Error("browser bridge state contains an invalid token");
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("browser bridge state contains an invalid port");
+  const pairingUrl = `http://127.0.0.1:${port}/pair`;
+  const healthUrl = `http://127.0.0.1:${port}/healthz`;
+  const health = await fetch(healthUrl, { signal: AbortSignal.timeout(2000), cache: "no-store" })
+    .then(async (response) => response.ok ? await response.json() : null)
+    .catch(() => null);
+  const result = {
+    running: health?.ok === true && health?.broker === "machine-bridge-browser",
+    connected: health?.broker === "machine-bridge-browser" && health?.connected === true,
+    extension_path: extensionPath,
+    pairing_url: pairingUrl,
+    token_exposed: false,
+  };
+  if (action === "status") {
+    if (args.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`Browser bridge: ${result.running ? "running" : "not reachable"}`);
+      console.log(`Extension: ${result.connected ? "connected" : "not connected"}`);
+      console.log(`Extension path: ${extensionPath}`);
+    }
+    return;
+  }
+  if (!result.running) throw new Error("browser bridge is not reachable; keep machine-mcp running and retry");
+  await openExternal(pairingUrl);
+  if (args.json) console.log(JSON.stringify({ ...result, pairing_page_opened: true }, null, 2));
+  else {
+    console.log(`Extension path: ${extensionPath}`);
+    console.log("Load this directory once from the Chromium extensions page with Developer mode enabled.");
+    console.log(`Pairing page opened: ${pairingUrl}`);
+  }
+}
+
+function openExternal(target) {
+  const command = process.platform === "darwin"
+    ? { file: "open", args: [target] }
+    : process.platform === "win32"
+      ? { file: "cmd.exe", args: ["/d", "/s", "/c", "start", "", target] }
+      : { file: "xdg-open", args: [target] };
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command.file, command.args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.once("spawn", () => {
+      child.unref();
+      resolvePromise();
+    });
+    child.once("error", rejectPromise);
+  });
 }
 
 async function jobCommand(args) {
@@ -1367,6 +1449,9 @@ Commands:
   rotate-secrets    Rotate MCP password and daemon secret in local state
   resource generate-ssh-key NAME [PATH]
                     Generate/reuse an Ed25519 key locally and register its private file by alias
+  browser status    Show browser-extension bridge and connection status
+  browser setup     Print the extension path and open the local pairing page
+  browser path      Print the packaged unpacked-extension directory
   uninstall         Delete known Worker(s), remove autostart and local state
 
 Start options:

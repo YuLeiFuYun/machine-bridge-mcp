@@ -78,9 +78,17 @@ The implementation omits:
 - file, patch, image, and temporary-file content;
 - OAuth request bodies;
 - connection passwords, daemon secrets, authorization codes, and access tokens;
-- registered resource values and source paths.
+- registered resource values and source paths;
+- browser pairing tokens, page URLs/source, DOM metadata, form values, uploaded file bytes, and screenshots;
+- application names, Accessibility trees, selectors, and entered values.
 
 Unexpected infrastructure failures are reduced to coarse error classes in normal logs. Client-facing tool errors may contain more detail according to the active path-display policy, but those details are not copied into operational logs.
+
+## Local automation events
+
+Browser broker ownership, extension connection, and persistent unavailability are infrastructure state. Ordinary tab/source/action/form/upload/screenshot calls remain per-tool debug events and never log their arguments or results. Pairing tokens are excluded from all structured fields.
+
+Application discovery and Accessibility operations follow the same rule: permission or runtime failures are classified, while app names, UI trees, selectors, and values are not operational log data.
 
 ## Bounding and redaction
 

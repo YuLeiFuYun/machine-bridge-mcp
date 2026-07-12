@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.10.0 - 2026-07-12
+
+### Session context and capability selection
+
+- Add a global `model_instructions_file` in `~/.config/machine-bridge-mcp/agent.json`. Stdio and remote MCP initialization append the bounded user-designated instructions when the local runtime is reachable; `session_bootstrap` exposes the same content explicitly. Project manifests cannot override the global file.
+- Add `resolve_task_capabilities`, which rescans effective instructions, filesystem skills, and registered commands for every task, returns a refresh fingerprint, ranks relevant capabilities, optionally loads the best skill, and recommends application/browser/file/Git/process tools. Newly added or edited skills are visible without daemon restart or dynamic MCP tool registration. Multilingual tokenization avoids weak single-character Chinese overlap when automatically selecting a skill.
+- Preserve the host boundary: Machine Bridge automates discovery, refresh, ranking, and progressive loading, while the ChatGPT/MCP host still decides whether a tool is exposed, approved, or invoked.
+
+### Existing-profile browser and local applications
+
+- Add a packaged Manifest V3 Chromium extension and authenticated loopback machine broker for the user's existing browser profile, windows, tabs, cookies, extensions, and login state. Multiple workspace or stdio runtimes share one extension connection through authenticated broker clients.
+- Add structured browser tools for tab listing, current DOM source, frame-aware and open-Shadow-DOM interactive-element inspection, navigation/actions, complex multi-field forms, visible screenshots, and resource-backed file inputs. Page operations run through a fixed packaged module injected into the target frame rather than caller-provided or service-worker-closure code. Registered local resources can provide sensitive field text or upload bytes without returning those values through MCP results.
+- Add installed-application discovery/opening and structured macOS Accessibility inspection/actions. The implementation uses fixed JXA code and does not accept caller-supplied JavaScript, AppleScript, JXA, or browser-extension source. Application paths are normalized to process names, selector indices apply to filtered matches, Linux desktop launchers use `gio launch`, Windows discovery prioritizes Start Menu launchers, and secure Accessibility fields never return values.
+- Add `machine-mcp browser status|setup|pair|path` for one-time unpacked-extension setup and diagnosis. Pairing tokens remain in owner-only state and non-cacheable loopback HTML rather than MCP output, browser URL fragments, or operational logs. Established pairing is replacement-locked and requires a browser-action click on the active local pairing page before switching broker state. The extension badge reports connection state and its action opens the saved pairing page; signed browser-store packaging is the intended mass-market distribution path.
+
+### Architecture, security, and verification
+
+- Split agent context, application automation, and browser broker into dedicated local domain modules while retaining one static catalog shared by Worker and stdio. Bound Worker initialization bootstrap to a short failure-tolerant daemon call.
+- Add loopback Host validation, extension-origin checks, authenticated extension/runtime WebSocket subprotocols, bounded messages/concurrency/source/forms/uploads, proxy timeout/cancellation cleanup, restricted-page handling, secret/value/result non-disclosure, and full-profile gating. Treat the owner-only browser pairing file as a recognized state-root entry so safe uninstall remains available.
+- Extend version synchronization to the browser-extension manifest and add broker owner/client proxy, pairing-token, resource-upload, stdio initialization, live skill refresh, and remote initialization regression coverage. Update architecture, security, operations, logging, privacy, testing, client, release, and user documentation.
+
 ## 0.9.0 - 2026-07-12
 
 ### Agent context and local workflows

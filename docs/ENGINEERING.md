@@ -9,7 +9,10 @@ This document records project-wide decisions that must survive individual fixes,
 3. **Machine Bridge authority and host authority are separate.** `full` removes Machine Bridge's own policy, path, shell, and environment restrictions. It cannot override an MCP host, connector gateway, operating system, endpoint-security product, cloud IAM, remote authentication, or `sudo`.
 4. **Publication surfaces contain no real environment metadata.** Source, tests, fixtures, examples, release notes, filenames, package contents, tags, and release assets use synthetic identifiers and reserved example domains.
 5. **Secrets are never operational log data.** Tool arguments, command text, stdin, stdout, stderr, file content, OAuth bodies, credentials, and local resource values are not logged.
-6. **A release is one version across all surfaces.** Package metadata, Worker version, Git tag, GitHub Release, npm version, documentation, and deployed health version must agree before a release is considered complete.
+6. **A release is one version across all surfaces.** Package metadata, Worker version, browser-extension version/name, Git tag, GitHub Release, npm version, documentation, and deployed health version must agree before a release is considered complete.
+7. **Generic local automation is structured, not arbitrary evaluation.** Browser/application features may expose broad user authority under canonical `full`, but must not accept caller-provided JavaScript, AppleScript, JXA, or extension code.
+8. **Daily-browser integration uses the existing profile.** The supported primary browser path is the packaged authenticated extension and machine-level loopback broker, preserving current tabs/login state; a separate automation profile is not an equivalent replacement.
+9. **Pairing and resource secrets are not conversation or log data.** Tokens and injected local-resource values must not be returned, embedded in URLs, or written to operational logs.
 
 A proposed change that conflicts with an invariant requires an explicit owner decision and corresponding documentation update. It must not be hidden inside an unrelated refactor.
 
@@ -158,6 +161,7 @@ A thorough review asks:
 - Are all success, failure, cancellation, timeout, disconnect, restart, and recovery branches bounded and tested?
 - Are logs actionable, rate-limited, and privacy-preserving?
 - Are persistent files atomic, owner-only, size-bounded, and symlink-aware?
+- Can browser/app automation be expressed without arbitrary evaluation, and are pairing/resource values absent from results and logs?
 - Can a stale PID, stale socket, duplicate request, partial write, or ambiguous remote response violate integrity?
 - Are package, CI, Worker, service, and release behavior tested on every supported platform?
 - Does the complete diff contain any real identifier, path, host, account, or credential-shaped value?

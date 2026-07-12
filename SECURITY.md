@@ -59,7 +59,19 @@ Skill loading is non-executing. `load_local_skill` returns an entrypoint and bou
 
 Registered commands are available only under direct-execution-capable policy. They use argv spawning rather than shell parsing, reject undeclared caller arguments, and enforce the manifest timeout as a ceiling. They are not an approval or sandbox boundary: a repository-controlled package script, interpreter, compiler, or executable can still run arbitrary code with local-user authority. Deeper manifests can override or remove inherited commands, so callers must obtain context for the actual target path rather than assuming the repository-root registry applies everywhere.
 
-The remote MCP host remains an independent boundary. Machine Bridge can advertise these tools and instruct the model to bootstrap with `agent_context`, but it cannot force a host to expose or invoke them, and it cannot bypass host confirmation or refusal.
+The remote MCP host remains an independent boundary. Machine Bridge can advertise these tools, append `model_instructions_file` during initialization, and recommend capabilities through `resolve_task_capabilities`, but it cannot force a host to preserve instructions, expose tools, approve calls, or invoke them.
+
+The global `model_instructions_file` is an explicit user trust decision. It is read for every profile and sent to the authorized host during session initialization; do not place credentials, private records, or content inappropriate for every connected session in it. Project manifests cannot override this global file. Other global manifest fields that would widen local scope are ignored under workspace-confined profiles.
+
+## Browser and application automation
+
+Canonical `full` exposes structured browser and desktop UI authority. The browser extension operates the user's existing Chromium profile, including active login state, and has broad host access so it can inspect arbitrary pages and fill complex forms. An authorized client may therefore read page content, click controls, submit forms, upload registered files, and cause transactions with the user's browser identity. macOS Accessibility actions similarly operate applications with the local user's UI authority.
+
+The browser loopback broker validates loopback `Host`, requires a random owner-only bearer subprotocol, accepts extension sockets only with a `chrome-extension://` origin, and authenticates additional local runtimes separately. Initial extension pairing is trust-on-first-use; after pairing, a different localhost page cannot replace the stored broker unless the user clicks the extension action while the genuine pairing page is active. The pairing token is never returned by MCP or written to operational logs. These controls defend against casual cross-origin and DNS-rebinding access; they do not protect against malicious code already running as the same OS user or a compromised browser extension profile.
+
+Caller-supplied JavaScript, AppleScript, and JXA source are deliberately unsupported. Actions use fixed implementation code and structured selectors. This removes an avoidable arbitrary-evaluation surface but does not make DOM or Accessibility actions safe. Pages can contain prompt injection, misleading labels, hidden consequences, cross-origin frames unavailable to inspection, or state that changes between inspection and submission. High-impact account, financial, legal, medical, publishing, deletion, and purchase actions require contextual review and any host/user confirmation the client provides.
+
+Text and file resources can be injected locally so their contents do not appear in MCP arguments or results. The destination page/application still receives the value, and remote tool metadata/results still traverse the Worker and host. Page source and screenshots can themselves contain secrets. Browser/app tool arguments, source, screenshots, field values, and results are intentionally omitted from operational logs.
 
 ## Filesystem exposure
 

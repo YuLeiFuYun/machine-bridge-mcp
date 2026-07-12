@@ -104,6 +104,7 @@ async function stateSelfTest() {
     loadGlobalConfig(stateRoot);
     const configBackups = (await readdir(stateRoot)).filter(name => /^config\.json\.corrupt-/.test(name));
     if (configBackups.length !== 1) throw new Error("corrupt global config did not create one bounded backup");
+    await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({ token: "synthetic-browser-token-1234567890123456", port: 39393 })}\n`, { mode: 0o600 });
     const safeRemoval = validateStateRootForRemoval(stateRoot);
     if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed after corrupt config recovery");
 

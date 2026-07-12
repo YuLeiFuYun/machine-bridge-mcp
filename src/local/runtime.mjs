@@ -11,10 +11,13 @@ import { MAX_COMMAND_BYTES, ProcessSessionManager, terminateProcessTree, validat
 export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
 import { allToolNames, assertCanonicalFullPolicy, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, POLICY_PROFILES, SERVER_NAME, toolNamesForPolicy } from "./tools.mjs";
 import { classifyOperationalError } from "./log.mjs";
-import { ManagedJobManager } from "./managed-jobs.mjs";
+import { inspectResourceFile, ManagedJobManager } from "./managed-jobs.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
 import { expandHome } from "./state.mjs";
 import { AgentContextManager } from "./agent-context.mjs";
+import { AppAutomationManager } from "./app-automation.mjs";
+import { BrowserBridgeManager } from "./browser-bridge.mjs";
+import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
@@ -28,11 +31,26 @@ const SLOW_TOOL_CALL_MS = 30_000;
 const RUNTIME_TOOL_HANDLERS = Object.freeze({
   server_info: (runtime) => runtime.runtimeInfo(),
   project_overview: (runtime, _args, context) => runtime.projectOverview(context),
+  session_bootstrap: (runtime, args, context) => runtime.sessionBootstrap(args, context),
   agent_context: (runtime, args, context) => runtime.agentContextManager.agentContext(args, context),
+  resolve_task_capabilities: (runtime, args, context) => runtime.resolveTaskCapabilities(args, context),
   list_local_skills: (runtime, args, context) => runtime.agentContextManager.listLocalSkills(args, context),
   load_local_skill: (runtime, args, context) => runtime.agentContextManager.loadLocalSkill(args, context),
   list_local_commands: (runtime, args, context) => runtime.agentContextManager.listLocalCommands(args, context),
   run_local_command: (runtime, args, context) => runtime.runLocalCommand(args, context),
+  list_local_applications: (runtime, args, context) => runtime.appAutomationManager.listApplications(args, context),
+  open_local_application: (runtime, args, context) => runtime.appAutomationManager.openApplication(args, context),
+  inspect_local_application: (runtime, args, context) => runtime.appAutomationManager.inspectApplication(args, context),
+  operate_local_application: (runtime, args, context) => runtime.appAutomationManager.operateApplication(args, context),
+  browser_status: (runtime, _args, context) => runtime.browserBridgeManager.status(context),
+  pair_browser_extension: (runtime, args, context) => runtime.browserBridgeManager.pair(args, context),
+  browser_list_tabs: (runtime, args, context) => runtime.browserBridgeManager.listTabs(args, context),
+  browser_get_source: (runtime, args, context) => runtime.browserBridgeManager.getSource(args, context),
+  browser_inspect_page: (runtime, args, context) => runtime.browserBridgeManager.inspectPage(args, context),
+  browser_action: (runtime, args, context) => runtime.browserBridgeManager.act(args, context),
+  browser_fill_form: (runtime, args, context) => runtime.browserBridgeManager.fillForm(args, context),
+  browser_screenshot: (runtime, args, context) => runtime.browserBridgeManager.screenshot(args, context),
+  browser_upload_files: (runtime, args, context) => runtime.browserBridgeManager.uploadFiles(args, context),
   list_roots: (runtime) => runtime.listRoots(),
   list_dir: (runtime, args, context) => runtime.listDir(args.path || ".", context),
   list_files: (runtime, args, context) => runtime.listFiles(args.path || ".", clampInt(args.max_files, 1000, 1, 10000), context),
@@ -67,7 +85,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", secret = "", expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", resources = {}, resourceStatePath = "", recoverJobs = true }) {
+  constructor({ workerUrl = "", secret = "", expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     const remoteSecret = secret || "";
     this.workspaceInput = resolve(workspace || process.cwd());
@@ -112,6 +130,26 @@ export class LocalRuntime {
       policy: this.policy,
       displayPath: (value) => this.displayPath(value),
       resolveExistingPath: (value) => this.resolveExistingPath(value),
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
+      home: agentHome,
+      codexHome,
+    });
+    const runProcess = (cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin) => this.runProcess(cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin);
+    const readResourceText = (name) => this.readLocalResourceText(name);
+    const readResourceBinary = (name) => this.readLocalResourceBinary(name);
+    this.appAutomationManager = new AppAutomationManager({
+      policy: this.policy,
+      displayPath: (value) => this.displayPath(value),
+      runProcess,
+      readResourceText,
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
+    });
+    this.browserBridgeManager = new BrowserBridgeManager({
+      policy: this.policy,
+      stateRoot: browserStateRoot,
+      runProcess,
+      readResourceText,
+      readResourceBinary,
       throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
     this.relay = createRelayConnection(this, {
@@ -170,8 +208,13 @@ export class LocalRuntime {
     };
   }
 
-  start() {
+  async start() {
     if (!this.relay) throw new Error("remote daemon start requires a Worker URL and daemon secret");
+    if (this.policy.profile === "full") {
+      void this.browserBridgeManager.ensureStarted().catch((error) => {
+        this.logger.warn?.("browser bridge did not start; browser tools remain unavailable", { error_class: classifyOperationalError(error) });
+      });
+    }
     return this.relay.start();
   }
 
@@ -179,6 +222,7 @@ export class LocalRuntime {
     this.relay?.stop();
     this.terminateActiveProcesses("SIGKILL");
     this.processSessionManager.clear();
+    this.browserBridgeManager?.stop();
     rmSync(this.runtimeDir, { recursive: true, force: true });
   }
 
@@ -277,6 +321,7 @@ export class LocalRuntime {
   cancelCall(callId, reason = "cancelled") {
     this.cancelledCalls.add(callId);
     this.processSessionManager.notifyCancellation();
+    this.browserBridgeManager?.cancelCall(callId);
     for (const child of this.callProcesses.get(callId) || []) terminateProcessTree(child, "SIGTERM");
     const children = [...(this.callProcesses.get(callId) || [])];
     if (children.length) {
@@ -738,6 +783,57 @@ export class LocalRuntime {
     };
   }
 
+
+  async sessionBootstrap(args = {}, context = {}) {
+    const bootstrap = await this.agentContextManager.sessionBootstrap(args, context);
+    bootstrap.local_automation = {
+      applications: this.appAutomationManager.capabilities(),
+      browser: this.policy.profile === "full" ? {
+        existing_profile: true,
+        extension_bridge: true,
+        status_tool: "browser_status",
+      } : null,
+    };
+    return bootstrap;
+  }
+
+  async resolveTaskCapabilities(args = {}, context = {}) {
+    const result = await this.agentContextManager.resolveTaskCapabilities(args, context);
+    const task = String(args.task || "");
+    if (/app|application|gui|window|应用|软件|窗口|界面/i.test(task) && this.policy.profile === "full") {
+      const applications = await this.appAutomationManager.listApplications({ query: "", max_results: 500 }, context).catch(() => ({ applications: [] }));
+      const lower = task.toLowerCase();
+      result.application_matches = applications.applications
+        .map((application) => ({ application, score: applicationMatchScore(lower, application) }))
+        .filter((item) => item.score > 0)
+        .sort((left, right) => right.score - left.score || left.application.name.localeCompare(right.application.name))
+        .slice(0, 20)
+        .map(({ application, score }) => ({ ...application, score }));
+    } else {
+      result.application_matches = [];
+    }
+    result.browser_backend = this.policy.profile === "full" ? { tool: "browser_status", existing_profile: true, extension_bridge: true } : null;
+    return result;
+  }
+
+  readLocalResourceBinary(name) {
+    const registry = this.managedJobManager.currentResources();
+    const resource = registry[name];
+    if (!resource) throw new Error(`unknown local resource: ${name}`);
+    const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
+    if (inspected.size > 1024 * 1024) throw new Error("local resource exceeds 1 MiB browser injection limit");
+    return { buffer: readBoundedRegularFileSync(resource.path, 1024 * 1024), path: resource.path, size: inspected.size };
+  }
+
+  readLocalResourceText(name) {
+    const { buffer } = this.readLocalResourceBinary(name);
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    } catch {
+      throw new Error(`local resource is not valid UTF-8 text: ${name}`);
+    }
+  }
+
   async runDirectProcess(args, context = {}) {
     if (this.policy.execMode !== "direct" && this.policy.execMode !== "shell") throw new Error("run_process is disabled by daemon policy");
     const argv = validateArgv(args.argv);
@@ -785,9 +881,10 @@ export class LocalRuntime {
     }
   }
 
-  async runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024, context = {}, cwd = this.workspace) {
+  async runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024, context = {}, cwd = this.workspace, stdin = null) {
     this.throwIfCancelled(context);
     return new Promise((resolvePromise, reject) => {
+      if (stdin !== null && Buffer.byteLength(String(stdin)) > 1024 * 1024) throw new Error("process stdin exceeds 1 MiB");
       const child = spawn(cmd, args, {
         cwd,
         env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false, runtimeDir: this.runtimeDir }),
@@ -795,6 +892,10 @@ export class LocalRuntime {
         windowsHide: true,
       });
       this.activeProcesses.add(child);
+      if (stdin !== null) {
+        child.stdin.on("error", () => {});
+        child.stdin.end(String(stdin));
+      }
       if (context.callId) {
         const set = this.callProcesses.get(context.callId) || new Set();
         set.add(child);
@@ -963,6 +1064,15 @@ export class LocalRuntime {
     await previous;
     try { return await callback(); } finally { release(); }
   }
+}
+
+function applicationMatchScore(task, application) {
+  const name = String(application.name || "").toLowerCase();
+  const id = String(application.id || "").toLowerCase();
+  if (!name) return 0;
+  if (task.includes(name)) return 10 + Math.min(name.length, 20);
+  const words = name.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2);
+  return words.reduce((score, word) => score + (task.includes(word) ? 2 : 0), id && task.includes(id) ? 5 : 0);
 }
 
 function policyMatchesNamedProfile(policy) {
