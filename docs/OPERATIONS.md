@@ -61,7 +61,9 @@ Application UI inspection/actions require Accessibility permission for the Node/
 
 `machine-mcp` is a foreground command. It remains attached to the terminal, defaults to `info` logging, and stops on `Ctrl+C`. `machine-mcp service start` launches the installed platform service in the background and returns to the shell; that service uses `warn` logging.
 
-A global npm install changes the CLI files on disk but does not replace an already running Node process. On a normal foreground start, Machine Bridge checks whether its autostart service is active, requests a stop, waits up to 15 seconds for the old daemon lock to be released, and then continues with the newly installed version. New daemon locks record foreground/background mode and package version. If another foreground process owns the lock, Machine Bridge does not kill it or print a false readiness message; stop it with `Ctrl+C`. If a background takeover reaches its deadline, run:
+A global npm install changes the CLI files on disk but does not replace an already running Node process. On a normal foreground start, Machine Bridge unloads the platform service and then independently examines the workspace daemon lock. This second path handles a detached/orphan `--daemon-only` process that launchd/systemd/task scheduling no longer tracks, including legacy locks without mode/version metadata. Before sending `SIGTERM`, Machine Bridge verifies the live command line against the lock, entrypoint, canonical workspace, canonical state root, and daemon-only flag. It waits up to 15 seconds for both the PID and lock to disappear and never escalates to a forced kill. A foreground or unverifiable process is left untouched; stop a foreground instance with `Ctrl+C`.
+
+`machine-mcp service status [WORKSPACE]` reports two independent layers: the platform service (`active`) and `workspace_daemon`, plus `effective_active` and `orphaned_workspace_daemon` summary flags. On macOS it is possible for launchd to report inactive while a prior Node process remains alive with parent PID 1; that is an orphan-daemon condition, not proof that the daemon stopped. `service stop` now unloads the provider when present and then terminates only a verified service-style workspace daemon. If takeover reaches its deadline, run:
 
 ```sh
 machine-mcp service stop
@@ -75,6 +77,8 @@ Recommended upgrade:
 npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
 machine-mcp --verbose
 ```
+
+Keep `--omit=optional` in the install command. Without it npm may resolve optional `fsevents` and warn that its install script was not included in `allowScripts`; Machine Bridge does not require that development-time watcher at runtime.
 
 ## Logs
 

@@ -5,6 +5,7 @@ import path, { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalRuntime } from "./runtime.mjs";
+import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "./daemon-process.mjs";
 import { runStdioServer } from "./stdio.mjs";
 import { assertCanonicalFullPolicy, DEFAULT_POLICY_PROFILE, DEFAULT_POLICY_REVISION, POLICY_PROFILES, normalizePolicy, policyProfile, toolsForPolicy } from "./tools.mjs";
 import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
@@ -47,8 +48,6 @@ const BOOLEAN_OPTIONS = new Set([
 const VALUE_OPTIONS = new Set([
   "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel",
 ]);
-const DAEMON_TAKEOVER_TIMEOUT_MS = 15_000;
-const DAEMON_TAKEOVER_POLL_MS = 100;
 
 const COMMAND_HANDLERS = Object.freeze({
   start: startCommand,
@@ -146,7 +145,7 @@ const ACTION_POSITIONAL_RULES = Object.freeze({
   },
   service(args) {
     const action = String(args._[0] || "status");
-    return { max: action === "install" ? 2 : 1, tooMany: `service ${action} received too many positional arguments`, workspaceConflictAfter: 1 };
+    return { max: ["install", "status", "stop", "uninstall", "remove"].includes(action) ? 2 : 1, tooMany: `service ${action} received too many positional arguments`, workspaceConflictAfter: 1 };
   },
   autostart(args) {
     return ACTION_POSITIONAL_RULES.service(args);
@@ -324,7 +323,7 @@ async function startCommand(args) {
   try {
     const startMode = await prepareStartMode(args, state, logger);
     const daemonLock = await acquireDaemonLockWithTakeover(state, {
-      waitForServiceExit: startMode.waitForServiceExit,
+      takeOverServiceOwner: startMode.takeOverServiceOwner,
       ownerMetadata: {
         mode: args.daemonOnly ? "service" : "foreground",
         version: currentPackageVersion(),
@@ -345,41 +344,13 @@ async function prepareStartMode(args, state, logger) {
   if (args.daemonOnly) {
     const { trimAutostartLogs } = await import("./service.mjs");
     trimAutostartLogs(state.paths.stateRoot);
-    return { waitForServiceExit: false };
+    return { takeOverServiceOwner: false };
   }
-  // A normal foreground start takes over from the installed background
-  // service. Service managers terminate asynchronously, so wait for the
-  // existing daemon to release its workspace lock before declaring conflict.
+  // A normal foreground start first asks the platform service manager to
+  // unload the job, then independently reclaims a verified daemon-only
+  // process. The second step handles legacy/orphan daemons that launchd or
+  // another service manager no longer tracks.
   return stopAutostartBestEffort(logger);
-}
-
-export async function acquireDaemonLockWithTakeover(state, options = {}) {
-  const ownerMetadata = options.ownerMetadata || {};
-  let lock = acquireDaemonLock(state, ownerMetadata);
-  if (lock.acquired || !options.waitForServiceExit) return lock;
-
-  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
-    ? Math.max(1, Number(options.timeoutMs))
-    : DAEMON_TAKEOVER_TIMEOUT_MS;
-  const pollMs = Number.isFinite(Number(options.pollMs))
-    ? Math.max(1, Number(options.pollMs))
-    : DAEMON_TAKEOVER_POLL_MS;
-  const logger = options.logger || { info() {} };
-  const priorPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "the existing process";
-  logger.info(`waiting for the background daemon (${priorPid}) to stop before foreground startup`);
-
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
-    lock = acquireDaemonLock(state, ownerMetadata);
-    if (lock.acquired) {
-      logger.info("background daemon stopped; foreground startup is taking over the workspace");
-      return lock;
-    }
-  }
-
-  const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
-  throw new Error(`background daemon did not release the workspace within ${Math.ceil(timeoutMs / 1000)} seconds (${pid}); run \`machine-mcp service stop\`, verify \`machine-mcp service status\`, and retry`);
 }
 
 function reportExistingDaemon(args, state, owner, logger) {
@@ -1244,7 +1215,15 @@ async function serviceCommand(args) {
   const { installAutostart, uninstallAutostart, autostartStatus, startAutostart, stopAutostart } = await import("./service.mjs");
   if (action === "status") {
     const status = await autostartStatus({ logger: structuredLogger(Boolean(args.quiet)) });
-    console.log(JSON.stringify(status, null, 2));
+    const state = optionalServiceState(args, stateRoot);
+    const workspaceDaemon = state ? inspectWorkspaceDaemon(state) : null;
+    console.log(JSON.stringify({
+      ...status,
+      workspace: state?.workspace?.path || null,
+      workspace_daemon: workspaceDaemon,
+      effective_active: Boolean(status.active || workspaceDaemon?.alive),
+      orphaned_workspace_daemon: Boolean(!status.active && workspaceDaemon?.alive && workspaceDaemon?.verified_service_daemon),
+    }, null, 2));
     return;
   }
   if (action === "install") {
@@ -1264,16 +1243,46 @@ async function serviceCommand(args) {
     return;
   }
   if (action === "stop") {
-    const result = await stopAutostart({ logger: structuredLogger(Boolean(args.quiet)) });
+    const logger = structuredLogger(Boolean(args.quiet));
+    const provider = await stopAutostart({ logger });
+    const state = optionalServiceState(args, stateRoot);
+    const workspaceDaemon = state
+      ? await stopWorkspaceServiceDaemon(state, { logger, reason: "service stop" })
+      : { ok: true, found: false, stopped: false, verified_service_daemon: false, reason: "workspace_not_selected" };
+    const result = {
+      ...provider,
+      ok: provider?.ok !== false && workspaceDaemon.ok,
+      workspace: state?.workspace?.path || null,
+      workspace_daemon: workspaceDaemon,
+    };
     console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) process.exitCode = 1;
     return;
   }
   if (action === "uninstall" || action === "remove") {
-    const result = await uninstallAutostart({ stateRoot, logger: structuredLogger(Boolean(args.quiet)) });
-    console.log(JSON.stringify(result, null, 2));
+    const logger = structuredLogger(Boolean(args.quiet));
+    const result = await uninstallAutostart({ stateRoot, logger });
+    const state = optionalServiceState(args, stateRoot);
+    const workspaceDaemon = state
+      ? await stopWorkspaceServiceDaemon(state, { logger, reason: "service uninstall" })
+      : { ok: true, found: false, stopped: false, verified_service_daemon: false, reason: "workspace_not_selected" };
+    const output = {
+      ...result,
+      ok: result?.ok !== false && workspaceDaemon.ok,
+      workspace: state?.workspace?.path || null,
+      workspace_daemon: workspaceDaemon,
+    };
+    console.log(JSON.stringify(output, null, 2));
+    if (!output.ok) process.exitCode = 1;
     return;
   }
   throw new Error(`Unknown service action: ${action}`);
+}
+
+function optionalServiceState(args, stateRoot) {
+  const requested = args.workspace || args._[1] || selectedWorkspace(stateRoot);
+  if (!requested || requested === true) return null;
+  return loadState(resolveWorkspace(String(requested)), { stateDir: stateRoot });
 }
 
 async function installAutostartBestEffort({ workspace, stateRoot, entryScript, logger }) {
@@ -1288,24 +1297,19 @@ async function installAutostartBestEffort({ workspace, stateRoot, entryScript, l
 }
 
 async function stopAutostartBestEffort(logger) {
+  let result = null;
   try {
-    const { autostartStatus, stopAutostart } = await import("./service.mjs");
-    let status = null;
-    try {
-      status = await autostartStatus({ logger: structuredLogger(true) });
-    } catch (error) {
-      logger.debug?.("Autostart status check failed before takeover", { error_class: classifyOperationalError(error) });
-    }
-    if (status?.active === false) return { waitForServiceExit: false };
-
-    const result = await stopAutostart({ logger: structuredLogger(true) });
-    const stopSucceeded = result?.code === 0 || result?.ok === true;
-    if (status?.active && stopSucceeded) logger.info("stopping the background service before foreground startup");
-    return { waitForServiceExit: Boolean(stopSucceeded && status?.active !== false) };
+    const { stopAutostart } = await import("./service.mjs");
+    result = await stopAutostart({ logger: structuredLogger(true) });
   } catch (error) {
-    logger.warn("Autostart stop skipped", { error_class: classifyOperationalError(error) });
-    return { waitForServiceExit: false };
+    logger.warn("Autostart stop command was unavailable; checking the workspace daemon directly", { error_class: classifyOperationalError(error) });
+    return { takeOverServiceOwner: true, provider: null };
   }
+  if (result?.active_before && result?.ok) logger.info("stopping the background service before foreground startup");
+  if (result?.ok === false && result?.active === true) {
+    throw new Error("the background service is still active after the stop request; run `machine-mcp service status` for details");
+  }
+  return { takeOverServiceOwner: true, provider: result };
 }
 
 async function uninstallCommand(args) {

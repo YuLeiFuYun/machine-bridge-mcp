@@ -18,7 +18,7 @@ The suite includes:
 - syntax validation for every shipped JavaScript entry point;
 - shared tool-catalog schema, annotation, and profile-inventory checks;
 - default working-agreement injection without user files, bounded automatic project metadata, script-body non-disclosure, user-global opt-out, repository opt-out rejection, global `model_instructions_file` injection in stdio/remote initialization, hierarchical precedence, live project/skill rescanning and fingerprints, automatic task ranking/loading, command override/removal, direct argv handling, timeout ceilings, and execution-profile denial;
-- foreground takeover of an asynchronously stopping background daemon, bounded timeout guidance, daemon lock mode/version metadata, and silent idempotent duplicate service starts;
+- foreground takeover of active and orphaned background daemons, legacy lock identification from canonicalized process arguments, foreground-process protection, actual-PID exit waiting, non-forcing timeout guidance, daemon lock mode/version metadata, launchd service-target semantics, and silent idempotent duplicate service starts;
 - machine-level browser-broker ownership/client proxying, authenticated extension origin/subprotocol, non-cacheable local pairing, pairing-token non-disclosure, resource-backed upload routing, and broker result redaction;
 - canonical path and symbolic-link escape tests;
 - relative-path privacy and error-path redaction tests;

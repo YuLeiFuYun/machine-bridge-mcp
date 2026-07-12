@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.1 - 2026-07-12
+
+### Reliable macOS service and orphan-daemon takeover
+
+- Stop launchd jobs by their loaded service target first, with the plist form retained as a compatibility fallback. Treat an already-unloaded job as an idempotent success, verify the post-stop state before reporting success, and prevent `service start` or `service uninstall` from continuing when the existing job remains active.
+- Detect legacy daemon locks that predate mode/version metadata by inspecting the live process command line. A process is eligible for takeover only when its PID, daemon purpose, canonical workspace, canonical state root, entrypoint, and `--daemon-only` arguments all match. Foreground or unverifiable processes are never signalled.
+- Let normal foreground startup and `machine-mcp service stop` terminate a verified detached/orphan service daemon with `SIGTERM`, wait for the actual PID as well as the lock to disappear, reclaim stale locks through the normal token-aware primitive, and fail with a bounded timeout rather than escalating to a forced kill.
+- Extend `machine-mcp service status` to report platform-service state and workspace-daemon state separately, including whether a live legacy process was verified as service-style. This makes a launchd-unloaded but still-running daemon visible instead of presenting a misleading inactive-only status.
+
+### Tests and documentation
+
+- Add real child-process regression coverage for legacy orphan takeover, canonical `/var` versus `/private/var` path aliases, foreground-process protection, non-forcing timeout behavior, launchd service-target generation, and packaged daemon-process module presence. Update upgrade and recovery guidance for the exact npm install command and split service/daemon diagnosis.
+
 ## 0.11.0 - 2026-07-12
 
 ### Zero-configuration agent working agreements

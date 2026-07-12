@@ -1,14 +1,15 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
-import { acquireDaemonLockWithTakeover, isSupportedNodeVersion, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
+import { isSupportedNodeVersion, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { daemonArgs, launchdPlist, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
+import { daemonArgs, launchdPlist, launchdServiceTarget, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
 import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
@@ -167,61 +168,145 @@ async function stateSelfTest() {
 async function daemonTakeoverSelfTest() {
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-takeover-state-"));
   const workspace = await mkdtemp(join(tmpdir(), "mbm-takeover-workspace-"));
+  const fixture = join(workspace, "daemon-fixture.mjs");
+  const stateModuleUrl = new URL("../src/local/state.mjs", import.meta.url).href;
+  await writeFile(fixture, `import { acquireDaemonLock, loadState } from ${JSON.stringify(stateModuleUrl)};
+const args = process.argv.slice(2);
+const value = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; };
+const workspace = value("--workspace");
+const stateRoot = value("--state-dir");
+const metadata = args.includes("--legacy-lock") ? {} : { mode: args.includes("--foreground-lock") ? "foreground" : "service", version: "0.11.0" };
+const state = loadState(workspace, { stateDir: stateRoot });
+const lock = acquireDaemonLock(state, metadata);
+if (!lock.acquired) process.exit(3);
+process.stdout.write("ready\\n");
+process.on("SIGTERM", () => {
+  if (args.includes("--ignore-term")) return;
+  lock.release();
+  process.exit(0);
+});
+process.on("exit", () => lock.release());
+setInterval(() => {}, 2 ** 31 - 1);
+`, "utf8");
+
+  let child = null;
   try {
     const state = loadState(workspace, { stateDir: stateRoot });
-    const serviceLock = acquireDaemonLock(state, { mode: "service", version: "0.10.0" });
-    if (!serviceLock.acquired) throw new Error("takeover test could not acquire service daemon lock");
+    child = await startDaemonFixture(fixture, workspace, stateRoot, ["--legacy-lock", "--daemon-only"]);
+    const legacy = inspectWorkspaceDaemon(state);
+    if (!legacy.alive || !legacy.verified_service_daemon || legacy.mode !== "legacy") {
+      throw new Error("legacy daemon-only process was not identified as a service daemon");
+    }
 
     const immediate = await acquireDaemonLockWithTakeover(state, {
-      waitForServiceExit: false,
-      ownerMetadata: { mode: "foreground", version: "0.10.1" },
+      takeOverServiceOwner: false,
+      ownerMetadata: { mode: "foreground", version: "0.11.1" },
     });
-    if (immediate.acquired || immediate.owner?.mode !== "service" || immediate.owner?.version !== "0.10.0") {
-      throw new Error("non-takeover lock attempt did not preserve service owner metadata");
-    }
+    if (immediate.acquired) throw new Error("non-takeover lock attempt replaced a live legacy daemon");
 
     const messages = [];
-    const releaseTimer = setTimeout(() => serviceLock.release(), 30);
     const foregroundLock = await acquireDaemonLockWithTakeover(state, {
-      waitForServiceExit: true,
-      timeoutMs: 1_000,
-      pollMs: 5,
-      ownerMetadata: { mode: "foreground", version: "0.10.1" },
-      logger: { info(message) { messages.push(message); } },
+      takeOverServiceOwner: true,
+      timeoutMs: 2_000,
+      pollMs: 10,
+      ownerMetadata: { mode: "foreground", version: "0.11.1" },
+      logger: { info(message) { messages.push(message); }, warn(message) { messages.push(message); } },
     });
-    clearTimeout(releaseTimer);
-    if (!foregroundLock.acquired) throw new Error("foreground takeover did not acquire the released daemon lock");
-    if (!messages.some(message => message.includes("waiting for the background daemon"))
-      || !messages.some(message => message.includes("foreground startup is taking over"))) {
-      throw new Error("foreground takeover did not emit bounded progress messages");
+    await waitForChildExit(child);
+    child = null;
+    if (!foregroundLock.acquired) throw new Error("foreground takeover did not acquire the legacy daemon lock");
+    if (!messages.some((message) => message.includes("stopping detached background daemon"))
+      || !messages.some((message) => message.includes("foreground startup is taking over"))) {
+      throw new Error("foreground takeover did not report orphan termination and successful takeover");
     }
     const duplicate = acquireDaemonLock(state);
-    if (duplicate.acquired || duplicate.owner?.mode !== "foreground" || duplicate.owner?.version !== "0.10.1") {
+    if (duplicate.acquired || duplicate.owner?.mode !== "foreground" || duplicate.owner?.version !== "0.11.1") {
       throw new Error("foreground takeover lock metadata was not persisted");
     }
     foregroundLock.release();
 
-    const stuckLock = acquireDaemonLock(state, { mode: "service", version: "0.10.0" });
-    if (!stuckLock.acquired) throw new Error("takeover timeout test could not acquire service daemon lock");
-    let timeoutError = null;
-    try {
-      await acquireDaemonLockWithTakeover(state, {
-        waitForServiceExit: true,
-        timeoutMs: 20,
-        pollMs: 5,
-        ownerMetadata: { mode: "foreground", version: "0.10.1" },
-      });
-    } catch (error) {
-      timeoutError = error;
-    } finally {
-      stuckLock.release();
+    child = await startDaemonFixture(fixture, workspace, stateRoot, ["--foreground-lock"]);
+    const foreground = inspectWorkspaceDaemon(state);
+    if (!foreground.alive || foreground.verified_service_daemon || foreground.identity_reason !== "foreground_daemon") {
+      throw new Error("foreground daemon was misclassified as a service daemon");
     }
-    if (!String(timeoutError?.message || "").includes("did not release the workspace")) {
-      throw new Error("takeover timeout did not fail with actionable guidance");
+    const protectedLock = await acquireDaemonLockWithTakeover(state, {
+      takeOverServiceOwner: true,
+      timeoutMs: 100,
+      pollMs: 5,
+      ownerMetadata: { mode: "foreground", version: "0.11.1" },
+    });
+    if (protectedLock.acquired || !isProcessAlive(child.pid)) throw new Error("foreground daemon was terminated during service takeover");
+    child.kill("SIGTERM");
+    await waitForChildExit(child);
+    child = null;
+
+    child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only", "--ignore-term"]);
+    const timedOut = await stopWorkspaceServiceDaemon(state, { timeoutMs: 60, pollMs: 5 });
+    if (timedOut.ok || timedOut.reason !== "timeout" || !timedOut.verified_service_daemon || !isProcessAlive(child.pid)) {
+      throw new Error("unresponsive service daemon did not produce a bounded non-forcing timeout");
     }
+    child.kill("SIGKILL");
+    await waitForChildExit(child);
+    child = null;
+    const stale = acquireDaemonLock(state, { mode: "foreground", version: "0.11.1" });
+    if (!stale.acquired) throw new Error("dead service daemon lock was not reclaimable");
+    stale.release();
   } finally {
+    if (child && isProcessAlive(child.pid)) child.kill("SIGKILL");
+    if (child) await waitForChildExit(child).catch(() => {});
     await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
     await rm(workspace, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = []) {
+  const child = spawn(process.execPath, [
+    fixture,
+    "start",
+    ...extraArgs,
+    "--workspace", workspace,
+    "--state-dir", stateRoot,
+  ], {
+    cwd: workspace,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-4096); });
+  await new Promise((resolvePromise, rejectPromise) => {
+    let stdout = "";
+    const timeout = setTimeout(() => rejectPromise(new Error(`daemon fixture did not become ready: ${stderr}`)), 5000);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (stdout.includes("ready\n")) {
+        clearTimeout(timeout);
+        resolvePromise();
+      }
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      rejectPromise(new Error(`daemon fixture exited before readiness (${code}): ${stderr}`));
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      rejectPromise(error);
+    });
+  });
+  return child;
+}
+
+function waitForChildExit(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolvePromise) => child.once("exit", resolvePromise));
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
   }
 }
 
@@ -639,6 +724,10 @@ function logSelfTest() {
 }
 
 async function serviceSelfTest() {
+  if (launchdServiceTarget(501) !== "gui/501/dev.machine-bridge-mcp.daemon") {
+    throw new Error("launchd service target did not use the loaded label form");
+  }
+  expectThrow(() => launchdServiceTarget("invalid"), "numeric user id");
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-service-test-"));
   try {
     const logs = join(stateRoot, "logs");

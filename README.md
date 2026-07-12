@@ -79,7 +79,7 @@ On first remote start, the CLI:
 6. starts an outbound-only daemon connection;
 7. prints the Remote MCP URL and connection password.
 
-A normal `machine-mcp` invocation is a foreground start: it remains attached to the terminal and prints `info` logs. If an older autostart daemon is active after a global package upgrade, the CLI stops that service, waits up to 15 seconds for its workspace lock, and then starts the newly installed version in the foreground. A genuine foreground conflict is left untouched and reported with actionable guidance. To run only in the background, use `machine-mcp service start`; inspect its owner-only logs under `~/.local/state/machine-bridge-mcp/logs/`.
+A normal `machine-mcp` invocation is a foreground start: it remains attached to the terminal and prints `info` logs. After a global package upgrade, the CLI unloads the platform service and also checks the workspace lock for a detached/orphan `--daemon-only` process that the service manager no longer tracks. It terminates only a process whose PID, entrypoint, canonical workspace, canonical state root, and daemon-only arguments all match, waits up to 15 seconds for the PID and lock to disappear, and then starts the installed version in the foreground. A genuine foreground or unverifiable conflict is left untouched and reported with actionable guidance. To run only in the background, use `machine-mcp service start`; inspect its owner-only logs under `~/.local/state/machine-bridge-mcp/logs/`.
 
 Recommended upgrade sequence:
 
@@ -88,7 +88,7 @@ npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents ma
 machine-mcp --verbose
 ```
 
-The global install replaces files on disk but cannot hot-reload an already running Node process; the second command performs the bounded service takeover. If takeover fails, run `machine-mcp service stop`, confirm with `machine-mcp service status`, and retry.
+The global install replaces files on disk but cannot hot-reload an already running Node process; the second command performs the bounded service and orphan-daemon takeover. Use the command exactly as shown: `--omit=optional` prevents the development-only optional `fsevents` package from producing a blocked-install-script warning. If takeover fails, run `machine-mcp service status` first; it reports the platform service and workspace daemon separately. Then run `machine-mcp service stop` and retry.
 
 Use the printed values in the MCP client:
 

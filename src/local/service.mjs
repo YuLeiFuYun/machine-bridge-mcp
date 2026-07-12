@@ -248,6 +248,18 @@ function launchdPlistPath() {
   return path.join(os.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
 }
 
+export function launchdServiceTarget(uid = process.getuid?.()) {
+  const parsed = Number(uid);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error("launchd requires a numeric user id");
+  return `gui/${parsed}/${LABEL}`;
+}
+
+function launchdDomainTarget(uid = process.getuid?.()) {
+  const parsed = Number(uid);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error("launchd requires a numeric user id");
+  return `gui/${parsed}`;
+}
+
 async function installLaunchd(spec, logger) {
   const plistPath = launchdPlistPath();
   mkdirSync(path.dirname(plistPath), { recursive: true });
@@ -259,34 +271,73 @@ async function installLaunchd(spec, logger) {
 
 async function startLaunchd(logger) {
   const plistPath = launchdPlistPath();
-  const target = `gui/${process.getuid?.() ?? ""}`;
+  const target = launchdDomainTarget();
   if (!existsSync(plistPath)) return { ok: false, error: "launchd plist not installed" };
-  await serviceRun("launchctl", ["bootout", target, plistPath]);
+  const stopped = await stopLaunchd({ info() {}, warn() {} });
+  if (!stopped.ok) return { ok: false, provider: "launchd", stop: stopped };
   const boot = await serviceRun("launchctl", ["bootstrap", target, plistPath]);
   const kick = await serviceRun("launchctl", ["kickstart", "-k", `${target}/${LABEL}`]);
-  logger.info?.("launchd service started");
-  return { ok: boot.code === 0 || kick.code === 0, bootstrap: boot, kickstart: kick };
+  const ok = boot.code === 0 || kick.code === 0;
+  if (ok) logger.info?.("launchd service started");
+  else logger.warn?.("launchd service failed to start");
+  return { ok, provider: "launchd", bootstrap: boot, kickstart: kick };
 }
 
 async function stopLaunchd(logger) {
   const plistPath = launchdPlistPath();
-  const target = `gui/${process.getuid?.() ?? ""}`;
-  const result = await serviceRun("launchctl", ["bootout", target, plistPath]);
-  logger.info?.("launchd service stopped");
-  return result;
+  const domainTarget = launchdDomainTarget();
+  const serviceTarget = launchdServiceTarget();
+  const before = await statusLaunchd();
+  if (!before.active) {
+    logger.info?.("launchd service is not loaded");
+    return {
+      ok: true,
+      provider: "launchd",
+      installed: existsSync(plistPath),
+      active_before: false,
+      active: false,
+      already_stopped: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+    };
+  }
+
+  const byServiceTarget = await serviceRun("launchctl", ["bootout", serviceTarget]);
+  const byPlist = byServiceTarget.code === 0
+    ? null
+    : await serviceRun("launchctl", ["bootout", domainTarget, plistPath]);
+  const after = await statusLaunchd();
+  const rawResult = byPlist || byServiceTarget;
+  const ok = !after.active;
+  if (ok) logger.info?.("launchd service stopped");
+  else logger.warn?.("launchd service is still active after the stop request");
+  return {
+    ...rawResult,
+    ok,
+    provider: "launchd",
+    installed: existsSync(plistPath),
+    active_before: true,
+    active: after.active,
+    already_stopped: false,
+    code: ok ? 0 : rawResult.code,
+    bootout_service_target: byServiceTarget,
+    ...(byPlist ? { bootout_plist_fallback: byPlist } : {}),
+  };
 }
 
 async function uninstallLaunchd(logger) {
-  await stopLaunchd(logger).catch(() => {});
+  const stopped = await stopLaunchd(logger);
   const plistPath = launchdPlistPath();
+  if (!stopped.ok) return { ok: false, provider: "launchd", path: plistPath, stop: stopped };
   if (existsSync(plistPath)) rmSync(plistPath, { force: true });
   logger.info?.("Autostart removed.");
-  return { ok: true, provider: "launchd", path: plistPath };
+  return { ok: true, provider: "launchd", path: plistPath, stop: stopped };
 }
 
 async function statusLaunchd() {
   const plistPath = launchdPlistPath();
-  const target = `gui/${process.getuid?.() ?? ""}/${LABEL}`;
+  const target = launchdServiceTarget();
   const result = await serviceRun("launchctl", ["print", target]);
   return { ok: existsSync(plistPath), provider: "launchd", installed: existsSync(plistPath), path: plistPath, active: result.code === 0, detail: result.stdout || result.stderr };
 }
