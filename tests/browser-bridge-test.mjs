@@ -17,6 +17,8 @@ const owner = new BrowserBridgeManager(common);
 const client = new BrowserBridgeManager(common);
 let extension;
 let replacementExtension;
+let invalidExtension;
+let invalidRuntime;
 let holdListTabs = false;
 let heldRequestId = "";
 let cancelledRequestId = "";
@@ -36,6 +38,12 @@ try {
   const rejected = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "https://example.test" });
   await expectSocketRejected(rejected);
 
+  invalidExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "chrome-extension://invalid-test" });
+  await onceOpen(invalidExtension);
+  const invalidExtensionClosed = onceClose(invalidExtension);
+  invalidExtension.send("{");
+  assert((await invalidExtensionClosed).code === 1007, "invalid extension JSON did not close with 1007");
+
   extension = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "chrome-extension://synthetic-test" });
   await onceOpen(extension);
   attachExtensionResponder(extension);
@@ -48,6 +56,8 @@ try {
   const oversizedFields = Array.from({ length: 33 }, (_, index) => ({ selector: { id: `field-${index}` }, value: "x".repeat(128 * 1024) }));
   await expectReject(owner.fillForm({ fields: oversizedFields }), "exceed 4 MiB total");
   await expectReject(owner.uploadFiles({ selector: { id: "file" }, resources: ["upload"], filenames: "not-an-array" }), "filenames must be an array");
+  await expectReject(owner.uploadFiles({ selector: { id: "file" }, resources: ["upload"], filenames: ["../deceptive.txt"] }), "safe single-component filenames");
+  await expectReject(owner.uploadFiles({ selector: { id: "file" }, resources: ["upload"], mime_types: ["text/plain\ninvalid"] }), "valid media types");
   const invalidTimeoutResponses = [];
   owner.handleRuntimeClientMessage({ readyState: 1, send: (value) => invalidTimeoutResponses.push(JSON.parse(value)) }, Buffer.from(JSON.stringify({ type: "request", id: "invalid-timeout", method: "list_tabs", timeout_ms: -1 })));
   assert(invalidTimeoutResponses[0]?.error === "invalid browser request timeout", "invalid broker timeout escaped event-handler validation");
@@ -70,6 +80,15 @@ try {
   await waitFor(() => owner.socket?.readyState === 1 && owner.socket !== previousServerSocket);
   const replacementTabs = await owner.listTabs({});
   assert(replacementTabs.tabs[0].id === 7 && owner.socket !== previousServerSocket, "closing a superseded extension disrupted the replacement connection");
+
+  const runtimeUrl = new URL(initial.endpoint);
+  runtimeUrl.pathname = "/runtime";
+  invalidRuntime = new WebSocket(runtimeUrl, [`mbm-runtime.${pairing.token}`]);
+  await onceOpen(invalidRuntime);
+  await onceMessage(invalidRuntime);
+  const invalidRuntimeClosed = onceClose(invalidRuntime);
+  invalidRuntime.send(JSON.stringify({ type: "unknown" }));
+  assert((await invalidRuntimeClosed).code === 1002, "unknown runtime protocol message did not close with 1002");
 
   const clientStatus = await client.status();
   assert(clientStatus.broker_role === "client" && clientStatus.connected === true, "second runtime did not join the machine-level browser broker");
@@ -99,6 +118,8 @@ try {
 } finally {
   try { extension?.close(); } catch {}
   try { replacementExtension?.close(); } catch {}
+  try { invalidExtension?.close(); } catch {}
+  try { invalidRuntime?.close(); } catch {}
   client.stop();
   owner.stop();
   await rm(root, { recursive: true, force: true });
@@ -123,6 +144,7 @@ function attachExtensionResponder(socket) {
     if (message.method === "upload_files") {
       const file = message.params.files[0];
       assert(Buffer.from(file.data, "base64").toString("utf8") === "file-data", "registered file resource was not transferred to the extension");
+      assert(file.filename === "upload.txt" && file.mime === "application/octet-stream", "browser upload metadata was not normalized");
       socket.send(JSON.stringify({ type: "response", id: message.id, ok: true, result: { ok: true, file_count: 1, values_exposed: false } }));
       return;
     }
@@ -143,6 +165,17 @@ function onceOpen(socket) {
     socket.once("open", resolvePromise);
     socket.once("error", rejectPromise);
   });
+}
+
+function onceMessage(socket) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    socket.once("message", resolvePromise);
+    socket.once("error", rejectPromise);
+  });
+}
+
+function onceClose(socket) {
+  return new Promise((resolvePromise) => socket.once("close", (code, reason) => resolvePromise({ code, reason: String(reason || "") })));
 }
 
 function expectSocketRejected(socket) {

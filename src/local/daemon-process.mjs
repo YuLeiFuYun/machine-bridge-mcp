@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -7,6 +6,7 @@ import {
   readDaemonLockOwner,
   resolveWorkspace,
 } from "./state.mjs";
+import { inspectProcessInstance, isPidAlive, processCommandLine, splitProcessCommandLine } from "./process-identity.mjs";
 
 const DEFAULT_TAKEOVER_TIMEOUT_MS = 15_000;
 const DEFAULT_TAKEOVER_POLL_MS = 100;
@@ -137,6 +137,8 @@ function inspectWorkspaceDaemonOwner(state, owner) {
   if (!owner || owner.purpose !== "daemon") return { verified_service_daemon: false, reason: "invalid_lock_owner" };
   const pid = Number(owner.pid);
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return { verified_service_daemon: false, reason: "invalid_pid" };
+  const processIdentity = inspectProcessInstance(owner);
+  if (!processIdentity.current) return { verified_service_daemon: false, reason: processIdentity.reason };
   if (!sameCanonicalPath(owner.workspace, state.workspace.path)) return { verified_service_daemon: false, reason: "workspace_mismatch" };
   if (owner.mode === "foreground") return { verified_service_daemon: false, reason: "foreground_daemon" };
 
@@ -157,61 +159,6 @@ function inspectWorkspaceDaemonOwner(state, owner) {
     && sameCanonicalPath(stateRootArg, state.paths.stateRoot)
     && entryMatches;
   return { verified_service_daemon: matches, reason: matches ? "service_command" : "command_mismatch" };
-}
-
-function processCommandLine(pid) {
-  if (process.platform === "win32") {
-    const command = `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`;
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
-      encoding: "utf8",
-      timeout: 3000,
-      windowsHide: true,
-    });
-    return result.status === 0 ? String(result.stdout || "").trim() : "";
-  }
-  const result = spawnSync("ps", ["-ww", "-p", String(pid), "-o", "command="], {
-    encoding: "utf8",
-    timeout: 3000,
-    windowsHide: true,
-  });
-  return result.status === 0 ? String(result.stdout || "").trim() : "";
-}
-
-function splitProcessCommandLine(value) {
-  const args = [];
-  let current = "";
-  let quote = "";
-  const text = String(value);
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (quote) {
-      if (character === quote) quote = "";
-      else if (character === "\\" && quote === '"' && ['"', "\\"].includes(text[index + 1])) {
-        current += text[index + 1];
-        index += 1;
-      } else current += character;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (/\s/.test(character)) {
-      if (current) {
-        args.push(current);
-        current = "";
-      }
-      continue;
-    }
-    if (character === "\\" && /[\s'"\\]/.test(text[index + 1] || "")) {
-      current += text[index + 1];
-      index += 1;
-      continue;
-    }
-    current += character;
-  }
-  if (current) args.push(current);
-  return args;
 }
 
 function commandFlagValue(argv, name) {
@@ -240,17 +187,6 @@ function publicDaemonOwner(owner) {
 
 function publicDaemonMode(owner) {
   return owner?.mode === "service" || owner?.mode === "foreground" ? owner.mode : "legacy";
-}
-
-function isPidAlive(pid) {
-  const parsed = Number(pid);
-  if (!Number.isInteger(parsed) || parsed <= 0) return false;
-  try {
-    process.kill(parsed, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
 }
 
 function boundedPositiveInt(value, fallback) {

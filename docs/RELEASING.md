@@ -22,7 +22,7 @@ The release invariant is:
 
 2. Add the matching dated `CHANGELOG.md` section.
 3. Run `npm run release-impact:check`, `npm run privacy:check`, `npm run check`, both dependency audits, `npm audit signatures`, and generate a CycloneDX `npm sbom`.
-4. Inspect the complete diff and `npm pack --dry-run`, then commit and push all release changes to `main`.
+4. Inspect the complete diff and `npm pack --dry-run`, including packaged file modes and every helper referenced by package scripts, then commit and push all release changes to `main`.
 
 A privacy/security documentation correction is not “docs only” for release purposes. It requires a replacement npm version and, when appropriate, deprecation or unpublication of the affected version.
 

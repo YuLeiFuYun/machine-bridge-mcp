@@ -25,10 +25,11 @@ These are release-operator or machine-operator actions, not implicit parts of a 
 
 ## Validation expectations
 
-- Run targeted tests while iterating and `npm run check` before committing a release-relevant change.
+- Run targeted behavior tests while iterating and `npm run check` before committing a release-relevant change.
+- Lock, state deletion, service lifecycle, detached process, credential, browser, or application authority changes require concurrent/fault-injection tests; source-string assertions alone are insufficient.
 - Run both dependency audits, Worker dry-run, and `npm pack --dry-run` for a versioned release candidate.
 - Update tests, documentation, and `CHANGELOG.md` whenever behavior, security, privacy, operations, or public contracts change.
-- Inspect the complete diff and Git status before commit or push.
+- Inspect the complete diff, Git status, generated package file list/modes, and [docs/AUDIT.md](docs/AUDIT.md) implications before commit or push.
 
 ## Standard release handoff
 

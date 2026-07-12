@@ -1,12 +1,12 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
-import { replaceFileSync } from "./atomic-fs.mjs";
+import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { ownerOnlyFile, packageRoot } from "./state.mjs";
+import { assertStateMaintenanceAvailable, ownerOnlyFile, packageRoot } from "./state.mjs";
 
 const DEFAULT_PORT = 39393;
 const MAX_PORT_ATTEMPTS = 10;
@@ -200,9 +200,11 @@ export class BrowserBridgeManager {
       const resource = this.readResourceBinary(name);
       total += resource.buffer.length;
       if (total > 5 * 1024 * 1024) throw new Error("browser upload resources exceed 5 MiB total");
+      const suppliedFilename = filenames[files.length];
+      const derivedFilename = resource.path.split(/[\\/]/).pop() || name;
       files.push({
-        filename: String(args.filenames?.[files.length] || resource.path.split(/[\\/]/).pop() || name).slice(0, 255),
-        mime: String(args.mime_types?.[files.length] || "application/octet-stream").slice(0, 200),
+        filename: normalizeUploadFilename(suppliedFilename || derivedFilename, { derived: !suppliedFilename }),
+        mime: normalizeMimeType(mimeTypes[files.length] || "application/octet-stream"),
         data: resource.buffer.toString("base64"),
       });
     }
@@ -271,6 +273,7 @@ export class BrowserBridgeManager {
 
   async ensureStarted(context = {}) {
     this.throwIfCancelled(context);
+    if (this.stateRoot) assertStateMaintenanceAvailable(this.stateRoot);
     this.stopping = false;
     if (this.server || this.upstream?.readyState === 1) return;
     if (!this.startPromise) this.startPromise = this.start();
@@ -356,15 +359,23 @@ export class BrowserBridgeManager {
         resolvePromise(ok);
       };
       ws.on("message", (data) => {
-        let message;
-        try { message = JSON.parse(Buffer.from(data).toString("utf8")); } catch { return; }
-        if (!settled && message?.type === "hello" && message?.role === "runtime") {
+        const parsed = parseBrowserSocketMessage(data);
+        if (!parsed.ok) {
+          closeProtocolSocket(ws, parsed.code, parsed.reason);
+          return;
+        }
+        const message = parsed.message;
+        if (!settled) {
+          if (message.type !== "hello" || message.role !== "runtime") {
+            closeProtocolSocket(ws, 1002, "runtime hello required");
+            return;
+          }
           this.upstream = ws;
           this.proxyExtensionConnected = message.extension_connected === true;
           finish(true);
           return;
         }
-        this.handleUpstreamMessage(message);
+        if (!this.handleUpstreamMessage(message)) closeProtocolSocket(ws, 1002, "invalid broker protocol message");
       });
       ws.once("error", () => finish(false));
       ws.once("close", () => {
@@ -398,7 +409,7 @@ export class BrowserBridgeManager {
     }
     if (this.socket && this.socket.readyState === 1) this.socket.close(4001, "superseded");
     this.socket = ws;
-    ws.on("message", (data) => this.handleExtensionMessage(data));
+    ws.on("message", (data) => this.handleExtensionMessage(ws, data));
     ws.on("close", () => {
       if (this.socket !== ws) return;
       this.socket = null;
@@ -415,11 +426,18 @@ export class BrowserBridgeManager {
     this.broadcastRuntimeStatus(true);
   }
 
-  handleExtensionMessage(data) {
-    if (Buffer.byteLength(data) > MAX_BROWSER_MESSAGE_BYTES) return;
-    let message;
-    try { message = JSON.parse(Buffer.from(data).toString("utf8")); } catch { return; }
-    if (!message || message.type !== "response" || typeof message.id !== "string") return;
+  handleExtensionMessage(socket, data) {
+    if (this.socket !== socket) return;
+    const parsed = parseBrowserSocketMessage(data);
+    if (!parsed.ok) {
+      closeProtocolSocket(socket, parsed.code, parsed.reason);
+      return;
+    }
+    const message = parsed.message;
+    if (message.type !== "response" || typeof message.id !== "string") {
+      closeProtocolSocket(socket, 1002, "invalid extension protocol message");
+      return;
+    }
     const pending = this.pending.get(message.id);
     if (pending) {
       clearTimeout(pending.timeout);
@@ -436,11 +454,14 @@ export class BrowserBridgeManager {
   }
 
   handleRuntimeClientMessage(socket, data) {
-    if (Buffer.byteLength(data) > MAX_BROWSER_MESSAGE_BYTES) return;
-    let message;
-    try { message = JSON.parse(Buffer.from(data).toString("utf8")); } catch { return; }
-    if (message?.type === "ping") return;
-    if (message?.type === "cancel" && typeof message.id === "string") {
+    const parsed = parseBrowserSocketMessage(data);
+    if (!parsed.ok) {
+      closeProtocolSocket(socket, parsed.code, parsed.reason);
+      return;
+    }
+    const message = parsed.message;
+    if (message.type === "ping") return;
+    if (message.type === "cancel" && typeof message.id === "string") {
       for (const [routedId, route] of this.proxyRoutes) {
         if (route.socket !== socket || route.id !== message.id) continue;
         clearTimeout(route.timeout);
@@ -449,7 +470,10 @@ export class BrowserBridgeManager {
       }
       return;
     }
-    if (!message || message.type !== "request" || typeof message.id !== "string" || typeof message.method !== "string") return;
+    if (message.type !== "request" || typeof message.id !== "string" || typeof message.method !== "string") {
+      closeProtocolSocket(socket, 1002, "invalid runtime protocol message");
+      return;
+    }
     if (!this.socket || this.socket.readyState !== 1) {
       safeSocketSend(socket, { type: "response", id: message.id, ok: false, error: "browser extension is not connected" });
       return;
@@ -469,13 +493,13 @@ export class BrowserBridgeManager {
       const route = this.proxyRoutes.get(routedId);
       if (!route) return;
       this.proxyRoutes.delete(routedId);
-      try { this.socket?.send(JSON.stringify({ type: "cancel", id: routedId })); } catch {}
       safeSocketSend(socket, { type: "response", id: message.id, ok: false, error: "browser broker request timed out" });
+      try { this.socket?.send(JSON.stringify({ type: "cancel", id: routedId })); } catch {}
     }, timeoutMs);
     timeout.unref?.();
     this.proxyRoutes.set(routedId, { socket, id: message.id, timeout });
     try {
-      this.socket.send(JSON.stringify({ ...message, id: routedId }));
+      this.socket.send(JSON.stringify({ ...message, id: routedId, timeout_ms: timeoutMs }));
     } catch {
       clearTimeout(timeout);
       this.proxyRoutes.delete(routedId);
@@ -484,19 +508,19 @@ export class BrowserBridgeManager {
   }
 
   handleUpstreamMessage(message) {
-    if (!message || typeof message !== "object") return;
-    if (message.type === "status") {
-      this.proxyExtensionConnected = message.extension_connected === true;
+    if (message.type === "status" && typeof message.extension_connected === "boolean") {
+      this.proxyExtensionConnected = message.extension_connected;
       if (!this.proxyExtensionConnected) this.rejectPending("browser extension disconnected");
-      return;
+      return true;
     }
-    if (message.type !== "response" || typeof message.id !== "string") return;
+    if (message.type !== "response" || typeof message.id !== "string") return false;
     const pending = this.pending.get(message.id);
-    if (!pending) return;
+    if (!pending) return true;
     clearTimeout(pending.timeout);
     this.pending.delete(message.id);
     if (message.ok === false) pending.reject(new Error(String(message.error || "browser operation failed").slice(0, 2000)));
     else pending.resolve(message.result);
+    return true;
   }
 
   broadcastRuntimeStatus(connected) {
@@ -587,6 +611,7 @@ export class BrowserBridgeManager {
 
 async function loadOrCreatePairing(stateRoot) {
   if (!stateRoot) return { token: randomBytes(32).toString("base64url"), port: DEFAULT_PORT };
+  assertStateMaintenanceAvailable(stateRoot);
   await mkdir(stateRoot, { recursive: true, mode: 0o700 });
   const file = join(stateRoot, PAIRING_FILE);
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -600,18 +625,12 @@ async function loadOrCreatePairing(stateRoot) {
       return parsed;
     }
     const value = { token: randomBytes(32).toString("base64url"), port: DEFAULT_PORT };
-    let fd;
     try {
-      fd = openSync(file, "wx", 0o600);
-      writeFileSync(fd, `${JSON.stringify(value, null, 2)}
-`, "utf8");
-      fsyncSync(fd);
-      closeSync(fd);
-      fd = undefined;
+      createExclusiveFileSync(file, `${JSON.stringify(value, null, 2)}
+`, { mode: 0o600 });
       ownerOnlyFile(file);
       return value;
     } catch (error) {
-      if (fd !== undefined) try { closeSync(fd); } catch {}
       if (error?.code !== "EEXIST") throw error;
     }
   }
@@ -619,23 +638,11 @@ async function loadOrCreatePairing(stateRoot) {
 }
 
 async function savePairing(stateRoot, value) {
+  assertStateMaintenanceAvailable(stateRoot);
   const file = join(stateRoot, PAIRING_FILE);
-  const temp = `${file}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-  let fd;
-  try {
-    fd = openSync(temp, "wx", 0o600);
-    writeFileSync(fd, `${JSON.stringify(value, null, 2)}
-`, "utf8");
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    replaceFileSync(temp, file);
-    ownerOnlyFile(file);
-  } catch (error) {
-    if (fd !== undefined) try { closeSync(fd); } catch {}
-    try { unlinkSync(temp); } catch {}
-    throw error;
-  }
+  replaceFileAtomicallySync(file, `${JSON.stringify(value, null, 2)}
+`, { mode: 0o600 });
+  ownerOnlyFile(file);
 }
 
 function pairingHtml(port, token) {
@@ -655,6 +662,22 @@ function securityHeaders(contentType) {
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
   };
+}
+
+function parseBrowserSocketMessage(data) {
+  if (Buffer.byteLength(data) > MAX_BROWSER_MESSAGE_BYTES) return { ok: false, code: 1009, reason: "message too large" };
+  let text;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(data)); }
+  catch { return { ok: false, code: 1007, reason: "invalid UTF-8" }; }
+  let message;
+  try { message = JSON.parse(text); }
+  catch { return { ok: false, code: 1007, reason: "invalid JSON" }; }
+  if (!message || typeof message !== "object" || Array.isArray(message)) return { ok: false, code: 1002, reason: "invalid protocol message" };
+  return { ok: true, message };
+}
+
+function closeProtocolSocket(socket, code, reason) {
+  try { socket.close(code, reason); } catch {}
 }
 
 function safeSocketSend(socket, value) {
@@ -706,6 +729,24 @@ function validateNavigationUrl(value) {
   try { parsed = new URL(value); } catch { throw new Error("url must be an absolute URL"); }
   if (!["http:", "https:", "file:"].includes(parsed.protocol)) throw new Error("url protocol must be http, https, or file");
   return parsed.href;
+}
+
+function normalizeUploadFilename(value, { derived = false } = {}) {
+  let name = String(value || "");
+  if (derived) name = name.replace(/[\u0000-\u001f\u007f/\\]+/g, "_").trim();
+  if (!name || name === "." || name === ".." || name.length > 255 || /[\u0000-\u001f\u007f/\\]/.test(name)) {
+    if (derived) return "upload.bin";
+    throw new Error("filenames entries must be safe single-component filenames of at most 255 characters");
+  }
+  return name;
+}
+
+function normalizeMimeType(value) {
+  const mime = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mime) || mime.length > 200) {
+    throw new Error("mime_types entries must be valid media types");
+  }
+  return mime;
 }
 
 function optionalStringArray(value, label, maxItems, maxLength) {

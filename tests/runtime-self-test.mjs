@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/runtime.mjs";

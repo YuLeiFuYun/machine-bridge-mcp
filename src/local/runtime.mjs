@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { constants as fsConstants, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { chmod, link, lstat, mkdir, open, opendir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -108,6 +108,7 @@ export class LocalRuntime {
       policy: this.policy,
       resources,
       resourceStatePath,
+      stateRoot: browserStateRoot,
       logger: this.logger,
       recover: recoverJobs,
     });
@@ -1101,7 +1102,8 @@ function assertContainedPath(root, target) {
 }
 
 async function readBoundedFile(filePath, maxBytes, label) {
-  const handle = await open(filePath, "r");
+  const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0);
+  const handle = await open(filePath, flags);
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new Error(`${label} is not a regular file`);

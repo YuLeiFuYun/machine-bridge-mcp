@@ -15,7 +15,7 @@ for (const name of modules) {
     throw new Error(`obsolete daemon/runtime naming returned in ${relative(root, file)}`);
   }
   const dependencies = [];
-  for (const match of source.matchAll(/\bfrom\s+["'](\.\/[^"']+)["']/g)) {
+  for (const match of source.matchAll(/(?:\bfrom\s+|\bimport\s*\(\s*)["'](\.\/[^"']+)["']/g)) {
     const target = resolve(dirname(file), match[1]);
     const modulePath = extname(target) ? target : `${target}.mjs`;
     if (!existsSync(modulePath)) throw new Error(`missing relative module ${match[1]} imported by ${relative(root, file)}`);
@@ -109,6 +109,29 @@ if (!serviceWorkerSource.includes("pairingUrlFromEndpoint") || !serviceWorkerSou
 if (!pageAutomationSource.includes("isSensitiveElement") || !pageAutomationSource.includes("one-time-code")) {
   throw new Error("browser page inspection lost broad sensitive-field redaction");
 }
+
+const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
+  throw new Error("package syntax check is not using the dynamic repository scanner");
+}
+for (const [name, command] of Object.entries(packageJson.scripts || {})) {
+  const match = /^node\s+([^\s]+\.mjs)(?:\s|$)/.exec(String(command));
+  if (match && !existsSync(join(root, match[1]))) throw new Error(`package script ${name} references missing ${match[1]}`);
+}
+const packaged = new Set(packageJson.files || []);
+if (!packaged.has("scripts") || !packaged.has("src/local")) throw new Error("package files omit executable script or local runtime directories");
+
+const installCommand = "npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
+for (const file of [
+  join(root, "AGENTS.md"),
+  join(root, "CONTRIBUTING.md"),
+  join(root, "README.md"),
+  join(root, "docs", "ENGINEERING.md"),
+]) {
+  const normalized = readFileSync(file, "utf8").replace(/\s+/g, " ");
+  if (!normalized.includes(installCommand)) throw new Error(`global install/activation guidance drifted in ${relative(root, file)}`);
+}
+if (!cliSource.replace(/\s+/g, " ").includes(`${installCommand} && machine-mcp`)) throw new Error("CLI usage install guidance drifted from repository documentation");
 
 const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
 if (!engineering.includes("default profile is intentionally `full`") || !engineering.includes("`.project-local/`")) {

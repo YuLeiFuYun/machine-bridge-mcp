@@ -15,10 +15,12 @@ The suite includes:
 - release-impact enforcement requiring a new package version and CHANGELOG section for release-relevant changes;
 - release-state diagnostics distinguishing missing local/remote version tags from tags that point to the wrong commit, including the required publication order;
 - generated Cloudflare Worker types and strict TypeScript checking, including unused-local and unused-parameter rejection;
-- syntax validation for every shipped JavaScript entry point;
+- recursive syntax validation for every JavaScript file under the shipped/runtime/test roots plus the shell wrapper;
 - shared tool-catalog schema, annotation, and profile-inventory checks;
 - default working-agreement injection without user files, bounded automatic project metadata, script-body non-disclosure, user-global opt-out, repository opt-out rejection, global `model_instructions_file` injection in stdio/remote initialization, hierarchical precedence, live project/skill rescanning and fingerprints, automatic task ranking/loading, command override/removal, direct argv handling, timeout ceilings, and execution-profile denial;
-- foreground takeover of active and orphaned background daemons, legacy lock identification from canonicalized process arguments, foreground-process protection, actual-PID exit waiting, non-forcing timeout guidance, daemon lock mode/version metadata, launchd service-target semantics, and silent idempotent duplicate service starts;
+- concurrent complete-before-visible lock claims, atomic replacement under active readers, malformed-lock grace, snapshot/token-safe reclamation, absolute-age expiry, PID-reuse detection, and bounded startup-lock waiting;
+- foreground takeover of active and orphaned background daemons, legacy lock identification from canonicalized process arguments, foreground-process protection, actual-PID exit waiting, non-forcing timeout guidance, daemon lock mode/version/process-start metadata, launchd service-target semantics, and silent idempotent duplicate service starts;
+- fail-closed service lifecycle ordering for provider-stop, all-workspace daemon-stop, and definition removal, including platform/daemon/removal failure injection and normalized macOS/systemd/Windows results;
 - machine-level browser-broker ownership/client proxying, authenticated extension origin/subprotocol, non-cacheable local pairing, pairing-token non-disclosure, resource-backed upload routing, and broker result redaction;
 - canonical path and symbolic-link escape tests;
 - relative-path privacy and error-path redaction tests;
@@ -29,16 +31,16 @@ The suite includes:
 - nested Git repository detection and helper suppression;
 - author-email privacy in `git_log`;
 - isolated command HOME/temp/cache behavior;
-- one-shot timeout, descendant termination, cancellation, and process-session interaction;
+- one-shot timeout, descendant process-group/tree termination including descendants that ignore graceful shutdown, cancellation, and process-session interaction;
 - layered fixed runtime diagnostics for filesystem, direct process, shell, managed-job storage, and resource availability;
 - local resource CLI registration, permission checks, dynamic reload, state-path redaction, and content non-disclosure;
 - real Ed25519 and RSA generation, idempotent reuse, public/private correspondence, mode enforcement, incomplete/mismatched/symlink rejection, and private-content non-disclosure;
 - real-machine canonical-full sandbox acceptance for outside-workspace I/O, direct/shell execution, full environment inheritance, SSH prerequisites, temporary authorized-key writing, and detached cleanup without external state changes;
 - deterministic injected atomic-replace failures and repeated Windows full-sandbox runs to catch transient file-sharing races;
 - canonical named-profile repair and full-only tool exposure parity between local and Worker policy filters;
-- managed-job staging/local approval/cancel-before-start, detachment, job-scoped temporary files, resource hash verification/redaction, discard capture, finally execution, cancellation escalation, plan scrubbing, and dead-runner recovery;
-- daemon/startup locking and state corruption recovery;
-- guarded state-root removal, schema migration, policy-origin persistence, and legacy implicit-default migration;
+- managed-job staging/local approval/cancel-before-start, detachment, job-scoped temporary files, resource hash verification/redaction, discard capture, finally execution, descendant-tree escalation, token/snapshot-safe transition locks, runner process identity, plan scrubbing, PID-reuse-safe dead-runner recovery, and legacy PID-file compatibility;
+- daemon/startup locking, successfully-read corrupt-JSON recovery, and explicit propagation/preservation of oversized, symbolic-link, permission, and I/O failures;
+- guarded state-root removal, unsafe state-root/workspace overlap rejection before creation, all-profile lock/daemon scanning, schema migration, policy-origin persistence, and legacy implicit-default migration;
 - no filename-based sensitive-file denial under unrestricted policy;
 - log redaction, control-character handling, message/field bounds, suppression of both successful and failed per-tool events outside debug, service warning-level configuration, and idempotent bounded migration of legacy log formats;
 - deterministic relay connection lifecycle coverage for transport construction/error/deadline, pre-handshake `welcome` validation, authenticated `hello_ack` readiness, identity/version mismatch, retryable Worker handshake errors, fatal protocol errors, autonomous outage-reminder backoff, handshake and heartbeat timeout, brief-outage suppression, sustained-outage escalation, recovery summaries, and supersession;
@@ -65,6 +67,7 @@ GitHub Actions executes the main suite on Linux, macOS, and Windows using the pi
 ## Test design rules
 
 - Tests should exercise the public boundary rather than only helper functions when practical.
+- Lock, service lifecycle, state deletion, detached process, and credential changes require behavior-level concurrent or fault-injection coverage; source-string assertions are supplementary only.
 - Every permission-expanding feature needs a denial test. Browser/application features also require a token/value/content non-disclosure assertion.
 - Every bounded resource needs an over-limit test.
 - Every multi-stage mutation needs a no-partial-commit test.
@@ -80,10 +83,10 @@ Run `npm run privacy:check` before committing and before packaging. Developers s
 
 ## Package manifest
 
-`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, and verifies that privacy/engineering guidance, the runtime/relay/secure-file/browser/app modules, packaged browser extension, contribution discipline, and privacy/release-impact checkers are present in the published package. `npm run install:test` packs the real tarball, installs it into an isolated global prefix with the documented npm 12 options, rejects blocked-script warnings, confirms optional `fsevents` is absent, and runs the installed CLI.
+`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, validates every packaged mode as `0644` or `0755`, and verifies that privacy/engineering guidance, runtime/relay/secure-file/lock/service/browser/app modules, all package-script helpers, the packaged browser extension, contribution discipline, and privacy/release-impact checkers are present. `npm run install:test` packs the real tarball, installs it into an isolated global prefix with the documented npm 12 options, rejects blocked-script warnings, confirms optional `fsevents` is absent, and runs the installed CLI.
 
 The stdio integration test also sends an oversized line, verifies bounded rejection, and confirms that the next valid request is still processed.
 
 ## Architecture and documentation regression checks
 
-`npm run architecture:test` rejects local-module dependency cycles, missing relative imports, obsolete `LocalDaemon`/`daemon.mjs` naming, broken relative Markdown links, invisible ASCII control bytes in repository text, removal of the owner-required default-`full` engineering invariant, and accidental publication of `.project-local/` notes.
+`npm run architecture:test` rejects local-module dependency cycles, missing static or dynamic relative imports, package scripts that reference missing files, drift from the recursive syntax scanner, incomplete executable package directories, inconsistent installation guidance, obsolete `LocalDaemon`/`daemon.mjs` naming, broken relative Markdown links, invisible ASCII control bytes in repository text, removal of the owner-required default-`full` engineering invariant, and accidental publication of `.project-local/` notes.

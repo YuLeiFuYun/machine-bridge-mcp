@@ -1,9 +1,9 @@
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "./shell.mjs";
 import { ensureOwnerOnlyDir, expandHome, ownerOnlyFile } from "./state.mjs";
-import { replaceFileSync } from "./atomic-fs.mjs";
+import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
@@ -40,16 +40,33 @@ export async function autostartStatus({ logger = console } = {}) {
 
 export async function startAutostart({ logger = console } = {}) {
   if (process.platform === "darwin") return startLaunchd(logger);
-  if (process.platform === "win32") return serviceRun("schtasks", ["/Run", "/TN", WINDOWS_TASK]);
-  return serviceRun("systemctl", ["--user", "start", "machine-bridge-mcp.service"]);
+  if (process.platform === "win32") {
+    return normalizeServiceCommandResult("schtasks", await serviceRun("schtasks", ["/Run", "/TN", WINDOWS_TASK]));
+  }
+  return normalizeServiceCommandResult("systemd", await serviceRun("systemctl", ["--user", "start", "machine-bridge-mcp.service"]));
 }
 
 export async function stopAutostart({ logger = console } = {}) {
   if (process.platform === "darwin") return stopLaunchd(logger);
-  if (process.platform === "win32") return serviceRun("schtasks", ["/End", "/TN", WINDOWS_TASK]);
-  return serviceRun("systemctl", ["--user", "stop", "machine-bridge-mcp.service"]);
+  if (process.platform === "win32") {
+    return normalizeServiceCommandResult("schtasks", await serviceRun("schtasks", ["/End", "/TN", WINDOWS_TASK]), { allowAlreadyStopped: true });
+  }
+  return normalizeServiceCommandResult("systemd", await serviceRun("systemctl", ["--user", "stop", "machine-bridge-mcp.service"]), { allowAlreadyStopped: true });
 }
 
+
+
+export function normalizeServiceCommandResult(provider, result, { allowAlreadyStopped = false } = {}) {
+  const detail = `${result?.stdout || ""}
+${result?.stderr || ""}`;
+  const alreadyStopped = allowAlreadyStopped && /(?:not loaded|not found|does not exist|cannot find|not running|inactive)/i.test(detail);
+  return {
+    ...result,
+    ok: result?.code === 0 || alreadyStopped,
+    provider,
+    already_stopped: alreadyStopped,
+  };
+}
 
 export function trimAutostartLogs(stateRoot, options = {}) {
   const root = expandHome(stateRoot);
@@ -233,15 +250,8 @@ function writePrivateServiceFile(file, content) {
     const info = lstatSync(file);
     if (info.isSymbolicLink() || !info.isFile()) throw new Error("autostart configuration path must be a regular non-symbolic-link file");
   }
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    writeFileSync(temporary, content, { mode: 0o600, flag: "wx" });
-    replaceFileSync(temporary, file);
-    ownerOnlyFile(file);
-  } catch (error) {
-    try { rmSync(temporary, { force: true }); } catch {}
-    throw error;
-  }
+  replaceFileAtomicallySync(file, content, { mode: 0o600 });
+  ownerOnlyFile(file);
 }
 
 function launchdPlistPath() {
@@ -379,17 +389,28 @@ async function installSystemd(spec, logger) {
   const reload = await serviceRun("systemctl", ["--user", "daemon-reload"]);
   const enable = await serviceRun("systemctl", ["--user", "enable", "machine-bridge-mcp.service"]);
   const linger = await serviceRun("loginctl", ["enable-linger", os.userInfo().username]);
-  logger.info?.("Autostart installed.");
-  return { ok: reload.code === 0 && enable.code === 0, provider: "systemd", path: servicePath, reload, enable, linger };
+  const ok = reload.code === 0 && enable.code === 0;
+  if (ok) logger.info?.("Autostart installed.");
+  else logger.warn?.("Autostart installation failed; the service definition was kept for diagnosis.");
+  return { ok, provider: "systemd", path: servicePath, reload, enable, linger };
 }
 
 async function uninstallSystemd(logger) {
-  await serviceRun("systemctl", ["--user", "disable", "--now", "machine-bridge-mcp.service"]);
   const servicePath = systemdPath();
+  const disable = await serviceRun("systemctl", ["--user", "disable", "--now", "machine-bridge-mcp.service"]);
+  const activeCheck = await serviceRun("systemctl", ["--user", "is-active", "machine-bridge-mcp.service"]);
+  const active = activeCheck.code === 0;
+  if (active) {
+    logger.warn?.("systemd service is still active; its definition was not removed.");
+    return { ok: false, provider: "systemd", path: servicePath, disable, active_check: activeCheck, active: true };
+  }
   if (existsSync(servicePath)) rmSync(servicePath, { force: true });
-  await serviceRun("systemctl", ["--user", "daemon-reload"]);
-  logger.info?.("Autostart removed.");
-  return { ok: true, provider: "systemd", path: servicePath };
+  const reload = await serviceRun("systemctl", ["--user", "daemon-reload"]);
+  const ok = reload.code === 0 && (disable.code === 0 || /not loaded|not found|does not exist/i.test(`${disable.stdout}
+${disable.stderr}`));
+  if (ok) logger.info?.("Autostart removed.");
+  else logger.warn?.("Autostart removal reported an error.");
+  return { ok, provider: "systemd", path: servicePath, disable, active_check: activeCheck, reload, active: false };
 }
 
 async function statusSystemd() {
@@ -421,14 +442,21 @@ WantedBy=default.target
 async function installWindowsTask(spec, logger) {
   const command = windowsCommand(spec);
   const result = await serviceRun("schtasks", ["/Create", "/TN", WINDOWS_TASK, "/SC", "ONLOGON", "/TR", command, "/F"]);
-  logger.info?.("Windows Scheduled Task installed for logon");
-  return { ok: result.code === 0, provider: "schtasks", task: WINDOWS_TASK, result };
+  const ok = result.code === 0;
+  if (ok) logger.info?.("Windows Scheduled Task installed for logon");
+  else logger.warn?.("Windows Scheduled Task installation failed");
+  return { ok, provider: "schtasks", task: WINDOWS_TASK, result };
 }
 
 async function uninstallWindowsTask(logger) {
+  const end = await serviceRun("schtasks", ["/End", "/TN", WINDOWS_TASK]);
   const result = await serviceRun("schtasks", ["/Delete", "/TN", WINDOWS_TASK, "/F"]);
-  logger.info?.("Windows Scheduled Task removed");
-  return { ok: result.code === 0 || /cannot find/i.test(result.stderr), provider: "schtasks", task: WINDOWS_TASK, result };
+  const missing = /cannot find|not exist|not found/i.test(`${result.stdout}
+${result.stderr}`);
+  const ok = result.code === 0 || missing;
+  if (ok) logger.info?.("Windows Scheduled Task removed");
+  else logger.warn?.("Windows Scheduled Task removal failed");
+  return { ok, provider: "schtasks", task: WINDOWS_TASK, end, result };
 }
 
 async function statusWindowsTask() {

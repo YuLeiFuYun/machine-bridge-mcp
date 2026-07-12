@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { executionEnv } from "./shell.mjs";
 import { terminateProcessTree } from "./process-sessions.mjs";
-import { replaceFileSync } from "./atomic-fs.mjs";
+import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { currentProcessStartTimeMs } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -22,6 +23,8 @@ if (!jobDirInput) throw new Error("--job-dir is required");
 const jobDir = resolve(jobDirInput);
 if (!JOB_ID.test(basename(jobDir))) throw new Error("--job-dir must name a managed job directory");
 const recover = options.recover === true;
+const recoveryLockToken = typeof process.env.MBM_RECOVERY_LOCK_TOKEN === "string" ? process.env.MBM_RECOVERY_LOCK_TOKEN : "";
+delete process.env.MBM_RECOVERY_LOCK_TOKEN;
 const planFile = join(jobDir, "plan.json");
 const statusFile = join(jobDir, "status.json");
 const resultFile = join(jobDir, "result.json");
@@ -30,6 +33,7 @@ const runtimeDir = join(jobDir, "runtime");
 const resourcesDir = join(runtimeDir, "resources");
 const temporaryFilesDir = join(runtimeDir, "files");
 const runnerPidFile = join(jobDir, "runner.pid");
+const RUNNER_PROCESS_STARTED_AT = new Date(currentProcessStartTimeMs()).toISOString();
 
 class JobCancelledError extends Error {
   constructor() {
@@ -49,7 +53,7 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
 
 const initial = readJson(statusFile, MAX_STATUS_BYTES);
 assertLaunchState(initial);
-writeFileSync(runnerPidFile, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
+createExclusiveFileSync(runnerPidFile, `${JSON.stringify({ pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT })}\n`, { mode: 0o600 });
 if (recover) rmSync(join(jobDir, "recovery.lock"), { force: true });
 try {
   const plan = readJson(planFile, 1024 * 1024);
@@ -59,10 +63,22 @@ try {
   recordFatalRunnerError(error);
 }
 
+async function releaseRecoveryClaim() {
+  if (!/^[a-f0-9]{32}$/.test(recoveryLockToken)) throw new Error("recovery runner is missing its ownership token");
+  const file = join(jobDir, "recovery.lock");
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (removeOwnedJsonFileSync(file, { pid: process.pid, token: recoveryLockToken })) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+  throw new Error("recovery runner could not verify ownership of the recovery lock");
+}
+
 async function main(plan, initial) {
   const status = {
     ...initial,
     runner_pid: process.pid,
+    runner_process_started_at: RUNNER_PROCESS_STARTED_AT,
     started_at: initial.started_at || new Date().toISOString(),
     updated_at: new Date().toISOString(),
     status: recover ? "cleaning" : "running",
@@ -182,6 +198,7 @@ function recordFatalRunnerError(error) {
       current_phase: null,
       current_step: null,
       runner_pid: process.pid,
+      runner_process_started_at: RUNNER_PROCESS_STARTED_AT,
       updated_at: now,
       finished_at: now,
       error_class: result.error_class,
@@ -259,7 +276,6 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
       timedOut = true;
       terminateProcessTree(child, "SIGTERM");
       killTimer = setTimeout(() => terminateProcessTree(child, "SIGKILL"), 2000);
-      killTimer.unref?.();
     }, timeoutMs);
     timer.unref?.();
     const cancellationPoll = setInterval(() => {
@@ -300,12 +316,14 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
       if (closed) return;
       closed = true;
       clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
+      if (killTimer && !timedOut) clearTimeout(killTimer);
       clearInterval(cancellationPoll);
       activeChild = null;
       activeChildCancellationAware = false;
-      if (cancellationEscalation) clearTimeout(cancellationEscalation);
-      cancellationEscalation = null;
+      if (cancellationEscalation && !isCancellationRequested()) {
+        clearTimeout(cancellationEscalation);
+        cancellationEscalation = null;
+      }
       callback();
     }
   });
@@ -440,7 +458,7 @@ function redactOutput(buffer, context) {
 }
 
 function updateStatus(status, changes) {
-  Object.assign(status, changes, { runner_pid: process.pid, updated_at: new Date().toISOString() });
+  Object.assign(status, changes, { runner_pid: process.pid, runner_process_started_at: RUNNER_PROCESS_STARTED_AT, updated_at: new Date().toISOString() });
   writeJson(statusFile, status, MAX_STATUS_BYTES);
 }
 
@@ -451,9 +469,9 @@ function requestCancellation() {
   terminateProcessTree(child, "SIGTERM");
   if (cancellationEscalation) return;
   cancellationEscalation = setTimeout(() => {
-    if (activeChild === child && activeChildCancellationAware) terminateProcessTree(child, "SIGKILL");
+    terminateProcessTree(child, "SIGKILL");
+    cancellationEscalation = null;
   }, 2000);
-  cancellationEscalation.unref?.();
 }
 
 function isCancellationRequested() {
@@ -474,12 +492,10 @@ function appendLimited(current, chunk, limit, budget) {
 }
 
 function writeJson(file, value, maxBytes) {
-  const text = `${JSON.stringify(value, null, 2)}\n`;
+  const text = `${JSON.stringify(value, null, 2)}
+`;
   if (Buffer.byteLength(text) > maxBytes) throw new Error(`job JSON exceeds ${maxBytes} bytes`);
-  const temp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  writeFileSync(temp, text, { mode: 0o600, flag: "wx" });
-  replaceFileSync(temp, file);
-  chmodSync(file, 0o600);
+  replaceFileAtomicallySync(file, text, { mode: 0o600 });
 }
 
 function readJson(file, maxBytes) {

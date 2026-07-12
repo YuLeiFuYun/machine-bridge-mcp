@@ -5,11 +5,11 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
-import { isSupportedNodeVersion, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { cleanupStaleSecretFiles, isSupportedNodeVersion, knownProfileStates, knownWorkerNames, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { daemonArgs, launchdPlist, launchdServiceTarget, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
+import { daemonArgs, launchdPlist, launchdServiceTarget, normalizeServiceCommandResult, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
 import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
@@ -28,6 +28,29 @@ await workerSourceSelfTest();
 console.log("local daemon/state/cli/log/service/worker self-test ok");
 
 async function stateSelfTest() {
+  const unsafeCombinedRoot = await mkdtemp(join(tmpdir(), "mbm-state-workspace-collision-"));
+  try {
+    expectThrow(() => loadState(unsafeCombinedRoot, { stateDir: unsafeCombinedRoot }), "must be separate");
+    if ((await readdir(unsafeCombinedRoot)).length !== 0) throw new Error("unsafe state/workspace collision created state before rejection");
+  } finally {
+    await rm(unsafeCombinedRoot, { recursive: true, force: true });
+  }
+  const nestedWorkspace = await mkdtemp(join(tmpdir(), "mbm-state-nested-workspace-"));
+  try {
+    const nestedState = join(nestedWorkspace, ".machine-state");
+    expectThrow(() => loadState(nestedWorkspace, { stateDir: nestedState }), "must be separate");
+    if (await existsForSelfTest(nestedState)) throw new Error("state directory was created inside the workspace before rejection");
+  } finally {
+    await rm(nestedWorkspace, { recursive: true, force: true });
+  }
+  const containingStateRoot = await mkdtemp(join(tmpdir(), "mbm-state-containing-root-"));
+  try {
+    const containedWorkspace = join(containingStateRoot, "workspace");
+    await mkdir(containedWorkspace, { recursive: true });
+    expectThrow(() => loadState(containedWorkspace, { stateDir: containingStateRoot }), "must be separate");
+  } finally {
+    await rm(containingStateRoot, { recursive: true, force: true });
+  }
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-state-test-"));
   const workspace = await mkdtemp(join(tmpdir(), "mbm-state-workspace-"));
   try {
@@ -106,6 +129,67 @@ async function stateSelfTest() {
     loadGlobalConfig(stateRoot);
     const configBackups = (await readdir(stateRoot)).filter(name => /^config\.json\.corrupt-/.test(name));
     if (configBackups.length !== 1) throw new Error("corrupt global config did not create one bounded backup");
+
+
+    const secretFileCurrent = join(state.paths.profileDir, `worker-secrets-${process.pid}-${Date.now() - 2 * 60 * 60 * 1000}-fixture.json`);
+    await writeFile(secretFileCurrent, "{}", { mode: 0o600 });
+    cleanupStaleSecretFiles(state.paths.profileDir);
+    if (!await existsForSelfTest(secretFileCurrent)) throw new Error("secret cleanup removed a file owned by the current process solely because it was old");
+    await rm(secretFileCurrent, { force: true });
+
+    const corruptWorkerRoot = await mkdtemp(join(tmpdir(), "mbm-worker-name-corrupt-"));
+    const corruptWorkerWorkspace = await mkdtemp(join(tmpdir(), "mbm-worker-name-workspace-"));
+    try {
+      const corruptWorkerState = loadState(corruptWorkerWorkspace, { stateDir: corruptWorkerRoot });
+      await writeFile(corruptWorkerState.paths.statePath, "not-json\n", { mode: 0o600 });
+      await writeFile(join(corruptWorkerState.paths.profileDir, "daemon.lock"), `${JSON.stringify({
+        pid: process.pid,
+        token: "synthetic-daemon-lock-token",
+        purpose: "daemon",
+        workspace: corruptWorkerWorkspace,
+        startedAt: new Date().toISOString(),
+        processStartedAt: new Date().toISOString(),
+        entryScript: "machine-mcp",
+      })}\n`, { mode: 0o600 });
+      const profileStates = knownProfileStates(corruptWorkerRoot);
+      if (profileStates.length !== 1 || profileStates[0].workspace.path !== await realpath(corruptWorkerWorkspace)) {
+        throw new Error("daemon-lock workspace recovery did not produce a non-mutating uninstall state");
+      }
+      if (await readFile(corruptWorkerState.paths.statePath, "utf8") !== "not-json\n") {
+        throw new Error("profile discovery mutated corrupt state before Worker-name inspection");
+      }
+      expectThrow(() => knownWorkerNames(corruptWorkerRoot), "cannot determine deployed Worker");
+      if (!await existsForSelfTest(corruptWorkerState.paths.statePath)) throw new Error("worker-name discovery removed unreadable state");
+    } finally {
+      await rm(corruptWorkerRoot, { recursive: true, force: true });
+      await rm(corruptWorkerWorkspace, { recursive: true, force: true });
+    }
+
+    const readFailureRoot = await mkdtemp(join(tmpdir(), "mbm-state-read-failure-"));
+    const readFailureWorkspace = await mkdtemp(join(tmpdir(), "mbm-state-read-workspace-"));
+    try {
+      const readFailureState = loadState(readFailureWorkspace, { stateDir: readFailureRoot });
+      await writeFile(readFailureState.paths.statePath, "x".repeat(2 * 1024 * 1024 + 1), { mode: 0o600 });
+      expectThrow(() => loadState(readFailureWorkspace, { stateDir: readFailureRoot }), "exceeds");
+      const oversizedEntries = await readdir(readFailureState.paths.profileDir);
+      if (oversizedEntries.some((name) => name.startsWith("state.json.corrupt-"))) throw new Error("oversized state was incorrectly classified as corrupt JSON");
+      if ((await stat(readFailureState.paths.statePath)).size <= 2 * 1024 * 1024) throw new Error("oversized state was modified after read failure");
+      await writeFile(readFailureState.paths.statePath, Buffer.from([0xc3, 0x28]), { mode: 0o600 });
+      expectThrow(() => loadState(readFailureWorkspace, { stateDir: readFailureRoot }), "not valid UTF-8");
+      const encodingEntries = await readdir(readFailureState.paths.profileDir);
+      if (encodingEntries.some((name) => name.startsWith("state.json.corrupt-"))) throw new Error("invalid UTF-8 state was incorrectly classified as corrupt JSON");
+      if (process.platform !== "win32") {
+        const outside = join(readFailureRoot, "outside-state.json");
+        await writeFile(outside, "{}\n", { mode: 0o600 });
+        await rm(readFailureState.paths.statePath, { force: true });
+        await symlink(outside, readFailureState.paths.statePath);
+        expectThrow(() => loadState(readFailureWorkspace, { stateDir: readFailureRoot }), "must not be a symbolic link");
+        if (await readFile(outside, "utf8") !== "{}\n") throw new Error("state symlink read failure modified the target");
+      }
+    } finally {
+      await rm(readFailureRoot, { recursive: true, force: true });
+      await rm(readFailureWorkspace, { recursive: true, force: true });
+    }
     await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({ token: "synthetic-browser-token-1234567890123456", port: 39393 })}\n`, { mode: 0o600 });
     const safeRemoval = validateStateRootForRemoval(stateRoot);
     if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed after corrupt config recovery");
@@ -707,12 +791,17 @@ function logSelfTest() {
     throw new Error("structured log local-path redaction failed");
   }
   const syntheticAwsKey = `AK${"IA"}${"A".repeat(16)}`;
+  const syntheticNpmToken = ["npm", "A".repeat(36)].join("_");
+  const syntheticSlackToken = ["xoxb", "1234567890", "ABCDEFGHIJK"].join("-");
+  const syntheticGoogleKey = ["AI", "za", "A".repeat(35)].join("");
+  const syntheticJwt = ["eyJ" + "A".repeat(12), "B".repeat(12), "C".repeat(12)].join(".");
+  const syntheticCredentialUrl = ["https://operator", "private-value@host.example/path"].join(":");
   if (classifyOperationalError(new Error("Unexpected server response: 401")) !== "authentication_failed") {
     throw new Error("HTTP authentication error classification failed");
   }
-  const sensitiveText = sanitizeLogText(`contact person@example.com at ${privateHome}/project ${syntheticAwsKey} abc\u202Etxt`);
-  if (sensitiveText.includes("person@example.com") || sensitiveText.includes(privateHome) || sensitiveText.includes(syntheticAwsKey) || sensitiveText.includes("\u202E")) {
-    throw new Error("free-form log privacy redaction failed");
+  const sensitiveText = sanitizeLogText(`contact person@example.com at ${privateHome}/project ${syntheticAwsKey} ${syntheticNpmToken} ${syntheticSlackToken} ${syntheticGoogleKey} ${syntheticJwt} ${syntheticCredentialUrl} abc\u202Etxt`);
+  for (const secret of ["person@example.com", privateHome, syntheticAwsKey, syntheticNpmToken, syntheticSlackToken, syntheticGoogleKey, syntheticJwt, syntheticCredentialUrl, "\u202E"]) {
+    if (sensitiveText.includes(secret)) throw new Error("free-form log privacy redaction failed");
   }
   const hostileFields = {};
   Object.defineProperty(hostileFields, "broken", { enumerable: true, get() { throw new Error("getter failed"); } });
@@ -724,6 +813,10 @@ function logSelfTest() {
 }
 
 async function serviceSelfTest() {
+  const normalizedFailure = normalizeServiceCommandResult("systemd", { code: 5, stdout: "", stderr: "permission denied" });
+  if (normalizedFailure.ok !== false || normalizedFailure.provider !== "systemd") throw new Error("service command failure normalization is incorrect");
+  const normalizedInactive = normalizeServiceCommandResult("systemd", { code: 5, stdout: "inactive", stderr: "" }, { allowAlreadyStopped: true });
+  if (normalizedInactive.ok !== true || normalizedInactive.already_stopped !== true) throw new Error("idempotent service stop normalization is incorrect");
   if (launchdServiceTarget(501) !== "gui/501/dev.machine-bridge-mcp.daemon") {
     throw new Error("launchd service target did not use the loaded label form");
   }
@@ -888,6 +981,23 @@ async function shellSelfTest() {
     timeoutMs: 50,
   });
   if (timedOut.code !== 124 || !timedOut.stderr.includes("timed out")) throw new Error("shell timeout handling failed");
+
+  const treeRoot = await mkdtemp(join(tmpdir(), "mbm-shell-tree-test-"));
+  try {
+    const childPidFile = join(treeRoot, "child.pid");
+    const treeScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(() => {}, 1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);`;
+    const treeResult = await run(process.execPath, ["-e", treeScript, childPidFile], {
+      capture: true,
+      allowFailure: true,
+      timeoutMs: 200,
+    });
+    if (treeResult.code !== 124) throw new Error("shell process-tree timeout did not report timeout");
+    const descendantPid = Number((await readFile(childPidFile, "utf8")).trim());
+    const exited = await waitForPidExit(descendantPid, 5000);
+    if (!exited) throw new Error("shell timeout left a descendant process running");
+  } finally {
+    await rm(treeRoot, { recursive: true, force: true });
+  }
 }
 
 async function workerSourceSelfTest() {
@@ -936,6 +1046,15 @@ async function workerSourceSelfTest() {
   ]) {
     if (source.includes(removed)) throw new Error(`obsolete or public-sensitive Worker route remains: ${removed}`);
   }
+}
+
+async function waitForPidExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); } catch (error) { if (error?.code === "ESRCH") return true; }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  try { process.kill(pid, 0); return false; } catch { return true; }
 }
 
 async function existsForSelfTest(file) {

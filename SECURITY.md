@@ -95,13 +95,19 @@ A canonical `full` profile guarantees that Machine Bridge itself will not reject
 
 ## Mutation integrity
 
-Writes are bounded, reject symbolic-link/non-regular destinations, use same-directory staging, and commit atomically per file. Create-only commit fails if a concurrent destination appears. Expected hashes and exact edits reduce accidental stale overwrites.
+Writes are bounded, reject symbolic-link/non-regular destinations, use same-directory staging, flush staged data, and commit atomically per file. Create-only and lock claims fully write a private temporary file before a same-directory hard-link claim becomes visible; a concurrent destination fails without exposing partial content. Replacement writes use `fsync` plus atomic rename/replacement. Expected hashes and exact edits reduce accidental stale overwrites.
 
-Patch operations prevalidate all paths/content, reject canonical collisions, recheck source hashes and destination absence, serialize bridge mutations, maintain backups, and roll back on ordinary commit errors. On platforms without descriptor-relative path traversal, a malicious process running as the same local account can still race filesystem or parent-directory replacement between validation and commit. These controls do not claim protection against a hostile same-user namespace, nor do they make a multi-directory patch power-loss atomic.
+Startup, daemon, managed-job transition, recovery, and runner claims record ownership tokens and process start time. Reclamation validates process identity and a file snapshot before removal, limiting PID-reuse and stale-owner races. Recent malformed claims are not deleted immediately. Ordinary startup/state changes wait a bounded interval for a concurrent operation instead of turning a brief service-manager race into an operator error.
+
+Patch operations prevalidate all paths/content, reject canonical collisions, recheck source hashes and destination absence, serialize bridge mutations, maintain backups, and roll back on ordinary commit errors. Existing reads and writes use canonical containment checks and final-component no-follow opens where the platform supports `O_NOFOLLOW`. On platforms without portable descriptor-relative `openat` traversal, a malicious process running as the same local account can still race a parent-directory replacement between validation and open/commit. These controls do not claim protection against a hostile same-user namespace, nor do they make a multi-directory patch power-loss atomic.
+
+A custom state root is rejected if it overlaps the selected workspace in either direction. Recursive state removal cross-checks the marker, global selection, profile state, daemon locks, active/unreadable locks, known directory shape, package/source/workspace exclusions, service removal, and managed-job state. Any unresolved condition fails closed and retains state.
 
 ## Credential exposure
 
-Local state contains the MCP connection password and daemon secret. State, lock, temporary secret, runtime, and service-log files use owner-only permissions where supported. State writes are atomic. Logs recursively redact known credential fields and token formats and neutralize control characters.
+Local state contains the MCP connection password and daemon secret. State, lock, temporary secret, runtime, and service-log files use owner-only permissions where supported. State writes are flushed and atomically replaced. A read/type/permission/size/symbolic-link failure is not treated as empty or corrupt state; only successfully read invalid JSON is moved to a bounded corrupt backup.
+
+Logs recursively redact known credential fields, private-key headers, npm/GitHub/GitLab/Slack/Google/AWS/live-payment/API token forms, JWT-shaped bearer values, embedded-credential URLs, email addresses, user-home paths, and control characters. These patterns are defense in depth; unknown, transformed, split, encrypted, or application-specific secret forms can still pass through an explicitly requested tool result.
 
 First-run or explicit reconnect output can intentionally display the MCP connection password. JSON output and standalone secret rotation redact credentials by default; printing requires the explicit reconnect flag. The daemon secret is never printed in full. Avoid shared terminal logs, shell recordings, screenshots, CI output, or support tickets.
 
@@ -127,7 +133,7 @@ Active plans are owner-only and may temporarily contain argv, non-secret stdin, 
 
 Exact canonical and registration-time resource path aliases, exact resource bytes interpreted as text, and bounded exact base64/hex forms are redacted from retained output. This cannot detect partial, transformed, encrypted, compressed, or application-specific encodings. It also cannot redact unrelated secrets inherited through the full parent environment. Use `capture_output: "discard"` whenever a process may echo credentials, and never place a secret directly in argv, ordinary env, stdin, temporary-file content, or a JSON plan.
 
-`finally_steps` run after ordinary success, failure, timeout, and cancellation. Cancellation uses an owner-only marker rather than signaling the runner process itself, so the coordinator remains alive to execute cleanup consistently across platforms. A dead runner is detected on the next daemon or local job-CLI start; stale private resource copies are removed and cleanup is retried. This is best effort. Power loss, disk failure, permanent loss of credentials/network access, SIGKILL without later recovery, or security software denying the cleanup executable can prevent cleanup. Finally steps must be idempotent and safe to repeat. Automatic recovery is capped at three attempts so persistent endpoint-security or executable-policy denial cannot create an endless launch loop. Uninstall refuses to remove local state while managed jobs are active; operators must inspect or cancel them first.
+`finally_steps` run after ordinary success, failure, timeout, and cancellation. Cancellation uses an owner-only marker rather than signaling the runner process itself, so the coordinator remains alive to execute cleanup consistently across platforms. Timeout/cancellation target the process group/tree and keep a forced-termination escalation alive even if the direct child exits before a resistant descendant. Runner identity includes process start time; recovery does not trust a reused PID. A dead runner is detected on the next daemon or local job-CLI start; stale private resource copies are removed and cleanup is retried. This is best effort. Power loss, disk failure, permanent loss of credentials/network access, SIGKILL without later recovery, or security software denying the cleanup executable can prevent cleanup. Finally steps must be idempotent and safe to repeat. Automatic recovery is capped at three attempts so persistent endpoint-security or executable-policy denial cannot create an endless launch loop. Uninstall refuses to remove local state while managed jobs are active; operators must inspect or cancel them first.
 
 Job-scoped `temporary_files` should be used instead of loose helper scripts. They are materialized only below the private job runtime. Remote scripts should preferably be sent through a process stdin instead of written to the remote filesystem.
 
@@ -165,7 +171,7 @@ Process sessions are interactive and intentionally die with runtime disconnect/r
 
 ## Logs and privacy
 
-Default operational logs record startup/deployment, relay, protocol, service, and infrastructure transitions. Every ordinary per-tool event—start, success, failure, cancellation, and duration—is debug-only. Tool arguments, command text, stdin, file/patch contents, and outputs are omitted. Messages and fields are bounded; unexpected daemon and Worker infrastructure exceptions are reduced to error classes. Git author email is omitted from `git_log` unless explicitly requested.
+Default operational logs record startup/deployment, relay, protocol, service, and infrastructure transitions. Every ordinary per-tool event—start, success, failure, cancellation, and duration—is debug-only. Tool arguments, command text, stdin, file/patch contents, and outputs are omitted. Messages and fields are bounded; unexpected daemon and Worker infrastructure exceptions are reduced to error classes. Static operator guidance uses sanitized plain output; raw plain output is reserved for explicitly requested credentials or local paths. Git author email is omitted from `git_log` unless explicitly requested.
 
 No logging policy can prevent data from being returned to a client that explicitly invokes an enabled tool. The Worker necessarily relays remote tool arguments and results; this is not end-to-end encryption against the user's Cloudflare execution environment. Managed-job result files may contain remote command output and are owner-only local data, not operational logs.
 
@@ -188,6 +194,8 @@ Also:
 - patch the OS and use the repository-pinned Node.js 26/npm 12 baseline;
 - enable MFA on Cloudflare, GitHub, and npm accounts;
 - do not configure broad CORS origins;
+- keep the state root completely separate from every workspace; never point `--state-dir` at a project directory or one of its ancestors;
+- treat an unreadable or malformed live lock as an incident to inspect, not a file to delete blindly;
 - select `agent`, `edit`, or `review` instead of the default `full` when broad authority is unnecessary;
 - inspect client names and OAuth redirect URIs;
 - rotate secrets after suspected disclosure;
@@ -196,6 +204,8 @@ Also:
 - use `capture_output: "discard"` for credential-consuming steps and idempotent finally steps for cleanup;
 - remove the Worker and state when remote access is no longer needed;
 - use external OS isolation for untrusted code.
+
+The full cross-cutting review and residual limitations are recorded in [docs/AUDIT.md](docs/AUDIT.md).
 
 ## Out of scope
 

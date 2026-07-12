@@ -32,6 +32,7 @@ try {
   assert(opened.code === 0 && calls.at(-1).cmd === "open", "application launcher did not use the macOS launcher");
   assert(JSON.stringify(calls.at(-1).argv) === JSON.stringify(["-a", "Example", "https://example.test/"]), "application launcher arguments are incorrect");
 
+  await expectReject(() => manager.operateApplication({ application: "Example", action: "set_value", selector: { role: "AXTextField" }, value: "bad\0value" }), "contains a NUL byte");
   const activated = await manager.operateApplication({ application: "Example", action: "activate" });
   assert(activated.ok === true && JSON.parse(calls.at(-1).stdin).selector === null, "activate incorrectly required a UI selector");
   const activatedByPath = await manager.operateApplication({ application: join(applications, "Example.app"), action: "activate" });

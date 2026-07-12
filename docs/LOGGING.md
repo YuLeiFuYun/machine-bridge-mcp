@@ -93,9 +93,11 @@ Application discovery and Accessibility operations follow the same rule: permiss
 
 ## Bounding and redaction
 
-Messages, strings, object depth, object key counts, array item counts, and serialized field payloads are bounded. Control characters and Unicode display controls are neutralized. Fields with secret-like names, path-like keys, and known token formats are recursively redacted.
+Messages, strings, object depth, object key counts, array item counts, and serialized field payloads are bounded. Control characters and Unicode display controls are neutralized. Fields with secret-like names and path-like keys are recursively redacted. Free-form sanitization covers generic private-key headers, AWS/GitHub/GitLab/npm/Slack/Google/live-payment/API token forms, JWT-shaped values, URLs with embedded credentials, email addresses, and user-home paths.
 
-This is defense in depth, not content classification. Unknown secret formats can evade pattern matching, which is why tool arguments and outputs are omitted rather than merely filtered.
+The logger exposes two intentional plain-output boundaries. `safePlain` sanitizes operational guidance and diagnostic text. Raw `plain` output is reserved for explicitly requested credentials or local paths whose display is the command's purpose; callers must not pass external exception text or tool content to it.
+
+This is defense in depth, not content classification. Unknown, split, transformed, encrypted, or application-specific secret formats can evade pattern matching, which is why tool arguments and outputs are omitted rather than merely filtered.
 
 ## Files
 
@@ -120,6 +122,6 @@ Use `server_info`, `machine-mcp status`, `machine-mcp doctor`, and `diagnose_run
 
 ## Adding or changing logs
 
-A default-level message must be actionable, privacy-preserving, and resistant to repetition. Add a regression test for severity and field visibility. Raw protocol values belong at debug unless a user can act on them without external documentation.
+A default-level message must be actionable, privacy-preserving, and resistant to repetition. Add a regression test for severity and field visibility. Raw protocol values belong at debug unless a user can act on them without external documentation. New plain-output calls require explicit review of whether `safePlain` is sufficient.
 
 See [ENGINEERING.md](ENGINEERING.md) for the project-wide review rules.

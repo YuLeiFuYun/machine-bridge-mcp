@@ -22,8 +22,15 @@ const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*\b/gi;
 const EMAIL_VALUE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
 const GITHUB_TOKEN = /\bgh[pousr]_[A-Za-z0-9_]{30,}\b/g;
+const GITLAB_TOKEN = /\bglpat-[A-Za-z0-9_-]{20,}\b/g;
+const NPM_TOKEN = /\bnpm_[A-Za-z0-9]{30,}\b/g;
+const SLACK_TOKEN = /\bxox[aboprs]-[A-Za-z0-9-]{10,}\b/g;
+const GOOGLE_API_KEY = /\bAIza[A-Za-z0-9_-]{30,}\b/g;
+const PAYMENT_API_KEY = /\b(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}\b/g;
+const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+const URL_CREDENTIALS = /https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@[^\s/"'<>]+/gi;
 const API_SECRET = /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g;
-const PRIVATE_KEY_HEADER = /-----BEGIN\s+(?:OPENSSH|RSA|EC|DSA)\s+PRIVATE\s+KEY-----/g;
+const PRIVATE_KEY_HEADER = /-----BEGIN\s+(?:(?:OPENSSH|RSA|EC|DSA)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/g;
 const HOME_PATHS = [...new Set([process.env.HOME, process.env.USERPROFILE, safeHomeDirectory()].filter(value => typeof value === "string" && value.length > 1))]
   .sort((left, right) => right.length - left.length);
 
@@ -54,6 +61,7 @@ export function createLogger(options = {}) {
     error(message, fields) { write(process.stderr, "error", "[error]", COLORS.red, message, fields); },
     debug(message, fields) { write(process.stderr, "debug", "[debug]", COLORS.gray, message, fields); },
     plain(message = "") { if (!quiet) process.stdout.write(`${String(message)}\n`); },
+    safePlain(message = "") { if (!quiet) process.stdout.write(`${sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS)}\n`); },
     json(value) { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); },
   };
 }
@@ -123,6 +131,13 @@ export function sanitizeLogText(value, maxChars = MAX_LOG_MESSAGE_CHARS) {
     .replace(BEARER_VALUE, "Bearer <redacted>")
     .replace(AWS_ACCESS_KEY, "<redacted-cloud-key>")
     .replace(GITHUB_TOKEN, "<redacted-access-token>")
+    .replace(GITLAB_TOKEN, "<redacted-access-token>")
+    .replace(NPM_TOKEN, "<redacted-access-token>")
+    .replace(SLACK_TOKEN, "<redacted-access-token>")
+    .replace(GOOGLE_API_KEY, "<redacted-cloud-key>")
+    .replace(PAYMENT_API_KEY, "<redacted-api-secret>")
+    .replace(JWT_VALUE, "<redacted-bearer-token>")
+    .replace(URL_CREDENTIALS, "<redacted-credential-url>")
     .replace(API_SECRET, "<redacted-api-secret>")
     .replace(PRIVATE_KEY_HEADER, "<redacted-private-key-header>")
     .replace(EMAIL_VALUE, "<redacted-email>");

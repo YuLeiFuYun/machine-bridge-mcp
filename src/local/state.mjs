@@ -1,10 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, writeFileSync, chmodSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, chmodSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 import { replaceFileSync } from "./atomic-fs.mjs";
+import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const appName = String(serverMetadata.name);
@@ -12,6 +14,9 @@ const STATE_MARKER = ".machine-bridge-mcp-state";
 const MAX_STATE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_LOCK_BYTES = 64 * 1024;
 const MAX_MARKER_BYTES = 4096;
+const STARTUP_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const MALFORMED_LOCK_GRACE_MS = 60_000;
+const MAINTENANCE_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
 export function expandHome(input = "") {
   if (!input || input === "~") return os.homedir();
@@ -39,14 +44,19 @@ function configPath(stateRoot = defaultStateRoot()) {
 }
 
 export function loadGlobalConfig(stateRoot = defaultStateRoot()) {
-  const file = configPath(stateRoot);
+  const root = path.resolve(expandHome(stateRoot));
+  assertNoForeignMaintenance(root);
+  const file = configPath(root);
   if (!existsSync(file)) return {};
   ownerOnlyFile(file);
   return readJsonObjectOrBackup(file);
 }
 
 export function saveGlobalConfig(config, stateRoot = defaultStateRoot()) {
-  const root = ensureStateRoot(expandHome(stateRoot));
+  const requestedRoot = path.resolve(expandHome(stateRoot));
+  assertNoForeignMaintenance(requestedRoot);
+  const root = ensureStateRoot(requestedRoot);
+  assertNoForeignMaintenance(root);
   const file = configPath(root);
   atomicWriteJson(file, { ...config, updatedAt: new Date().toISOString() });
 }
@@ -91,6 +101,32 @@ function profileDirForWorkspace(workspace, stateRoot = defaultStateRoot()) {
 }
 
 
+
+function canonicalizePotentialPath(input) {
+  let existing = path.resolve(input);
+  const suffix = [];
+  while (!existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    suffix.unshift(path.basename(existing));
+    existing = parent;
+  }
+  const canonicalExisting = realpathSync.native ? realpathSync.native(existing) : realpathSync(existing);
+  return path.join(canonicalExisting, ...suffix);
+}
+
+function assertStateRootSeparatedFromWorkspace(stateRoot, workspace) {
+  const canonicalStateRoot = canonicalizePotentialPath(stateRoot);
+  const stateIdentity = process.platform === "win32" ? canonicalStateRoot.toLowerCase() : canonicalStateRoot;
+  const workspaceIdentity = process.platform === "win32" ? workspace.toLowerCase() : workspace;
+  const relativeWorkspace = path.relative(canonicalStateRoot, workspace);
+  const relativeState = path.relative(workspace, canonicalStateRoot);
+  const contains = (value) => value === "" || (!value.startsWith(`..${path.sep}`) && value !== ".." && !path.isAbsolute(value));
+  if (stateIdentity === workspaceIdentity || contains(relativeWorkspace) || contains(relativeState)) {
+    throw new Error("state root and selected workspace must be separate, non-overlapping directories");
+  }
+}
+
 function matchingLegacyProfileDir(canonicalWorkspace, stateRoot) {
   const profilesRoot = path.join(stateRoot, "profiles");
   if (!existsSync(profilesRoot)) return "";
@@ -123,7 +159,11 @@ function sameWorkspaceIdentity(left, right) {
 
 export function loadState(workspace, options = {}) {
   const canonicalWorkspace = resolveWorkspace(workspace);
-  const stateRoot = ensureStateRoot(options.stateDir ? expandHome(options.stateDir) : defaultStateRoot());
+  const requestedStateRoot = path.resolve(options.stateDir ? expandHome(options.stateDir) : defaultStateRoot());
+  assertStateRootSeparatedFromWorkspace(requestedStateRoot, canonicalWorkspace);
+  assertNoForeignMaintenance(requestedStateRoot);
+  const stateRoot = ensureStateRoot(requestedStateRoot);
+  assertNoForeignMaintenance(stateRoot);
   const canonicalProfileDir = profileDirForWorkspace(canonicalWorkspace, stateRoot);
   const profileDir = existsSync(canonicalProfileDir)
     ? canonicalProfileDir
@@ -150,6 +190,7 @@ export function loadState(workspace, options = {}) {
 }
 
 export function saveState(state) {
+  assertNoForeignMaintenance(state?.paths?.stateRoot);
   const statePath = state?.paths?.statePath;
   if (!statePath) throw new Error("state path is missing");
   ensureOwnerOnlyDir(path.dirname(statePath));
@@ -170,18 +211,87 @@ function lockPathForState(state, name) {
   return path.join(profileDir, name);
 }
 
+export function acquireMaintenanceLock(stateRoot, metadata = {}) {
+  const root = path.resolve(expandHome(stateRoot));
+  if (!existsSync(root)) throw new Error("cannot acquire maintenance lock for a missing state root");
+  const operation = typeof metadata.operation === "string" && /^[a-z][a-z0-9._-]{0,63}$/.test(metadata.operation)
+    ? metadata.operation
+    : "maintenance";
+  return acquireProcessLock(path.join(root, "maintenance.lock"), {
+    workspace: { path: "" },
+    paths: { profileDir: root, stateRoot: root },
+  }, "maintenance", { operation }, { maxAgeMs: MAINTENANCE_LOCK_MAX_AGE_MS });
+}
+
+export function assertStateMaintenanceAvailable(stateRoot) {
+  assertNoForeignMaintenance(stateRoot);
+}
+
+function assertNoForeignMaintenance(stateRoot) {
+  if (!stateRoot) return;
+  const file = path.join(path.resolve(expandHome(stateRoot)), "maintenance.lock");
+  if (!existsSync(file)) return;
+  const snapshot = readProcessLockSnapshot(file);
+  if (!snapshot) return;
+  if (!snapshot.owner) {
+    const ageMs = Date.now() - snapshot.info.mtimeMs;
+    if (ageMs < MALFORMED_LOCK_GRACE_MS) throw new Error("state maintenance lock is recent but unreadable");
+    if (!removeLockSnapshot(file, snapshot)) {
+      throw new Error("state maintenance lock changed during inspection; retry after checking the owning process");
+    }
+    return;
+  }
+  if (snapshot.owner.purpose !== "maintenance") throw new Error("state maintenance lock contains mismatched purpose metadata");
+  const identity = inspectProcessInstance(snapshot.owner, { maxAgeMs: MAINTENANCE_LOCK_MAX_AGE_MS });
+  if (identity.current) {
+    if (Number(snapshot.owner.pid) === process.pid) return;
+    throw new Error(`state maintenance is active in another process (pid ${snapshot.owner.pid})`);
+  }
+  if (!identity.reclaimable) throw new Error(`state maintenance lock cannot be verified safely (${identity.reason})`);
+  if (!removeLockSnapshot(file, snapshot)) {
+    throw new Error("state maintenance lock changed during inspection; retry after checking the owning process");
+  }
+}
+
 export function acquireDaemonLock(state, metadata = {}) {
+  assertNoForeignMaintenance(state?.paths?.stateRoot);
   const details = {};
   if (metadata?.mode === "foreground" || metadata?.mode === "service") details.mode = metadata.mode;
   if (typeof metadata?.version === "string" && /^[0-9A-Za-z.+_-]{1,64}$/.test(metadata.version)) details.version = metadata.version;
-  return acquireProcessLock(daemonLockPathForState(state), state, "daemon", details);
+  return acquireProcessLock(daemonLockPathForState(state), state, "daemon", details, { maxAgeMs: Number.POSITIVE_INFINITY });
 }
 
-export function acquireStartupLock(state) {
-  return acquireProcessLock(startupLockPathForState(state), state, "startup");
+export function acquireStartupLock(state, metadata = {}) {
+  assertNoForeignMaintenance(state?.paths?.stateRoot);
+  const details = {};
+  if (typeof metadata?.operation === "string" && /^[a-z][a-z0-9._-]{0,63}$/.test(metadata.operation)) details.operation = metadata.operation;
+  return acquireProcessLock(startupLockPathForState(state), state, "startup", details, { maxAgeMs: STARTUP_LOCK_MAX_AGE_MS });
 }
 
-function acquireProcessLock(lockPath, state, purpose, details = {}) {
+export async function acquireStartupLockWithWait(state, options = {}) {
+  const timeoutMs = boundedPositiveInteger(options.timeoutMs, 30_000);
+  const pollMs = boundedPositiveInteger(options.pollMs, 100);
+  const logger = options.logger || { info() {} };
+  const metadata = { operation: options.operation };
+  let lock = acquireStartupLock(state, metadata);
+  if (lock.acquired) return lock;
+  const ownerPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "another process";
+  logger.info?.(`waiting for ${ownerPid} to finish the current startup/state operation`);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+    lock = acquireStartupLock(state, metadata);
+    if (lock.acquired) {
+      logger.info?.("the previous startup/state operation finished; continuing");
+      return lock;
+    }
+  }
+  const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
+  const operation = typeof lock.owner?.operation === "string" ? ` (${lock.owner.operation})` : "";
+  throw new Error(`another startup/state operation did not finish within ${Math.ceil(timeoutMs / 1000)} seconds (${pid}${operation}); inspect the process before retrying`);
+}
+
+function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}) {
   ensureOwnerOnlyDir(path.dirname(lockPath));
   const token = randomBytes(16).toString("hex");
   const payload = {
@@ -190,18 +300,15 @@ function acquireProcessLock(lockPath, state, purpose, details = {}) {
     purpose,
     workspace: state?.workspace?.path || "",
     startedAt: new Date().toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
     entryScript: process.argv[1] || "",
     ...details,
   };
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let fd;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      fd = openSync(lockPath, "wx", 0o600);
-      writeFileSync(fd, JSON.stringify(payload, null, 2) + "\n");
-      fsyncSync(fd);
-      closeSync(fd);
-      fd = undefined;
+      createExclusiveFileSync(lockPath, `${JSON.stringify(payload, null, 2)}
+`, { mode: 0o600 });
       ownerOnlyFile(lockPath);
       return {
         acquired: true,
@@ -210,25 +317,85 @@ function acquireProcessLock(lockPath, state, purpose, details = {}) {
         release() { releaseProcessLock(lockPath, token); },
       };
     } catch (error) {
-      if (fd !== undefined) {
-        try { closeSync(fd); } catch {}
-      }
       if (error?.code !== "EEXIST") throw error;
-      const owner = readDaemonLockOwner(lockPath);
-      if (owner?.pid && isPidAlive(owner.pid)) {
-        return { acquired: false, path: lockPath, owner, release() {} };
+      const snapshot = readProcessLockSnapshot(lockPath);
+      if (!snapshot) continue;
+      if (!snapshot.owner) {
+        const ageMs = Date.now() - snapshot.info.mtimeMs;
+        if (ageMs < MALFORMED_LOCK_GRACE_MS) {
+          return { acquired: false, path: lockPath, owner: null, reason: "recent_invalid_lock", release() {} };
+        }
+        if (!removeLockSnapshot(lockPath, snapshot)) continue;
+        continue;
       }
-      try { unlinkSync(lockPath); } catch {}
+      if (snapshot.owner.purpose !== purpose) throw new Error(`${purpose} lock contains mismatched purpose metadata`);
+      if (snapshot.owner.workspace && state?.workspace?.path && !sameWorkspaceIdentity(snapshot.owner.workspace, state.workspace.path)) {
+        throw new Error(`${purpose} lock belongs to a different workspace`);
+      }
+      const identity = inspectProcessInstance(snapshot.owner, { maxAgeMs: options.maxAgeMs });
+      if (identity.current || !identity.reclaimable) {
+        return { acquired: false, path: lockPath, owner: snapshot.owner, reason: identity.reason, release() {} };
+      }
+      if (!removeLockSnapshot(lockPath, snapshot)) continue;
     }
   }
   const owner = readDaemonLockOwner(lockPath);
   return { acquired: false, path: lockPath, owner, release() {} };
 }
 
+function readProcessLockSnapshot(lockPath) {
+  let info;
+  try { info = lstatSync(lockPath); } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  if (info.isSymbolicLink()) throw new Error(`process lock must not be a symbolic link: ${lockPath}`);
+  if (!info.isFile()) throw new Error(`process lock is not a regular file: ${lockPath}`);
+  let owner = null;
+  try {
+    const parsed = JSON.parse(readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+  }
+  return { owner, info: lockIdentity(info) };
+}
+
+function removeLockSnapshot(lockPath, snapshot) {
+  let current;
+  try { current = lstatSync(lockPath); } catch (error) { return error?.code === "ENOENT"; }
+  if (current.isSymbolicLink() || !current.isFile()) return false;
+  if (!sameLockIdentity(snapshot.info, lockIdentity(current))) return false;
+  if (snapshot.owner?.token) {
+    const currentOwner = readDaemonLockOwner(lockPath);
+    if (currentOwner?.token !== snapshot.owner.token) return false;
+  }
+  try {
+    unlinkSync(lockPath);
+    return true;
+  } catch (error) {
+    return error?.code === "ENOENT";
+  }
+}
+
+function lockIdentity(info) {
+  return {
+    dev: Number(info.dev),
+    ino: Number(info.ino),
+    size: Number(info.size),
+    mtimeMs: Number(info.mtimeMs),
+  };
+}
+
+function sameLockIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
 function releaseProcessLock(lockPath, token) {
-  const owner = readDaemonLockOwner(lockPath);
-  if (owner?.token !== token) return;
-  try { unlinkSync(lockPath); } catch {}
+  let snapshot;
+  try { snapshot = readProcessLockSnapshot(lockPath); } catch { return; }
+  if (!snapshot || snapshot.owner?.token !== token) return;
+  removeLockSnapshot(lockPath, snapshot);
 }
 
 export function readDaemonLockOwner(lockPath) {
@@ -240,15 +407,9 @@ export function readDaemonLockOwner(lockPath) {
   }
 }
 
-function isPidAlive(pid) {
-  const parsed = Number(pid);
-  if (!Number.isInteger(parsed) || parsed <= 0) return false;
-  try {
-    process.kill(parsed, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
+function boundedPositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : fallback;
 }
 
 function readBoundedUtf8(filePath, maxBytes, label) {
@@ -267,24 +428,28 @@ function readBoundedUtf8(filePath, maxBytes, label) {
       if (count === 0) break;
       offset += count;
     }
-    return buffer.subarray(0, offset).toString("utf8");
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
+    } catch {
+      throw new Error(`${label} is not valid UTF-8`);
+    }
   } finally {
     closeSync(fd);
   }
 }
 
 function readJsonObjectOrBackup(filePath) {
+  const text = readBoundedUtf8(filePath, MAX_STATE_JSON_BYTES, "state JSON");
+  let parsed;
   try {
-    const parsed = JSON.parse(readBoundedUtf8(filePath, MAX_STATE_JSON_BYTES, "state JSON"));
+    parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("JSON root must be an object");
     return parsed;
   } catch {
     const backupPath = `${filePath}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
-    try {
-      replaceFileSync(filePath, backupPath);
-      ownerOnlyFile(backupPath);
-      pruneBackups(filePath, 3);
-    } catch {}
+    replaceFileSync(filePath, backupPath);
+    ownerOnlyFile(backupPath);
+    pruneBackups(filePath, 3);
     return {};
   }
 }
@@ -310,7 +475,7 @@ function ensureStateRoot(inputRoot) {
       }
     }
     try {
-      writeFileSync(marker, `${JSON.stringify({ app: appName, schema: 1 })}\n`, { mode: 0o600, flag: "wx" });
+      createExclusiveFileSync(marker, `${JSON.stringify({ app: appName, schema: 1 })}\n`, { mode: 0o600 });
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       assertValidStateMarker(marker, { migrateLegacy: true });
@@ -365,7 +530,7 @@ function assertValidStateMarker(marker, options = {}) {
 }
 
 function hasOnlyStateEntries(entries) {
-  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "profiles", "logs"]);
+  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "maintenance.lock", "profiles", "logs"]);
   return entries.every((entry) => allowed.has(entry) || /^config\.json\.corrupt-\d+(?:-[a-f0-9]{8})?$/.test(entry));
 }
 
@@ -374,16 +539,28 @@ function looksLikeSourceTree(root) {
 }
 
 function stateRootMatchesRecordedWorkspace(root) {
+  const config = path.join(root, "config.json");
+  if (existsSync(config)) {
+    try {
+      const value = JSON.parse(readBoundedUtf8(config, MAX_STATE_JSON_BYTES, "config JSON"));
+      if (typeof value?.selectedWorkspace === "string" && sameWorkspaceIdentity(value.selectedWorkspace, root)) return true;
+    } catch {}
+  }
   const profiles = path.join(root, "profiles");
   if (!existsSync(profiles)) return false;
   try {
     for (const entry of readdirSync(profiles, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const stateFile = path.join(profiles, entry.name, "state.json");
-      if (!existsSync(stateFile)) continue;
-      const value = JSON.parse(readBoundedUtf8(stateFile, MAX_STATE_JSON_BYTES, "state JSON"));
-      if (typeof value?.workspace?.path !== "string") continue;
-      try { if (realpathSync(value.workspace.path) === root) return true; } catch {}
+      const profileDir = path.join(profiles, entry.name);
+      const stateFile = path.join(profileDir, "state.json");
+      if (existsSync(stateFile)) {
+        try {
+          const value = JSON.parse(readBoundedUtf8(stateFile, MAX_STATE_JSON_BYTES, "state JSON"));
+          if (typeof value?.workspace?.path === "string" && sameWorkspaceIdentity(value.workspace.path, root)) return true;
+        } catch {}
+      }
+      const owner = readDaemonLockOwner(path.join(profileDir, "daemon.lock"));
+      if (typeof owner?.workspace === "string" && sameWorkspaceIdentity(owner.workspace, root)) return true;
     }
   } catch {}
   return false;
@@ -420,25 +597,10 @@ function atomicWriteJson(filePath, value) {
   const dir = path.dirname(filePath);
   ensureOwnerOnlyDir(dir);
   cleanupStaleAtomicTemps(dir, path.basename(filePath));
-  const serialized = `${JSON.stringify(value, null, 2)}\n`;
+  const serialized = `${JSON.stringify(value, null, 2)}
+`;
   if (Buffer.byteLength(serialized) > MAX_STATE_JSON_BYTES) throw new Error(`state JSON exceeds ${MAX_STATE_JSON_BYTES} bytes`);
-  const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
-  let fd;
-  try {
-    fd = openSync(tempPath, "wx", 0o600);
-    writeFileSync(fd, serialized, "utf8");
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    replaceFileSync(tempPath, filePath);
-    ownerOnlyFile(filePath);
-  } catch (error) {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch {}
-    }
-    try { unlinkSync(tempPath); } catch {}
-    throw error;
-  }
+  replaceFileAtomicallySync(filePath, serialized, { mode: 0o600 });
 }
 
 function cleanupStaleAtomicTemps(dir, baseName = "") {

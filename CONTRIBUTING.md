@@ -17,7 +17,7 @@ The release operator then creates the matching Git tag and GitHub Release and pu
 After npm publication, the standard machine update is:
 
 ```bash
-npm install -g --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@latest && machine-mcp
+npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
 ```
 
 The npm command updates the global CLI. Normal `machine-mcp` startup checks the Worker deployment hash, expected version, and health, redeploys when necessary, and reconciles the daemon/autostart flow.
@@ -34,6 +34,6 @@ Use only synthetic names, reserved example domains, and generic paths. Maintain 
 
 Read [docs/ENGINEERING.md](docs/ENGINEERING.md) before changing architecture, policy, logging, persistence, transport lifecycle, or release behavior. The default `full` profile is an explicit product invariant and must not be narrowed by an unrelated change.
 
-A log change is behavior: test its level, repetition policy, privacy fields, and recovery message. A transport change must distinguish low-level connectivity from authenticated readiness and test timeout/reconnect branches deterministically.
+A log change is behavior: test its level, repetition policy, privacy fields, and recovery message. A transport change must distinguish low-level connectivity from authenticated readiness and test timeout/reconnect branches deterministically. Lock, state deletion, service lifecycle, detached process, and credential changes require behavior-level concurrency or fault-injection tests. Review [docs/AUDIT.md](docs/AUDIT.md) before changing those surfaces.
 
 Reusable decisions belong in tracked documentation. Keep only machine-specific observations in the ignored `.project-local/` directory, and never store credentials there.

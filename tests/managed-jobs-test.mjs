@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inspectResourceFile, ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { activeManagedJobs, inspectResourceFile, ManagedJobManager } from "../src/local/managed-jobs.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-managed-job-test-"));
 const workspace = join(root, "workspace");
@@ -41,6 +41,26 @@ try {
   expectThrow(() => restrictedManager.start({
     steps: [{ argv: [process.execPath, "-e", ""], cwd: root }],
   }), "outside the configured workspace");
+
+  const unreadableRoot = join(root, "unreadable-jobs");
+  const unreadableId = `job_${"A".repeat(24)}`;
+  const unreadableDir = join(unreadableRoot, unreadableId);
+  await mkdir(unreadableDir, { recursive: true });
+  await writeFile(join(unreadableDir, "status.json"), "not-json\n", { mode: 0o600 });
+  const oldUnreadable = new Date(Date.now() - 120_000);
+  await utimes(unreadableDir, oldUnreadable, oldUnreadable);
+  const unreadableManager = new ManagedJobManager({
+    jobRoot: unreadableRoot,
+    workspace,
+    policy: { execMode: "direct", minimalEnv: true, unrestrictedPaths: false },
+    resources: {},
+    logger: { warn() {} },
+    recover: true,
+  });
+  assert(await exists(unreadableDir), "managed-job pruning deleted unreadable state");
+  const unreadableList = unreadableManager.list({ limit: 10 });
+  assert(unreadableList.jobs.some((job) => job.job_id === unreadableId && job.status === "unreadable"), "managed-job list hid unreadable state");
+  assert(activeManagedJobs(unreadableRoot).some((job) => job.job_id === unreadableId && job.status === "unreadable"), "unreadable managed job did not block removal");
 
   const stagedMarker = join(workspace, "staged-approved.txt");
   const staged = manager.stage({
@@ -240,6 +260,19 @@ try {
   const discardedStep = discardedResult.result.steps[0];
   assert(discardedStep.output_discarded === true && discardedStep.stdout === "" && discardedStep.stderr === "", "discard output mode retained output");
 
+  const descendantPidFile = join(workspace, "managed-descendant.pid");
+  const treeTimeout = manager.start({
+    name: "timeout terminates descendants",
+    steps: [{
+      argv: [process.execPath, "-e", `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`, descendantPidFile],
+      timeout_seconds: 1,
+    }],
+  });
+  const treeTimeoutResult = await waitForJob(manager, treeTimeout.job_id, null, 20_000);
+  assert(treeTimeoutResult.result.steps[0].timed_out === true, "managed job process-tree fixture did not time out");
+  const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
+  await waitForPidExit(descendantPid, 10_000);
+
   const cancellable = manager.start({
     name: "cancel with cleanup",
     steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},30000)"], timeout_seconds: 60 }],
@@ -259,8 +292,12 @@ try {
   });
   await waitForRunning(manager, recoverable.job_id);
   const recoverableDir = join(jobRoot, recoverable.job_id);
-  const runnerPid = Number((await readFile(join(recoverableDir, "runner.pid"), "utf8")).trim());
-  if (!Number.isInteger(runnerPid) || runnerPid <= 0) throw new Error("managed job did not persist its runner PID");
+  const runnerClaimText = (await readFile(join(recoverableDir, "runner.pid"), "utf8")).trim();
+  const runnerClaim = runnerClaimText.startsWith("{") ? JSON.parse(runnerClaimText) : { pid: Number(runnerClaimText) };
+  const runnerPid = Number(runnerClaim.pid);
+  if (!Number.isInteger(runnerPid) || runnerPid <= 0 || typeof runnerClaim.processStartedAt !== "string") {
+    throw new Error("managed job did not persist its runner process identity");
+  }
   try { process.kill(runnerPid, "SIGKILL"); } catch {}
   await waitForPidExit(runnerPid, 10_000);
   const statusFile = join(recoverableDir, "status.json");
@@ -268,6 +305,7 @@ try {
   Object.assign(stale, {
     status: "running",
     runner_pid: runnerPid,
+    runner_process_started_at: runnerClaim.processStartedAt,
     updated_at: new Date(Date.now() - 60_000).toISOString(),
     finished_at: null,
   });

@@ -79,7 +79,7 @@ On first remote start, the CLI:
 6. starts an outbound-only daemon connection;
 7. prints the Remote MCP URL and connection password.
 
-A normal `machine-mcp` invocation is a foreground start: it remains attached to the terminal and prints `info` logs. After a global package upgrade, the CLI unloads the platform service and also checks the workspace lock for a detached/orphan `--daemon-only` process that the service manager no longer tracks. It terminates only a process whose PID, entrypoint, canonical workspace, canonical state root, and daemon-only arguments all match, waits up to 15 seconds for the PID and lock to disappear, and then starts the installed version in the foreground. A genuine foreground or unverifiable conflict is left untouched and reported with actionable guidance. To run only in the background, use `machine-mcp service start`; inspect its owner-only logs under `~/.local/state/machine-bridge-mcp/logs/`.
+A normal `machine-mcp` invocation is a foreground start: it remains attached to the terminal and prints `info` logs. Startup and other state-changing operations use an owner-token/process-identity lock and wait up to 30 seconds for an ordinary concurrent startup to finish instead of failing on a brief launchd/systemd race. After a global package upgrade, the CLI unloads the platform service and also checks the workspace lock for a detached/orphan `--daemon-only` process that the service manager no longer tracks. It terminates only a process whose PID, process start time, entrypoint, canonical workspace, canonical state root, and daemon-only arguments all match, waits up to 15 seconds for the PID and lock to disappear, and then starts the installed version in the foreground. A genuine foreground or unverifiable conflict is left untouched and reported with actionable guidance. To run only in the background, use `machine-mcp service start`; inspect its owner-only logs under `~/.local/state/machine-bridge-mcp/logs/`.
 
 Recommended upgrade sequence:
 
@@ -422,7 +422,7 @@ Default state roots:
 - Linux with `XDG_STATE_HOME`: `$XDG_STATE_HOME/machine-bridge-mcp`
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
-State/config writes use owner-only temporary files, flushes, and atomic rename. Malformed state is retained as a bounded corrupt backup before reconstruction. Resource source paths are redacted from `status` output. Active managed-job plans are owner-only and are deleted after a terminal result; bounded redacted results are retained temporarily. Uninstall validates markers, canonical paths, active locks, workspace/source exclusions, and known contents before recursive deletion.
+State/config writes use owner-only temporary files, `fsync`, and atomic replacement. Exclusive locks are fully written before a same-directory hard-link claim becomes visible; lock ownership includes a token and process start time so PID reuse and lock replacement cannot silently transfer ownership. Only successfully read but invalid JSON is retained as a bounded corrupt backup; permission, symbolic-link, size, encoding, and I/O failures remain explicit. A custom state root must not equal, contain, or be contained by the selected workspace. Resource source paths are redacted from `status` output. Active managed-job plans are owner-only and are deleted after a terminal result; bounded redacted results are retained temporarily. Uninstall first acquires a state-root maintenance lock that blocks new profile/state operations and state-backed operations from already constructed managed-job/browser managers, stops the platform service and all verified workspace daemons before removing definitions, rechecks jobs and locks, then validates markers, canonical paths, workspace/source exclusions, and known contents before recursive deletion.
 
 Default foreground logs report authenticated relay readiness, readable persistent-degradation summaries, and recovery rather than raw WebSocket callbacks or JSON field dumps. Brief self-healing disconnects and close codes/reasons are debug-only. Stalled connection attempts have a deadline, and sustained-outage reminders use autonomous exponential backoff. Every per-tool event—including success, failure, cancellation, and slow-call timing—also appears only at `--log-level debug` or `--verbose`. Background services use `warn`, so ordinary tool outcomes and brief network changes do not fill daemon logs. Log messages and structured fields are bounded, secret-like keys and known token formats are redacted, and tool arguments/results are not written. See [docs/LOGGING.md](docs/LOGGING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
@@ -437,9 +437,9 @@ npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```
 
-`npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, JavaScript syntax, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, local path/write/process/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/sensitive-artifact check, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline; macOS and package-audit jobs also exercise the documented isolated global installation.
+`npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, recursively discovered JavaScript syntax, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, concurrent lock/atomic-replacement/PID-reuse fixtures, fail-closed service lifecycle tests, descendant process-tree termination, local path/write/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/mode/sensitive-artifact check, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline; macOS and package-audit jobs also exercise the documented isolated global installation.
 
-See [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), and [SECURITY.md](SECURITY.md).
+The cross-cutting 0.12.0 review, corrected failure modes, and residual OS-level limits are recorded in [docs/AUDIT.md](docs/AUDIT.md). See also [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), and [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 
@@ -448,7 +448,7 @@ machine-mcp uninstall
 npm uninstall -g machine-bridge-mcp
 ```
 
-Use `--keep-worker` to retain deployed Workers while removing local state and autostart.
+Use `--keep-worker` to retain deployed Workers while removing local state and autostart. Uninstall is fail-closed: if the platform service, a verified daemon, a managed job, an unreadable lock, or a service-definition removal cannot be resolved safely, service definitions and local state are retained for diagnosis instead of being partially deleted.
 
 ## License
 

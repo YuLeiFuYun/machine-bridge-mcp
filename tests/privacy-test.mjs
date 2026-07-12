@@ -48,12 +48,52 @@ try {
   assert(binaryResult.status === 1 && binaryResult.stderr.includes("binary file in publication surface"), "privacy checker silently skipped a binary publication file");
   rmSync(binary, { force: true });
 
+  const safeNpmrc = join(temp, ".npmrc");
+  writeFileSync(safeNpmrc, "engine-strict=true\n");
+  const safeNpmrcResult = runCheck();
+  assert(safeNpmrcResult.status === 0, `safe tracked .npmrc was rejected: ${safeNpmrcResult.stderr}`);
+  const npmToken = ["npm", "A".repeat(36)].join("_");
+  const npmAuthKey = ["_auth", "Token"].join("");
+  writeFileSync(safeNpmrc, `//registry.npmjs.org/:${npmAuthKey}=${npmToken}\n`);
+  const npmrcAuth = runCheck();
+  assert(npmrcAuth.status === 1 && npmrcAuth.stderr.includes("tracked .npmrc contains authentication"), "privacy checker missed npm authentication configuration");
+  assert(!`${npmrcAuth.stdout}${npmrcAuth.stderr}`.includes(npmToken), "privacy checker echoed an npm token");
+  rmSync(safeNpmrc, { force: true });
+
+  assertSensitiveContent("npm-token.txt", npmToken, "npm access token");
+  assertSensitiveContent("slack-token.txt", ["xoxb", "1234567890", "ABCDEFGHIJK"].join("-"), "Slack access token");
+  assertSensitiveContent("google-key.txt", ["AI", "za", "A".repeat(35)].join(""), "Google API key");
+  assertSensitiveContent("jwt.txt", ["eyJ" + "A".repeat(12), "B".repeat(12), "C".repeat(12)].join("."), "JWT-like bearer token");
+  assertSensitiveContent("private-key.txt", ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "), "private key material");
+  assertSensitiveContent("credential-url.txt", ["https://operator", "private-value@host.example/path"].join(":"), "URL with embedded credentials");
+  assertSensitiveContent("email.txt", ["person", "actual-domain.test"].join("@"), "non-example email address");
+
+  const sensitivePath = join(temp, [".env", "production"].join("."));
+  writeFileSync(sensitivePath, "neutral=true\n");
+  const sensitivePathResult = runCheck();
+  assert(sensitivePathResult.status === 1 && sensitivePathResult.stderr.includes("credential- or private-data-shaped publication filename"), "privacy checker missed a credential-shaped filename");
+  rmSync(sensitivePath, { force: true });
+
   writeFileSync(join(temp, "README.md"), "synthetic example only\n");
   const clean = runCheck();
   assert(clean.status === 0, `clean privacy fixture failed: ${clean.stderr}`);
+
+  rmSync(join(temp, ".privacy-denylist"), { force: true });
+  mkdirSync(join(temp, ".privacy-denylist"));
+  const unreadableDenylist = runCheck();
+  assert(unreadableDenylist.status !== 0 && unreadableDenylist.stderr.includes("local privacy denylist exists but could not be read"), "privacy checker ignored an unreadable denylist");
   console.log("privacy gate test ok");
 } finally {
   rmSync(temp, { recursive: true, force: true });
+}
+
+function assertSensitiveContent(name, value, rule) {
+  const file = join(temp, name);
+  writeFileSync(file, `${value}\n`);
+  const result = runCheck();
+  assert(result.status === 1 && result.stderr.includes(rule), `privacy checker missed ${rule}`);
+  assert(!`${result.stdout}${result.stderr}`.includes(value), `privacy checker echoed ${rule}`);
+  rmSync(file, { force: true });
 }
 
 function fsRead(path) { return readFileSync(path, "utf8"); }

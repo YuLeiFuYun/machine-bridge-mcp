@@ -13,6 +13,9 @@ This document records project-wide decisions that must survive individual fixes,
 7. **Generic local automation is structured, not arbitrary evaluation.** Browser/application features may expose broad user authority under canonical `full`, but must not accept caller-provided JavaScript, AppleScript, JXA, or extension code.
 8. **Daily-browser integration uses the existing profile.** The supported primary browser path is the packaged authenticated extension and machine-level loopback broker, preserving current tabs/login state; a separate automation profile is not an equivalent replacement.
 9. **Pairing and resource secrets are not conversation or log data.** Tokens and injected local-resource values must not be returned, embedded in URLs, or written to operational logs.
+10. **Exclusive claims are complete before visible.** Never create a final lock/PID claim and then populate it. Use the shared exclusive-file primitive, ownership tokens, process-start identity, and snapshot-checked reclamation.
+11. **Service and state removal are fail-closed state machines.** Stop the platform provider and every verified daemon before removing definitions or recursive state. An unreadable lock, failed stop, active job, or ambiguous identity retains state for diagnosis.
+12. **Read failure is not empty state.** Permission, type, symbolic-link, size, encoding, and I/O errors must propagate. Corrupt backup/reconstruction applies only after a successful read proves that JSON content is invalid.
 
 A proposed change that conflicts with an invariant requires an explicit owner decision and corresponding documentation update. It must not be hidden inside an unrelated refactor.
 
@@ -49,7 +52,9 @@ Rules:
 - State transitions are explicit; readiness is not inferred from a lower-level event. For example, an open WebSocket is not an authenticated relay until `hello_ack` is received.
 - Every externally controlled input is bounded before expensive allocation, traversal, parsing, storage, or execution.
 - Repository text must not contain invisible ASCII controls other than tab, CR, and LF; architecture tests enforce this even when JavaScript syntax remains valid.
-- Persistent mutations use owner-only files, bounded reads, atomic replacement, and integrity checks appropriate to the data.
+- Persistent mutations use owner-only files, bounded no-follow reads, flushed atomic replacement, and integrity checks appropriate to the data.
+- Exclusive locks use the shared complete-before-visible hard-link claim. Reclamation requires process identity plus a matching file snapshot/token; do not unlink a path merely because an earlier read looked stale.
+- Service providers normalize success/failure to one result contract. Definition removal follows the shared platform-stop → verified-daemon-stop → remove order.
 - Retry is limited to classified transient failures. Authentication, authorization, validation, integrity, and policy errors fail immediately.
 - Cleanup-only catches may be best effort, but primary failures must not be silently discarded.
 - New work should not increase an already broad orchestration module when the behavior has an independent lifecycle or test surface. Extract the domain first.
@@ -102,9 +107,10 @@ A higher branch count is acceptable only when the function is an explicit state 
 - Preserve a stable coarse error class for automation and a concise human message for operators.
 - Do not retry an operation merely because it failed; retry only when the error is positively classified as transient and the operation is idempotent or server state is checked after ambiguity.
 - When a remote write may have succeeded before the response was lost, query authoritative state before repeating it.
-- Timeouts must terminate the relevant process or connection and clear delayed escalation timers after exit.
+- Timeouts must terminate the relevant process tree. Forced escalation must remain referenced until resistant descendants are handled; do not clear it merely because the direct child exited.
 - Half-open connections need liveness detection, not only periodic writes.
-- Lock reclamation must consider both process liveness and absolute age to defend against PID reuse.
+- Lock reclamation must consider process liveness, process start time, absolute age, ownership token, and file identity to defend against PID reuse and replacement races.
+- State/config recovery may classify only parse/root-shape failures as corrupt content. It must not convert read failures into a new empty state.
 - A recovery path must be bounded and converge to a terminal state rather than retry forever.
 
 ## Testing rules
@@ -119,7 +125,9 @@ The required matrix includes:
 - Linux, macOS, and Windows on the pinned Node/npm baseline;
 - privacy and release-impact gates;
 - package-manifest and sensitive-artifact inspection;
-- type and syntax checks;
+- generated type checks and recursively discovered JavaScript/shell syntax checks;
+- concurrent exclusive-lock/atomic-replacement tests, PID-reuse/age tests, and fail-closed service-lifecycle tests;
+- real process-tree timeout/cancellation tests with descendants that ignore graceful termination;
 - local runtime and real `full` acceptance tests;
 - stdio JSON-RPC integration;
 - Worker OAuth/WebSocket/MCP integration;
@@ -155,6 +163,8 @@ Use the ignored `.project-local/` directory only for machine-specific material s
 Do not store passwords, tokens, private keys, authorization URLs, or copied secret-bearing logs there. Use `.privacy-denylist` for private vocabulary that the scanner should reject from publication surfaces.
 
 When a local observation becomes generally true, move the sanitized lesson into tracked documentation and delete the stale local note.
+
+The 0.12.0 cross-cutting audit and residual limits are recorded in [AUDIT.md](AUDIT.md).
 
 ## Review checklist
 

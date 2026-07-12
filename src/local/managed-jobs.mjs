@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
-import { replaceFileSync } from "./atomic-fs.mjs";
+import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
+import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMs } from "./process-identity.mjs";
 import { readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
 
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
@@ -23,7 +24,7 @@ const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted
 const PLAN_RETAINING_STATES = new Set(["staged", ...ACTIVE_JOB_STATES]);
 
 export class ManagedJobManager {
-  constructor({ jobRoot, workspace, policy, resources = {}, resourceStatePath = "", logger = console, recover = true }) {
+  constructor({ jobRoot, workspace, policy, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true }) {
     const jobRootInput = resolve(jobRoot);
     ensureOwnerOnlyDir(jobRootInput);
     this.jobRoot = realpathSync.native ? realpathSync.native(jobRootInput) : realpathSync(jobRootInput);
@@ -32,12 +33,15 @@ export class ManagedJobManager {
     this.policy = policy;
     this.resources = normalizeResourceRegistry(resources);
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
+    this.stateRoot = stateRoot ? resolve(stateRoot) : "";
     this.logger = logger;
+    this.assertMaintenanceAvailable();
     this.prune();
     if (recover) this.recoverInterruptedJobs();
   }
 
   status() {
+    this.assertMaintenanceAvailable();
     const jobs = this.list({ limit: MAX_JOBS }).jobs;
     return {
       active: jobs.filter((job) => ACTIVE_JOB_STATES.has(job.status)).length,
@@ -48,6 +52,7 @@ export class ManagedJobManager {
   }
 
   resourceInfo() {
+    this.assertMaintenanceAvailable();
     const resources = this.currentResources();
     return {
       count: Object.keys(resources).length,
@@ -57,6 +62,7 @@ export class ManagedJobManager {
   }
 
   listResources() {
+    this.assertMaintenanceAvailable();
     const resources = [];
     for (const [name, resource] of Object.entries(this.currentResources()).sort(([a], [b]) => a.localeCompare(b))) {
       try {
@@ -70,6 +76,7 @@ export class ManagedJobManager {
   }
 
   diagnoseStorage() {
+    this.assertMaintenanceAvailable();
     const probe = join(this.jobRoot, `.probe-${process.pid}-${randomBytes(6).toString("hex")}`);
     try {
       writeFileSync(probe, "ok\n", { mode: 0o600, flag: "wx" });
@@ -84,16 +91,19 @@ export class ManagedJobManager {
 
 
   stage(args = {}) {
+    this.assertMaintenanceAvailable();
     if (this.policy.allowWrite !== true) throw new Error("stage_job is disabled by daemon policy");
     return this.createJob(args, { launch: false });
   }
 
   start(args = {}) {
+    this.assertMaintenanceAvailable();
     this.assertEnabled("start_job");
     return this.createJob(args, { launch: true });
   }
 
   approve(args = {}, { localOperator = false } = {}) {
+    this.assertMaintenanceAvailable();
     if (!localOperator) this.assertEnabled("approve_job");
     const dir = this.jobDir(args.job_id);
     const transition = acquireJobTransitionLock(dir);
@@ -203,22 +213,29 @@ export class ManagedJobManager {
 
 
   list(args = {}) {
+    this.assertMaintenanceAvailable();
     this.prune();
     const limit = clampInt(args.limit, 20, 1, MAX_JOBS);
     const jobs = [];
     for (const entry of safeReadDir(this.jobRoot)) {
       if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
       const dir = join(this.jobRoot, entry.name);
-      this.reconcileStatus(dir);
-      const status = readJson(join(dir, "status.json"), 256 * 1024);
-      if (!status) continue;
-      jobs.push(publicStatus(status));
+      try {
+        this.reconcileStatus(dir);
+        const status = readJson(join(dir, "status.json"), 256 * 1024, "job status");
+        if (!status) continue;
+        jobs.push(publicStatus(status));
+      } catch (error) {
+        this.logger.warn?.("managed job status is unreadable; retaining it for inspection", { error_class: resourceErrorClass(error) });
+        jobs.push({ job_id: entry.name, name: "unavailable", status: "unreadable", error_class: resourceErrorClass(error) });
+      }
     }
     jobs.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     return { jobs: jobs.slice(0, limit), retained: jobs.length, maximum: MAX_JOBS };
   }
 
   read(args = {}) {
+    this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
     this.reconcileStatus(dir);
     const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
@@ -230,6 +247,7 @@ export class ManagedJobManager {
   }
 
   inspectLocal(args = {}) {
+    this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
     this.reconcileStatus(dir);
     const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
@@ -243,6 +261,7 @@ export class ManagedJobManager {
   }
 
   cancel(args = {}) {
+    this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
     const transition = acquireJobTransitionLock(dir);
     if (!transition) throw new Error("job state is being modified by another process; retry after inspecting its current status");
@@ -286,10 +305,16 @@ export class ManagedJobManager {
   }
 
   currentResources() {
+    this.assertMaintenanceAvailable();
     if (!this.resourceStatePath) return this.resources;
-    const state = readJson(this.resourceStatePath, 2 * 1024 * 1024);
-    if (!state || typeof state !== "object" || Array.isArray(state)) return existsSync(this.resourceStatePath) ? {} : this.resources;
+    const state = readJson(this.resourceStatePath, 2 * 1024 * 1024, "resource state");
+    if (!state) return this.resources;
+    if (typeof state !== "object" || Array.isArray(state)) throw new Error("resource state is not a JSON object");
     return normalizeResourceRegistry(state.resources);
+  }
+
+  assertMaintenanceAvailable() {
+    if (this.stateRoot) assertStateMaintenanceAvailable(this.stateRoot);
   }
 
   assertEnabled(tool) {
@@ -307,14 +332,14 @@ export class ManagedJobManager {
   }
 
   reconcileStatus(dir) {
+    this.assertMaintenanceAvailable();
     const file = join(dir, "status.json");
     const initial = readJson(file, 256 * 1024);
     if (!initial || !ACTIVE_JOB_STATES.has(initial.status)) {
       if (initial) scrubFinishedPlan(dir, initial);
       return;
     }
-    const initialPid = Number(initial.runner_pid) || readRunnerPid(dir);
-    if (Number.isInteger(initialPid) && initialPid > 0 && isPidAlive(initialPid)) return;
+    if (runnerProcessIsCurrent(initial, dir)) return;
     const updated = Date.parse(initial.updated_at || initial.created_at || "");
     if (Number.isFinite(updated) && Date.now() - updated < 10_000) return;
 
@@ -324,14 +349,13 @@ export class ManagedJobManager {
     try {
       const status = readJson(file, 256 * 1024);
       if (!status || !ACTIVE_JOB_STATES.has(status.status)) return;
-      const pid = Number(status.runner_pid) || readRunnerPid(dir);
-      if (Number.isInteger(pid) && pid > 0 && isPidAlive(pid)) return;
+      if (runnerProcessIsCurrent(status, dir)) return;
       const recoveryAttempts = Number(status.recovery_attempts || 0);
       if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
         markRecoveryExhausted(dir, file, status, recoveryAttempts);
         return;
       }
-      const runnerPid = relaunchInterruptedJob(dir, file, status, recoveryAttempts);
+      const runnerPid = relaunchInterruptedJob(dir, file, status, recoveryAttempts, recoveryLock.token);
       recoveryLock.handoff(runnerPid);
       handedOff = true;
     } finally {
@@ -340,22 +364,35 @@ export class ManagedJobManager {
   }
 
   recoverInterruptedJobs() {
+    this.assertMaintenanceAvailable();
     for (const entry of safeReadDir(this.jobRoot)) {
       if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
-      this.reconcileStatus(join(this.jobRoot, entry.name));
+      try {
+        this.reconcileStatus(join(this.jobRoot, entry.name));
+      } catch (error) {
+        this.logger.warn?.("managed job recovery skipped unreadable state; retaining it for inspection", { error_class: resourceErrorClass(error) });
+      }
     }
   }
 
   prune() {
+    this.assertMaintenanceAvailable();
     const entries = [];
     for (const entry of safeReadDir(this.jobRoot)) {
       if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
       const dir = join(this.jobRoot, entry.name);
-      const status = readJson(join(dir, "status.json"), 256 * 1024);
-      const mtime = safeMtime(dir);
+      let status;
+      let mtime;
+      try {
+        status = readJson(join(dir, "status.json"), 256 * 1024, "job status");
+        mtime = statSync(dir).mtimeMs;
+      } catch (error) {
+        this.logger.warn?.("managed job pruning skipped unreadable state; retaining it for inspection", { error_class: resourceErrorClass(error) });
+        continue;
+      }
       if (!status) {
-        const pid = readRunnerPid(dir);
-        if ((!pid || !isPidAlive(pid)) && Date.now() - mtime > 60_000) {
+        const runner = readRunnerOwner(dir, { startedAt: new Date(mtime).toISOString() });
+        if (!runnerProcessIsCurrent(runner, dir, { ownerOnly: true }) && Date.now() - mtime > 60_000) {
           rmSync(dir, { recursive: true, force: true });
           continue;
         }
@@ -384,13 +421,19 @@ export class ManagedJobManager {
 
 export function activeManagedJobs(jobRoot) {
   const root = resolve(jobRoot);
+  if (!existsSync(root)) return [];
   const jobs = [];
   for (const entry of safeReadDir(root)) {
     if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
     const dir = join(root, entry.name);
-    const status = readJson(join(dir, "status.json"), 256 * 1024);
-    const pid = Number(status?.runner_pid) || readRunnerPid(dir);
-    const runnerAlive = Number.isInteger(pid) && pid > 0 && isPidAlive(pid);
+    let status;
+    try {
+      status = readJson(join(dir, "status.json"), 256 * 1024, "job status");
+    } catch (error) {
+      jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: resourceErrorClass(error) });
+      continue;
+    }
+    const runnerAlive = runnerProcessIsCurrent(status, dir);
     const lifecycleActive = status && ACTIVE_JOB_STATES.has(status.status);
     if (runnerAlive || lifecycleActive) {
       jobs.push({
@@ -673,7 +716,7 @@ function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
   scrubFinishedPlan(dir, status);
 }
 
-function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts) {
+function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recoveryToken) {
   status.status = "interrupted";
   status.updated_at = new Date().toISOString();
   status.finished_at = status.updated_at;
@@ -682,7 +725,7 @@ function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts) {
   atomicWriteJson(statusFile, status, 256 * 1024);
   rmSync(join(dir, "runtime"), { recursive: true, force: true });
   rmSync(join(dir, "runner.pid"), { force: true });
-  return launchRunner(dir, true);
+  return launchRunner(dir, true, recoveryToken);
 }
 
 function acquireRecoveryLock(dir) {
@@ -707,32 +750,102 @@ function acquireJobTransitionLock(dir) {
 }
 
 function acquirePidLock(file, { allowHandoff = false } = {}) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const owner = pidLockOwner(process.pid, currentProcessStartTimeMs());
     try {
-      writeFileSync(file, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
+      createExclusiveFileSync(file, `${JSON.stringify(owner)}
+`, { mode: 0o600 });
       return {
         ...(allowHandoff ? {
           handoff(pid) {
-            if (Number.isInteger(pid) && pid > 0) writeFileSync(file, `${pid}\n`, { mode: 0o600 });
+            if (!Number.isInteger(pid) || pid <= 0) return;
+            const nextOwner = { ...pidLockOwner(pid, processStartTimeMs(pid)), token: owner.token };
+            replacePrivateTextFile(file, `${JSON.stringify(nextOwner)}
+`);
           },
         } : {}),
-        release() { rmSync(file, { force: true }); },
+        token: owner.token,
+        release() { removePidLockOwnedBy(file, owner.token); },
       };
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      let owner = 0;
-      try { owner = Number.parseInt(readBoundedFile(file, 64).toString("utf8").trim(), 10); } catch {}
-      const age = Date.now() - safeMtime(file);
-      const ownerAlive = owner > 0 && isPidAlive(owner);
-      const definitelyStale = age >= 5 * 60_000 || (!ownerAlive && age >= 60_000);
+      const snapshot = readPidLockSnapshot(file);
+      if (!snapshot) continue;
+      const age = Date.now() - snapshot.info.mtimeMs;
+      const identity = snapshot.owner ? inspectProcessInstance(snapshot.owner, { maxAgeMs: 5 * 60_000 }) : null;
+      const definitelyStale = !snapshot.owner
+        ? age >= 60_000
+        : identity.reclaimable === true;
       if (!definitelyStale) return null;
-      rmSync(file, { force: true });
+      removePidLockSnapshot(file, snapshot);
     }
   }
   return null;
 }
 
-function launchRunner(dir, recover = false) {
+function pidLockOwner(pid, startedAtMs) {
+  return {
+    pid,
+    token: randomBytes(16).toString("hex"),
+    startedAt: new Date().toISOString(),
+    processStartedAt: Number.isFinite(startedAtMs) && startedAtMs > 0 ? new Date(startedAtMs).toISOString() : null,
+  };
+}
+
+function readPidLockOwner(file) {
+  return readPidLockSnapshot(file)?.owner || null;
+}
+
+function readPidLockSnapshot(file) {
+  let info;
+  try { info = lstatSync(file); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error("job lock must be a regular non-symbolic-link file");
+  let owner = null;
+  try {
+    const text = readBoundedFile(file, 1024).toString("utf8").trim();
+    if (/^\d+$/.test(text)) owner = { pid: Number(text), startedAt: new Date(info.mtimeMs).toISOString() };
+    else {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
+    }
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+  }
+  return { owner, info: pidLockIdentity(info) };
+}
+
+function removePidLockOwnedBy(file, token) {
+  const snapshot = readPidLockSnapshot(file);
+  if (!snapshot || snapshot.owner?.token !== token) return false;
+  return removePidLockSnapshot(file, snapshot);
+}
+
+function removePidLockSnapshot(file, snapshot) {
+  let current;
+  try { current = lstatSync(file); } catch (error) { return error?.code === "ENOENT"; }
+  if (current.isSymbolicLink() || !current.isFile()) return false;
+  if (!samePidLockIdentity(snapshot.info, pidLockIdentity(current))) return false;
+  if (snapshot.owner?.token) {
+    const currentOwner = readPidLockSnapshot(file)?.owner;
+    if (currentOwner?.token !== snapshot.owner.token) return false;
+  }
+  try { rmSync(file); return true; } catch (error) { return error?.code === "ENOENT"; }
+}
+
+function pidLockIdentity(info) {
+  return { dev: Number(info.dev), ino: Number(info.ino), size: Number(info.size), mtimeMs: Number(info.mtimeMs) };
+}
+
+function samePidLockIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
+function replacePrivateTextFile(file, content) {
+  replaceFileAtomicallySync(file, content, { mode: 0o600 });
+  ownerOnlyFile(file);
+}
+
+function launchRunner(dir, recover = false, recoveryToken = "") {
   const args = [RUNNER_PATH, "--job-dir", dir];
   if (recover) args.push("--recover");
   const stdoutFile = join(dir, "runner.out.log");
@@ -749,6 +862,7 @@ function launchRunner(dir, recover = false) {
       detached: true,
       stdio: ["ignore", stdoutFd, stderrFd],
       windowsHide: true,
+      env: recoveryToken ? { ...process.env, MBM_RECOVERY_LOCK_TOKEN: recoveryToken } : process.env,
     });
   } finally {
     if (stdoutFd !== undefined) closeSync(stdoutFd);
@@ -761,13 +875,28 @@ function launchRunner(dir, recover = false) {
 }
 
 
-function readRunnerPid(dir) {
+function readRunnerOwner(dir, fallback = {}) {
   try {
-    const value = Number.parseInt(readBoundedFile(join(dir, "runner.pid"), 64).toString("utf8").trim(), 10);
-    return Number.isInteger(value) && value > 0 ? value : 0;
+    const text = readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8").trim();
+    if (/^\d+$/.test(text)) return { pid: Number(text), ...fallback };
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...fallback };
+    return { ...fallback, ...parsed };
   } catch {
-    return 0;
+    return { ...fallback };
   }
+}
+
+function runnerProcessIsCurrent(status, dir, { ownerOnly = false } = {}) {
+  const fallback = ownerOnly ? status : {
+    pid: Number(status?.runner_pid) || undefined,
+    processStartedAt: status?.runner_process_started_at,
+    startedAt: status?.started_at || status?.updated_at || status?.created_at,
+  };
+  const owner = readRunnerOwner(dir, fallback);
+  if (!owner.pid) return false;
+  const identity = inspectProcessInstance(owner, { maxAgeMs: Number.POSITIVE_INFINITY });
+  return identity.current || (identity.alive && !identity.reclaimable);
 }
 
 function scrubFinishedPlan(dir, status) {
@@ -816,20 +945,30 @@ function publicStatus(status) {
 
 function atomicWriteJson(file, value, maxBytes) {
   ensureOwnerOnlyDir(dirname(file));
-  const text = `${JSON.stringify(value, null, 2)}\n`;
+  const text = `${JSON.stringify(value, null, 2)}
+`;
   if (Buffer.byteLength(text) > maxBytes) throw new Error(`JSON exceeds ${maxBytes} bytes`);
-  const temp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  writeFileSync(temp, text, { mode: 0o600, flag: "wx" });
-  replaceFileSync(temp, file);
+  replaceFileAtomicallySync(file, text, { mode: 0o600 });
   ownerOnlyFile(file);
 }
 
-function readJson(file, maxBytes) {
-  try { return JSON.parse(readBoundedFile(file, maxBytes).toString("utf8")); } catch { return null; }
+function readJson(file, maxBytes, label = "JSON") {
+  let buffer;
+  try { buffer = readBoundedFile(file, maxBytes); } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw new Error(`${label} is unavailable (${resourceErrorClass(error)})`);
+  }
+  let text;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
+    throw new Error(`${label} is not valid UTF-8`);
+  }
+  try { return JSON.parse(text); } catch {
+    throw new Error(`${label} is not valid JSON`);
+  }
 }
 
 function readRequiredJson(file, maxBytes, label) {
-  const value = readJson(file, maxBytes);
+  const value = readJson(file, maxBytes, label);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is unavailable or invalid`);
   return value;
 }
@@ -900,15 +1039,7 @@ function resourceErrorClass(error) {
 }
 
 function safeReadDir(dir) {
-  try { return readdirSync(dir, { withFileTypes: true }); } catch { return []; }
-}
-
-function safeMtime(path) {
-  try { return statSync(path).mtimeMs; } catch { return 0; }
-}
-
-function isPidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
+  return readdirSync(dir, { withFileTypes: true });
 }
 
 function boundedString(value, maxBytes, label) {

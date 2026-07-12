@@ -132,7 +132,9 @@ export class AppAutomationManager {
       if (value !== null) throw new Error("value and value_resource are mutually exclusive");
       value = await this.readResourceText(requiredResourceName(args.value_resource));
     }
-    if (value !== null && value.length > MAX_TEXT_CHARS) throw new Error(`application action value exceeds ${MAX_TEXT_CHARS} characters`);
+    if (value !== null && (value.includes("\0") || value.length > MAX_TEXT_CHARS)) {
+      throw new Error(`application action value exceeds ${MAX_TEXT_CHARS} characters or contains a NUL byte`);
+    }
     const payload = {
       operation: "act",
       application: processName,

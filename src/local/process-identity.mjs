@@ -1,0 +1,143 @@
+import { spawnSync } from "node:child_process";
+import { performance } from "node:perf_hooks";
+
+const COMMAND_TIMEOUT_MS = 3000;
+const COMMAND_OUTPUT_BYTES = 256 * 1024;
+const START_TIME_TOLERANCE_MS = 15_000;
+
+export function isPidAlive(pid) {
+  const parsed = normalizePid(pid);
+  if (!parsed) return false;
+  try {
+    process.kill(parsed, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+export function currentProcessStartTimeMs() {
+  const value = Number(performance.timeOrigin);
+  return Number.isFinite(value) && value > 0 ? value : Date.now();
+}
+
+export function processStartTimeMs(pid) {
+  const parsed = normalizePid(pid);
+  if (!parsed) return null;
+  if (parsed === process.pid) return currentProcessStartTimeMs();
+  if (process.platform === "win32") {
+    const command = `(Get-CimInstance Win32_Process -Filter "ProcessId = ${parsed}").CreationDate.ToUniversalTime().ToString('o')`;
+    const result = runBounded("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]);
+    return result.ok ? parseTime(result.stdout) : null;
+  }
+  const result = runBounded("ps", ["-p", String(parsed), "-o", "lstart="]);
+  return result.ok ? parseTime(result.stdout) : null;
+}
+
+export function processCommandLine(pid) {
+  const parsed = normalizePid(pid);
+  if (!parsed) return "";
+  if (process.platform === "win32") {
+    const command = `(Get-CimInstance Win32_Process -Filter "ProcessId = ${parsed}").CommandLine`;
+    const result = runBounded("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]);
+    return result.ok ? result.stdout.trim() : "";
+  }
+  const result = runBounded("ps", ["-ww", "-p", String(parsed), "-o", "command="]);
+  return result.ok ? result.stdout.trim() : "";
+}
+
+export function splitProcessCommandLine(value) {
+  const args = [];
+  let current = "";
+  let quote = "";
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote) quote = "";
+      else if (character === "\\" && quote === '"' && ['"', "\\"].includes(text[index + 1])) {
+        current += text[index + 1];
+        index += 1;
+      } else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+      continue;
+    }
+    if (character === "\\" && /[\s'"\\]/.test(text[index + 1] || "")) {
+      current += text[index + 1];
+      index += 1;
+      continue;
+    }
+    current += character;
+  }
+  if (current) args.push(current);
+  return args;
+}
+
+export function inspectProcessInstance(owner, options = {}) {
+  const pid = normalizePid(owner?.pid);
+  if (!pid) return { current: false, alive: false, reclaimable: true, reason: "invalid_pid", pid: null };
+  const alive = (options.isAlive || isPidAlive)(pid);
+  if (!alive) return { current: false, alive: false, reclaimable: true, reason: "not_running", pid };
+
+  const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  const lockStartedAt = parseTime(owner?.startedAt);
+  if (!lockStartedAt) return { current: false, alive: true, reclaimable: false, reason: "invalid_lock_timestamp", pid };
+  if (lockStartedAt > now + START_TIME_TOLERANCE_MS) return { current: false, alive: true, reclaimable: false, reason: "future_lock_timestamp", pid };
+
+  const observedStart = (options.getProcessStartTime || processStartTimeMs)(pid);
+  const recordedStart = parseTime(owner?.processStartedAt);
+  if (Number.isFinite(observedStart) && observedStart > 0) {
+    if (recordedStart && Math.abs(observedStart - recordedStart) > START_TIME_TOLERANCE_MS) {
+      return { current: false, alive: true, reclaimable: true, reason: "pid_reused", pid, process_started_at: observedStart };
+    }
+    if (!recordedStart && lockStartedAt + START_TIME_TOLERANCE_MS < observedStart) {
+      return { current: false, alive: true, reclaimable: true, reason: "pid_reused", pid, process_started_at: observedStart };
+    }
+  }
+  const maxAgeMs = Number(options.maxAgeMs);
+  if (Number.isFinite(maxAgeMs) && maxAgeMs > 0 && now - lockStartedAt > maxAgeMs) {
+    return { current: false, alive: true, reclaimable: false, reason: "lock_expired", pid, age_ms: now - lockStartedAt };
+  }
+  return {
+    current: true,
+    alive: true,
+    reclaimable: false,
+    reason: "current_process",
+    pid,
+    age_ms: Math.max(0, now - lockStartedAt),
+    process_started_at: Number.isFinite(observedStart) ? observedStart : null,
+  };
+}
+
+function runBounded(command, args) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    timeout: COMMAND_TIMEOUT_MS,
+    maxBuffer: COMMAND_OUTPUT_BYTES,
+    windowsHide: true,
+    env: process.platform === "win32" ? process.env : { ...process.env, LC_ALL: "C", LANG: "C" },
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return { ok: !result.error && result.status === 0, stdout: String(result.stdout || "") };
+}
+
+function normalizePid(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function parseTime(value) {
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : null;
+  const parsed = Date.parse(String(value || "").trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}

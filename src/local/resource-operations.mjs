@@ -3,15 +3,14 @@ import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { inspectResourceFile, validateResourceName } from "./managed-jobs.mjs";
 import { generateSshKeyPair } from "./ssh-key.mjs";
-import { acquireStartupLock, loadState, saveState } from "./state.mjs";
+import { acquireStartupLockWithWait, loadState, saveState } from "./state.mjs";
 
 export async function generateRegisteredSshKey({ workspace, stateDir, name: rawName, targetPath, comment = "" }) {
   const name = validateResourceName(rawName);
   if (typeof targetPath !== "string" || !targetPath.trim()) throw new Error("SSH private key target path is required");
   const target = resolve(targetPath);
   const state = loadState(workspace, { stateDir });
-  const lock = acquireStartupLock(state);
-  if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
+  const lock = await acquireStartupLockWithWait(state, { operation: "generate-ssh-key" });
   let key = null;
   try {
     state.resources ||= {};

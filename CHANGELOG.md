@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.12.0 - 2026-07-12
+
+### Locking, persistence, and process lifecycle
+
+- Replace partial-write-prone final-path lock creation with fully written, flushed temporary files and atomic same-directory hard-link claims. Record ownership tokens and process start times, detect PID reuse, verify file identity before stale-lock removal, preserve recent malformed locks, and add bounded startup-lock waiting.
+- Add a state-root maintenance lock for full uninstall, including checks in already constructed managed-job and browser managers. State roots must be disjoint from selected workspaces, including non-existent paths beneath canonicalized platform aliases; unreadable locks/jobs and ambiguous process identities now block destructive cleanup rather than being treated as inactive.
+- Consolidate owner-only state, managed-job, runner, browser-pairing, and service-definition commits on one flushed atomic replacement primitive. Only successfully read invalid JSON is backed up; permission, symbolic-link, size, invalid UTF-8, and I/O failures propagate without silently reconstructing empty state.
+- Persist managed-job runner process identity, protect transition/recovery locks with token and file-snapshot checks, hand recovery ownership to the runner without an unconditional delete, and keep timeout/cancellation escalation alive until resistant descendant process trees are terminated.
+
+### Services, uninstall, and cross-platform behavior
+
+- Extract one fail-closed service lifecycle: stop the platform service, stop every verified workspace daemon, and remove the service definition only after all stop phases succeed. Full uninstall scans every profile and rechecks managed jobs and process locks while holding maintenance ownership.
+- Normalize launchd, systemd user services, and Windows Scheduled Tasks to a common success/failure contract so non-zero Linux/Windows stop results cannot be mistaken for success. Preserve service definitions and local state whenever stop, verification, definition removal, or remote Worker discovery is incomplete.
+- Make CLI helper timeouts terminate process groups/trees rather than only direct children, including forced escalation for descendants that ignore graceful termination.
+
+### Security, privacy, and local automation
+
+- Expand repository privacy and log redaction coverage for npm authentication, common cloud/source-control/chat/payment tokens, JWT-shaped values, embedded-credential URLs, broader private-key headers, credential-shaped filenames, and non-example identities. Scanner read/traversal failures now fail closed without echoing matched values.
+- Add final-component no-follow reads in restricted filesystem paths, reject NUL application action values, and normalize browser-upload filenames and MIME types to prevent deceptive metadata or downstream form parsing ambiguity.
+- Close authenticated browser broker sockets with protocol-specific WebSocket codes for oversized, invalid UTF-8/JSON, or structurally invalid messages instead of silently retaining faulty clients.
+
+### Tests, architecture, and documentation
+
+- Replace the hand-maintained JavaScript syntax list with recursive entrypoint discovery; remove stale imports and duplicated lifecycle logic. Add executable concurrency, atomicity, PID-reuse, service-failure, process-tree, state-corruption, unsafe-root, unreadable-job, browser-protocol, upload-metadata, and privacy regression tests.
+- Add `docs/AUDIT.md` and synchronize architecture, security, operations, logging, privacy, managed-job, local-automation, testing, contribution, and release documentation with the implemented fail-closed behavior and residual OS-level limitations.
+
 ## 0.11.1 - 2026-07-12
 
 ### Reliable macOS service and orphan-daemon takeover

@@ -18,9 +18,9 @@ No transport is treated as a sandbox. Both transports invoke the same local runt
 
 ### CLI and state layer
 
-The CLI canonicalizes workspaces, resolves policy profiles, maintains per-workspace state and credentials, serializes startup/deploy/rotation with locks, deploys the Worker, installs optional platform-native autostart, and starts either remote daemon or stdio mode.
+The CLI canonicalizes workspaces, resolves policy profiles, maintains per-workspace state and credentials, serializes startup/deploy/rotation with process-identity locks, deploys the Worker, installs optional platform-native autostart, and starts either remote daemon or stdio mode.
 
-A canonical workspace receives an independent profile, Worker name, secret set, resource registry, managed-job directory, daemon/startup locks, and state file. State schema version 5 records policy origin/revision and local resource metadata in addition to the capability fields.
+A canonical workspace receives an independent profile, Worker name, secret set, resource registry, managed-job directory, daemon/startup locks, and state file. State schema version 5 records policy origin/revision and local resource metadata in addition to the capability fields. `exclusive-file.mjs` owns complete-before-visible exclusive claims and flushed atomic replacement. `process-identity.mjs` owns PID liveness, process start-time comparison, bounded command-line inspection, and PID-reuse classification. `service-lifecycle.mjs` owns the fail-closed stop-daemons-before-remove state machine shared by service removal and full uninstall.
 
 ### Local runtime
 
@@ -40,7 +40,7 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 
 `RelayConnection` owns remote WebSocket transport, authenticated `hello_ack` readiness, heartbeat liveness, reconnect backoff, and outage logging. Stdio mode invokes `LocalRuntime` directly without that adapter.
 
-`daemon-process.mjs` owns workspace-daemon inspection and takeover. It distinguishes platform service state from the lock-owning Node process, canonicalizes workspace/state paths before identity comparison, parses bounded process command lines without executing them, and sends `SIGTERM` only to a verified same-workspace `--daemon-only` process. CLI orchestration never treats a missing launchd/systemd job as proof that the process exited.
+`daemon-process.mjs` owns workspace-daemon inspection and takeover. It distinguishes platform service state from the lock-owning Node process, validates PID and process-start identity, canonicalizes workspace/state paths before comparison, parses bounded process command lines without executing them, and sends `SIGTERM` only to a verified same-workspace `--daemon-only` process. CLI orchestration never treats a missing launchd/systemd job as proof that the process exited.
 
 ### Agent context and capability resolver
 
@@ -113,6 +113,8 @@ The daemon attachment deliberately omits workspace path/name/hash and process ID
 
 The service layer emits launchd, systemd-user, or Windows Scheduled Task definitions. Credentials are not embedded in service definitions; the daemon loads owner-only state. The exact policy is stored in owner-only state. launchd/systemd definitions contain the workspace/state-root selectors, a `warn` log-level setting, and a sanitized absolute-only PATH captured at installation so background `full` mode can resolve the same developer tools without accepting relative PATH entries.
 
+The platform adapters normalize launchd, systemd, and Windows Scheduled Task operations to one `{ok, provider}` result contract. Removal is not a provider-specific sequence: `service-lifecycle.mjs` first stops the provider, then every verified workspace daemon in scope, and only then removes the definition. A failed stop or unverifiable process prevents definition/state deletion.
+
 ## Trust boundaries
 
 ```mermaid
@@ -170,7 +172,7 @@ The workspace is canonicalized and compared with targets through consistent plat
 
 Path behavior is profile-dependent. The default `full` profile permits unrestricted direct filesystem paths and returns absolute paths. The `agent`, `edit`, and `review` profiles enforce canonical workspace containment and return workspace-relative paths. Error strings redact canonical and common platform-alias forms of workspace, runtime, and home paths whenever absolute path display is disabled. Access scope and path display are independent: unrestricted access with path display disabled returns relative workspace paths and opaque external-path identifiers.
 
-Symbolic-link destinations and non-regular write targets are rejected. Recursive walkers do not follow symbolic-link directories.
+Symbolic-link destinations and non-regular write targets are rejected. Existing bounded reads add final-component `O_NOFOLLOW` where supported. Recursive walkers do not follow symbolic-link directories. Because portable Node.js lacks descriptor-relative `openat` traversal for every operation, parent-directory replacement by hostile same-user code remains an external-isolation concern.
 
 ## Mutation model
 
@@ -200,7 +202,7 @@ The default `full` profile passes the complete parent environment. Isolated envi
 
 One-shot calls have bounded output and timeouts. Process sessions retain bounded byte buffers with monotonic offsets, accept bounded stdin, support short output/exit waits, and are capped per runtime. Valid UTF-8 is returned as text; byte slices that are not valid UTF-8 also include lossless base64 data. Session IDs are random. Sessions are memory-only and are killed on runtime stop, remote disconnect, or daemon replacement.
 
-Child processes run in a separate process group where supported. Timeout, cancellation, disconnect, and replacement send termination to ordinary process trees, with forced escalation for timeout/disconnect paths.
+Child processes run in a separate process group where supported. Timeout, cancellation, disconnect, and replacement send termination to process trees, with a referenced forced-escalation timer that remains alive even when the direct child exits before a resistant descendant. Windows uses tree-aware task termination.
 
 Managed jobs use the same argv/environment primitives but a different lifecycle. Each job is capped at 16 main and 16 finally steps, 50 retained jobs, 64 registered resources, 8 MiB of referenced resource bytes, 512 KiB of temporary-file content, and bounded per-step output. They are non-interactive. Resource paths/stdin/environment are injected only inside the runner. Exact resource output redaction is defense in depth; discard capture is the strong option when a command may echo credentials.
 
@@ -214,11 +216,15 @@ The Worker also treats a new connection as a bounded candidate until it authenti
 
 ## Persistence
 
-Local state and global config are owner-only, versioned, size-bounded, and written through temporary files, flushes, and atomic rename. Machine-level browser pairing state is owner-only and shared across workspace runtimes through the local broker; its bearer token is not part of workspace state responses. State, managed-job manager, and detached runner commits share a bounded retrying atomic-replace primitive for transient Windows `EPERM`, `EACCES`, `EBUSY`, and `ENOTEMPTY` sharing failures. Managed-job manager and detached runner use one shared no-follow, size-bounded regular-file reader; transition and recovery locks use one PID-lock primitive with bounded stale-lock reclamation and optional runner handoff. Malformed or oversized state becomes a bounded-count `.corrupt-*` backup. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+Local state and global config are owner-only, versioned, and size-bounded. Shared persistence primitives write a complete private temporary file, `fsync` it, and either hard-link it for an exclusive claim or atomically replace the destination. Machine-level browser pairing state is owner-only and shared across workspace runtimes through the local broker; its bearer token is not part of workspace state responses. State, managed-job manager, detached runner, browser pairing, and service definitions share the same flushed atomic-replacement primitive plus bounded retry for transient Windows sharing failures.
 
-Active managed jobs persist an owner-only plan, status, runner PID, and bounded runner diagnostics. Terminal jobs delete the full plan and retain only bounded status/redacted results for up to seven days. This balances crash cleanup with minimization of scripts, stdin, argv, environment overrides, and resource source paths.
+Process locks contain purpose, workspace, ownership token, lock time, and process start time. Stale removal rechecks device/inode/size/mtime and token so an old observer cannot delete a replacement lock. Recent malformed claims receive a grace period. Startup/state operations wait a bounded interval; daemon and runner identity remain process-lifetime locks. Managed-job transition and recovery locks use the same ownership/snapshot principles and support an atomic runner handoff.
 
-Removal validates the state marker, canonical target, known contents, active locks, filesystem root/home/current/package/workspace/source exclusions, and Worker deletion outcome before recursive deletion.
+Only successfully read but syntactically invalid JSON is moved to a bounded `.corrupt-*` backup. Permission, type, symbolic-link, size, encoding, and I/O failures propagate. A state root must be disjoint from its selected workspace. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+
+Active managed jobs persist an owner-only plan, status, runner process identity, and bounded runner diagnostics. Terminal jobs delete the full plan and retain only bounded status/redacted results for up to seven days. This balances crash cleanup with minimization of scripts, stdin, argv, environment overrides, and resource source paths.
+
+Removal first acquires a state-root maintenance lock that blocks new profile/state claims and state-backed operations from already constructed managed-job/browser managers, then stops the platform service and all known verified workspace daemons. It then validates the state marker, canonical target, known contents, active or unreadable locks, filesystem root/home/current/package/workspace/source exclusions, managed jobs, and Worker deletion outcome before recursive deletion. Any unresolved phase retains definitions and state.
 
 OAuth metadata is pruned on access. Expired codes/tokens, old throttling records, and inactive clients without active credentials are removed. Source identities are deployment-keyed HMAC values, not stored source addresses or reversible unsalted hashes.
 

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import path, { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
@@ -14,9 +14,12 @@ import { runWrangler } from "./shell.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { inspectProcessInstance } from "./process-identity.mjs";
+import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
+import { createExclusiveFileSync } from "./exclusive-file.mjs";
 import {
-  acquireDaemonLock,
-  acquireStartupLock,
+  acquireMaintenanceLock,
+  acquireStartupLockWithWait,
   appName,
   daemonLockPathForState,
   defaultStateRoot,
@@ -314,11 +317,7 @@ async function startCommand(args) {
   const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), component: "cli" });
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
-  const startupLock = acquireStartupLock(state);
-  if (!startupLock.acquired) {
-    const pid = startupLock.owner?.pid ? `pid ${startupLock.owner.pid}` : "unknown pid";
-    throw new Error(`another startup/deployment operation is already running for this workspace (${pid})`);
-  }
+  const startupLock = await acquireStartupLockWithWait(state, { operation: "start", logger });
 
   try {
     const startMode = await prepareStartMode(args, state, logger);
@@ -372,9 +371,9 @@ function reportExistingDaemon(args, state, owner, logger) {
     return;
   }
   if (owner?.mode === "foreground") {
-    logger.plain("  Stop the existing foreground process with Ctrl+C in its terminal, then retry.");
+    logger.safePlain("  Stop the existing foreground process with Ctrl+C in its terminal, then retry.");
   } else {
-    logger.plain("  Run `machine-mcp service stop`, verify `machine-mcp service status`, then retry.");
+    logger.safePlain("  Run `machine-mcp service stop`, verify `machine-mcp service status`, then retry.");
   }
   logger.plain(`  Workspace: ${state.workspace.path}`);
 }
@@ -603,12 +602,11 @@ function resourceListAction({ args, workspace, state }) {
   }
 }
 
-function resourceAddAction({ args, workspace, state }) {
+async function resourceAddAction({ args, workspace, state }) {
   const name = validateResourceName(args._[1]);
   const inputPath = args._[2];
   if (!inputPath) throw new Error("resource add requires NAME and FILE_PATH");
-  const lock = acquireStartupLock(state);
-  if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
+  const lock = await acquireStartupLockWithWait(state, { operation: "resource-add" });
   try {
     const latest = loadState(workspace, { stateDir: args.stateDir });
     latest.resources ||= {};
@@ -672,10 +670,9 @@ async function resourceGenerateSshKeyAction({ args, workspace }) {
   }
 }
 
-function resourceRemoveAction({ args, workspace, state }) {
+async function resourceRemoveAction({ args, workspace, state }) {
   const name = validateResourceName(args._[1]);
-  const lock = acquireStartupLock(state);
-  if (!lock.acquired) throw new Error("another state-changing operation is already running for this workspace");
+  const lock = await acquireStartupLockWithWait(state, { operation: "resource-remove" });
   try {
     const latest = loadState(workspace, { stateDir: args.stateDir });
     latest.resources ||= {};
@@ -803,6 +800,7 @@ async function jobCommand(args) {
     policy: resolvePolicy({}, state.policy),
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
+    stateRoot: state.paths.stateRoot,
     logger: createLogger({ level: "warn", component: "job" }),
   });
   let result;
@@ -922,7 +920,7 @@ async function withSecretsFile(state, callback) {
     DAEMON_SHARED_SECRET: state.worker.daemonSecret,
     OAUTH_TOKEN_VERSION: state.worker.oauthTokenVersion,
   };
-  writeFileSync(tempPath, JSON.stringify(payload), { mode: 0o600 });
+  createExclusiveFileSync(tempPath, JSON.stringify(payload), { mode: 0o600 });
   ownerOnlyFile(tempPath);
   try {
     return await callback(tempPath);
@@ -931,7 +929,7 @@ async function withSecretsFile(state, callback) {
   }
 }
 
-function cleanupStaleSecretFiles(dir) {
+export function cleanupStaleSecretFiles(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const match = /^worker-secrets-(\d+)-(\d+)(?:-[a-f0-9]+)?\.json$/.exec(entry.name);
@@ -939,8 +937,9 @@ function cleanupStaleSecretFiles(dir) {
     const file = resolve(dir, entry.name);
     try {
       const pid = Number(match[1]);
-      const ageMs = Date.now() - statSync(file).mtimeMs;
-      if (!isPidAlive(pid) || ageMs > 60 * 60 * 1000) unlinkSync(file);
+      const createdAt = Number(match[2]);
+      const identity = inspectProcessInstance({ pid, startedAt: new Date(createdAt).toISOString() });
+      if (!identity.current) unlinkSync(file);
     } catch {}
   }
 }
@@ -1074,13 +1073,13 @@ function printMcpConnection(state, {
     else logger.plain(`  MCP connection password: ${previewSecret(payload.mcp_connection_password)} (redacted)`);
   } else {
     logger.success("Remote MCP bridge is ready");
-    logger.plain("  Connection credentials unchanged; use --print-mcp-credentials only when reconnecting a client.");
+    logger.safePlain("  Connection credentials unchanged; use --print-mcp-credentials only when reconnecting a client.");
   }
   if (policyMigrated) {
     logger.warn("Legacy implicit policy migrated to full access; use --profile agent, edit, or review to narrow it.");
   }
   logger.plain(`  Workspace: ${payload.workspace}`);
-  logger.plain(`  Policy: ${formatPolicySummary(payload.policy)}`);
+  logger.safePlain(`  Policy: ${formatPolicySummary(payload.policy)}`);
   if (verbose) logger.plain(`  State: ${payload.state_path}`);
 }
 
@@ -1186,16 +1185,19 @@ async function fullTestCommand(args) {
 async function rotateSecretsCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
-  const startupLock = acquireStartupLock(state);
-  if (!startupLock.acquired) {
-    const pid = startupLock.owner?.pid ? `pid ${startupLock.owner.pid}` : "unknown pid";
-    throw new Error(`another startup/deployment operation is already running for this workspace (${pid})`);
-  }
+  const operationLogger = createLogger({ level: args.quiet ? "error" : "warn", component: "service" });
+  const startupLock = await acquireStartupLockWithWait(state, { operation: "rotate-secrets", logger: operationLogger });
   try {
-    await stopAutostartBestEffort(createLogger({ level: args.quiet ? "error" : "warn", component: "service" }));
-    await sleep(500);
+    await stopAutostartBestEffort(operationLogger);
+    const stopped = await stopWorkspaceServiceDaemon(state, { logger: operationLogger, reason: "secret rotation" });
+    if (stopped.found && !stopped.ok) {
+      const pid = stopped.pid ? `pid ${stopped.pid}` : "unknown pid";
+      throw new Error(`refusing to rotate secrets while a daemon cannot be safely stopped (${pid}; ${stopped.reason})`);
+    }
+    await sleep(100);
     const daemonOwner = readDaemonLockOwner(daemonLockPathForState(state));
-    if (daemonOwner?.pid && isPidAlive(daemonOwner.pid)) {
+    const daemonIdentity = daemonOwner ? inspectProcessInstance(daemonOwner) : null;
+    if (daemonIdentity?.current) {
       throw new Error(`refusing to rotate secrets while the daemon is active (pid ${daemonOwner.pid}); stop the foreground daemon and retry`);
     }
     ensureWorkerSecrets(state, { rotateSecrets: true, workerName: validateWorkerName(args.workerName) });
@@ -1235,11 +1237,13 @@ async function serviceCommand(args) {
     }
     const result = await installAutostart({ workspace, stateRoot, entryScript: process.argv[1], logger: structuredLogger(Boolean(args.quiet)) });
     console.log(JSON.stringify(result, null, 2));
+    if (result?.ok === false) process.exitCode = 1;
     return;
   }
   if (action === "start") {
     const result = await startAutostart({ logger: structuredLogger(Boolean(args.quiet)) });
     console.log(JSON.stringify(result, null, 2));
+    if (result?.ok === false) process.exitCode = 1;
     return;
   }
   if (action === "stop") {
@@ -1261,16 +1265,21 @@ async function serviceCommand(args) {
   }
   if (action === "uninstall" || action === "remove") {
     const logger = structuredLogger(Boolean(args.quiet));
-    const result = await uninstallAutostart({ stateRoot, logger });
     const state = optionalServiceState(args, stateRoot);
-    const workspaceDaemon = state
-      ? await stopWorkspaceServiceDaemon(state, { logger, reason: "service uninstall" })
-      : { ok: true, found: false, stopped: false, verified_service_daemon: false, reason: "workspace_not_selected" };
+    const lifecycle = await stopAndRemoveAutostart({
+      states: state ? [state] : [],
+      stateRoot,
+      logger,
+      reason: "service uninstall",
+      stopAutostart,
+      uninstallAutostart,
+      stopWorkspaceServiceDaemon,
+    });
     const output = {
-      ...result,
-      ok: result?.ok !== false && workspaceDaemon.ok,
+      ...lifecycle,
       workspace: state?.workspace?.path || null,
-      workspace_daemon: workspaceDaemon,
+      workspace_daemon: lifecycle.workspace_daemons[0] || null,
+      autostart_removed: lifecycle.removed,
     };
     console.log(JSON.stringify(output, null, 2));
     if (!output.ok) process.exitCode = 1;
@@ -1315,7 +1324,7 @@ async function stopAutostartBestEffort(logger) {
 async function uninstallCommand(args) {
   const stateRoot = stateRootFromArgs(args);
   const deleteRemote = !args.keepWorker;
-  validateStateRootForRemoval(stateRoot);
+  const validation = validateStateRootForRemoval(stateRoot);
   const action = deleteRemote
     ? `delete deployed Worker(s), remove autostart entries, and remove local state at ${stateRoot}`
     : `remove autostart entries and local state at ${stateRoot} while keeping deployed Worker(s)`;
@@ -1324,26 +1333,46 @@ async function uninstallCommand(args) {
     console.log("Uninstall cancelled. Re-run with `machine-mcp uninstall --yes` to skip confirmation.");
     return;
   }
+  const currentValidation = validateStateRootForRemoval(stateRoot);
+  const maintenance = currentValidation.exists ? acquireMaintenanceLock(stateRoot, { operation: "uninstall" }) : null;
+  if (maintenance && !maintenance.acquired) {
+    const pid = maintenance.owner?.pid ? `pid ${maintenance.owner.pid}` : "another process";
+    throw new Error(`another state maintenance operation is active (${pid})`);
+  }
+  try {
+    if (currentValidation.exists) validateStateRootForRemoval(stateRoot);
+    assertNoActiveJobsForUninstall(stateRoot);
+    const autostartRemoved = await removeAutostartBestEffort(stateRoot);
+    if (!autostartRemoved) throw new Error("autostart removal failed; state and Worker were kept so the uninstall can be retried safely");
+    await sleep(100);
+    assertNoActiveJobsForUninstall(stateRoot);
+    assertNoActiveLocksForUninstall(stateRoot);
+    if (deleteRemote) await deleteKnownWorkers(stateRoot);
+    assertNoActiveJobsForUninstall(stateRoot);
+    assertNoActiveLocksForUninstall(stateRoot);
+    removeStateRoot(stateRoot);
+    console.log("Removed local autostart entries and state.");
+    if (deleteRemote) console.log("Requested deletion for known deployed Worker(s).");
+    console.log("If installed globally, remove the npm package with:");
+    console.log("  npm uninstall -g machine-bridge-mcp");
+  } finally {
+    maintenance?.release?.();
+  }
+}
+
+function assertNoActiveJobsForUninstall(stateRoot) {
   const activeJobs = activeStateJobs(stateRoot);
-  if (activeJobs.length) {
-    const detail = activeJobs.slice(0, 5).map((item) => `${item.job_id}:${item.status}`).join(", ");
-    const suffix = activeJobs.length > 5 ? `, and ${activeJobs.length - 5} more` : "";
-    throw new Error(`refusing to uninstall while managed jobs are active (${detail}${suffix}); inspect or cancel them with machine-mcp job list/cancel`);
-  }
-  const autostartRemoved = await removeAutostartBestEffort(stateRoot);
-  if (!autostartRemoved) throw new Error("autostart removal failed; state and Worker were kept so the uninstall can be retried safely");
-  await sleep(500);
+  if (!activeJobs.length) return;
+  const detail = activeJobs.slice(0, 5).map((item) => `${item.job_id}:${item.status}`).join(", ");
+  const suffix = activeJobs.length > 5 ? `, and ${activeJobs.length - 5} more` : "";
+  throw new Error(`refusing to uninstall while managed jobs are active (${detail}${suffix}); inspect or cancel them with machine-mcp job list/cancel`);
+}
+
+function assertNoActiveLocksForUninstall(stateRoot) {
   const activeLocks = activeStateLocks(stateRoot);
-  if (activeLocks.length) {
-    const detail = activeLocks.map((item) => `${item.kind}:${item.pid || "unknown"}`).join(", ");
-    throw new Error(`refusing to uninstall while Machine Bridge processes are active (${detail}); stop foreground sessions and retry`);
-  }
-  if (deleteRemote) await deleteKnownWorkers(stateRoot);
-  removeStateRoot(stateRoot);
-  console.log("Removed local autostart entries and state.");
-  if (deleteRemote) console.log("Requested deletion for known deployed Worker(s).");
-  console.log("If installed globally, remove the npm package with:");
-  console.log("  npm uninstall -g machine-bridge-mcp");
+  if (!activeLocks.length) return;
+  const detail = activeLocks.map((item) => `${item.kind}:${item.pid || "unknown"}`).join(", ");
+  throw new Error(`refusing to uninstall while Machine Bridge processes are active (${detail}); stop foreground sessions and retry`);
 }
 
 async function deleteKnownWorkers(stateRoot) {
@@ -1367,31 +1396,52 @@ async function deleteKnownWorkers(stateRoot) {
   }
 }
 
-function knownWorkerNames(stateRoot) {
+export function knownWorkerNames(stateRoot) {
   const profiles = resolve(expandHome(stateRoot), "profiles");
   if (!existsSync(profiles)) return [];
   const names = new Set();
   for (const entry of readdirSync(profiles, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const stateFile = resolve(profiles, entry.name, "state.json");
-    if (!existsSync(stateFile)) continue;
+    if (!entry.isDirectory() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
+    const profileDir = resolve(profiles, entry.name);
+    const stateFile = resolve(profileDir, "state.json");
+    if (!existsSync(stateFile)) {
+      const evidence = readdirSync(profileDir).some((name) => /^state\.json\.corrupt-/.test(name) || name === "daemon.lock");
+      if (evidence) throw new Error(`cannot determine deployed Worker from profile ${entry.name}; local state was kept for inspection`);
+      continue;
+    }
+    let state;
     try {
-      if (statSync(stateFile).size > 2 * 1024 * 1024) continue;
-      const state = JSON.parse(readFileSync(stateFile, "utf8"));
-      const name = String(state?.worker?.name || "");
-      if (/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) names.add(name);
-    } catch {}
+      state = JSON.parse(readBoundedRegularFileSync(stateFile, 2 * 1024 * 1024).toString("utf8"));
+    } catch {
+      throw new Error(`cannot determine deployed Worker from profile ${entry.name}; local state was kept for inspection`);
+    }
+    if (!state || typeof state !== "object" || Array.isArray(state)) {
+      throw new Error(`cannot determine deployed Worker from profile ${entry.name}; local state was kept for inspection`);
+    }
+    const name = String(state?.worker?.name || "");
+    if (name && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+      throw new Error(`profile ${entry.name} contains an invalid Worker name; local state was kept for inspection`);
+    }
+    if (name) names.add(name);
   }
   return [...names];
 }
 
 async function removeAutostartBestEffort(stateRoot) {
+  const logger = structuredLogger(false);
   try {
     const { stopAutostart, uninstallAutostart } = await import("./service.mjs");
-    await stopAutostart({ logger: structuredLogger(true) }).catch(() => {});
-    const result = await uninstallAutostart({ stateRoot, logger: structuredLogger(false) });
-    if (result?.ok === false) {
-      console.warn("Autostart removal reported failure.");
+    const lifecycle = await stopAndRemoveAutostart({
+      states: knownProfileStates(stateRoot),
+      stateRoot,
+      logger,
+      reason: "uninstall",
+      stopAutostart,
+      uninstallAutostart,
+      stopWorkspaceServiceDaemon,
+    });
+    if (!lifecycle.ok) {
+      console.warn(`Autostart removal stopped at ${lifecycle.reason}; service definitions and state were kept.`);
       return false;
     }
     return true;
@@ -1399,6 +1449,46 @@ async function removeAutostartBestEffort(stateRoot) {
     console.warn(`Autostart removal skipped or failed (${classifyOperationalError(error)}). Run machine-mcp service status for details.`);
     return false;
   }
+}
+
+export function knownProfileStates(stateRoot) {
+  const canonicalStateRoot = resolve(expandHome(stateRoot));
+  const profiles = resolve(canonicalStateRoot, "profiles");
+  if (!existsSync(profiles)) return [];
+  const states = [];
+  const seen = new Set();
+  for (const entry of readdirSync(profiles, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
+    const profileDir = resolve(profiles, entry.name);
+    const statePath = resolve(profileDir, "state.json");
+    const candidates = [];
+    if (existsSync(statePath)) {
+      try {
+        const value = JSON.parse(readBoundedRegularFileSync(statePath, 2 * 1024 * 1024).toString("utf8"));
+        if (typeof value?.workspace?.path === "string") candidates.push(value.workspace.path);
+      } catch {}
+    }
+    const daemonLock = resolve(profileDir, "daemon.lock");
+    const daemonOwner = readDaemonLockOwner(daemonLock);
+    if (existsSync(daemonLock) && !daemonOwner) {
+      throw new Error(`cannot inspect daemon lock for profile ${entry.name}; service definitions and state were kept`);
+    }
+    if (typeof daemonOwner?.workspace === "string") candidates.push(daemonOwner.workspace);
+    for (const candidate of candidates) {
+      try {
+        const workspace = resolveWorkspace(candidate);
+        if (seen.has(workspace)) break;
+        states.push({
+          schemaVersion: 5,
+          workspace: { path: workspace, hash: entry.name },
+          paths: { stateRoot: canonicalStateRoot, profileDir, statePath },
+        });
+        seen.add(workspace);
+        break;
+      } catch {}
+    }
+  }
+  return states;
 }
 
 function activeStateJobs(stateRoot) {
@@ -1424,21 +1514,15 @@ function activeStateLocks(stateRoot) {
       const lockPath = resolve(profiles, profile.name, name);
       if (!existsSync(lockPath)) continue;
       const owner = readDaemonLockOwner(lockPath);
-      if (owner?.pid && isPidAlive(owner.pid)) active.push({ kind, pid: owner.pid, path: lockPath });
+      if (!owner) {
+        active.push({ kind, pid: null, path: lockPath, reason: "invalid_or_unreadable_lock" });
+        continue;
+      }
+      const identity = inspectProcessInstance(owner, { maxAgeMs: kind === "startup" ? 2 * 60 * 60 * 1000 : Number.POSITIVE_INFINITY });
+      if (identity.current || (identity.alive && !identity.reclaimable)) active.push({ kind, pid: owner.pid, path: lockPath, reason: identity.reason });
     }
   }
   return active;
-}
-
-function isPidAlive(pid) {
-  const parsed = Number(pid);
-  if (!Number.isInteger(parsed) || parsed <= 0) return false;
-  try {
-    process.kill(parsed, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
 }
 
 function structuredLogger(quiet) {

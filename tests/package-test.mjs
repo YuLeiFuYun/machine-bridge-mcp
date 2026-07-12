@@ -29,11 +29,15 @@ try {
   if (sensitive.length) throw new Error(`npm package contains sensitive local artifacts: ${sensitive.join(", ")}`);
   if (!record.files.some((item) => item.path === "docs/PRIVACY.md")) throw new Error("npm package omitted privacy guidance");
   if (!record.files.some((item) => item.path === "docs/ENGINEERING.md")) throw new Error("npm package omitted engineering invariants");
+  if (!record.files.some((item) => item.path === "docs/AUDIT.md")) throw new Error("npm package omitted the engineering/security audit record");
   if (!record.files.some((item) => item.path === "src/local/relay-connection.mjs")) throw new Error("npm package omitted the relay lifecycle module");
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   if (!record.files.some((item) => item.path === "src/local/agent-context.mjs")) throw new Error("npm package omitted the agent-context module");
   if (!record.files.some((item) => item.path === "src/local/default-instructions.mjs")) throw new Error("npm package omitted the default-instructions module");
   if (!record.files.some((item) => item.path === "src/local/daemon-process.mjs")) throw new Error("npm package omitted the daemon-process module");
+  if (!record.files.some((item) => item.path === "src/local/process-identity.mjs")) throw new Error("npm package omitted the process-identity module");
+  if (!record.files.some((item) => item.path === "src/local/exclusive-file.mjs")) throw new Error("npm package omitted the atomic exclusive-file module");
+  if (!record.files.some((item) => item.path === "src/local/service-lifecycle.mjs")) throw new Error("npm package omitted the service-lifecycle module");
   if (!record.files.some((item) => item.path === "src/local/app-automation.mjs")) throw new Error("npm package omitted the application-automation module");
   if (!record.files.some((item) => item.path === "src/local/browser-bridge.mjs")) throw new Error("npm package omitted the browser-bridge module");
   if (!record.files.some((item) => item.path === "browser-extension/manifest.json")) throw new Error("npm package omitted the browser extension manifest");
@@ -45,7 +49,11 @@ try {
   if (!record.files.some((item) => item.path === "scripts/privacy-check.mjs")) throw new Error("npm package omitted the privacy checker");
   if (!record.files.some((item) => item.path === "scripts/release-impact-check.mjs")) throw new Error("npm package omitted the release-impact checker");
   if (!record.files.some((item) => item.path === "scripts/network-retry.mjs")) throw new Error("npm package omitted the network retry helper");
+  if (!record.files.some((item) => item.path === "scripts/syntax-check.mjs")) throw new Error("npm package omitted the dynamic syntax checker");
+  if (!record.files.some((item) => item.path === "scripts/github-release.mjs")) throw new Error("npm package omitted the release helper referenced by package scripts");
   if (!record.files.some((item) => item.path === "CONTRIBUTING.md")) throw new Error("npm package omitted contribution/release discipline");
+  const badModes = record.files.filter((item) => ![0o644, 0o755].includes(Number(item.mode))).map((item) => `${item.path}:${item.mode}`);
+  if (badModes.length) throw new Error(`npm package contains unexpected file modes: ${badModes.join(", ")}`);
   console.log(`npm package manifest test ok (${record.files.length} files)`);
 } finally {
   rmSync(output, { recursive: true, force: true });

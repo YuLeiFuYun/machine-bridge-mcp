@@ -60,7 +60,7 @@ The broker is machine-global rather than workspace-global. One local owner liste
 - `browser_inspect_page` returns bounded interactive-element metadata.
 - `browser_action` performs one structured navigation or DOM action. Navigation accepts absolute `http`, `https`, or `file` URLs; script/data schemes are rejected.
 - `browser_fill_form` fills up to 200 fields and can submit once.
-- `browser_upload_files` sets a file input from up to eight registered local resources.
+- `browser_upload_files` sets a file input from up to eight registered local resources. Caller filenames must be safe single-component names; derived names have controls and separators removed. MIME overrides must be canonical media types.
 - `browser_screenshot` returns native MCP image content.
 
 Selectors can use CSS, ID, field name, label text, visible text, ARIA/implicit role, placeholder, and a zero-based match index. The fixed page module traverses open Shadow DOM roots; closed shadow roots remain inaccessible. For frame-specific work, inspect all frames first and then pass `frame_id` to an action.
@@ -74,7 +74,7 @@ machine-mcp resource add account-password /path/to/owner-only/password.txt
 machine-mcp resource add application-pdf /path/to/document.pdf
 ```
 
-Then use `value_resource` for a text field or `resources` for `browser_upload_files`. The local daemon reads the resource only when executing the operation. Results report the alias and outcome, not the resource content. This reduces model-context and result exposure, but the destination page receives the value by design and can transmit it according to its own behavior.
+Then use `value_resource` for a text field or `resources` for `browser_upload_files`. The local daemon reads the resource only when executing the operation. Results report the alias and outcome, not the resource content. Upload metadata is normalized before reaching the page so path separators, controls, deceptive relative names, and malformed MIME values are rejected. This reduces model-context and result exposure, but the destination page receives the value by design and can transmit it according to its own behavior.
 
 ## Application tools
 
@@ -83,7 +83,7 @@ Then use `value_resource` for a text field or `resources` for `browser_upload_fi
 - `inspect_local_application` returns a bounded macOS Accessibility tree.
 - `operate_local_application` performs a structured Accessibility action.
 
-macOS UI inspection and actions require Accessibility permission for the Node/Machine Bridge process. Application discovery and opening are available on supported desktop platforms; structured UI inspection currently targets macOS. The application backend uses fixed JXA implementation code. The caller selects only an application, structured selector, action, and optional bounded value. `include_values` never returns values for secure-text roles or controls whose metadata indicates passwords, tokens, one-time codes, or payment-card secrets.
+macOS UI inspection and actions require Accessibility permission for the Node/Machine Bridge process. Application discovery and opening are available on supported desktop platforms; structured UI inspection currently targets macOS. The application backend uses fixed JXA implementation code. The caller selects only an application, structured selector, action, and optional bounded value; NUL-containing action text is rejected. `include_values` never returns values for secure-text roles or controls whose metadata indicates passwords, tokens, one-time codes, or payment-card secrets.
 
 ## Capability discovery and automatic selection
 

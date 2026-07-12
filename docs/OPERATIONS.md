@@ -61,9 +61,9 @@ Application UI inspection/actions require Accessibility permission for the Node/
 
 `machine-mcp` is a foreground command. It remains attached to the terminal, defaults to `info` logging, and stops on `Ctrl+C`. `machine-mcp service start` launches the installed platform service in the background and returns to the shell; that service uses `warn` logging.
 
-A global npm install changes the CLI files on disk but does not replace an already running Node process. On a normal foreground start, Machine Bridge unloads the platform service and then independently examines the workspace daemon lock. This second path handles a detached/orphan `--daemon-only` process that launchd/systemd/task scheduling no longer tracks, including legacy locks without mode/version metadata. Before sending `SIGTERM`, Machine Bridge verifies the live command line against the lock, entrypoint, canonical workspace, canonical state root, and daemon-only flag. It waits up to 15 seconds for both the PID and lock to disappear and never escalates to a forced kill. A foreground or unverifiable process is left untouched; stop a foreground instance with `Ctrl+C`.
+A global npm install changes the CLI files on disk but does not replace an already running Node process. Startup and other state-changing CLI operations use a token/process-identity lock and wait up to 30 seconds for a normal concurrent startup to finish; a short launchd/systemd overlap is therefore serialized rather than reported immediately as an error. On a normal foreground start, Machine Bridge unloads the platform service and then independently examines the workspace daemon lock. This second path handles a detached/orphan `--daemon-only` process that launchd/systemd/task scheduling no longer tracks, including legacy locks without mode/version metadata. Before sending `SIGTERM`, Machine Bridge verifies PID and process start time plus the live command line, entrypoint, canonical workspace, canonical state root, and daemon-only flag. It waits up to 15 seconds for both the PID and lock to disappear and never escalates a daemon takeover to a forced kill. A foreground or unverifiable process is left untouched; stop a foreground instance with `Ctrl+C`.
 
-`machine-mcp service status [WORKSPACE]` reports two independent layers: the platform service (`active`) and `workspace_daemon`, plus `effective_active` and `orphaned_workspace_daemon` summary flags. On macOS it is possible for launchd to report inactive while a prior Node process remains alive with parent PID 1; that is an orphan-daemon condition, not proof that the daemon stopped. `service stop` now unloads the provider when present and then terminates only a verified service-style workspace daemon. If takeover reaches its deadline, run:
+`machine-mcp service status [WORKSPACE]` reports two independent layers: the platform service (`active`) and `workspace_daemon`, plus `effective_active` and `orphaned_workspace_daemon` summary flags. On macOS it is possible for launchd to report inactive while a prior Node process remains alive with parent PID 1; that is an orphan-daemon condition, not proof that the daemon stopped. `service stop` unloads the provider when present and then terminates only a verified service-style workspace daemon. `service uninstall` and full uninstall are ordered fail-closed operations: provider stop → verified daemon stop(s) → definition removal. A failed or ambiguous stop leaves definitions and state intact. If takeover reaches its deadline, run:
 
 ```sh
 machine-mcp service stop
@@ -80,6 +80,12 @@ machine-mcp --verbose
 
 Keep `--omit=optional` in the install command. Without it npm may resolve optional `fsevents` and warn that its install script was not included in `allowScripts`; Machine Bridge does not require that development-time watcher at runtime.
 
+## State-root safety and removal
+
+The state root must be a dedicated directory and must not equal, contain, or be contained by the selected workspace. Do not point `--state-dir` at a project directory. State/config and lock files are owner-only, bounded, and committed through flushed atomic primitives. A permission, type, symbolic-link, size, encoding, or I/O failure is reported; only successfully read invalid JSON is moved to a bounded `.corrupt-*` backup.
+
+Uninstall acquires a state-root `maintenance.lock` that blocks new profile/state operations and state-backed operations from already constructed managed-job/browser managers, then scans all known profiles, active managed jobs, daemon/startup locks, global workspace selection, profile state, daemon lock workspace metadata, the state marker, and directory shape. It rechecks jobs and locks after stopping services/daemons. An unreadable lock is treated as a blocker, not as inactivity. Do not manually delete a lock merely because it looks old; inspect the recorded PID and command first.
+
 ## Logs
 
 Remote autostart definitions prefer a stable PATH alias that resolves to the currently running Node executable and persist a sanitized absolute-only service `PATH` containing the Node/CLI directories, the installer's absolute PATH entries, and platform defaults. This avoids versioned Homebrew-style paths becoming invalid after upgrades and prevents launchd/systemd from falling back to a minimal system-only PATH. Re-run `machine-mcp service install` after changing Node installation families or PATH layout. A service-style `--daemon-only` start that finds the same workspace daemon already running is an idempotent no-op: it exits successfully without repeating warnings or readiness output; explicit policy/secret/change requests still report that changes were not applied. Autostart logs are stored under the state root in `logs/daemon.out.log` and `logs/daemon.err.log`. Files are owner-only where supported and tail-trimmed before daemon startup. On a logging-schema upgrade, bounded prior content is moved into `daemon.out.legacy.log` and `daemon.err.legacy.log`; use the active filenames when diagnosing current behavior.
@@ -95,7 +101,7 @@ debug  all per-tool starts/successes/failures/cancellations/timing, correlation 
 
 Foreground mode defaults to `info`; autostart uses `warn`. Use `--verbose` or `--log-level debug` only for diagnosis. `--quiet` is an alias for `--log-level error`.
 
-Normal logs intentionally omit tool arguments, file/patch/image content, command text and argv, stdin/stdout/stderr, OAuth request bodies, connection credentials, authorization codes, and tokens. Unexpected daemon and Worker failures use coarse error classes rather than raw exception messages. Messages and structured fields are bounded and secret-like fields/token formats are redacted.
+Normal logs intentionally omit tool arguments, file/patch/image content, command text and argv, stdin/stdout/stderr, OAuth request bodies, connection credentials, authorization codes, and tokens. Unexpected daemon and Worker failures use coarse error classes rather than raw exception messages. Messages and structured fields are bounded and redact private-key headers, common access-token/API-key/JWT forms, embedded-credential URLs, email addresses, and user-home paths. Raw plain terminal output is reserved for explicitly requested credentials or local paths; operational guidance uses sanitized plain output.
 
 See [LOGGING.md](LOGGING.md) for the event contract and MCP-host boundary. Cloudflare observability is sampled and is not a complete audit log.
 
@@ -215,6 +221,8 @@ After suspected credential or client compromise:
 1. stop foreground and autostart daemons;
 2. run `machine-mcp rotate-secrets`;
 3. restart without broad flags and redeploy;
-4. inspect Cloudflare account access, Worker configuration, local state/resource permissions, managed-job results, and service logs;
+4. inspect Cloudflare account access, Worker configuration, local state/resource permissions, process-lock owners, managed-job results, and service logs;
 5. cancel active managed jobs and remove compromised resource aliases;
 6. remove the Worker and local state if continued remote access is unnecessary.
+
+The detailed 0.12.0 audit record and residual operational limits are in [AUDIT.md](AUDIT.md).

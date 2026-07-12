@@ -12,6 +12,7 @@ export function run(command, args = [], options = {}) {
       env: options.env || process.env,
       stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
       shell: false,
+      detached: process.platform !== "win32",
       windowsHide: true,
     });
     let stdout = "";
@@ -26,9 +27,8 @@ export function run(command, args = [], options = {}) {
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
       timer = setTimeout(() => {
         timedOut = true;
-        try { child.kill("SIGTERM"); } catch {}
-        killTimer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
-        killTimer.unref?.();
+        terminateCommandTree(child, false);
+        killTimer = setTimeout(() => terminateCommandTree(child, true), 2000);
       }, timeoutMs);
       timer.unref?.();
     }
@@ -36,7 +36,7 @@ export function run(command, args = [], options = {}) {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
+      if (killTimer && !timedOut) clearTimeout(killTimer);
       callback();
     };
     if (capture) {
@@ -71,6 +71,25 @@ export function run(command, args = [], options = {}) {
       }
     }));
   });
+}
+
+
+function terminateCommandTree(child, force) {
+  if (!child?.pid) return;
+  if (process.platform === "win32") {
+    try {
+      const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", ...(force ? ["/F"] : [])], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.unref();
+      return;
+    } catch {}
+  }
+  const signal = force ? "SIGKILL" : "SIGTERM";
+  try { process.kill(-child.pid, signal); } catch {
+    try { child.kill(signal); } catch {}
+  }
 }
 
 function appendLimited(current, chunk, max) {
