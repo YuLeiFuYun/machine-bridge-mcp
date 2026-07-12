@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -69,7 +69,8 @@
     "browser-bridge:test": "node tests/browser-bridge-test.mjs",
     "app-automation:test": "node tests/app-automation-test.mjs",
     "process-lock:test": "node tests/process-lock-test.mjs",
-    "service-lifecycle:test": "node tests/service-lifecycle-test.mjs"
+    "service-lifecycle:test": "node tests/service-lifecycle-test.mjs",
+    "app-automation:live-test": "node tests/app-automation-test.mjs --live-macos"
   },
   "dependencies": {
     "wrangler": "4.110.0",

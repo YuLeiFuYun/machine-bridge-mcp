@@ -116,6 +116,8 @@ Follow the sample workflow.
 
     const resolved = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "Follow the sample local workflow and run the repository command" });
     assert(resolved.selected_skill?.name === "sample-skill", "task capability resolver did not automatically select the relevant skill");
+    const namedWithSpaces = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "Load and use the sample skill" });
+    assert(namedWithSpaces.selected_skill?.name === "sample-skill", "task capability resolver did not match a hyphenated skill name written with spaces");
     assert(resolved.effective_instructions.includes("root project") && resolved.effective_instructions.includes("nested local"), "task capability resolver omitted effective instructions for a reused host session");
     assert(resolved.recommended_tools.includes("run_local_command"), "task capability resolver did not recommend the registered command surface");
     let previousFingerprint = resolved.refresh.fingerprint;

@@ -200,6 +200,11 @@
           "type": "boolean",
           "default": false
         },
+        "include_menus": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include and recursively inspect the application menu hierarchy. Disabled by default so main-window controls are reached quickly."
+        },
         "timeout_seconds": {
           "type": "integer",
           "minimum": 1,
@@ -285,6 +290,11 @@
         "value_resource": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "include_menus": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include menu-bar and menu subtrees when matching the action selector."
         },
         "max_depth": {
           "type": "integer",

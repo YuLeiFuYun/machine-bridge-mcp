@@ -1,7 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppAutomationManager } from "../src/local/app-automation.mjs";
+import { LocalRuntime } from "../src/local/runtime.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-app-automation-"));
 const applications = join(root, "Applications");
@@ -34,7 +36,11 @@ try {
 
   await expectReject(() => manager.operateApplication({ application: "Example", action: "set_value", selector: { role: "AXTextField" }, value: "bad\0value" }), "contains a NUL byte");
   const activated = await manager.operateApplication({ application: "Example", action: "activate" });
-  assert(activated.ok === true && JSON.parse(calls.at(-1).stdin).selector === null, "activate incorrectly required a UI selector");
+  const activatedPayload = JSON.parse(calls.at(-1).stdin);
+  assert(activated.ok === true && activatedPayload.selector === null, "activate incorrectly required a UI selector");
+  assert(activatedPayload.includeMenus === false, "application actions expanded menu trees by default");
+  await manager.inspectApplication({ application: "Example", include_menus: true });
+  assert(JSON.parse(calls.at(-1).stdin).includeMenus === true, "include_menus was not forwarded to the fixed JXA helper");
   const activatedByPath = await manager.operateApplication({ application: join(applications, "Example.app"), action: "activate" });
   assert(activatedByPath.process_name === "Example" && JSON.parse(calls.at(-1).stdin).application === "Example", "application bundle path was not normalized to its process name");
 
@@ -49,6 +55,17 @@ try {
   assert(jxa.cmd === "osascript" && jxa.argv.includes("JavaScript"), "application UI operation did not use fixed JXA");
   assert(jxa.stdin.includes("local-secret"), "application resource value was not delivered locally");
   assert(!JSON.stringify(operated).includes("local-secret"), "application action returned a local resource value");
+
+  const silentJxa = new AppAutomationManager({
+    policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+    platform: "darwin",
+    home: root,
+    applicationRoots: [applications],
+    displayPath: (value) => value,
+    readResourceText: async () => "",
+    runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+  });
+  await expectReject(() => silentJxa.inspectApplication({ application: "Example" }), "returned no JSON output");
 
   const restricted = new AppAutomationManager({
     policy: { profile: "agent", execMode: "direct", unrestrictedPaths: false },
@@ -83,6 +100,10 @@ try {
   assert(linuxCalls.at(-1).cmd === "gio" && linuxCalls.at(-1).argv[0] === "launch" && linuxCalls.at(-1).argv[1].endsWith("/Example.desktop") && linuxCalls.at(-1).argv[2] === "https://example.test/", "Linux desktop launcher did not use gio launch");
   await expectReject(() => linux.inspectApplication({ application: "Example" }), "requires macOS");
 
+  const liveMacosRequested = process.argv.includes("--live-macos");
+  if (liveMacosRequested && process.platform !== "darwin") throw new Error("--live-macos requires macOS");
+  if (liveMacosRequested) await liveMacosCalculatorSmoke(root);
+
   console.log("application automation test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
@@ -98,4 +119,29 @@ async function expectReject(callback, expected) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function liveMacosCalculatorSmoke(root) {
+  const runtime = new LocalRuntime({
+    workspace: root,
+    policy: { profile: "full", origin: "explicit", revision: 3 },
+    jobRoot: join(root, "live-jobs"),
+    browserStateRoot: join(root, "live-browser-state"),
+    recoverJobs: false,
+  });
+  try {
+    const opened = await runtime.executeTool("open_local_application", { application: "Calculator", timeout_seconds: 30 });
+    assert(opened.code === 0, "live Calculator open failed");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
+    const activated = await runtime.executeTool("operate_local_application", { application: "Calculator", action: "activate", timeout_seconds: 30 });
+    assert(activated.ok === true, "live Calculator activation did not return structured success");
+    const inspected = await runtime.executeTool("inspect_local_application", { application: "Calculator", max_depth: 6, max_elements: 300, include_values: true, timeout_seconds: 60 });
+    assert(Array.isArray(inspected.elements) && inspected.elements.some((item) => item.identifier === "One"), "live Calculator inspection did not reach main-window controls");
+    assert(inspected.menus_included === false, "live Calculator inspection expanded menu trees by default");
+    const clicked = await runtime.executeTool("operate_local_application", { application: "Calculator", action: "click", selector: { identifier: "One" }, timeout_seconds: 30 });
+    assert(clicked.ok === true && clicked.element?.identifier === "One", "live Calculator click failed");
+  } finally {
+    runtime.stop();
+    spawnSync("osascript", ["-e", "tell application \"Calculator\" to quit"], { stdio: "ignore" });
+  }
 }

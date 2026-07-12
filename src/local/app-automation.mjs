@@ -109,6 +109,7 @@ export class AppAutomationManager {
       maxDepth: clampInt(args.max_depth, 6, 1, MAX_UI_DEPTH),
       maxElements: clampInt(args.max_elements, 200, 1, MAX_UI_ELEMENTS),
       includeValues: args.include_values === true,
+      includeMenus: args.include_menus === true,
     };
     const result = await this.runJxa(payload, clampInt(args.timeout_seconds, 30, 1, 120), context);
     return {
@@ -143,6 +144,7 @@ export class AppAutomationManager {
       value,
       maxDepth: clampInt(args.max_depth, 8, 1, MAX_UI_DEPTH),
       maxElements: MAX_UI_ELEMENTS,
+      includeMenus: args.include_menus === true,
     };
     const result = await this.runJxa(payload, clampInt(args.timeout_seconds, 30, 1, 120), context);
     return {
@@ -168,9 +170,11 @@ export class AppAutomationManager {
       undefined,
       input,
     );
+    const output = result.stdout.trim();
+    if (!output) throw new Error("macOS accessibility helper returned no JSON output");
     let parsed;
     try {
-      parsed = JSON.parse(result.stdout.trim() || "{}");
+      parsed = JSON.parse(output);
     } catch {
       throw new Error("macOS accessibility helper returned invalid JSON");
     }
@@ -337,7 +341,7 @@ function describe(element, index, includeValues) {
   return item;
 }
 function childrenOf(element) { return safe(() => element.uiElements(), []); }
-function flatten(root, maxDepth, maxElements, includeValues) {
+function flatten(root, maxDepth, maxElements, includeValues, includeMenus) {
   const output = [];
   const elements = [];
   const stack = [{ element: root, depth: 0 }];
@@ -346,10 +350,12 @@ function flatten(root, maxDepth, maxElements, includeValues) {
     const children = childrenOf(current.element);
     for (let i = children.length - 1; i >= 0; i--) {
       const child = children[i];
+      const item = describe(child, output.length, includeValues);
       elements.push(child);
-      output.push(describe(child, output.length, includeValues));
+      output.push(item);
       if (output.length >= maxElements) break;
-      if (current.depth + 1 < maxDepth) stack.push({ element: child, depth: current.depth + 1 });
+      const isMenuTree = String(item.role || '').startsWith('AXMenu');
+      if (current.depth + 1 < maxDepth && (includeMenus || !isMenuTree)) stack.push({ element: child, depth: current.depth + 1 });
     }
   }
   return { output, elements, truncated: stack.length > 0 || output.length >= maxElements };
@@ -366,14 +372,14 @@ function main() {
   const process = se.applicationProcesses.byName(payload.application);
   if (!safe(() => process.exists(), false)) throw new Error('application process not found or Accessibility access denied');
   if (payload.operation === 'inspect') {
-    const flattened = flatten(process, payload.maxDepth, payload.maxElements, payload.includeValues === true);
-    return { frontmost: safe(() => process.frontmost(), false), elements: flattened.output, truncated: flattened.truncated };
+    const flattened = flatten(process, payload.maxDepth, payload.maxElements, payload.includeValues === true, payload.includeMenus === true);
+    return { frontmost: safe(() => process.frontmost(), false), elements: flattened.output, truncated: flattened.truncated, menus_included: payload.includeMenus === true };
   }
   if (payload.action === 'activate') {
     process.frontmost = true;
     return { ok: true, matched: 1 };
   }
-  const flattened = flatten(process, payload.maxDepth, payload.maxElements, true);
+  const flattened = flatten(process, payload.maxDepth, payload.maxElements, true, payload.includeMenus === true);
   const matchesList = [];
   for (let i = 0; i < flattened.output.length; i++) if (matches(flattened.output[i], payload.selector)) matchesList.push(i);
   const chosen = payload.selector.index !== undefined ? matchesList[payload.selector.index] : matchesList[0];
@@ -398,5 +404,5 @@ function main() {
   }
   return { ok: true, matched: matchesList.length, selected_index: chosen, element: describe(element, chosen, false) };
 }
-try { console.log(JSON.stringify(main())); } catch (error) { console.log(JSON.stringify({ error: String(error.message || error) })); }
+(() => { try { return JSON.stringify(main()); } catch (error) { return JSON.stringify({ error: String(error.message || error) }); } })()
 `;

@@ -49,6 +49,18 @@ The suite includes:
 - live stdio MCP initialization with session instructions, capability resolution, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;
 - live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, daemon-backed session bootstrap, dynamic tool advertisement, rich content, daemon replacement, cancellation, malformed daemon JSON/non-object rejection, duplicate hello rejection, and unknown-message closure.
 
+## Opt-in live desktop and browser validation
+
+The normal suite uses deterministic mocks for macOS Accessibility and an authenticated in-process extension peer for browser routing. Before a release that changes local UI automation, run the macOS live smoke test on a machine where the invoking Node/terminal process has Accessibility permission:
+
+```sh
+npm run app-automation:live-test
+```
+
+It opens Calculator, activates it through the fixed JXA helper, verifies structured JSON output, inspects main-window Accessibility controls with menu recursion disabled, clicks the `One` control, and quits the application. It is intentionally excluded from CI because macOS TCC permission and a graphical login session are host state.
+
+For browser changes, perform an isolated-profile smoke test with the packaged unpacked extension: pair it to a temporary source runtime, navigate a local no-store page, inspect controls, fill multiple fields, click a button, verify the live DOM, and capture a screenshot. A Playwright persistent Chromium context is an acceptable harness because it loads the real MV3 service worker while keeping the user's daily browser profile untouched.
+
 ## Additional release checks
 
 ```sh

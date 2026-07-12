@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.1 - 2026-07-12
+
+### Real local automation corrections
+
+- Make the fixed macOS JXA helper return JSON as the top-level `osascript` result instead of using `console.log`, which real `osascript` sends to stderr. Empty helper stdout now fails explicitly rather than being interpreted as a successful empty object.
+- Skip recursive macOS menu-bar/menu traversal by default so bounded inspection reaches main-window controls promptly. Add `include_menus` to inspection and actions for explicit menu automation.
+- Normalize hyphens, underscores, dots, and spaces during capability ranking, and strongly boost explicitly named skills and commands. Natural-language references such as `agents progressive disclosure` now select `agents-progressive-disclosure` instead of a generic competing skill.
+
+### Live verification and regression coverage
+
+- Add regression coverage for missing JXA output, menu-recursion forwarding, and punctuation-normalized Skill selection. Add an opt-in real macOS Calculator smoke path and document isolated-profile MV3 browser validation.
+- Validate the source runtime with a temporary real global instruction file, an existing user Skill, a registered direct-argv command, shell execution, Calculator discovery/open/activation/inspection/click, and a real unpacked browser extension controlling a local form through inspect/fill/click/source/screenshot operations. Test files, browser profiles, temporary global configuration, tabs, and application state are removed afterward.
+
 ## 0.12.0 - 2026-07-12
 
 ### Locking, persistence, and process lifecycle

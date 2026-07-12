@@ -112,12 +112,12 @@ export class AgentContextManager {
     const discovered = await this.discoverSkills(state, { maxResults: MAX_SKILL_RESULTS }, context);
     const maxSkills = clampInt(args.max_skills, 10, 1, 50);
     const skillMatches = discovered.skills
-      .map((skill) => ({ skill, score: relevanceScore(task, `${skill.name} ${skill.description}`) }))
+      .map((skill) => ({ skill, score: relevanceScore(task, `${skill.name} ${skill.description}`, skill.name) }))
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name))
       .slice(0, maxSkills);
     const commandMatches = [...state.commands.values()]
-      .map((command) => ({ command, score: relevanceScore(task, `${command.name} ${command.description} ${command.argv.join(" ")}`) }))
+      .map((command) => ({ command, score: relevanceScore(task, `${command.name} ${command.description} ${command.argv.join(" ")}`, command.name) }))
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score || a.command.name.localeCompare(b.command.name))
       .slice(0, 20);
@@ -718,7 +718,7 @@ function capabilityFingerprint(state, skills) {
   }));
 }
 
-function relevanceScore(task, candidate) {
+function relevanceScore(task, candidate, identity = "") {
   const taskTokens = tokenize(task);
   const candidateTokens = tokenize(candidate);
   if (!taskTokens.size || !candidateTokens.size) return 0;
@@ -726,10 +726,20 @@ function relevanceScore(task, candidate) {
   for (const token of taskTokens) {
     if (candidateTokens.has(token)) score += token.length >= 6 ? 2 : 1;
   }
-  const taskLower = task.toLowerCase();
-  const candidateLower = candidate.toLowerCase();
-  if (candidateLower.includes(taskLower) || taskLower.includes(candidateLower)) score += 4;
+  const taskComparable = comparableText(task);
+  const candidateComparable = comparableText(candidate);
+  const identityComparable = comparableText(identity);
+  if (candidateComparable.includes(taskComparable) || taskComparable.includes(candidateComparable)) score += 4;
+  if (identityComparable.length >= 3 && ` ${taskComparable} `.includes(` ${identityComparable} `)) score += 12;
   return score;
+}
+
+function comparableText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\p{Script=Han}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function tokenize(value) {
@@ -738,6 +748,9 @@ function tokenize(value) {
   for (const raw of text.match(/[a-z0-9_][a-z0-9_.-]{1,}/g) || []) {
     const token = raw.replace(/^[.-]+|[.-]+$/g, "");
     if (token.length >= 2 && !TOKEN_STOP_WORDS.has(token)) tokens.add(token);
+    for (const part of token.split(/[._-]+/)) {
+      if (part.length >= 2 && !TOKEN_STOP_WORDS.has(part)) tokens.add(part);
+    }
   }
   for (const sequence of text.match(/[\p{Script=Han}]{1,}/gu) || []) {
     if (!TOKEN_STOP_WORDS.has(sequence)) tokens.add(sequence);

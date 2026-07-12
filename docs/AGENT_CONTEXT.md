@@ -189,7 +189,7 @@ No persistent skill or project-context index is trusted as authoritative. `sessi
 
 ## Progressive disclosure and task selection
 
-`agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions and command names/descriptions/argv, returns matches with scores, and loads the leading skill only when its relevance threshold is met.
+`agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions and command names/descriptions/argv, returns matches with scores, and loads the leading skill only when its relevance threshold is met. Hyphens, underscores, dots, and whitespace are normalized for matching, while an explicitly named skill or registered command receives a strong deterministic boost. Thus a task that says “agents progressive disclosure” can match `agents-progressive-disclosure` without relying on generic description words.
 
 This ranking is deterministic local assistance, not semantic certainty. The model must still evaluate whether the selected skill applies. Machine Bridge does not execute skill scripts implicitly and does not fabricate a dynamically named MCP tool per skill.
 

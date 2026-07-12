@@ -83,7 +83,9 @@ Then use `value_resource` for a text field or `resources` for `browser_upload_fi
 - `inspect_local_application` returns a bounded macOS Accessibility tree.
 - `operate_local_application` performs a structured Accessibility action.
 
-macOS UI inspection and actions require Accessibility permission for the Node/Machine Bridge process. Application discovery and opening are available on supported desktop platforms; structured UI inspection currently targets macOS. The application backend uses fixed JXA implementation code. The caller selects only an application, structured selector, action, and optional bounded value; NUL-containing action text is rejected. `include_values` never returns values for secure-text roles or controls whose metadata indicates passwords, tokens, one-time codes, or payment-card secrets.
+macOS UI inspection and actions require Accessibility permission for the Node/Machine Bridge process. Application discovery and opening are available on supported desktop platforms; structured UI inspection currently targets macOS. The application backend uses fixed JXA implementation code and requires a non-empty JSON result from `osascript`; missing or malformed helper output fails explicitly. The caller selects only an application, structured selector, action, and optional bounded value; NUL-containing action text is rejected. `include_values` never returns values for secure-text roles or controls whose metadata indicates passwords, tokens, one-time codes, or payment-card secrets.
+
+Menu-bar and menu subtrees are not recursively expanded by default. This keeps main-window controls within the element/time budget for applications with large localized menu hierarchies. Pass `include_menus: true` to `inspect_local_application` or `operate_local_application` only when the target is a menu item.
 
 ## Capability discovery and automatic selection
 
