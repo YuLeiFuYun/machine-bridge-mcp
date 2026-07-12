@@ -9,7 +9,7 @@ This document records project-wide decisions that must survive individual fixes,
 3. **Machine Bridge authority and host authority are separate.** `full` removes Machine Bridge's own policy, path, shell, and environment restrictions. It cannot override an MCP host, connector gateway, operating system, endpoint-security product, cloud IAM, remote authentication, or `sudo`.
 4. **Publication surfaces contain no real environment metadata.** Source, tests, fixtures, examples, release notes, filenames, package contents, tags, and release assets use synthetic identifiers and reserved example domains.
 5. **Secrets are never operational log data.** Tool arguments, command text, stdin, stdout, stderr, file content, OAuth bodies, credentials, and local resource values are not logged.
-6. **A release is one version across all surfaces.** Package metadata, Worker version, browser-extension version/name, Git tag, GitHub Release, npm version, documentation, and deployed health version must agree before a release is considered complete.
+6. **A release is one version with successful cross-platform evidence.** Package metadata, Worker version, browser-extension version/name, Git tag, GitHub Release, npm version, documentation, and deployed health version must agree, and the exact `origin/main` commit must have a completed successful push-triggered GitHub Actions run before a tag or release is created.
 7. **Generic local automation is structured, not arbitrary evaluation.** Browser/application features may expose broad user authority under canonical `full`, but must not accept caller-provided JavaScript, AppleScript, JXA, or extension code.
 8. **Daily-browser integration uses the existing profile.** The supported primary browser path is the packaged authenticated extension and machine-level loopback broker, preserving current tabs/login state; a separate automation profile is not an equivalent replacement.
 9. **Pairing and resource secrets are not conversation or log data.** Tokens and injected local-resource values must not be returned, embedded in URLs, or written to operational logs.
@@ -123,7 +123,7 @@ Every defect fix includes a regression test that fails for the original reason. 
 The required matrix includes:
 
 - Linux, macOS, and Windows on the pinned Node/npm baseline;
-- privacy and release-impact gates;
+- current-tree and reachable-history privacy gates, release-impact enforcement, and exact-commit release-CI gating;
 - package-manifest and sensitive-artifact inspection;
 - generated type checks and recursively discovered JavaScript/shell syntax checks;
 - concurrent exclusive-lock/atomic-replacement tests, PID-reuse/age tests, and fail-closed service-lifecycle tests;
@@ -134,7 +134,7 @@ The required matrix includes:
 - managed-job integrity, recovery, cancellation, cleanup, and redaction;
 - dependency audit, registry signatures/attestations, SBOM, and Worker dry run.
 
-Cross-platform tests must not depend on shell syntax, case-sensitive Windows paths, Unix-only executable shims, or timing races when a deterministic scheduler can be injected.
+Cross-platform tests must not depend on shell syntax, case-sensitive Windows paths, Unix-only executable shims, or timing races when a deterministic scheduler can be injected. Local success cannot substitute for the required Linux/macOS/Windows push CI result used by the release gate.
 
 ## Documentation rules
 
@@ -177,7 +177,7 @@ A thorough review asks:
 - Are persistent files atomic, owner-only, size-bounded, and symlink-aware?
 - Can browser/app automation be expressed without arbitrary evaluation, and are pairing/resource values absent from results and logs?
 - Can a stale PID, stale socket, duplicate request, partial write, or ambiguous remote response violate integrity?
-- Are package, CI, Worker, service, and release behavior tested on every supported platform?
+- Are package, CI, Worker, service, and release behavior tested on every supported platform, and does publication verify the exact successful push CI run?
 - Does the complete diff contain any real identifier, path, host, account, or credential-shaped value?
 - Does the change require a new npm version and deployment?
 

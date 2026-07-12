@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const selfPath = "scripts/privacy-check.mjs";
+const requestedOptions = new Set(process.argv.slice(2));
+for (const option of requestedOptions) {
+  if (option !== "--history") throw new Error(`unknown privacy-check option: ${option}`);
+}
+const scanHistory = requestedOptions.has("--history");
 const candidates = collectCandidateFiles(root);
 const denylist = loadDenylist(path.join(root, ".privacy-denylist"));
 const findings = [];
@@ -47,6 +52,8 @@ for (const relativePath of candidates) {
   scanDenylist(relativePath, text, denylist, findings);
 }
 
+const historySummaryCounts = scanHistory ? scanReachableHistory(root, denylist, findings) : { blobs: 0, commits: 0 };
+
 if (findings.length) {
   for (const finding of findings.slice(0, 100)) {
     process.stderr.write(`${redactReportPath(finding.path, denylist)}:${finding.line}: ${finding.rule}\n`);
@@ -56,7 +63,8 @@ if (findings.length) {
   process.exit(1);
 }
 
-process.stderr.write(`privacy check ok (${candidates.length} tracked/unignored files; ${denylist.length} local denylist entries)\n`);
+const historySummary = scanHistory ? `; ${historySummaryCounts.blobs} reachable history blobs; ${historySummaryCounts.commits} commit messages` : "";
+process.stderr.write(`privacy check ok (${candidates.length} tracked/unignored files; ${denylist.length} local denylist entries${historySummary})\n`);
 
 function collectCandidateFiles(directory) {
   try {
@@ -87,6 +95,136 @@ function collectCandidateFiles(directory) {
   }
 }
 
+function scanReachableHistory(directory, entries, out) {
+  let listing;
+  try {
+    listing = execFileSync("git", ["-C", directory, "rev-list", "--objects", "--all", "-z"], {
+      encoding: "buffer",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    throw new Error("privacy history scan could not enumerate reachable Git objects");
+  }
+  let records;
+  try { records = new TextDecoder("utf-8", { fatal: true }).decode(listing).split("\0").filter(Boolean); }
+  catch { throw new Error("privacy history scan encountered a non-UTF-8 Git object path"); }
+  const objectPaths = new Map();
+  let objectHash = "";
+  for (const record of records) {
+    if (/^[0-9a-f]{40,64}$/.test(record)) {
+      objectHash = record;
+      continue;
+    }
+    if (!record.startsWith("path=") || !objectHash) {
+      objectHash = "";
+      continue;
+    }
+    const relativePath = record.slice(5);
+    if (relativePath && !relativePath.includes("\0")) {
+      if (!objectPaths.has(objectHash)) objectPaths.set(objectHash, new Set());
+      objectPaths.get(objectHash).add(relativePath);
+    }
+    objectHash = "";
+  }
+  const hashes = [...objectPaths.keys()];
+  let metadata;
+  try {
+    metadata = execFileSync("git", ["-C", directory, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], {
+      input: `${hashes.join("\n")}\n`,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim().split(/\r?\n/);
+  } catch {
+    throw new Error("privacy history scan could not classify reachable Git objects");
+  }
+  const blobSizes = new Map();
+  for (const line of metadata) {
+    const match = /^([0-9a-f]{40,64}) blob ([0-9]+)$/.exec(line);
+    if (match) blobSizes.set(match[1], Number(match[2]));
+  }
+  let scanned = 0;
+  for (const [hash, paths] of objectPaths) {
+    if (!blobSizes.has(hash)) continue;
+    const relativePaths = [...paths].sort();
+    const reportPath = relativePaths[0] || "unknown";
+    const contentPath = relativePaths.find((relativePath) => relativePath !== selfPath) || reportPath;
+    for (const relativePath of relativePaths) {
+      if (relativePath === ".privacy-denylist") continue;
+      const historicalPath = `history/${hash.slice(0, 12)}/${relativePath}`;
+      scanDenylistPath(historicalPath, entries, out);
+      scanSensitivePath(historicalPath, out);
+    }
+    if (blobSizes.get(hash) > 5 * 1024 * 1024) {
+      out.push({ path: `history/${hash.slice(0, 12)}/${reportPath}`, line: 1, rule: "historical file exceeds privacy scanner size limit and requires manual review" });
+      continue;
+    }
+    let buffer;
+    try {
+      buffer = execFileSync("git", ["-C", directory, "cat-file", "blob", hash], {
+        encoding: "buffer",
+        maxBuffer: 6 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      out.push({ path: `history/${hash.slice(0, 12)}/${reportPath}`, line: 1, rule: "historical file content could not be read" });
+      continue;
+    }
+    scanned += 1;
+    const historicalPath = `history/${hash.slice(0, 12)}/${contentPath}`;
+    if (buffer.includes(0)) {
+      out.push({ path: historicalPath, line: 1, rule: "binary file in reachable Git history requires manual review" });
+      continue;
+    }
+    let historicalText;
+    try { historicalText = new TextDecoder("utf-8", { fatal: true }).decode(buffer); }
+    catch {
+      out.push({ path: historicalPath, line: 1, rule: "non-UTF-8 file in reachable Git history requires manual review" });
+      continue;
+    }
+    if (contentPath !== selfPath) scanBuiltIn(historicalPath, historicalText, out);
+    if (relativePaths.some((relativePath) => path.basename(relativePath).toLowerCase() === ".npmrc")) scanNpmrc(historicalPath, historicalText, out);
+    scanDenylist(historicalPath, historicalText, entries, out);
+  }
+  const commitCount = scanReachableCommitMessages(directory, entries, out);
+  return { blobs: scanned, commits: commitCount };
+}
+
+function scanReachableCommitMessages(directory, entries, out) {
+  let output;
+  try {
+    output = execFileSync("git", ["-C", directory, "log", "--all", "--format=%H%x00%B%x00"], {
+      encoding: "buffer",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    throw new Error("privacy history scan could not read reachable commit messages");
+  }
+  let records;
+  try { records = new TextDecoder("utf-8", { fatal: true }).decode(output).split("\0"); }
+  catch { throw new Error("privacy history scan encountered a non-UTF-8 commit message"); }
+  let count = 0;
+  for (let index = 0; index + 1 < records.length; index += 2) {
+    const hash = records[index].trim();
+    const message = records[index + 1];
+    if (!/^[0-9a-f]{40,64}$/.test(hash)) continue;
+    const reportPath = `history/commit/${hash.slice(0, 12)}/message`;
+    const scannedMessage = removeKnownPublicAutomationTrailers(message);
+    scanBuiltIn(reportPath, scannedMessage, out);
+    scanDenylist(reportPath, scannedMessage, entries, out);
+    count += 1;
+  }
+  return count;
+}
+
+function removeKnownPublicAutomationTrailers(message) {
+  return String(message).split(/\r?\n/).filter((line) => {
+    return !/^(?:Signed-off-by|Co-authored-by):\s+dependabot\[bot\]\s+<[^>\s]+@github\.com>\s*$/i.test(line);
+  }).join("\n");
+}
+
 function redactReportPath(relativePath, entries) {
   let shown = String(relativePath);
   for (const entry of entries) {
@@ -112,7 +250,6 @@ function scanBuiltIn(relativePath, text, out) {
     ["live payment API key", /\b(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}\b/g],
     ["API secret token", /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g],
     ["JWT-like bearer token", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g],
-    ["URL with embedded credentials", /https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@[^\s/"'<>]+/gi],
     ["absolute macOS/Linux home path", /(?:^|[\s"'=(:,])\/(?:Users|home)\/([^/\s"'<>]+)\//gm],
     ["absolute Windows home path", /(?:^|[\s"'=(:,])\b[A-Za-z]:\\Users\\([^\\\s"'<>]+)\\/gm],
   ];
@@ -121,6 +258,11 @@ function scanBuiltIn(relativePath, text, out) {
       if (rule.includes("home path") && isSyntheticUser(String(match[1] || ""))) continue;
       out.push({ path: relativePath, line: lineNumber(text, match.index || 0), rule });
     }
+  }
+  const credentialUrl = /https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@([^\s/"'<>]+)/gi;
+  for (const match of text.matchAll(credentialUrl)) {
+    if (isReservedExampleHost(stripHostPort(match[1]))) continue;
+    out.push({ path: relativePath, line: lineNumber(text, match.index || 0), rule: "URL with embedded credentials" });
   }
   const emailLike = /\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b/gi;
   for (const match of text.matchAll(emailLike)) {
@@ -213,6 +355,12 @@ function hasNearbySshContext(text, offset) {
     end = next === -1 ? text.length : next;
   }
   return /\b(?:ssh|scp|sftp)\b/i.test(text.slice(start, end));
+}
+
+function stripHostPort(host) {
+  const value = String(host || "");
+  if (value.startsWith("[")) return value.slice(1, value.indexOf("]") > 0 ? value.indexOf("]") : undefined);
+  return value.replace(/:[0-9]+$/, "");
 }
 
 function isReservedExampleHost(host) {

@@ -13,7 +13,7 @@ The repository requires Node.js 26 and npm 12. `.node-version`, `.nvmrc`, `packa
 The suite includes:
 
 - release-impact enforcement requiring a new package version and CHANGELOG section for release-relevant changes;
-- release-state diagnostics distinguishing missing local/remote version tags from tags that point to the wrong commit, including the required publication order;
+- release-state diagnostics distinguishing missing local/remote version tags from tags that point to the wrong commit, plus a release-CI gate that rejects missing, pending, failed, pull-request-only, stale, or wrong-commit runs;
 - generated Cloudflare Worker types and strict TypeScript checking, including unused-local and unused-parameter rejection;
 - recursive syntax validation for every JavaScript file under the shipped/runtime/test roots plus the shell wrapper;
 - shared tool-catalog schema, annotation, and profile-inventory checks;
@@ -21,7 +21,7 @@ The suite includes:
 - concurrent complete-before-visible lock claims, atomic replacement under active readers, malformed-lock grace, snapshot/token-safe reclamation, absolute-age expiry, PID-reuse detection, and bounded startup-lock waiting;
 - foreground takeover of active and orphaned background daemons, legacy lock identification from canonicalized process arguments, foreground-process protection, actual-PID exit waiting, non-forcing timeout guidance, daemon lock mode/version/process-start metadata, launchd service-target semantics, and silent idempotent duplicate service starts;
 - fail-closed service lifecycle ordering for provider-stop, all-workspace daemon-stop, and definition removal, including platform/daemon/removal failure injection and normalized macOS/systemd/Windows results;
-- machine-level browser-broker ownership/client proxying, authenticated extension origin/subprotocol, non-cacheable local pairing, pairing-token non-disclosure, resource-backed upload routing, and broker result redaction;
+- machine-level browser-broker ownership/client proxying, authenticated extension origin/subprotocol, non-cacheable local pairing, pairing-token non-disclosure, resource-backed upload routing, broker result redaction, pre-registered runtime-handshake listeners, and bounded socket/HTTP waits;
 - canonical path and symbolic-link escape tests;
 - relative-path privacy and error-path redaction tests;
 - atomic create/update, optimistic hash, exact edit, and patch transaction tests;
@@ -36,7 +36,7 @@ The suite includes:
 - local resource CLI registration, permission checks, dynamic reload, state-path redaction, and content non-disclosure;
 - real Ed25519 and RSA generation, idempotent reuse, public/private correspondence, mode enforcement, incomplete/mismatched/symlink rejection, and private-content non-disclosure;
 - real-machine canonical-full sandbox acceptance for outside-workspace I/O, direct/shell execution, full environment inheritance, SSH prerequisites, temporary authorized-key writing, and detached cleanup without external state changes;
-- deterministic injected atomic-replace failures and repeated Windows full-sandbox runs to catch transient file-sharing races;
+- deterministic injected atomic-replace failures, sustained transient Windows sharing contention beyond the old retry budget, bounded exponential delay selection, and repeated Windows full-sandbox runs;
 - canonical named-profile repair and full-only tool exposure parity between local and Worker policy filters;
 - managed-job staging/local approval/cancel-before-start, detachment, job-scoped temporary files, resource hash verification/redaction, discard capture, finally execution, descendant-tree escalation, token/snapshot-safe transition locks, runner process identity, plan scrubbing, PID-reuse-safe dead-runner recovery, and legacy PID-file compatibility;
 - daemon/startup locking, successfully-read corrupt-JSON recovery, and explicit propagation/preservation of oversized, symbolic-link, permission, and I/O failures;
@@ -64,6 +64,7 @@ For browser changes, perform an isolated-profile smoke test with the packaged un
 ## Additional release checks
 
 ```sh
+npm run privacy:history
 npm run worker:dry-run
 npm audit --audit-level=high
 npm audit --omit=dev --audit-level=high
@@ -74,7 +75,7 @@ npm run version:check
 npm run release-impact:check
 ```
 
-GitHub Actions executes the main suite on Linux, macOS, and Windows using the pinned Node 26/npm 12 baseline. Because Node 26 currently bundles npm 11, CI explicitly disables setup-node's automatic package-manager cache and upgrades npm from the runner temporary directory before any project-local npm command can trigger strict `devEngines`. Checkout fetches version tags so the release-impact gate can compare the branch with the latest release. A separate package-audit job audits both the complete dependency graph and the production-only graph, verifies registry signatures and attestations, validates a CycloneDX SBOM written under the runner temporary directory, exercises the documented isolated global installation, then performs a dry-run package build. The macOS matrix job also runs the installation smoke test because Wrangler's optional `fsevents` resolution is platform-specific. Dependency and GitHub Actions updates are monitored by Dependabot.
+GitHub Actions executes the main suite on Linux, macOS, and Windows using the pinned Node 26/npm 12 baseline. Because Node 26 currently bundles npm 11, CI explicitly disables setup-node's automatic package-manager cache and upgrades npm from the runner temporary directory before any project-local npm command can trigger strict `devEngines`. Checkout fetches version tags so the release-impact gate can compare the branch with the latest release. A separate package-audit job scans reachable Git history, audits both the complete dependency graph and the production-only graph, verifies registry signatures and attestations, validates a CycloneDX SBOM written under the runner temporary directory, exercises the documented isolated global installation, then performs a dry-run package build. The macOS matrix job also runs the installation smoke test because Wrangler's optional `fsevents` resolution is platform-specific. Third-party Actions are pinned to immutable 40-character commit SHAs; architecture tests reject movable tags, and Dependabot monitors both action and dependency updates.
 
 ## Test design rules
 
@@ -91,7 +92,7 @@ GitHub Actions executes the main suite on Linux, macOS, and Windows using the pi
 
 ## Privacy hygiene
 
-Run `npm run privacy:check` before committing and before packaging. Developers should maintain an ignored owner-only `.privacy-denylist` for machine aliases, usernames, internal codenames, and other private identifiers that a generic scanner cannot know. See [Repository privacy hygiene](PRIVACY.md).
+Run `npm run privacy:check` before committing and before packaging. Run and review `npm run privacy:history` before release; local denylist findings may require an explicit owner decision because ordinary commits cannot remove public history. Developers should maintain an ignored owner-only `.privacy-denylist` for machine aliases, usernames, internal codenames, and other private identifiers that a generic scanner cannot know. See [Repository privacy hygiene](PRIVACY.md).
 
 ## Package manifest
 
@@ -101,4 +102,4 @@ The stdio integration test also sends an oversized line, verifies bounded reject
 
 ## Architecture and documentation regression checks
 
-`npm run architecture:test` rejects local-module dependency cycles, missing static or dynamic relative imports, package scripts that reference missing files, drift from the recursive syntax scanner, incomplete executable package directories, inconsistent installation guidance, obsolete `LocalDaemon`/`daemon.mjs` naming, broken relative Markdown links, invisible ASCII control bytes in repository text, removal of the owner-required default-`full` engineering invariant, and accidental publication of `.project-local/` notes.
+`npm run architecture:test` rejects movable GitHub Action references and loss of the CI history scan, release-gate script drift, local-module dependency cycles, missing static or dynamic relative imports, package scripts that reference missing files, drift from the recursive syntax scanner, incomplete executable package directories, inconsistent installation guidance, obsolete `LocalDaemon`/`daemon.mjs` naming, broken relative Markdown links, invisible ASCII control bytes in repository text, removal of the owner-required default-`full` engineering invariant, and accidental publication of `.project-local/` notes.

@@ -30,7 +30,7 @@ try {
 
   const pairing = JSON.parse(await readFile(join(root, "browser-bridge.json"), "utf8"));
   assert(!JSON.stringify(initial).includes(pairing.token), "browser status exposed the pairing token");
-  const response = await fetch(initial.pairing_url);
+  const response = await fetch(initial.pairing_url, { signal: AbortSignal.timeout(5000) });
   const html = await response.text();
   assert(response.status === 200 && html.includes(pairing.token), "local pairing page did not contain the local-only token");
   assert(response.headers.get("cache-control") === "no-store", "pairing page is cacheable");
@@ -84,8 +84,11 @@ try {
   const runtimeUrl = new URL(initial.endpoint);
   runtimeUrl.pathname = "/runtime";
   invalidRuntime = new WebSocket(runtimeUrl, [`mbm-runtime.${pairing.token}`]);
-  await onceOpen(invalidRuntime);
-  await onceMessage(invalidRuntime);
+  const invalidRuntimeOpened = onceOpen(invalidRuntime);
+  const invalidRuntimeHello = onceMessage(invalidRuntime);
+  await invalidRuntimeOpened;
+  const runtimeHello = JSON.parse(Buffer.from(await invalidRuntimeHello).toString("utf8"));
+  assert(runtimeHello.type === "hello" && runtimeHello.role === "runtime", "runtime broker did not send its handshake");
   const invalidRuntimeClosed = onceClose(invalidRuntime);
   invalidRuntime.send(JSON.stringify({ type: "unknown" }));
   assert((await invalidRuntimeClosed).code === 1002, "unknown runtime protocol message did not close with 1002");
@@ -160,22 +163,41 @@ async function expectReject(promise, expected) {
   throw new Error(`expected rejection containing ${expected}`);
 }
 
-function onceOpen(socket) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    socket.once("open", resolvePromise);
-    socket.once("error", rejectPromise);
-  });
+function onceOpen(socket, timeoutMs = 5000) {
+  return waitForSocketEvent(socket, "open", timeoutMs, "open", (resolvePromise) => () => resolvePromise());
 }
 
-function onceMessage(socket) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    socket.once("message", resolvePromise);
-    socket.once("error", rejectPromise);
-  });
+function onceMessage(socket, timeoutMs = 5000) {
+  return waitForSocketEvent(socket, "message", timeoutMs, "message", (resolvePromise) => (data) => resolvePromise(data));
 }
 
-function onceClose(socket) {
-  return new Promise((resolvePromise) => socket.once("close", (code, reason) => resolvePromise({ code, reason: String(reason || "") })));
+function onceClose(socket, timeoutMs = 5000) {
+  return waitForSocketEvent(socket, "close", timeoutMs, "close", (resolvePromise) => (code, reason) => {
+    resolvePromise({ code, reason: String(reason || "") });
+  }, { rejectOnError: false });
+}
+
+function waitForSocketEvent(socket, event, timeoutMs, label, createListener, options = {}) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const rejectOnError = options.rejectOnError !== false;
+    const timer = setTimeout(() => {
+      cleanup();
+      rejectPromise(new Error(`timed out waiting for browser socket ${label}`));
+    }, timeoutMs);
+    const listener = createListener((value) => { cleanup(); resolvePromise(value); });
+    const onError = (error) => {
+      if (!rejectOnError) return;
+      cleanup();
+      rejectPromise(error);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off(event, listener);
+      socket.off("error", onError);
+    };
+    socket.once(event, listener);
+    socket.on("error", onError);
+  });
 }
 
 function expectSocketRejected(socket) {

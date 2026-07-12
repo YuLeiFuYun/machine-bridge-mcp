@@ -12,6 +12,8 @@ try {
   cpSync(join(root, "scripts", "privacy-check.mjs"), join(temp, "scripts", "privacy-check.mjs"));
   writeFileSync(join(temp, ".privacy-denylist"), `${privateName}\n`, { mode: 0o600 });
   git(["init", "-q"]);
+  git(["config", "user.name", "Privacy Test"]);
+  git(["config", "user.email", "developer@example.com"]);
 
   const checkerPath = join(temp, "scripts", "privacy-check.mjs");
   const checkerSource = fsRead(checkerPath);
@@ -65,7 +67,13 @@ try {
   assertSensitiveContent("google-key.txt", ["AI", "za", "A".repeat(35)].join(""), "Google API key");
   assertSensitiveContent("jwt.txt", ["eyJ" + "A".repeat(12), "B".repeat(12), "C".repeat(12)].join("."), "JWT-like bearer token");
   assertSensitiveContent("private-key.txt", ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "), "private key material");
-  assertSensitiveContent("credential-url.txt", ["https://operator", "private-value@host.example/path"].join(":"), "URL with embedded credentials");
+  assertSensitiveContent("credential-url.txt", ["https://operator", ["private-value@host", "actual-domain", "test/path"].join(".")].join(":"), "URL with embedded credentials");
+
+  const reservedCredentialUrl = join(temp, "reserved-credential-url.txt");
+  writeFileSync(reservedCredentialUrl, "https://synthetic:fixture@example.com/path\n");
+  const reservedCredentialResult = runCheck();
+  assert(reservedCredentialResult.status === 0, `reserved example credential URL was rejected: ${reservedCredentialResult.stderr}`);
+  rmSync(reservedCredentialUrl, { force: true });
   assertSensitiveContent("email.txt", ["person", "actual-domain.test"].join("@"), "non-example email address");
 
   const sensitivePath = join(temp, [".env", "production"].join("."));
@@ -77,6 +85,25 @@ try {
   writeFileSync(join(temp, "README.md"), "synthetic example only\n");
   const clean = runCheck();
   assert(clean.status === 0, `clean privacy fixture failed: ${clean.stderr}`);
+
+  git(["add", "scripts/privacy-check.mjs", "README.md"]);
+  const publicAutomationEmail = ["support", "github.com"].join("@");
+  git(["commit", "-q", "-m", "safe baseline", "-m", `Signed-off-by: dependabot[bot] <${publicAutomationEmail}>`]);
+  const safeHistory = runCheck({ args: ["--history"] });
+  assert(safeHistory.status === 0, `public Dependabot trailer was rejected by history scanning: ${safeHistory.stderr}`);
+  const historicalToken = ["npm", "H".repeat(36)].join("_");
+  const historicalFile = join(temp, "historical-token.txt");
+  writeFileSync(historicalFile, `${historicalToken}\n`);
+  git(["add", "historical-token.txt"]);
+  git(["commit", "-q", "-m", "historical fixture"]);
+  rmSync(historicalFile, { force: true });
+  git(["add", "-u"]);
+  git(["commit", "-q", "-m", "remove historical fixture"]);
+  const cleanCurrentAfterDeletion = runCheck();
+  assert(cleanCurrentAfterDeletion.status === 0, `deleted historical fixture remained in the current publication surface: ${cleanCurrentAfterDeletion.stderr}`);
+  const historicalResult = runCheck({ args: ["--history"] });
+  assert(historicalResult.status === 1 && historicalResult.stderr.includes("npm access token"), "privacy history scan missed a deleted reachable credential blob");
+  assert(!`${historicalResult.stdout}${historicalResult.stderr}`.includes(historicalToken), "privacy history scan echoed a historical credential");
 
   rmSync(join(temp, ".privacy-denylist"), { force: true });
   mkdirSync(join(temp, ".privacy-denylist"));
@@ -99,7 +126,7 @@ function assertSensitiveContent(name, value, rule) {
 function fsRead(path) { return readFileSync(path, "utf8"); }
 
 function runCheck(options = {}) {
-  return spawnSync(process.execPath, [join(temp, "scripts", "privacy-check.mjs")], {
+  return spawnSync(process.execPath, [join(temp, "scripts", "privacy-check.mjs"), ...(options.args || [])], {
     cwd: temp,
     encoding: "utf8",
     windowsHide: true,

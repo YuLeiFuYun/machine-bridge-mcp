@@ -1,6 +1,18 @@
 # Engineering and security audit
 
-This document records the cross-cutting audit performed for version 0.12.0. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
+This document records the cross-cutting audit initiated for version 0.12.0 and the 0.12.2 follow-up triggered by real cross-platform CI failures. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
+
+## 0.12.2 follow-up findings
+
+The failed `0.12.1` workflow had two independent causes. Windows exhausted the old approximately half-second atomic-replacement retry window while a stress reader repeatedly held the destination open. Linux and macOS lost an immediately emitted browser runtime `hello` between awaiting `open` and registering the message listener, then waited without a deadline until the 20-minute job timeout. The fixes preserve atomic replacement, extend only classified transient retries, pre-register the browser handshake listener, bound all relevant HTTP/WebSocket waits, and terminate failed proxy candidates.
+
+The review also found three governance gaps not represented by the original failure message:
+
+- GitHub Releases could be created from a local pass while the exact cross-platform push CI was failing. Publication now requires successful exact-commit push CI before tagging or release verification.
+- Workflow actions used movable major-version tags. They are now pinned to immutable official commit SHAs, with an executable invariant.
+- Repository privacy checks covered only the current tree. Package audit now scans reachable historical paths, bounded UTF-8 blobs, and commit messages; deleted credential fixtures fail without echoing their values.
+
+No generic active credential pattern was found in the current tree or reachable history after excluding standard public automation trailers. The developer-local denylist does match legacy historical identifiers, and the Git metadata audit found a legacy non-noreply author/committer identity. These are identity/privacy metadata rather than active credentials. Removing them would require a coordinated history rewrite and force-update of affected refs, which is intentionally not performed as an incidental code fix.
 
 ## Scope
 

@@ -941,8 +941,9 @@ async function serviceSelfTest() {
 async function ciBootstrapSelfTest() {
   const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const lines = workflow.split("\n");
-  const setupIndexes = lines.flatMap((line, index) => line.includes("uses: actions/setup-node@v6") ? [index] : []);
-  if (setupIndexes.length !== 2) throw new Error("CI must contain exactly two setup-node bootstrap blocks");
+  const setupNodePattern = /^\s*-\s+uses:\s+actions\/setup-node@([0-9a-f]{40})\s+#\s+v6\s*$/;
+  const setupIndexes = lines.flatMap((line, index) => setupNodePattern.test(line) ? [index] : []);
+  if (setupIndexes.length !== 2) throw new Error("CI must contain exactly two immutable setup-node v6 bootstrap blocks");
   for (const index of setupIndexes) {
     const setupWindow = lines.slice(index, index + 6).join("\n");
     if (!setupWindow.includes("package-manager-cache: false")) {

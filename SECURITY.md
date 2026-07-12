@@ -19,7 +19,7 @@ Do not include live MCP passwords, daemon secrets, OAuth tokens, Cloudflare cred
 
 ## Repository and documentation privacy
 
-Tests, examples, documentation, release notes, and package metadata are publication surfaces. Use only synthetic hostnames, resource aliases, usernames, paths, and project names. Run `npm run privacy:check` before committing or publishing, and maintain private local identifiers in the ignored `.privacy-denylist`; the scanner never prints matched values. See [Repository privacy hygiene](docs/PRIVACY.md).
+Tests, examples, documentation, release notes, and package metadata are publication surfaces. Use only synthetic hostnames, resource aliases, usernames, paths, and project names. Run `npm run privacy:check` before committing, review `npm run privacy:history` before publishing, and maintain private local identifiers in the ignored `.privacy-denylist`; neither scanner mode prints matched values. See [Repository privacy hygiene](docs/PRIVACY.md).
 
 Removing a value from the current branch does not remove it from Git history, caches, forks, or an already published npm package. Rotate any exposed credential immediately and coordinate destructive history rewriting separately when its risk is justified.
 

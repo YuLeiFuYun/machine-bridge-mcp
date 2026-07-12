@@ -216,7 +216,7 @@ The Worker also treats a new connection as a bounded candidate until it authenti
 
 ## Persistence
 
-Local state and global config are owner-only, versioned, and size-bounded. Shared persistence primitives write a complete private temporary file, `fsync` it, and either hard-link it for an exclusive claim or atomically replace the destination. Machine-level browser pairing state is owner-only and shared across workspace runtimes through the local broker; its bearer token is not part of workspace state responses. State, managed-job manager, detached runner, browser pairing, and service definitions share the same flushed atomic-replacement primitive plus bounded retry for transient Windows sharing failures.
+Local state and global config are owner-only, versioned, and size-bounded. Shared persistence primitives write a complete private temporary file, `fsync` it, and either hard-link it for an exclusive claim or atomically replace the destination. Machine-level browser pairing state is owner-only and shared across workspace runtimes through the local broker; its bearer token is not part of workspace state responses. State, managed-job manager, detached runner, browser pairing, and service definitions share the same flushed atomic-replacement primitive. Only classified transient Windows sharing failures are retried, using a bounded sixteen-attempt exponential schedule with jitter; the implementation never deletes the destination as a retry fallback, so readers are not intentionally exposed to a missing-file interval.
 
 Process locks contain purpose, workspace, ownership token, lock time, and process start time. Stale removal rechecks device/inode/size/mtime and token so an old observer cannot delete a replacement lock. Recent malformed claims receive a grace period. Startup/state operations wait a bounded interval; daemon and runner identity remain process-lifetime locks. Managed-job transition and recovery locks use the same ownership/snapshot principles and support an atomic runner handoff.
 
@@ -235,6 +235,12 @@ Public health exposes only server identity and version. Authenticated `server_in
 Foreground logging defaults to `info`; autostart uses `warn`. Authenticated readiness, persistent degradation, and recovery are user-visible state transitions. Brief relay interruptions, raw transport close details, retry timing, and all per-tool starts/successes/failures/cancellations/durations are debug-only. Unexpected local and Worker infrastructure errors are reduced to classes. Messages, strings, arrays, object depth/key counts, and serialized fields are bounded.
 
 Cloudflare sampling is size control rather than an audit log. The project intentionally does not claim complete forensic logging. See [LOGGING.md](LOGGING.md).
+
+## Release integrity
+
+Repository-local checks are necessary but cannot prove behavior on every supported operating system. `scripts/github-release.mjs` therefore queries `.github/workflows/ci.yml` for the exact `origin/main` commit and requires the newest push-triggered run to be completed with `success` before it creates or verifies a version tag, GitHub Release, or package asset. Pull-request runs, older successful runs, pending runs, and successful runs for another SHA do not satisfy the gate. The selection policy is isolated in `scripts/release-ci.mjs` and tested independently.
+
+Third-party workflow actions are pinned to immutable commit SHAs. Dependabot proposes reviewed SHA updates, and `architecture:test` rejects a return to movable action tags or removal of the reachable-history package-audit step.
 
 ## Explicit non-goals
 

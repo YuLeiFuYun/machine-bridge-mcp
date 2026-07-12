@@ -355,7 +355,9 @@ export class BrowserBridgeManager {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (!ok) try { ws.close(); } catch {}
+        if (!ok) {
+          try { ws.terminate(); } catch { try { ws.close(); } catch {} }
+        }
         resolvePromise(ok);
       };
       ws.on("message", (data) => {

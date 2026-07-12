@@ -8,9 +8,14 @@ Run:
 
 ```sh
 npm run privacy:check
+npm run privacy:history
 ```
 
-The check scans tracked and unignored new UTF-8 files and relative names for generic/encrypted/algorithm-specific private-key headers, AWS/GitHub/GitLab/npm/Slack/Google/live-payment/API token forms, JWT-shaped bearer values, embedded-credential URLs, absolute user-home paths, non-example email/`user@host` identifiers, credential-shaped filenames, and locally configured private identifiers. A tracked `.npmrc` is parsed: non-secret repository settings such as `engine-strict=true` are allowed, while authentication/identity keys, environment interpolation, and embedded credentials fail closed. Publication-surface symbolic links are rejected rather than followed. Binary, invalid UTF-8, and files above the bounded scanner limit require explicit manual review instead of being silently skipped. Findings report only file, line, and rule; the matched value is never printed.
+`privacy:check` scans tracked and unignored new UTF-8 files and relative names for generic/encrypted/algorithm-specific private-key headers, AWS/GitHub/GitLab/npm/Slack/Google/live-payment/API token forms, JWT-shaped bearer values, embedded-credential URLs, absolute user-home paths, non-example email/`user@host` identifiers, credential-shaped filenames, and locally configured private identifiers. A tracked `.npmrc` is parsed: non-secret repository settings such as `engine-strict=true` are allowed, while authentication/identity keys, environment interpolation, and embedded credentials fail closed. Publication-surface symbolic links are rejected rather than followed. Binary, invalid UTF-8, and files above the bounded scanner limit require explicit manual review instead of being silently skipped. Findings report only file, line, and rule; the matched value is never printed.
+
+`privacy:history` first runs the same current-tree checks, then scans every reachable historical blob path and bounded UTF-8 blob plus every reachable commit message. It catches values that were committed and later deleted. Standard public Dependabot signing trailers are ignored only in that exact commit-message context; the same non-example address remains disallowed in ordinary files. The local `.privacy-denylist` is also applied to history, so a developer may discover legacy identifiers that CI cannot know. Such a finding is real publication history, but ordinary commits cannot erase it.
+
+Git author and committer identity headers are canonical Git metadata rather than blob or commit-message content and are not automatically rejected. Audit them separately with `git log`; changing historical identity metadata requires a coordinated history rewrite and force-update of affected refs.
 
 Maintain machine-specific names in an ignored owner-only file:
 
@@ -41,13 +46,13 @@ Before committing or publishing:
 
 - inspect the complete staged diff, including tests, snapshots, examples, release notes, and generated metadata;
 - use reserved example domains and neutral aliases;
-- run `npm run privacy:check`, `npm run check`, and `npm pack --dry-run`;
+- run `npm run privacy:check`, review `npm run privacy:history`, run `npm run check`, and inspect `npm pack --dry-run`;
 - treat paths, host aliases, usernames, codenames, real browser URLs/page captures, application names tied to a user, and form data as private metadata even when they are not authentication secrets;
 - keep browser pairing-state files and captured source/screenshots out of fixtures, documentation, support logs, and release assets;
 - review any tracked `.npmrc` as configuration code and never commit authentication, registry identity, environment interpolation, cert/key paths, or credential-bearing URLs;
 - inspect package modes and filenames as well as file contents—an empty `.env`, private-key filename, database, or log is still an inappropriate publication artifact.
 
-The scanner is heuristic. It cannot identify every personal or organizational name, split/transformed/encrypted value, image, archive, binary fixture, custom credential format, or data already present in Git history. Passing it is a gate, not proof that a publication contains no private data.
+The scanner is heuristic. It cannot identify every personal or organizational name, split/transformed/encrypted value, image, archive, binary fixture, custom credential format, unreachable/pruned object, reflog-only object, fork/cache copy, or Git identity header. Passing current-tree and reachable-history checks is a gate, not proof that every publication copy contains no private data.
 
 ## Incident response
 

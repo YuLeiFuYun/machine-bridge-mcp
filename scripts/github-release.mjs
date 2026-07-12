@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { runNetworkCommand } from "./network-retry.mjs";
+import { requireSuccessfulCiRun } from "./release-ci.mjs";
 import { tagSyncError } from "./release-state.mjs";
 import { fileURLToPath } from "node:url";
 
@@ -124,6 +125,31 @@ function remoteTagCommit(tag) {
   return (peeled ?? direct)?.[0] ?? null;
 }
 
+function assertSuccessfulCi(head) {
+  const text = outputNetwork("gh", [
+    "run",
+    "list",
+    "--workflow",
+    ".github/workflows/ci.yml",
+    "--commit",
+    head,
+    "--event",
+    "push",
+    "--limit",
+    "20",
+    "--json",
+    "databaseId,status,conclusion,headSha,event,createdAt,url",
+  ]);
+  let runs;
+  try { runs = JSON.parse(text); }
+  catch { fail("GitHub Actions did not return valid JSON"); }
+  let run;
+  try { run = requireSuccessfulCiRun(runs, head); }
+  catch (error) { fail(String(error?.message || error)); }
+  console.log(`GitHub Actions CI succeeded for ${head} (run ${run.databaseId}).`);
+  return run;
+}
+
 function releaseInfo(tag) {
   const result = runNetwork(
     "gh",
@@ -148,6 +174,7 @@ function assertCoreSync({ requireReleaseAsset }) {
   if (head !== originMain) {
     fail(`HEAD ${head} does not match origin/main ${originMain}`);
   }
+  assertSuccessfulCi(head);
 
   const localCommit = localTagCommit(tag);
   const localTagError = tagSyncError({ scope: "local", tag, head, commit: localCommit });
@@ -275,6 +302,7 @@ function publishCurrent() {
     }
     runNetwork("git", ["push", "origin", "HEAD:main"]);
   }
+  assertSuccessfulCi(head);
 
   const existingLocal = localTagCommit(tag);
   if (existingLocal && existingLocal !== head) {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,8 +11,12 @@ try {
   await writeFile(source, "new", "utf8");
   await writeFile(target, "old", "utf8");
   let calls = 0;
+  const delays = [];
   const result = replaceFileSync(source, target, {
-    baseDelayMs: 1,
+    baseDelayMs: 10,
+    maxDelayMs: 250,
+    random: () => 0,
+    sleep: (milliseconds) => delays.push(milliseconds),
     rename(from, to) {
       calls += 1;
       if (calls <= 3) {
@@ -24,7 +28,22 @@ try {
     },
   });
   assert(result.attempts === 4 && calls === 4, "transient replacement was not retried deterministically");
+  assert(JSON.stringify(delays) === JSON.stringify([10, 20, 40]), "atomic replacement did not use bounded exponential backoff");
   assert(await readFile(target, "utf8") === "new", "replacement did not commit the new file");
+
+  let extendedCalls = 0;
+  const extended = replaceFileSync("source", "target", {
+    baseDelayMs: 0,
+    rename() {
+      extendedCalls += 1;
+      if (extendedCalls <= 12) {
+        const error = new Error("simulated sustained Windows sharing violation");
+        error.code = "EPERM";
+        throw error;
+      }
+    },
+  });
+  assert(extended.attempts === 13 && extendedCalls === 13, "default replacement retry budget did not survive sustained transient contention");
 
   const missing = join(root, "missing.json");
   let nonTransientCalls = 0;

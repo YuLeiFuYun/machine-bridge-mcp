@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.12.2 - 2026-07-12
+
+### Cross-platform persistence and browser reliability
+
+- Extend transient Windows atomic replacement from eight short linear retries to sixteen bounded exponential retries with jitter. The implementation continues to use one same-directory atomic rename and never falls back to deleting the destination, while tolerating longer antivirus/indexer/reader sharing windows.
+- Eliminate a broker-test race that could miss the runtime `hello` message between WebSocket `open` and listener registration. Pairing HTTP requests and WebSocket open/message/close waits are now bounded, and failed proxy candidates are terminated so a handshake cannot retain the test process indefinitely.
+
+### CI, release, and supply-chain integrity
+
+- Require a completed successful push-triggered GitHub Actions run for the exact `origin/main` commit before creating or verifying a version tag, GitHub Release, or release asset. A local test pass is necessary but no longer sufficient for publication.
+- Pin all third-party GitHub Actions to immutable commit SHAs, retain Dependabot updates, and enforce the pinning plus the release-CI wiring through architecture and dedicated release-gate tests.
+- Run a reachable-history privacy audit in the package-audit job. The scanner covers historical UTF-8 blob contents, historical paths, and commit messages without printing matched values, while narrowly ignoring the standard public Dependabot signing trailer.
+
+### Regression coverage and audit follow-up
+
+- Add deterministic tests for twelve consecutive transient Windows replacement failures, exponential delay selection, lost browser handshakes, bounded socket waits, deleted historical credential blobs, public automation trailers, and successful/failed/pending release CI states.
+- Update the architecture, engineering, privacy, testing, release, security, and audit documentation. Record remaining immutable Git-history identity metadata separately from current-tree and active-credential findings.
+
 ## 0.12.1 - 2026-07-12
 
 ### Real local automation corrections

@@ -40,6 +40,13 @@ const repositoryFiles = execFileSync("git", ["ls-files", "-z", "--cached", "--ot
   .toString("utf8")
   .split("\0")
   .filter(Boolean);
+const workflowFiles = repositoryFiles.filter((name) => /^\.github\/workflows\/.*\.ya?ml$/i.test(name));
+for (const name of workflowFiles) {
+  const source = readFileSync(join(root, name), "utf8");
+  for (const match of source.matchAll(/\buses:\s*([^@\s]+)@([^\s#]+)/g)) {
+    if (!/^[0-9a-f]{40}$/.test(match[2])) throw new Error(`GitHub Action ${match[1]} in ${name} is not pinned to an immutable commit SHA`);
+  }
+}
 for (const name of repositoryFiles) {
   const file = join(root, name);
   if (!existsSync(file)) continue;
@@ -113,6 +120,16 @@ if (!pageAutomationSource.includes("isSensitiveElement") || !pageAutomationSourc
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
   throw new Error("package syntax check is not using the dynamic repository scanner");
+}
+if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
+  throw new Error("package privacy history check is missing or drifted");
+}
+const ciSource = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+if (!ciSource.includes("npm run privacy:history")) throw new Error("CI package audit no longer scans reachable Git history");
+const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
+if (!releaseSource.includes('import { requireSuccessfulCiRun } from "./release-ci.mjs";')
+    || (releaseSource.match(/assertSuccessfulCi\(head\);/g) || []).length !== 2) {
+  throw new Error("GitHub release orchestration no longer requires exact-commit successful CI for publish and verification");
 }
 for (const [name, command] of Object.entries(packageJson.scripts || {})) {
   const match = /^node\s+([^\s]+\.mjs)(?:\s|$)/.exec(String(command));

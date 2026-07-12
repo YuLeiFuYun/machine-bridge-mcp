@@ -2,7 +2,7 @@
 
 The release invariant is:
 
-- `main` points to the release commit.
+- `main` points to the release commit, and the exact commit has a completed successful push-triggered `.github/workflows/ci.yml` run.
 - `v<package version>` points to that same commit locally and on GitHub.
 - A final GitHub Release exists for the tag.
 - The GitHub Release contains the npm tarball generated from that commit.
@@ -21,8 +21,8 @@ The release invariant is:
    ```
 
 2. Add the matching dated `CHANGELOG.md` section.
-3. Run `npm run release-impact:check`, `npm run privacy:check`, `npm run check`, both dependency audits, `npm audit signatures`, and generate a CycloneDX `npm sbom`.
-4. Inspect the complete diff and `npm pack --dry-run`, including packaged file modes and every helper referenced by package scripts, then commit and push all release changes to `main`.
+3. Run `npm run release-impact:check`, `npm run privacy:check`, review `npm run privacy:history`, run `npm run check`, both dependency audits, `npm audit signatures`, and generate a CycloneDX `npm sbom`.
+4. Inspect the complete diff and `npm pack --dry-run`, including packaged file modes and every helper referenced by package scripts, then commit and push all release changes to `main`. Wait for the push-triggered Linux/macOS/Windows and package-audit checks to complete successfully.
 
 A privacy/security documentation correction is not “docs only” for release purposes. It requires a replacement npm version and, when appropriate, deprecation or unpublication of the affected version.
 
@@ -34,7 +34,7 @@ From a clean `main` worktree:
 npm run release:publish
 ```
 
-The command validates the project, including repository privacy checks, fast-forwards `origin/main`, creates or verifies the annotated version tag, pushes it, builds the npm tarball, creates or updates the GitHub Release, uploads the tarball, and verifies the resulting state. Read-only GitHub operations, Git pushes, and idempotent release updates use bounded retries only for classified transient network failures; ambiguous Release creation responses are resolved by querying server state before continuing.
+The command validates the project, including repository privacy checks, fast-forwards `origin/main` when needed, then requires the latest push-triggered CI run for that exact commit to be completed successfully before it creates or verifies the annotated version tag. It then pushes the tag, builds the npm tarball, creates or updates the GitHub Release, uploads the tarball, and verifies the resulting state. Read-only GitHub operations, Git pushes, and idempotent release updates use bounded retries only for classified transient network failures; ambiguous Release creation responses are resolved by querying server state before continuing.
 
 To verify without changing anything:
 
@@ -64,4 +64,4 @@ The npm lifecycle repeats the full project checks and the GitHub synchronization
 - An authenticated GitHub CLI session with repository release permission.
 - An npm account that owns the package or has maintainer permission.
 
-GitHub Actions is intentionally not required by this release path. This avoids coupling releases to an OAuth token with the separate `workflow` scope while retaining fail-closed synchronization.
+GitHub Actions is a required publication boundary. The authenticated GitHub CLI must be able to read Actions runs, and a missing, pending, cancelled, skipped, or failed exact-commit push run blocks both `release:publish` and `release:check`. This prevents a machine-specific local pass from publishing a version that fails another supported platform.
