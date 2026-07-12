@@ -27,6 +27,14 @@ Machine-specific operational notes may be kept under the ignored `.project-local
 
 Ignored does not mean safe for secrets: do not store passwords, tokens, private keys, authorization URLs, or copied secret-bearing logs there. `.privacy-denylist` remains the dedicated local vocabulary gate.
 
+## Runtime instruction context
+
+When automatic project context is enabled, Machine Bridge sends a small generated block through the same authorized MCP transport as other session instructions. It may contain the target path relative to the repository root, recognized project/build filenames, package-manager and lockfile names, package script names, runtime constraints, common documentation filenames, and CI workflow filenames.
+
+The generator does not include package script bodies, dependency names or versions, source/document contents, environment values, absolute home paths, or command output. It executes nothing and writes no repository or user files. File and script names can still reveal project structure, so users who do not want that metadata to traverse a remote Worker/host can set `"automatic_project_context": false` in `~/.config/machine-bridge-mcp/agent.json`. Built-in instructions can be disabled separately with `"builtin_instructions": false`.
+
+Neither generated nor explicit instruction content is written to ordinary operational logs.
+
 ## Review rules
 
 Before committing or publishing:

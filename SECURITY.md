@@ -53,7 +53,9 @@ For untrusted repositories or instructions, run the bridge inside a disposable V
 
 ## Agent instructions, skills, and command manifests
 
-Repository and user instruction files are untrusted content from the model's perspective. `agent_context` returns their text in deterministic precedence order but does not certify correctness or safety. A malicious `AGENTS.md`, custom instruction file, or `SKILL.md` can attempt prompt injection or recommend destructive operations. Use only trusted repositories and skill roots, or isolate the bridge externally.
+Machine Bridge prepends a package-controlled built-in working-agreement block and an optional bounded automatic project-context block before repository/user instructions. The built-in block is guidance, not a security boundary. Automatic context reads only recognized root filenames, package-manager/lockfile facts, package script names, runtime constraints, common documentation names, and CI filenames; it does not inject script bodies, dependency values, source contents, or execute discovered commands. Symbolic-link, oversized, invalid-UTF-8, and unsupported metadata is skipped conservatively.
+
+Repository and user instruction files remain untrusted content from the model's perspective. `agent_context` returns their text in deterministic precedence order but does not certify correctness or safety. A malicious `AGENTS.md`, custom instruction file, filename, script name, or `SKILL.md` can attempt prompt injection or recommend destructive operations. Use only trusted repositories and skill roots, keep host approvals/policy enabled, or isolate the bridge externally.
 
 Skill loading is non-executing. `load_local_skill` returns an entrypoint and bounded file inventory; scripts remain inert until a separate process or command tool is called. Symlinked skill directories are followed only after canonical path-policy validation, while symbolic-link `SKILL.md` entrypoints are rejected. Traversal, cycles, content, summaries, and inventory are bounded.
 
@@ -61,7 +63,7 @@ Registered commands are available only under direct-execution-capable policy. Th
 
 The remote MCP host remains an independent boundary. Machine Bridge can advertise these tools, append `model_instructions_file` during initialization, and recommend capabilities through `resolve_task_capabilities`, but it cannot force a host to preserve instructions, expose tools, approve calls, or invoke them.
 
-The global `model_instructions_file` is an explicit user trust decision. It is read for every profile and sent to the authorized host during session initialization; do not place credentials, private records, or content inappropriate for every connected session in it. Project manifests cannot override this global file. Other global manifest fields that would widen local scope are ignored under workspace-confined profiles.
+The global `model_instructions_file` is an explicit user trust decision. It is read for every profile and sent to the authorized host during session initialization; do not place credentials, private records, or content inappropriate for every connected session in it. Project manifests cannot override this global file or the global `builtin_instructions`/`automatic_project_context` controls. Other global manifest fields that would widen local scope are ignored under workspace-confined profiles.
 
 ## Browser and application automation
 

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from "./default-instructions.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".machine-bridge", "agent.json");
 const GLOBAL_CONFIG_RELATIVE_PATH = join(".config", "machine-bridge-mcp", "agent.json");
@@ -23,7 +24,7 @@ const MAX_COMMAND_ARGV = 128;
 const MAX_COMMAND_ARGUMENT_BYTES = 256 * 1024;
 const COMMAND_NAME_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 const TOKEN_STOP_WORDS = new Set(["the", "and", "for", "with", "from", "this", "that", "use", "using", "into", "of", "to", "a", "an", "in", "on", "is", "are", "or", "及", "和", "的", "了", "在", "用", "使用", "进行", "根据"]);
-const CONFIG_KEYS = new Set(["version", "model_instructions_file", "instruction_files", "instruction_max_bytes", "skill_roots", "commands"]);
+const CONFIG_KEYS = new Set(["version", "builtin_instructions", "automatic_project_context", "model_instructions_file", "instruction_files", "instruction_max_bytes", "skill_roots", "commands"]);
 const COMMAND_KEYS = new Set(["description", "argv", "cwd", "timeout_seconds", "allow_extra_args"]);
 
 export class AgentContextManager {
@@ -46,8 +47,10 @@ export class AgentContextManager {
     const result = {
       target: this.displayPath(state.target),
       scope_root: this.displayPath(state.scopeRoot),
-      precedence: "global guidance first, then scope root to target directory; each directory contributes the first non-empty instruction_files candidate; later directories have higher precedence",
+      precedence: "built-in defaults, automatic project facts, user-global guidance, then scope root to target directory; explicit files loaded later have higher precedence",
       config_files: state.configFiles.map((file) => this.displayPath(file)),
+      builtin_instructions: publicVirtualInstruction(state.builtinInstructions, includeContent),
+      automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, includeContent),
       model_instructions_file: state.modelInstructions ? {
         path: this.displayPath(state.modelInstructions.path),
         bytes: state.modelInstructions.bytes,
@@ -68,12 +71,13 @@ export class AgentContextManager {
       instructions_truncated: state.instructionsTruncated,
       commands: publicCommands(state.commands, this.displayPath),
       guidance: [
+        "Apply built-in instructions and automatic project context as lower-precedence defaults; explicit global/project instruction files loaded later take precedence.",
         "Treat instruction_files as authoritative workspace guidance in the returned precedence order.",
         "Load a relevant skill with load_local_skill before following its workflow; SKILL.md is an instruction bundle, not executable code by itself.",
         "Prefer run_local_command for registered repeatable commands. Use run_process or exec_command only when no registered command fits and policy permits it.",
       ],
     };
-    if (includeContent) result.effective_instructions = renderEffectiveInstructions([...(state.modelInstructions ? [state.modelInstructions] : []), ...state.instructions], this.displayPath);
+    if (includeContent) result.effective_instructions = renderEffectiveInstructions(effectiveInstructionItems(state), this.displayPath);
     return result;
   }
 
@@ -83,7 +87,9 @@ export class AgentContextManager {
     const fingerprint = capabilityFingerprint(state, []);
     return {
       target: this.displayPath(state.target),
-      instructions: renderEffectiveInstructions([...(state.modelInstructions ? [state.modelInstructions] : []), ...state.instructions], this.displayPath),
+      instructions: renderEffectiveInstructions(effectiveInstructionItems(state), this.displayPath),
+      builtin_instructions: publicVirtualInstruction(state.builtinInstructions, false),
+      automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, false),
       model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path) : null,
       capability_refresh: {
         strategy: "resolve_task_capabilities-rescans-on-every-call",
@@ -92,6 +98,7 @@ export class AgentContextManager {
         generated_at: new Date().toISOString(),
       },
       guidance: [
+        "Built-in working agreements and bounded automatic project facts are present by default unless disabled in the user-global agent config.",
         "Call resolve_task_capabilities with the current user task before substantive local work or at the start of a reused-host conversation.",
         "The resolver returns the effective instructions again and rescans skill and command metadata on every call; the runtime supplements application and browser capability metadata.",
       ],
@@ -125,7 +132,9 @@ export class AgentContextManager {
     return {
       task,
       target: this.displayPath(state.target),
-      effective_instructions: renderEffectiveInstructions([...(state.modelInstructions ? [state.modelInstructions] : []), ...state.instructions], this.displayPath),
+      effective_instructions: renderEffectiveInstructions(effectiveInstructionItems(state), this.displayPath),
+      builtin_instructions: publicVirtualInstruction(state.builtinInstructions, false),
+      automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, false),
       model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path) : null,
       instruction_files: state.instructions.map((item) => ({ path: this.displayPath(item.path), scope: item.scope, bytes: item.bytes, sha256: item.sha256, precedence: item.precedence })),
       instructions_truncated: state.instructionsTruncated,
@@ -232,6 +241,10 @@ export class AgentContextManager {
       instructionMaxBytes: DEFAULT_INSTRUCTION_MAX_BYTES,
       skillRoots: defaultSkillRoots(directories, this.home, this.policy.unrestrictedPaths === true),
       commands: new Map(),
+      builtinInstructionsEnabled: true,
+      automaticProjectContextEnabled: true,
+      builtinInstructions: null,
+      automaticProjectContext: null,
       modelInstructionsFile: "",
       modelInstructions: null,
       configFiles: [],
@@ -247,9 +260,22 @@ export class AgentContextManager {
         if (this.policy.unrestrictedPaths === true) this.applyConfig(state, config, globalConfig, this.home, { global: true });
         else {
           state.configFiles.push(globalConfig);
+          if (config.builtinInstructions !== null) state.builtinInstructionsEnabled = config.builtinInstructions;
+          if (config.automaticProjectContext !== null) state.automaticProjectContextEnabled = config.automaticProjectContext;
           if (config.modelInstructionsFile) state.modelInstructionsFile = resolveConfiguredPath(config.modelInstructionsFile, this.home, this.home, this.workspace, true);
         }
       }
+    }
+
+    state.builtinInstructions = createBuiltinInstruction(state.builtinInstructionsEnabled);
+    state.automaticProjectContext = await discoverAutomaticProjectInstruction({
+      scopeRoot,
+      targetDir,
+      enabled: state.automaticProjectContextEnabled,
+      throwIfCancelled: () => this.throwIfCancelled(context),
+    });
+
+    if (this.home) {
       if (state.modelInstructionsFile) await this.collectModelInstructions(state, context);
       if (this.policy.unrestrictedPaths === true && this.codexHome) await this.collectDirectoryInstruction(state, this.codexHome, context, "global");
     }
@@ -266,6 +292,14 @@ export class AgentContextManager {
 
   applyConfig(state, config, configPath, baseDir, { global = false } = {}) {
     state.configFiles.push(configPath);
+    if (config.builtinInstructions !== null) {
+      if (!global) throw new Error(`builtin_instructions is only allowed in the global agent config: ${configPath}`);
+      state.builtinInstructionsEnabled = config.builtinInstructions;
+    }
+    if (config.automaticProjectContext !== null) {
+      if (!global) throw new Error(`automatic_project_context is only allowed in the global agent config: ${configPath}`);
+      state.automaticProjectContextEnabled = config.automaticProjectContext;
+    }
     if (config.modelInstructionsFile) {
       if (!global) throw new Error(`model_instructions_file is only allowed in the global agent config: ${configPath}`);
       state.modelInstructionsFile = resolveConfiguredPath(config.modelInstructionsFile, baseDir, this.home, this.workspace, true);
@@ -480,7 +514,23 @@ function normalizeConfig(value, configPath) {
   if (!isPlainRecord(value)) throw new Error(`agent config must be a JSON object: ${configPath}`);
   for (const key of Object.keys(value)) if (!CONFIG_KEYS.has(key)) throw new Error(`unknown agent config field '${key}': ${configPath}`);
   if (value.version !== 1) throw new Error(`agent config version must be 1: ${configPath}`);
-  const result = { modelInstructionsFile: null, instructionFiles: null, instructionMaxBytes: null, skillRoots: null, commands: new Map() };
+  const result = {
+    builtinInstructions: null,
+    automaticProjectContext: null,
+    modelInstructionsFile: null,
+    instructionFiles: null,
+    instructionMaxBytes: null,
+    skillRoots: null,
+    commands: new Map(),
+  };
+  if (value.builtin_instructions !== undefined) {
+    if (typeof value.builtin_instructions !== "boolean") throw new Error(`builtin_instructions must be boolean: ${configPath}`);
+    result.builtinInstructions = value.builtin_instructions;
+  }
+  if (value.automatic_project_context !== undefined) {
+    if (typeof value.automatic_project_context !== "boolean") throw new Error(`automatic_project_context must be boolean: ${configPath}`);
+    result.automaticProjectContext = value.automatic_project_context;
+  }
   if (value.model_instructions_file !== undefined) {
     result.modelInstructionsFile = requiredString(value.model_instructions_file, "model_instructions_file");
   }
@@ -657,7 +707,12 @@ async function listSkillFiles(root, maxFiles, context, throwIfCancelled) {
 function capabilityFingerprint(state, skills) {
   return sha256(JSON.stringify({
     configs: state.configFiles,
-    instructions: [state.modelInstructions?.sha256 || "", ...state.instructions.map((item) => item.sha256)],
+    instructions: [
+      state.builtinInstructions?.sha256 || "",
+      state.automaticProjectContext?.sha256 || "",
+      state.modelInstructions?.sha256 || "",
+      ...state.instructions.map((item) => item.sha256),
+    ],
     skills: skills.map((skill) => [skill.id, skill.sha256]),
     commands: [...state.commands.values()].map((command) => [command.name, command.argv]),
   }));
@@ -763,12 +818,36 @@ function publicCommands(commands, displayPath) {
     }));
 }
 
+function effectiveInstructionItems(state) {
+  return [
+    ...(state.builtinInstructions ? [state.builtinInstructions] : []),
+    ...(state.automaticProjectContext ? [state.automaticProjectContext] : []),
+    ...(state.modelInstructions ? [state.modelInstructions] : []),
+    ...state.instructions,
+  ];
+}
+
+function publicVirtualInstruction(item, includeContent) {
+  if (!item) return null;
+  return {
+    source: item.source,
+    scope: item.scope,
+    bytes: item.bytes,
+    sha256: item.sha256,
+    precedence: item.precedence,
+    ...(includeContent ? { content: item.content } : {}),
+  };
+}
+
 function renderEffectiveInstructions(instructions, displayPath) {
-  return instructions.map((item) => [
-    `--- BEGIN ${displayPath(item.path)} (precedence ${item.precedence}) ---`,
-    item.content,
-    `--- END ${displayPath(item.path)} ---`,
-  ].join("\n")).join("\n\n");
+  return instructions.map((item) => {
+    const source = item.source || displayPath(item.path);
+    return [
+      `--- BEGIN ${source} (precedence ${item.precedence}) ---`,
+      item.content,
+      `--- END ${source} ---`,
+    ].join("\n");
+  }).join("\n\n");
 }
 
 async function readOptionalRegularUtf8(filePath, maxBytes, label) {

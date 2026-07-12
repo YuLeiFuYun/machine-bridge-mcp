@@ -80,7 +80,8 @@ The implementation omits:
 - connection passwords, daemon secrets, authorization codes, and access tokens;
 - registered resource values and source paths;
 - browser pairing tokens, page URLs/source, DOM metadata, form values, uploaded file bytes, and screenshots;
-- application names, Accessibility trees, selectors, and entered values.
+- application names, Accessibility trees, selectors, and entered values;
+- built-in instruction text, automatic project facts, package script names, and explicit instruction-file contents.
 
 Unexpected infrastructure failures are reduced to coarse error classes in normal logs. Client-facing tool errors may contain more detail according to the active path-display policy, but those details are not copied into operational logs.
 

@@ -121,34 +121,39 @@ The stdio server writes only JSON-RPC messages to stdout and operational logs to
 
 ## Session instructions, local skills, commands, apps, and browser
 
-Machine Bridge loads a user-selected global instruction file and repository-specific guidance without changing the static MCP catalog. On macOS/Linux, create a global prompt with:
+Machine Bridge now starts with useful agent guidance even when the user has not created `MODEL.md`, `AGENTS.md`, or `.machine-bridge/agent.json`.
 
-```sh
-mkdir -p ~/.config/machine-bridge-mcp
-cat > ~/.config/machine-bridge-mcp/MODEL.md <<'EOF'
-# Global operating instructions
+Two lower-precedence virtual sources are generated in memory:
 
-- Respond in Chinese unless I request another language.
-- For repository work, inspect existing instructions and tests before editing.
-- Never publish, deploy, rotate credentials, or restart services without explicit authorization.
-- Prefer precise explanations and report validation results.
-EOF
+- `machine-bridge://defaults/working-agreements` supplies conservative cross-project rules for inspection, scoped changes, preservation of unrelated work, validation, security, Git discipline, and explicit authorization for deployment/publication/destructive operations.
+- `machine-bridge://project-context/current` derives bounded facts from the active repository: target path, common project/build files, package-manager declarations and lockfiles, package script names, runtime constraints, documentation files, and CI entrypoints. It never injects package-script bodies or source contents and does not claim commands were validated.
 
-cat > ~/.config/machine-bridge-mcp/agent.json <<'EOF'
+No files are created or modified by this bootstrap. Explicit user and repository instructions load later and therefore override the defaults. `session_bootstrap` supplies the chain during MCP initialization; `agent_context` exposes every source and hash; `resolve_task_capabilities` refreshes project facts, instructions, skills, and commands for the current task.
+
+Optional user-global preferences still live in `~/.config/machine-bridge-mcp/agent.json`:
+
+```json
 {
   "version": 1,
   "model_instructions_file": "~/.config/machine-bridge-mcp/MODEL.md"
 }
-EOF
-
-chmod 600 ~/.config/machine-bridge-mcp/agent.json ~/.config/machine-bridge-mcp/MODEL.md
 ```
 
-Edit `MODEL.md` to contain the durable instructions that should apply across all Machine Bridge workspaces. Keep secrets out of it. Repository-specific rules belong in `AGENTS.md` or `AGENTS.override.md` at the repository root; deeper instruction files override broader project guidance, while the global model file is loaded first and cannot be overridden by project configuration.
+Use `MODEL.md` for preferences not covered by the baseline, such as default language or organization-specific review rules. Repository-specific rules belong in `AGENTS.md`/`AGENTS.override.md`; deeper files take precedence. Keep secrets out of every instruction file.
 
-The global file is prepended to MCP initialization instructions for every new stdio or remote connection when the local runtime is reachable. `session_bootstrap` exposes the same material explicitly. `agent_context` adds target-specific `AGENTS.override.md`/`AGENTS.md` precedence, and `resolve_task_capabilities` rescans global/project instructions, skills, and registered commands for the current task. Editing `MODEL.md` or `AGENTS.md` does not require a daemon restart; start a new MCP conversation or reconnect the client when initialization-time injection must be guaranteed for the whole session.
+To disable either automatic layer globally:
 
-Skill discovery follows Codex-style progressive disclosure. Default roots are target-to-project `.agents/skills`; unrestricted policy also enables user/admin roots. Newly added or edited skills are found on the next resolver/list call without restarting the daemon. A project can customize instruction candidates, skill roots, and direct-argv registered commands with `.machine-bridge/agent.json`. See [Session instructions, skills, commands, and capability discovery](docs/AGENT_CONTEXT.md).
+```json
+{
+  "version": 1,
+  "builtin_instructions": false,
+  "automatic_project_context": false
+}
+```
+
+Repositories cannot disable these user-level controls. Editing instruction files or project metadata does not require a daemon restart; start a new MCP conversation or reconnect when initialization-time injection must be guaranteed from the beginning.
+
+Skill discovery follows Codex-style progressive disclosure. Default roots are target-to-project `.agents/skills`; unrestricted policy also enables user/admin roots. Newly added or edited skills are found on the next resolver/list call without restarting the daemon. A project can customize instruction candidates, skill roots, and direct-argv registered commands with `.machine-bridge/agent.json`. See [Session instructions, defaults, skills, commands, and capability discovery](docs/AGENT_CONTEXT.md).
 
 Under canonical `full`, Machine Bridge also exposes structured local automation:
 
@@ -292,8 +297,8 @@ The exact `tools/list` response reflects the active local policy. Definitions co
 
 - `server_info`
 - `project_overview`
-- `session_bootstrap` — session/global instructions and capability refresh metadata
-- `agent_context` — effective instructions, skill summaries, and registered commands for a target path
+- `session_bootstrap` — built-in defaults, automatic project facts, explicit instructions, and refresh metadata
+- `agent_context` — complete default/explicit instruction precedence, skill summaries, and registered commands for a target path
 - `resolve_task_capabilities` — live skill/command ranking and local automation recommendations
 - `list_local_skills`
 - `load_local_skill` — load instructions and file inventory without implicit execution

@@ -22,6 +22,10 @@ Repository changes and live release operations are separate responsibilities. Un
 
 The normal handoff is: the repository owner publishes the reviewed npm version, then runs `npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp`. The npm command updates the global CLI but cannot hot-reload an existing Node process. The subsequent normal foreground startup validates the Worker deployment hash, expected version, and health, requests shutdown of an active autostart daemon, waits a bounded interval for its lock, redeploys when necessary, and then takes over with the installed version. Live operations require explicit authorization even when they appear to be the obvious next release step.
 
+## Default instruction invariant
+
+A new installation must provide useful, conservative agent working agreements without requiring the user to create instruction files. The default context is generated in memory, is bounded and inspectable, writes no home/repository files, exposes no package-script bodies or source contents, and remains lower precedence than explicit user/repository guidance. Repository configuration cannot disable user-global baseline controls. Instructions remain behavioral guidance; hard restrictions belong to policy, permissions, approvals, hooks, or external isolation.
+
 ## Architectural boundaries
 
 The preferred dependency direction is:

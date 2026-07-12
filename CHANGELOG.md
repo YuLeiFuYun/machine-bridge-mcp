@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.11.0 - 2026-07-12
+
+### Zero-configuration agent working agreements
+
+- Add a package-controlled `machine-bridge://defaults/working-agreements` instruction layer so every stdio and remote MCP session starts with conservative, auditable guidance even when the user and repository provide no `MODEL.md`, `AGENTS.md`, or manifest. The baseline covers inspect-before-editing, minimal coherent changes, preservation of unrelated work, existing-toolchain reuse, tests/documentation synchronization, honest validation reporting, secret handling, safe Git practice, and explicit authorization for publication, deployment, credential rotation, live-data mutation, system-wide installation, and destructive operations.
+- Keep the baseline lower precedence than explicit user and root-to-target project instructions. Expose its source, size, hash, precedence, and optional content through `session_bootstrap`, `agent_context`, and `resolve_task_capabilities`; include its hash in live capability fingerprints. The defaults are behavioral guidance rather than a replacement for Machine Bridge policy, host approvals, operating-system permissions, hooks, sandboxes, or external isolation.
+
+### Bounded automatic project context
+
+- Add `machine-bridge://project-context/current`, regenerated on every relevant context scan from bounded repository metadata: target-relative path, recognized project/build entry files, JavaScript package-manager and lockfile facts, package script names, runtime constraints/version hints, common documentation files, and CI entrypoint filenames. The scanner executes nothing, writes no user or repository files, omits script bodies, dependency values, source/document contents, absolute home paths, and command output, and never claims a declared command was validated.
+- Harden repository-controlled metadata with strict character/count/byte limits, no-follow regular-file reads, safe workflow-name filtering, independent 16 KiB output bounds, and conservative skipping of symbolic links, invalid UTF-8, oversized files, permission failures, and transient metadata races. Add user-global `builtin_instructions` and `automatic_project_context` boolean opt-outs; project manifests cannot disable the user's baseline controls.
+
+### Documentation and verification
+
+- Document the default instruction model, precedence, opt-outs, privacy data surface, security boundary, recommended `AGENTS.md` content, progressive disclosure, and official cross-agent best-practice sources. Update repository automation guidance, shared MCP tool descriptions, initialization instructions, architecture, clients, logging, privacy, security, testing, and package contents.
+- Add regression coverage for no-file defaults, initialization injection over stdio, automatic project refresh/fingerprints, package-manager/lockfile/script/CI discovery, script-body non-disclosure, hostile metadata filtering, global opt-out, project opt-out rejection, precedence, and packaged-module presence.
+
 ## 0.10.1 - 2026-07-12
 
 ### Foreground startup and upgrade takeover

@@ -9,7 +9,7 @@
   "instructions": [
     "You are connected to a local workspace through machine-bridge-mcp.",
     "At the start of each substantive local task, call resolve_task_capabilities with the current user request and target path. Apply the returned session/project instructions, follow the automatically selected relevant skill when present, and prefer registered local commands for repeatable workflows.",
-    "The MCP initialize response automatically appends the configured global model_instructions_file and current root instruction chain when the local daemon is reachable; session_bootstrap exposes the same material explicitly.",
+    "The MCP initialize response automatically appends conservative built-in working agreements, bounded automatic project facts, the configured global model_instructions_file, and the current root instruction chain when the local daemon is reachable; session_bootstrap exposes the same material explicitly.",
     "For existing-browser work, use the paired Machine Bridge browser extension. It operates the user current Chromium profile and tabs, can inspect DOM/source, fill complex forms, and inject sensitive text from registered local resources without returning those values.",
     "For local application work, use structured application discovery and Accessibility actions. Arbitrary caller-supplied AppleScript or JavaScript is intentionally not accepted.",
     "Remote mode uses a Cloudflare relay; stdio mode runs on the local machine. File and command operations execute on the user's local runtime, not in the Worker.",

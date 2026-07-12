@@ -34,7 +34,7 @@
   {
     "name": "session_bootstrap",
     "title": "Load session bootstrap",
-    "description": "Load the current global model instructions, root workspace instructions, and capability refresh metadata for MCP session initialization.",
+    "description": "Load built-in working agreements, bounded automatic project facts, user-global and root workspace instructions, and capability refresh metadata for MCP session initialization.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -57,7 +57,7 @@
   {
     "name": "resolve_task_capabilities",
     "title": "Resolve task capabilities",
-    "description": "Rescan local instructions, skills, registered commands, applications, and browser capability metadata; rank the capabilities relevant to the current task and optionally load the best skill.",
+    "description": "Rescan built-in and automatic project context, local instruction files, skills, registered commands, applications, and browser capability metadata; rank the capabilities relevant to the current task and optionally load the best skill.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -887,7 +887,7 @@
   {
     "name": "agent_context",
     "title": "Load agent context",
-    "description": "Discover Codex-compatible global and root-to-target instruction precedence, progressively disclosed local skills, and registered commands for a target path.",
+    "description": "Discover built-in defaults, bounded automatic project facts, Codex-compatible global/root-to-target instruction precedence, progressively disclosed local skills, and registered commands for a target path.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,

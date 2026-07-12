@@ -16,6 +16,11 @@ await mkdir(workspace, { recursive: true });
 await mkdir(join(home, ".config", "machine-bridge-mcp"), { recursive: true });
 await writeFile(join(home, "MODEL.md"), "stdio global model instructions\n", "utf8");
 await writeFile(join(home, ".config", "machine-bridge-mcp", "agent.json"), JSON.stringify({ version: 1, model_instructions_file: "MODEL.md" }, null, 2), "utf8");
+await writeFile(join(workspace, "package-lock.json"), "{}\n", "utf8");
+await writeFile(join(workspace, "package.json"), JSON.stringify({
+  packageManager: "npm@12.1.0",
+  scripts: { check: "node private-script-body.mjs" },
+}, null, 2), "utf8");
 await writeFile(join(workspace, "sample.txt"), "one\ntwo\nthree\n", "utf8");
 await writeFile(join(workspace, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=", "base64"));
 await writeFile(join(temp, "passwords.txt"), "stdio-sensitive-name-visible", "utf8");
@@ -52,6 +57,9 @@ try {
   const initialized = await responseFor(1);
   assert(initialized.result?.protocolVersion === "2025-11-25", "stdio protocol negotiation failed");
   assert(initialized.result?.capabilities?.tools, "stdio initialize omitted tools capability");
+  assert(initialized.result?.instructions?.includes("Machine Bridge default working agreements"), "stdio initialize omitted built-in working agreements");
+  assert(initialized.result?.instructions?.includes("Automatic project context") && initialized.result?.instructions?.includes("npm run check"), "stdio initialize omitted automatic project facts");
+  assert(!initialized.result?.instructions?.includes("private-script-body.mjs"), "stdio initialize exposed a package script body");
   assert(initialized.result?.instructions?.includes("stdio global model instructions"), "stdio initialize did not inject model_instructions_file into the session context");
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
@@ -81,6 +89,8 @@ try {
 
   send({ jsonrpc: "2.0", id: 201, method: "tools/call", params: { name: "session_bootstrap", arguments: { path: "." } } });
   const bootstrap = await responseFor(201);
+  assert(bootstrap.result?.structuredContent?.builtin_instructions?.source === "machine-bridge://defaults/working-agreements", "session_bootstrap omitted built-in instruction metadata");
+  assert(bootstrap.result?.structuredContent?.automatic_project_context?.source === "machine-bridge://project-context/current", "session_bootstrap omitted automatic project-context metadata");
   assert(bootstrap.result?.structuredContent?.instructions?.includes("stdio global model instructions"), "session_bootstrap omitted global model instructions");
   send({ jsonrpc: "2.0", id: 202, method: "tools/call", params: { name: "resolve_task_capabilities", arguments: { path: ".", task: "inspect browser form and edit source files" } } });
   const capabilities = await responseFor(202);
