@@ -40,7 +40,7 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 
 `RelayConnection` owns remote WebSocket transport, authenticated `hello_ack` readiness, heartbeat liveness, reconnect backoff, and outage logging. Stdio mode invokes `LocalRuntime` directly without that adapter.
 
-`daemon-process.mjs` owns workspace-daemon inspection and takeover. It distinguishes platform service state from the lock-owning Node process, validates PID and process-start identity, canonicalizes workspace/state paths before comparison, parses bounded process command lines without executing them, and sends `SIGTERM` only to a verified same-workspace `--daemon-only` process. CLI orchestration never treats a missing launchd/systemd job as proof that the process exited.
+`daemon-process.mjs` owns workspace-daemon inspection and takeover. It distinguishes platform service state from the lock-owning Node process, validates PID and process-start identity, canonicalizes workspace/state paths before comparison, parses bounded process command lines without executing them, and sends `SIGTERM` only to a verified same-workspace `--daemon-only` process. POSIX daemons may ignore that signal and reach the bounded non-escalating timeout; Node's Windows signal mapping terminates the verified process directly. CLI orchestration never treats a missing launchd/systemd job as proof that the process exited.
 
 ### Agent context and capability resolver
 

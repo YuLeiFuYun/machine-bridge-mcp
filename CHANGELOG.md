@@ -15,7 +15,7 @@
 
 ### Regression coverage and audit follow-up
 
-- Add deterministic tests for twelve consecutive transient Windows replacement failures, exponential delay selection, lost browser handshakes, bounded socket waits, portable simulated-Linux launcher paths on Windows, deleted historical credential blobs, public automation trailers, and successful/failed/pending release CI states.
+- Add deterministic tests for twelve consecutive transient Windows replacement failures, exponential delay selection, lost browser handshakes, bounded socket waits, portable simulated-Linux launcher paths on Windows, POSIX-versus-Windows daemon-stop semantics, deleted historical credential blobs, public automation trailers, and successful/failed/pending release CI states.
 - Update the architecture, engineering, privacy, testing, release, security, and audit documentation. Record remaining immutable Git-history identity metadata separately from current-tree and active-credential findings.
 
 ## 0.12.1 - 2026-07-12

@@ -326,13 +326,21 @@ setInterval(() => {}, 2 ** 31 - 1);
     child = null;
 
     child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only", "--ignore-term"]);
-    const timedOut = await stopWorkspaceServiceDaemon(state, { timeoutMs: 60, pollMs: 5 });
-    if (timedOut.ok || timedOut.reason !== "timeout" || !timedOut.verified_service_daemon || !isProcessAlive(child.pid)) {
-      throw new Error("unresponsive service daemon did not produce a bounded non-forcing timeout");
+    const stopResult = await stopWorkspaceServiceDaemon(state, { timeoutMs: 60, pollMs: 5 });
+    if (process.platform === "win32") {
+      if (!stopResult.ok || stopResult.reason !== "stopped" || !stopResult.verified_service_daemon || isProcessAlive(child.pid)) {
+        throw new Error("verified Windows service daemon did not stop under the platform SIGTERM mapping");
+      }
+      await waitForChildExit(child);
+      child = null;
+    } else {
+      if (stopResult.ok || stopResult.reason !== "timeout" || !stopResult.verified_service_daemon || !isProcessAlive(child.pid)) {
+        throw new Error("unresponsive POSIX service daemon did not produce a bounded non-forcing timeout");
+      }
+      child.kill("SIGKILL");
+      await waitForChildExit(child);
+      child = null;
     }
-    child.kill("SIGKILL");
-    await waitForChildExit(child);
-    child = null;
     const stale = acquireDaemonLock(state, { mode: "foreground", version: "0.11.1" });
     if (!stale.acquired) throw new Error("dead service daemon lock was not reclaimable");
     stale.release();
