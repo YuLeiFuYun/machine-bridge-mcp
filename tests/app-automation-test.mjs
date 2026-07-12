@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { AppAutomationManager } from "../src/local/app-automation.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
 
@@ -97,7 +97,7 @@ try {
   const linuxListed = await linux.listApplications({ query: "example" });
   assert(linuxListed.applications.length === 1, "Linux desktop application discovery failed");
   await linux.openApplication({ application: "Example", target: "https://example.test/" });
-  assert(linuxCalls.at(-1).cmd === "gio" && linuxCalls.at(-1).argv[0] === "launch" && linuxCalls.at(-1).argv[1].endsWith("/Example.desktop") && linuxCalls.at(-1).argv[2] === "https://example.test/", "Linux desktop launcher did not use gio launch");
+  assert(linuxCalls.at(-1).cmd === "gio" && linuxCalls.at(-1).argv[0] === "launch" && basename(linuxCalls.at(-1).argv[1]) === "Example.desktop" && linuxCalls.at(-1).argv[2] === "https://example.test/", "Linux desktop launcher did not use gio launch");
   await expectReject(() => linux.inspectApplication({ application: "Example" }), "requires macOS");
 
   const liveMacosRequested = process.argv.includes("--live-macos");
