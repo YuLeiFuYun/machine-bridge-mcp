@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
-import { isSupportedNodeVersion, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { acquireDaemonLockWithTakeover, isSupportedNodeVersion, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
@@ -14,6 +14,7 @@ import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadGlobalC
 
 await runtimeSelfTest();
 await stateSelfTest();
+await daemonTakeoverSelfTest();
 await activeDaemonPolicyMutationSelfTest();
 await clientConfigDefaultSelfTest();
 await resourceCliSelfTest();
@@ -158,6 +159,68 @@ async function stateSelfTest() {
     }
   } finally {
     try { removeStateRoot(stateRoot); } catch { await rm(stateRoot, { recursive: true, force: true }).catch(() => {}); }
+    await rm(workspace, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+
+async function daemonTakeoverSelfTest() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-takeover-state-"));
+  const workspace = await mkdtemp(join(tmpdir(), "mbm-takeover-workspace-"));
+  try {
+    const state = loadState(workspace, { stateDir: stateRoot });
+    const serviceLock = acquireDaemonLock(state, { mode: "service", version: "0.10.0" });
+    if (!serviceLock.acquired) throw new Error("takeover test could not acquire service daemon lock");
+
+    const immediate = await acquireDaemonLockWithTakeover(state, {
+      waitForServiceExit: false,
+      ownerMetadata: { mode: "foreground", version: "0.10.1" },
+    });
+    if (immediate.acquired || immediate.owner?.mode !== "service" || immediate.owner?.version !== "0.10.0") {
+      throw new Error("non-takeover lock attempt did not preserve service owner metadata");
+    }
+
+    const messages = [];
+    const releaseTimer = setTimeout(() => serviceLock.release(), 30);
+    const foregroundLock = await acquireDaemonLockWithTakeover(state, {
+      waitForServiceExit: true,
+      timeoutMs: 1_000,
+      pollMs: 5,
+      ownerMetadata: { mode: "foreground", version: "0.10.1" },
+      logger: { info(message) { messages.push(message); } },
+    });
+    clearTimeout(releaseTimer);
+    if (!foregroundLock.acquired) throw new Error("foreground takeover did not acquire the released daemon lock");
+    if (!messages.some(message => message.includes("waiting for the background daemon"))
+      || !messages.some(message => message.includes("foreground startup is taking over"))) {
+      throw new Error("foreground takeover did not emit bounded progress messages");
+    }
+    const duplicate = acquireDaemonLock(state);
+    if (duplicate.acquired || duplicate.owner?.mode !== "foreground" || duplicate.owner?.version !== "0.10.1") {
+      throw new Error("foreground takeover lock metadata was not persisted");
+    }
+    foregroundLock.release();
+
+    const stuckLock = acquireDaemonLock(state, { mode: "service", version: "0.10.0" });
+    if (!stuckLock.acquired) throw new Error("takeover timeout test could not acquire service daemon lock");
+    let timeoutError = null;
+    try {
+      await acquireDaemonLockWithTakeover(state, {
+        waitForServiceExit: true,
+        timeoutMs: 20,
+        pollMs: 5,
+        ownerMetadata: { mode: "foreground", version: "0.10.1" },
+      });
+    } catch (error) {
+      timeoutError = error;
+    } finally {
+      stuckLock.release();
+    }
+    if (!String(timeoutError?.message || "").includes("did not release the workspace")) {
+      throw new Error("takeover timeout did not fail with actionable guidance");
+    }
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
     await rm(workspace, { recursive: true, force: true }).catch(() => {});
   }
 }

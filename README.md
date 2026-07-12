@@ -51,7 +51,7 @@ Node.js 26 or newer and npm 12 or newer are required. The repository pins the ac
 npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
 ```
 
-Recent npm releases may otherwise warn that Wrangler's native dependencies (`esbuild`, `workerd`, and `sharp`) have install scripts awaiting approval. The scoped command approves the reviewed native script names that npm 12 evaluates during global resolution while `--omit=optional` keeps optional `fsevents` out of the installed runtime. `fsevents` is used for development-time filesystem watching rather than Machine Bridge runtime or deployment. It does not change the user's global npm policy. `machine-mcp doctor` remains the authoritative runtime check.
+Recent npm releases may otherwise warn that Wrangler's native dependencies (`esbuild`, `workerd`, and `sharp`) have install scripts awaiting approval. The scoped command approves the reviewed native script names that npm 12 evaluates during global resolution while `--omit=optional` keeps optional `fsevents` out of the installed runtime. `fsevents` is used for development-time filesystem watching rather than Machine Bridge runtime or deployment. Omitting `--omit=optional` can therefore produce a harmless blocked-script warning for `fsevents@2.3.3`; use the documented command rather than changing global npm policy. `machine-mcp doctor` remains the authoritative runtime check.
 
 From a source checkout, the checked-in exact-version `allowScripts` policy approves the reviewed native dependencies:
 
@@ -78,6 +78,17 @@ On first remote start, the CLI:
 5. installs a platform-native login service unless `--no-autostart` is used;
 6. starts an outbound-only daemon connection;
 7. prints the Remote MCP URL and connection password.
+
+A normal `machine-mcp` invocation is a foreground start: it remains attached to the terminal and prints `info` logs. If an older autostart daemon is active after a global package upgrade, the CLI stops that service, waits up to 15 seconds for its workspace lock, and then starts the newly installed version in the foreground. A genuine foreground conflict is left untouched and reported with actionable guidance. To run only in the background, use `machine-mcp service start`; inspect its owner-only logs under `~/.local/state/machine-bridge-mcp/logs/`.
+
+Recommended upgrade sequence:
+
+```sh
+npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+machine-mcp --verbose
+```
+
+The global install replaces files on disk but cannot hot-reload an already running Node process; the second command performs the bounded service takeover. If takeover fails, run `machine-mcp service stop`, confirm with `machine-mcp service status`, and retry.
 
 Use the printed values in the MCP client:
 
@@ -110,16 +121,32 @@ The stdio server writes only JSON-RPC messages to stdout and operational logs to
 
 ## Session instructions, local skills, commands, apps, and browser
 
-Machine Bridge loads a user-selected global instruction file and repository-specific guidance without changing the static MCP catalog. Configure the global file in `~/.config/machine-bridge-mcp/agent.json`:
+Machine Bridge loads a user-selected global instruction file and repository-specific guidance without changing the static MCP catalog. On macOS/Linux, create a global prompt with:
 
-```json
+```sh
+mkdir -p ~/.config/machine-bridge-mcp
+cat > ~/.config/machine-bridge-mcp/MODEL.md <<'EOF'
+# Global operating instructions
+
+- Respond in Chinese unless I request another language.
+- For repository work, inspect existing instructions and tests before editing.
+- Never publish, deploy, rotate credentials, or restart services without explicit authorization.
+- Prefer precise explanations and report validation results.
+EOF
+
+cat > ~/.config/machine-bridge-mcp/agent.json <<'EOF'
 {
   "version": 1,
   "model_instructions_file": "~/.config/machine-bridge-mcp/MODEL.md"
 }
+EOF
+
+chmod 600 ~/.config/machine-bridge-mcp/agent.json ~/.config/machine-bridge-mcp/MODEL.md
 ```
 
-The file is prepended to MCP initialization instructions for every new stdio or remote session when the local runtime is reachable. `session_bootstrap` exposes the same material explicitly. `agent_context` adds target-specific `AGENTS.override.md`/`AGENTS.md` precedence, and `resolve_task_capabilities` rescans skills and registered commands for the current task, ranks matches, optionally loads the best skill, and recommends relevant local tools.
+Edit `MODEL.md` to contain the durable instructions that should apply across all Machine Bridge workspaces. Keep secrets out of it. Repository-specific rules belong in `AGENTS.md` or `AGENTS.override.md` at the repository root; deeper instruction files override broader project guidance, while the global model file is loaded first and cannot be overridden by project configuration.
+
+The global file is prepended to MCP initialization instructions for every new stdio or remote connection when the local runtime is reachable. `session_bootstrap` exposes the same material explicitly. `agent_context` adds target-specific `AGENTS.override.md`/`AGENTS.md` precedence, and `resolve_task_capabilities` rescans global/project instructions, skills, and registered commands for the current task. Editing `MODEL.md` or `AGENTS.md` does not require a daemon restart; start a new MCP conversation or reconnect the client when initialization-time injection must be guaranteed for the whole session.
 
 Skill discovery follows Codex-style progressive disclosure. Default roots are target-to-project `.agents/skills`; unrestricted policy also enables user/admin roots. Newly added or edited skills are found on the next resolver/list call without restarting the daemon. A project can customize instruction candidates, skill roots, and direct-argv registered commands with `.machine-bridge/agent.json`. See [Session instructions, skills, commands, and capability discovery](docs/AGENT_CONTEXT.md).
 

@@ -57,6 +57,25 @@ The machine-level broker permits multiple workspace daemons/stdio clients to sha
 
 Application UI inspection/actions require Accessibility permission for the Node/Machine Bridge process. Grant it in macOS Privacy & Security, then retry `inspect_local_application`. Opening applications does not require the same Accessibility authority. If an app changes UI hierarchy or localizes labels, inspect again and use role/identifier/index selectors instead of assuming a stale title.
 
+## Foreground startup, background service, and upgrades
+
+`machine-mcp` is a foreground command. It remains attached to the terminal, defaults to `info` logging, and stops on `Ctrl+C`. `machine-mcp service start` launches the installed platform service in the background and returns to the shell; that service uses `warn` logging.
+
+A global npm install changes the CLI files on disk but does not replace an already running Node process. On a normal foreground start, Machine Bridge checks whether its autostart service is active, requests a stop, waits up to 15 seconds for the old daemon lock to be released, and then continues with the newly installed version. New daemon locks record foreground/background mode and package version. If another foreground process owns the lock, Machine Bridge does not kill it or print a false readiness message; stop it with `Ctrl+C`. If a background takeover reaches its deadline, run:
+
+```sh
+machine-mcp service stop
+machine-mcp service status
+machine-mcp --verbose
+```
+
+Recommended upgrade:
+
+```sh
+npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+machine-mcp --verbose
+```
+
 ## Logs
 
 Remote autostart definitions prefer a stable PATH alias that resolves to the currently running Node executable and persist a sanitized absolute-only service `PATH` containing the Node/CLI directories, the installer's absolute PATH entries, and platform defaults. This avoids versioned Homebrew-style paths becoming invalid after upgrades and prevents launchd/systemd from falling back to a minimal system-only PATH. Re-run `machine-mcp service install` after changing Node installation families or PATH layout. A service-style `--daemon-only` start that finds the same workspace daemon already running is an idempotent no-op: it exits successfully without repeating warnings or readiness output; explicit policy/secret/change requests still report that changes were not applied. Autostart logs are stored under the state root in `logs/daemon.out.log` and `logs/daemon.err.log`. Files are owner-only where supported and tail-trimmed before daemon startup. On a logging-schema upgrade, bounded prior content is moved into `daemon.out.legacy.log` and `daemon.err.legacy.log`; use the active filenames when diagnosing current behavior.

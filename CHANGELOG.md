@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.1 - 2026-07-12
+
+### Foreground startup and upgrade takeover
+
+- Make a normal `machine-mcp` start reliably take over from an active platform autostart daemon: detect whether the service is active, request shutdown, wait up to 15 seconds for the workspace daemon lock to be released, and then continue foreground startup with the newly installed CLI. A failed bounded takeover now exits with explicit `service stop`/`service status` recovery guidance instead of silently leaving the old process in place.
+- Record foreground/background mode and package version in new daemon locks. A genuine lock conflict now identifies the running mode/version when known, explains how to stop it, and no longer prints the misleading `[ok] ready` block when no restart or requested change occurred. Service-style duplicate starts remain silent idempotent successes.
+
+### Global instructions and operator guidance
+
+- Add copy-paste setup instructions for `~/.config/machine-bridge-mcp/agent.json` and the global `MODEL.md`, explain global-versus-project precedence, live rescanning, and when a new MCP conversation/reconnection is needed for initialization-time injection.
+- Document the foreground/background distinction, safe global upgrade sequence, owner-only instruction-file permissions, background log locations, and the exact optional-dependency install command that avoids the development-only `fsevents` warning.
+
 ## 0.10.0 - 2026-07-12
 
 ### Session context and capability selection

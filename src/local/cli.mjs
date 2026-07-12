@@ -47,6 +47,8 @@ const BOOLEAN_OPTIONS = new Set([
 const VALUE_OPTIONS = new Set([
   "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel",
 ]);
+const DAEMON_TAKEOVER_TIMEOUT_MS = 15_000;
+const DAEMON_TAKEOVER_POLL_MS = 100;
 
 const COMMAND_HANDLERS = Object.freeze({
   start: startCommand,
@@ -320,8 +322,15 @@ async function startCommand(args) {
   }
 
   try {
-    await prepareStartMode(args, state, logger);
-    const daemonLock = acquireDaemonLock(state);
+    const startMode = await prepareStartMode(args, state, logger);
+    const daemonLock = await acquireDaemonLockWithTakeover(state, {
+      waitForServiceExit: startMode.waitForServiceExit,
+      ownerMetadata: {
+        mode: args.daemonOnly ? "service" : "foreground",
+        version: currentPackageVersion(),
+      },
+      logger,
+    });
     if (!daemonLock.acquired) {
       reportExistingDaemon(args, state, daemonLock.owner, logger);
       return;
@@ -336,11 +345,41 @@ async function prepareStartMode(args, state, logger) {
   if (args.daemonOnly) {
     const { trimAutostartLogs } = await import("./service.mjs");
     trimAutostartLogs(state.paths.stateRoot);
-    return;
+    return { waitForServiceExit: false };
   }
-  // Stop an installed service before acquiring the runtime lock. If a
-  // foreground daemon owns the lock, no new policy or secret state is saved.
-  await stopAutostartBestEffort(logger);
+  // A normal foreground start takes over from the installed background
+  // service. Service managers terminate asynchronously, so wait for the
+  // existing daemon to release its workspace lock before declaring conflict.
+  return stopAutostartBestEffort(logger);
+}
+
+export async function acquireDaemonLockWithTakeover(state, options = {}) {
+  const ownerMetadata = options.ownerMetadata || {};
+  let lock = acquireDaemonLock(state, ownerMetadata);
+  if (lock.acquired || !options.waitForServiceExit) return lock;
+
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    ? Math.max(1, Number(options.timeoutMs))
+    : DAEMON_TAKEOVER_TIMEOUT_MS;
+  const pollMs = Number.isFinite(Number(options.pollMs))
+    ? Math.max(1, Number(options.pollMs))
+    : DAEMON_TAKEOVER_POLL_MS;
+  const logger = options.logger || { info() {} };
+  const priorPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "the existing process";
+  logger.info(`waiting for the background daemon (${priorPid}) to stop before foreground startup`);
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+    lock = acquireDaemonLock(state, ownerMetadata);
+    if (lock.acquired) {
+      logger.info("background daemon stopped; foreground startup is taking over the workspace");
+      return lock;
+    }
+  }
+
+  const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
+  throw new Error(`background daemon did not release the workspace within ${Math.ceil(timeoutMs / 1000)} seconds (${pid}); run \`machine-mcp service stop\`, verify \`machine-mcp service status\`, and retry`);
 }
 
 function reportExistingDaemon(args, state, owner, logger) {
@@ -349,21 +388,24 @@ function reportExistingDaemon(args, state, owner, logger) {
     logger.debug?.("local daemon already running; daemon-only start completed as an idempotent no-op", { owner_pid_known: Boolean(owner?.pid) });
     return;
   }
-  logger.warn(`local daemon already running for this workspace (${pid}); requested changes were not applied`);
+  const mode = owner?.mode === "foreground" ? "foreground" : owner?.mode === "service" ? "background service" : "local";
+  const version = owner?.version ? `, version ${owner.version}` : "";
+  const notice = `${mode} daemon already running for this workspace (${pid}${version}); it was not restarted and requested changes were not applied`;
+  logger.warn(notice);
   if (args.json) {
     printStartJson(state, {
       showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
       requestedChangesApplied: false,
-      notice: "local daemon already running; requested changes were not applied",
+      notice,
     });
     return;
   }
-  printMcpConnection(state, {
-    noPrintCredentials: Boolean(args.noPrintCredentials),
-    includeCredentials: Boolean(args.printMcpCredentials || args.printCredentials),
-    quiet: Boolean(args.quiet),
-    verbose: Boolean(args.verbose),
-  });
+  if (owner?.mode === "foreground") {
+    logger.plain("  Stop the existing foreground process with Ctrl+C in its terminal, then retry.");
+  } else {
+    logger.plain("  Run `machine-mcp service stop`, verify `machine-mcp service status`, then retry.");
+  }
+  logger.plain(`  Workspace: ${state.workspace.path}`);
 }
 
 function isIdempotentDaemonOnlyStart(args) {
@@ -1247,10 +1289,22 @@ async function installAutostartBestEffort({ workspace, stateRoot, entryScript, l
 
 async function stopAutostartBestEffort(logger) {
   try {
-    const { stopAutostart } = await import("./service.mjs");
-    await stopAutostart({ logger: structuredLogger(true) });
+    const { autostartStatus, stopAutostart } = await import("./service.mjs");
+    let status = null;
+    try {
+      status = await autostartStatus({ logger: structuredLogger(true) });
+    } catch (error) {
+      logger.debug?.("Autostart status check failed before takeover", { error_class: classifyOperationalError(error) });
+    }
+    if (status?.active === false) return { waitForServiceExit: false };
+
+    const result = await stopAutostart({ logger: structuredLogger(true) });
+    const stopSucceeded = result?.code === 0 || result?.ok === true;
+    if (status?.active && stopSucceeded) logger.info("stopping the background service before foreground startup");
+    return { waitForServiceExit: Boolean(stopSucceeded && status?.active !== false) };
   } catch (error) {
     logger.warn("Autostart stop skipped", { error_class: classifyOperationalError(error) });
+    return { waitForServiceExit: false };
   }
 }
 
@@ -1433,7 +1487,7 @@ Usage:
   .\\mbm.cmd                                      # from source checkout on Windows cmd
 
 Commands:
-  start             Deploy/update Worker, install autostart, start remote daemon
+  start             Deploy/update Worker, take over autostart, run foreground daemon
   stdio             Run a local MCP stdio server for Claude, Cursor, Codex, and compatible clients
   client-config     Print stdio client configuration snippets
   workspace show    Show remembered workspace

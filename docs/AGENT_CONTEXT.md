@@ -33,7 +33,29 @@ Example:
 }
 ```
 
-The file is loaded before repository guidance for every session and every target path. It must be a non-empty, regular, non-symbolic-link UTF-8 file and is bounded by the hard instruction-file limit. Relative values are resolved from the user's home directory.
+Copy-paste setup on macOS/Linux:
+
+```sh
+mkdir -p ~/.config/machine-bridge-mcp
+cat > ~/.config/machine-bridge-mcp/MODEL.md <<'EOF'
+# Global operating instructions
+
+- Use the language and level of detail I request.
+- Inspect repository instructions and tests before changing code.
+- Do not publish, deploy, rotate credentials, or restart services without explicit authorization.
+EOF
+cat > ~/.config/machine-bridge-mcp/agent.json <<'EOF'
+{
+  "version": 1,
+  "model_instructions_file": "~/.config/machine-bridge-mcp/MODEL.md"
+}
+EOF
+chmod 600 ~/.config/machine-bridge-mcp/agent.json ~/.config/machine-bridge-mcp/MODEL.md
+```
+
+The file is loaded before repository guidance for every session and every target path. It must be a non-empty, regular, non-symbolic-link UTF-8 file and is bounded by the hard instruction-file limit. Relative values are resolved from the user's home directory. Keep credentials, tokens, private keys, and unrelated personal data out of instruction files.
+
+Changes are discovered on the next `session_bootstrap`, `agent_context`, or `resolve_task_capabilities` call and do not require daemon restart. Because an MCP host may reuse a connection and may not call those tools automatically, start a new conversation or reconnect the MCP client when the revised global instructions must be present in initialization context from the beginning.
 
 `model_instructions_file` is global-only. A project `.machine-bridge/agent.json` cannot set or override it. It is read even under workspace-confined profiles because the user explicitly designated it as session configuration. Under those profiles, other user-manifest fields that would widen filesystem/skill/command scope are ignored; project instruction and command policy remains confined.
 

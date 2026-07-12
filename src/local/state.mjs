@@ -170,15 +170,18 @@ function lockPathForState(state, name) {
   return path.join(profileDir, name);
 }
 
-export function acquireDaemonLock(state) {
-  return acquireProcessLock(daemonLockPathForState(state), state, "daemon");
+export function acquireDaemonLock(state, metadata = {}) {
+  const details = {};
+  if (metadata?.mode === "foreground" || metadata?.mode === "service") details.mode = metadata.mode;
+  if (typeof metadata?.version === "string" && /^[0-9A-Za-z.+_-]{1,64}$/.test(metadata.version)) details.version = metadata.version;
+  return acquireProcessLock(daemonLockPathForState(state), state, "daemon", details);
 }
 
 export function acquireStartupLock(state) {
   return acquireProcessLock(startupLockPathForState(state), state, "startup");
 }
 
-function acquireProcessLock(lockPath, state, purpose) {
+function acquireProcessLock(lockPath, state, purpose, details = {}) {
   ensureOwnerOnlyDir(path.dirname(lockPath));
   const token = randomBytes(16).toString("hex");
   const payload = {
@@ -188,6 +191,7 @@ function acquireProcessLock(lockPath, state, purpose) {
     workspace: state?.workspace?.path || "",
     startedAt: new Date().toISOString(),
     entryScript: process.argv[1] || "",
+    ...details,
   };
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
