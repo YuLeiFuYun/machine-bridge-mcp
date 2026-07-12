@@ -51,6 +51,16 @@ The default for newly selected workspaces is `full`, which prioritizes ease of u
 
 For untrusted repositories or instructions, run the bridge inside a disposable VM/container or under a dedicated low-privilege OS account. On macOS and Windows, this external isolation is especially important. The project does not claim an in-process OS sandbox.
 
+## Agent instructions, skills, and command manifests
+
+Repository and user instruction files are untrusted content from the model's perspective. `agent_context` returns their text in deterministic precedence order but does not certify correctness or safety. A malicious `AGENTS.md`, custom instruction file, or `SKILL.md` can attempt prompt injection or recommend destructive operations. Use only trusted repositories and skill roots, or isolate the bridge externally.
+
+Skill loading is non-executing. `load_local_skill` returns an entrypoint and bounded file inventory; scripts remain inert until a separate process or command tool is called. Symlinked skill directories are followed only after canonical path-policy validation, while symbolic-link `SKILL.md` entrypoints are rejected. Traversal, cycles, content, summaries, and inventory are bounded.
+
+Registered commands are available only under direct-execution-capable policy. They use argv spawning rather than shell parsing, reject undeclared caller arguments, and enforce the manifest timeout as a ceiling. They are not an approval or sandbox boundary: a repository-controlled package script, interpreter, compiler, or executable can still run arbitrary code with local-user authority. Deeper manifests can override or remove inherited commands, so callers must obtain context for the actual target path rather than assuming the repository-root registry applies everywhere.
+
+The remote MCP host remains an independent boundary. Machine Bridge can advertise these tools and instruct the model to bootstrap with `agent_context`, but it cannot force a host to expose or invoke them, and it cannot bypass host confirmation or refusal.
+
 ## Filesystem exposure
 
 Direct filesystem scope is profile-dependent. The default `full` profile is unrestricted. The `agent`, `edit`, and `review` profiles confine direct filesystem tools to the canonical selected workspace, including symbolic-link resolution.

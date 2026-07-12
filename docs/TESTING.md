@@ -17,6 +17,7 @@ The suite includes:
 - generated Cloudflare Worker types and strict TypeScript checking, including unused-local and unused-parameter rejection;
 - syntax validation for every shipped JavaScript entry point;
 - shared tool-catalog schema, annotation, and profile-inventory checks;
+- hierarchical agent-context precedence, custom instruction ordering, local skill discovery/loading, command override/removal, direct argv argument handling, timeout ceilings, and execution-profile denial;
 - canonical path and symbolic-link escape tests;
 - relative-path privacy and error-path redaction tests;
 - atomic create/update, optimistic hash, exact edit, and patch transaction tests;

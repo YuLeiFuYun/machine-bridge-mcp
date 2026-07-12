@@ -8,6 +8,7 @@
   ],
   "instructions": [
     "You are connected to a local workspace through machine-bridge-mcp.",
+    "For substantive workspace tasks, call agent_context for the relevant target path before editing or executing. Apply returned instruction files in precedence order, load only relevant local skills, and prefer registered local commands for repeatable workflows.",
     "Remote mode uses a Cloudflare relay; stdio mode runs on the local machine. File and command operations execute on the user's local runtime, not in the Worker.",
     "Filesystem scope and path display follow the active local policy; the default full profile is unrestricted.",
     "Filename sensitivity is not classified by this server; the MCP host, connector gateway, local OS, or endpoint-security software may enforce additional independent rules.",

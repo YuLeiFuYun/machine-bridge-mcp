@@ -14,6 +14,7 @@ import { classifyOperationalError } from "./log.mjs";
 import { ManagedJobManager } from "./managed-jobs.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
 import { expandHome } from "./state.mjs";
+import { AgentContextManager } from "./agent-context.mjs";
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
@@ -27,6 +28,11 @@ const SLOW_TOOL_CALL_MS = 30_000;
 const RUNTIME_TOOL_HANDLERS = Object.freeze({
   server_info: (runtime) => runtime.runtimeInfo(),
   project_overview: (runtime, _args, context) => runtime.projectOverview(context),
+  agent_context: (runtime, args, context) => runtime.agentContextManager.agentContext(args, context),
+  list_local_skills: (runtime, args, context) => runtime.agentContextManager.listLocalSkills(args, context),
+  load_local_skill: (runtime, args, context) => runtime.agentContextManager.loadLocalSkill(args, context),
+  list_local_commands: (runtime, args, context) => runtime.agentContextManager.listLocalCommands(args, context),
+  run_local_command: (runtime, args, context) => runtime.runLocalCommand(args, context),
   list_roots: (runtime) => runtime.listRoots(),
   list_dir: (runtime, args, context) => runtime.listDir(args.path || ".", context),
   list_files: (runtime, args, context) => runtime.listFiles(args.path || ".", clampInt(args.max_files, 1000, 1, 10000), context),
@@ -99,6 +105,13 @@ export class LocalRuntime {
         return cwd;
       },
       displayPath: (value) => this.displayPath(value),
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
+    });
+    this.agentContextManager = new AgentContextManager({
+      workspace: this.workspace,
+      policy: this.policy,
+      displayPath: (value) => this.displayPath(value),
+      resolveExistingPath: (value) => this.resolveExistingPath(value),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
     this.relay = createRelayConnection(this, {
@@ -731,6 +744,25 @@ export class LocalRuntime {
     const cwd = await this.resolveExistingPath(args.cwd || ".");
     if (!(await stat(cwd)).isDirectory()) throw new Error("cwd is not a directory");
     return this.runProcess(argv[0], argv.slice(1), clampInt(args.timeout_seconds, 120, 1, 600) * 1000, false, 512 * 1024, context, cwd);
+  }
+
+  async runLocalCommand(args, context = {}) {
+    if (this.policy.execMode !== "direct" && this.policy.execMode !== "shell") throw new Error("run_local_command is disabled by daemon policy");
+    const command = await this.agentContextManager.resolveLocalCommand(args, context);
+    const argv = validateArgv(command.argv);
+    const cwd = await this.resolveExistingPath(command.cwd);
+    if (!(await stat(cwd)).isDirectory()) throw new Error("registered command cwd is not a directory");
+    const requestedTimeout = args.timeout_seconds === undefined
+      ? command.timeoutSeconds
+      : clampInt(args.timeout_seconds, command.timeoutSeconds, 1, 600);
+    const timeoutSeconds = Math.min(requestedTimeout, command.timeoutSeconds);
+    const result = await this.runProcess(argv[0], argv.slice(1), timeoutSeconds * 1000, false, 512 * 1024, context, cwd);
+    return {
+      name: command.name,
+      cwd: this.displayPath(cwd),
+      timeout_seconds: timeoutSeconds,
+      ...result,
+    };
   }
 
   async execCommand(command, timeoutSeconds, context = {}) {

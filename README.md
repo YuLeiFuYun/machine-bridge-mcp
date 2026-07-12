@@ -108,6 +108,37 @@ machine-mcp stdio --workspace /path/to/project
 
 The stdio server writes only JSON-RPC messages to stdout and operational logs to stderr. See [docs/CLIENTS.md](docs/CLIENTS.md) for the host/model distinction and transport trade-offs.
 
+## Agent instructions, local skills, and command registry
+
+For substantive workspace tasks, clients can call `agent_context` for the relevant file or directory. Its default instruction discovery mirrors Codex: under unrestricted policy it first checks `CODEX_HOME` or `~/.codex`, then walks from the project root to the target directory, selecting the first non-empty `AGENTS.override.md` or `AGENTS.md` in each scope. Deeper guidance has higher precedence, and the default combined budget is 32 KiB.
+
+Skill discovery also follows Codex-style progressive disclosure. By default, Machine Bridge scans `.agents/skills` from the target directory through the project root; unrestricted policy additionally enables `~/.agents/skills` and, on Unix-like systems, `/etc/codex/skills`. `agent_context` initially returns bounded metadata, while `load_local_skill` returns the selected `SKILL.md` and file inventory without executing anything implicitly.
+
+A project can add custom instruction candidates, explicit skill roots, and registered commands with `.machine-bridge/agent.json`:
+
+```json
+{
+  "version": 1,
+  "instruction_files": [
+    "PROJECT.override.md",
+    "AGENTS.override.md",
+    "AGENTS.md"
+  ],
+  "instruction_max_bytes": 65536,
+  "commands": {
+    "check": {
+      "description": "Run repository validation.",
+      "argv": ["npm", "run", "check"],
+      "cwd": ".",
+      "timeout_seconds": 600,
+      "allow_extra_args": false
+    }
+  }
+}
+```
+
+`instruction_files` is a priority list: each directory contributes only its first non-empty candidate. Deeper manifests override earlier settings and can remove an inherited command with `null`. `run_local_command` executes registered commands as direct argv processes without shell parsing and is available only when direct execution is enabled. See [Agent context, local skills, and registered commands](docs/AGENT_CONTEXT.md) for the complete contract.
+
 ## Policy controls
 
 The default is `full`. Narrow or customize it with explicit flags:
@@ -233,6 +264,10 @@ The exact `tools/list` response reflects the active local policy. Definitions co
 
 - `server_info`
 - `project_overview`
+- `agent_context` — effective instructions, skill summaries, and registered commands for a target path
+- `list_local_skills`
+- `load_local_skill` — load instructions and file inventory without implicit execution
+- `list_local_commands`
 - `list_roots`
 - `list_dir`
 - `list_files`
@@ -270,6 +305,7 @@ Managed jobs are non-interactive and persist independently of the MCP connection
 
 ### Processes
 
+- `run_local_command` — direct argv execution of a manifest-registered command
 - `run_process` — one-shot argv execution without a shell
 - `start_process`
 - `read_process`
@@ -350,7 +386,7 @@ npm pack --dry-run
 
 `npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, JavaScript syntax, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, local path/write/process/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/sensitive-artifact check, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline; macOS and package-audit jobs also exercise the documented isolated global installation.
 
-See [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), and [SECURITY.md](SECURITY.md).
+See [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), and [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 

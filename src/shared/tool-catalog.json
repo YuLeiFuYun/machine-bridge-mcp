@@ -32,6 +32,178 @@
     }
   },
   {
+    "name": "agent_context",
+    "title": "Load agent context",
+    "description": "Discover Codex-compatible global and root-to-target instruction precedence, progressively disclosed local skills, and registered commands for a target path.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": ".",
+          "maxLength": 32768
+        },
+        "include_instruction_content": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_skills": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 100
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_local_skills",
+    "title": "List local skills",
+    "description": "Search bounded SKILL.md or skill.md bundles from Codex-compatible and explicitly configured skill roots without executing them.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": ".",
+          "maxLength": 32768
+        },
+        "query": {
+          "type": "string",
+          "default": "",
+          "maxLength": 1000
+        },
+        "max_results": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 100
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "load_local_skill",
+    "title": "Load local skill",
+    "description": "Load one discovered local skill entrypoint and a bounded relative file inventory. Loading returns instructions and never executes skill files implicitly.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "skill": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "path": {
+          "type": "string",
+          "default": ".",
+          "maxLength": 32768
+        },
+        "max_files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 200
+        }
+      },
+      "required": [
+        "skill"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_local_commands",
+    "title": "List registered local commands",
+    "description": "List commands registered by hierarchical .machine-bridge/agent.json manifests for the selected target path.",
+    "availability": "always",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": ".",
+          "maxLength": 32768
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "run_local_command",
+    "title": "Run registered local command",
+    "description": "Execute a named command registered in .machine-bridge/agent.json as a direct argv process without shell parsing. Manifest timeout and argument policy remain authoritative.",
+    "availability": "direct-exec",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "path": {
+          "type": "string",
+          "default": ".",
+          "maxLength": 32768
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "maxItems": 64,
+          "default": []
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "list_roots",
     "title": "List workspace roots",
     "description": "List filesystem roots exposed by the active local policy. The default full profile exposes local filesystem roots and returns absolute paths.",

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0 - 2026-07-12
+
+### Agent context and local workflows
+
+- Add `agent_context`, a bounded bootstrap tool with Codex-compatible instruction precedence: unrestricted `CODEX_HOME`/`~/.codex` guidance, then project root-to-target scopes, selecting the first non-empty `AGENTS.override.md` or `AGENTS.md` candidate per directory under a default 32 KiB combined budget. Add hierarchical `.machine-bridge/agent.json` manifests plus an optional unrestricted user manifest at `~/.config/machine-bridge-mcp/agent.json` for custom candidate priority and bounds.
+- Add `list_local_skills` and `load_local_skill` with Codex-style progressive disclosure. Default discovery scans target-to-root `.agents/skills`, unrestricted user/admin roots, and canonicalized symlinked skill directories; invalid metadata is skipped with bounded warnings. Skill loading returns instructions and a relative file inventory without implicitly executing scripts.
+- Add `list_local_commands` and direct-argv `run_local_command`. Nearest manifests can override or remove inherited commands, caller arguments require manifest opt-in, and callers cannot increase the manifest timeout ceiling.
+
+### Architecture, security, and tests
+
+- Extract agent discovery into `AgentContextManager` rather than expanding transport or runtime dispatch responsibilities. Keep a static MCP catalog across Worker and stdio transports so host-side caching and filtering do not require dynamic per-skill tools.
+- Reject escaping instruction/config paths, unknown manifest fields, out-of-policy skill symlink targets, symbolic-link skill entrypoints, ambiguous skill names, oversized content/argv, and execution attempts under non-execution profiles. Document that repository instructions and skills are untrusted content and that registered commands are convenience aliases, not a sandbox or approval boundary.
+- Add regression coverage for global/project override selection, empty-candidate fallback, custom priority, instruction-byte ceilings, target-to-root skill discovery, symlinked skill folders, invalid metadata warnings, command override/removal, literal argument handling without shell parsing, timeout ceilings, path escape denial, and execution-profile denial. Update server instructions, architecture, security, testing, and operator documentation for the new bootstrap workflow.
+
 ## 0.8.2 - 2026-07-11
 
 ### Relay reliability and protocol correctness

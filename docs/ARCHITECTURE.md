@@ -32,11 +32,20 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 - process-session buffers and stdin lifecycle;
 - layered fixed runtime diagnostics;
 - local resource aliases and detached managed-job coordination;
+- agent-context discovery and registered-command execution coordination;
 - mutation serialization;
 - child-process tracking and cancellation;
 - output, traversal, concurrency, and time limits.
 
 `RelayConnection` owns remote WebSocket transport, authenticated `hello_ack` readiness, heartbeat liveness, reconnect backoff, and outage logging. Stdio mode invokes `LocalRuntime` directly without that adapter.
+
+### Agent context manager
+
+`AgentContextManager` is a local domain module beneath `LocalRuntime`. It discovers the nearest Git/workspace scope, applies optional user configuration and hierarchical `.machine-bridge/agent.json` files, selects the first non-empty instruction candidate in each global/root-to-target scope, discovers bounded Codex-style `.agents/skills` metadata, and resolves registered commands. The runtime remains responsible for canonical path policy and process execution.
+
+The MCP surface is deliberately static: `agent_context`, `list_local_skills`, `load_local_skill`, `list_local_commands`, and `run_local_command`. Skills and commands do not become dynamically named MCP tools. This avoids host-side catalog caching/filtering problems and keeps one schema contract across Worker and stdio transports. Initial skill delivery is metadata-only and budgeted; loading a skill is read-only and execution requires a separate ordinary tool call. Registered commands use direct argv spawning and inherit the active runtime environment policy.
+
+See [Agent context, local skills, and registered commands](AGENT_CONTEXT.md) for precedence and configuration semantics.
 
 ### Managed job runner
 
