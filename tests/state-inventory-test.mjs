@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
@@ -21,7 +21,9 @@ try {
   const profiles = knownProfileStates(stateRoot);
   assert.equal(profiles.length, 1);
   assert.equal(profiles[0].workspace.path, state.workspace.path);
-  assert.equal(profiles[0].paths.profileDir, state.paths.profileDir);
+  const canonicalStateRoot = await realpath(stateRoot);
+  assert.equal(profiles[0].paths.stateRoot, canonicalStateRoot);
+  assert.equal(profiles[0].paths.profileDir, join(canonicalStateRoot, "profiles", state.workspace.hash));
 
   state.worker.name = "-invalid";
   saveState(state);
