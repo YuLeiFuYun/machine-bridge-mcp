@@ -215,8 +215,6 @@ async function listWindowsApplications(configuredRoots, home, context, throwIfCa
   const roots = configuredRoots || [
     join(process.env.APPDATA || home, "Microsoft", "Windows", "Start Menu", "Programs"),
     process.env.ProgramData ? join(process.env.ProgramData, "Microsoft", "Windows", "Start Menu", "Programs") : "",
-    process.env.ProgramFiles,
-    process.env["ProgramFiles(x86)"],
   ].filter(Boolean);
   return listExecutableRoots(roots, new Set([".exe", ".lnk"]), context, throwIfCancelled);
 }
