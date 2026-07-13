@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -20,7 +20,7 @@
     "browser-extension",
     "src/local",
     "src/shared",
-    "src/worker/index.ts",
+    "src/worker",
     "scripts",
     "wrangler.jsonc",
     "tsconfig.json",

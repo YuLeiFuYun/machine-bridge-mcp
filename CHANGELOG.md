@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.2 - 2026-07-13
+
+### Fixed
+
+- Package the entire `src/worker` directory (instead of just `src/worker/index.ts`) in the published npm package so that global installations have all files required to compile/deploy the Worker.
+- Add regression coverage in packaging tests to verify all worker modules are present.
+
 ## 0.16.1 - 2026-07-13
 
 ### Fixed
