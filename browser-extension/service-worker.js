@@ -1,10 +1,12 @@
-importScripts("devtools-input.js");
+importScripts("devtools-input.js", "browser-operations.js");
 
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 let keepaliveTimer = null;
 const MAX_RESULT_BYTES = 7 * 1024 * 1024;
+const BROWSER_EXTENSION_PROTOCOL = 3;
+const HANDSHAKE_TIMEOUT_MS = 3000;
 const activeRequests = new Map();
 
 chrome.runtime.onInstalled.addListener(() => { ensureReconnectAlarm(); void connectFromStorage(); });
@@ -22,7 +24,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.action.onClicked.addListener((tab) => void handleActionClick(tab));
 
 async function handleActionClick(tab) {
-  if (tab?.id && /^http:\/\/127\.0\.0\.1:\d+\/pair(?:$|[?#])/.test(String(tab.url || ""))) {
+  if (tab?.id && parsePairingPage(tab.url)) {
     await confirmRepairFromTab(tab);
     return;
   }
@@ -32,8 +34,28 @@ async function handleActionClick(tab) {
 }
 
 function pairingUrlFromEndpoint(endpoint) {
-  const match = /^ws:\/\/127\.0\.0\.1:(\d+)\/extension$/.exec(String(endpoint || ""));
-  return match ? `http://127.0.0.1:${match[1]}/pair` : "";
+  const parsed = parseBrokerEndpoint(endpoint);
+  return parsed ? `http://127.0.0.1:${parsed.port}/pair` : "";
+}
+
+function parsePairingPage(value) {
+  let parsed;
+  try { parsed = new URL(String(value || "")); } catch { return null; }
+  const port = Number(parsed.port);
+  if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1" || parsed.pathname !== "/pair"
+      || parsed.username || parsed.password || parsed.search || parsed.hash
+      || !Number.isInteger(port) || port < 1024 || port > 65535) return null;
+  return parsed;
+}
+
+function parseBrokerEndpoint(value) {
+  let parsed;
+  try { parsed = new URL(String(value || "")); } catch { return null; }
+  const port = Number(parsed.port);
+  if (parsed.protocol !== "ws:" || parsed.hostname !== "127.0.0.1" || parsed.pathname !== "/extension"
+      || parsed.username || parsed.password || parsed.search || parsed.hash
+      || !Number.isInteger(port) || port < 1024 || port > 65535) return null;
+  return parsed;
 }
 
 function setConnectionState(state) {
@@ -56,21 +78,38 @@ function ignoreOptionalPromise(value) {
 async function pairConfiguration(rawEndpoint, rawToken, { replace, senderUrl }) {
   const endpoint = String(rawEndpoint || "");
   const token = String(rawToken || "");
-  if (!/^http:\/\/127\.0\.0\.1:\d+\/pair(?:$|[?#])/.test(String(senderUrl || ""))) return { ok: false, error: "invalid_pairing_page" };
-  if (!/^ws:\/\/127\.0\.0\.1:\d+\/extension$/.test(endpoint) || !/^[A-Za-z0-9_-]{32,100}$/.test(token)) return { ok: false, error: "invalid_pairing_material" };
+  const pairingPage = parsePairingPage(senderUrl);
+  const brokerEndpoint = parseBrokerEndpoint(endpoint);
+  if (!pairingPage) return { ok: false, error: "invalid_pairing_page" };
+  if (!brokerEndpoint || pairingPage.port !== brokerEndpoint.port || !/^[A-Za-z0-9_-]{32,100}$/.test(token)) return { ok: false, error: "invalid_pairing_material" };
   const current = await chrome.storage.local.get(["endpoint", "token"]);
   const alreadyPaired = Boolean(current.endpoint && current.token);
+  const samePairing = current.endpoint === endpoint && current.token === token;
+  if (alreadyPaired && samePairing
+      && socket?.bridgeReady === true
+      && socket.readyState === WebSocket.OPEN
+      && socket.machineBridgeEndpoint === endpoint
+      && socket.machineBridgeToken === token) {
+    return { ok: true, replaced: false, already_connected: true };
+  }
   if (alreadyPaired && !replace && (current.endpoint !== endpoint || current.token !== token)) {
     return { ok: false, requires_manual_repair: true };
   }
-  await chrome.storage.local.set({ endpoint, token });
   setConnectionState("connecting");
-  connect(endpoint, token);
-  return { ok: true, replaced: alreadyPaired && (current.endpoint !== endpoint || current.token !== token) };
+  try {
+    const connectedSocket = await connect(endpoint, token, { reconnect: false });
+    await chrome.storage.local.set({ endpoint, token });
+    connectedSocket.reconnectEnabled = true;
+    if (connectedSocket.readyState !== WebSocket.OPEN || connectedSocket.bridgeReady !== true) void connect(endpoint, token).catch(() => {});
+    return { ok: true, replaced: alreadyPaired && (current.endpoint !== endpoint || current.token !== token) };
+  } catch (error) {
+    if (current.endpoint && current.token) void connect(current.endpoint, current.token).catch(() => {});
+    throw error;
+  }
 }
 
 async function confirmRepairFromTab(tab) {
-  if (!tab?.id || !/^http:\/\/127\.0\.0\.1:\d+\/pair(?:$|[?#])/.test(String(tab.url || ""))) return;
+  if (!tab?.id || !parsePairingPage(tab.url)) return;
   try {
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -88,7 +127,17 @@ async function confirmRepairFromTab(tab) {
       },
       args: [paired.ok === true],
     });
-  } catch {}
+  } catch {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          const status = document.getElementById("status");
+          if (status) status.textContent = "Pairing failed. Reload this page and confirm that the expected extension build is loaded.";
+        },
+      });
+    } catch {}
+  }
 }
 
 ensureReconnectAlarm();
@@ -103,13 +152,13 @@ async function connectFromStorage() {
   const value = await chrome.storage.local.get(["endpoint", "token"]);
   if (value.endpoint && value.token) {
     setConnectionState("connecting");
-    connect(value.endpoint, value.token);
+    void connect(value.endpoint, value.token).catch(() => {});
   } else {
     setConnectionState("unconfigured");
   }
 }
 
-function connect(endpoint, token) {
+function connect(endpoint, token, { reconnect = true } = {}) {
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
   if (socket) {
@@ -117,54 +166,102 @@ function connect(endpoint, token) {
   }
   const ws = new WebSocket(endpoint, [`mbm.${token}`]);
   socket = ws;
-  ws.onopen = () => {
-    if (socket !== ws) {
-      try { ws.close(); } catch {}
-      return;
-    }
-    reconnectAttempt = 0;
-    const manifest = chrome.runtime.getManifest();
-    ws.send(JSON.stringify({
-      type: "hello",
-      role: "extension",
-      protocol: 2,
-      version: manifest.version_name || manifest.version,
-      capabilities: [
-        "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
-      ],
-    }));
-    setConnectionState("connected");
-    clearInterval(keepaliveTimer);
-    keepaliveTimer = setInterval(() => { if (socket === ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" })); }, 20000);
-  };
-  ws.onmessage = (event) => void handleMessage(ws, event.data);
-  ws.onerror = () => {};
-  ws.onclose = () => {
-    if (socket !== ws) return;
-    clearInterval(keepaliveTimer);
-    keepaliveTimer = null;
-    socket = null;
-    setConnectionState("disconnected");
-    scheduleReconnect(endpoint, token);
-  };
+  ws.bridgeReady = false;
+  ws.serverHelloSeen = false;
+  ws.machineBridgeEndpoint = endpoint;
+  ws.machineBridgeToken = token;
+  ws.reconnectEnabled = reconnect;
+  setConnectionState("connecting");
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const settle = (error = null) => {
+      if (settled) return;
+      settled = true;
+      if (error) rejectPromise(error); else resolvePromise(ws);
+    };
+    ws.onopen = () => {
+      if (socket !== ws) {
+        try { ws.close(); } catch {}
+        settle(new Error("browser connection was superseded"));
+        return;
+      }
+      ws.handshakeTimer = setTimeout(() => {
+        try { ws.close(1002, "browser broker handshake timed out"); } catch {}
+      }, HANDSHAKE_TIMEOUT_MS);
+    };
+    ws.onmessage = (event) => void handleMessage(ws, event.data, () => settle());
+    ws.onerror = () => {};
+    ws.onclose = () => {
+      clearTimeout(ws.handshakeTimer);
+      if (!ws.bridgeReady) settle(new Error("browser broker handshake failed"));
+      if (socket !== ws) return;
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+      cancelRequestsForSocket(ws);
+      socket = null;
+      setConnectionState("disconnected");
+      if (ws.reconnectEnabled) scheduleReconnect(endpoint, token);
+    };
+  });
 }
 
 function scheduleReconnect(endpoint, token) {
   clearTimeout(reconnectTimer);
   const delay = Math.min(30000, 1000 * 2 ** Math.min(reconnectAttempt++, 5));
-  reconnectTimer = setTimeout(() => connect(endpoint, token), delay);
+  reconnectTimer = setTimeout(() => { void connect(endpoint, token).catch(() => {}); }, delay);
 }
 
-async function handleMessage(ws, raw) {
+async function handleMessage(ws, raw, onReady = () => {}) {
   let message;
-  try { message = JSON.parse(String(raw)); } catch { return; }
+  try { message = JSON.parse(String(raw)); } catch {
+    try { ws.close(1007, "invalid broker JSON"); } catch {}
+    return;
+  }
+  if (message?.type === "hello") {
+    if (ws.serverHelloSeen || message.role !== "extension" || message.protocol !== BROWSER_EXTENSION_PROTOCOL) {
+      try { ws.close(1002, "browser broker protocol mismatch"); } catch {}
+      return;
+    }
+    ws.serverHelloSeen = true;
+    const manifest = chrome.runtime.getManifest();
+    ws.send(JSON.stringify({
+      type: "hello",
+      role: "extension",
+      protocol: BROWSER_EXTENSION_PROTOCOL,
+      version: manifest.version_name || manifest.version,
+      capabilities: [
+        "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
+      ],
+    }));
+    return;
+  }
+  if (message?.type === "hello_ack") {
+    if (ws.bridgeReady || !ws.serverHelloSeen || message.role !== "extension" || message.protocol !== BROWSER_EXTENSION_PROTOCOL) {
+      try { ws.close(1002, "invalid browser broker acknowledgement"); } catch {}
+      return;
+    }
+    clearTimeout(ws.handshakeTimer);
+    ws.bridgeReady = true;
+    reconnectAttempt = 0;
+    setConnectionState("connected");
+    clearInterval(keepaliveTimer);
+    keepaliveTimer = setInterval(() => {
+      if (socket === ws && ws.bridgeReady && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+    }, 20000);
+    onReady();
+    return;
+  }
+  if (!ws.bridgeReady) {
+    try { ws.close(1002, "browser broker acknowledgement required"); } catch {}
+    return;
+  }
   if (message?.type === "cancel" && typeof message.id === "string") {
     const state = activeRequests.get(message.id);
     if (state) state.cancelled = true;
     return;
   }
   if (message?.type !== "request" || typeof message.id !== "string" || typeof message.method !== "string") return;
-  const state = { cancelled: false };
+  const state = { cancelled: false, timeoutMs: browserOperations().boundedRequestTimeout(message.timeout_ms), socket: ws };
   activeRequests.set(message.id, state);
   try {
     throwIfCancelled(state);
@@ -175,6 +272,12 @@ async function handleMessage(ws, raw) {
     if (!state.cancelled) sendResponse(ws, message.id, false, null, String(error?.message || error).slice(0, 2000));
   } finally {
     activeRequests.delete(message.id);
+  }
+}
+
+function cancelRequestsForSocket(closedSocket) {
+  for (const state of activeRequests.values()) {
+    if (state.socket === closedSocket) state.cancelled = true;
   }
 }
 
@@ -191,319 +294,13 @@ function sendResponse(ws, id, ok, result, error = "") {
   try { ws.send(payload); } catch {}
 }
 
-async function dispatch(method, params, state) {
-  if (method === "list_tabs") return listTabs(params);
-  if (method === "manage_tabs") return manageTabs(params);
-  if (method === "wait") return browserWait(params, state);
-  if (method === "get_source") return getSource(params);
-  if (method === "inspect_page") return inspectPage(params);
-  if (method === "action") return browserAction(params);
-  if (method === "fill_form") return fillForm(params);
-  if (method === "upload_files") return uploadFiles(params);
-  if (method === "screenshot") return screenshot(params);
-  throw new Error(`unknown browser method: ${method}`);
+
+function browserOperations() {
+  const api = globalThis.__machineBridgeBrowserOperations;
+  if (!api || typeof api.dispatch !== "function") throw new Error("browser operations module is unavailable");
+  return api;
 }
 
-async function listTabs(params) {
-  const query = params.currentWindow ? { currentWindow: true } : {};
-  const tabs = await chrome.tabs.query(query);
-  return {
-    tabs: tabs
-      .filter((tab) => params.includePinned !== false || !tab.pinned)
-      .map((tab) => ({
-        id: tab.id,
-        window_id: tab.windowId,
-        active: tab.active,
-        pinned: tab.pinned,
-        audible: tab.audible,
-        discarded: tab.discarded,
-        status: tab.status,
-        title: tab.title || "",
-        url: tab.url || "",
-      })),
-  };
-}
-
-
-async function manageTabs(params) {
-  if (params.action === "new") {
-    const tab = await chrome.tabs.create({ url: params.url || "about:blank", active: params.active !== false });
-    return { action: "new", ...publicTab(tab) };
-  }
-  const tab = await chrome.tabs.get(params.tabId);
-  if (params.action === "activate") {
-    await chrome.tabs.update(tab.id, { active: true });
-    await chrome.windows.update(tab.windowId, { focused: true });
-    return { action: "activate", ...publicTab(await chrome.tabs.get(tab.id)) };
-  }
-  if (params.action === "close") {
-    const result = { action: "close", closed: true, ...publicTab(tab) };
-    await chrome.tabs.remove(tab.id);
-    return result;
-  }
-  throw new Error("unsupported browser tab action");
-}
-
-async function browserWait(params, state) {
-  const tab = await resolveTab(params.tabId);
-  const deadline = Date.now() + Math.max(1, Number(params.timeoutMs) || 30000);
-  let last = null;
-  while (Date.now() <= deadline) {
-    throwIfCancelled(state);
-    const current = await chrome.tabs.get(tab.id);
-    const urlMatched = !params.urlContains || String(current.url || "").includes(params.urlContains);
-    const needsPage = Boolean(params.selector || params.text || params.loadState);
-    let page = { matched: true, ready_state: current.status || "" };
-    if (needsPage) {
-      try {
-        assertPageTab(current);
-        const [execution] = await executePageAutomation(scriptTarget(current.id, params.frameId, false), "checkWait", params);
-        page = execution?.result || { matched: false };
-      } catch (error) {
-        const message = String(error?.message || error).replace(/\s+/g, " ").slice(0, 500);
-        if (message.includes("invalid CSS selector") || message.includes("selector matched")) throw new Error(message);
-        page = { matched: false, error: message };
-      }
-    }
-    last = { url_matched: urlMatched, ...page };
-    if (urlMatched && page.matched === true) {
-      return { ok: true, tab_id: current.id, title: current.title || "", url: current.url || "", condition: last };
-    }
-    await delay(200);
-  }
-  throw new Error(`browser wait timed out; last condition: ${JSON.stringify(last || {})}`);
-}
-function scriptTarget(tabId, frameId, allFrames) {
-  if (Number.isInteger(frameId)) return { tabId, frameIds: [frameId] };
-  if (allFrames) return { tabId, allFrames: true };
-  return { tabId };
-}
-
-async function resolveTab(tabId) {
-  if (Number.isInteger(tabId)) return chrome.tabs.get(tabId);
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) throw new Error("no active browser tab");
-  return tab;
-}
-
-async function getSource(params) {
-  const tab = await resolveTab(params.tabId);
-  assertPageTab(tab);
-  const maxBytes = Number(params.maxBytes) || 1024 * 1024;
-  const executions = await chrome.scripting.executeScript({
-    target: scriptTarget(tab.id, params.frameId, params.allFrames === true),
-    func: (limit) => {
-      const doctype = document.doctype ? `<!DOCTYPE ${document.doctype.name}>\n` : "";
-      const source = `${doctype}${document.documentElement?.outerHTML || ""}`;
-      const encoder = new TextEncoder();
-      const bytes = encoder.encode(source);
-      if (bytes.byteLength <= limit) return { source, bytes: bytes.byteLength, truncated: false, url: location.href };
-      const decoder = new TextDecoder();
-      return { source: decoder.decode(bytes.slice(0, limit)), bytes: bytes.byteLength, truncated: true, url: location.href };
-    },
-    args: [maxBytes],
-  });
-  return { tab_id: tab.id, title: tab.title || "", url: tab.url || "", frames: executions.map((item) => ({ frame_id: item.frameId, ...item.result })) };
-}
-
-async function inspectPage(params) {
-  const tab = await resolveTab(params.tabId);
-  assertPageTab(tab);
-  const executions = await executePageAutomation(
-    scriptTarget(tab.id, params.frameId, params.allFrames === true),
-    "inspect",
-    { maxElements: Number(params.maxElements) || 300, includeValues: params.includeValues === true },
-  );
-  return { tab_id: tab.id, title: tab.title || "", url: tab.url || "", frames: executions.map((item) => ({ frame_id: item.frameId, ...item.result })) };
-}
-
-async function browserAction(params) {
-  const tab = await resolveTab(params.tabId);
-  if (params.action === "navigate") {
-    if (!params.url) throw new Error("navigate requires url");
-    const waiter = beginTabWait(tab.id, params.waitFor);
-    try {
-      const updated = await chrome.tabs.update(tab.id, { url: params.url });
-      await waiter.promise;
-      return publicTab(await chrome.tabs.get(updated.id));
-    } catch (error) {
-      waiter.cancel();
-      throw error;
-    }
-  }
-  if (params.action === "reload") {
-    const waiter = beginTabWait(tab.id, params.waitFor);
-    try {
-      await chrome.tabs.reload(tab.id);
-      await waiter.promise;
-      return publicTab(await chrome.tabs.get(tab.id));
-    } catch (error) {
-      waiter.cancel();
-      throw error;
-    }
-  }
-  if (params.action === "back" || params.action === "forward") {
-    const waiter = beginTabWait(tab.id, params.waitFor);
-    try {
-      if (params.action === "back") await chrome.tabs.goBack(tab.id);
-      else await chrome.tabs.goForward(tab.id);
-      await waiter.promise;
-      return publicTab(await chrome.tabs.get(tab.id));
-    } catch (error) {
-      waiter.cancel();
-      throw error;
-    }
-  }
-  assertPageTab(tab);
-  const waiter = beginTabWait(tab.id, params.waitFor);
-  let result;
-  try {
-    result = await performPageAction(tab, params);
-    await waiter.promise;
-  } catch (error) {
-    waiter.cancel();
-    throw error;
-  }
-  const current = await chrome.tabs.get(tab.id).catch(() => tab);
-  return { tab_id: current.id, title: current.title || "", url: current.url || "", ...result };
-}
-
-async function performPageAction(tab, params) {
-  const trustedActions = new Set(["click", "double_click", "hover", "press", "type_text"]);
-  if (params.inputMode === "trusted" && !trustedActions.has(params.action)) {
-    throw new Error("trusted input is unavailable for this action");
-  }
-  const wantsTrusted = params.inputMode !== "dom" && trustedActions.has(params.action);
-  const topFrame = !Number.isInteger(params.frameId) || params.frameId === 0;
-  if (wantsTrusted && !topFrame && params.inputMode === "trusted") {
-    throw new Error("trusted input currently requires the top frame; use input_mode=dom for a subframe");
-  }
-  if (wantsTrusted && topFrame) {
-    const [prepared] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "prepareAction", params);
-    try {
-      const api = globalThis.__machineBridgeDevtoolsInput;
-      if (!api?.perform) throw new Error("trusted input module is unavailable");
-      await api.perform(tab.id, params.action, {
-        point: prepared.result?.point,
-        key: params.key || params.value || "Enter",
-        text: params.value || "",
-      });
-      return { ...prepared.result, input_mode: "trusted", trusted_input_fallback: false };
-    } catch (error) {
-      if (params.inputMode === "trusted") throw error;
-      const [fallback] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "action", params);
-      return {
-        ...fallback.result,
-        input_mode: "dom",
-        trusted_input_fallback: true,
-        fallback_reason: String(error?.message || error).slice(0, 500),
-      };
-    }
-  }
-  const [execution] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "action", params);
-  return { ...execution.result, input_mode: "dom", trusted_input_fallback: false };
-}
-async function fillForm(params) {
-  const tab = await resolveTab(params.tabId);
-  assertPageTab(tab);
-  const waiter = beginTabWait(tab.id, params.waitFor);
-  let execution;
-  try {
-    [execution] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "fillForm", params);
-    await waiter.promise;
-  } catch (error) {
-    waiter.cancel();
-    throw error;
-  }
-  return { tab_id: tab.id, title: tab.title || "", url: tab.url || "", ...execution.result };
-}
-
-async function uploadFiles(params) {
-  const tab = await resolveTab(params.tabId);
-  assertPageTab(tab);
-  const [execution] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "uploadFiles", params);
-  return { tab_id: tab.id, title: tab.title || "", url: tab.url || "", ...execution.result };
-}
-
-async function screenshot(params) {
-  const tab = await resolveTab(params.tabId);
-  await chrome.tabs.update(tab.id, { active: true });
-  await chrome.windows.update(tab.windowId, { focused: true });
-  const data = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: params.format === "jpeg" ? "jpeg" : "png",
-    quality: Number(params.quality) || 90,
-  });
-  return { tab_id: tab.id, title: tab.title || "", url: tab.url || "", data };
-}
-
-function publicTab(tab) {
-  return { tab_id: tab.id, window_id: tab.windowId, title: tab.title || "", url: tab.url || "", status: tab.status || "" };
-}
-
-function assertPageTab(tab) {
-  const url = String(tab.url || "");
-  if (!/^(https?|file):/i.test(url)) throw new Error("this page cannot be scripted by a browser extension");
-}
-
-function beginTabWait(tabId, mode) {
-  if (!mode || mode === "none") return { promise: Promise.resolve(), cancel() {} };
-  let settled = false;
-  let navigationStarted = false;
-  let pollTimer = null;
-  let timeout = null;
-  let resolveWait;
-  let rejectWait;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolveWait = resolvePromise;
-    rejectWait = rejectPromise;
-  });
-  const cleanup = () => {
-    clearTimeout(timeout);
-    clearTimeout(pollTimer);
-    chrome.tabs.onUpdated.removeListener(listener);
-  };
-  const settle = (error = null) => {
-    if (settled) return;
-    settled = true;
-    cleanup();
-    if (error) rejectWait(error); else resolveWait();
-  };
-  const pollReadyState = async () => {
-    if (settled || !navigationStarted || mode !== "domcontentloaded") return;
-    try {
-      const [execution] = await chrome.scripting.executeScript({ target: { tabId }, func: () => document.readyState });
-      if (["interactive", "complete"].includes(execution?.result)) {
-        settle();
-        return;
-      }
-    } catch {}
-    pollTimer = setTimeout(pollReadyState, 100);
-  };
-  const listener = (updatedId, changeInfo, tab) => {
-    if (updatedId !== tabId || settled) return;
-    if (changeInfo.status === "loading" || typeof changeInfo.url === "string") navigationStarted = true;
-    if (!navigationStarted) return;
-    if (mode === "complete" && (changeInfo.status === "complete" || (typeof changeInfo.url === "string" && tab.status === "complete"))) settle();
-    if (mode === "domcontentloaded") void pollReadyState();
-  };
-  chrome.tabs.onUpdated.addListener(listener);
-  timeout = setTimeout(() => settle(new Error("browser navigation wait timed out")), 30000);
-  return { promise, cancel: () => settle() };
-}
-
-function executePageAutomation(target, method, params) {
-  return chrome.scripting.executeScript({ target, files: ["page-automation.js"] })
-    .then(() => chrome.scripting.executeScript({
-      target,
-      func: (operation, payload) => {
-        const api = globalThis.__machineBridgePageAutomation;
-        if (!api || typeof api[operation] !== "function") throw new Error("page automation module is unavailable");
-        return api[operation](payload);
-      },
-      args: [method, params],
-    }));
-}
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function dispatch(method, params, state) {
+  return browserOperations().dispatch(method, params, state);
 }

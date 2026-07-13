@@ -2,7 +2,7 @@
   const marker = document.querySelector('meta[name="machine-bridge-browser-pair"]');
   const portMeta = document.querySelector('meta[name="machine-bridge-browser-port"]');
   const tokenMeta = document.querySelector('meta[name="machine-bridge-browser-token"]');
-  if (!marker || !portMeta || !tokenMeta) return;
+  if (marker?.content !== "1" || !portMeta || !tokenMeta) return;
   const token = tokenMeta.content;
   const port = Number(portMeta.content);
   if (!/^[A-Za-z0-9_-]{32,100}$/.test(token) || !Number.isInteger(port) || port < 1024 || port > 65535) return;

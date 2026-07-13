@@ -1,28 +1,92 @@
 (() => {
   if (globalThis.__machineBridgePageAutomation) return;
 
-  const INTERACTIVE_SELECTOR = "a,button,input,select,textarea,[role],[contenteditable='true'],summary";
+  const INTERACTIVE_SELECTOR = "a,button,input,select,textarea,[role],[contenteditable]:not([contenteditable='false']),summary";
   const MAX_SHADOW_ROOTS = 200;
+  const MAX_SCAN_NODES = 100000;
+  const MAX_QUERY_MATCHES = 10001;
+  const MAX_PAGE_FIELD_CHARS = 2000;
+  const MAX_PAGE_URL_CHARS = 8192;
+  const MAX_WAIT_TEXT_CHARS = 2 * 1024 * 1024;
+  const MAX_ELEMENT_REFS = 10000;
   const elementRefs = new WeakMap();
   const refElements = new Map();
   let nextRef = 1;
+  let evictedRefs = 0;
 
-  function collectRoots() {
+  function scanPageElements(maxNodes = MAX_SCAN_NODES) {
     const roots = [document];
-    for (let index = 0; index < roots.length && roots.length <= MAX_SHADOW_ROOTS; index += 1) {
-      const root = roots[index];
-      for (const element of root.querySelectorAll("*")) {
-        if (element.shadowRoot && !roots.includes(element.shadowRoot)) roots.push(element.shadowRoot);
-        if (roots.length > MAX_SHADOW_ROOTS) break;
+    const seenRoots = new Set(roots);
+    const entries = [];
+    let visitedNodes = 0;
+    let truncated = false;
+    for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+      const root = roots[rootIndex];
+      const elements = [];
+      const source = iterateElements(root);
+      for (const element of source) {
+        if (visitedNodes >= maxNodes) {
+          truncated = true;
+          break;
+        }
+        visitedNodes += 1;
+        elements.push(element);
+        if (element.shadowRoot && !seenRoots.has(element.shadowRoot)) {
+          if (roots.length >= MAX_SHADOW_ROOTS + 1) truncated = true;
+          else {
+            seenRoots.add(element.shadowRoot);
+            roots.push(element.shadowRoot);
+          }
+        }
       }
+      entries.push({ root, elements });
+      if (visitedNodes >= maxNodes) break;
     }
-    return roots;
+    return { roots, entries, visitedNodes, truncated };
   }
 
-  function deepQuerySelectorAll(selector) {
+  function iterateElements(root) {
+    if (typeof document.createTreeWalker === "function") {
+      const walker = document.createTreeWalker(root, globalThis.NodeFilter?.SHOW_ELEMENT || 1);
+      return {
+        [Symbol.iterator]() {
+          return {
+            next() {
+              const value = walker.nextNode();
+              return value ? { value, done: false } : { value: undefined, done: true };
+            },
+          };
+        },
+      };
+    }
+    return root.querySelectorAll("*");
+  }
+
+  function deepQuerySelectorAll(selector, limit = MAX_QUERY_MATCHES) {
+    if (!selector || limit < 1) return [];
+    const scan = scanPageElements();
     const results = [];
-    for (const root of collectRoots()) results.push(...root.querySelectorAll(selector));
+    try {
+      if (typeof document.documentElement?.matches === "function") document.documentElement.matches(selector);
+      for (const entry of scan.entries) {
+        for (const element of entry.elements) {
+          if (element.matches?.(selector)) {
+            results.push(element);
+            if (results.length >= limit) return results;
+          }
+        }
+      }
+    } catch (error) {
+      throw new Error(`invalid CSS selector: ${String(error?.message || error).slice(0, 300)}`);
+    }
     return results;
+  }
+
+  function isInteractiveElement(element) {
+    const tag = String(element.tagName || "").toLowerCase();
+    return ["a", "button", "input", "select", "textarea", "summary"].includes(tag)
+      || element.hasAttribute?.("role")
+      || (element.hasAttribute?.("contenteditable") && String(element.getAttribute?.("contenteditable") || "").toLowerCase() !== "false");
   }
 
   function rootById(element, id) {
@@ -33,14 +97,23 @@
 
   function refFor(element) {
     let ref = elementRefs.get(element);
-    if (ref) {
-      refElements.set(ref, element);
-      return ref;
+    if (!ref) {
+      ref = `e${nextRef++}`;
+      elementRefs.set(element, ref);
     }
-    ref = `e${nextRef++}`;
-    elementRefs.set(element, ref);
-    refElements.set(ref, element);
+    rememberRef(ref, element);
     return ref;
+  }
+
+  function rememberRef(ref, element) {
+    if (refElements.has(ref)) refElements.delete(ref);
+    while (refElements.size >= MAX_ELEMENT_REFS) {
+      const oldest = refElements.keys().next().value;
+      if (!oldest) break;
+      refElements.delete(oldest);
+      evictedRefs += 1;
+    }
+    refElements.set(ref, element);
   }
 
   function pruneDetachedRefs() {
@@ -51,22 +124,39 @@
 
   function inspect(params) {
     pruneDetachedRefs();
-    const maxElements = Number(params.maxElements) || 300;
+    const maxElements = Math.max(0, Number(params.maxElements) || 0);
     const includeValues = params.includeValues === true;
-    const all = deepQuerySelectorAll(INTERACTIVE_SELECTOR);
-    const candidates = all.slice(0, maxElements);
+    const scan = scanPageElements();
+    const candidates = [];
+    let interactiveCount = 0;
+    let formCount = 0;
+    for (const entry of scan.entries) {
+      for (const element of entry.elements) {
+        if (String(element.tagName || "").toLowerCase() === "form") formCount += 1;
+        if (!isInteractiveElement(element)) continue;
+        interactiveCount += 1;
+        if (candidates.length < maxElements) candidates.push(element);
+      }
+    }
+    const describedElements = candidates.map((element, index) => describeElement(element, index, includeValues));
     return {
-      snapshot_version: 1,
+      snapshot_version: 2,
       document: {
-        title: document.title,
-        url: location.href,
-        language: document.documentElement.lang || "",
+        title: boundedPageText(document.title, 1000),
+        url: safePageUrl(location.href),
+        language: boundedPageText(document.documentElement.lang, 100),
         ready_state: document.readyState,
-        forms: deepQuerySelectorAll("form").length,
-        open_shadow_roots: Math.max(0, collectRoots().length - 1),
+        forms: formCount,
+        open_shadow_roots: Math.max(0, scan.roots.length - 1),
+        scanned_nodes: scan.visitedNodes,
+        scan_limit: MAX_SCAN_NODES,
+        scan_truncated: scan.truncated,
+        tracked_refs: refElements.size,
+        ref_limit: MAX_ELEMENT_REFS,
+        refs_evicted: evictedRefs,
       },
-      elements: candidates.map((element, index) => describeElement(element, index, includeValues)),
-      truncated: all.length > candidates.length,
+      elements: describedElements,
+      truncated: scan.truncated || interactiveCount > describedElements.length,
     };
   }
 
@@ -101,19 +191,30 @@
     const timeoutMs = Number(params.elementTimeoutMs) || 10000;
     for (let index = 0; index < params.fields.length; index += 1) {
       const field = params.fields[index];
-      const element = await waitForActionable(field.selector, field.action, timeoutMs);
-      await applyOne(element, field.action, field.value, "");
-      results.push({ index, action: field.action, sensitive: field.sensitive === true, element: describeElement(element, index, false) });
+      try {
+        const element = await waitForActionable(field.selector, field.action, timeoutMs);
+        await applyOne(element, field.action, field.value, "");
+        results.push({ index, action: field.action, sensitive: field.sensitive === true, element: describeElement(element, index, false) });
+      } catch (error) {
+        const prefix = index > 0
+          ? `form field ${index} (${field.action}) failed after ${index} earlier field(s) may have changed`
+          : `form field 0 (${field.action}) failed before any earlier field changed`;
+        throw new Error(`${prefix}: ${boundedPageText(error?.message || error, 500)}`);
+      }
     }
     if (params.submit) {
-      const submitter = params.submitSelector ? await waitForActionable(params.submitSelector, "click", timeoutMs) : deepQuerySelectorAll("button[type='submit'],input[type='submit']")[0];
-      if (submitter) submitter.click();
-      else {
-        const field = params.fields.length ? findOne(params.fields[0].selector) : null;
-        const form = field?.form || field?.closest?.("form") || deepQuerySelectorAll("form")[0];
-        if (!form) throw new Error("no form or submit control found");
-        if (typeof form.requestSubmit === "function") form.requestSubmit();
-        else form.submit();
+      try {
+        const submitter = params.submitSelector ? await waitForActionable(params.submitSelector, "click", timeoutMs) : deepQuerySelectorAll("button[type='submit'],input[type='submit']", 1)[0];
+        if (submitter) submitter.click();
+        else {
+          const field = params.fields.length ? findOne(params.fields[0].selector) : null;
+          const form = field?.form || field?.closest?.("form") || deepQuerySelectorAll("form", 1)[0];
+          if (!form) throw new Error("no form or submit control found");
+          if (typeof form.requestSubmit === "function") form.requestSubmit();
+          else form.submit();
+        }
+      } catch (error) {
+        throw new Error(`form submission failed after ${results.length} field(s) changed: ${boundedPageText(error?.message || error, 500)}`);
       }
     }
     return { ok: true, fields: results, submitted: params.submit === true, values_exposed: false };
@@ -148,8 +249,8 @@
       || (params.state === "editable" && editable.length > 0)
       || (params.state === "checked" && elements.some((element) => "checked" in element && element.checked === true))
       || (params.state === "unchecked" && elements.some((element) => "checked" in element && element.checked === false));
-    const pageText = params.text ? normalizedText(document.body?.innerText || document.body?.textContent || "") : "";
-    const textMatched = !params.text || pageText.includes(normalizedText(params.text));
+    const textSearch = params.text ? pageContainsText(params.text) : { found: true, truncated: false, scanned_chars: 0 };
+    const textMatched = textSearch.found;
     const loadMatched = !params.loadState
       || (params.loadState === "domcontentloaded" && ["interactive", "complete"].includes(document.readyState))
       || (params.loadState === "complete" && document.readyState === "complete");
@@ -159,13 +260,15 @@
       visible_count: visible.length,
       state: params.state || "",
       text_found: textMatched,
+      text_scan_truncated: textSearch.truncated,
+      text_scanned_chars: textSearch.scanned_chars,
       ready_state: document.readyState,
     };
   }
 
   function describeElement(element, index, includeValues) {
-    const tag = element.tagName.toLowerCase();
-    const type = String(element.getAttribute("type") || "").toLowerCase();
+    const tag = String(element.tagName || "").toLowerCase();
+    const type = boundedPageText(element.getAttribute("type"), 100).toLowerCase();
     const sensitive = isSensitiveElement(element, tag, type);
     const visible = isVisible(element);
     const item = {
@@ -173,33 +276,36 @@
       index,
       tag,
       type,
-      role: element.getAttribute("role") || implicitRole(element),
+      role: boundedPageText(element.getAttribute("role") || implicitRole(element), 200),
       name: accessibleName(element),
-      id: element.id || "",
-      field_name: element.getAttribute("name") || "",
+      id: boundedPageText(element.id, MAX_PAGE_FIELD_CHARS),
+      field_name: boundedPageText(element.getAttribute("name"), MAX_PAGE_FIELD_CHARS),
       label: labelText(element),
-      placeholder: element.getAttribute("placeholder") || "",
+      placeholder: boundedPageText(element.getAttribute("placeholder"), MAX_PAGE_FIELD_CHARS),
       visible,
       enabled: isEnabled(element),
       editable: isEditable(element),
       disabled: Boolean(element.disabled),
       checked: "checked" in element ? Boolean(element.checked) : null,
-      selected: tag === "select" ? element.value : null,
-      href: tag === "a" ? element.href : "",
+      selected: tag === "select" ? boundedPageText(element.value, MAX_PAGE_FIELD_CHARS) : null,
+      href: tag === "a" ? safePageUrl(element.href) : "",
       sensitive,
       in_shadow_dom: element.getRootNode?.() instanceof ShadowRoot,
       bounding_box: visible ? boundingBox(element) : null,
     };
-    if (includeValues && !sensitive && "value" in element) item.value = String(element.value || "").slice(0, 2000);
+    if (includeValues && !sensitive && "value" in element) item.value = boundedPageText(element.value, MAX_PAGE_FIELD_CHARS);
     return item;
   }
 
   function isSensitiveElement(element, tag, type) {
-    if (tag !== "input" && tag !== "textarea") return false;
+    if (tag !== "input" && tag !== "textarea" && !element.isContentEditable) return false;
     if (["password", "hidden"].includes(type)) return true;
     const autocomplete = String(element.getAttribute("autocomplete") || "").toLowerCase();
     if (/(?:password|one-time-code|cc-number|cc-csc|cc-exp)/.test(autocomplete)) return true;
-    const identity = `${element.id || ""} ${element.getAttribute("name") || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("placeholder") || ""}`.toLowerCase();
+    const identity = [element.id, element.getAttribute("name"), element.getAttribute("aria-label"), element.getAttribute("placeholder")]
+      .map((value) => boundedPageText(value, 500))
+      .join(" ")
+      .toLowerCase();
     return /(?:password|passwd|secret|token|api[-_ ]?key|otp|one[-_ ]?time|verification|cvc|cvv|security[-_ ]?code|card[-_ ]?number)/.test(identity);
   }
 
@@ -312,13 +418,14 @@
     if (operation === "check" || operation === "uncheck") {
       const wanted = operation === "check";
       if (Boolean(element.checked) !== wanted) element.click();
+      if (Boolean(element.checked) !== wanted) throw new Error(`checkable control did not reach the requested ${wanted ? "checked" : "unchecked"} state`);
       return;
     }
     if (operation === "select") {
       const text = String(value ?? "");
       const option = [...element.options].find((item) => item.value === text || item.text.trim() === text);
       if (!option) throw new Error("select option was not found");
-      element.value = option.value;
+      setNativeValue(element, option.value);
       dispatchValueEvents(element);
       return;
     }
@@ -418,7 +525,7 @@
     elements = elements.filter((element) => {
       if (selector.name && element.getAttribute("name") !== selector.name) return false;
       if (selector.label && !sameText(labelText(element), selector.label)) return false;
-      if (selector.text && !sameText(element.innerText || element.textContent || "", selector.text)) return false;
+      if (selector.text && !sameText(boundedNodeText(element, MAX_PAGE_FIELD_CHARS + 1), selector.text)) return false;
       if (selector.role && !sameText(element.getAttribute("role") || implicitRole(element), selector.role)) return false;
       if (selector.placeholder && !sameText(element.getAttribute("placeholder") || "", selector.placeholder)) return false;
       return true;
@@ -478,7 +585,7 @@
   }
 
   function normalizedText(value) {
-    return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    return boundedPageText(value, MAX_WAIT_TEXT_CHARS).trim().replace(/\s+/g, " ").toLowerCase();
   }
 
   function sameText(left, right) {
@@ -486,17 +593,95 @@
   }
 
   function labelText(element) {
-    if (element.labels?.length) return [...element.labels].map((label) => label.innerText || label.textContent || "").join(" ").trim();
-    const parent = element.closest("label");
-    if (parent) return (parent.innerText || parent.textContent || "").trim();
+    if (element.labels?.length) {
+      let text = "";
+      for (const label of [...element.labels].slice(0, 100)) {
+        text += ` ${boundedNodeText(label, Math.max(0, MAX_PAGE_FIELD_CHARS - text.length))}`;
+        if (text.length >= MAX_PAGE_FIELD_CHARS) break;
+      }
+      return boundedPageText(text.trim(), MAX_PAGE_FIELD_CHARS);
+    }
+    const parent = element.closest?.("label");
+    if (parent) return boundedNodeText(parent, MAX_PAGE_FIELD_CHARS);
     const labelledBy = element.getAttribute("aria-labelledby");
-    if (labelledBy) return labelledBy.split(/\s+/).map((id) => rootById(element, id)?.textContent || "").join(" ").trim();
+    if (labelledBy) {
+      let text = "";
+      for (const id of labelledBy.split(/\s+/).slice(0, 100)) {
+        const labelled = rootById(element, id);
+        text += ` ${boundedNodeText(labelled, Math.max(0, MAX_PAGE_FIELD_CHARS - text.length))}`;
+        if (text.length >= MAX_PAGE_FIELD_CHARS) break;
+      }
+      return boundedPageText(text.trim(), MAX_PAGE_FIELD_CHARS);
+    }
     return "";
   }
 
   function accessibleName(element) {
-    return (element.getAttribute("aria-label") || labelText(element) || element.getAttribute("title") || element.getAttribute("alt") || element.innerText || element.textContent || "")
-      .trim().replace(/\s+/g, " ").slice(0, 500);
+    const direct = element.getAttribute("aria-label") || labelText(element) || element.getAttribute("title") || element.getAttribute("alt");
+    return boundedPageText(direct || boundedNodeText(element, 500), 500).trim().replace(/\s+/g, " ");
+  }
+
+  function boundedNodeText(node, maxChars) {
+    const limit = Math.max(0, Number(maxChars) || 0);
+    if (!node || limit === 0) return "";
+    if (typeof document.createTreeWalker !== "function") return boundedPageText(node.textContent || node.innerText, limit);
+    const walker = document.createTreeWalker(node, globalThis.NodeFilter?.SHOW_TEXT || 4);
+    let text = "";
+    let current;
+    while ((current = walker.nextNode()) && text.length < limit) {
+      const remaining = limit - text.length;
+      text += boundedPageText(current.data, remaining);
+    }
+    return text;
+  }
+
+  function pageContainsText(value) {
+    const needle = normalizedText(value);
+    if (!needle) return { found: true, truncated: false, scanned_chars: 0 };
+    const root = document.body || document.documentElement;
+    if (!root) return { found: false, truncated: false, scanned_chars: 0 };
+    if (typeof document.createTreeWalker !== "function") {
+      const text = boundedPageText(root.textContent || root.innerText, MAX_WAIT_TEXT_CHARS);
+      return { found: normalizedText(text).includes(needle), truncated: String(root.textContent || root.innerText || "").length > text.length, scanned_chars: text.length };
+    }
+    const walker = document.createTreeWalker(root, globalThis.NodeFilter?.SHOW_TEXT || 4);
+    let haystack = "";
+    let truncated = false;
+    let scannedChars = 0;
+    let node;
+    while ((node = walker.nextNode())) {
+      const remaining = MAX_WAIT_TEXT_CHARS - scannedChars;
+      if (remaining <= 0) { truncated = true; break; }
+      const raw = String(node.data || "");
+      const boundedRaw = raw.slice(0, remaining);
+      scannedChars += boundedRaw.length;
+      const chunk = normalizedText(boundedRaw);
+      if (chunk) {
+        haystack = haystack ? `${haystack} ${chunk}` : chunk;
+        if (haystack.includes(needle)) return { found: true, truncated: raw.length > boundedRaw.length, scanned_chars: scannedChars };
+        if (haystack.length > needle.length * 2 + 4096) haystack = haystack.slice(-(needle.length + 4096));
+      }
+      if (raw.length > boundedRaw.length) { truncated = true; break; }
+    }
+    return { found: haystack.includes(needle), truncated, scanned_chars: Math.min(MAX_WAIT_TEXT_CHARS, scannedChars) };
+  }
+
+  function boundedPageText(value, maxChars) {
+    return String(value || "").slice(0, Math.max(0, maxChars));
+  }
+
+  function safePageUrl(value) {
+    const text = boundedPageText(value, MAX_PAGE_URL_CHARS);
+    try {
+      const parsed = new URL(text, location.href);
+      if (parsed.username || parsed.password) {
+        parsed.username = "";
+        parsed.password = "";
+      }
+      return boundedPageText(parsed.href, MAX_PAGE_URL_CHARS);
+    } catch {
+      return text;
+    }
   }
 
   function implicitRole(element) {

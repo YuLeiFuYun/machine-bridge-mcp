@@ -52,7 +52,7 @@ The suite includes:
 
 ## Opt-in live desktop and browser validation
 
-The normal suite uses deterministic mocks for macOS Accessibility and an authenticated in-process extension peer for browser routing. Browser contract tests cover versioned extension handshakes, stale-extension rejection, compatible replacement without premature displacement, clean rejection of in-flight direct and proxied requests during replacement, keepalive handling, strict action/value validation, stable-ref validation, combined waits, tab commands, fixed trusted-input CDP sequences, attach/detach cleanup, semantic-ref stability, deterministic scrolling, obscured-target waiting, and stale-reference failure. Before a release that changes local UI automation, run the macOS live smoke test on a machine where the invoking Node/terminal process has Accessibility permission:
+The normal suite uses deterministic mocks for macOS Accessibility and an authenticated in-process extension peer for browser routing. Browser contract tests cover acknowledged protocol readiness, provisional pairing commit/rollback boundaries, strict extension IDs and matching loopback ports, stale-extension rejection, compatible replacement without premature displacement, clean rejection of in-flight direct and proxied requests, keepalive handling, trusted-input replay prevention after partial dispatch, focus-safe screenshots, aggregate 64-frame/source/element budgets, bounded hostile DOM/text processing, contenteditable-secret suppression, partial-form failure reporting, stable refs, combined waits, and actionability failures. Before a release that changes local UI automation, run the macOS live smoke test on a machine where the invoking Node/terminal process has Accessibility permission:
 
 ```sh
 npm run app-automation:live-test
@@ -60,7 +60,7 @@ npm run app-automation:live-test
 
 It opens Calculator, activates it through the fixed JXA helper, verifies structured JSON output, inspects main-window Accessibility controls with menu recursion disabled, clicks the `One` control, and quits the application. It is intentionally excluded from CI because macOS TCC permission and a graphical login session are host state.
 
-For browser changes, perform an isolated-profile smoke test with the packaged unpacked extension: pair it to a temporary source runtime, navigate a local no-store page, inspect controls and reuse a returned `ref`, wait for an element state, fill multiple fields, exercise `input_mode: trusted` for click/key/text, verify the live DOM, create/activate/close a tab, and capture a screenshot. A Playwright persistent Chromium context is an acceptable harness because it loads the real MV3 service worker while keeping the user's daily browser profile untouched.
+For deterministic release validation, perform an isolated-profile smoke test with the packaged unpacked extension; a Playwright persistent Chromium context is acceptable only as that isolated harness. When the requirement is specifically to prove control of the user's ordinary browser, the user must load the same unpacked directory into that known daily Chromium profile; status can verify the extension version/protocol and that Machine Bridge did not launch a browser, but cannot infer profile identity. Then use a localhost no-store fixture in a newly created tab. Do not enumerate, read, or mutate unrelated existing tabs. In both modes, inspect and reuse refs, exercise waits/forms/trusted input/open Shadow DOM/screenshots, verify final live DOM, and close the fixture tab.
 
 ## Additional release checks
 

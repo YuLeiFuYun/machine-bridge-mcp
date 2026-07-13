@@ -84,6 +84,7 @@ const localAutomationFiles = [
   join(root, "src", "local", "app-automation.mjs"),
   join(root, "src", "local", "browser-bridge.mjs"),
   join(root, "browser-extension", "service-worker.js"),
+  join(root, "browser-extension", "browser-operations.js"),
   join(root, "browser-extension", "devtools-input.js"),
   join(root, "browser-extension", "page-automation.js"),
   join(root, "browser-extension", "pairing.js"),
@@ -102,6 +103,7 @@ if (!extensionManifest.host_permissions?.includes("<all_urls>")) {
   throw new Error("browser extension no longer declares the generic page access documented by the security model");
 }
 const serviceWorkerSource = readFileSync(join(root, "browser-extension", "service-worker.js"), "utf8");
+const browserOperationsSource = readFileSync(join(root, "browser-extension", "browser-operations.js"), "utf8");
 const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
 const appAutomationSource = readFileSync(join(root, "src", "local", "app-automation.mjs"), "utf8");
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
@@ -119,17 +121,19 @@ if (!appAutomationSource.includes("matchesList[payload.selector.index]")) {
 if (!appAutomationSource.includes("item.role === 'AXSecureTextField'") || !appAutomationSource.includes("includeValues && !item.sensitive")) {
   throw new Error("application UI inspection does not suppress secure field values");
 }
-if (!serviceWorkerSource.includes('files: ["page-automation.js"]')) {
-  throw new Error("browser service worker does not inject the fixed page automation module");
+if (!serviceWorkerSource.includes('importScripts("devtools-input.js", "browser-operations.js")')) throw new Error("browser service worker lost fixed browser module loading");
+if (!browserOperationsSource.includes('files: ["page-automation.js"]')) {
+  throw new Error("browser operations module does not inject the fixed page automation module");
 }
+if (serviceWorkerSource.split(/\r?\n/).length > 350) throw new Error("browser service worker regained page-operation responsibilities");
 for (const obsolete of ["func: inspectDocument", "func: performAction", "func: performFormFill", "func: performFileUpload"]) {
-  if (serviceWorkerSource.includes(obsolete)) throw new Error(`browser service worker retained cross-world helper reference: ${obsolete}`);
+  if (serviceWorkerSource.includes(obsolete) || browserOperationsSource.includes(obsolete)) throw new Error(`browser service worker retained cross-world helper reference: ${obsolete}`);
 }
 if (!pageAutomationSource.includes("__machineBridgePageAutomation") || !pageAutomationSource.includes("shadowRoot") || !pageAutomationSource.includes("waitForActionable") || !pageAutomationSource.includes("refFor")) {
   throw new Error("browser page automation module is missing its fixed API or open Shadow DOM traversal");
 }
-if (!serviceWorkerSource.includes('importScripts("devtools-input.js")') || !serviceWorkerSource.includes("performPageAction")) throw new Error("browser extension lost fixed trusted-input integration");
-if (!serviceWorkerSource.includes('protocol: 2') || !serviceWorkerSource.includes('type: "hello"') || !serviceWorkerSource.includes('capabilities:')) throw new Error("browser extension lost its versioned capability handshake");
+if (!browserOperationsSource.includes("performPageAction") || !browserOperationsSource.includes("safeToFallback")) throw new Error("browser operations lost fixed trusted-input integration or replay protection");
+if (!serviceWorkerSource.includes('BROWSER_EXTENSION_PROTOCOL = 3') || !serviceWorkerSource.includes('hello_ack') || !serviceWorkerSource.includes('capabilities:')) throw new Error("browser extension lost its acknowledged versioned capability handshake");
 if (!readFileSync(join(root, "src", "local", "browser-bridge.mjs"), "utf8").includes("extension hello required; reload the extension")) throw new Error("browser broker lost stale-extension rejection guidance");
 if (!serviceWorkerSource.includes("requires_manual_repair") || !serviceWorkerSource.includes("chrome.action.onClicked")) {
   throw new Error("browser extension no longer requires a user gesture to replace established pairing");
@@ -142,6 +146,8 @@ if (!pageAutomationSource.includes("isSensitiveElement") || !pageAutomationSourc
 }
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser-service-worker-test.mjs") throw new Error("browser service-worker behavior test is missing");
+if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
 if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
   throw new Error("package syntax check is not using the dynamic repository scanner");
 }
