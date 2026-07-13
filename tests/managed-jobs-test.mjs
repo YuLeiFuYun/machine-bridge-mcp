@@ -35,7 +35,7 @@ try {
   const restrictedManager = new ManagedJobManager({
     jobRoot: join(root, "restricted-jobs"),
     workspace,
-    policy: { execMode: "direct", minimalEnv: true, unrestrictedPaths: false },
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true, unrestrictedPaths: false },
     resources: {},
   });
   expectThrow(() => restrictedManager.start({
@@ -52,7 +52,7 @@ try {
   const unreadableManager = new ManagedJobManager({
     jobRoot: unreadableRoot,
     workspace,
-    policy: { execMode: "direct", minimalEnv: true, unrestrictedPaths: false },
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true, unrestrictedPaths: false },
     resources: {},
     logger: { warn() {} },
     recover: true,
@@ -221,7 +221,7 @@ try {
   const changingManager = new ManagedJobManager({
     jobRoot: join(root, "changing-jobs"),
     workspace,
-    policy: { execMode: "direct", minimalEnv: false },
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: false },
     resources: { changing: inspectResourceFile(changingResource) },
   });
   const changingJob = changingManager.start({
@@ -319,13 +319,13 @@ try {
   const recoveryManager = new ManagedJobManager({
     jobRoot,
     workspace,
-    policy: { execMode: "direct", minimalEnv: false },
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: false },
     resources: { "test-secret": resource },
   });
   const concurrentRecoveryManager = new ManagedJobManager({
     jobRoot,
     workspace,
-    policy: { execMode: "direct", minimalEnv: false },
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: false },
     resources: { "test-secret": resource },
   });
   const recovered = await waitForJob(recoveryManager, recoverable.job_id, new Set(["recovered", "recovery_failed"]));
@@ -358,7 +358,7 @@ try {
     runner_pid: 99999999,
   })}
 `, { mode: 0o600 });
-  const exhaustedManager = new ManagedJobManager({ jobRoot, workspace, policy: { execMode: "direct", minimalEnv: true }, resources: {} });
+  const exhaustedManager = new ManagedJobManager({ jobRoot, workspace, policy: { allowWrite: true, execMode: "direct", minimalEnv: true }, resources: {} });
   const exhausted = exhaustedManager.read({ job_id: exhaustedId });
   assert(exhausted.status === "recovery_exhausted" && exhausted.recovery_attempts === 3, "recovery limit did not become terminal");
   assert(!(await exists(join(exhaustedDir, "plan.json"))) && !(await exists(join(exhaustedDir, "runner.pid"))), "recovery exhaustion retained active metadata");

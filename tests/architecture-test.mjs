@@ -38,6 +38,23 @@ const boundaryModules = new Set([
   "network-proxy.mjs",
   "process-sessions.mjs",
   "project-package.mjs",
+  "policy.mjs",
+  "errors.mjs",
+  "call-registry.mjs",
+  "tool-executor.mjs",
+  "observability.mjs",
+  "process-tracker.mjs",
+  "process-execution.mjs",
+  "git-service.mjs",
+  "workspace-file-service.mjs",
+  "cli-options.mjs",
+  "cli-policy.mjs",
+  "lifecycle.mjs",
+  "cli-local-admin.mjs",
+  "capability-ranking.mjs",
+  "managed-job-plan.mjs",
+  "browser-extension-protocol.mjs",
+  "browser-pairing-store.mjs",
 ]);
 for (const name of boundaryModules) {
   const file = join(localRoot, name);
@@ -46,6 +63,55 @@ for (const name of boundaryModules) {
     const dependencyName = relative(localRoot, dependency);
     if (adapterModules.has(dependencyName)) throw new Error(`${name} crosses the domain/adapter boundary by importing ${dependencyName}`);
   }
+}
+
+const lineLimits = Object.freeze({
+  "src/local/runtime.mjs": 900,
+  "src/local/cli.mjs": 1250,
+  "src/worker/index.ts": 1050,
+  "src/local/process-execution.mjs": 300,
+  "src/local/git-service.mjs": 220,
+  "src/local/workspace-file-service.mjs": 550,
+  "src/local/tool-executor.mjs": 180,
+  "src/local/call-registry.mjs": 180,
+  "src/local/lifecycle.mjs": 130,
+  "src/local/cli-local-admin.mjs": 400,
+  "src/local/agent-context.mjs": 950,
+  "src/local/capability-ranking.mjs": 150,
+  "src/local/managed-jobs.mjs": 900,
+  "src/local/managed-job-plan.mjs": 300,
+  "src/local/browser-bridge.mjs": 850,
+  "src/local/browser-extension-protocol.mjs": 120,
+  "src/local/browser-pairing-store.mjs": 120,
+});
+for (const [name, maximum] of Object.entries(lineLimits)) {
+  const lines = readFileSync(join(root, name), "utf8").split(/\r?\n/).length;
+  if (lines > maximum) throw new Error(`${name} exceeds its responsibility boundary (${lines} > ${maximum} lines)`);
+}
+
+for (const name of ["app-automation.mjs", "browser-bridge.mjs", "managed-jobs.mjs", "process-sessions.mjs"]) {
+  const source = readFileSync(join(localRoot, name), "utf8");
+  if (/\bassert(?:Full|Enabled)\s*\(/.test(source) || /disabled by daemon policy|requires the canonical full profile/.test(source)) {
+    throw new Error(`${name} reimplements tool authorization instead of using PolicyGate`);
+  }
+  if (!source.includes("authorizeTool")) throw new Error(`${name} lost the shared authorization gate`);
+}
+
+const runtimeBoundarySource = readFileSync(join(localRoot, "runtime.mjs"), "utf8");
+for (const forbidden of ["spawn(", "parsePatchEnvelope", "applyUpdateHunks", "workspaceShellCommand("]) {
+  if (runtimeBoundarySource.includes(forbidden)) throw new Error(`LocalRuntime regained low-level responsibility: ${forbidden}`);
+}
+const localPolicySource = readFileSync(join(localRoot, "policy.mjs"), "utf8");
+const workerPolicySource = readFileSync(join(root, "src", "worker", "policy.ts"), "utf8");
+if (!localPolicySource.includes('policy-contract.json') || !workerPolicySource.includes('policy-contract.json')) {
+  throw new Error("local and Worker policy enforcement do not share the generated policy contract");
+}
+const workerIndexBoundary = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+for (const duplicate of ["function validateAuthorizationRequest", "function readBoundedText", "class HttpError", "new Map<string, PendingCall>"]) {
+  if (workerIndexBoundary.includes(duplicate)) throw new Error(`Worker index regained extracted responsibility: ${duplicate}`);
+}
+for (const module of ["pending-calls", "policy", "errors", "http", "oauth-state", "observability"]) {
+  if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
 
 const docs = [
@@ -107,12 +173,13 @@ const browserOperationsSource = readFileSync(join(root, "browser-extension", "br
 const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
 const appAutomationSource = readFileSync(join(root, "src", "local", "app-automation.mjs"), "utf8");
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
+const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 
 if (!workerSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"') || !workerSource.includes('"browser_screenshot", "browser_upload_files"')) {
   throw new Error("Worker timeout classification omits browser_upload_files");
 }
-if (!cliSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
+if (!cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
   throw new Error("browser CLI pairing state read is not bounded");
 }
 if (!appAutomationSource.includes("matchesList[payload.selector.index]")) {
@@ -148,6 +215,12 @@ if (!pageAutomationSource.includes("isSensitiveElement") || !pageAutomationSourc
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser-service-worker-test.mjs") throw new Error("browser service-worker behavior test is missing");
 if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
+if (packageJson.scripts?.["coverage:test"] !== "node scripts/coverage-check.mjs") throw new Error("critical-module coverage gate is missing");
+if (packageJson.scripts?.["policy-docs:check"] !== "node scripts/generate-policy-reference.mjs --check") throw new Error("generated policy documentation gate is missing");
+if (packageJson.scripts?.["logging-structure:test"] !== "node tests/logging-structure-test.mjs") throw new Error("structured logging regression test is missing");
+if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
+if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
+if (packageJson.scripts?.["capability-ranking:test"] !== "node tests/capability-ranking-test.mjs") throw new Error("capability ranking regression test is missing");
 if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
   throw new Error("package syntax check is not using the dynamic repository scanner");
 }

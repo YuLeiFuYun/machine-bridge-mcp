@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { LocalRuntime } from "./runtime.mjs";
 import { classifyOperationalError, createLogger } from "./log.mjs";
+import { publicError } from "./errors.mjs";
 import {
   MCP_INSTRUCTIONS,
   MCP_PROTOCOL_VERSION,
@@ -14,7 +15,6 @@ import {
 } from "./tools.mjs";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
-const SLOW_TOOL_CALL_MS = 30_000;
 const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version);
 
 export async function runStdioServer({ workspace, policy, logLevel = "info", jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "" }) {
@@ -115,21 +115,13 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
       return;
     }
     if (key) pending.set(key, callId);
-    const started = Date.now();
-    logger.debug("tool call started", { call_id: callId.slice(0, 20), tool: name });
     try {
-      const result = await runtime.executeTool(name, args, { callId });
+      const result = await runtime.executeTool(name, args, { callId, origin: "stdio" });
       send(rpcResult(message.id, toolResult(result)));
-      const durationMs = Date.now() - started;
-      logger.debug(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs });
     } catch (error) {
-      const safeError = runtime.safeErrorMessage(error, args);
-      send(rpcResult(message.id, toolResult({ error: safeError }, true)));
-      const durationMs = Date.now() - started;
-      logger.debug("tool call failed", { call_id: callId.slice(0, 20), tool: name, duration_ms: durationMs, error_class: classifyOperationalError(error) });
+      send(rpcResult(message.id, toolResult({ error: publicError(error) }, true)));
     } finally {
       if (key) pending.delete(key);
-      runtime.finishCall(callId);
     }
   }
 

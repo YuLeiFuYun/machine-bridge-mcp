@@ -111,7 +111,7 @@ async function stateSelfTest() {
     policyReload.policy = resolvePolicy({}, policyReload.policy);
     saveState(policyReload);
     const policyPersisted = loadState(workspace, { stateDir: stateRoot });
-    if (policyPersisted.policy.profile !== "full" || policyPersisted.policy.origin !== "migrated" || policyPersisted.policy.revision !== 3) {
+    if (policyPersisted.policy.profile !== "full" || policyPersisted.policy.origin !== "migrated" || policyPersisted.policy.revision !== 4) {
       throw new Error("migrated policy origin/revision was not persisted");
     }
 
@@ -763,7 +763,7 @@ function cliSelfTest() {
     throw new Error("legacy implicit default policy was not migrated to full");
   }
   const staleDefault = resolvePolicy({}, { profile: "review", origin: "default", revision: 1, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
-  if (staleDefault.profile !== "full" || staleDefault.origin !== "default" || staleDefault.revision !== 3) {
+  if (staleDefault.profile !== "full" || staleDefault.origin !== "default" || staleDefault.revision !== 4) {
     throw new Error("outdated default-origin policy did not follow the current policy revision");
   }
   const staleExplicit = resolvePolicy({}, { profile: "review", origin: "explicit", revision: 1, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
@@ -1020,6 +1020,10 @@ async function shellSelfTest() {
 
 async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
+  const workerModules = await Promise.all([
+    "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "observability.ts",
+  ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
+  const combinedSource = [source, ...workerModules].join("\n");
   const unawaitedAsyncRoutes = [
     "return this.registerClient(request);",
     "return this.authorizeSubmit(request, base);",
@@ -1037,7 +1041,7 @@ async function workerSourceSelfTest() {
     "oauthQueue",
     "AUTH_FAILURE_LIMIT",
     "OAUTH_BODY_LIMIT_BYTES",
-    "pending.socket !== ws",
+    "PendingCallRegistry",
     "isJsonRpcId(candidate.id)",
     "pruneRecordByExpiry(store.tokens, MAX_OAUTH_TOKENS)",
     "A valid PKCE S256 challenge is required.",
@@ -1054,7 +1058,7 @@ async function workerSourceSelfTest() {
     "structuredContent",
     "../shared/tool-catalog.json",
   ]) {
-    if (!source.includes(required)) throw new Error(`Worker hardening guard missing: ${required}`);
+    if (!combinedSource.includes(required)) throw new Error(`Worker hardening guard missing: ${required}`);
   }
   for (const removed of [
     "/api/mcp/sampling",
@@ -1062,7 +1066,7 @@ async function workerSourceSelfTest() {
     "sampling/createMessage",
     'request.headers.get("User-Agent")',
   ]) {
-    if (source.includes(removed)) throw new Error(`obsolete or public-sensitive Worker route remains: ${removed}`);
+    if (combinedSource.includes(removed)) throw new Error(`obsolete or public-sensitive Worker route remains: ${removed}`);
   }
 }
 

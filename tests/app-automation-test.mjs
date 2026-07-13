@@ -85,7 +85,7 @@ try {
     readResourceText: async () => "",
     runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
   });
-  await expectReject(() => restricted.openApplication({ application: "Example" }), "requires the canonical full profile");
+  await expectReject(() => restricted.openApplication({ application: "Example" }), "disabled by the active policy");
 
   const linuxApplications = join(root, "linux-applications");
   await mkdir(linuxApplications, { recursive: true });

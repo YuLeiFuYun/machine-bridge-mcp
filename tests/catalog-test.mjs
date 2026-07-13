@@ -25,7 +25,7 @@ for (const tool of catalog) {
   assert(typeof tool.name === "string" && /^[a-z][a-z0-9_]*$/.test(tool.name), `invalid tool name: ${tool.name}`);
   assert(typeof tool.title === "string" && tool.title.length > 0, `${tool.name} is missing title`);
   assert(typeof tool.description === "string" && tool.description.length > 20, `${tool.name} has an insufficient description`);
-  assert(["always", "write", "direct-exec", "shell-exec", "full"].includes(tool.availability), `${tool.name} has invalid availability`);
+  assert(["always", "write", "direct-exec", "write+direct-exec", "shell-exec", "full"].includes(tool.availability), `${tool.name} has invalid availability`);
   assert(tool.inputSchema?.type === "object", `${tool.name} inputSchema must be an object`);
   assert(tool.inputSchema?.additionalProperties === false, `${tool.name} inputSchema must reject unknown fields`);
   for (const field of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"]) {
@@ -36,11 +36,11 @@ for (const tool of catalog) {
 const review = new Set(toolsForPolicy({ profile: "review", allowWrite: false, execMode: "off" }).map((tool) => tool.name));
 const edit = new Set(toolsForPolicy({ profile: "edit", allowWrite: true, execMode: "off" }).map((tool) => tool.name));
 const agent = new Set(toolsForPolicy({ profile: "agent", allowWrite: true, execMode: "direct" }).map((tool) => tool.name));
-const full = new Set(toolsForPolicy({ profile: "full", origin: "explicit", revision: 3, allowWrite: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }).map((tool) => tool.name));
+const full = new Set(toolsForPolicy({ profile: "full", origin: "explicit", revision: 4, allowWrite: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }).map((tool) => tool.name));
 
-assert(review.has("read_file") && !review.has("write_file") && !review.has("run_process"), "review profile inventory is invalid");
+assert(review.has("read_file") && review.has("list_jobs") && review.has("read_job") && review.has("list_local_resources") && !review.has("write_file") && !review.has("run_process"), "review profile inventory is invalid");
 assert(edit.has("apply_patch") && !edit.has("run_process"), "edit profile inventory is invalid");
-assert(agent.has("run_process") && !agent.has("exec_command") && !agent.has("generate_ssh_key_resource"), "agent profile inventory is invalid");
+assert(agent.has("run_process") && agent.has("start_job") && !agent.has("exec_command") && !agent.has("generate_ssh_key_resource"), "agent profile inventory is invalid");
 for (const fullOnly of ["list_local_applications", "operate_local_application", "browser_status", "browser_manage_tabs", "browser_wait", "browser_action", "browser_fill_form", "browser_upload_files"]) {
   assert(!review.has(fullOnly) && !edit.has(fullOnly) && !agent.has(fullOnly), `${fullOnly} escaped full-only policy`);
 }

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
 const serviceWorkerSource = await readFile(new URL("../browser-extension/service-worker.js", import.meta.url), "utf8");
+const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const browserOperationsSource = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");
 
 await testHandshakeReadiness();
@@ -38,7 +39,7 @@ async function testHandshakeReadiness() {
       },
       runtime: {
         ...runtimeBase(),
-        getManifest: () => ({ version: "0.15.0", version_name: "0.15.0" }),
+        getManifest: () => ({ version: PACKAGE_VERSION, version_name: PACKAGE_VERSION }),
       },
       storage: { local: {
         async get() { return { ...storedPairing }; },
@@ -329,7 +330,7 @@ function baseChrome(overrides = {}) {
 }
 
 function runtimeBase() {
-  return { onInstalled: listener(), onStartup: listener(), onMessage: listener(), getManifest: () => ({ version: "0.15.0" }) };
+  return { onInstalled: listener(), onStartup: listener(), onMessage: listener(), getManifest: () => ({ version: PACKAGE_VERSION }) };
 }
 
 function listener() {

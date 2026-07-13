@@ -1,0 +1,54 @@
+{
+  "revision": 4,
+  "defaultProfile": "full",
+  "origins": ["default", "explicit", "custom", "migrated", "legacy-preserved"],
+  "profiles": {
+    "review": {
+      "profile": "review",
+      "allowWrite": false,
+      "execMode": "off",
+      "unrestrictedPaths": false,
+      "minimalEnv": true,
+      "exposeAbsolutePaths": false
+    },
+    "edit": {
+      "profile": "edit",
+      "allowWrite": true,
+      "execMode": "off",
+      "unrestrictedPaths": false,
+      "minimalEnv": true,
+      "exposeAbsolutePaths": false
+    },
+    "agent": {
+      "profile": "agent",
+      "allowWrite": true,
+      "execMode": "direct",
+      "unrestrictedPaths": false,
+      "minimalEnv": true,
+      "exposeAbsolutePaths": false
+    },
+    "full": {
+      "profile": "full",
+      "allowWrite": true,
+      "execMode": "shell",
+      "unrestrictedPaths": true,
+      "minimalEnv": false,
+      "exposeAbsolutePaths": true
+    }
+  },
+  "availability": {
+    "always": {},
+    "write": { "allowWrite": true },
+    "direct-exec": { "execModes": ["direct", "shell"] },
+    "write+direct-exec": { "allowWrite": true, "execModes": ["direct", "shell"] },
+    "shell-exec": { "execModes": ["shell"] },
+    "full": {
+      "profile": "full",
+      "allowWrite": true,
+      "execModes": ["shell"],
+      "unrestrictedPaths": true,
+      "minimalEnv": false,
+      "exposeAbsolutePaths": true
+    }
+  }
+}

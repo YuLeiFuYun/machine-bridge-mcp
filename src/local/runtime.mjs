@@ -1,15 +1,22 @@
-import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { constants as fsConstants, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { chmod, link, lstat, mkdir, open, opendir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { lstat, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { RelayConnection } from "./relay-connection.mjs";
-import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
-import { executionEnv, workspaceShellCommand } from "./shell.mjs";
-import { MAX_COMMAND_BYTES, ProcessSessionManager, terminateProcessTree, terminateProcessTreeWithEscalation, validateArgv } from "./process-sessions.mjs";
+import { MAX_COMMAND_BYTES, ProcessSessionManager } from "./process-sessions.mjs";
 export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
-import { allToolNames, assertCanonicalFullPolicy, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, POLICY_PROFILES, SERVER_NAME, toolNamesForPolicy } from "./tools.mjs";
+import { allToolNames, assertCanonicalFullPolicy, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, POLICY_PROFILES, PolicyGate, SERVER_NAME } from "./tools.mjs";
+import { publicError } from "./errors.mjs";
+import { ProcessTracker } from "./process-tracker.mjs";
+import { CallRegistry } from "./call-registry.mjs";
+import { RuntimeObservability } from "./observability.mjs";
+import { ToolExecutor } from "./tool-executor.mjs";
+import { boundedErrorMessage, ProcessExecutionService } from "./process-execution.mjs";
+import { GitService } from "./git-service.mjs";
+import { LifecycleController } from "./lifecycle.mjs";
+import { MAX_WRITE_BYTES, readBoundedFile, sha256, WorkspaceFileService } from "./workspace-file-service.mjs";
+export { MAX_WRITE_BYTES, sha256 } from "./workspace-file-service.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { inspectResourceFile, ManagedJobManager } from "./managed-jobs.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
@@ -20,13 +27,8 @@ import { BrowserBridgeManager } from "./browser-bridge.mjs";
 import { CapabilityObserver } from "./capability-observer.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
-export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_CONCURRENT_TOOL_CALLS = 16;
-const MAX_DIRECTORY_ENTRIES = 10_000;
-const MAX_PATH_RESULT_BYTES = 4 * 1024 * 1024;
-const MAX_WALK_ENTRIES = 200_000;
-const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const SLOW_TOOL_CALL_MS = 30_000;
 
 const RUNTIME_TOOL_HANDLERS = Object.freeze({
@@ -95,21 +97,44 @@ export class LocalRuntime {
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
     this.workspaceCanonicalPromise = null;
     this.policy = normalizePolicy(policy);
+    this.policyGate = new PolicyGate(this.policy);
     this.logger = logger;
     this.onSuperseded = typeof onSuperseded === "function" ? onSuperseded : null;
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
-    this.activeToolCalls = 0;
-    this.activeProcesses = new Set();
-    this.callProcesses = new Map();
-    this.cancelledCalls = new Set();
+    this.processTracker = new ProcessTracker();
+    this.lifecycle = new LifecycleController("local runtime");
+    this.observability = new RuntimeObservability();
+    this.callRegistry = new CallRegistry({
+      maximum: MAX_CONCURRENT_TOOL_CALLS,
+      onCancel: (record) => {
+        this.processSessionManager?.notifyCancellation();
+        this.browserBridgeManager?.cancelCall(record.id);
+        this.processTracker.terminateCall(record.id);
+        this.logger.event?.("debug", "tool.call.cancel_requested", {
+          call_id: shortCallId(record.id), tool: record.tool, origin: record.origin,
+        });
+      },
+      onFinish: (record) => this.processTracker.releaseCall(record.id),
+    });
     this.mutationQueue = Promise.resolve();
     this.capabilityObserver = new CapabilityObserver();
     this.runtimeDir = createRuntimeDir();
+    this.workspaceFileService = new WorkspaceFileService({
+      workspace: this.workspace,
+      policy: this.policy,
+      policyGate: this.policyGate,
+      resolveExistingPath: (value) => this.resolveExistingPath(value),
+      resolveWritePath: (value) => this.resolveWritePath(value),
+      displayPath: (value) => this.displayPath(value),
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
+      withMutationLock: (operation) => this.withMutationLock(operation),
+    });
     if (typeof jobRoot !== "string" || !jobRoot.trim()) throw new Error("persistent managed-job root is required");
     this.managedJobManager = new ManagedJobManager({
       jobRoot,
       workspace: this.workspace,
       policy: this.policy,
+      authorizeTool: (tool) => this.policyGate.assert(tool),
       resources,
       resourceStatePath,
       stateRoot: browserStateRoot,
@@ -119,9 +144,9 @@ export class LocalRuntime {
     this.processSessionManager = new ProcessSessionManager({
       workspace: this.workspace,
       policy: this.policy,
+      authorizeTool: (tool) => this.policyGate.assert(tool),
       runtimeDir: this.runtimeDir,
-      activeProcesses: this.activeProcesses,
-      callProcesses: this.callProcesses,
+      processTracker: this.processTracker,
       resolveCwd: async (input) => {
         const cwd = await this.resolveExistingPath(input);
         if (!(await stat(cwd)).isDirectory()) throw new Error("cwd is not a directory");
@@ -139,12 +164,30 @@ export class LocalRuntime {
       home: agentHome,
       codexHome,
     });
+    this.processExecutionService = new ProcessExecutionService({
+      workspace: this.workspace,
+      policy: this.policy,
+      policyGate: this.policyGate,
+      runtimeDir: this.runtimeDir,
+      processTracker: this.processTracker,
+      resolveExistingPath: (value) => this.resolveExistingPath(value),
+      resolveLocalCommand: (args, context) => this.agentContextManager.resolveLocalCommand(args, context),
+      displayPath: (value) => this.displayPath(value),
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
+    });
+    this.gitService = new GitService({
+      resolveExistingPath: (value) => this.resolveExistingPath(value),
+      displayPath: (value) => this.displayPath(value),
+      runProcess: (...args) => this.processExecutionService.run(...args),
+      maximumBytes: MAX_WRITE_BYTES,
+    });
     const runProcess = (cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin) => this.runProcess(cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin);
     const readResourceText = (name) => this.readLocalResourceText(name);
     const readResourceBinary = (name) => this.readLocalResourceBinary(name);
     this.appAutomationManager = new AppAutomationManager({
       ...applicationAutomation,
       policy: this.policy,
+      authorizeTool: (tool) => this.policyGate.assert(tool),
       displayPath: (value) => this.displayPath(value),
       runProcess,
       readResourceText,
@@ -152,11 +195,24 @@ export class LocalRuntime {
     });
     this.browserBridgeManager = new BrowserBridgeManager({
       policy: this.policy,
+      authorizeTool: (tool) => this.policyGate.assert(tool),
       stateRoot: browserStateRoot,
       runProcess,
       readResourceText,
       readResourceBinary,
       throwIfCancelled: (context) => this.throwIfCancelled(context),
+    });
+    this.toolExecutor = new ToolExecutor({
+      handlers: Object.fromEntries(Object.entries(RUNTIME_TOOL_HANDLERS).map(([name, handler]) => [
+        name,
+        (args, context) => handler(this, args, context),
+      ])),
+      policyGate: this.policyGate,
+      callRegistry: this.callRegistry,
+      observability: this.observability,
+      logger: this.logger,
+      safeMessage: (error, args) => this.safeErrorMessage(error, args),
+      slowMs: SLOW_TOOL_CALL_MS,
     });
     this.relay = createRelayConnection(this, {
       workerUrl: remoteWorkerUrl,
@@ -167,7 +223,7 @@ export class LocalRuntime {
   }
 
   tools() {
-    return toolNamesForPolicy(this.policy).filter((name) => name !== "server_info");
+    return this.policyGate.names().filter((name) => name !== "server_info");
   }
 
   runtimeInfo() {
@@ -200,15 +256,19 @@ export class LocalRuntime {
         relay_readiness: "authenticated-hello-acknowledged",
         brief_relay_interruptions: "debug-only",
         raw_transport_details: "debug-only",
-        per_tool_events: "debug-only",
+        per_tool_events: "structured-debug-events",
         default_logs_include_tool_failures: false,
         tool_arguments_or_results_logged: false,
         capability_routing: this.capabilityObserver.snapshot(),
+        tool_calls: this.observability.snapshot(),
+        in_flight_calls: this.callRegistry.snapshot(),
       },
       runtime: {
         environment: this.policy.minimalEnv ? "isolated-minimal" : "full-parent",
+        lifecycle: this.lifecycle.snapshot(),
         relay: this.relay?.status?.() || null,
         runtime_dir: this.policy.exposeAbsolutePaths ? this.runtimeDir : "<private-runtime-dir>",
+        processes: this.processTracker.snapshot(),
         process_sessions: this.processSessionManager.status(),
         managed_jobs: this.managedJobManager.status(),
         local_resources: this.managedJobManager.resourceInfo(),
@@ -218,20 +278,33 @@ export class LocalRuntime {
 
   async start() {
     if (!this.relay) throw new Error("remote daemon start requires a Worker URL and daemon secret");
+    if (!this.lifecycle.beginStart()) return;
     if (this.policy.profile === "full") {
       void this.browserBridgeManager.ensureStarted().catch((error) => {
         this.logger.warn?.("browser bridge did not start; browser tools remain unavailable", { error_class: classifyOperationalError(error) });
       });
     }
-    return this.relay.start();
+    try {
+      await this.relay.start();
+      this.lifecycle.markRunning();
+    } catch (error) {
+      this.lifecycle.markFailed(error);
+      throw error;
+    }
   }
 
   stop() {
-    this.relay?.stop();
-    this.terminateActiveProcesses("SIGKILL");
-    this.processSessionManager.clear();
-    this.browserBridgeManager?.stop();
-    rmSync(this.runtimeDir, { recursive: true, force: true });
+    if (!this.lifecycle.beginStop()) return;
+    try {
+      this.relay?.stop();
+      this.callRegistry.cancelAll("runtime stopped");
+      this.terminateActiveProcesses("SIGKILL");
+      this.processSessionManager.clear();
+      this.browserBridgeManager?.stop();
+      rmSync(this.runtimeDir, { recursive: true, force: true });
+    } finally {
+      this.lifecycle.markStopped();
+    }
   }
 
   send(value) {
@@ -288,58 +361,39 @@ export class LocalRuntime {
   async handleRelayToolCall(message) {
     const envelope = normalizeRelayToolCall(message);
     if (!envelope.ok) {
-      this.logger.warn?.("invalid tool_call envelope");
-      if (envelope.id) this.send({ type: "tool_result", id: envelope.id, ok: false, error: { message: "invalid tool_call envelope" } });
+      this.logger.event?.("warn", "relay.tool_call.invalid", { has_call_id: Boolean(envelope.id) });
+      if (envelope.id) this.send({ type: "tool_result", id: envelope.id, ok: false, error: { code: "invalid_request", message: "invalid tool_call envelope", retryable: false } });
       return;
     }
-    if (this.activeToolCalls >= MAX_CONCURRENT_TOOL_CALLS) {
-      this.send({ type: "tool_result", id: envelope.id, ok: false, error: { message: "too many concurrent tool calls" } });
-      return;
-    }
-
-    const deadline = setTimeout(() => this.cancelCall(envelope.id, "relay deadline exceeded"), envelope.timeoutMs);
-    deadline.unref?.();
-    this.activeToolCalls += 1;
-    const started = Date.now();
-    this.logger.debug?.("tool call started", { call_id: shortCallId(envelope.id), tool: envelope.tool });
     try {
-      const result = await this.executeTool(envelope.tool, envelope.arguments, { callId: envelope.id });
-      if (this.cancelledCalls.has(envelope.id)) throw new Error("tool call cancelled");
+      const result = await this.executeTool(envelope.tool, envelope.arguments, {
+        callId: envelope.id,
+        origin: "relay",
+        timeoutMs: envelope.timeoutMs,
+      });
       this.send({ type: "tool_result", id: envelope.id, ok: true, result });
-      const durationMs = Date.now() - started;
-      this.logger.debug?.(durationMs >= SLOW_TOOL_CALL_MS ? "slow tool call completed" : "tool call completed", { call_id: shortCallId(envelope.id), tool: envelope.tool, duration_ms: durationMs });
     } catch (error) {
-      const safeError = this.safeErrorMessage(error, envelope.arguments);
-      this.send({ type: "tool_result", id: envelope.id, ok: false, error: { message: safeError } });
-      const durationMs = Date.now() - started;
-      this.logger.debug?.("tool call failed", { call_id: shortCallId(envelope.id), tool: envelope.tool, duration_ms: durationMs, error_class: classifyOperationalError(error) });
-    } finally {
-      clearTimeout(deadline);
-      this.activeToolCalls -= 1;
-      this.finishCall(envelope.id);
+      this.send({ type: "tool_result", id: envelope.id, ok: false, error: publicError(error) });
     }
   }
 
   finishCall(callId) {
     if (!callId) return;
-    this.cancelledCalls.delete(callId);
-    this.callProcesses.delete(callId);
+    this.callRegistry.finish(callId);
   }
 
   cancelCall(callId, reason = "cancelled") {
-    this.cancelledCalls.add(callId);
-    this.processSessionManager.notifyCancellation();
-    this.browserBridgeManager?.cancelCall(callId);
-    const children = [...(this.callProcesses.get(callId) || [])];
-    for (const child of children) terminateProcessTreeWithEscalation(child);
-    this.logger.debug?.("tool call cancellation requested", { call_id: shortCallId(callId), reason });
+    return this.callRegistry.cancel(callId, reason);
   }
 
   async executeTool(tool, args, context = {}) {
-    if (!["server_info", ...this.tools()].includes(tool)) throw new Error(`tool disabled or unknown: ${tool}`);
-    const handler = RUNTIME_TOOL_HANDLERS[tool];
-    if (!handler) throw new Error(`runtime handler is missing for tool: ${tool}`);
-    return handler(this, args, context);
+    this.lifecycle.assertOperational();
+    return this.toolExecutor.execute(tool, args, {
+      callId: context.callId,
+      origin: context.origin || "local",
+      timeoutMs: context.timeoutMs,
+      context,
+    });
   }
 
   async projectOverview(context = {}) {
@@ -357,318 +411,38 @@ export class LocalRuntime {
     };
   }
 
-  listRoots() {
-    const roots = [{ name: this.policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace", path: this.displayPath(this.workspace), default: true }];
-    if (this.policy.unrestrictedPaths) {
-      const home = process.env.HOME || process.env.USERPROFILE;
-      if (home && home !== this.workspace) roots.push({ name: "home", path: this.displayPath(resolve(home)), default: false });
-      roots.push({ name: "filesystem-root", path: this.displayPath(path.parse(this.workspace).root), default: false });
-    }
-    return { roots };
+  listRoots() { return this.workspaceFileService.listRoots(); }
+
+  listDir(pathValue, context = {}) { return this.workspaceFileService.listDir(pathValue, context); }
+
+  listFiles(pathValue, maxFiles, context = {}) { return this.workspaceFileService.listFiles(pathValue, maxFiles, context); }
+
+  readFile(args, context = {}) { return this.workspaceFileService.readFile(args, context); }
+
+  viewImage(args, context = {}) { return this.workspaceFileService.viewImage(args, context); }
+
+  writeFile(args, context = {}) { return this.workspaceFileService.writeFile(args, context); }
+
+  editFile(args, context = {}) { return this.workspaceFileService.editFile(args, context); }
+
+  applyPatch(args, context = {}) { return this.workspaceFileService.applyPatch(args, context); }
+
+  searchText(args, context = {}) { return this.workspaceFileService.searchText(args, context); }
+
+  gitStatus(args = {}, context = {}) {
+    return this.gitService.status(args, context);
   }
 
-  async listDir(inputPath, context = {}) {
-    const full = await this.resolveExistingPath(inputPath);
-    const entries = [];
-    let resultBytes = 0;
-    let truncated = false;
-    for await (const entry of await opendir(full)) {
-      this.throwIfCancelled(context);
-      const entryPath = resolve(full, entry.name);
-      const info = await lstat(entryPath).catch(() => null);
-      const item = {
-        name: entry.name,
-        path: this.displayPath(entryPath),
-        type: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
-        size: info?.size ?? 0,
-      };
-      const itemBytes = Buffer.byteLength(item.name) + Buffer.byteLength(item.path) + 64;
-      if (entries.length >= MAX_DIRECTORY_ENTRIES || resultBytes + itemBytes > MAX_PATH_RESULT_BYTES) {
-        truncated = true;
-        break;
-      }
-      entries.push(item);
-      resultBytes += itemBytes;
-    }
-    entries.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
-    return { path: this.displayPath(full), entries, truncated };
+  gitDiff(args = {}, context = {}) {
+    return this.gitService.diff(args, context);
   }
 
-  async listFiles(inputPath, maxFiles, context = {}) {
-    const root = await this.resolveExistingPath(inputPath);
-    const info = await stat(root);
-    if (info.isFile()) return { path: this.displayPath(root), files: [this.displayPath(root)], truncated: false };
-    if (!info.isDirectory()) throw new Error("path is not a file or directory");
-    const files = [];
-    let resultBytes = 0;
-    const walkResult = await this.walk(root, async full => {
-      this.throwIfCancelled(context);
-      const shown = this.displayPath(full);
-      const pathBytes = Buffer.byteLength(shown) + 8;
-      if (files.length >= maxFiles || resultBytes + pathBytes > MAX_PATH_RESULT_BYTES) return false;
-      files.push(shown);
-      resultBytes += pathBytes;
-      return true;
-    }, context);
-    return { path: this.displayPath(root), files, truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated };
+  gitLog(args = {}, context = {}) {
+    return this.gitService.log(args, context);
   }
 
-  async readFile(args, context = {}) {
-    if (typeof args === "string") {
-      args = { path: args, max_bytes: typeof context === "number" ? context : undefined };
-      context = {};
-    }
-    if (!args.path) throw new Error("path is required");
-    const full = await this.resolveExistingPath(args.path);
-    this.throwIfCancelled(context);
-    const { buffer, info } = await readBoundedFile(full, MAX_WRITE_BYTES, "readable text file");
-    const content = decodeUtf8(buffer);
-    this.throwIfCancelled(context);
-    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
-    const startLine = args.start_line === undefined ? 1 : clampInt(args.start_line, 1, 1, Number.MAX_SAFE_INTEGER);
-    const rawLines = content.split(/\r?\n/);
-    const totalLines = content.endsWith("\n") ? Math.max(1, rawLines.length - 1) : rawLines.length;
-    const endLine = args.end_line === undefined ? totalLines : clampInt(args.end_line, totalLines, 1, Number.MAX_SAFE_INTEGER);
-    if (endLine < startLine) throw new Error("end_line must be greater than or equal to start_line");
-    if (startLine > totalLines) throw new Error(`start_line exceeds total lines (${startLine} > ${totalLines})`);
-    const selectedEnd = Math.min(endLine, totalLines);
-    let selected = rawLines.slice(startLine - 1, selectedEnd).join("\n");
-    if (selectedEnd < totalLines || content.endsWith("\n")) selected += "\n";
-    const selectedBytes = Buffer.byteLength(selected);
-    if (selectedBytes > maxBytes) throw new Error(`selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`);
-    return {
-      path: this.displayPath(full),
-      size: info.size,
-      sha256: sha256(content),
-      content: selected,
-      start_line: startLine,
-      end_line: selectedEnd,
-      total_lines: totalLines,
-      complete: startLine === 1 && selectedEnd === totalLines,
-    };
-  }
-
-  async viewImage(args, context = {}) {
-    if (!args.path) throw new Error("path is required");
-    const full = await this.resolveExistingPath(args.path);
-    this.throwIfCancelled(context);
-    const { buffer, info } = await readBoundedFile(full, MAX_IMAGE_BYTES, "image");
-    this.throwIfCancelled(context);
-    const mimeType = detectImageMime(buffer);
-    if (!mimeType) throw new Error("unsupported image format; expected PNG, JPEG, GIF, or WebP");
-    return {
-      $mcp: {
-        content: [{ type: "image", data: buffer.toString("base64"), mimeType }],
-        structuredContent: {
-          path: this.displayPath(full),
-          size: info.size,
-          sha256: createHash("sha256").update(buffer).digest("hex"),
-          mime_type: mimeType,
-        },
-      },
-    };
-  }
-
-  async writeFile(args, context = {}) {
-    return this.withMutationLock(async () => {
-      this.throwIfCancelled(context);
-      if (!this.policy.allowWrite) throw new Error("write_file is disabled by daemon policy");
-      if (!args.path) throw new Error("path is required");
-      const content = String(args.content ?? "");
-      const bytes = Buffer.byteLength(content);
-      if (bytes > MAX_WRITE_BYTES) throw new Error(`content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
-      const full = await this.resolveWritePath(args.path);
-      const existing = await lstat(full).catch(() => null);
-      if (existing?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
-      if (args.create_only && existing) throw new Error("file exists and create_only=true");
-      if (existing && !existing.isFile()) throw new Error("path is not a regular file");
-      if (args.expected_sha256) {
-        if (!existing) throw new Error("expected_sha256 requires an existing file");
-        const current = await readUtf8File(full);
-        if (sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new Error("expected_sha256 mismatch");
-      }
-      this.throwIfCancelled(context);
-      await atomicWriteText(full, content, existing, {
-        createOnly: args.create_only === true,
-        expectedHash: args.expected_sha256 ? String(args.expected_sha256).toLowerCase() : undefined,
-      });
-      return { ok: true, path: this.displayPath(full), sha256: sha256(content), bytes };
-    });
-  }
-
-  async editFile(args, context = {}) {
-    return this.withMutationLock(async () => {
-      this.throwIfCancelled(context);
-      if (!this.policy.allowWrite) throw new Error("edit_file is disabled by daemon policy");
-      if (!args.path) throw new Error("path is required");
-      const oldText = String(args.old_text ?? "");
-      const newText = String(args.new_text ?? "");
-      if (!oldText) throw new Error("old_text must not be empty");
-      const full = await this.resolveExistingPath(args.path);
-      const info = await lstat(full);
-      if (!info.isFile() || info.isSymbolicLink()) throw new Error("path is not a regular non-symbolic-link file");
-      const current = await readUtf8File(full);
-      if (args.expected_sha256 && sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new Error("expected_sha256 mismatch");
-      const occurrences = countOccurrences(current, oldText);
-      if (occurrences === 0) throw new Error("old_text was not found");
-      if (!args.replace_all && occurrences !== 1) throw new Error(`old_text occurs ${occurrences} times; provide a unique fragment or set replace_all=true`);
-      const updated = args.replace_all ? current.split(oldText).join(newText) : current.replace(oldText, newText);
-      const bytes = Buffer.byteLength(updated);
-      if (bytes > MAX_WRITE_BYTES) throw new Error(`edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
-      this.throwIfCancelled(context);
-      await atomicWriteText(full, updated, info, { expectedHash: sha256(current) });
-      return { ok: true, path: this.displayPath(full), replacements: args.replace_all ? occurrences : 1, sha256: sha256(updated), bytes };
-    });
-  }
-
-  async applyPatch(args, context = {}) {
-    return this.withMutationLock(async () => {
-      this.throwIfCancelled(context);
-      if (!this.policy.allowWrite) throw new Error("apply_patch is disabled by daemon policy");
-      const patchText = String(args.patch ?? "");
-      if (!patchText) throw new Error("patch is required");
-      if (Buffer.byteLength(patchText) > MAX_WRITE_BYTES) throw new Error("patch exceeds maximum size");
-      const parsed = parsePatchEnvelope(patchText);
-      const prepared = [];
-      for (const operation of parsed) {
-        this.throwIfCancelled(context);
-        if (operation.kind === "add") {
-          const target = await this.resolveWritePath(operation.path);
-          if (await lstat(target).catch(() => null)) throw new Error(`add target already exists: ${operation.path}`);
-          assertTextSize(operation.content, operation.path);
-          prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
-          continue;
-        }
-        const source = await this.resolveExistingPath(operation.path);
-        const sourceInfo = await lstat(source);
-        if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error(`patch source is not a regular file: ${operation.path}`);
-        const original = await readUtf8File(source);
-        if (operation.kind === "delete") {
-          prepared.push({ kind: "delete", source, target: null, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
-          continue;
-        }
-        const content = applyUpdateHunks(original, operation.hunks, operation.path);
-        assertTextSize(content, operation.path);
-        const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo) : source;
-        if (target !== source && await lstat(target).catch(() => null)) throw new Error(`move target already exists: ${operation.moveTo}`);
-        prepared.push({ kind: operation.moveTo ? "move" : "update", source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
-      }
-      assertNoResolvedPatchCollisions(prepared);
-      this.throwIfCancelled(context);
-      await commitPatchTransaction(prepared);
-      return {
-        ok: true,
-        files: prepared.map((item) => ({
-          operation: item.kind,
-          path: this.displayPath(item.target || item.source),
-          from: item.kind === "move" ? this.displayPath(item.source) : undefined,
-          sha256: item.content === undefined ? undefined : sha256(item.content),
-        })),
-      };
-    });
-  }
-
-  async searchText(args, context = {}) {
-    const query = String(args.query || "");
-    if (!query) throw new Error("query is required");
-    const root = await this.resolveExistingPath(args.path || ".");
-    const max = clampInt(args.max_matches, 100, 1, 1000);
-    const maxFiles = clampInt(args.max_files, 10000, 1, 100000);
-    let visitedFiles = 0;
-    const matches = [];
-    const rootInfo = await stat(root);
-    if (rootInfo.isFile()) {
-      await this.searchOneFile(root, query, matches, max, context);
-      return { query, root: this.displayPath(root), matches, visited_files: 1, truncated: matches.length >= max };
-    }
-    if (!rootInfo.isDirectory()) throw new Error("path is not a file or directory");
-    const walkResult = await this.walk(root, async full => {
-      this.throwIfCancelled(context);
-      if (matches.length >= max || visitedFiles >= maxFiles) return false;
-      visitedFiles += 1;
-      await this.searchOneFile(full, query, matches, max, context);
-      return matches.length < max && visitedFiles < maxFiles;
-    }, context);
-    return { query, root: this.displayPath(root), matches, visited_files: visitedFiles, truncated: matches.length >= max || visitedFiles >= maxFiles || walkResult.truncated };
-  }
-
-  async searchOneFile(full, query, matches, max, context = {}) {
-    this.throwIfCancelled(context);
-    const bounded = await readBoundedFile(full, 1024 * 1024, "search file").catch(() => null);
-    if (!bounded || bounded.buffer.includes(0)) return;
-    const buffer = bounded.buffer;
-    let text;
-    try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch { return; }
-    if (!text) return;
-    const lines = text.split(/\r?\n/);
-    for (let index = 0; index < lines.length; index += 1) {
-      if (lines[index].includes(query)) {
-        matches.push({ path: this.displayPath(full), line: index + 1, text: lines[index].slice(0, 500) });
-        if (matches.length >= max) break;
-      }
-    }
-  }
-
-  async gitStatus(args = {}, context = {}) {
-    const git = await this.gitContext(args.path || ".", context);
-    if (!git.ok) return git.result;
-    const commandArgs = ["-c", "core.fsmonitor=false", "-C", git.root, "status", "--short", "--branch"];
-    if (git.pathspec) commandArgs.push("--", git.pathspec);
-    const result = await this.runProcess("git", commandArgs, 30_000, true, 512 * 1024, context);
-    return { ...result, path: this.displayPath(git.target), gitRoot: this.displayPath(git.root) };
-  }
-
-  async gitDiff(args = {}, context = {}) {
-    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
-    const git = await this.gitContext(args.path || ".", context);
-    if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
-    const commandArgs = ["-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", git.root, "diff", "--no-ext-diff", "--no-textconv"];
-    if (args.staged) commandArgs.push("--cached");
-    if (git.pathspec) commandArgs.push("--", git.pathspec);
-    const result = await this.runProcess("git", commandArgs, 60_000, true, maxBytes, context);
-    return { ...result, path: this.displayPath(git.target), gitRoot: this.displayPath(git.root), staged: args.staged === true };
-  }
-
-  async gitLog(args = {}, context = {}) {
-    const git = await this.gitContext(args.path || ".", context);
-    if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
-    const maxCount = clampInt(args.max_count, 20, 1, 100);
-    const format = "%H%x1f%h%x1f%aI%x1f%an%x1f%ae%x1f%s%x1e";
-    const commandArgs = ["-c", "core.fsmonitor=false", "-C", git.root, "log", `--max-count=${maxCount}`, `--format=${format}`];
-    if (git.pathspec) commandArgs.push("--", git.pathspec);
-    const result = await this.runProcess("git", commandArgs, 30_000, true, 1024 * 1024, context);
-    const commits = result.stdout.split("\x1e").map((record) => record.trim()).filter(Boolean).map((record) => {
-      const [hash, short, authored_at, author_name, author_email, subject] = record.split("\x1f");
-      const commit = { hash, short, authored_at, author_name, subject };
-      if (args.include_author_email === true) commit.author_email = author_email;
-      return commit;
-    });
-    return { code: result.code, stderr: result.stderr, commits, path: this.displayPath(git.target), gitRoot: this.displayPath(git.root) };
-  }
-
-  async gitShow(args = {}, context = {}) {
-    const git = await this.gitContext(args.path || ".", context);
-    if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
-    const revision = validateRevision(args.revision || "HEAD");
-    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
-    const commandArgs = ["-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", git.root, "show", "--no-ext-diff", "--no-textconv", "--decorate=no", revision];
-    if (git.pathspec) commandArgs.push("--", git.pathspec);
-    const result = await this.runProcess("git", commandArgs, 60_000, true, maxBytes, context);
-    return { ...result, revision, path: this.displayPath(git.target), gitRoot: this.displayPath(git.root) };
-  }
-
-  async gitContext(inputPath, context = {}) {
-    const target = await this.resolveExistingPath(inputPath);
-    const info = await stat(target);
-    const cwd = info.isDirectory() ? target : dirname(target);
-    const result = await this.runProcess("git", ["-c", "core.fsmonitor=false", "-C", cwd, "rev-parse", "--show-toplevel"], 10_000, true, 512 * 1024, context);
-    if (result.code !== 0) return { ok: false, result, target };
-    const root = result.stdout.trim();
-    const repoRelative = relative(root, target);
-    if (repoRelative.startsWith(`..${sep}`) || repoRelative === ".." || isAbsolute(repoRelative)) {
-      return { ok: false, target, result: { code: 128, stdout: "", stderr: "target is outside the detected git repository" } };
-    }
-    return { ok: true, target, root, pathspec: repoRelative || "" };
+  gitShow(args = {}, context = {}) {
+    return this.gitService.show(args, context);
   }
 
   async diagnoseRuntime(context = {}) {
@@ -716,8 +490,7 @@ export class LocalRuntime {
     }
 
     if (this.policy.execMode === "shell") {
-      const shell = workspaceShellCommand(process.platform === "win32" ? "cd" : "pwd");
-      const result = await this.runProcess(shell.cmd, shell.args, 5000, true, 4096, context, this.workspace)
+      const result = await this.processExecutionService.probeShell(context)
         .catch((error) => ({ code: 127, error_class: classifyOperationalError(error) }));
       checks.push({
         layer: "local-shell",
@@ -753,7 +526,7 @@ export class LocalRuntime {
 
   async generateSshKeyResource(args = {}, context = {}) {
     this.throwIfCancelled(context);
-    assertCanonicalFullPolicy(this.policy);
+    this.policyGate.assert("generate_ssh_key_resource");
     if (!this.resourceStatePath) throw new Error("local resource state is unavailable in this runtime");
     const home = process.env.HOME || process.env.USERPROFILE;
     if (!home) throw new Error("HOME or USERPROFILE is required to choose a default SSH key path");
@@ -843,149 +616,24 @@ export class LocalRuntime {
     }
   }
 
-  async runDirectProcess(args, context = {}) {
-    if (this.policy.execMode !== "direct" && this.policy.execMode !== "shell") throw new Error("run_process is disabled by daemon policy");
-    const argv = validateArgv(args.argv);
-    const cwd = await this.resolveExistingPath(args.cwd || ".");
-    if (!(await stat(cwd)).isDirectory()) throw new Error("cwd is not a directory");
-    return this.runProcess(argv[0], argv.slice(1), clampInt(args.timeout_seconds, 120, 1, 600) * 1000, false, 512 * 1024, context, cwd);
+  runDirectProcess(args, context = {}) {
+    return this.processExecutionService.runDirect(args, context);
   }
 
-  async runLocalCommand(args, context = {}) {
-    if (this.policy.execMode !== "direct" && this.policy.execMode !== "shell") throw new Error("run_local_command is disabled by daemon policy");
-    const command = await this.agentContextManager.resolveLocalCommand(args, context);
-    const argv = validateArgv(command.argv);
-    const cwd = await this.resolveExistingPath(command.cwd);
-    if (!(await stat(cwd)).isDirectory()) throw new Error("registered command cwd is not a directory");
-    const requestedTimeout = args.timeout_seconds === undefined
-      ? command.timeoutSeconds
-      : clampInt(args.timeout_seconds, command.timeoutSeconds, 1, 600);
-    const timeoutSeconds = Math.min(requestedTimeout, command.timeoutSeconds);
-    const result = await this.runProcess(argv[0], argv.slice(1), timeoutSeconds * 1000, false, 512 * 1024, context, cwd);
-    return {
-      name: command.name,
-      cwd: this.displayPath(cwd),
-      timeout_seconds: timeoutSeconds,
-      ...result,
-    };
+  runLocalCommand(args, context = {}) {
+    return this.processExecutionService.runRegistered(args, context);
   }
 
-  async execCommand(command, timeoutSeconds, context = {}) {
-    if (this.policy.execMode !== "shell") throw new Error("exec_command requires shell execution mode");
-    if (!command || typeof command !== "string") throw new Error("command is required");
-    if (command.includes("\0")) throw new Error("command contains a NUL byte");
-    if (Buffer.byteLength(command) > MAX_COMMAND_BYTES) throw new Error(`command exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
-    const shell = workspaceShellCommand(command);
-    return this.runProcess(shell.cmd, shell.args, clampInt(timeoutSeconds, 120, 1, 600) * 1000, false, 512 * 1024, context);
+  execCommand(command, timeoutSeconds, context = {}) {
+    return this.processExecutionService.runShell(command, timeoutSeconds, context);
   }
 
   terminateActiveProcesses(signal = "SIGTERM", escalate = false) {
-    const children = [...this.activeProcesses];
-    for (const child of children) {
-      if (escalate && signal !== "SIGKILL") terminateProcessTreeWithEscalation(child);
-      else terminateProcessTree(child, signal);
-    }
+    this.processExecutionService.terminateAll(signal, escalate);
   }
 
-  async runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024, context = {}, cwd = this.workspace, stdin = null) {
-    this.throwIfCancelled(context);
-    return new Promise((resolvePromise, reject) => {
-      if (stdin !== null && Buffer.byteLength(String(stdin)) > 1024 * 1024) throw new Error("process stdin exceeds 1 MiB");
-      const child = spawn(cmd, args, {
-        cwd,
-        env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false, runtimeDir: this.runtimeDir }),
-        detached: process.platform !== "win32",
-        windowsHide: true,
-      });
-      this.activeProcesses.add(child);
-      if (stdin !== null) {
-        child.stdin.on("error", () => {});
-        child.stdin.end(String(stdin));
-      }
-      if (context.callId) {
-        const set = this.callProcesses.get(context.callId) || new Set();
-        set.add(child);
-        this.callProcesses.set(context.callId, set);
-      }
-      let stdout = "";
-      let stderr = "";
-      let stdoutTruncated = 0;
-      let stderrTruncated = 0;
-      let timedOut = false;
-      let settled = false;
-      let killTimer = null;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        killTimer = terminateProcessTreeWithEscalation(child);
-      }, timeoutMs);
-      timer.unref?.();
-      const cleanup = () => {
-        clearTimeout(timer);
-        if (killTimer && !timedOut) clearTimeout(killTimer);
-        this.activeProcesses.delete(child);
-        if (context.callId) {
-          const set = this.callProcesses.get(context.callId);
-          set?.delete(child);
-          if (!set?.size) this.callProcesses.delete(context.callId);
-        }
-      };
-      const finish = callback => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        callback();
-      };
-      child.stdout.on("data", chunk => {
-        const next = appendLimited(stdout, chunk, maxOutputBytes);
-        stdout = next.value;
-        stdoutTruncated += next.truncated;
-      });
-      child.stderr.on("data", chunk => {
-        const next = appendLimited(stderr, chunk, maxOutputBytes);
-        stderr = next.value;
-        stderrTruncated += next.truncated;
-      });
-      child.on("error", error => finish(() => {
-        if (allowFailure) resolvePromise({ code: 127, stdout: finalizeOutput(stdout, stdoutTruncated), stderr: boundedErrorMessage(error) });
-        else reject(error);
-      }));
-      child.on("close", code => finish(() => {
-        const result = { code, stdout: finalizeOutput(stdout, stdoutTruncated), stderr: finalizeOutput(stderr, stderrTruncated) };
-        if (context.callId && this.cancelledCalls.has(context.callId)) {
-          reject(new Error("tool call cancelled"));
-          return;
-        }
-        if (timedOut) {
-          reject(new Error(`command timed out after ${timeoutMs}ms`));
-          return;
-        }
-        if (code === 0 || allowFailure) resolvePromise(result);
-        else reject(new Error(stderr.trim() || stdout.trim() || `${cmd} exited ${code}`));
-      }));
-    });
-  }
-
-  async walk(root, onFile, context = {}) {
-    const stack = [root];
-    let visitedEntries = 0;
-    while (stack.length) {
-      this.throwIfCancelled(context);
-      const current = stack.pop();
-      const entries = await opendir(current).catch(() => null);
-      if (!entries) continue;
-      for await (const entry of entries) {
-        this.throwIfCancelled(context);
-        visitedEntries += 1;
-        if (visitedEntries > MAX_WALK_ENTRIES) return { truncated: true, visitedEntries };
-        const full = resolve(current, entry.name);
-        if (entry.isDirectory()) stack.push(full);
-        else if (entry.isFile()) {
-          const keepGoing = await onFile(full);
-          if (keepGoing === false) return { truncated: true, visitedEntries };
-        }
-      }
-    }
-    return { truncated: false, visitedEntries };
+  runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024, context = {}, cwd = this.workspace, stdin = null) {
+    return this.processExecutionService.run(cmd, args, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin);
   }
 
   resolvePath(inputPath = ".") {
@@ -999,6 +647,8 @@ export class LocalRuntime {
       this.workspaceCanonicalPromise = realpath(this.workspaceInput).then((canonical) => {
         this.workspace = canonical;
         this.processSessionManager.workspace = canonical;
+        this.processExecutionService.workspace = canonical;
+        this.workspaceFileService.workspace = canonical;
         return canonical;
       }).catch((error) => {
         this.workspaceCanonicalPromise = null;
@@ -1058,7 +708,7 @@ export class LocalRuntime {
   }
 
   throwIfCancelled(context = {}) {
-    if (context.callId && this.cancelledCalls.has(context.callId)) throw new Error("tool call cancelled");
+    this.callRegistry.throwIfCancelled(context);
   }
 
   async withMutationLock(callback) {
@@ -1104,184 +754,10 @@ function assertContainedPath(root, target) {
   throw new Error("path is outside the configured workspace; restart with --unrestricted-paths to allow it");
 }
 
-async function readBoundedFile(filePath, maxBytes, label) {
-  const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0);
-  const handle = await open(filePath, flags);
-  try {
-    const info = await handle.stat();
-    if (!info.isFile()) throw new Error(`${label} is not a regular file`);
-    if (info.size > maxBytes) throw new Error(`${label} exceeds maximum size (${info.size} > ${maxBytes})`);
-    const buffer = Buffer.alloc(info.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (bytesRead === 0) break;
-      offset += bytesRead;
-    }
-    return { buffer: buffer.subarray(0, offset), info };
-  } finally {
-    await handle.close();
-  }
-}
-
-function decodeUtf8(buffer) {
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
-    throw new Error("file is not valid UTF-8 text");
-  }
-}
-
-async function readUtf8File(filePath) {
-  const { buffer } = await readBoundedFile(filePath, MAX_WRITE_BYTES, "text file");
-  return decodeUtf8(buffer);
-}
-
-async function atomicWriteText(full, content, existing = null, options = {}) {
-  await mkdir(dirname(full), { recursive: true });
-  const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-  try {
-    await writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: existing ? existing.mode & 0o777 : 0o600 });
-    if (existing) await chmod(temp, existing.mode & 0o777).catch(() => {});
-    if (options.expectedHash) {
-      const current = await readUtf8File(full).catch(() => null);
-      if (current === null || sha256(current) !== options.expectedHash) throw new Error("file changed before atomic commit");
-    }
-    if (options.createOnly) {
-      await link(temp, full);
-      await rm(temp, { force: true });
-    } else {
-      await rename(temp, full);
-    }
-  } catch (error) {
-    await rm(temp, { force: true }).catch(() => {});
-    throw error;
-  }
-}
-
-function assertNoResolvedPatchCollisions(operations) {
-  const owners = new Map();
-  for (const operation of operations) {
-    const paths = operation.source === operation.target
-      ? [operation.source]
-      : [operation.source, operation.target].filter(Boolean);
-    for (const full of paths) {
-      const key = process.platform === "win32" ? String(full).toLowerCase() : String(full);
-      const previous = owners.get(key);
-      if (previous && previous !== operation) throw new Error(`patch operations resolve to the same path: ${full}`);
-      owners.set(key, operation);
-    }
-  }
-}
-
-async function commitPatchTransaction(operations) {
-  const staged = [];
-  const committed = [];
-  try {
-    for (const operation of operations) {
-      if (operation.content === undefined) continue;
-      await mkdir(dirname(operation.target), { recursive: true });
-      const temp = join(dirname(operation.target), `.${basename(operation.target)}.mbm-patch-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-      await writeFile(temp, operation.content, { encoding: "utf8", flag: "wx", mode: operation.mode });
-      await chmod(temp, operation.mode).catch(() => {});
-      staged.push({ operation, temp });
-    }
-
-    for (const operation of operations) {
-      if (operation.source) {
-        const current = await readUtf8File(operation.source);
-        if (sha256(current) !== operation.originalHash) throw new Error(`patch source changed during apply: ${operation.source}`);
-      }
-      if (operation.kind === "add" || operation.kind === "move") {
-        if (await lstat(operation.target).catch(() => null)) throw new Error(`patch target appeared during apply: ${operation.target}`);
-      }
-    }
-
-    for (const operation of operations) {
-      let backup = null;
-      if (operation.source) {
-        backup = join(dirname(operation.source), `.${basename(operation.source)}.mbm-backup-${process.pid}-${randomBytes(6).toString("hex")}`);
-        await rename(operation.source, backup);
-      }
-      const record = { operation, backup, targetCreated: false };
-      committed.push(record);
-      const stage = staged.find((item) => item.operation === operation);
-      if (stage) {
-        await rename(stage.temp, operation.target);
-        record.targetCreated = true;
-      }
-    }
-  } catch (error) {
-    for (const item of committed.reverse()) {
-      if (item.targetCreated) await rm(item.operation.target, { force: true }).catch(() => {});
-      if (item.backup) await rename(item.backup, item.operation.source).catch(() => {});
-    }
-    throw error;
-  } finally {
-    for (const item of staged) await rm(item.temp, { force: true }).catch(() => {});
-  }
-  for (const item of committed) if (item.backup) await rm(item.backup, { force: true }).catch(() => {});
-}
-
-function assertTextSize(content, label) {
-  const bytes = Buffer.byteLength(content);
-  if (bytes > MAX_WRITE_BYTES) throw new Error(`patched file exceeds maximum size for ${label} (${bytes} > ${MAX_WRITE_BYTES})`);
-}
-
-function countOccurrences(content, needle) {
-  let count = 0;
-  let offset = 0;
-  while ((offset = content.indexOf(needle, offset)) !== -1) {
-    count += 1;
-    offset += needle.length;
-  }
-  return count;
-}
-
-function validateRevision(value) {
-  const revision = String(value || "HEAD");
-  if (!revision || revision.length > 256 || revision.startsWith("-") || revision.includes("\0") || /[\r\n]/.test(revision)) throw new Error("invalid Git revision");
-  return revision;
-}
-
-function boundedErrorMessage(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/[\r\n]+/g, " ").slice(0, 4096) || "tool call failed";
-}
-
-export function sha256(value) {
-  return createHash("sha256").update(String(value)).digest("hex");
-}
-
-function appendLimited(current, chunk, max) {
-  const text = String(chunk || "");
-  const budget = Math.max(0, max - Buffer.byteLength(current));
-  const textBytes = Buffer.byteLength(text);
-  if (textBytes <= budget) return { value: current + text, truncated: 0 };
-  const slice = Buffer.from(text).subarray(0, budget).toString();
-  return { value: current + slice, truncated: textBytes - Buffer.byteLength(slice) };
-}
-
-function finalizeOutput(value, truncated) {
-  return truncated > 0 ? `${value}\n\n[truncated ${truncated} bytes]` : value;
-}
-
-function clampInt(value, fallback, min, max) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, min), max);
-}
-
 function createRuntimeDir() {
   const root = mkdtempSync(join(tmpdir(), "machine-bridge-mcp-"));
   for (const name of ["home", "tmp", "cache"]) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   return root;
-}
-
-function detectImageMime(buffer) {
-  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
-  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
-  if (buffer.length >= 6 && ["GIF87a", "GIF89a"].includes(buffer.subarray(0, 6).toString("ascii"))) return "image/gif";
-  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
-  return "";
 }
 
 function createRelayConnection(runtime, { workerUrl, secret, expectedVersion, onFatal }) {
@@ -1380,4 +856,10 @@ function replacePathPrefix(message, pathValue, replacement) {
 
 function shortCallId(value) {
   return String(value || "").slice(0, 20);
+}
+
+function clampInt(value, fallback, minimum, maximum) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  const number = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.min(Math.max(number, minimum), maximum);
 }

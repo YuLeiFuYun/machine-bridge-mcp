@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 
+const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+
 const root = await mkdtemp(join(tmpdir(), "mbm-browser-bridge-"));
 const policy = { profile: "full", execMode: "shell", unrestrictedPaths: true };
 const common = {
@@ -41,7 +43,7 @@ try {
   const response = await fetch(initial.pairing_url, { signal: AbortSignal.timeout(5000) });
   const html = await response.text();
   assert(response.status === 200 && html.includes(pairing.token), "local pairing page did not contain the local-only token");
-  assert(html.includes("Expected extension build") && html.includes("0.15.0"), "local pairing page omitted extension reload diagnostics");
+  assert(html.includes("Expected extension build") && html.includes(PACKAGE_VERSION), "local pairing page omitted extension reload diagnostics");
   assert(response.headers.get("cache-control") === "no-store", "pairing page is cacheable");
 
   const rejected = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "https://example.test" });
@@ -74,13 +76,13 @@ try {
   await extensionReady;
   await waitFor(() => owner.extensionConnected());
   const connectedStatus = await owner.status();
-  assert(connectedStatus.expected_extension_version === "0.15.0" && connectedStatus.extension_protocol === 3 && connectedStatus.extension_version === "0.15.0", "extension handshake metadata was not exposed");
+  assert(connectedStatus.expected_extension_version === PACKAGE_VERSION && connectedStatus.extension_protocol === 3 && connectedStatus.extension_version === PACKAGE_VERSION, "extension handshake metadata was not exposed");
   assert(connectedStatus.extension_reload_required === false, "compatible extension did not clear stale-build reload guidance");
   const healthUrl = new URL(initial.endpoint);
   healthUrl.protocol = "http:";
   healthUrl.pathname = "/healthz";
   const health = await (await fetch(healthUrl, { signal: AbortSignal.timeout(5000) })).json();
-  assert(health.connected === true && health.expected_extension_version === "0.15.0" && health.extension_protocol === 3 && health.extension_version === "0.15.0", "browser health endpoint omitted authenticated extension metadata");
+  assert(health.connected === true && health.expected_extension_version === PACKAGE_VERSION && health.extension_protocol === 3 && health.extension_version === PACKAGE_VERSION, "browser health endpoint omitted authenticated extension metadata");
   assert(health.controls_extension_profile === true && health.machine_bridge_launches_browser === false, "browser health endpoint omitted the extension-profile execution model");
   assert(health.profile_identity_verifiable === false, "browser health endpoint falsely claimed it can identify the daily browser profile");
   extension.send(JSON.stringify({ type: "ping" }));
@@ -220,7 +222,7 @@ function attachExtensionResponder(socket) {
       assert(message.type === "hello" && message.role === "extension" && message.protocol === 3, "broker extension hello was invalid");
       handshakeStage = "broker-ack";
       socket.send(JSON.stringify({
-        type: "hello", role: "extension", protocol: 3, version: "0.15.0",
+        type: "hello", role: "extension", protocol: 3, version: PACKAGE_VERSION,
         capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits"],
       }));
       return;

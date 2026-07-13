@@ -1,6 +1,7 @@
 import { opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
+import { createToolAuthorizer } from "./policy.mjs";
 
 const MAX_APPLICATIONS = 1000;
 const MAX_APPLICATION_SCAN_ENTRIES = 20_000;
@@ -12,8 +13,9 @@ const APP_NAME_PATTERN = /^[^\0\r\n]{1,300}$/;
 const DEFAULT_APPLICATION_CACHE_MS = 30_000;
 
 export class AppAutomationManager {
-  constructor({ policy, displayPath, runProcess, readResourceText, throwIfCancelled = () => {}, platform = process.platform, home = homedir(), applicationRoots = null, applicationCacheMs = DEFAULT_APPLICATION_CACHE_MS, now = () => Date.now() }) {
+  constructor({ policy, authorizeTool = null, displayPath, runProcess, readResourceText, throwIfCancelled = () => {}, platform = process.platform, home = homedir(), applicationRoots = null, applicationCacheMs = DEFAULT_APPLICATION_CACHE_MS, now = () => Date.now() }) {
     this.policy = policy || {};
+    this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.displayPath = displayPath;
     this.runProcess = runProcess;
     this.readResourceText = readResourceText;
@@ -41,6 +43,7 @@ export class AppAutomationManager {
   }
 
   async listApplications(args = {}, context = {}) {
+    this.authorizeTool("list_local_applications");
     this.throwIfCancelled(context);
     const query = String(args.query || "").trim().toLowerCase();
     const limit = clampInt(args.max_results, 200, 1, MAX_APPLICATIONS);
@@ -86,7 +89,7 @@ export class AppAutomationManager {
   }
 
   async openApplication(args = {}, context = {}) {
-    this.assertFull("open_local_application");
+    this.authorizeTool("open_local_application");
     const application = requiredApplication(args.application);
     const target = optionalString(args.target, "target", 32768);
     this.throwIfCancelled(context);
@@ -113,7 +116,7 @@ export class AppAutomationManager {
   }
 
   async inspectApplication(args = {}, context = {}) {
-    this.assertFull("inspect_local_application");
+    this.authorizeTool("inspect_local_application");
     assertMacAccessibility(this.platform);
     const application = requiredApplication(args.application);
     const processName = applicationProcessName(application);
@@ -136,7 +139,7 @@ export class AppAutomationManager {
   }
 
   async operateApplication(args = {}, context = {}) {
-    this.assertFull("operate_local_application");
+    this.authorizeTool("operate_local_application");
     assertMacAccessibility(this.platform);
     const application = requiredApplication(args.application);
     const processName = applicationProcessName(application);
@@ -196,11 +199,6 @@ export class AppAutomationManager {
     return parsed;
   }
 
-  assertFull(tool) {
-    if (this.policy.profile !== "full" || this.policy.execMode !== "shell" || this.policy.unrestrictedPaths !== true) {
-      throw new Error(`${tool} requires the canonical full profile`);
-    }
-  }
 }
 
 async function listMacApplications(roots, context, throwIfCancelled) {

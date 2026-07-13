@@ -79,6 +79,13 @@ Caller-supplied JavaScript, AppleScript, JXA source, and arbitrary DevTools meth
 
 Text and file resources can be injected locally so their contents do not appear in MCP arguments or results. The destination page/application still receives the value, and remote tool metadata/results still traverse the Worker and host. Page source and screenshots can themselves contain secrets. Source/inspection budgets are aggregate across frames, page-controlled metadata is bounded, URL userinfo is removed from semantic snapshots, and contenteditable controls with secret-like identity are treated as sensitive; these limits reduce accidental exposure but do not classify every possible secret. Browser/app tool arguments, source, screenshots, field values, and results are intentionally omitted from operational logs.
 
+
+## Shared authorization contract
+
+Policy revision 4 is a single source of truth shared by the local daemon and Worker. The catalog availability class controls both advertisement and execution; manager-level checks invoke the same gate as defense in depth. Custom policies are evaluated by capabilities, so a label cannot impersonate `full`. Persistent job start requires both write and direct-execution authority; read-only job/resource inventory does not imply mutation authority.
+
+Transport-visible failures use stable error codes and retryability. Unexpected implementation errors are not downgraded to ordinary resource state, and raw internal exceptions are not returned by the Worker. This reduces both authorization drift and accidental disclosure through error strings.
+
 ## Filesystem exposure
 
 Direct filesystem scope is profile-dependent. The default `full` profile is unrestricted. The `agent`, `edit`, and `review` profiles confine direct filesystem tools to the canonical selected workspace, including symbolic-link resolution.

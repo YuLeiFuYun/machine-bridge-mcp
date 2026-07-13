@@ -62,6 +62,13 @@ It opens Calculator, activates it through the fixed JXA helper, verifies structu
 
 For deterministic release validation, perform an isolated-profile smoke test with the packaged unpacked extension; a Playwright persistent Chromium context is acceptable only as that isolated harness. When the requirement is specifically to prove control of the user's ordinary browser, the user must load the same unpacked directory into that known daily Chromium profile; status can verify the extension version/protocol and that Machine Bridge did not launch a browser, but cannot infer profile identity. Then use a localhost no-store fixture in a newly created tab. Do not enumerate, read, or mutate unrelated existing tabs. In both modes, inspect and reuse refs, exercise waits/forms/trusted input/open Shadow DOM/screenshots, verify final live DOM, and close the fixture tab.
 
+
+## Critical-module coverage gate
+
+`npm run coverage:test` runs selected in-process and lightweight entrypoint fixtures under V8 coverage and enforces per-module baselines for policy, typed errors, call registration, execution middleware, lifecycle/observability, logging, Runtime/CLI orchestration, and Worker pending/policy/error modules. The full stdio and Worker OAuth/MCP integrations run separately in the main suite and are not duplicated inside coverage collection. The gate deliberately reports each module rather than one aggregate percentage. JavaScript modules enforce function and branch minima; Node's direct TypeScript stripping does not expose trustworthy branch ranges, so TypeScript modules enforce function coverage plus explicit state-machine tests and the real workerd integration suite.
+
+The current CLI entrypoint remains the weakest covered orchestration surface; its baseline is therefore reported and locked independently, while extracted `cli-options` and `cli-policy` pure modules carry substantially higher thresholds. A refactor may raise a threshold, but must not lower one merely to make CI green without an explicit audit explanation.
+
 ## Additional release checks
 
 ```sh

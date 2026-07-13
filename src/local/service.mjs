@@ -226,6 +226,7 @@ export function daemonArgs(spec) {
     "--state-dir", spec.stateRoot,
     "--no-print-credentials",
     "--log-level", "warn",
+    "--log-format", "json",
   ];
 }
 

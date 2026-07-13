@@ -1,5 +1,6 @@
 import process from "node:process";
 import os from "node:os";
+import { errorCode } from "./errors.mjs";
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -40,7 +41,8 @@ export function createLogger(options = {}) {
   const minimumLevel = normalizeLogLevel(options.level || (quiet ? "error" : verbose ? "debug" : "info"));
   const component = sanitizeLogText(options.component ? String(options.component) : "cli", 128);
   const useColor = shouldUseColor(options);
-  const stdout = options.stderrOnly ? process.stderr : process.stdout;
+  const stderr = options.stderr || process.stderr;
+  const stdout = options.stderrOnly ? stderr : (options.stdout || process.stdout);
 
   const write = (stream, level, label, color, message, fields) => {
     if (LEVEL_RANK[level] < LEVEL_RANK[minimumLevel]) return;
@@ -49,20 +51,50 @@ export function createLogger(options = {}) {
     stream.write(`${prefix} ${component}: ${sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS)}${suffix}\n`);
   };
 
+  const event = (level, name, fields = {}, message = "") => {
+    const normalizedLevel = normalizeEventLevel(level);
+    const eventName = sanitizeEventName(name);
+    const payload = { event: eventName, ...fields };
+    const humanMessage = message || eventName;
+    if (options.format === "json") {
+      if (LEVEL_RANK[normalizedLevel] < LEVEL_RANK[minimumLevel]) return;
+      const entry = sanitizeLogValue({
+        timestamp: new Date().toISOString(),
+        level: normalizedLevel === "success" ? "info" : normalizedLevel,
+        component,
+        message: sanitizeLogText(humanMessage, MAX_LOG_MESSAGE_CHARS),
+        ...payload,
+      });
+      const target = normalizedLevel === "info" || normalizedLevel === "success" ? stdout : stderr;
+      target.write(`${JSON.stringify(entry)}\n`);
+      return;
+    }
+    const methods = {
+      debug: [stderr, "[debug]", COLORS.gray],
+      info: [stdout, "[info]", COLORS.blue],
+      success: [stdout, "[ok]", COLORS.green],
+      warn: [stderr, "[warn]", COLORS.yellow],
+      error: [stderr, "[error]", COLORS.red],
+    };
+    const [stream, label, color] = methods[normalizedLevel];
+    write(stream, normalizedLevel, label, color, humanMessage, payload);
+  };
+
   return {
     verbose: minimumLevel === "debug",
     level: minimumLevel,
     child(childComponent) {
       return createLogger({ ...options, component: childComponent });
     },
+    event,
     info(message, fields) { write(stdout, "info", "[info]", COLORS.blue, message, fields); },
     success(message, fields) { write(stdout, "success", "[ok]", COLORS.green, message, fields); },
-    warn(message, fields) { write(process.stderr, "warn", "[warn]", COLORS.yellow, message, fields); },
-    error(message, fields) { write(process.stderr, "error", "[error]", COLORS.red, message, fields); },
-    debug(message, fields) { write(process.stderr, "debug", "[debug]", COLORS.gray, message, fields); },
-    plain(message = "") { if (!quiet) process.stdout.write(`${String(message)}\n`); },
-    safePlain(message = "") { if (!quiet) process.stdout.write(`${sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS)}\n`); },
-    json(value) { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); },
+    warn(message, fields) { write(stderr, "warn", "[warn]", COLORS.yellow, message, fields); },
+    error(message, fields) { write(stderr, "error", "[error]", COLORS.red, message, fields); },
+    debug(message, fields) { write(stderr, "debug", "[debug]", COLORS.gray, message, fields); },
+    plain(message = "") { if (!quiet) stdout.write(`${String(message)}\n`); },
+    safePlain(message = "") { if (!quiet) stdout.write(`${sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS)}\n`); },
+    json(value) { stdout.write(`${JSON.stringify(value, null, 2)}\n`); },
   };
 }
 
@@ -76,18 +108,7 @@ export function normalizeLogLevel(value = "info") {
 
 
 export function classifyOperationalError(error) {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  if (/cancel/i.test(message)) return "cancelled";
-  if (/timed out/i.test(message)) return "timeout";
-  if (/unauthorized|forbidden|authentication|\b401\b|\b403\b/i.test(message)) return "authentication_failed";
-  if (/ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|socket hang up|network|websocket|TLS|SSL/i.test(message)) return "network_error";
-  if (/outside the configured workspace/i.test(message)) return "path_boundary";
-  if (/disabled|requires .* mode/i.test(message)) return "policy_denied";
-  if (/not found|ENOENT/i.test(message)) return "not_found";
-  if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
-  if (/maximum|exceeds|max_bytes|too many/i.test(message)) return "limit_exceeded";
-  if (/invalid|must|requires|ambiguous|mismatch/i.test(message)) return "invalid_request";
-  return "execution_failed";
+  return errorCode(error);
 }
 
 export function formatFields(fields) {
@@ -161,4 +182,14 @@ function shouldUseColor(options) {
   if (options.color === false || process.env.NO_COLOR) return false;
   if (options.color === true) return true;
   return Boolean(process.stderr.isTTY || process.stdout.isTTY);
+}
+
+function normalizeEventLevel(value) {
+  const level = String(value || "info").toLowerCase();
+  return Object.prototype.hasOwnProperty.call(LEVEL_RANK, level) ? level : "info";
+}
+
+function sanitizeEventName(value) {
+  const name = String(value || "event").toLowerCase().replace(/[^a-z0-9._-]/g, "_").slice(0, 128);
+  return name || "event";
 }
