@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.16.0 - 2026-07-13
+
+### Runtime boundaries and lifecycle
+
+- Replace the monolithic local tool dispatcher with a middleware-based execution pipeline covering policy authorization, bounded call registration, cancellation/deadlines, stable error normalization, structured lifecycle events, and per-tool metrics. Add explicit runtime lifecycle states and a process tracker so stop/cancel paths release calls and child ownership deterministically.
+- Extract workspace filesystem transactions, process/shell execution, Git operations, CLI option/policy parsing, local resource/browser/job administration, capability ranking, managed-job plan/resource validation, browser extension protocol handling, and browser pairing persistence into focused modules. Add executable line-count and dependency-direction limits so these responsibilities cannot silently return to `LocalRuntime`, the CLI entrypoint, or browser manager.
+- Split the Worker Durable Object into HTTP/CORS boundaries, OAuth state/PKCE helpers, shared policy evaluation, structured errors, pending-call indexing, and observability. Replace the linear pending-call scan with an atomic ID/request-key registry so completed, cancelled, timed-out, send-failed, and disconnected calls clear both indexes before settling; JSON-RPC request IDs can be reused immediately after completion.
+
+### Policy, errors, logging, and observability
+
+- Define policy revision 4 in one shared contract consumed by the local daemon, Worker, generated documentation, tests, and architecture checks. Fix `start_job` to require both write and direct-execution capabilities, keep `cancel_job` write-gated, and expose read-only resource/job inventory to review-mode clients without granting mutation authority.
+- Introduce typed `BridgeError`/Worker errors with allowlisted stable codes and retryability. Centralize legacy error classification at adapters instead of making transports and tests depend on free-form English messages. Unknown programming errors are no longer silently converted into ordinary managed-resource unavailability; a failing timeout callback still settles and clears its pending indexes.
+- Add structured JSON lifecycle logging and in-memory observability for calls, durations, errors, active processes, pending request indexes, daemon candidates, socket transitions, and per-tool outcomes. Autostart services now use warning-level JSON logs by default while foreground output remains human-readable; local and Worker structured-field redaction is behavior-tested.
+
+### Tests, documentation, and audit follow-up
+
+- Add behavior tests for policy parity, compound ACLs, middleware order, runtime lifecycle transitions, process ownership, pending-ID reuse, socket cleanup, Worker/local error serialization, structured log privacy, bilingual capability ranking, and generated policy documentation. Replace brittle source-string and monkeypatched happy-path tests with production-path deadline, process-tree, OAuth/MCP, and resource-reload coverage.
+- Add a critical-module V8 coverage gate with per-module function/branch baselines, rather than a single aggregate percentage that hides weak orchestration coverage. Generate `docs/POLICY_REFERENCE.md` from the shared policy contract and tool catalog; CI rejects stale generated documentation.
+- Correct an extraction defect where a re-exported resource inspector was not locally bound and a broad catch disguised the resulting `ReferenceError` as `resource_unavailable`. File availability now degrades only for classified filesystem conditions; unexpected implementation faults remain visible.
+
 ## 0.15.0 - 2026-07-13
 
 ### Daily-profile browser verification and protocol safety

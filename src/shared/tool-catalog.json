@@ -1864,7 +1864,7 @@
     "name": "list_local_resources",
     "title": "List local resource aliases",
     "description": "List names and validation status for locally registered file resources without returning their paths or contents. Resources are registered only through the local machine-mcp CLI.",
-    "availability": "write",
+    "availability": "always",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -2113,7 +2113,7 @@
     "name": "start_job",
     "title": "Start managed job",
     "description": "Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, and guaranteed-attempt finally steps. The independent local runner continues if the MCP connection disappears. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments.",
-    "availability": "direct-exec",
+    "availability": "write+direct-exec",
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": true,
@@ -2309,7 +2309,7 @@
     "name": "list_jobs",
     "title": "List managed jobs",
     "description": "List recent detached managed jobs and their lifecycle status without returning step output.",
-    "availability": "write",
+    "availability": "always",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -2333,7 +2333,7 @@
     "name": "read_job",
     "title": "Read managed job",
     "description": "Return one managed job status plus bounded, resource-redacted step results. Registered resource paths and contents are never returned.",
-    "availability": "direct-exec",
+    "availability": "always",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,

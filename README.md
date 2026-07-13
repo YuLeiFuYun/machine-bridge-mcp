@@ -32,7 +32,7 @@ A newly selected workspace starts with the maximum-permission `full` profile for
 - tool results may return absolute paths;
 - child processes inherit the complete parent environment.
 
-Policy state records whether it came from the default, an explicit named profile, or custom overrides. Named profiles are canonical contracts: a stored `full` profile is repaired on load to enable writes, shell execution, unrestricted paths, full parent environment, absolute path output, and the complete tool catalog. Any explicit per-capability narrowing is stored as `custom`. Policy revision 3 refreshes default/migrated state and preserves explicit restrictive/custom profiles.
+Policy state records whether it came from the default, an explicit named profile, or custom overrides. Named profiles are canonical contracts: a stored `full` profile is repaired on load to enable writes, shell execution, unrestricted paths, full parent environment, absolute path output, and the complete tool catalog. Any explicit per-capability narrowing is stored as `custom`. Policy revision 4 normalizes named profiles from the shared contract, refreshes default/migrated state, preserves explicit restrictive/custom profiles, and applies compound tool requirements consistently in the local daemon and Worker.
 
 | Profile | File edits | Direct argv processes | Shell commands | Filesystem scope | Process environment |
 |---|---:|---:|---:|---|---|
@@ -199,7 +199,16 @@ Load the printed unpacked-extension directory in the Chromium profile you actual
 
 Machine Bridge can discover, refresh, rank, and load capabilities automatically. The ChatGPT/MCP host still owns tool selection and approval, so the server cannot force a host to expose or invoke a recommended skill, command, app, or browser operation. Check `server_info.observability.capability_routing` or `project_overview.capabilityRouting` to distinguish “the host never called the resolver” from “the resolver ran but found no relevant capability.”
 
+
+## Runtime lifecycle and observability
+
+Every tool call passes through one execution pipeline: bounded call registration and deadline/cancellation ownership, structured observability, shared policy authorization, then the typed handler. Errors use stable codes and retryability metadata instead of transport-specific message parsing. `server_info` exposes the local lifecycle state, in-flight calls, active process ownership, per-tool outcomes, durations, and error-code counts. The Worker adds pending internal/request-key indexes, daemon candidate/socket counters, and Worker-side per-tool outcomes.
+
+Foreground logging defaults to human-readable text. Installed background services use warning-level JSON events by default. Use `--log-format json` for machine-readable foreground logs; arguments, outputs, credentials, resource contents, and local paths remain excluded or redacted.
+
 ## Policy controls
+
+Policy revision 4 is defined once in `src/shared/policy-contract.json`. The local runtime, Worker advertisement filter, manager-level defense-in-depth checks, tests, and generated [policy reference](docs/POLICY_REFERENCE.md) consume that same contract. A custom policy is authorized by capabilities rather than its display name; compound classes such as `write+direct-exec` require every capability.
 
 The default is `full`. Narrow or customize it with explicit flags:
 
@@ -212,6 +221,7 @@ The default is `full`. Narrow or customize it with explicit flags:
 --unrestricted-paths
 --absolute-paths
 --log-level error|warn|info|debug
+--log-format text|json
 --verbose
 --quiet
 ```
@@ -432,7 +442,7 @@ Remote mode supports:
 - Linux `systemd --user`, with best-effort lingering;
 - Windows Scheduled Task at logon.
 
-The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. launchd/systemd definitions persist a sanitized absolute-only PATH captured during installation, including the stable Node/CLI directories, so background `full` mode does not lose Homebrew or other developer command locations. Background services run at log level `warn`: relay, protocol, and service problems are retained, while all per-tool success/failure/cancellation/timing events remain debug-only. Logs are owner-only where supported and bounded by tail trimming.
+The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. launchd/systemd definitions persist a sanitized absolute-only PATH captured during installation, including the stable Node/CLI directories, so background `full` mode does not lose Homebrew or other developer command locations. Background services run at log level `warn` with JSON output: relay, protocol, and service problems are retained as bounded structured events, while all per-tool success/failure/cancellation/timing events remain debug-only. Logs are owner-only where supported and bounded by tail trimming.
 
 ## Secret rotation
 

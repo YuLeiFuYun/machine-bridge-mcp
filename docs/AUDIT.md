@@ -1,6 +1,17 @@
 # Engineering and security audit
 
-This document records the cross-cutting audit initiated for version 0.12.0, the 0.12.2 cross-platform CI follow-up, and the 0.13.0 architecture/automatic-routing follow-up, plus the 0.15.0 daily-browser and cross-platform hardening review. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
+This document records the cross-cutting audit initiated for version 0.12.0, the 0.12.2 cross-platform CI follow-up, and the 0.13.0 architecture/automatic-routing follow-up, the 0.15.0 daily-browser and cross-platform hardening review, and the 0.16.0 runtime-boundary review. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
+
+
+## 2026-07-13 runtime-boundary and lifecycle follow-up
+
+This review confirmed that earlier safety controls existed but were distributed across duplicated policy checks, transport-specific pending maps, message-regex errors, and oversized composition files. It reproduced a production-visible Worker defect where a completed client JSON-RPC request key could remain indexed and cause unrelated later calls to fail as duplicate in-flight IDs. Pending calls now use one atomic double-index registry whose terminal `take` operation clears the internal ID, request key, and timer before resolution or rejection; success, daemon error, cancellation, timeout, send failure, and socket loss have behavior coverage.
+
+Policy revision 4 replaces local/Worker/manager interpretations with one contract. The audit found a concrete compound-ACL error: `start_job` was advertised by direct-exec alone even though it creates persistent files. It now requires write plus direct execution; read-only job/resource inspection no longer inherits mutation requirements. Typed errors, shared middleware, explicit runtime lifecycle, process ownership, structured JSON logs, and local/Worker metrics replace ad hoc message parsing and invisible pending state.
+
+The composition roots were reduced by extracting filesystem, process, Git, CLI parsing/admin, ranking, managed-job validation, browser protocol/pairing, Worker HTTP, OAuth, policy, errors, pending calls, and observability. Executable architecture limits prevent these responsibilities from returning. During extraction, a missing local ESM binding was initially hidden by a broad catch and surfaced only as `resource_unavailable`; the catch now rethrows unknown faults, and the stdio generated-resource test exercises the complete state reload path.
+
+Coverage review showed that a large test count had hidden weak orchestration coverage. CI now reports and enforces per-module baselines, while pure policy/CLI/ranking/state modules receive direct branch tests and Worker behavior still runs through workerd. Generated policy documentation eliminates a second hand-maintained ACL description.
 
 ## 2026-07-13 daily-browser and cross-platform hardening follow-up
 

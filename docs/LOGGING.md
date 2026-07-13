@@ -24,7 +24,7 @@ The CLI accepts:
 --verbose    # alias for debug
 ```
 
-Foreground mode defaults to `info`. Platform autostart services use `warn`.
+Foreground mode defaults to `info` and human-readable text. Platform autostart services use `warn` with newline-delimited JSON. Foreground operators can select JSON explicitly with `--log-format json`.
 
 | Level | Intended events |
 |---|---|
@@ -100,6 +100,12 @@ Messages, strings, object depth, object key counts, array item counts, and seria
 The logger exposes two intentional plain-output boundaries. `safePlain` sanitizes operational guidance and diagnostic text. Raw `plain` output is reserved for explicitly requested credentials or local paths whose display is the command's purpose; callers must not pass external exception text or tool content to it.
 
 This is defense in depth, not content classification. Unknown, split, transformed, encrypted, or application-specific secret formats can evade pattern matching, which is why tool arguments and outputs are omitted rather than merely filtered.
+
+## Structured lifecycle events
+
+The local execution middleware emits bounded events such as `tool.call.started`, `tool.call.completed`, `tool.call.failed`, `tool.call.slow`, and `tool.call.cancel_requested`. Stable fields include a shortened call ID, tool name, origin, duration, error code, and retryability. The Worker emits JSON events for HTTP failures and daemon socket errors. Structured values still pass through field-name and value redaction; JSON format is not permission to log arguments or results.
+
+`server_info` is the operational metrics surface. Local metrics include lifecycle state, active and maximum calls, oldest-call age, active-process ownership, per-tool duration buckets, and error-code counts. Worker metrics include HTTP status classes, pending internal/request-key indexes, per-tool outcomes, daemon candidate/authenticated/disconnected counts, and protocol-error counts. Metrics contain counts and bounded identifiers, not request arguments or result contents.
 
 ## Files
 

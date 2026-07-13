@@ -239,7 +239,7 @@ description: 审查部署流程并验证发布配置。
   try {
     await expectReject(
       () => editRuntime.executeTool("run_local_command", { path: ".", name: "echo-args" }),
-      "tool disabled or unknown",
+      "disabled by the active policy",
     );
   } finally {
     editRuntime.stop();

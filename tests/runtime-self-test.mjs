@@ -13,6 +13,7 @@ export async function runtimeSelfTest() {
     warn(message, fields) { logEvents.push({ level: "warn", message, fields }); },
     error(message, fields) { logEvents.push({ level: "error", message, fields }); },
     debug(message, fields) { logEvents.push({ level: "debug", message, fields }); },
+    event(level, name, fields) { logEvents.push({ level, message: name, event: name, fields }); },
   };
   const restricted = new LocalRuntime({
     workerUrl: "https://example.invalid",
@@ -43,22 +44,21 @@ export async function runtimeSelfTest() {
   try {
     const relayMessages = [];
     const originalSend = restricted.send.bind(restricted);
-    const originalExecuteTool = restricted.executeTool.bind(restricted);
     restricted.send = (value) => { relayMessages.push(value); return true; };
-    restricted.executeTool = async (_tool, _args, context) => {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 1100));
-      restricted.throwIfCancelled(context);
-      return { unexpected: true };
-    };
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "deadline-call", tool: "read_file", arguments: {}, timeout_ms: 1000 }));
+    await restricted.handleMessage(JSON.stringify({
+      type: "tool_call",
+      id: "deadline-call",
+      tool: "run_process",
+      arguments: { argv: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], timeout_seconds: 10 },
+      timeout_ms: 1000,
+    }));
     const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
-    if (deadlineResult?.ok !== false || !String(deadlineResult.error?.message || "").includes("cancelled")) throw new Error("relay deadline did not cancel the local call");
+    if (deadlineResult?.ok !== false || deadlineResult.error?.code !== "timeout" || deadlineResult.error?.retryable !== true) throw new Error(`relay deadline did not return a structured retryable timeout: ${JSON.stringify(deadlineResult)}`);
     relayMessages.length = 0;
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [] }));
     const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
-    if (invalidEnvelope?.ok !== false || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
+    if (invalidEnvelope?.ok !== false || invalidEnvelope.error?.code !== "invalid_request" || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
     restricted.send = originalSend;
-    restricted.executeTool = originalExecuteTool;
 
     await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
     await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
@@ -95,10 +95,10 @@ export async function runtimeSelfTest() {
 
     logEvents.length = 0;
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" } }));
-    if (logEvents.some(event => event.level === "info" && event.message === "tool call completed")) {
+    if (logEvents.some(event => event.level === "info" && event.event === "tool.call.completed")) {
       throw new Error("remote daemon emitted routine success at info level");
     }
-    if (!logEvents.some(event => event.level === "debug" && event.message === "tool call completed")) {
+    if (!logEvents.some(event => event.level === "debug" && event.event === "tool.call.completed")) {
       throw new Error("remote daemon omitted debug success correlation");
     }
 
@@ -109,10 +109,10 @@ export async function runtimeSelfTest() {
     restricted.send = originalSend;
     const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
     if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");
-    if (logEvents.some(event => event.level === "warn" && event.message === "tool call failed")) {
+    if (logEvents.some(event => event.level === "warn" && event.event === "tool.call.failed")) {
       throw new Error("remote daemon emitted per-tool failure noise at warn level");
     }
-    if (!logEvents.some(event => event.level === "debug" && event.message === "tool call failed" && event.fields?.tool === "read_file")) {
+    if (!logEvents.some(event => event.level === "debug" && event.event === "tool.call.failed" && event.fields?.tool === "read_file")) {
       throw new Error("remote daemon omitted debug-only failure telemetry");
     }
 
@@ -251,7 +251,7 @@ export async function runtimeSelfTest() {
       await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
       restricted.terminateActiveProcesses("SIGTERM");
       await expectReject(() => interrupted, "exited");
-      if (restricted.activeProcesses.size !== 0) throw new Error("terminated process remained tracked");
+      if (restricted.processTracker.snapshot().active_processes !== 0) throw new Error("terminated process remained tracked");
 
       const descendantPidFile = join(workspace, "timeout-descendant.pid");
       const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;

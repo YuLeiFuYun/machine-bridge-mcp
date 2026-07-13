@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { executionEnv } from "./shell.mjs";
+import { createToolAuthorizer } from "./policy.mjs";
 
 export const MAX_COMMAND_BYTES = 64 * 1024;
 const MAX_ARGV_ITEMS = 256;
@@ -11,12 +12,12 @@ const MAX_PROCESS_STDIN_BYTES = 64 * 1024;
 const PROCESS_SESSION_RETENTION_MS = 30 * 60 * 1000;
 
 export class ProcessSessionManager {
-  constructor({ workspace, policy, runtimeDir, activeProcesses, callProcesses, resolveCwd, displayPath, throwIfCancelled }) {
+  constructor({ workspace, policy, authorizeTool = null, runtimeDir, processTracker, resolveCwd, displayPath, throwIfCancelled }) {
     this.workspace = workspace;
     this.policy = policy;
+    this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.runtimeDir = runtimeDir;
-    this.activeProcesses = activeProcesses;
-    this.callProcesses = callProcesses;
+    this.processTracker = processTracker;
     this.resolveCwd = resolveCwd;
     this.displayPath = displayPath;
     this.throwIfCancelled = throwIfCancelled;
@@ -40,7 +41,7 @@ export class ProcessSessionManager {
   }
 
   async start(args, context = {}) {
-    this.assertEnabled("start_process");
+    this.authorizeTool("start_process");
     const argv = validateArgv(args.argv);
     const cwd = await this.resolveCwd(args.cwd || ".");
     this.prune();
@@ -109,7 +110,7 @@ export class ProcessSessionManager {
   }
 
   async read(args, context = {}) {
-    this.assertEnabled("read_process");
+    this.authorizeTool("read_process");
     const session = this.get(args.session_id);
     const stdoutOffset = clampInt(args.stdout_offset, 0, 0, Number.MAX_SAFE_INTEGER);
     const stderrOffset = clampInt(args.stderr_offset, 0, 0, Number.MAX_SAFE_INTEGER);
@@ -137,7 +138,7 @@ export class ProcessSessionManager {
   }
 
   async write(args, context = {}) {
-    this.assertEnabled("write_process");
+    this.authorizeTool("write_process");
     const session = this.get(args.session_id);
     if (session.closedAt !== null) throw new Error("process session has already exited");
     const data = String(args.data ?? "");
@@ -158,7 +159,7 @@ export class ProcessSessionManager {
   }
 
   async kill(args, context = {}) {
-    this.assertEnabled("kill_process");
+    this.authorizeTool("kill_process");
     const session = this.get(args.session_id);
     this.throwIfCancelled(context);
     const wasRunning = session.closedAt === null;
@@ -207,24 +208,13 @@ export class ProcessSessionManager {
     }
   }
 
-  assertEnabled(tool) {
-    if (this.policy.execMode !== "direct" && this.policy.execMode !== "shell") throw new Error(`${tool} is disabled by daemon policy`);
-  }
 
   trackChild(child, callId) {
-    this.activeProcesses.add(child);
-    if (!callId) return;
-    const set = this.callProcesses.get(callId) || new Set();
-    set.add(child);
-    this.callProcesses.set(callId, set);
+    this.processTracker.track(child, callId);
   }
 
   untrackChild(child) {
-    this.activeProcesses.delete(child);
-    for (const [callId, set] of this.callProcesses) {
-      set.delete(child);
-      if (!set.size) this.callProcesses.delete(callId);
-    }
+    this.processTracker.untrack(child);
   }
 }
 

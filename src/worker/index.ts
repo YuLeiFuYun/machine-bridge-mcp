@@ -1,9 +1,23 @@
 import { DurableObject } from "cloudflare:workers";
 import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
+import { PendingCallRegistry } from "./pending-calls";
+import { WorkerObservability } from "./observability";
+import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors";
+import { sanitizeDaemonPolicy, sanitizeDaemonTools, type DaemonPolicy } from "./policy";
+import {
+  AUTH_BLOCK_SECONDS, authorizationIdentity, pkceS256, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry,
+  randomToken, recordAuthorizationFailure, safeEqual, sha256Hex, validateAuthorizationRequest,
+  type OAuthClient, type OAuthStore, type ValidatedAuthorization,
+} from "./oauth-state";
+import {
+  HttpError, applyCors, authorizationRedirectLocation, baseUrl, bearerToken, corsPreflight, escapeHtml,
+  html, json, methodNotAllowed, normalizeDisplayText, normalizeRedirectUri, oauthRedirect, sanitizeMetadataText,
+  parseJsonRequest, parseRequestBody, searchParamsEntries, searchParamsObject, validateOrigin, workerErrorClass,
+} from "./http";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.15.0";
+const SERVER_VERSION = "0.16.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -23,11 +37,7 @@ const MAX_CODES_PER_CLIENT = 10;
 const MAX_OAUTH_CODES = 200;
 const MAX_OAUTH_TOKENS = 500;
 const MAX_AUTH_FAILURE_IDENTITIES = 200;
-const AUTH_FAILURE_WINDOW_SECONDS = 10 * 60;
-const AUTH_BLOCK_SECONDS = 15 * 60;
-const AUTH_FAILURE_LIMIT = 10;
 const AUTHORIZATION_FIELDS = new Set(["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "scope", "resource", "state"]);
-const UNSAFE_DISPLAY_CONTROLS = /[\u0000-\u001f\u007f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
 interface BridgeEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
@@ -47,70 +57,14 @@ interface JsonRpcRequest {
   params?: unknown;
 }
 
-interface OAuthClient {
-  client_id: string;
-  client_name: string;
-  redirect_uris: string[];
-  created_at: number;
-  last_used_at: number;
-  registration_identity?: string;
-}
-
-interface OAuthCode {
-  client_id: string;
-  redirect_uri: string;
-  code_challenge: string;
-  scope: string;
-  resource: string;
-  expires_at: number;
-}
-
-interface OAuthToken {
-  client_id: string;
-  scope: string;
-  resource: string;
-  version: string;
-  expires_at: number;
-}
-
-interface OAuthFailure {
-  count: number;
-  window_started: number;
-  blocked_until: number;
-  last_attempt: number;
-}
-
-interface OAuthStore {
-  clients: Record<string, OAuthClient>;
-  codes: Record<string, OAuthCode>;
-  tokens: Record<string, OAuthToken>;
-  auth_failures: Record<string, OAuthFailure>;
-}
-
-interface ValidatedAuthorization {
-  client: OAuthClient;
-  clientId: string;
-  redirectUri: string;
-  codeChallenge: string;
-  requestedResource: string;
-  scope: string;
-  state: string;
-}
-
 interface DaemonAttachment {
   role: "candidate" | "expired" | "daemon";
   connectedAt: string;
-  policy?: Record<string, unknown>;
+  policy?: DaemonPolicy;
   tools?: string[];
 }
 
-interface PendingCall {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  timeout: ReturnType<typeof setTimeout>;
-  socket: WebSocket;
-  clientRequestKey?: string;
-}
+
 
 interface AuthorizedToken {
   tokenKey: string;
@@ -132,7 +86,8 @@ function publicTool(tool: ToolDefinition): ToolDefinition {
 }
 
 export class BridgeRoom extends DurableObject<BridgeEnv> {
-  private readonly pending = new Map<string, PendingCall>();
+  private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS);
+  private readonly observability = new WorkerObservability();
   private oauthQueue: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
@@ -142,12 +97,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   async fetch(request: Request): Promise<Response> {
     const base = baseUrl(request);
     const configuredOrigins = this.env.MBM_ALLOWED_ORIGINS ?? "";
-    if (!validateOrigin(request, base, configuredOrigins)) return json({ error: "origin_not_allowed" }, 403);
-    if (request.method === "OPTIONS" && request.headers.has("Origin")) {
-      return corsPreflight(request, base, configuredOrigins);
-    }
-    const response = await this.handleRequest(request, base);
-    return applyCors(response, request, base, configuredOrigins);
+    let response: Response;
+    if (!validateOrigin(request, base, configuredOrigins)) response = json({ error: "origin_not_allowed" }, 403);
+    else if (request.method === "OPTIONS" && request.headers.has("Origin")) response = corsPreflight(request, base, configuredOrigins);
+    else response = applyCors(await this.handleRequest(request, base), request, base, configuredOrigins);
+    this.observability.requestFinished(response.status);
+    return response;
   }
 
   private async handleRequest(request: Request, base: string): Promise<Response> {
@@ -199,7 +154,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return json({ error: "not_found" }, 404);
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.code, message: error.message }, error.status);
-      console.error(JSON.stringify({ level: "error", message: "request_failed", path: url.pathname, error_class: workerErrorClass(error) }));
+      this.observability.event("error", "http.request.failed", { path: url.pathname, error_class: workerErrorClass(error) });
       return json({ error: "internal_server_error" }, 500);
     }
   }
@@ -261,6 +216,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         policy: daemonPolicy,
         tools: sanitizeDaemonTools(body.tools, daemonPolicy),
       } satisfies DaemonAttachment);
+      this.observability.socketAuthenticated();
       await this.scheduleCandidateAlarm();
       try {
         ws.send(JSON.stringify({ type: "hello_ack", server: SERVER_NAME, version: SERVER_VERSION }));
@@ -293,12 +249,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return;
     }
 
-    const pending = this.pending.get(body.id);
-    if (!pending || pending.socket !== ws) return;
-    clearTimeout(pending.timeout);
-    this.pending.delete(body.id);
-    if (body.ok === false) pending.reject(new Error(errorMessage(body.error)));
-    else pending.resolve(body.result);
+    if (body.ok === false) this.pending.reject(body.id, daemonToolError(body.error), ws);
+    else this.pending.resolve(body.id, ws, body.result);
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
@@ -306,18 +258,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
-    console.error(JSON.stringify({ level: "warn", message: "daemon_websocket_error", error_class: workerErrorClass(error) }));
+    this.observability.event("warn", "daemon.websocket.error", { error_class: workerErrorClass(error) });
     await this.cleanupDaemonSocket(ws, "daemon transport error");
   }
 
   private async cleanupDaemonSocket(ws: WebSocket, message: string): Promise<void> {
+    this.observability.socketDisconnected();
     await this.scheduleCandidateAlarm();
-    for (const [id, pending] of this.pending) {
-      if (pending.socket !== ws) continue;
-      clearTimeout(pending.timeout);
-      pending.reject(new Error(message));
-      this.pending.delete(id);
-    }
+    this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
   }
 
   private async handleMcp(request: Request, base: string): Promise<Response> {
@@ -390,7 +338,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         const result = await this.callTool(name, args, base, clientRequestKey(authorized, request.id));
         return rpcResult(request.id, textToolResult(result));
       } catch (error) {
-        return rpcResult(request.id, textToolResult({ error: errorMessage(error) }, true));
+        return rpcResult(request.id, textToolResult({ error: publicWorkerToolError(error) }, true));
       }
     }
     return rpcError(request.id, -32601, `Method not found: ${request.method}`);
@@ -406,6 +354,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         mcp_url: `${base}/mcp`,
         oauth: this.authorizationServerMetadata(base),
         daemon,
+        worker: {
+          pending_calls: this.pending.snapshot(),
+          daemon_candidates: this.candidateSockets().length,
+          observability: this.observability.snapshot(),
+        },
         tools,
         tool_delivery: {
           full_profile_scope: "local-daemon-and-relay-advertisement",
@@ -425,39 +378,41 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async callDaemonTool(name: string, args: Record<string, unknown>, requestKey?: string): Promise<unknown> {
     const socket = this.daemonSockets()[0];
-    if (!socket) throw new Error("local daemon is not connected; keep the CLI start command running");
-    if (this.pending.size >= MAX_PENDING_CALLS) throw new Error("too many concurrent daemon tool calls");
-    if (requestKey && [...this.pending.values()].some((pending) => pending.clientRequestKey === requestKey)) {
-      throw new Error("duplicate in-flight JSON-RPC request id for this access token");
-    }
+    if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
     const id = randomToken("call");
     const timeoutMs = daemonToolTimeoutMs(name, args);
-    return await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        try { socket.send(JSON.stringify({ type: "cancel_call", id })); } catch {}
-        reject(new Error(`daemon tool timed out: ${name}`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timeout, socket, clientRequestKey: requestKey });
-      try {
-        socket.send(JSON.stringify({ type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutMs }));
-      } catch (error) {
-        clearTimeout(timeout);
-        this.pending.delete(id);
-        reject(new Error(`failed to send daemon tool call: ${errorMessage(error)}`));
-      }
+    const result = this.pending.register({
+      id,
+      socket,
+      clientRequestKey: requestKey,
+      timeoutMs,
+      onTimeout: (record) => {
+        try { record.socket.send(JSON.stringify({ type: "cancel_call", id: record.id })); } catch {}
+        return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
+      },
     });
+    this.observability.callStarted(name);
+    try {
+      socket.send(JSON.stringify({ type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutMs }));
+    } catch {
+      this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
+    }
+    try {
+      const value = await result;
+      this.observability.callFinished(name);
+      return value;
+    } catch (error) {
+      this.observability.callFinished(name, publicWorkerToolError(error).code);
+      throw error;
+    }
   }
 
   private cancelClientRequest(requestKey?: string): void {
     if (!requestKey) return;
-    for (const [id, pending] of this.pending) {
-      if (pending.clientRequestKey !== requestKey) continue;
-      clearTimeout(pending.timeout);
-      this.pending.delete(id);
-      try { pending.socket.send(JSON.stringify({ type: "cancel_call", id })); } catch {}
-      pending.reject(new Error("tool call cancelled by client"));
-    }
+    this.pending.cancelRequest(requestKey, (record) => {
+      try { record.socket.send(JSON.stringify({ type: "cancel_call", id: record.id })); } catch {}
+      return new WorkerToolError("cancelled", "tool call cancelled by client");
+    });
   }
 
   private async acceptDaemonWebSocket(request: Request): Promise<Response> {
@@ -473,6 +428,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
+    this.observability.socketCandidate();
     server.serializeAttachment({
       role: "candidate",
       connectedAt: new Date().toISOString(),
@@ -735,7 +691,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const body = searchParamsObject(new URL(request.url).searchParams);
     return this.withOAuthLock(async () => {
       const store = await this.oauthStore();
-      const validation = validateAuthorizationRequest(body, base, store);
+      const validation = validateAuthorizationRequest(body, base, SERVER_NAME, store);
       if ("error" in validation) {
         return this.authorizePage(request, base, validation.error, body, validation.status, undefined, false);
       }
@@ -793,7 +749,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const body = await parseRequestBody(request, OAUTH_BODY_LIMIT_BYTES);
     return this.withOAuthLock(async () => {
       const store = await this.oauthStore();
-      const validation = validateAuthorizationRequest(body, base, store);
+      const validation = validateAuthorizationRequest(body, base, SERVER_NAME, store);
       if ("error" in validation) {
         return this.authorizePage(request, base, validation.error, body, validation.status, undefined, false);
       }
@@ -983,188 +939,11 @@ function textToolResult(value: unknown, isError = false): Record<string, unknown
   return result;
 }
 
-function methodNotAllowed(allow: string): Response {
-  return new Response(JSON.stringify({ error: "method_not_allowed" }), {
-    status: 405,
-    headers: {
-      allow,
-      "cache-control": "no-store",
-      "content-type": "application/json; charset=utf-8",
-      "x-content-type-options": "nosniff",
-    },
-  });
-}
-
-function oauthRedirect(location: URL): Response {
-  return new Response(null, {
-    status: 303,
-    headers: {
-      location: location.href,
-      "cache-control": "no-store",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
-    },
-  });
-}
-
-function authorizationRedirectLocation(redirectUri: string, code: string, state: string): URL {
-  const location = new URL(redirectUri);
-  location.searchParams.append("code", code);
-  if (state) location.searchParams.append("state", state);
-  return location;
-}
-
 function isFreshDaemonCandidate(connectedAt: string): boolean {
   const timestamp = Date.parse(connectedAt);
   if (!Number.isFinite(timestamp)) return false;
   const age = Date.now() - timestamp;
   return age >= 0 && age <= DAEMON_HELLO_TIMEOUT_MS;
-}
-
-function sanitizeMetadataText(value: unknown, maxLength: number): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.replace(UNSAFE_DISPLAY_CONTROLS, " ").replace(/\s+/g, " ").trim();
-  return normalized ? normalized.slice(0, maxLength) : undefined;
-}
-
-
-function sanitizeDaemonTools(value: unknown, policy: Record<string, unknown>): string[] {
-  if (!Array.isArray(value)) return [];
-  const definitions = new Map(allCatalogTools.map((tool) => [tool.name, tool]));
-  return [...new Set(value.filter((item): item is string => {
-    if (typeof item !== "string" || item === "server_info") return false;
-    const definition = definitions.get(item);
-    return Boolean(definition && daemonPolicyAllows(definition.availability, policy));
-  }))];
-}
-
-function daemonPolicyAllows(availability: unknown, policy: Record<string, unknown>): boolean {
-  if (availability === "always") return true;
-  if (availability === "write") return policy.allowWrite === true;
-  if (availability === "direct-exec") return policy.execMode === "direct" || policy.execMode === "shell";
-  if (availability === "shell-exec") return policy.execMode === "shell";
-  if (availability === "full") return policy.profile === "full"
-    && policy.allowWrite === true
-    && policy.execMode === "shell"
-    && policy.unrestrictedPaths === true
-    && policy.minimalEnv === false
-    && policy.exposeAbsolutePaths === true;
-  return false;
-}
-
-function sanitizeDaemonPolicy(value: unknown): Record<string, unknown> {
-  const policy = asObject(value);
-  const execMode = policy.execMode === "shell" || policy.execMode === "direct" ? policy.execMode : "off";
-  const origin = sanitizeMetadataText(policy.origin, 32);
-  const revision = Number.isInteger(policy.revision) && Number(policy.revision) > 0
-    ? Math.min(Number(policy.revision), 1_000_000)
-    : 1;
-  return {
-    profile: sanitizeMetadataText(policy.profile, 32) ?? "custom",
-    origin: ["default", "explicit", "custom", "migrated", "legacy-preserved"].includes(origin ?? "") ? origin : "custom",
-    revision,
-    allowWrite: policy.allowWrite === true,
-    allowExec: execMode !== "off",
-    execMode,
-    unrestrictedPaths: policy.unrestrictedPaths === true,
-    minimalEnv: policy.minimalEnv !== false,
-    exposeAbsolutePaths: policy.exposeAbsolutePaths === true,
-  };
-}
-
-function json(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-    },
-  });
-}
-
-function html(value: string, status = 200): Response {
-  return new Response(value, {
-    status,
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
-      "x-frame-options": "DENY",
-    },
-  });
-}
-
-function baseUrl(request: Request): string {
-  return new URL(request.url).origin;
-}
-
-function bearerToken(request: Request): string {
-  const match = (request.headers.get("Authorization") ?? "").match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() ?? "";
-}
-
-async function parseJsonRequest(request: Request, limit: number): Promise<unknown> {
-  const text = await readBoundedText(request, limit);
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new HttpError(400, "invalid_json", "Request body is not valid JSON");
-  }
-}
-
-async function parseRequestBody(request: Request, limit: number): Promise<Record<string, unknown>> {
-  const contentType = (request.headers.get("content-type") ?? "").toLowerCase();
-  const text = await readBoundedText(request, limit);
-  if (contentType.includes("application/json") || text.trim().startsWith("{")) {
-    let parsed: unknown;
-    try {
-      parsed = text.trim() ? JSON.parse(text) : {};
-    } catch {
-      throw new HttpError(400, "invalid_json", "Request body is not valid JSON");
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new HttpError(400, "bad_request", "JSON body must be an object");
-    return parsed as Record<string, unknown>;
-  }
-  return searchParamsObject(new URLSearchParams(text));
-}
-
-
-async function readBoundedText(request: Request, limit: number): Promise<string> {
-  const length = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(length) && length > limit) throw new HttpError(413, "request_body_too_large", `request body exceeds ${limit} bytes`);
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > limit) {
-        await reader.cancel();
-        throw new HttpError(413, "request_body_too_large", `request body exceeds ${limit} bytes`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const combined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(combined);
-  } catch {
-    throw new HttpError(400, "invalid_encoding", "Request body must be valid UTF-8");
-  }
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -1224,238 +1003,4 @@ function validateProtocolVersionHeader(request: Request, body: JsonRpcRequest): 
 function clientRequestKey(authorized: AuthorizedToken, requestId: unknown): string | undefined {
   if (requestId === null || (typeof requestId !== "string" && typeof requestId !== "number")) return undefined;
   return `${authorized.tokenKey}:${typeof requestId}:${String(requestId)}`;
-}
-
-function validateAuthorizationRequest(
-  body: Record<string, unknown>,
-  base: string,
-  store: OAuthStore,
-): { value: ValidatedAuthorization } | { error: string; status: number } {
-  const responseType = String(body.response_type ?? "");
-  const clientId = String(body.client_id ?? "");
-  const redirectUri = String(body.redirect_uri ?? "");
-  const codeChallenge = String(body.code_challenge ?? "");
-  const codeChallengeMethod = String(body.code_challenge_method ?? "");
-  const requestedResource = String(body.resource ?? `${base}/mcp`);
-  const scope = String(body.scope ?? SERVER_NAME).trim();
-  const state = body.state === undefined ? "" : typeof body.state === "string" ? body.state : "";
-
-  if (responseType !== "code") return { error: "response_type must be code.", status: 400 };
-  if (requestedResource !== `${base}/mcp`) return { error: "resource mismatch.", status: 400 };
-  if (scope !== SERVER_NAME) return { error: "unsupported scope.", status: 400 };
-  if (body.state !== undefined && typeof body.state !== "string") return { error: "state must be a string.", status: 400 };
-  if (state.length > 1024) return { error: "state is too long.", status: 400 };
-  if (codeChallengeMethod !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)) {
-    return { error: "A valid PKCE S256 challenge is required.", status: 400 };
-  }
-  const client = store.clients[clientId];
-  if (!client) return { error: "Unknown OAuth client.", status: 400 };
-  if (!client.redirect_uris.includes(redirectUri)) return { error: "redirect_uri is not registered.", status: 400 };
-  return { value: { client, clientId, redirectUri, codeChallenge, requestedResource, scope, state } };
-}
-
-function pruneClientRecordByExpiry<T extends { client_id: string; expires_at: number }>(record: Record<string, T>, clientId: string, keep: number): void {
-  const allowed = new Set(Object.entries(record)
-    .filter(([, value]) => value.client_id === clientId)
-    .sort((left, right) => right[1].expires_at - left[1].expires_at)
-    .slice(0, keep)
-    .map(([key]) => key));
-  for (const [key, value] of Object.entries(record)) {
-    if (value.client_id === clientId && !allowed.has(key)) delete record[key];
-  }
-}
-
-function pruneRecordByExpiry<T extends { expires_at: number }>(record: Record<string, T>, keep: number): void {
-  const allowed = new Set(Object.entries(record)
-    .sort((left, right) => right[1].expires_at - left[1].expires_at)
-    .slice(0, keep)
-    .map(([key]) => key));
-  for (const key of Object.keys(record)) if (!allowed.has(key)) delete record[key];
-}
-
-async function authorizationIdentity(request: Request, keyMaterial: string): Promise<string> {
-  const source = (request.headers.get("CF-Connecting-IP") || "unknown").slice(0, 128);
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(keyMaterial),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(source));
-  return `hmac-sha256:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function recordAuthorizationFailure(store: OAuthStore, identity: string, now: number): void {
-  const current = store.auth_failures[identity];
-  const activeWindow = current && current.window_started + AUTH_FAILURE_WINDOW_SECONDS > now;
-  const count = activeWindow ? current.count + 1 : 1;
-  store.auth_failures[identity] = {
-    count,
-    window_started: activeWindow ? current.window_started : now,
-    blocked_until: count >= AUTH_FAILURE_LIMIT ? now + AUTH_BLOCK_SECONDS : 0,
-    last_attempt: now,
-  };
-}
-
-function pruneAuthFailures(store: OAuthStore, keep: number): void {
-  const allowed = new Set(Object.entries(store.auth_failures)
-    .sort((left, right) => right[1].last_attempt - left[1].last_attempt)
-    .slice(0, keep)
-    .map(([key]) => key));
-  for (const key of Object.keys(store.auth_failures)) if (!allowed.has(key)) delete store.auth_failures[key];
-}
-
-function randomToken(prefix: string): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return `${prefix}_${base64Url(bytes)}`;
-}
-
-function base64Url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-async function safeEqual(left: string, right: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const [leftHash, rightHash] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(left)),
-    crypto.subtle.digest("SHA-256", encoder.encode(right)),
-  ]);
-  const leftBytes = new Uint8Array(leftHash);
-  const rightBytes = new Uint8Array(rightHash);
-  let diff = leftBytes.length ^ rightBytes.length;
-  for (let index = 0; index < Math.max(leftBytes.length, rightBytes.length); index += 1) diff |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
-  return diff === 0;
-}
-
-async function pkceS256(verifier: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-  return base64Url(new Uint8Array(digest));
-}
-
-function normalizeRedirectUri(value: string): string | null {
-  try {
-    const url = new URL(value);
-    if (url.username || url.password || url.hash) return null;
-    if (url.protocol === "https:" && url.hostname) return url.toString();
-    if (url.protocol === "http:" && isLoopbackHost(url.hostname)) return url.toString();
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function corsPreflight(request: Request, base: string, configured: string): Response {
-  const origin = request.headers.get("Origin") ?? "";
-  if (!isConfiguredOrSameOrigin(origin, base, configured)) return json({ error: "origin_not_allowed" }, 403);
-  const requestedMethod = (request.headers.get("Access-Control-Request-Method") ?? "").toUpperCase();
-  if (requestedMethod && !["GET", "POST"].includes(requestedMethod)) return methodNotAllowed("GET, POST, OPTIONS");
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "access-control-allow-origin": origin,
-      "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, content-type, mcp-protocol-version, mcp-session-id",
-      "access-control-max-age": "600",
-      "cache-control": "no-store",
-      "vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
-    },
-  });
-}
-
-function applyCors(response: Response, request: Request, base: string, configured: string): Response {
-  if (response.status === 101) return response;
-  const origin = request.headers.get("Origin") ?? "";
-  if (!origin || !isConfiguredOrSameOrigin(origin, base, configured)) return response;
-  const headers = new Headers(response.headers);
-  headers.set("access-control-allow-origin", origin);
-  headers.set("access-control-expose-headers", "www-authenticate, mcp-session-id");
-  appendVary(headers, "Origin");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
-
-function appendVary(headers: Headers, value: string): void {
-  const existing = headers.get("vary");
-  const values = new Set((existing ?? "").split(",").map((item) => item.trim()).filter(Boolean));
-  values.add(value);
-  headers.set("vary", [...values].join(", "));
-}
-
-function isConfiguredOrSameOrigin(origin: string, base: string, configured: string): boolean {
-  if (isDefaultAllowedOrigin(origin, base)) return true;
-  const allowed = configured.split(",").map((item) => item.trim()).filter((item) => item && item !== "null");
-  return allowed.includes(origin);
-}
-
-function validateOrigin(request: Request, base: string, configured = ""): boolean {
-  const origin = request.headers.get("Origin");
-  return !origin || isConfiguredOrSameOrigin(origin, base, configured);
-}
-
-function isDefaultAllowedOrigin(origin: string, base: string): boolean {
-  try {
-    return new URL(origin).origin === new URL(base).origin;
-  } catch {
-    return false;
-  }
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
-}
-
-function searchParamsEntries(params: URLSearchParams): Array<[string, string]> {
-  const entries: Array<[string, string]> = [];
-  params.forEach((value, key) => entries.push([key, value]));
-  return entries;
-}
-
-function searchParamsObject(params: URLSearchParams): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  params.forEach((value, key) => {
-    if (out[key] === undefined) out[key] = value;
-    else if (Array.isArray(out[key])) (out[key] as string[]).push(value);
-    else out[key] = [out[key] as string, value];
-  });
-  return out;
-}
-
-function normalizeDisplayText(value: string, maxLength: number, fallback = "MCP Client"): string {
-  const normalized = value.replace(UNSAFE_DISPLAY_CONTROLS, " ").replace(/\s+/g, " ").trim();
-  return (normalized || fallback).slice(0, maxLength);
-}
-
-function escapeHtml(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-}
-
-function workerErrorClass(error: unknown): string {
-  if (error instanceof HttpError) return error.code;
-  if (error instanceof TypeError) return "type_error";
-  if (error instanceof RangeError) return "range_error";
-  if (error instanceof Error) return error.name.replace(/[^A-Za-z0-9_-]/g, "_").toLowerCase().slice(0, 64) || "error";
-  return "unknown_error";
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-}
-
-class HttpError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) {
-    super(message);
-  }
 }

@@ -1,0 +1,451 @@
+import { createHash, randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { chmod, link, lstat, mkdir, open, opendir, rename, rm, stat, writeFile } from "node:fs/promises";
+import path, { basename, dirname, join, resolve } from "node:path";
+import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
+
+export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
+const MAX_DIRECTORY_ENTRIES = 10_000;
+const MAX_PATH_RESULT_BYTES = 4 * 1024 * 1024;
+const MAX_WALK_ENTRIES = 200_000;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+
+export class WorkspaceFileService {
+  constructor({ workspace, policy, policyGate, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationLock }) {
+    this.workspace = workspace;
+    this.policy = policy;
+    this.policyGate = policyGate;
+    this.resolveExistingPath = resolveExistingPath;
+    this.resolveWritePath = resolveWritePath;
+    this.displayPath = displayPath;
+    this.throwIfCancelled = throwIfCancelled;
+    this.withMutationLock = withMutationLock;
+  }
+
+  listRoots() {
+    const roots = [{ name: this.policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace", path: this.displayPath(this.workspace), default: true }];
+    if (this.policy.unrestrictedPaths) {
+      const home = process.env.HOME || process.env.USERPROFILE;
+      if (home && home !== this.workspace) roots.push({ name: "home", path: this.displayPath(resolve(home)), default: false });
+      roots.push({ name: "filesystem-root", path: this.displayPath(path.parse(this.workspace).root), default: false });
+    }
+    return { roots };
+  }
+
+  async listDir(inputPath, context = {}) {
+    const full = await this.resolveExistingPath(inputPath);
+    const entries = [];
+    let resultBytes = 0;
+    let truncated = false;
+    for await (const entry of await opendir(full)) {
+      this.throwIfCancelled(context);
+      const entryPath = resolve(full, entry.name);
+      const info = await lstat(entryPath).catch(() => null);
+      const item = {
+        name: entry.name,
+        path: this.displayPath(entryPath),
+        type: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
+        size: info?.size ?? 0,
+      };
+      const itemBytes = Buffer.byteLength(item.name) + Buffer.byteLength(item.path) + 64;
+      if (entries.length >= MAX_DIRECTORY_ENTRIES || resultBytes + itemBytes > MAX_PATH_RESULT_BYTES) {
+        truncated = true;
+        break;
+      }
+      entries.push(item);
+      resultBytes += itemBytes;
+    }
+    entries.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+    return { path: this.displayPath(full), entries, truncated };
+  }
+
+  async listFiles(inputPath, maxFiles, context = {}) {
+    const root = await this.resolveExistingPath(inputPath);
+    const info = await stat(root);
+    if (info.isFile()) return { path: this.displayPath(root), files: [this.displayPath(root)], truncated: false };
+    if (!info.isDirectory()) throw new Error("path is not a file or directory");
+    const files = [];
+    let resultBytes = 0;
+    const walkResult = await this.walk(root, async full => {
+      this.throwIfCancelled(context);
+      const shown = this.displayPath(full);
+      const pathBytes = Buffer.byteLength(shown) + 8;
+      if (files.length >= maxFiles || resultBytes + pathBytes > MAX_PATH_RESULT_BYTES) return false;
+      files.push(shown);
+      resultBytes += pathBytes;
+      return true;
+    }, context);
+    return { path: this.displayPath(root), files, truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated };
+  }
+
+  async readFile(args, context = {}) {
+    if (typeof args === "string") {
+      args = { path: args, max_bytes: typeof context === "number" ? context : undefined };
+      context = {};
+    }
+    if (!args.path) throw new Error("path is required");
+    const full = await this.resolveExistingPath(args.path);
+    this.throwIfCancelled(context);
+    const { buffer, info } = await readBoundedFile(full, MAX_WRITE_BYTES, "readable text file");
+    const content = decodeUtf8(buffer);
+    this.throwIfCancelled(context);
+    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
+    const startLine = args.start_line === undefined ? 1 : clampInt(args.start_line, 1, 1, Number.MAX_SAFE_INTEGER);
+    const rawLines = content.split(/\r?\n/);
+    const totalLines = content.endsWith("\n") ? Math.max(1, rawLines.length - 1) : rawLines.length;
+    const endLine = args.end_line === undefined ? totalLines : clampInt(args.end_line, totalLines, 1, Number.MAX_SAFE_INTEGER);
+    if (endLine < startLine) throw new Error("end_line must be greater than or equal to start_line");
+    if (startLine > totalLines) throw new Error(`start_line exceeds total lines (${startLine} > ${totalLines})`);
+    const selectedEnd = Math.min(endLine, totalLines);
+    let selected = rawLines.slice(startLine - 1, selectedEnd).join("\n");
+    if (selectedEnd < totalLines || content.endsWith("\n")) selected += "\n";
+    const selectedBytes = Buffer.byteLength(selected);
+    if (selectedBytes > maxBytes) throw new Error(`selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`);
+    return {
+      path: this.displayPath(full),
+      size: info.size,
+      sha256: sha256(content),
+      content: selected,
+      start_line: startLine,
+      end_line: selectedEnd,
+      total_lines: totalLines,
+      complete: startLine === 1 && selectedEnd === totalLines,
+    };
+  }
+
+  async viewImage(args, context = {}) {
+    if (!args.path) throw new Error("path is required");
+    const full = await this.resolveExistingPath(args.path);
+    this.throwIfCancelled(context);
+    const { buffer, info } = await readBoundedFile(full, MAX_IMAGE_BYTES, "image");
+    this.throwIfCancelled(context);
+    const mimeType = detectImageMime(buffer);
+    if (!mimeType) throw new Error("unsupported image format; expected PNG, JPEG, GIF, or WebP");
+    return {
+      $mcp: {
+        content: [{ type: "image", data: buffer.toString("base64"), mimeType }],
+        structuredContent: {
+          path: this.displayPath(full),
+          size: info.size,
+          sha256: createHash("sha256").update(buffer).digest("hex"),
+          mime_type: mimeType,
+        },
+      },
+    };
+  }
+
+  async writeFile(args, context = {}) {
+    return this.withMutationLock(async () => {
+      this.throwIfCancelled(context);
+      this.policyGate.assert("write_file");
+      if (!args.path) throw new Error("path is required");
+      const content = String(args.content ?? "");
+      const bytes = Buffer.byteLength(content);
+      if (bytes > MAX_WRITE_BYTES) throw new Error(`content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
+      const full = await this.resolveWritePath(args.path);
+      const existing = await lstat(full).catch(() => null);
+      if (existing?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
+      if (args.create_only && existing) throw new Error("file exists and create_only=true");
+      if (existing && !existing.isFile()) throw new Error("path is not a regular file");
+      if (args.expected_sha256) {
+        if (!existing) throw new Error("expected_sha256 requires an existing file");
+        const current = await readUtf8File(full);
+        if (sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new Error("expected_sha256 mismatch");
+      }
+      this.throwIfCancelled(context);
+      await atomicWriteText(full, content, existing, {
+        createOnly: args.create_only === true,
+        expectedHash: args.expected_sha256 ? String(args.expected_sha256).toLowerCase() : undefined,
+      });
+      return { ok: true, path: this.displayPath(full), sha256: sha256(content), bytes };
+    });
+  }
+
+  async editFile(args, context = {}) {
+    return this.withMutationLock(async () => {
+      this.throwIfCancelled(context);
+      this.policyGate.assert("edit_file");
+      if (!args.path) throw new Error("path is required");
+      const oldText = String(args.old_text ?? "");
+      const newText = String(args.new_text ?? "");
+      if (!oldText) throw new Error("old_text must not be empty");
+      const full = await this.resolveExistingPath(args.path);
+      const info = await lstat(full);
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error("path is not a regular non-symbolic-link file");
+      const current = await readUtf8File(full);
+      if (args.expected_sha256 && sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new Error("expected_sha256 mismatch");
+      const occurrences = countOccurrences(current, oldText);
+      if (occurrences === 0) throw new Error("old_text was not found");
+      if (!args.replace_all && occurrences !== 1) throw new Error(`old_text occurs ${occurrences} times; provide a unique fragment or set replace_all=true`);
+      const updated = args.replace_all ? current.split(oldText).join(newText) : current.replace(oldText, newText);
+      const bytes = Buffer.byteLength(updated);
+      if (bytes > MAX_WRITE_BYTES) throw new Error(`edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
+      this.throwIfCancelled(context);
+      await atomicWriteText(full, updated, info, { expectedHash: sha256(current) });
+      return { ok: true, path: this.displayPath(full), replacements: args.replace_all ? occurrences : 1, sha256: sha256(updated), bytes };
+    });
+  }
+
+  async applyPatch(args, context = {}) {
+    return this.withMutationLock(async () => {
+      this.throwIfCancelled(context);
+      this.policyGate.assert("apply_patch");
+      const patchText = String(args.patch ?? "");
+      if (!patchText) throw new Error("patch is required");
+      if (Buffer.byteLength(patchText) > MAX_WRITE_BYTES) throw new Error("patch exceeds maximum size");
+      const parsed = parsePatchEnvelope(patchText);
+      const prepared = [];
+      for (const operation of parsed) {
+        this.throwIfCancelled(context);
+        if (operation.kind === "add") {
+          const target = await this.resolveWritePath(operation.path);
+          if (await lstat(target).catch(() => null)) throw new Error(`add target already exists: ${operation.path}`);
+          assertTextSize(operation.content, operation.path);
+          prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
+          continue;
+        }
+        const source = await this.resolveExistingPath(operation.path);
+        const sourceInfo = await lstat(source);
+        if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error(`patch source is not a regular file: ${operation.path}`);
+        const original = await readUtf8File(source);
+        if (operation.kind === "delete") {
+          prepared.push({ kind: "delete", source, target: null, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
+          continue;
+        }
+        const content = applyUpdateHunks(original, operation.hunks, operation.path);
+        assertTextSize(content, operation.path);
+        const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo) : source;
+        if (target !== source && await lstat(target).catch(() => null)) throw new Error(`move target already exists: ${operation.moveTo}`);
+        prepared.push({ kind: operation.moveTo ? "move" : "update", source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
+      }
+      assertNoResolvedPatchCollisions(prepared);
+      this.throwIfCancelled(context);
+      await commitPatchTransaction(prepared);
+      return {
+        ok: true,
+        files: prepared.map((item) => ({
+          operation: item.kind,
+          path: this.displayPath(item.target || item.source),
+          from: item.kind === "move" ? this.displayPath(item.source) : undefined,
+          sha256: item.content === undefined ? undefined : sha256(item.content),
+        })),
+      };
+    });
+  }
+
+  async searchText(args, context = {}) {
+    const query = String(args.query || "");
+    if (!query) throw new Error("query is required");
+    const root = await this.resolveExistingPath(args.path || ".");
+    const max = clampInt(args.max_matches, 100, 1, 1000);
+    const maxFiles = clampInt(args.max_files, 10000, 1, 100000);
+    let visitedFiles = 0;
+    const matches = [];
+    const rootInfo = await stat(root);
+    if (rootInfo.isFile()) {
+      await this.searchOneFile(root, query, matches, max, context);
+      return { query, root: this.displayPath(root), matches, visited_files: 1, truncated: matches.length >= max };
+    }
+    if (!rootInfo.isDirectory()) throw new Error("path is not a file or directory");
+    const walkResult = await this.walk(root, async full => {
+      this.throwIfCancelled(context);
+      if (matches.length >= max || visitedFiles >= maxFiles) return false;
+      visitedFiles += 1;
+      await this.searchOneFile(full, query, matches, max, context);
+      return matches.length < max && visitedFiles < maxFiles;
+    }, context);
+    return { query, root: this.displayPath(root), matches, visited_files: visitedFiles, truncated: matches.length >= max || visitedFiles >= maxFiles || walkResult.truncated };
+  }
+
+  async searchOneFile(full, query, matches, max, context = {}) {
+    this.throwIfCancelled(context);
+    const bounded = await readBoundedFile(full, 1024 * 1024, "search file").catch(() => null);
+    if (!bounded || bounded.buffer.includes(0)) return;
+    const buffer = bounded.buffer;
+    let text;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch { return; }
+    if (!text) return;
+    const lines = text.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index].includes(query)) {
+        matches.push({ path: this.displayPath(full), line: index + 1, text: lines[index].slice(0, 500) });
+        if (matches.length >= max) break;
+      }
+    }
+  }
+
+  async walk(root, onFile, context = {}) {
+    const stack = [root];
+    let visitedEntries = 0;
+    while (stack.length) {
+      this.throwIfCancelled(context);
+      const current = stack.pop();
+      const entries = await opendir(current).catch(() => null);
+      if (!entries) continue;
+      for await (const entry of entries) {
+        this.throwIfCancelled(context);
+        visitedEntries += 1;
+        if (visitedEntries > MAX_WALK_ENTRIES) return { truncated: true, visitedEntries };
+        const full = resolve(current, entry.name);
+        if (entry.isDirectory()) stack.push(full);
+        else if (entry.isFile()) {
+          const keepGoing = await onFile(full);
+          if (keepGoing === false) return { truncated: true, visitedEntries };
+        }
+      }
+    }
+    return { truncated: false, visitedEntries };
+  }
+
+}
+
+export async function readBoundedFile(filePath, maxBytes, label) {
+  const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0);
+  const handle = await open(filePath, flags);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error(`${label} is not a regular file`);
+    if (info.size > maxBytes) throw new Error(`${label} exceeds maximum size (${info.size} > ${maxBytes})`);
+    const buffer = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return { buffer: buffer.subarray(0, offset), info };
+  } finally {
+    await handle.close();
+  }
+}
+
+function decodeUtf8(buffer) {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
+    throw new Error("file is not valid UTF-8 text");
+  }
+}
+
+async function readUtf8File(filePath) {
+  const { buffer } = await readBoundedFile(filePath, MAX_WRITE_BYTES, "text file");
+  return decodeUtf8(buffer);
+}
+
+async function atomicWriteText(full, content, existing = null, options = {}) {
+  await mkdir(dirname(full), { recursive: true });
+  const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    await writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: existing ? existing.mode & 0o777 : 0o600 });
+    if (existing) await chmod(temp, existing.mode & 0o777).catch(() => {});
+    if (options.expectedHash) {
+      const current = await readUtf8File(full).catch(() => null);
+      if (current === null || sha256(current) !== options.expectedHash) throw new Error("file changed before atomic commit");
+    }
+    if (options.createOnly) {
+      await link(temp, full);
+      await rm(temp, { force: true });
+    } else {
+      await rename(temp, full);
+    }
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function assertNoResolvedPatchCollisions(operations) {
+  const owners = new Map();
+  for (const operation of operations) {
+    const paths = operation.source === operation.target
+      ? [operation.source]
+      : [operation.source, operation.target].filter(Boolean);
+    for (const full of paths) {
+      const key = process.platform === "win32" ? String(full).toLowerCase() : String(full);
+      const previous = owners.get(key);
+      if (previous && previous !== operation) throw new Error(`patch operations resolve to the same path: ${full}`);
+      owners.set(key, operation);
+    }
+  }
+}
+
+async function commitPatchTransaction(operations) {
+  const staged = [];
+  const committed = [];
+  try {
+    for (const operation of operations) {
+      if (operation.content === undefined) continue;
+      await mkdir(dirname(operation.target), { recursive: true });
+      const temp = join(dirname(operation.target), `.${basename(operation.target)}.mbm-patch-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+      await writeFile(temp, operation.content, { encoding: "utf8", flag: "wx", mode: operation.mode });
+      await chmod(temp, operation.mode).catch(() => {});
+      staged.push({ operation, temp });
+    }
+
+    for (const operation of operations) {
+      if (operation.source) {
+        const current = await readUtf8File(operation.source);
+        if (sha256(current) !== operation.originalHash) throw new Error(`patch source changed during apply: ${operation.source}`);
+      }
+      if (operation.kind === "add" || operation.kind === "move") {
+        if (await lstat(operation.target).catch(() => null)) throw new Error(`patch target appeared during apply: ${operation.target}`);
+      }
+    }
+
+    for (const operation of operations) {
+      let backup = null;
+      if (operation.source) {
+        backup = join(dirname(operation.source), `.${basename(operation.source)}.mbm-backup-${process.pid}-${randomBytes(6).toString("hex")}`);
+        await rename(operation.source, backup);
+      }
+      const record = { operation, backup, targetCreated: false };
+      committed.push(record);
+      const stage = staged.find((item) => item.operation === operation);
+      if (stage) {
+        await rename(stage.temp, operation.target);
+        record.targetCreated = true;
+      }
+    }
+  } catch (error) {
+    for (const item of committed.reverse()) {
+      if (item.targetCreated) await rm(item.operation.target, { force: true }).catch(() => {});
+      if (item.backup) await rename(item.backup, item.operation.source).catch(() => {});
+    }
+    throw error;
+  } finally {
+    for (const item of staged) await rm(item.temp, { force: true }).catch(() => {});
+  }
+  for (const item of committed) if (item.backup) await rm(item.backup, { force: true }).catch(() => {});
+}
+
+function assertTextSize(content, label) {
+  const bytes = Buffer.byteLength(content);
+  if (bytes > MAX_WRITE_BYTES) throw new Error(`patched file exceeds maximum size for ${label} (${bytes} > ${MAX_WRITE_BYTES})`);
+}
+
+function countOccurrences(content, needle) {
+  let count = 0;
+  let offset = 0;
+  while ((offset = content.indexOf(needle, offset)) !== -1) {
+    count += 1;
+    offset += needle.length;
+  }
+  return count;
+}
+
+export function sha256(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
+
+function clampInt(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  const number = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.min(Math.max(number, min), max);
+}
+
+
+function detectImageMime(buffer) {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer.length >= 6 && ["GIF87a", "GIF89a"].includes(buffer.subarray(0, 6).toString("ascii"))) return "image/gif";
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return "";
+}

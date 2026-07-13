@@ -1,40 +1,38 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
-import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { assertStateMaintenanceAvailable, ownerOnlyFile, packageRoot } from "./state.mjs";
+import { createToolAuthorizer } from "./policy.mjs";
+import { assertStateMaintenanceAvailable, packageRoot } from "./state.mjs";
+import {
+  BROWSER_EXTENSION_PROTOCOL, EXPECTED_EXTENSION_VERSION, MAX_BROWSER_MESSAGE_BYTES, REQUIRED_EXTENSION_CAPABILITIES,
+  closeProtocolSocket, normalizeCompatibleExtensionInfo, parseBrowserSocketMessage, parseExtensionHello, safeSocketSend,
+} from "./browser-extension-protocol.mjs";
+import {
+  DEFAULT_BROWSER_PORT, isAllowedExtensionOrigin, isAllowedLoopbackHost, loadOrCreatePairing,
+  pairingHtml, savePairing, securityHeaders, sendJson,
+} from "./browser-pairing-store.mjs";
 import {
   clampInt, normalizeBrowserAction, normalizeBrowserSelector, normalizeBrowserWait, normalizeFormAction,
   normalizeInputMode, normalizeNavigationWait, normalizeTabCommand, optionalInteger, optionalString,
   validateNavigationUrl,
 } from "./browser-command.mjs";
 
-const DEFAULT_PORT = 39393;
 const MAX_PORT_ATTEMPTS = 10;
-const MAX_BROWSER_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING = 32;
 const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_FORM_FIELDS = 200;
 const MAX_FIELD_VALUE_CHARS = 128 * 1024;
 const MAX_FORM_VALUE_BYTES = 4 * 1024 * 1024;
-const PAIRING_FILE = "browser-bridge.json";
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
-const BROWSER_EXTENSION_PROTOCOL = 3;
 const EXTENSION_HANDSHAKE_MS = 3_000;
-const EXTENSION_MANIFEST = JSON.parse(readFileSync(resolve(packageRoot, "browser-extension", "manifest.json"), "utf8"));
-const EXPECTED_EXTENSION_VERSION = String(EXTENSION_MANIFEST.version_name || EXTENSION_MANIFEST.version || "");
-if (!EXPECTED_EXTENSION_VERSION) throw new Error("packaged browser extension version is missing");
-const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
-  "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
-]);
+
+
 
 export class BrowserBridgeManager {
-  constructor({ policy, stateRoot = "", runProcess, readResourceText, readResourceBinary, throwIfCancelled = () => {} }) {
+  constructor({ policy, authorizeTool = null, stateRoot = "", runProcess, readResourceText, readResourceBinary, throwIfCancelled = () => {} }) {
     this.policy = policy || {};
+    this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.stateRoot = stateRoot ? resolve(stateRoot) : "";
     this.runProcess = runProcess;
     this.readResourceText = readResourceText;
@@ -62,6 +60,7 @@ export class BrowserBridgeManager {
   }
 
   async status(context = {}) {
+    this.authorizeTool("browser_status");
     await this.ensureStarted(context);
     return {
       available: true,
@@ -102,7 +101,7 @@ export class BrowserBridgeManager {
   }
 
   async pair(args = {}, context = {}) {
-    this.assertFull("pair_browser_extension");
+    this.authorizeTool("pair_browser_extension");
     const status = await this.status(context);
     if (args.open !== false) {
       const command = process.platform === "darwin"
@@ -125,6 +124,7 @@ export class BrowserBridgeManager {
   }
 
   async listTabs(args = {}, context = {}) {
+    this.authorizeTool("browser_list_tabs");
     const response = await this.request("list_tabs", {
       currentWindow: args.current_window === true,
       includePinned: args.include_pinned !== false,
@@ -133,16 +133,19 @@ export class BrowserBridgeManager {
   }
 
   async manageTabs(args = {}, context = {}) {
+    this.authorizeTool("browser_manage_tabs");
     return this.request("manage_tabs", normalizeTabCommand(args), clampInt(args.timeout_seconds, 30, 1, 120), context);
   }
 
   async wait(args = {}, context = {}) {
+    this.authorizeTool("browser_wait");
     const params = normalizeBrowserWait(args);
     const conditionTimeoutSeconds = clampInt(args.timeout_seconds, 30, 1, 120);
     return this.request("wait", params, conditionTimeoutSeconds + 5, context);
   }
 
   async getSource(args = {}, context = {}) {
+    this.authorizeTool("browser_get_source");
     const response = await this.request("get_source", {
       tabId: optionalInteger(args.tab_id, "tab_id", 1, Number.MAX_SAFE_INTEGER),
       frameId: optionalInteger(args.frame_id, "frame_id", 0, Number.MAX_SAFE_INTEGER),
@@ -153,6 +156,7 @@ export class BrowserBridgeManager {
   }
 
   async inspectPage(args = {}, context = {}) {
+    this.authorizeTool("browser_inspect_page");
     return this.request("inspect_page", {
       tabId: optionalInteger(args.tab_id, "tab_id", 1, Number.MAX_SAFE_INTEGER),
       frameId: optionalInteger(args.frame_id, "frame_id", 0, Number.MAX_SAFE_INTEGER),
@@ -163,7 +167,7 @@ export class BrowserBridgeManager {
   }
 
   async act(args = {}, context = {}) {
-    this.assertFull("browser_action");
+    this.authorizeTool("browser_action");
     const action = normalizeBrowserAction(args.action);
     const rawUrl = optionalString(args.url, "url", 32768);
     const payload = {
@@ -200,7 +204,7 @@ export class BrowserBridgeManager {
   }
 
   async fillForm(args = {}, context = {}) {
-    this.assertFull("browser_fill_form");
+    this.authorizeTool("browser_fill_form");
     if (!Array.isArray(args.fields) || !args.fields.length) throw new Error("fields must be a non-empty array");
     if (args.fields.length > MAX_FORM_FIELDS) throw new Error(`fields contains more than ${MAX_FORM_FIELDS} entries`);
     const fields = [];
@@ -242,7 +246,7 @@ export class BrowserBridgeManager {
   }
 
   async uploadFiles(args = {}, context = {}) {
-    this.assertFull("browser_upload_files");
+    this.authorizeTool("browser_upload_files");
     if (!Array.isArray(args.resources) || !args.resources.length || args.resources.length > 8) throw new Error("resources must contain 1 to 8 registered resource names");
     const filenames = optionalStringArray(args.filenames, "filenames", 8, 255);
     const mimeTypes = optionalStringArray(args.mime_types, "mime_types", 8, 200);
@@ -274,6 +278,7 @@ export class BrowserBridgeManager {
   }
 
   async screenshot(args = {}, context = {}) {
+    this.authorizeTool("browser_screenshot");
     const result = await this.request("screenshot", {
       tabId: optionalInteger(args.tab_id, "tab_id", 1, Number.MAX_SAFE_INTEGER),
       format: args.format === "jpeg" ? "jpeg" : "png",
@@ -296,7 +301,6 @@ export class BrowserBridgeManager {
   }
 
   async request(method, params, timeoutSeconds, context = {}) {
-    this.assertFull(method);
     await this.ensureStarted(context);
     this.throwIfCancelled(context);
     const transport = this.server ? this.socket : this.upstream;
@@ -778,140 +782,6 @@ export class BrowserBridgeManager {
       : this.proxyExtensionReloadRequired;
   }
 
-  assertFull(tool) {
-    if (this.policy.profile !== "full" || this.policy.execMode !== "shell" || this.policy.unrestrictedPaths !== true) {
-      throw new Error(`${tool} requires the canonical full profile`);
-    }
-  }
-}
-
-function normalizeCompatibleExtensionInfo(value) {
-  const info = normalizeExtensionInfo(value);
-  if (!info || info.protocol !== BROWSER_EXTENSION_PROTOCOL || info.version !== EXPECTED_EXTENSION_VERSION) return null;
-  if (REQUIRED_EXTENSION_CAPABILITIES.some((capability) => !info.capabilities.includes(capability))) return null;
-  return info;
-}
-
-function parseExtensionHello(message) {
-  if (message.role !== "extension" || message.protocol !== BROWSER_EXTENSION_PROTOCOL) {
-    throw new Error(`extension protocol mismatch; expected ${BROWSER_EXTENSION_PROTOCOL}; reload the extension`);
-  }
-  const info = normalizeExtensionInfo(message);
-  if (!info) throw new Error("invalid extension hello; reload the extension");
-  if (info.version !== EXPECTED_EXTENSION_VERSION) throw new Error(`extension version mismatch; expected ${EXPECTED_EXTENSION_VERSION}; reload the extension`);
-  const missing = REQUIRED_EXTENSION_CAPABILITIES.filter((capability) => !info.capabilities.includes(capability));
-  if (missing.length) throw new Error(`extension capability mismatch; reload the extension (${missing.join(",")})`);
-  return info;
-}
-
-function normalizeExtensionInfo(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const protocol = Number(value.protocol);
-  const version = typeof value.version === "string" && value.version.length <= 100 ? value.version : "";
-  const capabilities = Array.isArray(value.capabilities)
-    ? [...new Set(value.capabilities.filter((entry) => typeof entry === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(entry)))].slice(0, 32)
-    : [];
-  if (!Number.isInteger(protocol) || protocol < 1 || !version) return null;
-  return { protocol, version, capabilities };
-}
-
-async function loadOrCreatePairing(stateRoot) {
-  if (!stateRoot) return { token: randomBytes(32).toString("base64url"), port: DEFAULT_PORT };
-  assertStateMaintenanceAvailable(stateRoot);
-  await mkdir(stateRoot, { recursive: true, mode: 0o700 });
-  const file = join(stateRoot, PAIRING_FILE);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (existsSync(file)) {
-      ownerOnlyFile(file);
-      let parsed;
-      try { parsed = JSON.parse(readBoundedRegularFileSync(file, 64 * 1024).toString("utf8")); } catch { throw new Error("browser pairing state is not valid bounded JSON"); }
-      if (!/^[A-Za-z0-9_-]{32,100}$/.test(parsed.token) || !Number.isInteger(parsed.port) || parsed.port < 1024 || parsed.port > 65535) {
-        throw new Error("browser pairing state is invalid");
-      }
-      return parsed;
-    }
-    const value = { token: randomBytes(32).toString("base64url"), port: DEFAULT_PORT };
-    try {
-      createExclusiveFileSync(file, `${JSON.stringify(value, null, 2)}
-`, { mode: 0o600 });
-      ownerOnlyFile(file);
-      return value;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-    }
-  }
-  throw new Error("browser pairing state could not be initialized");
-}
-
-async function savePairing(stateRoot, value) {
-  assertStateMaintenanceAvailable(stateRoot);
-  const file = join(stateRoot, PAIRING_FILE);
-  replaceFileAtomicallySync(file, `${JSON.stringify(value, null, 2)}
-`, { mode: 0o600 });
-  ownerOnlyFile(file);
-}
-
-function pairingHtml(port, token) {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="machine-bridge-browser-pair" content="1"><meta name="machine-bridge-browser-port" content="${port}"><meta name="machine-bridge-browser-token" content="${token}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Machine Bridge browser pairing</title></head><body><h1>Machine Bridge browser pairing</h1><p>Expected extension build: <strong>${EXPECTED_EXTENSION_VERSION}</strong>. Reload the unpacked extension after every Machine Bridge upgrade.</p><p>The installed extension reads pairing material from this loopback-only page and stores it in browser-local extension storage. It is not sent to any website.</p><p id="status">Waiting for the Machine Bridge extension.</p></body></html>`;
-}
-
-function isAllowedExtensionOrigin(origin) {
-  let parsed;
-  try { parsed = new URL(String(origin || "")); } catch { return false; }
-  return parsed.protocol === "chrome-extension:"
-    && /^[a-p]{32}$/.test(parsed.hostname)
-    && !parsed.username
-    && !parsed.password
-    && !parsed.port
-    && (parsed.pathname === "" || parsed.pathname === "/")
-    && !parsed.search
-    && !parsed.hash;
-}
-
-function isAllowedLoopbackHost(host, port) {
-  const normalized = String(host || "").toLowerCase();
-  return normalized === `127.0.0.1:${port}` || normalized === `localhost:${port}` || normalized === `[::1]:${port}`;
-}
-
-function securityHeaders(contentType) {
-  return {
-    "content-type": contentType,
-    "cache-control": "no-store",
-    "content-security-policy": "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-    "x-content-type-options": "nosniff",
-    "referrer-policy": "no-referrer",
-  };
-}
-
-function parseBrowserSocketMessage(data) {
-  if (Buffer.byteLength(data) > MAX_BROWSER_MESSAGE_BYTES) return { ok: false, code: 1009, reason: "message too large" };
-  let text;
-  try { text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(data)); }
-  catch { return { ok: false, code: 1007, reason: "invalid UTF-8" }; }
-  let message;
-  try { message = JSON.parse(text); }
-  catch { return { ok: false, code: 1007, reason: "invalid JSON" }; }
-  if (!message || typeof message !== "object" || Array.isArray(message)) return { ok: false, code: 1002, reason: "invalid protocol message" };
-  return { ok: true, message };
-}
-
-function closeProtocolSocket(socket, code, reason) {
-  try { socket.close(code, reason); } catch {}
-}
-
-function safeSocketSend(socket, value) {
-  if (!socket || socket.readyState !== 1) return false;
-  try {
-    socket.send(typeof value === "string" ? value : JSON.stringify(value));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function sendJson(response, value) {
-  response.writeHead(200, securityHeaders("application/json; charset=utf-8"));
-  response.end(`${JSON.stringify(value)}\n`);
 }
 
 function normalizeUploadFilename(value, { derived = false } = {}) {

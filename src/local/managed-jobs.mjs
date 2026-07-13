@@ -7,30 +7,29 @@ import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } fr
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMs } from "./process-identity.mjs";
 import { readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
+import { createToolAuthorizer } from "./policy.mjs";
+import { BridgeError } from "./errors.mjs";
+import { inspectResourceFile, normalizeResourceRegistry, publicResourceRegistry, validatePlan, validateResourceName } from "./managed-job-plan.mjs";
+export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 
-const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
-const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
-const MAX_RESOURCE_BYTES = 1024 * 1024;
-const MAX_JOB_RESOURCE_BYTES = 8 * 1024 * 1024;
-const MAX_RESOURCES = 64;
 const MAX_JOBS = 50;
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PLAN_BYTES = 1024 * 1024;
-const MAX_TEMPORARY_FILE_BYTES = 512 * 1024;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const RUNNER_PATH = fileURLToPath(new URL("./job-runner.mjs", import.meta.url));
 const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"]);
 const PLAN_RETAINING_STATES = new Set(["staged", ...ACTIVE_JOB_STATES]);
 
 export class ManagedJobManager {
-  constructor({ jobRoot, workspace, policy, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true }) {
+  constructor({ jobRoot, workspace, policy, authorizeTool = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true }) {
     const jobRootInput = resolve(jobRoot);
     ensureOwnerOnlyDir(jobRootInput);
     this.jobRoot = realpathSync.native ? realpathSync.native(jobRootInput) : realpathSync(jobRootInput);
     const workspaceInput = resolve(workspace);
     this.workspace = realpathSync.native ? realpathSync.native(workspaceInput) : realpathSync(workspaceInput);
     this.policy = policy;
+    this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.resources = normalizeResourceRegistry(resources);
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
     this.stateRoot = stateRoot ? resolve(stateRoot) : "";
@@ -62,6 +61,7 @@ export class ManagedJobManager {
   }
 
   listResources() {
+    this.authorizeTool("list_local_resources");
     this.assertMaintenanceAvailable();
     const resources = [];
     for (const [name, resource] of Object.entries(this.currentResources()).sort(([a], [b]) => a.localeCompare(b))) {
@@ -69,7 +69,9 @@ export class ManagedJobManager {
         const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
         resources.push({ name, kind: "file", available: true, size: inspected.size, mode: inspected.mode });
       } catch (error) {
-        resources.push({ name, kind: "file", available: false, error_class: resourceErrorClass(error) });
+        const errorClass = resourceErrorClass(error);
+        if (errorClass === "resource_unavailable") throw error;
+        resources.push({ name, kind: "file", available: false, error_class: errorClass });
       }
     }
     return { resources, count: resources.length, values_exposed: false, paths_exposed: false };
@@ -91,20 +93,20 @@ export class ManagedJobManager {
 
 
   stage(args = {}) {
+    this.authorizeTool("stage_job");
     this.assertMaintenanceAvailable();
-    if (this.policy.allowWrite !== true) throw new Error("stage_job is disabled by daemon policy");
     return this.createJob(args, { launch: false });
   }
 
   start(args = {}) {
+    this.authorizeTool("start_job");
     this.assertMaintenanceAvailable();
-    this.assertEnabled("start_job");
     return this.createJob(args, { launch: true });
   }
 
   approve(args = {}, { localOperator = false } = {}) {
+    if (!localOperator) throw new BridgeError("policy_denied", "job approval is a local-operator-only action");
     this.assertMaintenanceAvailable();
-    if (!localOperator) this.assertEnabled("approve_job");
     const dir = this.jobDir(args.job_id);
     const transition = acquireJobTransitionLock(dir);
     if (!transition) throw new Error("job state is being modified by another process; retry after inspecting its current status");
@@ -213,6 +215,7 @@ export class ManagedJobManager {
 
 
   list(args = {}) {
+    this.authorizeTool("list_jobs");
     this.assertMaintenanceAvailable();
     this.prune();
     const limit = clampInt(args.limit, 20, 1, MAX_JOBS);
@@ -235,6 +238,7 @@ export class ManagedJobManager {
   }
 
   read(args = {}) {
+    this.authorizeTool("read_job");
     this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
     this.reconcileStatus(dir);
@@ -261,6 +265,7 @@ export class ManagedJobManager {
   }
 
   cancel(args = {}) {
+    this.authorizeTool("cancel_job");
     this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
     const transition = acquireJobTransitionLock(dir);
@@ -317,11 +322,6 @@ export class ManagedJobManager {
     if (this.stateRoot) assertStateMaintenanceAvailable(this.stateRoot);
   }
 
-  assertEnabled(tool) {
-    if (this.policy.execMode !== "direct" && this.policy.execMode !== "shell") {
-      throw new Error(`${tool} is disabled by daemon policy`);
-    }
-  }
 
   jobDir(value) {
     const id = String(value || "");
@@ -460,210 +460,6 @@ export function loadManagedJobPlan(inputPath) {
   return value;
 }
 
-export function validateResourceName(value) {
-  const name = String(value || "").trim();
-  if (!RESOURCE_NAME.test(name)) throw new Error("resource name must match [a-z][a-z0-9._-]{0,63}");
-  return name;
-}
-
-export function inspectResourceFile(inputPath, { allowInsecurePermissions = false, includeHash = false } = {}) {
-  const path = resolve(String(inputPath || ""));
-  const canonical = realpathFile(path);
-  const { buffer: content, info } = readBoundedRegularFileWithInfoSync(canonical, MAX_RESOURCE_BYTES);
-  if (process.platform !== "win32" && !allowInsecurePermissions && (info.mode & 0o077) !== 0) {
-    throw new Error("resource file is readable by group or others; restrict permissions or use --allow-insecure-permissions");
-  }
-  return {
-    kind: "file",
-    path: canonical,
-    pathAliases: normalizeResourcePathAliases([path, canonical]),
-    size: info.size,
-    mode: process.platform === "win32" ? null : `0${(info.mode & 0o777).toString(8)}`,
-    updatedAt: new Date().toISOString(),
-    allowInsecurePermissions: allowInsecurePermissions === true,
-    ...(includeHash ? { sha256: createHash("sha256").update(content).digest("hex") } : {}),
-  };
-}
-
-export function publicResourceRegistry(resources = {}, { includePaths = false } = {}) {
-  const normalized = normalizeResourceRegistry(resources);
-  return Object.fromEntries(Object.entries(normalized).map(([name, value]) => [name, {
-    kind: value.kind,
-    size: value.size ?? null,
-    mode: value.mode ?? null,
-    updatedAt: value.updatedAt ?? null,
-    allowInsecurePermissions: value.allowInsecurePermissions === true,
-    paths_exposed: includePaths,
-    ...(includePaths ? { path: value.path } : {}),
-  }]));
-}
-
-function validatePlan(args, context) {
-  if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("job arguments must be an object");
-  const allowed = new Set(["name", "steps", "finally_steps", "temporary_files"]);
-  for (const key of Object.keys(args)) if (!allowed.has(key)) throw new Error(`job contains unknown field: ${key}`);
-  const name = String(args.name || "managed job").trim().slice(0, 128) || "managed job";
-  const steps = validateSteps(args.steps, "steps", context);
-  const finallySteps = validateSteps(args.finally_steps || [], "finally_steps", context, true);
-  const temporaryFiles = validateTemporaryFiles(args.temporary_files || []);
-  if (!steps.length) throw new Error("steps must contain at least one step");
-  return {
-    version: 1,
-    name,
-    workspace: context.workspace,
-    full_env: context.fullEnv,
-    resources: referencedResources([...steps, ...finallySteps], context.resources),
-    temporary_files: temporaryFiles,
-    steps,
-    finally_steps: finallySteps,
-  };
-}
-
-function validateTemporaryFiles(value) {
-  if (!Array.isArray(value) || value.length > 16) throw new Error("temporary_files must contain 0-16 files");
-  const seen = new Set();
-  let totalBytes = 0;
-  return value.map((item, index) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`temporary_files[${index}] must be an object`);
-    for (const key of Object.keys(item)) if (!["name", "content", "executable"].includes(key)) throw new Error(`temporary_files[${index}] contains unknown field: ${key}`);
-    const name = validateResourceName(item.name);
-    if (seen.has(name)) throw new Error(`duplicate temporary file name: ${name}`);
-    seen.add(name);
-    const content = boundedString(item.content, 256 * 1024, `temporary_files[${index}].content`);
-    totalBytes += Buffer.byteLength(content);
-    if (totalBytes > MAX_TEMPORARY_FILE_BYTES) throw new Error(`temporary file contents exceed ${MAX_TEMPORARY_FILE_BYTES} bytes`);
-    return { name, content, executable: item.executable === true };
-  });
-}
-
-function validateSteps(value, label, context, allowEmpty = false) {
-  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.length > 16) {
-    throw new Error(`${label} must contain ${allowEmpty ? "0-16" : "1-16"} steps`);
-  }
-  return value.map((input, index) => {
-    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error(`${label}[${index}] must be an object`);
-    const allowed = new Set(["name", "argv", "cwd", "env", "env_resources", "stdin", "stdin_resource", "timeout_seconds", "allow_failure", "capture_output"]);
-    for (const key of Object.keys(input)) if (!allowed.has(key)) throw new Error(`${label}[${index}] contains unknown field: ${key}`);
-    if (!Array.isArray(input.argv) || !input.argv.length || input.argv.length > 256) throw new Error(`${label}[${index}].argv must contain 1-256 strings`);
-    const argv = input.argv.map((item) => boundedString(item, 16 * 1024, `${label}[${index}].argv`));
-    if (Buffer.byteLength(JSON.stringify(argv)) > 64 * 1024) throw new Error(`${label}[${index}].argv exceeds 64 KiB`);
-    const cwd = input.cwd === undefined ? context.workspace : resolveJobCwd(input.cwd, context.workspace, context.unrestrictedPaths);
-    const env = validateEnv(input.env, `${label}[${index}].env`);
-    const envResources = validateEnvResources(input.env_resources, `${label}[${index}].env_resources`);
-    for (const key of Object.keys(envResources)) if (Object.prototype.hasOwnProperty.call(env, key)) throw new Error(`${label}[${index}] duplicates ${key} in env and env_resources`);
-    const stdin = input.stdin === undefined ? null : boundedString(input.stdin, 256 * 1024, `${label}[${index}].stdin`);
-    const stdinResource = input.stdin_resource === undefined ? null : validateResourceName(input.stdin_resource);
-    if (stdin !== null && stdinResource !== null) throw new Error(`${label}[${index}] cannot combine stdin and stdin_resource`);
-    return {
-      name: String(input.name || basename(argv[0]) || `step ${index + 1}`).slice(0, 128),
-      argv,
-      cwd,
-      env,
-      env_resources: envResources,
-      stdin,
-      stdin_resource: stdinResource,
-      timeout_seconds: clampInt(input.timeout_seconds, 600, 1, 3600),
-      allow_failure: input.allow_failure === true,
-      capture_output: input.capture_output === "discard" ? "discard" : "redacted",
-    };
-  });
-}
-
-function validateEnv(value, label) {
-  if (value === undefined) return {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
-  const entries = Object.entries(value);
-  if (entries.length > 64) throw new Error(`${label} has too many entries`);
-  const out = {};
-  for (const [key, raw] of entries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)) throw new Error(`${label} contains invalid variable name: ${key}`);
-    out[key] = boundedString(raw, 16 * 1024, `${label}.${key}`);
-  }
-  return out;
-}
-
-function validateEnvResources(value, label) {
-  if (value === undefined) return {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
-  const entries = Object.entries(value);
-  if (entries.length > 32) throw new Error(`${label} has too many entries`);
-  const out = {};
-  for (const [key, raw] of entries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)) throw new Error(`${label} contains invalid variable name: ${key}`);
-    out[key] = validateResourceName(raw);
-  }
-  return out;
-}
-
-function referencedResources(steps, registry) {
-  const names = new Set();
-  for (const step of steps) {
-    if (step.stdin_resource) names.add(step.stdin_resource);
-    for (const name of Object.values(step.env_resources || {})) names.add(name);
-    for (const value of [...step.argv, ...Object.values(step.env)]) {
-      for (const match of String(value).matchAll(RESOURCE_TOKEN)) names.add(match[1]);
-    }
-  }
-  if (names.size > MAX_RESOURCES) throw new Error(`job references more than ${MAX_RESOURCES} local resources`);
-  const out = {};
-  let totalBytes = 0;
-  for (const name of names) {
-    const resource = registry[name];
-    if (!resource) throw new Error(`unknown local resource: ${name}`);
-    const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true, includeHash: true });
-    totalBytes += inspected.size;
-    if (totalBytes > MAX_JOB_RESOURCE_BYTES) throw new Error(`job resources exceed ${MAX_JOB_RESOURCE_BYTES} bytes`);
-    out[name] = {
-      ...inspected,
-      pathAliases: normalizeResourcePathAliases([...(resource.pathAliases || []), ...(inspected.pathAliases || [])]),
-      allowInsecurePermissions: resource.allowInsecurePermissions === true,
-    };
-  }
-  return out;
-}
-
-function normalizeResourceRegistry(resources) {
-  const out = {};
-  if (!resources || typeof resources !== "object" || Array.isArray(resources)) return out;
-  for (const [rawName, rawValue] of Object.entries(resources).slice(0, MAX_RESOURCES)) {
-    const name = validateResourceName(rawName);
-    if (!rawValue || rawValue.kind !== "file" || typeof rawValue.path !== "string") continue;
-    out[name] = {
-      kind: "file",
-      path: resolve(rawValue.path),
-      pathAliases: normalizeResourcePathAliases([rawValue.path, ...(Array.isArray(rawValue.pathAliases) ? rawValue.pathAliases : [])]),
-      size: Number.isFinite(Number(rawValue.size)) ? Number(rawValue.size) : null,
-      mode: rawValue.mode ?? null,
-      updatedAt: rawValue.updatedAt ?? null,
-      allowInsecurePermissions: rawValue.allowInsecurePermissions === true,
-    };
-  }
-  return out;
-}
-
-function normalizeResourcePathAliases(values) {
-  const aliases = [];
-  for (const value of values) {
-    if (typeof value !== "string" || !value || value.includes("\0") || value.length > 4096) continue;
-    const absolute = resolve(value);
-    if (!aliases.includes(absolute)) aliases.push(absolute);
-    if (aliases.length >= 8) break;
-  }
-  return aliases;
-}
-
-function resolveJobCwd(value, workspace, unrestrictedPaths) {
-  const raw = boundedString(value, 4096, "cwd");
-  const candidate = isAbsolute(raw) ? resolve(raw) : resolve(workspace, raw);
-  const canonical = realpathSync.native ? realpathSync.native(candidate) : realpathSync(candidate);
-  const info = statSync(canonical);
-  if (!info.isDirectory()) throw new Error("managed job cwd is not a directory");
-  if (!unrestrictedPaths) {
-    const rel = relative(workspace, canonical);
-    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("managed job cwd is outside the configured workspace");
-  }
-  return canonical;
-}
 
 function failRunnerLaunch(dir, status, error) {
   const now = new Date().toISOString();
