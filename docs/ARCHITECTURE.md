@@ -109,6 +109,8 @@ All requests for a deployed Worker route to one named Durable Object. It owns:
 
 The Worker verifies OAuth, validates MCP envelopes and optional protocol headers, converts `tools/call` into WebSocket messages, correlates cancellation by access-token hash and JSON-RPC ID, and formats text/structured/image results. It has no local filesystem or process API.
 
+The current OAuth store is multi-client but not principal-aware. `client_id` identifies an MCP application/installation; it does not identify a human or service account. Every successful authorization uses the same per-workspace connection password and receives the same workspace policy ceiling. Isolated account support therefore requires explicit principals, memberships, named grants, targeted revocation, and dual Worker/local enforcement rather than treating client registrations as users. The recommended design retains one bridge-specific Durable Object and one local runtime per workspace/trust domain; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
+
 The daemon attachment deliberately omits workspace path/name/hash and process ID. Explicit authenticated tools may return workspace metadata according to local path-display policy.
 
 ### Autostart layer
@@ -138,7 +140,7 @@ flowchart LR
   CLI --> S[Autostart provider]
 ```
 
-Remote OAuth determines which client may call tools. Local stdio access relies on the local process and configuration boundary. Policy determines which tools the local daemon and relay advertise. A connector host can independently present a smaller tool subset to a session; this post-relay filtering is outside the protocol state visible to Machine Bridge. Canonical resolution limits direct filesystem tools. Processes retain local-user authority and can escape workspace constraints through their own code or system calls.
+Remote OAuth currently determines which registered client token may call tools; it does not distinguish independently authorized human principals. Local stdio access relies on the local process and configuration boundary. Policy determines which tools the local daemon and relay advertise. A connector host can independently present a smaller tool subset to a session; this post-relay filtering is outside the protocol state visible to Machine Bridge. Canonical resolution limits direct filesystem tools. Processes retain local-user authority and can escape workspace constraints through their own code or system calls.
 
 ## Remote request lifecycle
 
@@ -258,4 +260,4 @@ Third-party workflow actions are pinned to immutable commit SHAs. Dependabot pro
 - model-level prompt-injection prevention or semantic validation of browser/application actions;
 - universal desktop UI automation beyond the implemented OS Accessibility backend;
 - scripting browser-internal/enterprise-blocked pages or inaccessible cross-origin frames;
-- multi-user tenancy in one Worker deployment.
+- isolated multi-user tenancy or per-principal authorization in one Worker deployment; multiple OAuth client registrations currently share one workspace authority.

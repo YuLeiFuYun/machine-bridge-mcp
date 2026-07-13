@@ -124,6 +124,8 @@ machine-mcp --workspace /path/to/project
 
 Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering the connection password.
 
+Several OAuth clients and access tokens can coexist, but the current release does not model separate human/service principals. Every authorization that uses the shared workspace password receives the same workspace authority. Do not treat separate ChatGPT accounts as isolated Machine Bridge accounts; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
+
 ## Profile guidance
 
 - `full` is the default and prioritizes immediate usability. It is a canonical contract exposing every catalog tool, shell execution, unrestricted direct filesystem paths, absolute path output, and the full parent environment. Any individual narrowing is represented as `custom`.

@@ -23,6 +23,8 @@ Local clients such as Claude Desktop, Cursor, and Codex CLI
 
 The remote Worker authenticates and relays calls. It cannot directly read local files or start local processes. File, Git, image, patch, process, diagnostic, and managed-job operations execute in the local runtime.
 
+New users should follow the end-to-end [installation and first-use guide](docs/GETTING_STARTED.md). Before sharing a deployment or connecting several accounts, read [multi-client, multi-account, and tenancy architecture](docs/MULTI_ACCOUNT.md).
+
 ## Default behavior and policy profiles
 
 A newly selected workspace starts with the maximum-permission `full` profile for low-friction operation:
@@ -44,6 +46,8 @@ Policy state records whether it came from the default, an explicit named profile
 This default prioritizes usability, not least privilege. `run_process` and process sessions avoid command-shell parsing, but they are **not an operating-system sandbox**. `exec_command` additionally permits shell syntax and expansion. Use `--profile review`, `edit`, or `agent`, or use a container, VM, or dedicated low-privilege OS account when the client, repository, or instructions are not fully trusted.
 
 ## Install
+
+For prerequisites, first remote deployment, ChatGPT connection, stdio configuration, browser pairing, upgrades, troubleshooting, and removal, follow [Installation and first use](docs/GETTING_STARTED.md). The commands below are the compact installation reference.
 
 Node.js 26 or newer and npm 12 or newer are required. The repository pins the active development versions in `.node-version`, `.nvmrc`, and `packageManager`; project installs fail on older Node runtimes.
 
@@ -125,6 +129,12 @@ MCP connection password: mcp_password_...
 ```
 
 The remote authorization flow uses an authorization code, PKCE S256, exact redirect/resource binding, expiring access tokens stored as hashes, and a token-version value for bulk revocation. After password approval, the Worker constructs the registered callback with the URL API and returns `303 See Other`, so OAuth response parameters are encoded and the browser performs a GET to the callback.
+
+### Multiple clients and accounts
+
+One Worker can hold several OAuth client registrations and access tokens, so the same trusted owner or team can connect more than one MCP application or ChatGPT account. This is **multi-client access, not isolated multi-account tenancy**: the current release uses one workspace connection password, one workspace policy, and one active daemon authority. It has no principal records, per-account roles, targeted account revocation, or account-specific audit boundary.
+
+Do not share a `full` bridge with mutually untrusted users. Use a separate bridge and preferably a separate low-privilege OS account, container, or VM for each trust domain. See [Multi-client, multi-account, and tenancy architecture](docs/MULTI_ACCOUNT.md) for the current support matrix and the proposed principal/grant design.
 
 ## Optional local stdio MCP
 
@@ -480,7 +490,7 @@ npm pack --dry-run
 
 `npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, recursively discovered JavaScript syntax, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, concurrent lock/atomic-replacement/PID-reuse fixtures, fail-closed service lifecycle tests, descendant process-tree termination, local path/write/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/mode/sensitive-artifact check, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, and a live local OAuth/Worker/WebSocket/MCP flow. GitHub Actions runs the suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline; macOS and package-audit jobs also exercise the documented isolated global installation.
 
-The cross-cutting 0.12.0 review, corrected failure modes, and residual OS-level limits are recorded in [docs/AUDIT.md](docs/AUDIT.md). See also [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), the generated [MCP tool reference](docs/TOOL_REFERENCE.md), and [SECURITY.md](SECURITY.md).
+The cross-cutting 0.12.0 review, corrected failure modes, and residual OS-level limits are recorded in [docs/AUDIT.md](docs/AUDIT.md). See also [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md), [docs/MULTI_ACCOUNT.md](docs/MULTI_ACCOUNT.md), [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), the generated [MCP tool reference](docs/TOOL_REFERENCE.md), and [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 

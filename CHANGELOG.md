@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.1 - 2026-07-14
+
+### Installation and first use
+
+- Add an end-to-end installation and first-use guide covering transport selection, authority profiles, prerequisites, released and source installation, first remote deployment, current ChatGPT developer-mode connection, stdio configuration, existing-profile browser pairing, verification, routine operation, multi-workspace use, upgrades, layered troubleshooting, and fail-closed removal.
+- Link the detailed guide from the README while retaining the compact command reference, and clarify how to distinguish package, Cloudflare, daemon, MCP-host, operating-system, and browser failures.
+
+### Multi-client and multi-account boundary
+
+- Document that the existing Worker supports multiple OAuth client registrations and access tokens but does not provide isolated human/service accounts: all successful authorizations use one per-workspace connection password and share the same policy and daemon authority.
+- Define a principal-aware evolution path that keeps OAuth clients separate from principals, memberships, and named grants; uses capability intersection and dual Worker/local enforcement; adds targeted revocation and per-principal quotas; and retains one bridge/Durable Object per workspace or trust domain.
+- Make the security and architecture contracts explicit: mutually untrusted users require separate bridge instances and preferably separate low-privilege OS, container, or VM boundaries because application-level roles cannot isolate local process, shell, browser, or credential-store authority.
+
 ## 0.17.0 - 2026-07-13
 
 ### Project governance and contribution flow
