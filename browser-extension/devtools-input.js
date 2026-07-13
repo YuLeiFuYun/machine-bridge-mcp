@@ -39,13 +39,18 @@
   async function withDebugger(tabId, operation) {
     const target = { tabId };
     let attached = false;
+    let dispatchStarted = false;
     try {
       await chrome.debugger.attach(target, "1.3");
       attached = true;
-      const send = (method, params = {}) => chrome.debugger.sendCommand(target, method, params);
+      const send = (method, params = {}) => {
+        dispatchStarted = true;
+        return chrome.debugger.sendCommand(target, method, params);
+      };
       return await operation(send);
     } catch (error) {
-      throw new Error(`trusted browser input unavailable: ${cleanError(error)}`);
+      if (error?.machineBridgeTrustedInput === true) throw error;
+      throw trustedInputError(error, { safeToFallback: !dispatchStarted, dispatchStarted });
     } finally {
       if (attached) {
         try { await chrome.debugger.detach(target); } catch {}
@@ -123,6 +128,16 @@
     const y = Number(point?.y);
     if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) throw new Error("trusted input target has no usable viewport point");
     return { x, y };
+  }
+
+  function trustedInputError(error, { safeToFallback, dispatchStarted }) {
+    const wrapped = new Error(`trusted browser input unavailable: ${cleanError(error)}`);
+    Object.defineProperties(wrapped, {
+      machineBridgeTrustedInput: { value: true },
+      safeToFallback: { value: safeToFallback === true },
+      dispatchStarted: { value: dispatchStarted === true },
+    });
+    return wrapped;
   }
 
   function cleanError(error) {

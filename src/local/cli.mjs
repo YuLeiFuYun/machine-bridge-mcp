@@ -753,13 +753,26 @@ async function browserCommand(args) {
     connected: health?.broker === "machine-bridge-browser" && health?.connected === true,
     extension_path: extensionPath,
     pairing_url: pairingUrl,
+    expected_extension_version: typeof health?.expected_extension_version === "string" ? health.expected_extension_version : "",
+    extension_protocol: Number.isInteger(health?.extension_protocol) ? health.extension_protocol : null,
+    extension_version: typeof health?.extension_version === "string" ? health.extension_version : "",
+    extension_capabilities: Array.isArray(health?.extension_capabilities) ? health.extension_capabilities : [],
+    extension_reload_required: health?.extension_reload_required === true,
+    controls_existing_profile: health?.controls_existing_profile === true,
+    controls_extension_profile: health?.controls_extension_profile === true,
+    machine_bridge_launches_browser: health?.machine_bridge_launches_browser === true,
+    profile_identity_verifiable: health?.profile_identity_verifiable === true,
     token_exposed: false,
   };
   if (action === "status") {
     if (args.json) console.log(JSON.stringify(result, null, 2));
     else {
       console.log(`Browser bridge: ${result.running ? "running" : "not reachable"}`);
-      console.log(`Extension: ${result.connected ? "connected" : "not connected"}`);
+      console.log(`Extension: ${result.connected ? "connected" : result.extension_reload_required ? "reload required" : "not connected"}`);
+      if (result.expected_extension_version) console.log(`Expected extension build: ${result.expected_extension_version}`);
+      if (result.extension_version || result.extension_protocol) console.log(`Connected extension build: ${result.extension_version || "unknown"} (protocol ${result.extension_protocol ?? "unknown"})`);
+      console.log(`Browser profile: ${result.controls_extension_profile ? "the Chromium profile where this extension is installed" : "unknown"}`);
+      if (result.controls_extension_profile) console.log(`Profile provenance: Machine Bridge did not launch the browser; daily-vs-isolated profile identity is not machine-verifiable.`);
       console.log(`Extension path: ${extensionPath}`);
     }
     return;
@@ -769,7 +782,8 @@ async function browserCommand(args) {
   if (args.json) console.log(JSON.stringify({ ...result, pairing_page_opened: true }, null, 2));
   else {
     console.log(`Extension path: ${extensionPath}`);
-    console.log("Load this directory once from the Chromium extensions page with Developer mode enabled.");
+    console.log("Load this directory in the Chromium profile you use every day; Machine Bridge does not install it into Playwright or a separate automation profile.");
+    console.log("Enable Developer mode, choose Load unpacked, and reload the extension after each Machine Bridge upgrade.");
     console.log(`Pairing page opened: ${pairingUrl}`);
   }
 }

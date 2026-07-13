@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.15.0 - 2026-07-13
+
+### Daily-profile browser verification and protocol safety
+
+- Verify the unpacked extension in the user's ordinary Chrome profile with a localhost-only live smoke test covering the acknowledged protocol handshake, real tab lifecycle, semantic inspection, open Shadow DOM, complex form fill, fixed DevTools text/click input, waits, screenshot capture, and cleanup. `browser status` and loopback health now report extension version/protocol, that Machine Bridge did not launch the browser, and the fact that daily-vs-isolated profile identity is not machine-verifiable.
+- Upgrade the extension protocol to an acknowledged `hello`/`hello_ack` state machine with exact packaged-version, protocol, and capability equality. WebSocket open is no longer treated as authenticated readiness, pairing material is persisted only after a successful capability handshake, failed candidate pairing preserves the prior configuration, pairing-page and broker ports must match, and extension WebSocket origins require a canonical 32-character Chromium extension ID.
+- Prevent duplicate side effects after an ambiguous trusted-input failure. `auto` falls back to DOM only before any DevTools `Input` command starts; after dispatch begins, the operation fails with an explicit unknown-outcome instruction to inspect the page before retrying. Screenshot capture temporarily activates only the requested tab, never focuses its window, and restores the previous active tab unless the user changed it concurrently.
+
+### Bounded page processing and extension architecture
+
+- Apply `max_bytes` and `max_elements` as aggregate request budgets across at most 64 accessible frames. Replace full `outerHTML` construction with a bounded iterative DOM serializer, cap page scans at 100,000 nodes, bound page-controlled metadata/text, cap reusable refs at 10,000 per frame, redact URL userinfo, mark contenteditable secret controls as sensitive, and report frame/node/text/ref truncation explicitly.
+- Report partial multi-field form mutation precisely when a later field or submission fails. Navigation waits now inherit the bounded request deadline rather than using a hidden fixed 30-second timer.
+- Extract tab/page/wait/source/screenshot orchestration into fixed `browser-operations.js`; the Manifest V3 service worker now owns only pairing, transport, acknowledged readiness, cancellation, and response routing. Architecture tests enforce this responsibility boundary.
+
+### Cross-platform audit and regression coverage
+
+- Replace ad-hoc Windows Scheduled Task argument quoting with the Windows CRT-compatible backslash/quote algorithm, including drive-root and trailing-backslash paths.
+- Add behavior tests for handshake readiness, provisional pairing persistence, trusted-input replay prevention, focus restoration, aggregate frame/source budgets, hostile DOM/text bounds, partial form failure, strict extension origins, and Windows command-line quoting. Synchronize architecture, security, operations, testing, audit, and tool documentation.
+
 ## 0.14.0 - 2026-07-13
 
 ### Windows installation and OAuth callback reliability

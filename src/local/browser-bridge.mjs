@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
@@ -23,8 +23,11 @@ const MAX_FIELD_VALUE_CHARS = 128 * 1024;
 const MAX_FORM_VALUE_BYTES = 4 * 1024 * 1024;
 const PAIRING_FILE = "browser-bridge.json";
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
-const BROWSER_EXTENSION_PROTOCOL = 2;
+const BROWSER_EXTENSION_PROTOCOL = 3;
 const EXTENSION_HANDSHAKE_MS = 3_000;
+const EXTENSION_MANIFEST = JSON.parse(readFileSync(resolve(packageRoot, "browser-extension", "manifest.json"), "utf8"));
+const EXPECTED_EXTENSION_VERSION = String(EXTENSION_MANIFEST.version_name || EXTENSION_MANIFEST.version || "");
+if (!EXPECTED_EXTENSION_VERSION) throw new Error("packaged browser extension version is missing");
 const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
   "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
 ]);
@@ -48,6 +51,7 @@ export class BrowserBridgeManager {
     this.extensionInfo = null;
     this.proxyExtensionInfo = null;
     this.proxyExtensionReloadRequired = false;
+    this.extensionReloadRequiredFlag = false;
     this.recoveryTimer = null;
     this.stopping = false;
     this.pending = new Map();
@@ -66,12 +70,17 @@ export class BrowserBridgeManager {
       endpoint: `ws://127.0.0.1:${this.port}/extension`,
       pairing_url: `http://127.0.0.1:${this.port}/pair`,
       extension_path: this.extensionPath,
+      expected_extension_version: EXPECTED_EXTENSION_VERSION,
       extension_protocol: this.extensionStatusInfo()?.protocol || null,
       extension_version: this.extensionStatusInfo()?.version || "",
       extension_capabilities: this.extensionStatusInfo()?.capabilities || [],
       extension_reload_required: this.extensionReloadRequired(),
       supported_browsers: ["Chrome", "Chromium", "Microsoft Edge", "Brave", "Vivaldi", "other Chromium browsers with Manifest V3"],
       controls_existing_profile: true,
+      controls_extension_profile: true,
+      launches_browser_process: false,
+      launches_separate_automation_profile: false,
+      profile_identity_verifiable: false,
       uses_existing_tabs_and_login_state: true,
       source_access: true,
       semantic_snapshot_refs: true,
@@ -363,7 +372,7 @@ export class BrowserBridgeManager {
         const protocol = String(request.headers["sec-websocket-protocol"] || "");
         const origin = String(request.headers.origin || "");
         let role = "";
-        if (url.pathname === "/extension" && protocol === `mbm.${this.token}` && origin.startsWith("chrome-extension://")) role = "extension";
+        if (url.pathname === "/extension" && protocol === `mbm.${this.token}` && isAllowedExtensionOrigin(origin)) role = "extension";
         if (url.pathname === "/runtime" && protocol === `mbm-runtime.${this.token}` && !origin) role = "runtime";
         if (!role) {
           socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
@@ -472,7 +481,10 @@ export class BrowserBridgeManager {
     this.pendingExtensionSocket = ws;
     this.broadcastRuntimeStatus(this.extensionConnected());
     ws.extensionReady = false;
-    ws.handshakeTimer = setTimeout(() => closeProtocolSocket(ws, 1002, "extension hello required; reload the extension"), EXTENSION_HANDSHAKE_MS);
+    ws.handshakeTimer = setTimeout(() => {
+      this.markExtensionReloadRequired();
+      closeProtocolSocket(ws, 1002, "extension hello required; reload the extension");
+    }, EXTENSION_HANDSHAKE_MS);
     ws.handshakeTimer.unref?.();
     ws.on("message", (data) => this.handleExtensionMessage(ws, data));
     ws.on("close", () => {
@@ -497,22 +509,30 @@ export class BrowserBridgeManager {
     if (this.socket !== socket && this.pendingExtensionSocket !== socket) return;
     const parsed = parseBrowserSocketMessage(data);
     if (!parsed.ok) {
+      this.markExtensionReloadRequired();
       closeProtocolSocket(socket, parsed.code, parsed.reason);
       return;
     }
     const message = parsed.message;
     if (message.type === "hello") {
       if (socket.extensionReady) {
+        this.markExtensionReloadRequired();
         closeProtocolSocket(socket, 1002, "duplicate extension hello");
         return;
       }
       let info;
       try { info = parseExtensionHello(message); }
       catch (error) {
+        this.markExtensionReloadRequired();
         closeProtocolSocket(socket, 1002, String(error?.message || error).slice(0, 120));
         return;
       }
       clearTimeout(socket.handshakeTimer);
+      if (!safeSocketSend(socket, { type: "hello_ack", role: "extension", protocol: BROWSER_EXTENSION_PROTOCOL })) {
+        closeProtocolSocket(socket, 1011, "extension acknowledgement failed");
+        return;
+      }
+      this.extensionReloadRequiredFlag = false;
       socket.extensionReady = true;
       if (this.pendingExtensionSocket === socket) this.pendingExtensionSocket = null;
       const previous = this.socket;
@@ -527,11 +547,13 @@ export class BrowserBridgeManager {
       return;
     }
     if (!socket.extensionReady) {
+      this.markExtensionReloadRequired();
       closeProtocolSocket(socket, 1002, "extension hello required; reload the extension");
       return;
     }
     if (message.type === "ping") return;
     if (message.type !== "response" || typeof message.id !== "string") {
+      this.markExtensionReloadRequired();
       closeProtocolSocket(socket, 1002, "invalid extension protocol message");
       return;
     }
@@ -654,7 +676,21 @@ export class BrowserBridgeManager {
       return;
     }
     if (url.pathname === "/healthz") {
-      sendJson(response, { ok: true, connected: this.extensionConnected(), broker: "machine-bridge-browser" });
+      const extension = this.extensionStatusInfo();
+      sendJson(response, {
+        ok: true,
+        connected: this.extensionConnected(),
+        broker: "machine-bridge-browser",
+        expected_extension_version: EXPECTED_EXTENSION_VERSION,
+        extension_protocol: extension?.protocol || null,
+        extension_version: extension?.version || "",
+        extension_capabilities: extension?.capabilities || [],
+        extension_reload_required: this.extensionReloadRequired(),
+        controls_existing_profile: true,
+        controls_extension_profile: true,
+        machine_bridge_launches_browser: false,
+        profile_identity_verifiable: false,
+      });
       return;
     }
     if (url.pathname === "/pair") {
@@ -711,6 +747,7 @@ export class BrowserBridgeManager {
     this.proxyExtensionConnected = false;
     this.proxyExtensionInfo = null;
     this.proxyExtensionReloadRequired = false;
+    this.extensionReloadRequiredFlag = false;
     this.runtimeClients.clear();
     for (const route of this.proxyRoutes.values()) clearTimeout(route.timeout);
     this.proxyRoutes.clear();
@@ -718,6 +755,11 @@ export class BrowserBridgeManager {
     try { this.server?.close(); } catch {}
     this.wss = null;
     this.server = null;
+  }
+
+  markExtensionReloadRequired() {
+    this.extensionReloadRequiredFlag = true;
+    this.broadcastRuntimeStatus(this.extensionConnected());
   }
 
   extensionConnected() {
@@ -732,7 +774,7 @@ export class BrowserBridgeManager {
 
   extensionReloadRequired() {
     return this.server
-      ? this.pendingExtensionSocket?.readyState === 1 && !this.extensionConnected()
+      ? this.extensionReloadRequiredFlag || (this.pendingExtensionSocket?.readyState === 1 && !this.extensionConnected())
       : this.proxyExtensionReloadRequired;
   }
 
@@ -745,7 +787,7 @@ export class BrowserBridgeManager {
 
 function normalizeCompatibleExtensionInfo(value) {
   const info = normalizeExtensionInfo(value);
-  if (!info || info.protocol !== BROWSER_EXTENSION_PROTOCOL) return null;
+  if (!info || info.protocol !== BROWSER_EXTENSION_PROTOCOL || info.version !== EXPECTED_EXTENSION_VERSION) return null;
   if (REQUIRED_EXTENSION_CAPABILITIES.some((capability) => !info.capabilities.includes(capability))) return null;
   return info;
 }
@@ -756,6 +798,7 @@ function parseExtensionHello(message) {
   }
   const info = normalizeExtensionInfo(message);
   if (!info) throw new Error("invalid extension hello; reload the extension");
+  if (info.version !== EXPECTED_EXTENSION_VERSION) throw new Error(`extension version mismatch; expected ${EXPECTED_EXTENSION_VERSION}; reload the extension`);
   const missing = REQUIRED_EXTENSION_CAPABILITIES.filter((capability) => !info.capabilities.includes(capability));
   if (missing.length) throw new Error(`extension capability mismatch; reload the extension (${missing.join(",")})`);
   return info;
@@ -809,7 +852,20 @@ async function savePairing(stateRoot, value) {
 }
 
 function pairingHtml(port, token) {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="machine-bridge-browser-pair" content="1"><meta name="machine-bridge-browser-port" content="${port}"><meta name="machine-bridge-browser-token" content="${token}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Machine Bridge browser pairing</title></head><body><h1>Machine Bridge browser pairing</h1><p>The installed extension reads pairing material from this loopback-only page and stores it in browser-local extension storage. It is not sent to any website.</p><p id="status">Waiting for the Machine Bridge extension.</p></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="machine-bridge-browser-pair" content="1"><meta name="machine-bridge-browser-port" content="${port}"><meta name="machine-bridge-browser-token" content="${token}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Machine Bridge browser pairing</title></head><body><h1>Machine Bridge browser pairing</h1><p>Expected extension build: <strong>${EXPECTED_EXTENSION_VERSION}</strong>. Reload the unpacked extension after every Machine Bridge upgrade.</p><p>The installed extension reads pairing material from this loopback-only page and stores it in browser-local extension storage. It is not sent to any website.</p><p id="status">Waiting for the Machine Bridge extension.</p></body></html>`;
+}
+
+function isAllowedExtensionOrigin(origin) {
+  let parsed;
+  try { parsed = new URL(String(origin || "")); } catch { return false; }
+  return parsed.protocol === "chrome-extension:"
+    && /^[a-p]{32}$/.test(parsed.hostname)
+    && !parsed.username
+    && !parsed.password
+    && !parsed.port
+    && (parsed.pathname === "" || parsed.pathname === "/")
+    && !parsed.search
+    && !parsed.hash;
 }
 
 function isAllowedLoopbackHost(host, port) {

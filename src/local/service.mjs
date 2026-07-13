@@ -465,11 +465,15 @@ async function statusWindowsTask() {
 }
 
 function windowsCommand(spec) {
-  return [spec.node, ...daemonArgs(spec)].map(winQuote).join(" ");
+  return [spec.node, ...daemonArgs(spec)].map(windowsCommandLineArgument).join(" ");
 }
 
-function winQuote(value) {
-  return `"${String(value).replaceAll('"', '\\"')}"`;
+export function windowsCommandLineArgument(value) {
+  const text = String(value);
+  if (text.includes("\0")) throw new Error("Windows command-line argument contains a NUL byte");
+  const escapedQuotes = text.replace(/(\\*)"/g, (_match, slashes) => `${slashes}${slashes}\\"`);
+  const escapedTrailingSlashes = escapedQuotes.replace(/(\\+)$/, (slashes) => `${slashes}${slashes}`);
+  return `"${escapedTrailingSlashes}"`;
 }
 
 export function systemdQuote(value) {

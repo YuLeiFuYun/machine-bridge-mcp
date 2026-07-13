@@ -15,7 +15,7 @@ The extension works with the current profile and supports:
 
 - listing, creating, activating, and closing tabs;
 - reading the current serialized DOM HTML from the main frame or accessible subframes;
-- discovering interactive controls, stable per-document element references, actionability state, geometry, labels, roles, placeholders, and field metadata across accessible frames and open Shadow DOM roots;
+- discovering interactive controls, bounded per-document element references, actionability state, geometry, labels, roles, placeholders, and field metadata across accessible frames and open Shadow DOM roots;
 - waiting for bounded combinations of URL, load state, page text, and element state;
 - structured navigation, click, double-click, hover, focus, fill, type-text, select, check, uncheck, key press, scroll-into-view, and form submission;
 - automatic existence/visibility/enabled/editable/stability/hit-target checks before actions, with fixed DevTools mouse/keyboard input for top-frame interactions and a controlled DOM fallback;
@@ -23,7 +23,7 @@ The extension works with the current profile and supports:
 - populating file inputs from registered local resource files;
 - visible-tab screenshots.
 
-Current support targets Chrome, Chromium, Microsoft Edge, Brave, Vivaldi, and compatible Chromium browsers. After upgrading Machine Bridge, reload the unpacked extension from the browser extensions page so its packaged scripts and permissions match the new runtime. Version 0.14.0 adds the `debugger` permission for fixed trusted-input commands; the extension attaches only for the action and detaches afterward. The broker requires a versioned extension hello with the expected capability set, keeps the last compatible connection active until a replacement completes its handshake, and reports `extension_reload_required` instead of silently routing new tools to stale extension code. Browser-internal pages, extension stores, some PDF/plugin viewers, cross-origin frames denied to the extension, and pages restricted by enterprise policy may not be scriptable.
+Current support targets Chrome, Chromium, Microsoft Edge, Brave, Vivaldi, and compatible Chromium browsers. The extension must be loaded into the user profile to be controlled; it is not installed into Playwright or an isolated automation profile. After every Machine Bridge upgrade, reload the unpacked extension so packaged scripts, protocol, and permissions match the runtime. Version 0.15.0 requires protocol 3 with broker `hello_ack`; the badge and pairing page report success only after protocol/version/capability validation. Pairing material is persisted only after that acknowledgement, an invalid candidate cannot overwrite the previous pairing, and `browser status` reports the expected packaged build, authenticated connected build/protocol/capabilities, and `extension_reload_required`; exact version equality is required in addition to protocol and capabilities. Browser-internal pages, extension stores, some PDF/plugin viewers, inaccessible cross-origin frames, and pages restricted by enterprise policy remain unscriptable.
 
 ## One-time browser setup
 
@@ -55,17 +55,17 @@ The broker is machine-global rather than workspace-global. One local owner liste
 
 ## Browser tools
 
-- `browser_status` reports broker role, extension connection, supported operations, pairing URL, and extension path without returning the pairing token.
+- `browser_status` reports broker role, authenticated extension protocol/version/capabilities, reload state, supported operations, pairing URL, and extension path without returning the pairing token.
 - `pair_browser_extension` opens the local pairing page and returns setup steps.
 - `browser_list_tabs` lists current tabs.
 - `browser_manage_tabs` creates, activates, or closes a selected tab.
-- `browser_get_source` returns bounded current DOM HTML for selected frames.
-- `browser_inspect_page` returns a bounded semantic snapshot. Each control includes a stable `ref` for the lifetime of that document/frame plus visibility, enabled/editable state, and viewport geometry.
+- `browser_get_source` returns a bounded iterative DOM serialization. `max_bytes` is one aggregate request budget across at most 64 accessible frames; omitted frames and node/byte truncation are explicit.
+- `browser_inspect_page` returns snapshot version 2 with one aggregate `max_elements` budget, at most 64 accessible frames, a 100,000-node per-frame scan ceiling, bounded page-controlled strings, URL-userinfo redaction, and explicit scan/frame truncation. Each control includes a reusable `ref` plus visibility, enabled/editable state, and viewport geometry. References are held in a 10,000-entry per-frame LRU; navigation, element replacement, or bounded eviction makes an older ref stale and requires a new inspection.
 - `browser_wait` waits until all supplied URL, load-state, page-text, and element-state conditions are true.
-- `browser_action` performs one structured navigation or page action. Navigation accepts absolute `http`, `https`, or `file` URLs; script/data schemes are rejected. Pointer and keyboard actions default to `input_mode: auto`, which attempts fixed trusted DevTools input in the top frame and falls back to DOM behavior. `trusted` forbids fallback; `dom` never attaches the debugger.
-- `browser_fill_form` fills up to 200 fields and can submit once.
+- `browser_action` performs one structured navigation or page action. Navigation accepts absolute `http`, `https`, or `file` URLs; script/data schemes are rejected. Pointer and keyboard actions default to `input_mode: auto`, which uses fixed trusted DevTools input in the top frame and falls back to DOM only when no `Input` command has started. Once dispatch begins, failure has an unknown outcome and must be inspected before retrying; automatic replay is forbidden. `trusted` always forbids fallback; `dom` never attaches the debugger.
+- `browser_fill_form` fills up to 200 fields and can submit once. If a later field fails, the error states how many earlier fields may already have changed without returning their values.
 - `browser_upload_files` sets a file input from up to eight registered local resources. Caller filenames must be safe single-component names; derived names have controls and separators removed. MIME overrides must be canonical media types.
-- `browser_screenshot` returns native MCP image content.
+- `browser_screenshot` returns native MCP image content, temporarily activates the selected tab only when required, restores the previous active tab when safe, and never focuses another browser window.
 
 Selectors can use the `ref` returned by inspection, CSS, ID, field name, label text, visible text, ARIA/implicit role, placeholder, and a zero-based match index. `ref` cannot be combined with other fields and becomes stale after navigation or element replacement. Non-ref selectors that match multiple controls fail explicitly unless `index` disambiguates them. The fixed page module traverses open Shadow DOM roots; closed shadow roots remain inaccessible. For frame-specific work, inspect all frames first and then pass `frame_id` to an action. Trusted input currently targets the top frame because DevTools coordinates are top-level; use `input_mode: dom` for an explicitly selected subframe.
 
@@ -105,12 +105,12 @@ The implementation reduces avoidable risk as follows:
 
 - all browser/app tools are `full`-only;
 - no arbitrary evaluation, caller-provided script source, or caller-selected DevTools method is accepted; trusted input exposes only fixed `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, and `Input.insertText` sequences;
-- loopback HTTP validates `Host`; extension WebSockets require a random bearer subprotocol and a `chrome-extension://` origin;
+- loopback HTTP validates `Host`; extension WebSockets require a random bearer subprotocol and a canonical `chrome-extension://` origin whose host is a 32-character Chromium extension ID; pairing-page and broker ports must match;
 - runtime-to-broker connections require a separate authenticated subprotocol;
 - the pairing token is stored owner-only, embedded only in the non-cacheable local pairing page, and omitted from MCP results and logs;
 - an established extension pairing cannot be silently replaced by another localhost page; replacement requires clicking the extension action on the active pairing page;
 - arguments, form values, page source, screenshots, and results are not operational log data;
-- message, source, form-field, upload, traversal, concurrency, proxy-route, actionability, and timeout limits are enforced; ambiguous selectors, stale refs, hidden/disabled/edit-blocked controls, moving targets, and obscured pointer targets fail explicitly;
+- message, aggregate source/element/frame, form-field, upload, DOM-node/text, concurrency, proxy-route, actionability, and request-deadline limits are enforced; ambiguous selectors, stale refs, hidden/disabled/edit-blocked controls, moving targets, and obscured pointer targets fail explicitly;
 - MCP cancellation clears local and broker pending state and propagates a cancellation signal to the extension; an action already delivered to a page or application may still have completed;
 - resource-backed text and files are not returned after injection.
 

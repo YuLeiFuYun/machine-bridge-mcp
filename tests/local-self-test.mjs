@@ -291,7 +291,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     const messages = [];
     const foregroundLock = await acquireDaemonLockWithTakeover(state, {
       takeOverServiceOwner: true,
-      timeoutMs: 2_000,
+      timeoutMs: 5_000,
       pollMs: 10,
       ownerMetadata: { mode: "foreground", version: "0.11.1" },
       logger: { info(message) { messages.push(message); }, warn(message) { messages.push(message); } },

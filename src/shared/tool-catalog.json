@@ -318,7 +318,7 @@
   {
     "name": "browser_status",
     "title": "Browser bridge status",
-    "description": "Start or inspect the loopback browser-extension bridge used to automate the user's existing Chromium profile, windows, tabs, and login state.",
+    "description": "Start or inspect the loopback bridge for the Chromium profile where the extension is installed. Machine Bridge does not launch Playwright or another browser process, but cannot infer whether that profile is the user's daily or isolated profile; status reports authenticated extension version, protocol, capabilities, and reload state.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -334,7 +334,7 @@
   {
     "name": "pair_browser_extension",
     "title": "Pair browser extension",
-    "description": "Open the local pairing page and return the packaged unpacked-extension path for one-time browser installation and pairing.",
+    "description": "Open the local pairing page and return the packaged unpacked-extension path for installation in the user's intended Chromium profile. Pairing is persisted only after an acknowledged version/capability handshake.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -437,7 +437,7 @@
   {
     "name": "browser_get_source",
     "title": "Read browser page source",
-    "description": "Read bounded serialized current DOM HTML from the active or selected browser tab and optionally from all accessible frames.",
+    "description": "Read bounded serialized current DOM HTML from the active or selected browser tab. max_bytes is one aggregate budget across at most 64 accessible frames, with explicit frame, node, and byte truncation metadata.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": true,
@@ -479,7 +479,7 @@
   {
     "name": "browser_inspect_page",
     "title": "Inspect browser page",
-    "description": "Inspect bounded interactive DOM metadata across accessible frames for links, controls, form fields, accessible names, labels, and roles.",
+    "description": "Inspect a bounded snapshot-version-2 semantic representation across at most 64 accessible frames, with one aggregate element budget, bounded reusable refs, actionability state, bounded page-controlled metadata, and explicit scan/frame truncation.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": true,
@@ -630,7 +630,7 @@
   {
     "name": "browser_action",
     "title": "Operate browser page",
-    "description": "Perform one structured navigation or page action in the user's existing browser tab, with automatic actionability waits and optional fixed DevTools input, without accepting arbitrary JavaScript.",
+    "description": "Perform one structured navigation or page action in the user's existing browser tab without arbitrary JavaScript. Automatic trusted-input fallback occurs only before any DevTools Input command starts; ambiguous post-dispatch failures require inspection before retry.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -771,7 +771,7 @@
   {
     "name": "browser_fill_form",
     "title": "Fill complex browser form",
-    "description": "Fill multiple fields and optionally submit a complex form in one structured browser transaction. Sensitive values can come from registered local resources and are not returned.",
+    "description": "Fill multiple fields and optionally submit a complex form. Sensitive values can come from registered local resources; errors identify possible earlier mutations without returning field values.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -950,7 +950,7 @@
   {
     "name": "browser_screenshot",
     "title": "Capture browser screenshot",
-    "description": "Capture the visible area of the active or selected tab from the paired existing browser profile and return it as MCP image content.",
+    "description": "Capture the visible area of the active or selected tab from the paired existing browser profile, restore the previous active tab when safe, avoid focusing another window, and return native MCP image content.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,

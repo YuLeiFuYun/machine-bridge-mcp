@@ -185,7 +185,7 @@ Skill discovery follows Codex-style progressive disclosure. Default project root
 Under canonical `full`, Machine Bridge also exposes structured local automation:
 
 - installed application discovery/opening and macOS Accessibility inspection/actions;
-- a packaged Chromium extension that controls the user's existing daily browser profile, active tabs, login state, and windows;
+- a packaged Chromium extension that controls the profile into which the user loads it, including that profile's tabs, login state, and windows; Machine Bridge does not launch a separate browser process;
 - current DOM source and frame/open-Shadow-DOM inspection, stable semantic element references, actionability waits, fixed trusted mouse/keyboard input, explicit browser waits, tab management, complex multi-field forms, resource-backed secret fields, resource-backed file uploads, and screenshots.
 
 One-time browser setup:
@@ -195,7 +195,7 @@ machine-mcp browser setup
 machine-mcp browser status
 ```
 
-Load the printed unpacked-extension directory once in Chrome, Edge, Brave, Vivaldi, or another compatible Chromium browser. After an upgrade that adds permissions, reload the unpacked extension and accept the browser prompt; trusted input uses the Chromium `debugger` permission only for fixed, short-lived DevTools Input commands. The extension badge reports connection state, and clicking it opens the saved local pairing page. The local pairing token remains in owner-only state and the loopback pairing page; it is not returned through MCP. For a mass-market release, distribute the same extension as a signed browser-store build rather than asking end users to enable Developer mode. See [Local application and browser automation](docs/LOCAL_AUTOMATION.md).
+Load the printed unpacked-extension directory in the Chromium profile you actually use; Machine Bridge does not install it into Playwright or a separate automation profile. After every Machine Bridge upgrade, reload the unpacked extension and accept any new browser permission. `machine-mcp browser status` reports both the expected packaged extension build and the authenticated connected build/protocol, and states that Machine Bridge did not launch the browser. It cannot infer whether the extension was loaded into a daily or isolated profile; that is determined by where the user installed it. Trusted input uses the Chromium `debugger` permission only for fixed, short-lived DevTools Input commands. The badge shows `ON` only after the broker acknowledges the version/capability handshake. The local pairing token remains in owner-only state and non-cacheable loopback HTML; it is not returned through MCP. For a mass-market release, distribute the same extension as a signed browser-store build rather than asking end users to enable Developer mode. See [Local application and browser automation](docs/LOCAL_AUTOMATION.md).
 
 Machine Bridge can discover, refresh, rank, and load capabilities automatically. The ChatGPT/MCP host still owns tool selection and approval, so the server cannot force a host to expose or invoke a recommended skill, command, app, or browser operation. Check `server_info.observability.capability_routing` or `project_overview.capabilityRouting` to distinguish “the host never called the resolver” from “the resolver ran but found no relevant capability.”
 
@@ -347,13 +347,13 @@ The exact `tools/list` response reflects the active local policy. Definitions co
 - `pair_browser_extension`
 - `browser_list_tabs`
 - `browser_manage_tabs` — create, activate, or close tabs
-- `browser_get_source` — bounded current DOM HTML, including selected frames
-- `browser_inspect_page` — semantic controls, stable per-document refs, state, and geometry
+- `browser_get_source` — bounded current DOM HTML with one aggregate byte budget across up to 64 accessible frames
+- `browser_inspect_page` — semantic controls, bounded LRU refs, state, geometry, and explicit frame/node/ref truncation metadata
 - `browser_wait` — bounded URL/load/text/element-state waits
-- `browser_action` — actionability checks plus `auto`, `trusted`, or `dom` input mode
+- `browser_action` — actionability checks plus `auto`, `trusted`, or `dom` input mode; ambiguous post-dispatch failures are never replayed through DOM
 - `browser_fill_form`
 - `browser_upload_files` — registered local resources to file inputs
-- `browser_screenshot`
+- `browser_screenshot` — restores the prior active tab and does not focus another window
 
 
 ### Mutation

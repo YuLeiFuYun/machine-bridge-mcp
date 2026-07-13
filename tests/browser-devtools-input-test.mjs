@@ -36,7 +36,9 @@ const failingContext = vm.createContext({
   chrome: { debugger: { async attach() { throw new Error("already attached\nprivate detail"); }, async sendCommand() {}, async detach() {} } },
 });
 vm.runInContext(source, failingContext, { filename: "devtools-input.js" });
-await expectReject(() => failingContext.__machineBridgeDevtoolsInput.perform(8, "click", { point: { x: 1, y: 1 } }), "trusted browser input unavailable: already attached private detail");
+const attachFailure = await capturedError(() => failingContext.__machineBridgeDevtoolsInput.perform(8, "click", { point: { x: 1, y: 1 } }));
+assert(attachFailure.message.includes("trusted browser input unavailable: already attached private detail"), "trusted attach failure was not sanitized");
+assert(attachFailure.safeToFallback === true && attachFailure.dispatchStarted === false, "pre-dispatch attach failure was not marked safe for fallback");
 
 let activeSessions = 0;
 let maxActiveSessions = 0;
@@ -64,10 +66,17 @@ const commandFailureContext = vm.createContext({
   } },
 });
 vm.runInContext(source, commandFailureContext, { filename: "devtools-input.js" });
-await expectReject(() => commandFailureContext.__machineBridgeDevtoolsInput.perform(10, "hover", { point: { x: 1, y: 1 } }), "input command failed");
+const commandFailure = await capturedError(() => commandFailureContext.__machineBridgeDevtoolsInput.perform(10, "hover", { point: { x: 1, y: 1 } }));
+assert(commandFailure.message.includes("input command failed"), "trusted command failure lost its error detail");
+assert(commandFailure.safeToFallback === false && commandFailure.dispatchStarted === true, "post-dispatch command failure was incorrectly marked safe for fallback");
 assert(detachedAfterCommandFailure, "trusted input did not detach after a command failure");
 
 console.log("browser trusted input test ok");
+
+async function capturedError(operation) {
+  try { await operation(); } catch (error) { return error; }
+  throw new Error("expected operation to reject");
+}
 
 async function expectReject(operation, expected) {
   try { await operation(); } catch (error) {
