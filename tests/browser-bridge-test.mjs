@@ -89,6 +89,7 @@ try {
   await expectReject(owner.act({ action: "navigate", url: "javascript:alert(1)" }), "protocol must be http, https, or file");
   const oversizedFields = Array.from({ length: 33 }, (_, index) => ({ selector: { id: `field-${index}` }, value: "x".repeat(128 * 1024) }));
   await expectReject(owner.fillForm({ fields: oversizedFields }), "exceed 4 MiB total");
+  await expectReject(owner.fillForm({ fields: [{ selector: { ref: "e1" }, action: "click", value: "must-not-be-sent" }] }), "value is not valid for action 'click'");
   await expectReject(owner.uploadFiles({ selector: { id: "file" }, resources: ["upload"], filenames: "not-an-array" }), "filenames must be an array");
   await expectReject(owner.uploadFiles({ selector: { id: "file" }, resources: ["upload"], filenames: ["../deceptive.txt"] }), "safe single-component filenames");
   await expectReject(owner.uploadFiles({ selector: { id: "file" }, resources: ["upload"], mime_types: ["text/plain\ninvalid"] }), "valid media types");
@@ -107,11 +108,22 @@ try {
   holdListTabs = false;
   heldRequestId = "";
 
+  holdListTabs = true;
+  const interruptedOwner = owner.listTabs({ timeout_seconds: 10 }).catch((error) => error);
+  const interruptedClient = client.listTabs({ timeout_seconds: 10 }).catch((error) => error);
+  await waitFor(() => owner.pending.size === 1 && owner.proxyRoutes.size === 1);
   const previousServerSocket = owner.socket;
   replacementExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "chrome-extension://replacement-test" });
   await onceOpen(replacementExtension);
   attachExtensionResponder(replacementExtension);
   await waitFor(() => owner.extensionConnected() && owner.socket !== previousServerSocket);
+  const ownerReplacementError = await interruptedOwner;
+  const clientReplacementError = await interruptedClient;
+  assert(String(ownerReplacementError?.message || ownerReplacementError).includes("replaced; retry"), "owner request was not rejected cleanly during extension replacement");
+  assert(String(clientReplacementError?.message || clientReplacementError).includes("replaced; retry"), "proxied request was not rejected cleanly during extension replacement");
+  assert(owner.pending.size === 0 && owner.proxyRoutes.size === 0, "extension replacement left stale routed requests");
+  holdListTabs = false;
+  heldRequestId = "";
   const replacementTabs = await owner.listTabs({});
   assert(replacementTabs.tabs[0].id === 7 && owner.socket !== previousServerSocket, "closing a superseded extension disrupted the replacement connection");
 

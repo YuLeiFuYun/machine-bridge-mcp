@@ -10,7 +10,7 @@
 
 ### Architecture, security, tests, and documentation
 
-- Extract browser command normalization into a focused local module and isolate trusted input in a fixed extension module. Add a versioned extension capability handshake, stale-build reload guidance, explicit keepalive handling, and replacement validation that preserves the current compatible connection until the candidate is accepted. Preserve resource-backed secrets/files, bounded broker messages, cancellation, source limits, and the existing owner-only pairing model.
+- Extract browser command normalization into a focused local module and isolate trusted input in a fixed extension module. Add a versioned extension capability handshake, stale-build reload guidance, explicit keepalive handling, and replacement validation that preserves the current compatible connection until the candidate is accepted; accepted replacements reject in-flight direct and proxied requests with retry guidance instead of leaving them to time out. Preserve resource-backed secrets/files, strict action/value validation, bounded broker messages, cancellation, source limits, and the existing owner-only pairing model.
 - Add behavior-level tests for command contracts, trusted-input command sequences and cleanup, semantic-ref stability, deterministic scrolling, obscured-target waiting, stale refs, broker routing, catalog parity, and architecture invariants. Update browser setup, permission, security, architecture, testing, and tool documentation.
 
 ## 0.13.0 - 2026-07-13

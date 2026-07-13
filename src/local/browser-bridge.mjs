@@ -110,6 +110,7 @@ export class BrowserBridgeManager {
         "Open the browser extensions page and enable developer mode.",
         "Load the unpacked extension from extension_path once.",
         "Open pairing_url; the installed extension stores the loopback endpoint and token locally.",
+        "After upgrades, reload the unpacked extension and accept any newly requested browser permission.",
       ],
     };
   }
@@ -179,7 +180,9 @@ export class BrowserBridgeManager {
       payload.value = boundedValue(await this.readResourceText(validateResource(args.value_resource)), "value_resource");
     }
     if (payload.value !== null && !["fill", "select", "press", "type_text"].includes(action)) throw new Error(`value is not valid for browser action '${action}'`);
-    const response = await this.request("action", payload, clampInt(args.timeout_seconds, 30, 1, 120), context);
+    const pageAction = !["navigate", "reload", "back", "forward"].includes(action);
+    const defaultTimeout = pageAction ? Math.min(120, Math.max(30, payload.elementTimeoutMs / 1000 + 5)) : 30;
+    const response = await this.request("action", payload, clampInt(args.timeout_seconds, defaultTimeout, 1, 120), context);
     return {
       ...response,
       value_source: args.value_resource !== undefined ? "local-resource" : payload.value === null ? "none" : "mcp-argument",
@@ -209,6 +212,7 @@ export class BrowserBridgeManager {
       }
       const action = input.action === undefined ? "fill" : normalizeFormAction(input.action);
       if (value === null && !["check", "uncheck", "click"].includes(action)) throw new Error(`fields[${index}] requires value or value_resource`);
+      if (value !== null && !["fill", "select"].includes(action)) throw new Error(`fields[${index}] value is not valid for action '${action}'`);
       fields.push({
         selector: normalizeBrowserSelector(input.selector, action),
         value,
@@ -216,6 +220,7 @@ export class BrowserBridgeManager {
         sensitive: input.sensitive === true || input.value_resource !== undefined,
       });
     }
+    const elementTimeoutSeconds = clampInt(args.element_timeout_seconds, 10, 1, 60);
     return this.request("fill_form", {
       tabId: optionalInteger(args.tab_id, "tab_id", 1, Number.MAX_SAFE_INTEGER),
       frameId: optionalInteger(args.frame_id, "frame_id", 0, Number.MAX_SAFE_INTEGER),
@@ -223,8 +228,8 @@ export class BrowserBridgeManager {
       submit: args.submit === true,
       submitSelector: args.submit_selector ? normalizeBrowserSelector(args.submit_selector, "click") : null,
       waitFor: normalizeNavigationWait(args.wait_for),
-      elementTimeoutMs: clampInt(args.element_timeout_seconds, 10, 1, 60) * 1000,
-    }, clampInt(args.timeout_seconds, 60, 1, 180), context);
+      elementTimeoutMs: elementTimeoutSeconds * 1000,
+    }, clampInt(args.timeout_seconds, Math.max(60, elementTimeoutSeconds + 5), 1, 180), context);
   }
 
   async uploadFiles(args = {}, context = {}) {
@@ -248,13 +253,14 @@ export class BrowserBridgeManager {
         data: resource.buffer.toString("base64"),
       });
     }
+    const elementTimeoutSeconds = clampInt(args.element_timeout_seconds, 10, 1, 60);
     const result = await this.request("upload_files", {
       tabId: optionalInteger(args.tab_id, "tab_id", 1, Number.MAX_SAFE_INTEGER),
       frameId: optionalInteger(args.frame_id, "frame_id", 0, Number.MAX_SAFE_INTEGER),
       selector: normalizeBrowserSelector(args.selector, "fill"),
       files,
-      elementTimeoutMs: clampInt(args.element_timeout_seconds, 10, 1, 60) * 1000,
-    }, clampInt(args.timeout_seconds, 60, 1, 180), context);
+      elementTimeoutMs: elementTimeoutSeconds * 1000,
+    }, clampInt(args.timeout_seconds, Math.max(60, elementTimeoutSeconds + 5), 1, 180), context);
     return { ...result, resource_names: args.resources.map(String), resource_contents_exposed: false };
   }
 
@@ -409,14 +415,15 @@ export class BrowserBridgeManager {
         }
         const message = parsed.message;
         if (!settled) {
-          if (message.type !== "hello" || message.role !== "runtime") {
+          if (message.type !== "hello" || message.role !== "runtime" || message.protocol !== 1) {
             closeProtocolSocket(ws, 1002, "runtime hello required");
             return;
           }
           this.upstream = ws;
-          this.proxyExtensionInfo = message.extension_connected === true ? normalizeExtensionInfo(message.extension_info) : null;
-          this.proxyExtensionConnected = message.extension_connected === true && Boolean(this.proxyExtensionInfo);
-          this.proxyExtensionReloadRequired = message.extension_reload_required === true;
+          const claimedExtension = message.extension_connected === true;
+          this.proxyExtensionInfo = claimedExtension ? normalizeCompatibleExtensionInfo(message.extension_info) : null;
+          this.proxyExtensionConnected = claimedExtension && Boolean(this.proxyExtensionInfo);
+          this.proxyExtensionReloadRequired = message.extension_reload_required === true || (claimedExtension && !this.proxyExtensionInfo);
           finish(true);
           return;
         }
@@ -479,11 +486,7 @@ export class BrowserBridgeManager {
       this.socket = null;
       this.extensionInfo = null;
       this.rejectPending("browser extension disconnected");
-      for (const [id, route] of this.proxyRoutes) {
-        clearTimeout(route.timeout);
-        try { route.socket.send(JSON.stringify({ type: "response", id: route.id, ok: false, error: "browser extension disconnected" })); } catch {}
-        this.proxyRoutes.delete(id);
-      }
+      this.rejectProxyRoutes("browser extension disconnected");
       this.broadcastRuntimeStatus(false);
     });
     ws.on("error", () => {});
@@ -515,7 +518,11 @@ export class BrowserBridgeManager {
       const previous = this.socket;
       this.socket = socket;
       this.extensionInfo = info;
-      if (previous && previous !== socket && previous.readyState === 1) previous.close(4001, "superseded");
+      if (previous && previous !== socket) {
+        this.rejectPending("browser extension was replaced; retry the browser request");
+        this.rejectProxyRoutes("browser extension was replaced; retry the browser request");
+        if (previous.readyState === 1) previous.close(4001, "superseded");
+      }
       this.broadcastRuntimeStatus(true);
       return;
     }
@@ -599,9 +606,10 @@ export class BrowserBridgeManager {
 
   handleUpstreamMessage(message) {
     if (message.type === "status" && typeof message.extension_connected === "boolean") {
-      this.proxyExtensionInfo = message.extension_connected ? normalizeExtensionInfo(message.extension_info) : null;
-      this.proxyExtensionConnected = message.extension_connected && Boolean(this.proxyExtensionInfo);
-      this.proxyExtensionReloadRequired = message.extension_reload_required === true;
+      const claimedExtension = message.extension_connected === true;
+      this.proxyExtensionInfo = claimedExtension ? normalizeCompatibleExtensionInfo(message.extension_info) : null;
+      this.proxyExtensionConnected = claimedExtension && Boolean(this.proxyExtensionInfo);
+      this.proxyExtensionReloadRequired = message.extension_reload_required === true || (claimedExtension && !this.proxyExtensionInfo);
       if (!this.proxyExtensionConnected) this.rejectPending("browser extension disconnected");
       return true;
     }
@@ -679,6 +687,14 @@ export class BrowserBridgeManager {
     this.pending.clear();
   }
 
+  rejectProxyRoutes(message) {
+    for (const [id, route] of this.proxyRoutes) {
+      clearTimeout(route.timeout);
+      safeSocketSend(route.socket, { type: "response", id: route.id, ok: false, error: message });
+      this.proxyRoutes.delete(id);
+    }
+  }
+
   stop() {
     this.stopping = true;
     clearTimeout(this.recoveryTimer);
@@ -725,6 +741,13 @@ export class BrowserBridgeManager {
       throw new Error(`${tool} requires the canonical full profile`);
     }
   }
+}
+
+function normalizeCompatibleExtensionInfo(value) {
+  const info = normalizeExtensionInfo(value);
+  if (!info || info.protocol !== BROWSER_EXTENSION_PROTOCOL) return null;
+  if (REQUIRED_EXTENSION_CAPABILITIES.some((capability) => !info.capabilities.includes(capability))) return null;
+  return info;
 }
 
 function parseExtensionHello(message) {
