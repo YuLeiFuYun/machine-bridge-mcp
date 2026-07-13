@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -75,8 +75,9 @@ function collectCoverage(directory) {
     for (const script of report.result || []) {
       if (!String(script.url).startsWith("file://")) continue;
       const absolute = fileURLToPath(script.url);
-      if (!absolute.startsWith(`${root}/`)) continue;
-      const file = relative(root, absolute);
+      const repositoryRelative = relative(root, absolute);
+      if (!repositoryRelative || repositoryRelative === ".." || repositoryRelative.startsWith(`..${sep}`) || isAbsolute(repositoryRelative)) continue;
+      const file = repositoryRelative.split(sep).join("/");
       if (!file.startsWith("src/")) continue;
       let entry = scripts.get(file);
       if (!entry) {
