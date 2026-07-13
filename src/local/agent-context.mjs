@@ -25,6 +25,35 @@ const MAX_COMMAND_ARGV = 128;
 const MAX_COMMAND_ARGUMENT_BYTES = 256 * 1024;
 const COMMAND_NAME_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 const TOKEN_STOP_WORDS = new Set(["the", "and", "for", "with", "from", "this", "that", "use", "using", "into", "of", "to", "a", "an", "in", "on", "is", "are", "or", "及", "和", "的", "了", "在", "用", "使用", "进行", "根据"]);
+const ENGLISH_TOKEN_CANONICAL = new Map([
+  ["created", "create"], ["creating", "create"], ["creation", "create"], ["creator", "create"],
+  ["improved", "improve"], ["improving", "improve"], ["improvement", "improve"],
+  ["installed", "install"], ["installing", "install"], ["installation", "install"], ["installer", "install"],
+  ["searched", "search"], ["searching", "search"], ["finder", "find"],
+  ["documentation", "docs"], ["document", "docs"], ["documents", "docs"],
+  ["validated", "verify"], ["validate", "verify"], ["validation", "verify"], ["verification", "verify"],
+  ["factcheck", "verify"], ["fact-check", "verify"], ["testing", "test"], ["tests", "test"],
+  ["building", "build"], ["built", "build"], ["deployment", "deploy"], ["deployed", "deploy"],
+]);
+const HAN_TOKEN_ALIASES = Object.freeze([
+  [/创建|新建|编写/u, ["create", "creator"]],
+  [/改进|优化|更新|维护/u, ["improve", "update"]],
+  [/技能/u, ["skill"]],
+  [/安装/u, ["install", "installer"]],
+  [/部署/u, ["deploy", "deployment"]],
+  [/查找|搜索|检索/u, ["search", "find"]],
+  [/最新|当前/u, ["latest", "current"]],
+  [/官方/u, ["official"]],
+  [/文档|资料/u, ["docs", "documentation"]],
+  [/事实核查|核查|验证|校验/u, ["verify", "factcheck"]],
+  [/测试/u, ["test"]],
+  [/前端/u, ["frontend"]],
+  [/设计/u, ["design"]],
+  [/邮件|邮箱/u, ["email"]],
+  [/浏览器|网页|网站/u, ["browser", "web"]],
+  [/性能/u, ["performance"]],
+  [/安全|漏洞/u, ["security", "audit"]],
+]);
 const CONFIG_KEYS = new Set(["version", "builtin_instructions", "automatic_project_context", "model_instructions_file", "instruction_files", "instruction_max_bytes", "skill_roots", "commands"]);
 const COMMAND_KEYS = new Set(["description", "argv", "cwd", "timeout_seconds", "allow_extra_args"]);
 
@@ -739,9 +768,11 @@ function relevanceScore(task, candidate, identity = "") {
   const taskTokens = tokenize(task);
   const candidateTokens = tokenize(candidate);
   if (!taskTokens.size || !candidateTokens.size) return 0;
+  const identityTokens = tokenize(identity);
   let score = 0;
   for (const token of taskTokens) {
     if (candidateTokens.has(token)) score += token.length >= 6 ? 2 : 1;
+    if (identityTokens.has(token)) score += token.length >= 6 ? 4 : 3;
   }
   const taskComparable = comparableText(task);
   const candidateComparable = comparableText(candidate);
@@ -764,22 +795,29 @@ function tokenize(value) {
   const tokens = new Set();
   for (const raw of text.match(/[a-z0-9_][a-z0-9_.-]{1,}/g) || []) {
     const token = raw.replace(/^[.-]+|[.-]+$/g, "");
-    if (token.length >= 2 && !TOKEN_STOP_WORDS.has(token)) tokens.add(token);
-    for (const part of token.split(/[._-]+/)) {
-      if (part.length >= 2 && !TOKEN_STOP_WORDS.has(part)) tokens.add(part);
-    }
+    addToken(tokens, token);
+    for (const part of token.split(/[._-]+/)) addToken(tokens, part);
   }
   for (const sequence of text.match(/[\p{Script=Han}]{1,}/gu) || []) {
-    if (!TOKEN_STOP_WORDS.has(sequence)) tokens.add(sequence);
+    addToken(tokens, sequence);
     const minimumSize = sequence.length === 1 ? 1 : 2;
     for (let size = minimumSize; size <= Math.min(3, sequence.length); size += 1) {
-      for (let index = 0; index + size <= sequence.length; index += 1) {
-        const token = sequence.slice(index, index + size);
-        if (!TOKEN_STOP_WORDS.has(token)) tokens.add(token);
-      }
+      for (let index = 0; index + size <= sequence.length; index += 1) addToken(tokens, sequence.slice(index, index + size));
     }
   }
+  for (const [pattern, aliases] of HAN_TOKEN_ALIASES) {
+    if (!pattern.test(text)) continue;
+    for (const alias of aliases) addToken(tokens, alias);
+  }
   return tokens;
+}
+
+function addToken(tokens, raw) {
+  const token = String(raw || "").replace(/^[.-]+|[.-]+$/g, "");
+  if (token.length < 2 || TOKEN_STOP_WORDS.has(token)) return;
+  tokens.add(token);
+  const canonical = ENGLISH_TOKEN_CANONICAL.get(token);
+  if (canonical) tokens.add(canonical);
 }
 
 function recommendTools(task, { commandsAvailable, commandRelevant, skillRelevant }) {

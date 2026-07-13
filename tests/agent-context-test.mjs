@@ -46,6 +46,18 @@ Follow the sample workflow.
 `, "utf8");
   await writeFile(join(workspace, ".codex", "skills", "sample", "scripts", "run.mjs"), "console.log('sample');\n", "utf8");
   await writeFile(join(workspace, ".codex", "skills", "invalid", "SKILL.md"), "---\nname: invalid-skill\n---\n", "utf8");
+  for (const fixture of [
+    ["skill-creator", "Guide for creating and updating reusable local skills with clear instructions and tests.", "Use the skill creator workflow."],
+    ["frontend-design", "Create production-grade frontend interfaces, pages, dashboards, and web applications.", "Use the frontend design workflow."],
+    ["smart-search-cli", "CLI-first current web search, official documentation retrieval, and fact checking.", "Use the smart search workflow."],
+    ["openai-docs", "Use official OpenAI documentation for OpenAI product and API questions.", "Use the OpenAI docs workflow."],
+    ["skill-installer", "Install local skills from a curated list or repository path.", "Use the skill installer workflow."],
+  ]) {
+    const [name, description, body] = fixture;
+    const directory = join(workspace, ".codex", "skills", name);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`, "utf8");
+  }
 
   await writeFile(join(workspace, ".machine-bridge", "agent.json"), JSON.stringify({
     version: 1,
@@ -105,7 +117,7 @@ Follow the sample workflow.
     assert(context.instruction_files.length === 2, "instruction file precedence chain is incomplete");
     assert(context.instruction_files.map((item) => item.path).join(",") === "PROJECT.md,packages/example/LOCAL.md", "instruction candidate priority or root-to-leaf order is incorrect");
     assert(context.effective_instructions.indexOf("root project") < context.effective_instructions.indexOf("nested local"), "effective instructions are not root-to-leaf");
-    assert(context.skills.length === 1 && context.skills[0].name === "sample-skill", "agent context did not summarize configured skills");
+    assert(context.skills.some((skill) => skill.name === "sample-skill"), "agent context did not summarize configured skills");
     assert(context.skill_warnings.length === 1 && context.skill_warnings[0].message.includes("requires non-empty name and description"), "invalid skill metadata was not reported and skipped");
     const contextCommandNames = new Set(context.commands.map((command) => command.name));
     assert(contextCommandNames.has("echo-args") && contextCommandNames.has("package.check") && contextCommandNames.has("package.test") && contextCommandNames.has("package.probe"), "automatic and explicit command discovery is incomplete");
@@ -169,6 +181,16 @@ description: 审查部署流程并验证发布配置。
     const chineseUnrelated = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "在浏览器里填写新闻表单" });
     assert(chineseUnrelated.selected_skill === null, "Chinese task matching selected an unrelated skill from weak single-character overlap");
     assert(!chineseUnrelated.recommended_tools.includes("load_local_skill"), "weak skill overlap produced a misleading load_local_skill recommendation");
+
+    const chineseSkillCreation = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "请创建一个可复用的本地 skill，包含清晰说明和测试" });
+    assert(chineseSkillCreation.selected_skill?.name === "skill-creator", "Chinese skill-creation intent did not select skill-creator");
+    assert(chineseSkillCreation.selected_skill?.instructions.includes("skill creator workflow"), "selected skill instructions were not loaded automatically");
+    const englishSkillCreation = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "Create a reusable local skill with clear instructions and tests" });
+    assert(englishSkillCreation.selected_skill?.name === "skill-creator", "identity weighting did not disambiguate skill-creator from generic create-oriented skills");
+    const chineseSearch = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "查找最新官方 API 文档并做事实核查" });
+    assert(chineseSearch.selected_skill?.name === "smart-search-cli", "Chinese search intent did not select smart-search-cli");
+    const chineseInstall = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "安装一个适合处理 PDF 的 skill" });
+    assert(chineseInstall.selected_skill?.name === "skill-installer", "Chinese skill-install intent did not select skill-installer");
 
     const commands = await runtime.executeTool("list_local_commands", { path: "packages/example" });
     assert(commands.commands.find((item) => item.name === "echo-args")?.timeout_seconds === 7, "list_local_commands did not apply nearest manifest precedence");

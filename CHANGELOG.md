@@ -6,6 +6,7 @@
 
 - Register bounded `package.*` commands from safe root `package.json` script names, while preserving explicit manifest override/deletion and never injecting script bodies. Extend default skill discovery to project `.codex/skills` and unrestricted `CODEX_HOME/skills` compatibility roots.
 - Match installed applications by their actual names for every canonical-full task instead of requiring generic “app/window” words, with a bounded discovery cache to avoid repeated filesystem scans.
+- Normalize a bounded set of common English inflections and Chinese workflow intents before skill/command ranking, and weight capability-name matches above incidental description overlap. This fixes Chinese selection of `skill-creator`, `smart-search-cli`, and `skill-installer` and prevents generic “create” wording from preferring unrelated design skills.
 - Record privacy-preserving bootstrap and task-resolution telemetry in `server_info` and `project_overview`: counts, timestamps, source/load flags, selected capability metadata, and a runtime-keyed task fingerprint rather than raw task text. Suppress weak skill-overlap recommendations and clarify that the MCP host still controls whether the resolver and recommended tools are invoked.
 
 ### Process and network lifecycle
