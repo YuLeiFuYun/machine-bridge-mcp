@@ -22,14 +22,20 @@ export async function isRegularNonSymlink(filePath) {
 }
 
 export async function readOptionalRegularUtf8(filePath, maxBytes) {
-  const info = await lstat(filePath).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
-  if (!info || info.isSymbolicLink() || !info.isFile() || info.size > maxBytes) return null;
   const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0))
     .catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
   if (!handle) return null;
   try {
-    const current = await handle.stat();
-    if (!current.isFile() || current.size > maxBytes) return null;
+    let pathInfo;
+    let current;
+    try {
+      [pathInfo, current] = await Promise.all([lstat(filePath), handle.stat()]);
+    } catch (error) {
+      if (skippableMetadataError(error)) return null;
+      throw error;
+    }
+    if (pathInfo.isSymbolicLink() || !pathInfo.isFile() || !current.isFile()
+        || pathInfo.dev !== current.dev || pathInfo.ino !== current.ino || current.size > maxBytes) return null;
     const buffer = Buffer.alloc(current.size);
     let offset = 0;
     while (offset < buffer.length) {

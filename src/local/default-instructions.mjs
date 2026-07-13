@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, opendir } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { packageScriptDisplayCommand, readProjectPackageMetadata, safeVersionValue } from "./project-package.mjs";
-import { isPlainRecord, isRegularNonSymlink, readOptionalRegularUtf8, safeSingleLine, skippableMetadataError } from "./project-metadata.mjs";
+import { isRegularNonSymlink, readOptionalRegularUtf8, safeSingleLine, skippableMetadataError } from "./project-metadata.mjs";
 
 const MAX_PROJECT_CONTEXT_BYTES = 16 * 1024;
 const MAX_SCRIPT_NAMES = 24;
