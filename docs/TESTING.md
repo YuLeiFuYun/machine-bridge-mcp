@@ -17,11 +17,12 @@ The suite includes:
 - generated Cloudflare Worker types and strict TypeScript checking, including unused-local and unused-parameter rejection;
 - recursive syntax validation for every JavaScript file under the shipped/runtime/test roots plus the shell wrapper;
 - shared tool-catalog schema, annotation, and profile-inventory checks;
-- default working-agreement injection without user files, bounded automatic project metadata, script-body non-disclosure, user-global opt-out, repository opt-out rejection, global `model_instructions_file` injection in stdio/remote initialization, hierarchical precedence, live project/skill rescanning and fingerprints, automatic task ranking/loading, command override/removal, direct argv handling, timeout ceilings, and execution-profile denial;
+- default working-agreement injection without user files, bounded automatic project metadata, script-body non-disclosure, user-global opt-out, repository opt-out rejection, global `model_instructions_file` injection in stdio/remote initialization, hierarchical precedence, `.agents/skills` and `.codex/skills` compatibility discovery, live project/skill rescanning and fingerprints, automatic task ranking/loading with English inflection normalization, bounded Chinese/English intent aliases, capability-name weighting, and selected-skill instruction loading; automatic `package.*` commands with English/Chinese workflow-intent matching and Windows command-shim execution, explicit command override/removal, direct argv handling, timeout ceilings, runtime-keyed routing-telemetry privacy, and execution-profile denial;
 - concurrent complete-before-visible lock claims, atomic replacement under active readers, malformed-lock grace, snapshot/token-safe reclamation, absolute-age expiry, PID-reuse detection, and bounded startup-lock waiting;
 - foreground takeover of active and orphaned background daemons, legacy lock identification from canonicalized process arguments, foreground-process protection, actual-PID exit waiting, POSIX non-escalating timeout behavior, Windows verified-daemon stop semantics, daemon lock mode/version/process-start metadata, launchd service-target semantics, and silent idempotent duplicate service starts;
 - fail-closed service lifecycle ordering for provider-stop, all-workspace daemon-stop, and definition removal, including platform/daemon/removal failure injection and normalized macOS/systemd/Windows results;
-- machine-level browser-broker ownership/client proxying, authenticated extension origin/subprotocol, non-cacheable local pairing, pairing-token non-disclosure, resource-backed upload routing, broker result redaction, pre-registered runtime-handshake listeners, and bounded socket/HTTP waits;
+- machine-level browser-broker ownership/client proxying, authenticated extension origin/subprotocol, non-cacheable local pairing, pairing-token non-disclosure, resource-backed upload routing, broker result redaction, pre-registered runtime-handshake listeners, bounded socket/HTTP waits, installed-application discovery caching, and name-based task matching;
+- relay environment-proxy direct/bypass/agent selection, unsupported proxy rejection, fail-fast invalid configuration, and route observability without endpoint or credential disclosure;
 - canonical path and symbolic-link escape tests;
 - relative-path privacy and error-path redaction tests;
 - atomic create/update, optimistic hash, exact edit, and patch transaction tests;
@@ -31,7 +32,7 @@ The suite includes:
 - nested Git repository detection and helper suppression;
 - author-email privacy in `git_log`;
 - isolated command HOME/temp/cache behavior;
-- one-shot timeout, descendant process-group/tree termination including descendants that ignore graceful shutdown, cancellation, and process-session interaction;
+- one-shot timeout, descendant process-group/tree termination including descendants that ignore graceful shutdown after the direct child has already exited, cancellation, and process-session interaction;
 - layered fixed runtime diagnostics for filesystem, direct process, shell, managed-job storage, and resource availability;
 - local resource CLI registration, permission checks, dynamic reload, state-path redaction, and content non-disclosure;
 - real Ed25519 and RSA generation, idempotent reuse, public/private correspondence, mode enforcement, incomplete/mismatched/symlink rejection, and private-content non-disclosure;

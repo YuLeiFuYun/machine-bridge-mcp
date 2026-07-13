@@ -14,7 +14,7 @@ This approximates a local coding agent without pretending that the MCP server ow
 - `list_local_commands` returns effective registered commands.
 - `run_local_command` executes a registered direct-argv command when policy permits.
 
-Both stdio and remote Worker connection initialization attempt `session_bootstrap`. Its instruction text is appended to the MCP `initialize` result. Because a host may reuse one MCP connection across conversations, the explicit tool and per-task `resolve_task_capabilities` call remain necessary to refresh and reapply instructions reliably.
+Both stdio and remote Worker connection initialization attempt `session_bootstrap`. Its instruction text is appended to the MCP `initialize` result. Because a host may reuse one MCP connection across conversations, the explicit tool and per-task `resolve_task_capabilities` call remain necessary to refresh and reapply instructions reliably. `server_info.observability.capability_routing` and `project_overview.capabilityRouting` report whether those calls reached the local runtime, their counts and timestamps, loaded-source flags, selected capability metadata, and a runtime-keyed HMAC task fingerprint. Raw task text is not retained.
 
 ## Useful defaults without configuration
 
@@ -171,8 +171,12 @@ Use `AGENTS.md` for durable facts a new contributor or agent must know: validate
 Without explicit `skill_roots`, discovery scans:
 
 - target-to-root `.agents/skills` directories;
+- target-to-root `.codex/skills` compatibility directories;
 - under unrestricted policy, `~/.agents/skills`;
+- under unrestricted policy, `CODEX_HOME/skills` (normally `~/.codex/skills`);
 - under unrestricted policy on Unix-like systems, `/etc/codex/skills`.
+
+Canonical paths are deduplicated, so a compatibility symlink from `.agents/skills` to `.codex/skills` does not duplicate a skill.
 
 A skill directory contains `SKILL.md` or `skill.md` with simple front matter:
 
@@ -189,15 +193,21 @@ No persistent skill or project-context index is trusted as authoritative. `sessi
 
 ## Progressive disclosure and task selection
 
-`agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions and command names/descriptions/argv, returns matches with scores, and loads the leading skill only when its relevance threshold is met. Hyphens, underscores, dots, and whitespace are normalized for matching, while an explicitly named skill or registered command receives a strong deterministic boost. Thus a task that says “agents progressive disclosure” can match `agents-progressive-disclosure` without relying on generic description words.
+`agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions and command names/descriptions/argv, returns matches with scores, and loads the leading skill only when its relevance threshold is met. Under canonical `full`, it also compares the task with installed application names on every call; application discovery is cached briefly and refreshed after a bounded interval.
 
-This ranking is deterministic local assistance, not semantic certainty. The model must still evaluate whether the selected skill applies. Machine Bridge does not execute skill scripts implicitly and does not fabricate a dynamically named MCP tool per skill.
+Matching remains deterministic and local. Hyphens, underscores, dots, and whitespace are normalized; common English inflections are reduced to a small canonical form; and a bounded Chinese/English workflow vocabulary covers creation, improvement, installation, search, current/official documentation, verification, testing, frontend/design, browser/web, email, performance, and security intents. Capability-name token matches receive more weight than incidental words in a long description. This lets Chinese tasks select English-metadata skills such as `skill-creator`, `smart-search-cli`, and `skill-installer`, while avoiding the prior tie where generic “create” wording could select `frontend-design`. An explicitly named skill or registered command still receives the strongest deterministic boost.
 
-## Registered commands
+This ranking is deterministic local assistance, not semantic certainty. Weak positive matches remain visible for diagnosis, but only a skill meeting the selection threshold is recommended for loading. The model must still evaluate whether the selected skill applies. Machine Bridge does not execute skill scripts implicitly and does not fabricate a dynamically named MCP tool per skill.
 
-`run_local_command` uses direct argv spawning rather than a shell. The manifest controls working directory, timeout ceiling, and whether caller arguments are accepted. A caller may reduce but not increase the timeout.
+## Registered and automatic package commands
 
-Registered commands are workflow aliases, not an approval boundary or sandbox. Package scripts, interpreters, compilers, and executables retain local-user authority. Use `review` or `edit`, or external VM/container isolation, for untrusted content.
+`run_local_command` spawns the registered argv directly rather than parsing caller text through a Machine Bridge shell. Manifest commands control working directory, timeout ceiling, and whether caller arguments are accepted. A caller may reduce but not increase the timeout.
+
+When the project root has a valid, non-symbolic-link `package.json`, safe script names are exposed automatically as `package.<normalized-name>` commands. The manager is selected from the validated `packageManager` field or one unambiguous lockfile; npm is used only when no manager signal exists. Conflicting lockfiles suppress automatic commands until the ambiguity is resolved. Only script names and bounded built-in workflow-intent terms are exposed. Script bodies and dependency values are not injected. Automatic commands accept no caller-supplied extra arguments, use the project root as cwd, and have a bounded timeout. Explicit manifests are applied afterward, so they can override or delete an automatic command by name.
+
+On Unix-like systems the package-manager executable is spawned directly. On Windows, npm/pnpm/yarn/bun are command shims rather than native executables, so the bridge uses a fixed `cmd.exe /d /s /c` command assembled only from an allowlisted manager and a validated script name; callers still cannot append arguments or shell syntax. This wrapper is transport compatibility, not a trust boundary.
+
+Directly invoking `npm run`, `pnpm run`, `yarn run`, or `bun run` does not make the repository script itself shell-free: package managers execute repository-controlled script bodies according to their own semantics. All registered commands are workflow aliases, not an approval boundary or sandbox. Package scripts, interpreters, compilers, and executables retain local-user authority. Use `review` or `edit`, or external VM/container isolation, for untrusted content.
 
 ## Recommended host workflow
 

@@ -39,6 +39,8 @@ A TCP/WebSocket `open` event is only transport availability. The daemon is repor
 
 Brief network interruptions are expected on laptop network changes, Worker deployment, proxy rotation, and ordinary internet transport. They are handled as follows:
 
+- proxy selection records only `direct` or `proxy` at debug level; proxy URLs, usernames, passwords, and headers are never log fields;
+- invalid proxy URLs or unsupported schemes fail fast with a sanitized corrective error rather than repeated reconnect warnings;
 - the raw close code, close reason, error class, connected duration, and retry delay are debug-only;
 - a brief interruption that reconnects within the grace period produces no `info` or `warn` line;
 - an outage that remains unresolved for 10 seconds produces a user-readable warning stating the duration, reconnect attempt count, classified cause, and automatic recovery behavior;
@@ -118,7 +120,7 @@ Each managed job has owner-only runner diagnostic logs. Child-step output is ret
 
 Machine Bridge does not classify filenames as sensitive and does not block credential-looking names under canonical `full`. An MCP host, connector, model provider, desktop application, operating system, or endpoint-security layer may independently reject a request before it reaches Machine Bridge.
 
-Use `server_info`, `machine-mcp status`, `machine-mcp doctor`, and `diagnose_runtime` to distinguish local policy from host-side enforcement. Changing the Machine Bridge profile cannot override another layer.
+Use `server_info`, `project_overview`, `machine-mcp status`, `machine-mcp doctor`, and `diagnose_runtime` to distinguish local policy from host-side enforcement. Capability-routing status is returned on demand rather than written as task logs; it stores a runtime-keyed task fingerprint, not raw task text. Changing the Machine Bridge profile cannot override another layer.
 
 ## Adding or changing logs
 

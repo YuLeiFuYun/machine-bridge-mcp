@@ -3,11 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentContextManager, parseSkillMetadata } from "../src/local/agent-context.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
+import { packageScriptCommand } from "../src/local/project-package.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-agent-context-"));
 const workspace = join(root, "workspace");
 const jobs = join(root, "jobs");
 const nested = join(workspace, "packages", "example");
+
+const windowsPackageCommand = packageScriptCommand("npm", "test", "win32", "cmd.exe");
+if (JSON.stringify(windowsPackageCommand) !== JSON.stringify(["cmd.exe", "/d", "/s", "/c", "npm run test"])) {
+  throw new Error("Windows package command did not use the fixed command-shell wrapper");
+}
 
 try {
   await mkdir(join(workspace, ".git"), { recursive: true });
@@ -21,12 +27,14 @@ try {
   await writeFile(join(workspace, "AGENTS.md"), "root agents\n", "utf8");
   await writeFile(join(workspace, "README.md"), "# Example project\n", "utf8");
   await writeFile(join(workspace, "package-lock.json"), "{}\n", "utf8");
+  await writeFile(join(workspace, ".node-version"), "26.5.0\n", "utf8");
   await writeFile(join(workspace, "package.json"), JSON.stringify({
     packageManager: "npm@12.1.0",
     engines: { node: ">=26" },
     scripts: {
       check: "node scripts/private-check-body.mjs",
       test: "node --test",
+      probe: "node -e \"process.stdout.write('package-probe')\"",
     },
   }, null, 2), "utf8");
   await writeFile(join(workspace, ".github", "workflows", "ci.yml"), "name: ci\n", "utf8");
@@ -44,6 +52,18 @@ Follow the sample workflow.
 `, "utf8");
   await writeFile(join(workspace, ".codex", "skills", "sample", "scripts", "run.mjs"), "console.log('sample');\n", "utf8");
   await writeFile(join(workspace, ".codex", "skills", "invalid", "SKILL.md"), "---\nname: invalid-skill\n---\n", "utf8");
+  for (const fixture of [
+    ["skill-creator", "Guide for creating and updating reusable local skills with clear instructions and tests.", "Use the skill creator workflow."],
+    ["frontend-design", "Create production-grade frontend interfaces, pages, dashboards, and web applications.", "Use the frontend design workflow."],
+    ["smart-search-cli", "CLI-first current web search, official documentation retrieval, and fact checking.", "Use the smart search workflow."],
+    ["openai-docs", "Use official OpenAI documentation for OpenAI product and API questions.", "Use the OpenAI docs workflow."],
+    ["skill-installer", "Install local skills from a curated list or repository path.", "Use the skill installer workflow."],
+  ]) {
+    const [name, description, body] = fixture;
+    const directory = join(workspace, ".codex", "skills", name);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`, "utf8");
+  }
 
   await writeFile(join(workspace, ".machine-bridge", "agent.json"), JSON.stringify({
     version: 1,
@@ -95,6 +115,7 @@ Follow the sample workflow.
     assert(context.builtin_instructions?.content.includes("Make the smallest coherent change"), "default working agreements were not injected");
     assert(context.automatic_project_context?.content.includes("npm run check"), "automatic project context omitted declared package scripts");
     assert(context.automatic_project_context?.content.includes("package-lock.json") && context.automatic_project_context?.content.includes(".github/workflows/ci.yml"), "automatic project context omitted lockfile or CI facts");
+    assert(context.automatic_project_context?.content.includes(".node-version") && context.automatic_project_context?.content.includes("26.5.0"), "automatic project context did not parse a bounded runtime-version hint");
     assert(!context.effective_instructions.includes("private-check-body.mjs"), "automatic project context leaked package script bodies");
     assert(context.effective_instructions.indexOf("Machine Bridge default working agreements") < context.effective_instructions.indexOf("Automatic project context"), "built-in defaults did not precede automatic project facts");
     assert(context.effective_instructions.indexOf("Automatic project context") < context.effective_instructions.indexOf("root project"), "explicit project instructions did not override automatic project facts");
@@ -102,10 +123,13 @@ Follow the sample workflow.
     assert(context.instruction_files.length === 2, "instruction file precedence chain is incomplete");
     assert(context.instruction_files.map((item) => item.path).join(",") === "PROJECT.md,packages/example/LOCAL.md", "instruction candidate priority or root-to-leaf order is incorrect");
     assert(context.effective_instructions.indexOf("root project") < context.effective_instructions.indexOf("nested local"), "effective instructions are not root-to-leaf");
-    assert(context.skills.length === 1 && context.skills[0].name === "sample-skill", "agent context did not summarize configured skills");
+    assert(context.skills.some((skill) => skill.name === "sample-skill"), "agent context did not summarize configured skills");
     assert(context.skill_warnings.length === 1 && context.skill_warnings[0].message.includes("requires non-empty name and description"), "invalid skill metadata was not reported and skipped");
-    assert(context.commands.length === 1 && context.commands[0].name === "echo-args", "nearest command override/deletion failed");
-    assert(context.commands[0].cwd === "packages/example", "registered command cwd was not resolved relative to its config scope");
+    const contextCommandNames = new Set(context.commands.map((command) => command.name));
+    assert(contextCommandNames.has("echo-args") && contextCommandNames.has("package.check") && contextCommandNames.has("package.test") && contextCommandNames.has("package.probe"), "automatic and explicit command discovery is incomplete");
+    assert(!contextCommandNames.has("fixed"), "nearest manifest command deletion failed");
+    assert(context.commands.find((command) => command.name === "echo-args")?.cwd === "packages/example", "registered command cwd was not resolved relative to its config scope");
+    assert(context.commands.find((command) => command.name === "package.check")?.source_type === "automatic-package-script", "automatic package command provenance is missing");
 
     const skills = await runtime.executeTool("list_local_skills", { path: "packages/example", query: "sample" });
     assert(skills.skills.length === 1, "list_local_skills did not find the sample skill");
@@ -120,6 +144,9 @@ Follow the sample workflow.
     assert(namedWithSpaces.selected_skill?.name === "sample-skill", "task capability resolver did not match a hyphenated skill name written with spaces");
     assert(resolved.effective_instructions.includes("root project") && resolved.effective_instructions.includes("nested local"), "task capability resolver omitted effective instructions for a reused host session");
     assert(resolved.recommended_tools.includes("run_local_command"), "task capability resolver did not recommend the registered command surface");
+    const chineseValidation = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "运行完整测试并检查代码质量" });
+    assert(chineseValidation.command_matches.some((command) => command.name === "package.check"), "Chinese validation intent did not match the automatic package check command");
+    assert(chineseValidation.recommended_tools.includes("run_local_command"), "Chinese validation intent did not recommend the registered command surface");
     let previousFingerprint = resolved.refresh.fingerprint;
     await writeFile(join(workspace, "package.json"), JSON.stringify({
       packageManager: "npm@12.1.0",
@@ -127,6 +154,7 @@ Follow the sample workflow.
       scripts: {
         check: "node scripts/private-check-body.mjs",
         test: "node --test",
+        probe: "node -e \"process.stdout.write('package-probe')\"",
         lint: "eslint .",
       },
     }, null, 2), "utf8");
@@ -158,9 +186,21 @@ description: 审查部署流程并验证发布配置。
     assert(chineseRelevant.selected_skill?.name === "deployment-review", "Chinese task matching did not select the relevant skill");
     const chineseUnrelated = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "在浏览器里填写新闻表单" });
     assert(chineseUnrelated.selected_skill === null, "Chinese task matching selected an unrelated skill from weak single-character overlap");
+    assert(!chineseUnrelated.recommended_tools.includes("load_local_skill"), "weak skill overlap produced a misleading load_local_skill recommendation");
+
+    const chineseSkillCreation = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "请创建一个可复用的本地 skill，包含清晰说明和测试" });
+    assert(chineseSkillCreation.selected_skill?.name === "skill-creator", "Chinese skill-creation intent did not select skill-creator");
+    assert(chineseSkillCreation.selected_skill?.instructions.includes("skill creator workflow"), "selected skill instructions were not loaded automatically");
+    const englishSkillCreation = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "Create a reusable local skill with clear instructions and tests" });
+    assert(englishSkillCreation.selected_skill?.name === "skill-creator", "identity weighting did not disambiguate skill-creator from generic create-oriented skills");
+    const chineseSearch = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "查找最新官方 API 文档并做事实核查" });
+    assert(chineseSearch.selected_skill?.name === "smart-search-cli", "Chinese search intent did not select smart-search-cli");
+    const chineseInstall = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "安装一个适合处理 PDF 的 skill" });
+    assert(chineseInstall.selected_skill?.name === "skill-installer", "Chinese skill-install intent did not select skill-installer");
 
     const commands = await runtime.executeTool("list_local_commands", { path: "packages/example" });
-    assert(commands.commands.length === 1 && commands.commands[0].timeout_seconds === 7, "list_local_commands did not apply nearest manifest precedence");
+    assert(commands.commands.find((item) => item.name === "echo-args")?.timeout_seconds === 7, "list_local_commands did not apply nearest manifest precedence");
+    assert(commands.commands.some((item) => item.name === "package.probe" && item.package_script === "probe"), "list_local_commands omitted the automatic package script command");
     const command = await runtime.executeTool("run_local_command", {
       path: "packages/example",
       name: "echo-args",
@@ -170,6 +210,12 @@ description: 审查部署流程并验证发布配置。
     assert(command.timeout_seconds === 7, "caller increased a registered command beyond its manifest timeout");
     assert(command.stdout.endsWith("\none;two|three"), "run_local_command used shell parsing or lost caller arguments");
     assert(command.cwd === "packages/example", "run_local_command used the wrong cwd");
+
+    const packageProbe = await runtime.executeTool("run_local_command", {
+      path: "packages/example",
+      name: "package.probe",
+    });
+    assert(packageProbe.stdout.includes("package-probe"), "automatic package command did not execute through the package manager");
 
     await expectReject(
       () => runtime.executeTool("run_local_command", { path: ".", name: "fixed", args: ["unexpected"] }),
@@ -219,6 +265,7 @@ description: 审查部署流程并验证发布配置。
   await writeFile(join(root, ".config", "machine-bridge-mcp", "agent.json"), JSON.stringify({ version: 1, model_instructions_file: "MODEL.md" }, null, 2), "utf8");
   await mkdir(join(compatWorkspace, ".git"), { recursive: true });
   await mkdir(join(compatSubdir, ".agents", "skills"), { recursive: true });
+  await mkdir(join(compatSubdir, ".codex", "skills", "direct-skill"), { recursive: true });
   await mkdir(codexHome, { recursive: true });
   await writeFile(join(compatWorkspace, "AGENTS.md"), "ignored root base\n", "utf8");
   await writeFile(join(compatWorkspace, "AGENTS.override.md"), "root override\n", "utf8");
@@ -226,6 +273,13 @@ description: 审查部署流程并验证发布配置。
   await writeFile(join(compatSubdir, "AGENTS.md"), "nested base\n", "utf8");
   await writeFile(join(codexHome, "AGENTS.md"), "ignored global base\n", "utf8");
   await writeFile(join(codexHome, "AGENTS.override.md"), "global override\n", "utf8");
+  await writeFile(join(compatSubdir, ".codex", "skills", "direct-skill", "SKILL.md"), `---
+name: direct-codex-skill
+description: A skill discovered directly from a project .codex/skills directory.
+---
+
+Use the direct Codex workflow.
+`, "utf8");
   const linkedSkillTarget = join(compatWorkspace, "shared-skill");
   await mkdir(linkedSkillTarget, { recursive: true });
   await writeFile(join(linkedSkillTarget, "SKILL.md"), `---
@@ -257,6 +311,7 @@ Use the linked workflow.
   assert(projectCompatContext.instruction_files[0].content === "root override\n", "project AGENTS.override.md did not win");
   assert(projectCompatContext.instruction_files[1].content === "nested base\n", "empty nested override did not fall back to AGENTS.md");
   if (linkedSkillAvailable) assert(projectCompatContext.skills.some((skill) => skill.name === "linked-skill"), "default ancestor .agents/skills discovery did not follow a repository skill symlink");
+  assert(projectCompatContext.skills.some((skill) => skill.name === "direct-codex-skill"), "default ancestor .codex/skills compatibility discovery failed");
 
   await mkdir(join(compatWorkspace, ".machine-bridge"), { recursive: true });
   await writeFile(join(compatWorkspace, ".machine-bridge", "agent.json"), JSON.stringify({
@@ -311,6 +366,22 @@ Use the linked workflow.
     && !hostileContext.effective_instructions.includes("malicious-body.mjs")
     && !hostileContext.effective_instructions.includes("other-body.mjs"),
   "hostile package metadata entered automatic project context");
+
+  const ambiguousPackageWorkspace = join(root, "ambiguous-package-workspace");
+  await mkdir(join(ambiguousPackageWorkspace, ".git"), { recursive: true });
+  await writeFile(join(ambiguousPackageWorkspace, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }), "utf8");
+  await writeFile(join(ambiguousPackageWorkspace, "package-lock.json"), "{}\n", "utf8");
+  await writeFile(join(ambiguousPackageWorkspace, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+  const ambiguousPackageManager = new AgentContextManager({
+    workspace: ambiguousPackageWorkspace,
+    policy: { unrestrictedPaths: false },
+    home: join(root, "empty-ambiguous-home"),
+    displayPath: (value) => value,
+    resolveExistingPath: async () => ambiguousPackageWorkspace,
+  });
+  const ambiguousPackageContext = await ambiguousPackageManager.agentContext({ path: "." });
+  assert(ambiguousPackageContext.automatic_project_context?.content.includes("Multiple JavaScript lockfiles"), "ambiguous package-manager state was not reported");
+  assert(!ambiguousPackageContext.commands.some((command) => command.name === "package.test"), "ambiguous package-manager state incorrectly defaulted an automatic command to npm");
 
   const optOutHome = join(root, "opt-out-home");
   const optOutWorkspace = join(root, "opt-out-workspace");

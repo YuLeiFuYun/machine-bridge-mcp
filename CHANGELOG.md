@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.13.0 - 2026-07-13
+
+### Automatic capability routing and observability
+
+- Register bounded `package.*` commands from safe root `package.json` script names, while preserving explicit manifest override/deletion and never injecting script bodies. Windows uses a fixed `cmd.exe` wrapper for package-manager shims; Unix keeps direct executable argv. Extend default skill discovery to project `.codex/skills` and unrestricted `CODEX_HOME/skills` compatibility roots.
+- Match installed applications by their actual names for every canonical-full task instead of requiring generic “app/window” words, with a bounded discovery cache to avoid repeated filesystem scans.
+- Normalize a bounded set of common English inflections and Chinese workflow intents before skill/command ranking, and weight capability-name matches above incidental description overlap. This fixes Chinese selection of `skill-creator`, `smart-search-cli`, and `skill-installer` and prevents generic “create” wording from preferring unrelated design skills.
+- Record privacy-preserving bootstrap and task-resolution telemetry in `server_info` and `project_overview`: counts, timestamps, source/load flags, selected capability metadata, and a runtime-keyed task fingerprint rather than raw task text. Suppress weak skill-overlap recommendations and clarify that the MCP host still controls whether the resolver and recommended tools are invoked.
+
+### Process and network lifecycle
+
+- Consolidate graceful process-tree termination plus forced escalation. Timeout, cancellation, and replacement now retain the escalation timer after the direct child exits, preventing a SIGTERM-resistant descendant with detached stdio from surviving as an orphan.
+- Add relay support for standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` routing through a reviewed HTTP(S) proxy agent. Invalid proxy URLs or unsupported proxy protocols fail fast with corrective guidance; status exposes only direct/proxy/invalid route state and never proxy URLs or credentials.
+
+### Architecture, tests, and documentation
+
+- Extract package metadata/command discovery and capability observation into focused modules, add domain-to-adapter import-boundary checks, remove duplicate object fields, and centralize reused metadata parsing.
+- Add behavior-level regression coverage for automatic package commands, direct `.codex/skills` compatibility, capability telemetry privacy, application-cache refresh, proxy selection/failure, and the direct-child-exits-first orphan-process boundary. Synchronize architecture, operations, logging, security, testing, and agent-context documentation.
+
 ## 0.12.2 - 2026-07-12
 
 ### Cross-platform persistence and browser reliability

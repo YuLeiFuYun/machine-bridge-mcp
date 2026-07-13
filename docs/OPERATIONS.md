@@ -15,6 +15,9 @@ machine-mcp service status
 | Result | Interpretation |
 |---|---|
 | `server_info` reports full and all relay tools, but the current session UI exposes fewer tools | Host/connector post-relay filtering; Machine Bridge cannot enumerate or override that subset |
+| `capability_routing.bootstrap_observed` is false | The current local runtime has not received `session_bootstrap`; reconnect or inspect host initialization handling |
+| `task_resolution_observed` is false after a substantive task | The host/model did not call `resolve_task_capabilities`; server-side discovery cannot force that host decision |
+| Task resolution ran but all match counts are zero | The resolver ran successfully but found no sufficiently relevant local skill, command, or application |
 | No structured result because the host rejects the call | Host/connector approval or safety layer, or transport before daemon delivery |
 | `mcp-host-to-daemon` passes but `local-filesystem` fails | Local state/runtime permissions, disk policy, sandbox, or endpoint security |
 | Filesystem passes but `local-process-spawn` fails | Local executable policy, endpoint security, OS permissions, or damaged Node runtime |
@@ -29,6 +32,8 @@ A successful diagnostic result applies only to that probe. An MCP host can still
 A brief relay interruption is retried automatically and is visible only with `--verbose`. Default logs do not print raw WebSocket values such as `code=1006` with an empty reason. If a transient outage persists for 10 seconds, the daemon emits a readable duration/cause/reconnect summary; later reminders use autonomous exponential backoff capped at 15 minutes, and recovery produces one readable summary. Each transport connection attempt also has a deadline, so a socket stuck in `CONNECTING` cannot freeze retries. Identity/version mismatch, authentication rejection, and unexpected protocol messages are not retried as ordinary network faults: the daemon emits an immediate actionable error and exits, requiring upgrade/redeployment or credential repair. A Worker-side daemon handshake timeout remains retryable.
 
 Use `--verbose` only when close codes, close reasons, heartbeat timeouts, and retry delays are needed for diagnosis. A close code of 1006 means the transport ended without a normal close handshake; it does not by itself identify the cause.
+
+The daemon honors `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` through standard environment-proxy resolution. `wss:` targets use HTTPS proxy selection and `ws:` targets use HTTP proxy selection. Only HTTP and HTTPS proxy URLs are accepted. Invalid URLs or unsupported protocols fail startup with corrective guidance instead of entering the reconnect loop. `server_info.runtime.relay.network_route` reports only `direct`, `proxy`, or `invalid-proxy-configuration`; proxy endpoints and credentials are never returned or logged.
 
 ## Browser extension setup and diagnosis
 

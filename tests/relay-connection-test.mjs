@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { acknowledgementMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, welcomeMismatch } from "../src/local/relay-connection.mjs";
+import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
 
 class FakeSocket extends EventEmitter {
   static CONNECTING = 0;
@@ -499,6 +500,43 @@ assert(relayCloseCategory(1002, "protocol error") === "relay_protocol_error", "1
 assert(relayCloseCategory(1008, "daemon hello timeout") === "relay_handshake_timeout", "daemon hello timeout was misclassified as an authentication failure");
 assert(relayCloseCategory(1011, "") === "relay_internal_error", "1011 close classification failed");
 assert(reconnectDelay(0, () => 0) === 3000 && reconnectDelay(99, () => 0) === 60_000, "reconnect backoff bounds changed");
+
+const directProxy = proxyAgentForWebSocket("wss://relay.example.invalid/daemon/ws", () => "");
+assert(directProxy.agent === null && directProxy.mode === "direct", "NO_PROXY/direct relay routing did not bypass proxy construction");
+let unsupportedProxyRejected = false;
+try { proxyAgentForWebSocket("wss://relay.example.invalid/daemon/ws", () => "socks5://proxy.example.invalid:1080"); } catch (error) {
+  unsupportedProxyRejected = String(error?.message || error).includes("HTTP or HTTPS");
+}
+assert(unsupportedProxyRejected, "unsupported relay proxy protocol was accepted");
+
+const proxyMarker = { proxy: true };
+const proxySockets = [];
+const proxyConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      proxySockets.push(this);
+    }
+  },
+  proxyAgentForUrl: () => ({ agent: proxyMarker, mode: "proxy" }),
+});
+proxyConnection.start();
+assert(proxySockets[0].options.agent === proxyMarker && proxyConnection.status().network_route === "proxy", "relay WebSocket did not receive the selected proxy agent");
+proxyConnection.stop();
+
+const invalidProxyConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: FakeSocket,
+  proxyAgentForUrl: () => { const error = new Error("relay proxy configuration is invalid"); error.code = "relay_proxy_configuration"; throw error; },
+});
+const invalidProxyError = await invalidProxyConnection.start().then(() => null, (error) => error);
+assert(invalidProxyError?.code === "relay_proxy_configuration" && invalidProxyError.message.includes("HTTP_PROXY"), "invalid proxy configuration did not fail fast with corrective guidance");
+assert(invalidProxyConnection.status().network_route === "invalid-proxy-configuration", "invalid proxy route was not observable");
 
 console.log("relay connection lifecycle/logging test ok");
 

@@ -128,7 +128,7 @@ Two lower-precedence virtual sources are generated in memory:
 - `machine-bridge://defaults/working-agreements` supplies conservative cross-project rules for inspection, scoped changes, preservation of unrelated work, validation, security, Git discipline, and explicit authorization for deployment/publication/destructive operations.
 - `machine-bridge://project-context/current` derives bounded facts from the active repository: target path, common project/build files, package-manager declarations and lockfiles, package script names, runtime constraints, documentation files, and CI entrypoints. It never injects package-script bodies or source contents and does not claim commands were validated.
 
-No files are created or modified by this bootstrap. Explicit user and repository instructions load later and therefore override the defaults. `session_bootstrap` supplies the chain during MCP initialization; `agent_context` exposes every source and hash; `resolve_task_capabilities` refreshes project facts, instructions, skills, and commands for the current task.
+No files are created or modified by this bootstrap. Explicit user and repository instructions load later and therefore override the defaults. `session_bootstrap` supplies the chain during MCP initialization; `agent_context` exposes every source and hash; `resolve_task_capabilities` refreshes project facts, instructions, skills, commands, and installed-application matches for the current task. `server_info` and `project_overview` expose whether bootstrap and task resolution actually reached the local runtime without retaining raw task text.
 
 Optional user-global preferences still live in `~/.config/machine-bridge-mcp/agent.json`:
 
@@ -153,7 +153,7 @@ To disable either automatic layer globally:
 
 Repositories cannot disable these user-level controls. Editing instruction files or project metadata does not require a daemon restart; start a new MCP conversation or reconnect when initialization-time injection must be guaranteed from the beginning.
 
-Skill discovery follows Codex-style progressive disclosure. Default roots are target-to-project `.agents/skills`; unrestricted policy also enables user/admin roots. Newly added or edited skills are found on the next resolver/list call without restarting the daemon. A project can customize instruction candidates, skill roots, and direct-argv registered commands with `.machine-bridge/agent.json`. See [Session instructions, defaults, skills, commands, and capability discovery](docs/AGENT_CONTEXT.md).
+Skill discovery follows Codex-style progressive disclosure. Default project roots include target-to-project `.agents/skills` and `.codex/skills`; unrestricted policy also enables `~/.agents/skills`, `CODEX_HOME/skills` (normally `~/.codex/skills`), and the Unix admin root. Newly added or edited skills are found on the next resolver/list call without restarting the daemon. Safe root `package.json` script names are also exposed as `package.*` command aliases with bounded deterministic English/Chinese workflow-intent terms; explicit `.machine-bridge/agent.json` commands can override or delete them. Package-script bodies are never injected, but invoking one still runs repository-controlled code with the active local policy. See [Session instructions, defaults, skills, commands, and capability discovery](docs/AGENT_CONTEXT.md).
 
 Under canonical `full`, Machine Bridge also exposes structured local automation:
 
@@ -170,7 +170,7 @@ machine-mcp browser status
 
 Load the printed unpacked-extension directory once in Chrome, Edge, Brave, Vivaldi, or another compatible Chromium browser. The extension badge reports connection state, and clicking it opens the saved local pairing page. The local pairing token remains in owner-only state and the loopback pairing page; it is not returned through MCP. For a mass-market release, distribute the same extension as a signed browser-store build rather than asking end users to enable Developer mode. See [Local application and browser automation](docs/LOCAL_AUTOMATION.md).
 
-Machine Bridge can discover, refresh, rank, and load capabilities automatically. The ChatGPT/MCP host still owns tool selection and approval, so the server cannot force a host to expose or invoke a recommended skill, command, app, or browser operation.
+Machine Bridge can discover, refresh, rank, and load capabilities automatically. The ChatGPT/MCP host still owns tool selection and approval, so the server cannot force a host to expose or invoke a recommended skill, command, app, or browser operation. Check `server_info.observability.capability_routing` or `project_overview.capabilityRouting` to distinguish “the host never called the resolver” from “the resolver ran but found no relevant capability.”
 
 ## Policy controls
 
@@ -357,7 +357,7 @@ Managed jobs are non-interactive and persist independently of the MCP connection
 
 ### Processes
 
-- `run_local_command` — direct argv execution of a manifest-registered command
+- `run_local_command` — fixed argv execution of an explicit or automatic package-script command
 - `run_process` — one-shot argv execution without a shell
 - `start_process`
 - `read_process`
@@ -423,6 +423,8 @@ Default state roots:
 - Windows: `%APPDATA%\machine-bridge-mcp`
 
 State/config writes use owner-only temporary files, `fsync`, and atomic replacement. Exclusive locks are fully written before a same-directory hard-link claim becomes visible; lock ownership includes a token and process start time so PID reuse and lock replacement cannot silently transfer ownership. Only successfully read but invalid JSON is retained as a bounded corrupt backup; permission, symbolic-link, size, encoding, and I/O failures remain explicit. A custom state root must not equal, contain, or be contained by the selected workspace. Resource source paths are redacted from `status` output. Active managed-job plans are owner-only and are deleted after a terminal result; bounded redacted results are retained temporarily. Uninstall first acquires a state-root maintenance lock that blocks new profile/state operations and state-backed operations from already constructed managed-job/browser managers, stops the platform service and all verified workspace daemons before removing definitions, rechecks jobs and locks, then validates markers, canonical paths, workspace/source exclusions, and known contents before recursive deletion.
+
+The relay honors standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment routing. Invalid or unsupported proxy configuration fails fast; runtime status reports only `direct`, `proxy`, or `invalid-proxy-configuration`, never proxy URLs or credentials.
 
 Default foreground logs report authenticated relay readiness, readable persistent-degradation summaries, and recovery rather than raw WebSocket callbacks or JSON field dumps. Brief self-healing disconnects and close codes/reasons are debug-only. Stalled connection attempts have a deadline, and sustained-outage reminders use autonomous exponential backoff. Every per-tool event—including success, failure, cancellation, and slow-call timing—also appears only at `--log-level debug` or `--verbose`. Background services use `warn`, so ordinary tool outcomes and brief network changes do not fill daemon logs. Log messages and structured fields are bounded, secret-like keys and known token formats are redacted, and tool arguments/results are not written. See [docs/LOGGING.md](docs/LOGGING.md) and [docs/OPERATIONS.md](docs/OPERATIONS.md).
 

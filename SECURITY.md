@@ -57,6 +57,10 @@ Machine Bridge prepends a package-controlled built-in working-agreement block an
 
 Repository and user instruction files remain untrusted content from the model's perspective. `agent_context` returns their text in deterministic precedence order but does not certify correctness or safety. A malicious `AGENTS.md`, custom instruction file, filename, script name, or `SKILL.md` can attempt prompt injection or recommend destructive operations. Use only trusted repositories and skill roots, keep host approvals/policy enabled, or isolate the bridge externally.
 
+Automatic `package.*` commands expose only validated script names and fixed package-manager argv; they do not expose script bodies. Executing one still runs repository-controlled package-script code with local-user authority and is not a sandbox or trust upgrade.
+
+Relay proxy selection honors `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`. Only HTTP(S) proxy URLs are accepted. Proxy endpoints, credentials, and authorization headers are not returned through MCP or written to operational logs; status exposes only coarse route state.
+
 Skill loading is non-executing. `load_local_skill` returns an entrypoint and bounded file inventory; scripts remain inert until a separate process or command tool is called. Symlinked skill directories are followed only after canonical path-policy validation, while symbolic-link `SKILL.md` entrypoints are rejected. Traversal, cycles, content, summaries, and inventory are bounded.
 
 Registered commands are available only under direct-execution-capable policy. They use argv spawning rather than shell parsing, reject undeclared caller arguments, and enforce the manifest timeout as a ceiling. They are not an approval or sandbox boundary: a repository-controlled package script, interpreter, compiler, or executable can still run arbitrary code with local-user authority. Deeper manifests can override or remove inherited commands, so callers must obtain context for the actual target path rather than assuming the repository-root registry applies everywhere.
