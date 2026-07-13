@@ -3,7 +3,6 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  isPlainRecord,
   isRegularNonSymlink,
   readOptionalRegularUtf8,
   safeSingleLine,
@@ -37,9 +36,6 @@ try {
 
   assert.equal(safeSingleLine("  alpha\n beta\t gamma  ", 16), "alpha beta gamma");
   assert.equal(safeSingleLine(null, 16), "");
-  assert.equal(isPlainRecord({}), true);
-  assert.equal(isPlainRecord([]), false);
-  assert.equal(isPlainRecord(null), false);
   assert.equal(skippableMetadataError({ code: "ENOENT" }), true);
   assert.equal(skippableMetadataError({ code: "EIO" }), false);
   console.log("project metadata helper test ok");

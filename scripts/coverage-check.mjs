@@ -15,6 +15,7 @@ const tests = [
   "tests/cli-entrypoint-test.mjs",
   "tests/local-self-test.mjs",
   "tests/numbers-test.mjs",
+  "tests/records-test.mjs",
   "tests/project-metadata-test.mjs",
   "tests/state-inventory-test.mjs",
 ];
@@ -48,6 +49,7 @@ try {
     "src/local/cli-options.mjs": [65, 35],
     "src/local/cli-policy.mjs": [70, 35],
     "src/local/numbers.mjs": [100, 100],
+    "src/local/records.mjs": [100, 100],
     "src/local/project-metadata.mjs": [85, 55],
     "src/local/state-inventory.mjs": [80, 50],
     "src/worker/pending-calls.ts": [85, null],

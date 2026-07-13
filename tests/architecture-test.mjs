@@ -55,6 +55,7 @@ const boundaryModules = new Set([
   "managed-job-plan.mjs",
   "numbers.mjs",
   "project-metadata.mjs",
+  "records.mjs",
   "state-inventory.mjs",
   "browser-extension-protocol.mjs",
   "browser-pairing-store.mjs",
@@ -79,7 +80,7 @@ const lineLimits = Object.freeze({
   "src/local/call-registry.mjs": 180,
   "src/local/lifecycle.mjs": 130,
   "src/local/cli-local-admin.mjs": 400,
-  "src/local/agent-context.mjs": 950,
+  "src/local/agent-context.mjs": 920,
   "src/local/default-instructions.mjs": 280,
   "src/local/project-package.mjs": 240,
   "src/local/capability-ranking.mjs": 150,
@@ -87,6 +88,7 @@ const lineLimits = Object.freeze({
   "src/local/managed-job-plan.mjs": 300,
   "src/local/numbers.mjs": 20,
   "src/local/project-metadata.mjs": 80,
+  "src/local/records.mjs": 10,
   "src/local/state-inventory.mjs": 160,
   "src/local/browser-bridge.mjs": 850,
   "src/local/browser-extension-protocol.mjs": 120,
@@ -247,6 +249,7 @@ if (packageJson.scripts?.["policy-docs:check"] !== "node scripts/generate-policy
 if (packageJson.scripts?.["markdown:test"] !== "node tests/markdown-test.mjs") throw new Error("shared Markdown helper test is missing");
 if (packageJson.scripts?.["project-metadata:test"] !== "node tests/project-metadata-test.mjs") throw new Error("project metadata helper test is missing");
 if (packageJson.scripts?.["numbers:test"] !== "node tests/numbers-test.mjs") throw new Error("integer normalization helper test is missing");
+if (packageJson.scripts?.["records:test"] !== "node tests/records-test.mjs") throw new Error("plain-record helper test is missing");
 if (packageJson.scripts?.["state-inventory:test"] !== "node tests/state-inventory-test.mjs") throw new Error("state inventory regression test is missing");
 if (!existsSync(join(root, "scripts", "generate-worker-types.mjs"))) throw new Error("cross-platform Worker type generator is missing");
 if (packageJson.scripts?.["worker:types"] !== "node scripts/generate-worker-types.mjs") throw new Error("generated Worker types are not isolated behind the cross-platform generator");

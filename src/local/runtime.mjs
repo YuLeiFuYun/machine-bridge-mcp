@@ -27,6 +27,7 @@ import { BrowserBridgeManager } from "./browser-bridge.mjs";
 import { CapabilityObserver } from "./capability-observer.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { clampInteger } from "./numbers.mjs";
+import { isPlainRecord } from "./records.mjs";
 
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_CONCURRENT_TOOL_CALLS = 16;
@@ -814,9 +815,6 @@ function normalizeRelayToolCall(message) {
   };
 }
 
-function isPlainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 
 function collectToolPathCandidates(error, toolArgs, workspace) {

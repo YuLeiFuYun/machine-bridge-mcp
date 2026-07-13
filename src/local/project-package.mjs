@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { isPlainRecord, isRegularNonSymlink, readOptionalRegularUtf8, safeSingleLine } from "./project-metadata.mjs";
+import { isRegularNonSymlink, readOptionalRegularUtf8, safeSingleLine } from "./project-metadata.mjs";
+import { isPlainRecord } from "./records.mjs";
 
 const MAX_METADATA_FILE_BYTES = 1024 * 1024;
 const MAX_PACKAGE_COMMANDS = 64;

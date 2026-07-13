@@ -3,10 +3,6 @@ import { lstat, open } from "node:fs/promises";
 
 const SKIPPABLE_METADATA_CODES = new Set(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "EBUSY"]);
 
-export function isPlainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 export function safeSingleLine(value, maxLength) {
   if (typeof value !== "string") return "";
   return value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
