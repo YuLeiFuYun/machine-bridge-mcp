@@ -1,7 +1,11 @@
 import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-sessions.mjs";
 
 export class ProcessTracker {
-  constructor() {
+  constructor(options = {}) {
+    this.terminate = typeof options.terminate === "function" ? options.terminate : terminateProcessTree;
+    this.terminateWithEscalation = typeof options.terminateWithEscalation === "function"
+      ? options.terminateWithEscalation
+      : terminateProcessTreeWithEscalation;
     this.active = new Set();
     this.byCall = new Map();
   }
@@ -32,16 +36,16 @@ export class ProcessTracker {
   terminateCall(callId, { force = false } = {}) {
     const children = [...(this.byCall.get(String(callId || "")) || [])];
     for (const child of children) {
-      if (force) terminateProcessTree(child, "SIGKILL");
-      else terminateProcessTreeWithEscalation(child);
+      if (force) this.terminate(child, "SIGKILL");
+      else this.terminateWithEscalation(child);
     }
     return children.length;
   }
 
   terminateAll(signal = "SIGTERM", escalate = false) {
     for (const child of [...this.active]) {
-      if (escalate && signal !== "SIGKILL") terminateProcessTreeWithEscalation(child);
-      else terminateProcessTree(child, signal);
+      if (escalate && signal !== "SIGKILL") this.terminateWithEscalation(child);
+      else this.terminate(child, signal);
     }
   }
 

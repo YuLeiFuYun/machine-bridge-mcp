@@ -77,14 +77,41 @@ async function testToolExecutor() {
 }
 
 function testProcessTracker() {
-  const tracker = new ProcessTracker();
-  const child = { pid: 0 };
-  tracker.track(child, "call");
-  assert(tracker.snapshot().active_processes === 1 && tracker.snapshot().calls_with_processes === 1, "process tracker did not register child ownership");
+  const terminations = [];
+  const escalations = [];
+  const tracker = new ProcessTracker({
+    terminate(child, signal) { terminations.push({ child, signal }); },
+    terminateWithEscalation(child) { escalations.push(child); },
+  });
+  const first = { pid: 101 };
+  const second = { pid: 102 };
+  const unowned = { pid: 103 };
+  tracker.track(null, "ignored");
+  tracker.track(first, "call");
+  tracker.track(second, "call");
+  tracker.track(unowned);
+  assert(tracker.snapshot().active_processes === 3 && tracker.snapshot().calls_with_processes === 1, "process tracker did not register child ownership");
+
+  assert(tracker.terminateCall("call") === 2 && escalations.length === 2, "graceful call termination did not escalate owned children");
+  assert(tracker.terminateCall("call", { force: true }) === 2, "forced call termination lost owned children");
+  assert(terminations.length === 2 && terminations.every((entry) => entry.signal === "SIGKILL"), "forced call termination did not use SIGKILL");
+  assert(tracker.terminateCall("missing") === 0, "missing call reported terminated children");
+
+  tracker.terminateAll("SIGTERM", true);
+  assert(escalations.length === 5, "terminateAll escalation did not cover every active child");
+  tracker.terminateAll("SIGKILL", true);
+  assert(terminations.slice(-3).every((entry) => entry.signal === "SIGKILL"), "SIGKILL terminateAll incorrectly used escalation");
+  tracker.terminateAll("SIGTERM", false);
+  assert(terminations.slice(-3).every((entry) => entry.signal === "SIGTERM"), "non-escalating terminateAll changed the signal");
+
   tracker.releaseCall("call");
-  assert(tracker.snapshot().active_processes === 1 && tracker.snapshot().calls_with_processes === 0, "call completion terminated or leaked call ownership");
-  tracker.untrack(child);
-  assert(tracker.snapshot().active_processes === 0, "process tracker did not release child");
+  tracker.releaseCall("");
+  assert(tracker.snapshot().active_processes === 3 && tracker.snapshot().calls_with_processes === 0, "call completion terminated or leaked call ownership");
+  tracker.untrack(first);
+  tracker.untrack(second);
+  tracker.untrack(unowned);
+  tracker.untrack(null);
+  assert(tracker.snapshot().active_processes === 0, "process tracker did not release children");
 }
 
 function testErrors() {
