@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import { classifyOperationalError } from "./log.mjs";
+import { proxyAgentForWebSocket } from "./network-proxy.mjs";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 75_000;
@@ -35,6 +36,8 @@ export class RelayConnection {
     this.scheduler = options.scheduler || DEFAULT_SCHEDULER;
     this.now = typeof options.now === "function" ? options.now : Date.now;
     this.reconnectDelay = typeof options.reconnectDelay === "function" ? options.reconnectDelay : reconnectDelay;
+    this.proxyAgentForUrl = typeof options.proxyAgentForUrl === "function" ? options.proxyAgentForUrl : proxyAgentForWebSocket;
+    this.networkRoute = "unresolved";
     this.maxPayload = boundedPositiveInteger(options.maxPayload, 8 * 1024 * 1024);
     this.heartbeatIntervalMs = boundedPositiveInteger(options.heartbeatIntervalMs, DEFAULT_HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimeoutMs = boundedPositiveInteger(options.heartbeatTimeoutMs, DEFAULT_HEARTBEAT_TIMEOUT_MS);
@@ -70,6 +73,16 @@ export class RelayConnection {
     this.connectedOnce = null;
     this.connectedOnceResolve = null;
     this.connectedOnceReject = null;
+  }
+
+  status() {
+    return {
+      ready: this.ready,
+      closed: this.closed,
+      network_route: this.networkRoute,
+      reconnect_attempt: this.reconnectAttempt,
+      outage_active: this.outageStartedAt > 0,
+    };
   }
 
   start() {
@@ -182,11 +195,20 @@ export class RelayConnection {
     this.logger.debug?.("connecting to remote relay", { endpoint: redactUrl(wsUrl), attempt: this.reconnectAttempt + 1 });
     let socket;
     try {
+      const proxy = this.proxyAgentForUrl(wsUrl);
+      this.networkRoute = proxy?.agent ? "proxy" : "direct";
       socket = new this.WebSocketClass(wsUrl, {
         headers: { "X-Bridge-Token": this.secret },
         maxPayload: this.maxPayload,
+        ...(proxy?.agent ? { agent: proxy.agent } : {}),
       });
+      this.logger.debug?.("remote relay network route selected", { route: this.networkRoute });
     } catch (error) {
+      if (error?.code === "relay_proxy_configuration") {
+        this.networkRoute = "invalid-proxy-configuration";
+        this.failPermanently("relay_proxy_configuration");
+        return;
+      }
       this.lastTransportErrorClass = classifyOperationalError(error);
       this.logger.debug?.("remote relay connection could not be created", { error_class: this.lastTransportErrorClass });
       this.scheduleReconnect("connection_interrupted");
@@ -475,6 +497,9 @@ function relayFatalMessage(category) {
   if (category === "relay_protocol_error") {
     return "remote relay protocol error; upgrade and redeploy both components, then restart the daemon";
   }
+  if (category === "relay_proxy_configuration") {
+    return "remote relay proxy configuration is invalid; check HTTP_PROXY, HTTPS_PROXY, and NO_PROXY";
+  }
   return "remote relay rejected the daemon connection; verify credentials or redeploy the Worker";
 }
 
@@ -491,6 +516,7 @@ function relayCloseUserCause(category) {
     relay_heartbeat_timeout: "relay stopped responding",
     relay_transport_error: "relay transport error",
     relay_protocol_error: "relay protocol error",
+    relay_proxy_configuration: "relay proxy configuration invalid",
     invalid_transport_payload: "invalid transport payload",
     message_too_large: "message exceeded the relay limit",
     normal_close: "connection closed",

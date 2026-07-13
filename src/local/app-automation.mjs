@@ -9,9 +9,10 @@ const MAX_UI_ELEMENTS = 500;
 const MAX_UI_DEPTH = 12;
 const MAX_TEXT_CHARS = 4000;
 const APP_NAME_PATTERN = /^[^\0\r\n]{1,300}$/;
+const DEFAULT_APPLICATION_CACHE_MS = 30_000;
 
 export class AppAutomationManager {
-  constructor({ policy, displayPath, runProcess, readResourceText, throwIfCancelled = () => {}, platform = process.platform, home = homedir(), applicationRoots = null }) {
+  constructor({ policy, displayPath, runProcess, readResourceText, throwIfCancelled = () => {}, platform = process.platform, home = homedir(), applicationRoots = null, applicationCacheMs = DEFAULT_APPLICATION_CACHE_MS, now = () => Date.now() }) {
     this.policy = policy || {};
     this.displayPath = displayPath;
     this.runProcess = runProcess;
@@ -20,6 +21,9 @@ export class AppAutomationManager {
     this.platform = platform;
     this.home = home;
     this.applicationRoots = applicationRoots;
+    this.applicationCacheMs = Math.max(0, Number(applicationCacheMs) || 0);
+    this.now = now;
+    this.applicationCache = null;
   }
 
   capabilities() {
@@ -57,6 +61,16 @@ export class AppAutomationManager {
   }
 
   async discoverApplications(context = {}) {
+    const now = this.now();
+    if (this.applicationCache && now - this.applicationCache.createdAt < this.applicationCacheMs) {
+      return this.applicationCache.result;
+    }
+    const result = await this.scanApplications(context);
+    this.applicationCache = { createdAt: this.now(), result };
+    return result;
+  }
+
+  async scanApplications(context = {}) {
     if (this.platform === "darwin") {
       return listMacApplications(this.applicationRoots || ["/Applications", "/System/Applications", join(this.home, "Applications")], context, this.throwIfCancelled);
     }

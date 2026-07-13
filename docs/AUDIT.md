@@ -1,6 +1,14 @@
 # Engineering and security audit
 
-This document records the cross-cutting audit initiated for version 0.12.0 and the 0.12.2 follow-up triggered by real cross-platform CI failures. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
+This document records the cross-cutting audit initiated for version 0.12.0, the 0.12.2 cross-platform CI follow-up, and the 0.13.0 architecture/automatic-routing follow-up. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
+
+## 2026-07-13 architecture and automatic-routing follow-up
+
+A new behavior-level review found that the existing global/project instruction path was functioning, but three gaps explained weak user-visible automation: direct `.codex/skills` compatibility depended on user-created symlinks, root package scripts were described but not executable through the registered-command surface, and the runtime provided no proof that the host had called bootstrap or task resolution. The review added direct compatibility roots, bounded automatic package commands, and privacy-preserving routing telemetry while retaining the host/model invocation boundary.
+
+The review also reproduced a lifecycle defect not covered by the previous descendant test: when a direct child exited after group `SIGTERM` while a detached-stdio descendant ignored the signal, `runProcess` cleared the pending `SIGKILL` escalation and left the descendant alive. Timeout/cancellation/replacement now use one escalation primitive whose forced phase remains referenced independently of direct-child tracking. A dedicated real-process regression covers that exact ordering.
+
+Relay routing now honors standard HTTP(S) proxy environment variables and `NO_PROXY`, rejects invalid/unsupported proxy configuration before reconnect, and exposes only coarse route state. Package metadata parsing and capability observation were extracted from orchestration code, and architecture tests now reject domain-to-adapter imports. Residual limits remain external: the MCP host can filter initialization instructions or tools, a package manager can execute arbitrary repository script bodies, HTTP(S) proxy support is not SOCKS support, and OS process-tree guarantees remain platform dependent.
 
 ## 0.12.2 follow-up findings
 

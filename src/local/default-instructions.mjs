@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, opendir } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
+import { packageScriptDisplayCommand, readProjectPackageMetadata, safeVersionValue } from "./project-package.mjs";
 
-const MAX_METADATA_FILE_BYTES = 1024 * 1024;
 const MAX_PROJECT_CONTEXT_BYTES = 16 * 1024;
 const MAX_SCRIPT_NAMES = 24;
 const MAX_WORKFLOW_FILES = 20;
@@ -77,14 +77,6 @@ const DOCUMENT_FILES = Object.freeze([
   "docs/TESTING.md",
 ]);
 
-const LOCKFILES = Object.freeze([
-  ["package-lock.json", "npm"],
-  ["pnpm-lock.yaml", "pnpm"],
-  ["yarn.lock", "yarn"],
-  ["bun.lock", "bun"],
-  ["bun.lockb", "bun"],
-]);
-
 const CI_FILES = Object.freeze([
   ".gitlab-ci.yml",
   "azure-pipelines.yml",
@@ -155,52 +147,34 @@ export async function discoverAutomaticProjectInstruction({
 }
 
 async function readPackageFacts(root, throwIfCancelled) {
-  const packagePath = join(root, "package.json");
-  const packageText = await readOptionalRegularUtf8(packagePath, MAX_METADATA_FILE_BYTES);
-  const lockfiles = [];
-  for (const [name, manager] of LOCKFILES) {
-    throwIfCancelled();
-    if (await isRegularNonSymlink(join(root, name))) lockfiles.push({ name, manager });
-  }
-  if (!packageText) {
-    const lines = lockfiles.length
-      ? [`- JavaScript lockfiles detected without readable root package metadata: ${lockfiles.map((item) => `\`${item.name}\``).join(", ")}. Inspect before installing dependencies.`]
+  const metadata = await readProjectPackageMetadata(root, throwIfCancelled);
+  if (!metadata.detected) return { detected: false, lines: [] };
+  if (metadata.packageState === "missing") {
+    const lines = metadata.lockfiles.length
+      ? [`- JavaScript lockfiles detected without readable root package metadata: ${metadata.lockfiles.map((item) => `\`${item.name}\``).join(", ")}. Inspect before installing dependencies.`]
       : [];
-    return { detected: lockfiles.length > 0, lines };
+    return { detected: metadata.lockfiles.length > 0, lines };
   }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(packageText);
-  } catch {
+  if (metadata.packageState === "invalid-json") {
     return { detected: true, lines: ["- A root `package.json` exists but is not valid JSON. Do not infer package commands until it is repaired or understood."] };
   }
-  if (!isPlainRecord(parsed)) return { detected: true, lines: ["- A root `package.json` exists but is not a JSON object."] };
-
-  const lines = [];
-  const declaredManager = safePackageManager(parsed.packageManager);
-  const managerName = packageManagerName(declaredManager) || uniqueLockManager(lockfiles);
-  if (declaredManager) lines.push(`- Declared package manager: \`${escapeInlineCode(declaredManager)}\`.`);
-  if (lockfiles.length === 1) lines.push(`- Package lockfile: \`${lockfiles[0].name}\`. Preserve it and use the matching package manager.`);
-  if (lockfiles.length > 1) lines.push(`- Multiple JavaScript lockfiles are present: ${lockfiles.map((item) => `\`${item.name}\``).join(", ")}. Do not choose or rewrite one automatically; inspect project guidance first.`);
-
-  const scripts = isPlainRecord(parsed.scripts)
-    ? Object.entries(parsed.scripts).filter(([name, value]) => validScriptName(name) && typeof value === "string").map(([name]) => name)
-    : [];
-  if (scripts.length) {
-    const selected = prioritizeScriptNames(scripts).slice(0, MAX_SCRIPT_NAMES);
-    const commands = selected.map((name) => formatPackageScriptCommand(managerName, name));
-    const suffix = scripts.length > selected.length ? `; ${scripts.length - selected.length} additional script(s) omitted` : "";
-    lines.push(`- Declared package scripts (names only; bodies are not injected): ${commands.map((command) => `\`${escapeInlineCode(command)}\``).join(", ")}${suffix}.`);
+  if (metadata.packageState === "invalid-root") {
+    return { detected: true, lines: ["- A root `package.json` exists but is not a JSON object."] };
   }
 
-  if (isPlainRecord(parsed.engines)) {
-    const engines = Object.entries(parsed.engines)
-      .map(([name, value]) => [name, safeVersionValue(value)])
-      .filter(([name, value]) => /^[A-Za-z0-9_.-]{1,40}$/.test(name) && value)
-      .slice(0, 10)
-      .map(([name, value]) => `\`${escapeInlineCode(name)} ${escapeInlineCode(value)}\``);
-    if (engines.length) lines.push(`- Declared runtime constraints: ${engines.join(", ")}.`);
+  const lines = [];
+  if (metadata.declaredManager) lines.push(`- Declared package manager: \`${escapeInlineCode(metadata.declaredManager)}\`.`);
+  if (metadata.lockfiles.length === 1) lines.push(`- Package lockfile: \`${metadata.lockfiles[0].name}\`. Preserve it and use the matching package manager.`);
+  if (metadata.lockfiles.length > 1) lines.push(`- Multiple JavaScript lockfiles are present: ${metadata.lockfiles.map((item) => `\`${item.name}\``).join(", ")}. Do not choose or rewrite one automatically; inspect project guidance first.`);
+  if (metadata.scripts.length) {
+    const selected = metadata.scripts.slice(0, MAX_SCRIPT_NAMES);
+    const commands = selected.map((name) => packageScriptDisplayCommand(metadata.managerName, name));
+    const suffix = metadata.scripts.length > selected.length ? `; ${metadata.scripts.length - selected.length} additional script(s) omitted` : "";
+    lines.push(`- Declared package scripts (names only; bodies are not injected): ${commands.map((command) => `\`${escapeInlineCode(command)}\``).join(", ")}${suffix}.`);
+  }
+  if (metadata.engines.length) {
+    const engines = metadata.engines.map(([name, value]) => `\`${escapeInlineCode(name)} ${escapeInlineCode(value)}\``);
+    lines.push(`- Declared runtime constraints: ${engines.join(", ")}.`);
   }
   return { detected: true, lines };
 }
@@ -273,50 +247,6 @@ function virtualInstruction(source, content, precedence, scope) {
     content,
     precedence,
   };
-}
-
-function packageManagerName(value) {
-  if (!value) return "";
-  const match = /^(npm|pnpm|yarn|bun)(?:@|$)/.exec(value.trim());
-  return match?.[1] || "";
-}
-
-function uniqueLockManager(lockfiles) {
-  const managers = [...new Set(lockfiles.map((item) => item.manager))];
-  return managers.length === 1 ? managers[0] : "";
-}
-
-function formatPackageScriptCommand(manager, name) {
-  if (manager === "pnpm") return `pnpm run ${name}`;
-  if (manager === "yarn") return `yarn ${name}`;
-  if (manager === "bun") return `bun run ${name}`;
-  return `npm run ${name}`;
-}
-
-function prioritizeScriptNames(names) {
-  const preferred = ["check", "test", "lint", "typecheck", "build", "format", "verify", "ci", "prepack", "start", "dev"];
-  const rank = new Map(preferred.map((name, index) => [name, index]));
-  return [...new Set(names)].sort((left, right) => {
-    const leftRank = rank.has(left) ? rank.get(left) : preferred.length;
-    const rightRank = rank.has(right) ? rank.get(right) : preferred.length;
-    return leftRank - rightRank || left.localeCompare(right);
-  });
-}
-
-function validScriptName(value) {
-  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,119}$/.test(value);
-}
-
-function safePackageManager(value) {
-  if (typeof value !== "string") return "";
-  const normalized = value.trim();
-  return /^(?:npm|pnpm|yarn|bun)@[A-Za-z0-9][A-Za-z0-9.+_-]{0,90}$/.test(normalized) ? normalized : "";
-}
-
-function safeVersionValue(value) {
-  if (typeof value !== "string") return "";
-  const normalized = safeSingleLine(value, 120);
-  return normalized && /^[A-Za-z0-9][A-Za-z0-9 ._*+<>=~^|&!/-]{0,119}$/.test(normalized) ? normalized : "";
 }
 
 function skippableMetadataError(error) {

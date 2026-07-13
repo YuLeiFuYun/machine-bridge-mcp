@@ -7,7 +7,7 @@ import path, { basename, dirname, isAbsolute, join, relative, resolve, sep } fro
 import { RelayConnection } from "./relay-connection.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
-import { MAX_COMMAND_BYTES, ProcessSessionManager, terminateProcessTree, validateArgv } from "./process-sessions.mjs";
+import { MAX_COMMAND_BYTES, ProcessSessionManager, terminateProcessTree, terminateProcessTreeWithEscalation, validateArgv } from "./process-sessions.mjs";
 export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
 import { allToolNames, assertCanonicalFullPolicy, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, POLICY_PROFILES, SERVER_NAME, toolNamesForPolicy } from "./tools.mjs";
 import { classifyOperationalError } from "./log.mjs";
@@ -17,6 +17,7 @@ import { expandHome } from "./state.mjs";
 import { AgentContextManager } from "./agent-context.mjs";
 import { AppAutomationManager } from "./app-automation.mjs";
 import { BrowserBridgeManager } from "./browser-bridge.mjs";
+import { CapabilityObserver } from "./capability-observer.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
@@ -85,7 +86,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", secret = "", expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true }) {
+  constructor({ workerUrl = "", secret = "", expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {} }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     const remoteSecret = secret || "";
     this.workspaceInput = resolve(workspace || process.cwd());
@@ -100,6 +101,7 @@ export class LocalRuntime {
     this.callProcesses = new Map();
     this.cancelledCalls = new Set();
     this.mutationQueue = Promise.resolve();
+    this.capabilityObserver = new CapabilityObserver();
     this.runtimeDir = createRuntimeDir();
     if (typeof jobRoot !== "string" || !jobRoot.trim()) throw new Error("persistent managed-job root is required");
     this.managedJobManager = new ManagedJobManager({
@@ -139,6 +141,7 @@ export class LocalRuntime {
     const readResourceText = (name) => this.readLocalResourceText(name);
     const readResourceBinary = (name) => this.readLocalResourceBinary(name);
     this.appAutomationManager = new AppAutomationManager({
+      ...applicationAutomation,
       policy: this.policy,
       displayPath: (value) => this.displayPath(value),
       runProcess,
@@ -198,9 +201,11 @@ export class LocalRuntime {
         per_tool_events: "debug-only",
         default_logs_include_tool_failures: false,
         tool_arguments_or_results_logged: false,
+        capability_routing: this.capabilityObserver.snapshot(),
       },
       runtime: {
         environment: this.policy.minimalEnv ? "isolated-minimal" : "full-parent",
+        relay: this.relay?.status?.() || null,
         runtime_dir: this.policy.exposeAbsolutePaths ? this.runtimeDir : "<private-runtime-dir>",
         process_sessions: this.processSessionManager.status(),
         managed_jobs: this.managedJobManager.status(),
@@ -323,14 +328,8 @@ export class LocalRuntime {
     this.cancelledCalls.add(callId);
     this.processSessionManager.notifyCancellation();
     this.browserBridgeManager?.cancelCall(callId);
-    for (const child of this.callProcesses.get(callId) || []) terminateProcessTree(child, "SIGTERM");
     const children = [...(this.callProcesses.get(callId) || [])];
-    if (children.length) {
-      const timer = setTimeout(() => {
-        for (const child of children) if (this.activeProcesses.has(child)) terminateProcessTree(child, "SIGKILL");
-      }, 2000);
-      timer.unref?.();
-    }
+    for (const child of children) terminateProcessTreeWithEscalation(child);
     this.logger.debug?.("tool call cancellation requested", { call_id: shortCallId(callId), reason });
   }
 
@@ -351,6 +350,7 @@ export class LocalRuntime {
       gitRoot: git.code === 0 ? this.displayPath(git.stdout.trim()) : "",
       policy: this.policy,
       tools: ["server_info", ...this.tools()],
+      capabilityRouting: this.capabilityObserver.snapshot(),
       topLevel: top.entries || [],
     };
   }
@@ -795,13 +795,14 @@ export class LocalRuntime {
         status_tool: "browser_status",
       } : null,
     };
+    this.capabilityObserver.recordBootstrap(bootstrap);
     return bootstrap;
   }
 
   async resolveTaskCapabilities(args = {}, context = {}) {
     const result = await this.agentContextManager.resolveTaskCapabilities(args, context);
     const task = String(args.task || "");
-    if (/app|application|gui|window|应用|软件|窗口|界面/i.test(task) && this.policy.profile === "full") {
+    if (this.policy.profile === "full") {
       const applications = await this.appAutomationManager.listApplications({ query: "", max_results: 500 }, context).catch(() => ({ applications: [] }));
       const lower = task.toLowerCase();
       result.application_matches = applications.applications
@@ -813,7 +814,12 @@ export class LocalRuntime {
     } else {
       result.application_matches = [];
     }
+    if (result.application_matches.length) {
+      result.recommended_tools = [...new Set([...result.recommended_tools, "list_local_applications", "open_local_application", "inspect_local_application", "operate_local_application"])];
+    }
     result.browser_backend = this.policy.profile === "full" ? { tool: "browser_status", existing_profile: true, extension_bridge: true } : null;
+    result.routing_observability = "Call server_info or project_overview to verify that bootstrap and task capability resolution reached the local runtime.";
+    this.capabilityObserver.recordResolution(task, result);
     return result;
   }
 
@@ -873,12 +879,9 @@ export class LocalRuntime {
 
   terminateActiveProcesses(signal = "SIGTERM", escalate = false) {
     const children = [...this.activeProcesses];
-    for (const child of children) terminateProcessTree(child, signal);
-    if (escalate && signal !== "SIGKILL" && children.length) {
-      const timer = setTimeout(() => {
-        for (const child of children) if (this.activeProcesses.has(child)) terminateProcessTree(child, "SIGKILL");
-      }, 2000);
-      timer.unref?.();
+    for (const child of children) {
+      if (escalate && signal !== "SIGKILL") terminateProcessTreeWithEscalation(child);
+      else terminateProcessTree(child, signal);
     }
   }
 
@@ -911,14 +914,12 @@ export class LocalRuntime {
       let killTimer = null;
       const timer = setTimeout(() => {
         timedOut = true;
-        terminateProcessTree(child, "SIGTERM");
-        killTimer = setTimeout(() => terminateProcessTree(child, "SIGKILL"), 2000);
-        killTimer.unref?.();
+        killTimer = terminateProcessTreeWithEscalation(child);
       }, timeoutMs);
       timer.unref?.();
       const cleanup = () => {
         clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
+        if (killTimer && !timedOut) clearTimeout(killTimer);
         this.activeProcesses.delete(child);
         if (context.callId) {
           const set = this.callProcesses.get(context.callId);

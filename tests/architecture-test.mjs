@@ -28,6 +28,25 @@ const visiting = new Set();
 const visited = new Set();
 for (const file of graph.keys()) visitModule(file, []);
 
+const adapterModules = new Set(["cli.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs", "relay-connection.mjs"]);
+const boundaryModules = new Set([
+  "agent-context.mjs",
+  "app-automation.mjs",
+  "capability-observer.mjs",
+  "default-instructions.mjs",
+  "network-proxy.mjs",
+  "process-sessions.mjs",
+  "project-package.mjs",
+]);
+for (const name of boundaryModules) {
+  const file = join(localRoot, name);
+  if (!graph.has(file)) throw new Error(`architecture boundary module is missing: ${name}`);
+  for (const dependency of graph.get(file) || []) {
+    const dependencyName = relative(localRoot, dependency);
+    if (adapterModules.has(dependencyName)) throw new Error(`${name} crosses the domain/adapter boundary by importing ${dependencyName}`);
+  }
+}
+
 const docs = [
   join(root, "README.md"),
   join(root, "SECURITY.md"),

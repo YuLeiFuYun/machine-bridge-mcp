@@ -57,7 +57,7 @@
   {
     "name": "resolve_task_capabilities",
     "title": "Resolve task capabilities",
-    "description": "Rescan built-in and automatic project context, local instruction files, skills, registered commands, applications, and browser capability metadata; rank the capabilities relevant to the current task and optionally load the best skill.",
+    "description": "Rescan built-in and automatic project context, local instruction files, skills, explicit and automatic package commands, installed applications, and browser capability metadata; rank the capabilities relevant to the current task and optionally load the best skill.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -897,7 +897,7 @@
   {
     "name": "agent_context",
     "title": "Load agent context",
-    "description": "Discover built-in defaults, bounded automatic project facts, Codex-compatible global/root-to-target instruction precedence, progressively disclosed local skills, and registered commands for a target path.",
+    "description": "Discover built-in defaults, bounded automatic project facts, Codex-compatible global/root-to-target instruction precedence, progressively disclosed local skills, explicit commands, and safe automatic package-script command aliases for a target path.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -1001,7 +1001,7 @@
   {
     "name": "list_local_commands",
     "title": "List registered local commands",
-    "description": "List commands registered by hierarchical .machine-bridge/agent.json manifests for the selected target path.",
+    "description": "List effective direct-argv commands from project manifests and safe automatic package-script aliases, including provenance and timeout limits.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -1024,7 +1024,7 @@
   {
     "name": "run_local_command",
     "title": "Run registered local command",
-    "description": "Execute a named command registered in .machine-bridge/agent.json as a direct argv process without shell parsing. Manifest timeout and argument policy remain authoritative.",
+    "description": "Run an effective manifest or automatic package-script command through its fixed argv, cwd, timeout ceiling, and extra-argument policy.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": false,

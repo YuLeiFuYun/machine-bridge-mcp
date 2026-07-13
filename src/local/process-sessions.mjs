@@ -253,6 +253,13 @@ export function terminateProcessTree(child, signal) {
   }
 }
 
+export function terminateProcessTreeWithEscalation(child, options = {}) {
+  const graceMs = Number.isFinite(Number(options.graceMs)) ? Math.max(0, Number(options.graceMs)) : 2000;
+  const schedule = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
+  terminateProcessTree(child, "SIGTERM");
+  return schedule(() => terminateProcessTree(child, "SIGKILL"), graceMs);
+}
+
 function waitForSpawn(child) {
   return new Promise((resolvePromise, rejectPromise) => {
     const onSpawn = () => { cleanup(); resolvePromise(); };

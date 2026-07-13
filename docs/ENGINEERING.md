@@ -46,6 +46,7 @@ CLI, service, release, and deployment orchestration
 Rules:
 
 - Transport lifecycle, domain execution, persistence, and presentation are separate modules.
+- Domain modules must not import CLI, service, stdio, or relay adapters. Architecture tests enforce this dependency direction for agent context, package metadata, default instructions, capability observation, application automation, process sessions, and proxy selection.
 - Pure classification and normalization functions are exported and tested directly when practical.
 - Adapters may translate data but should not duplicate policy or schemas.
 - Every protocol control message emitted by one side must be explicitly accepted, rejected, or version-gated by the other side, with an end-to-end contract test covering the message name and semantics.

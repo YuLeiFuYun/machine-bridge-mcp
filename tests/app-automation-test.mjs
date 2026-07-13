@@ -10,11 +10,14 @@ const applications = join(root, "Applications");
 await mkdir(join(applications, "Example.app"), { recursive: true });
 await mkdir(join(applications, "Utilities", "Nested Utility.app"), { recursive: true });
 const calls = [];
+let applicationClock = 0;
 const manager = new AppAutomationManager({
   policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
   platform: "darwin",
   home: root,
   applicationRoots: [applications],
+  applicationCacheMs: 100,
+  now: () => applicationClock,
   displayPath: (value) => value,
   readResourceText: async (name) => name === "account-secret" ? "local-secret" : "",
   runProcess: async (cmd, argv, timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
@@ -29,6 +32,12 @@ try {
   const nested = await manager.listApplications({ query: "nested utility" });
   assert(nested.applications.length === 1 && nested.applications[0].name === "Nested Utility", "nested macOS application discovery failed");
   assert(listed.capabilities.arbitrary_script_execution === false, "application capabilities claim arbitrary script support");
+  await mkdir(join(applications, "Late Arrival.app"), { recursive: true });
+  const cachedLate = await manager.listApplications({ query: "late arrival" });
+  assert(cachedLate.applications.length === 0, "application discovery cache did not stabilize repeated resolver scans");
+  applicationClock = 101;
+  const refreshedLate = await manager.listApplications({ query: "late arrival" });
+  assert(refreshedLate.applications.length === 1, "application discovery cache did not refresh after its bounded lifetime");
 
   const opened = await manager.openApplication({ application: "Example", target: "https://example.test/" });
   assert(opened.code === 0 && calls.at(-1).cmd === "open", "application launcher did not use the macOS launcher");
@@ -99,6 +108,32 @@ try {
   await linux.openApplication({ application: "Example", target: "https://example.test/" });
   assert(linuxCalls.at(-1).cmd === "gio" && linuxCalls.at(-1).argv[0] === "launch" && basename(linuxCalls.at(-1).argv[1]) === "Example.desktop" && linuxCalls.at(-1).argv[2] === "https://example.test/", "Linux desktop launcher did not use gio launch");
   await expectReject(() => linux.inspectApplication({ application: "Example" }), "requires macOS");
+
+  const routingRuntime = new LocalRuntime({
+    workspace: root,
+    policy: { profile: "full", origin: "explicit", revision: 3 },
+    jobRoot: join(root, "routing-jobs"),
+    browserStateRoot: join(root, "routing-browser-state"),
+    agentHome: join(root, "routing-home"),
+    codexHome: join(root, "routing-codex-home"),
+    recoverJobs: false,
+    applicationAutomation: {
+      platform: "darwin",
+      home: root,
+      applicationRoots: [applications],
+      applicationCacheMs: 0,
+    },
+  });
+  try {
+    const routed = await routingRuntime.executeTool("resolve_task_capabilities", {
+      path: ".",
+      task: "请使用 Late Arrival 完成工作",
+    });
+    assert(routed.application_matches.some((application) => application.name === "Late Arrival"), "task resolver required generic app wording instead of matching an installed application name");
+    assert(routed.recommended_tools.includes("operate_local_application"), "task resolver did not recommend structured application tools for a named application");
+  } finally {
+    routingRuntime.stop();
+  }
 
   const liveMacosRequested = process.argv.includes("--live-macos");
   if (liveMacosRequested && process.platform !== "darwin") throw new Error("--live-macos requires macOS");

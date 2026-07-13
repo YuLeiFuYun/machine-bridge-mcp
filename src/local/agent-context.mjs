@@ -3,6 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from "./default-instructions.mjs";
+import { automaticPackageCommands, readProjectPackageMetadata } from "./project-package.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".machine-bridge", "agent.json");
 const GLOBAL_CONFIG_RELATIVE_PATH = join(".config", "machine-bridge-mcp", "agent.json");
@@ -117,7 +118,7 @@ export class AgentContextManager {
       .sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name))
       .slice(0, maxSkills);
     const commandMatches = [...state.commands.values()]
-      .map((command) => ({ command, score: relevanceScore(task, `${command.name} ${command.description} ${command.argv.join(" ")}`, command.name) }))
+      .map((command) => ({ command, score: relevanceScore(task, commandMatchText(command), command.name) }))
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score || a.command.name.localeCompare(b.command.name))
       .slice(0, 20);
@@ -127,7 +128,11 @@ export class AgentContextManager {
       const content = await readRegularUtf8(selected.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
       selectedSkill = { ...publicSkill(selected, this.displayPath), instructions: content.text };
     }
-    const recommendedTools = recommendTools(task, commandMatches.length > 0, skillMatches.length > 0);
+    const recommendedTools = recommendTools(task, {
+      commandsAvailable: state.commands.size > 0,
+      commandRelevant: (commandMatches[0]?.score || 0) >= 3,
+      skillRelevant: Boolean(selected),
+    });
     const refresh = capabilityFingerprint(state, discovered.skills);
     return {
       task,
@@ -239,7 +244,7 @@ export class AgentContextManager {
       scopeRoot,
       instructionFiles: [...DEFAULT_INSTRUCTION_FILES],
       instructionMaxBytes: DEFAULT_INSTRUCTION_MAX_BYTES,
-      skillRoots: defaultSkillRoots(directories, this.home, this.policy.unrestrictedPaths === true),
+      skillRoots: defaultSkillRoots(directories, this.home, this.codexHome, this.policy.unrestrictedPaths === true),
       commands: new Map(),
       builtinInstructionsEnabled: true,
       automaticProjectContextEnabled: true,
@@ -252,6 +257,9 @@ export class AgentContextManager {
       instructionBytes: 0,
       instructionsTruncated: false,
     };
+
+    const packageMetadata = await readProjectPackageMetadata(scopeRoot, () => this.throwIfCancelled(context));
+    state.commands = automaticPackageCommands(packageMetadata, scopeRoot);
 
     if (this.home) {
       const globalConfig = join(this.home, GLOBAL_CONFIG_RELATIVE_PATH);
@@ -488,9 +496,14 @@ function directoriesBetween(root, leaf) {
   return result.reverse();
 }
 
-function defaultSkillRoots(directories, home, unrestricted) {
-  const roots = [...directories].reverse().map((directory) => resolve(directory, ".agents", "skills"));
+function defaultSkillRoots(directories, home, codexHome, unrestricted) {
+  const roots = [];
+  for (const directory of [...directories].reverse()) {
+    roots.push(resolve(directory, ".agents", "skills"));
+    roots.push(resolve(directory, ".codex", "skills"));
+  }
   if (unrestricted && home) roots.push(resolve(home, ".agents", "skills"));
+  if (unrestricted && codexHome) roots.push(resolve(codexHome, "skills"));
   if (unrestricted && process.platform !== "win32") roots.push(resolve("/etc/codex/skills"));
   return [...new Set(roots)];
 }
@@ -718,6 +731,10 @@ function capabilityFingerprint(state, skills) {
   }));
 }
 
+function commandMatchText(command) {
+  return `${command.name} ${command.description} ${command.argv.join(" ")} ${command.searchTerms || ""}`;
+}
+
 function relevanceScore(task, candidate, identity = "") {
   const taskTokens = tokenize(task);
   const candidateTokens = tokenize(candidate);
@@ -765,15 +782,15 @@ function tokenize(value) {
   return tokens;
 }
 
-function recommendTools(task, hasCommands, hasSkills) {
+function recommendTools(task, { commandsAvailable, commandRelevant, skillRelevant }) {
   const lower = task.toLowerCase();
   const tools = ["agent_context"];
-  if (hasSkills) tools.push("load_local_skill");
-  if (hasCommands) tools.push("run_local_command");
+  if (skillRelevant) tools.push("load_local_skill");
+  if (commandRelevant) tools.push("run_local_command");
   if (/browser|chrome|edge|brave|网页|浏览器|表单|网站/.test(lower)) tools.push("browser_status", "browser_list_tabs", "browser_inspect_page", "browser_action", "browser_fill_form");
   if (/app|application|gui|window|应用|软件|窗口|界面/.test(lower)) tools.push("list_local_applications", "inspect_local_application", "operate_local_application");
   if (/git|commit|branch|diff|仓库|提交|分支/.test(lower)) tools.push("git_status", "git_diff");
-  if (/test|build|lint|command|terminal|测试|构建|命令|终端/.test(lower)) tools.push(hasCommands ? "run_local_command" : "run_process");
+  if (/test|build|lint|command|terminal|测试|构建|命令|终端/.test(lower)) tools.push(commandsAvailable ? "run_local_command" : "run_process");
   if (/file|code|source|edit|write|文件|代码|源码|修改|写入/.test(lower)) tools.push("read_file", "search_text", "edit_file", "apply_patch");
   return [...new Set(tools)];
 }
@@ -828,6 +845,8 @@ function publicCommands(commands, displayPath) {
       timeout_seconds: command.timeoutSeconds,
       allow_extra_args: command.allowExtraArgs,
       source: displayPath(command.source),
+      source_type: command.sourceType || "agent-config",
+      ...(command.script ? { package_script: command.script } : {}),
     }));
 }
 

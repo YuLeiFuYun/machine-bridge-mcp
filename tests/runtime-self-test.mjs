@@ -223,6 +223,17 @@ export async function runtimeSelfTest() {
 
     const command = await restricted.execCommand("node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"", 5);
     if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
+    const beforeBootstrap = restricted.runtimeInfo().observability.capability_routing;
+    if (beforeBootstrap.bootstrap_observed || beforeBootstrap.task_resolution_observed) throw new Error("capability routing telemetry was pre-populated");
+    await restricted.sessionBootstrap({ path: "." });
+    await restricted.resolveTaskCapabilities({ path: ".", task: "inspect the repository files" });
+    const routing = restricted.runtimeInfo().observability.capability_routing;
+    if (!routing.bootstrap_observed || !routing.task_resolution_observed || routing.bootstrap_count !== 1 || routing.task_resolution_count !== 1) {
+      throw new Error("capability routing telemetry did not record bootstrap and task resolution");
+    }
+    if (!/^[a-f0-9]{64}$/.test(routing.last_task_resolution?.task_fingerprint || "") || "task" in (routing.last_task_resolution || {}) || "task_sha256" in (routing.last_task_resolution || {})) {
+      throw new Error("capability routing telemetry exposed raw task content or omitted its runtime-keyed fingerprint");
+    }
     const diagnostics = await restricted.diagnoseRuntime();
     if (!diagnostics.request_reached_local_runtime || !diagnostics.checks.some(check => check.layer === "local-process-spawn" && check.ok)) {
       throw new Error("runtime diagnostics did not prove local process execution");
@@ -250,6 +261,19 @@ export async function runtimeSelfTest() {
       if (isProcessAlive(descendantPid)) {
         try { process.kill(descendantPid, "SIGKILL"); } catch {}
         throw new Error("timeout escalation left a SIGTERM-ignoring descendant running");
+      }
+
+      const detachedDescendantPidFile = join(workspace, "detached-timeout-descendant.pid");
+      const detachedParent = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`;
+      await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 200), "command timed out");
+      const detachedDescendantPid = Number((await readFile(detachedDescendantPidFile, "utf8")).trim());
+      const detachedDeadline = Date.now() + 5000;
+      while (isProcessAlive(detachedDescendantPid) && Date.now() < detachedDeadline) {
+        await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+      }
+      if (isProcessAlive(detachedDescendantPid)) {
+        try { process.kill(detachedDescendantPid, "SIGKILL"); } catch {}
+        throw new Error("one-shot process timeout cancelled forced escalation after the direct child exited");
       }
     }
 

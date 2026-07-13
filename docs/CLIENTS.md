@@ -54,7 +54,7 @@ The MCP specification defines stdio and Streamable HTTP as standard transports. 
 
 ## Automatic capability selection
 
-MCP initialization and `resolve_task_capabilities` give the host a current view of conservative built-in working agreements, bounded project facts, explicit global/project instructions, skills, registered commands, applications, and browser capability. The resolver rescans rather than relying on a stale dynamic tool list and can return the best matching skill instructions in one call. No instruction file is required for the default layers, and no repository file is written automatically.
+MCP initialization and `resolve_task_capabilities` give the host a current view of conservative built-in working agreements, bounded project facts, explicit global/project instructions, skills, explicit/automatic package commands, applications, and browser capability. The resolver rescans rather than relying on a stale dynamic tool list and can return the best matching skill instructions in one call. No instruction file is required for the default layers, and no repository file is written automatically.
 
 The host still owns the agent loop. ChatGPT web may use the recommendation automatically, ask for confirmation, expose only part of the catalog, or ignore server instructions. No MCP implementation can guarantee automatic invocation from the server side. Machine Bridge models that limitation explicitly instead of treating a recommendation as execution.
 
