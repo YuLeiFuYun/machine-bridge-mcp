@@ -159,7 +159,7 @@ Under canonical `full`, Machine Bridge also exposes structured local automation:
 
 - installed application discovery/opening and macOS Accessibility inspection/actions;
 - a packaged Chromium extension that controls the user's existing daily browser profile, active tabs, login state, and windows;
-- current DOM source and frame/open-Shadow-DOM inspection, structured page actions, complex multi-field forms, resource-backed secret fields, resource-backed file uploads, and screenshots.
+- current DOM source and frame/open-Shadow-DOM inspection, stable semantic element references, actionability waits, fixed trusted mouse/keyboard input, explicit browser waits, tab management, complex multi-field forms, resource-backed secret fields, resource-backed file uploads, and screenshots.
 
 One-time browser setup:
 
@@ -168,7 +168,7 @@ machine-mcp browser setup
 machine-mcp browser status
 ```
 
-Load the printed unpacked-extension directory once in Chrome, Edge, Brave, Vivaldi, or another compatible Chromium browser. The extension badge reports connection state, and clicking it opens the saved local pairing page. The local pairing token remains in owner-only state and the loopback pairing page; it is not returned through MCP. For a mass-market release, distribute the same extension as a signed browser-store build rather than asking end users to enable Developer mode. See [Local application and browser automation](docs/LOCAL_AUTOMATION.md).
+Load the printed unpacked-extension directory once in Chrome, Edge, Brave, Vivaldi, or another compatible Chromium browser. After an upgrade that adds permissions, reload the unpacked extension and accept the browser prompt; trusted input uses the Chromium `debugger` permission only for fixed, short-lived DevTools Input commands. The extension badge reports connection state, and clicking it opens the saved local pairing page. The local pairing token remains in owner-only state and the loopback pairing page; it is not returned through MCP. For a mass-market release, distribute the same extension as a signed browser-store build rather than asking end users to enable Developer mode. See [Local application and browser automation](docs/LOCAL_AUTOMATION.md).
 
 Machine Bridge can discover, refresh, rank, and load capabilities automatically. The ChatGPT/MCP host still owns tool selection and approval, so the server cannot force a host to expose or invoke a recommended skill, command, app, or browser operation. Check `server_info.observability.capability_routing` or `project_overview.capabilityRouting` to distinguish “the host never called the resolver” from “the resolver ran but found no relevant capability.”
 
@@ -319,9 +319,11 @@ The exact `tools/list` response reflects the active local policy. Definitions co
 - `browser_status`
 - `pair_browser_extension`
 - `browser_list_tabs`
+- `browser_manage_tabs` — create, activate, or close tabs
 - `browser_get_source` — bounded current DOM HTML, including selected frames
-- `browser_inspect_page`
-- `browser_action`
+- `browser_inspect_page` — semantic controls, stable per-document refs, state, and geometry
+- `browser_wait` — bounded URL/load/text/element-state waits
+- `browser_action` — actionability checks plus `auto`, `trusted`, or `dom` input mode
 - `browser_fill_form`
 - `browser_upload_files` — registered local resources to file inputs
 - `browser_screenshot`

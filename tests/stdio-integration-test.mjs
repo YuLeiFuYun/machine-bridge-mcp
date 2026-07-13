@@ -82,7 +82,7 @@ try {
   send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const listed = await responseFor(2);
   const tools = new Map(listed.result.tools.map((tool) => [tool.name, tool]));
-  for (const required of ["server_info", "session_bootstrap", "resolve_task_capabilities", "agent_context", "list_local_skills", "list_local_commands", "list_local_applications", "browser_status", "pair_browser_extension", "browser_get_source", "browser_fill_form", "browser_upload_files", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "diagnose_runtime", "list_local_resources", "generate_ssh_key_resource", "stage_job", "start_job", "list_jobs", "read_job", "cancel_job", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
+  for (const required of ["server_info", "session_bootstrap", "resolve_task_capabilities", "agent_context", "list_local_skills", "list_local_commands", "list_local_applications", "browser_status", "pair_browser_extension", "browser_manage_tabs", "browser_wait", "browser_get_source", "browser_fill_form", "browser_upload_files", "read_file", "view_image", "write_file", "edit_file", "apply_patch", "diagnose_runtime", "list_local_resources", "generate_ssh_key_resource", "stage_job", "start_job", "list_jobs", "read_job", "cancel_job", "run_process", "start_process", "read_process", "write_process", "kill_process", "exec_command", "git_log", "git_show"]) {
     assert(tools.has(required), `stdio default full profile omitted ${required}`);
   }
   assert(tools.get("write_file")?.annotations?.destructiveHint === true, "tool annotations missing");

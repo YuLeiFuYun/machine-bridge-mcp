@@ -1,3 +1,5 @@
+importScripts("devtools-input.js");
+
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
@@ -121,6 +123,16 @@ function connect(endpoint, token) {
       return;
     }
     reconnectAttempt = 0;
+    const manifest = chrome.runtime.getManifest();
+    ws.send(JSON.stringify({
+      type: "hello",
+      role: "extension",
+      protocol: 2,
+      version: manifest.version_name || manifest.version,
+      capabilities: [
+        "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
+      ],
+    }));
     setConnectionState("connected");
     clearInterval(keepaliveTimer);
     keepaliveTimer = setInterval(() => { if (socket === ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" })); }, 20000);
@@ -156,7 +168,7 @@ async function handleMessage(ws, raw) {
   activeRequests.set(message.id, state);
   try {
     throwIfCancelled(state);
-    const result = await dispatch(message.method, message.params || {});
+    const result = await dispatch(message.method, message.params || {}, state);
     throwIfCancelled(state);
     sendResponse(ws, message.id, true, result);
   } catch (error) {
@@ -179,8 +191,10 @@ function sendResponse(ws, id, ok, result, error = "") {
   try { ws.send(payload); } catch {}
 }
 
-async function dispatch(method, params) {
+async function dispatch(method, params, state) {
   if (method === "list_tabs") return listTabs(params);
+  if (method === "manage_tabs") return manageTabs(params);
+  if (method === "wait") return browserWait(params, state);
   if (method === "get_source") return getSource(params);
   if (method === "inspect_page") return inspectPage(params);
   if (method === "action") return browserAction(params);
@@ -210,6 +224,55 @@ async function listTabs(params) {
   };
 }
 
+
+async function manageTabs(params) {
+  if (params.action === "new") {
+    const tab = await chrome.tabs.create({ url: params.url || "about:blank", active: params.active !== false });
+    return { action: "new", ...publicTab(tab) };
+  }
+  const tab = await chrome.tabs.get(params.tabId);
+  if (params.action === "activate") {
+    await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
+    return { action: "activate", ...publicTab(await chrome.tabs.get(tab.id)) };
+  }
+  if (params.action === "close") {
+    const result = { action: "close", closed: true, ...publicTab(tab) };
+    await chrome.tabs.remove(tab.id);
+    return result;
+  }
+  throw new Error("unsupported browser tab action");
+}
+
+async function browserWait(params, state) {
+  const tab = await resolveTab(params.tabId);
+  const deadline = Date.now() + Math.max(1, Number(params.timeoutMs) || 30000);
+  let last = null;
+  while (Date.now() <= deadline) {
+    throwIfCancelled(state);
+    const current = await chrome.tabs.get(tab.id);
+    const urlMatched = !params.urlContains || String(current.url || "").includes(params.urlContains);
+    const needsPage = Boolean(params.selector || params.text || params.loadState);
+    let page = { matched: true, ready_state: current.status || "" };
+    if (needsPage) {
+      try {
+        assertPageTab(current);
+        const [execution] = await executePageAutomation(scriptTarget(current.id, params.frameId, false), "checkWait", params);
+        page = execution?.result || { matched: false };
+      } catch (error) {
+        const message = String(error?.message || error).replace(/\s+/g, " ").slice(0, 500);
+        if (message.includes("invalid CSS selector") || message.includes("selector matched")) throw new Error(message);
+        page = { matched: false, error: message };
+      }
+    }
+    last = { url_matched: urlMatched, ...page };
+    if (urlMatched && page.matched === true) {
+      return { ok: true, tab_id: current.id, title: current.title || "", url: current.url || "", condition: last };
+    }
+    await delay(200);
+  }
+  throw new Error(`browser wait timed out; last condition: ${JSON.stringify(last || {})}`);
+}
 function scriptTarget(tabId, frameId, allFrames) {
   if (Number.isInteger(frameId)) return { tabId, frameIds: [frameId] };
   if (allFrames) return { tabId, allFrames: true };
@@ -293,17 +356,53 @@ async function browserAction(params) {
   }
   assertPageTab(tab);
   const waiter = beginTabWait(tab.id, params.waitFor);
-  let execution;
+  let result;
   try {
-    [execution] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "action", params);
+    result = await performPageAction(tab, params);
     await waiter.promise;
   } catch (error) {
     waiter.cancel();
     throw error;
   }
-  return { tab_id: tab.id, title: tab.title || "", url: tab.url || "", ...execution.result };
+  const current = await chrome.tabs.get(tab.id).catch(() => tab);
+  return { tab_id: current.id, title: current.title || "", url: current.url || "", ...result };
 }
 
+async function performPageAction(tab, params) {
+  const trustedActions = new Set(["click", "double_click", "hover", "press", "type_text"]);
+  if (params.inputMode === "trusted" && !trustedActions.has(params.action)) {
+    throw new Error("trusted input is unavailable for this action");
+  }
+  const wantsTrusted = params.inputMode !== "dom" && trustedActions.has(params.action);
+  const topFrame = !Number.isInteger(params.frameId) || params.frameId === 0;
+  if (wantsTrusted && !topFrame && params.inputMode === "trusted") {
+    throw new Error("trusted input currently requires the top frame; use input_mode=dom for a subframe");
+  }
+  if (wantsTrusted && topFrame) {
+    const [prepared] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "prepareAction", params);
+    try {
+      const api = globalThis.__machineBridgeDevtoolsInput;
+      if (!api?.perform) throw new Error("trusted input module is unavailable");
+      await api.perform(tab.id, params.action, {
+        point: prepared.result?.point,
+        key: params.key || params.value || "Enter",
+        text: params.value || "",
+      });
+      return { ...prepared.result, input_mode: "trusted", trusted_input_fallback: false };
+    } catch (error) {
+      if (params.inputMode === "trusted") throw error;
+      const [fallback] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "action", params);
+      return {
+        ...fallback.result,
+        input_mode: "dom",
+        trusted_input_fallback: true,
+        fallback_reason: String(error?.message || error).slice(0, 500),
+      };
+    }
+  }
+  const [execution] = await executePageAutomation(scriptTarget(tab.id, params.frameId, false), "action", params);
+  return { ...execution.result, input_mode: "dom", trusted_input_fallback: false };
+}
 async function fillForm(params) {
   const tab = await resolveTab(params.tabId);
   assertPageTab(tab);
@@ -403,4 +502,8 @@ function executePageAutomation(target, method, params) {
       },
       args: [method, params],
     }));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

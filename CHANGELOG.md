@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.0 - 2026-07-13
+
+### Existing-profile browser automation
+
+- Keep the authenticated Manifest V3 extension as the primary browser backend so automation operates the user's ordinary Chromium profile, tabs, extensions, cookies, and login state instead of launching a separate profile. Add tab creation/activation/closure and explicit combined waits for URL, document readiness, page text, and element state.
+- Replace fragile inspect-then-selector flows with bounded semantic snapshots containing stable per-document/frame element references, visibility/enabled/editable state, and viewport geometry. Page actions now wait for attachment, visibility, enabled/editable state, geometric stability, and unobscured pointer hit targets; ambiguous selectors and stale references fail explicitly.
+- Add double-click, hover, append-text, and scroll-into-view actions. Top-frame click, double-click, hover, key press, and text input can use fixed short-lived Chromium DevTools Input commands through explicit `auto`, `trusted`, or `dom` modes. The extension exposes no caller-selected CDP method or arbitrary JavaScript and detaches the debugger in `finally`.
+
+### Architecture, security, tests, and documentation
+
+- Extract browser command normalization into a focused local module and isolate trusted input in a fixed extension module. Add a versioned extension capability handshake, stale-build reload guidance, explicit keepalive handling, and replacement validation that preserves the current compatible connection until the candidate is accepted; accepted replacements reject in-flight direct and proxied requests with retry guidance instead of leaving them to time out. Preserve resource-backed secrets/files, strict action/value validation, bounded broker messages, cancellation, source limits, and the existing owner-only pairing model.
+- Add behavior-level tests for command contracts, trusted-input command sequences and cleanup, semantic-ref stability, deterministic scrolling, obscured-target waiting, stale refs, broker routing, catalog parity, and architecture invariants. Update browser setup, permission, security, architecture, testing, and tool documentation.
+
 ## 0.13.0 - 2026-07-13
 
 ### Automatic capability routing and observability

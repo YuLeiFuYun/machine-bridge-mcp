@@ -386,6 +386,55 @@
     }
   },
   {
+    "name": "browser_manage_tabs",
+    "title": "Manage browser tabs",
+    "description": "Create, activate, or close tabs in the paired existing browser profile.",
+    "availability": "full",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "new",
+            "activate",
+            "close"
+          ]
+        },
+        "tab_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Required for activate and close."
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 32768,
+          "description": "Optional absolute http, https, or file URL for a new tab."
+        },
+        "active": {
+          "type": "boolean",
+          "default": true
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 30
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
     "name": "browser_get_source",
     "title": "Read browser page source",
     "description": "Read bounded serialized current DOM HTML from the active or selected browser tab and optionally from all accessible frames.",
@@ -474,9 +523,114 @@
     }
   },
   {
+    "name": "browser_wait",
+    "title": "Wait for browser state",
+    "description": "Wait until all supplied URL, load, text, and element-state conditions are satisfied in an existing browser tab.",
+    "availability": "full",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tab_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selector": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "Stable element reference returned by browser_inspect_page for the same document and frame."
+            },
+            "css": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "label": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "role": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "placeholder": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "additionalProperties": false
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "attached",
+            "detached",
+            "visible",
+            "hidden",
+            "enabled",
+            "editable",
+            "checked",
+            "unchecked"
+          ],
+          "description": "Element state to wait for. Defaults to visible only when selector is supplied."
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "url_contains": {
+          "type": "string",
+          "maxLength": 32768
+        },
+        "load_state": {
+          "type": "string",
+          "enum": [
+            "domcontentloaded",
+            "complete"
+          ]
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 30
+        }
+      }
+    }
+  },
+  {
     "name": "browser_action",
     "title": "Operate browser page",
-    "description": "Perform one structured navigation or DOM action in the user's existing browser tab without accepting arbitrary JavaScript.",
+    "description": "Perform one structured navigation or page action in the user's existing browser tab, with automatic actionability waits and optional fixed DevTools input, without accepting arbitrary JavaScript.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -506,12 +660,21 @@
             "submit",
             "reload",
             "back",
-            "forward"
+            "forward",
+            "double_click",
+            "hover",
+            "type_text",
+            "scroll_into_view"
           ]
         },
         "selector": {
           "type": "object",
           "properties": {
+            "ref": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "Stable element reference returned by browser_inspect_page for the same document and frame."
+            },
             "css": {
               "type": "string",
               "maxLength": 2000
@@ -582,6 +745,22 @@
         "frame_id": {
           "type": "integer",
           "minimum": 0
+        },
+        "input_mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "trusted",
+            "dom"
+          ],
+          "default": "auto",
+          "description": "Use fixed DevTools Input commands when possible, require them, or use DOM events only."
+        },
+        "element_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 10
         }
       },
       "required": [
@@ -618,6 +797,11 @@
               "selector": {
                 "type": "object",
                 "properties": {
+                  "ref": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "description": "Stable element reference returned by browser_inspect_page for the same document and frame."
+                  },
                   "css": {
                     "type": "string",
                     "maxLength": 2000
@@ -691,6 +875,11 @@
         "submit_selector": {
           "type": "object",
           "properties": {
+            "ref": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "Stable element reference returned by browser_inspect_page for the same document and frame."
+            },
             "css": {
               "type": "string",
               "maxLength": 2000
@@ -745,6 +934,12 @@
         "frame_id": {
           "type": "integer",
           "minimum": 0
+        },
+        "element_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 10
         }
       },
       "required": [
@@ -815,6 +1010,11 @@
         "selector": {
           "type": "object",
           "properties": {
+            "ref": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "Stable element reference returned by browser_inspect_page for the same document and frame."
+            },
             "css": {
               "type": "string",
               "maxLength": 2000
@@ -885,6 +1085,12 @@
         "frame_id": {
           "type": "integer",
           "minimum": 0
+        },
+        "element_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 10
         }
       },
       "required": [

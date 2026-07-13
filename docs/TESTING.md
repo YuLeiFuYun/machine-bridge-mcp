@@ -52,7 +52,7 @@ The suite includes:
 
 ## Opt-in live desktop and browser validation
 
-The normal suite uses deterministic mocks for macOS Accessibility and an authenticated in-process extension peer for browser routing. Before a release that changes local UI automation, run the macOS live smoke test on a machine where the invoking Node/terminal process has Accessibility permission:
+The normal suite uses deterministic mocks for macOS Accessibility and an authenticated in-process extension peer for browser routing. Browser contract tests cover versioned extension handshakes, stale-extension rejection, compatible replacement without premature displacement, clean rejection of in-flight direct and proxied requests during replacement, keepalive handling, strict action/value validation, stable-ref validation, combined waits, tab commands, fixed trusted-input CDP sequences, attach/detach cleanup, semantic-ref stability, deterministic scrolling, obscured-target waiting, and stale-reference failure. Before a release that changes local UI automation, run the macOS live smoke test on a machine where the invoking Node/terminal process has Accessibility permission:
 
 ```sh
 npm run app-automation:live-test
@@ -60,7 +60,7 @@ npm run app-automation:live-test
 
 It opens Calculator, activates it through the fixed JXA helper, verifies structured JSON output, inspects main-window Accessibility controls with menu recursion disabled, clicks the `One` control, and quits the application. It is intentionally excluded from CI because macOS TCC permission and a graphical login session are host state.
 
-For browser changes, perform an isolated-profile smoke test with the packaged unpacked extension: pair it to a temporary source runtime, navigate a local no-store page, inspect controls, fill multiple fields, click a button, verify the live DOM, and capture a screenshot. A Playwright persistent Chromium context is an acceptable harness because it loads the real MV3 service worker while keeping the user's daily browser profile untouched.
+For browser changes, perform an isolated-profile smoke test with the packaged unpacked extension: pair it to a temporary source runtime, navigate a local no-store page, inspect controls and reuse a returned `ref`, wait for an element state, fill multiple fields, exercise `input_mode: trusted` for click/key/text, verify the live DOM, create/activate/close a tab, and capture a screenshot. A Playwright persistent Chromium context is an acceptable harness because it loads the real MV3 service worker while keeping the user's daily browser profile untouched.
 
 ## Additional release checks
 
