@@ -1,0 +1,21 @@
+name: Repair changelog
+
+on:
+  push:
+    branches:
+      - fix/cli-policy-state-metadata
+    paths:
+      - .github/workflows/repair-changelog.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Restore and prepend
