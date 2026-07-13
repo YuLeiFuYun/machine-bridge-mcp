@@ -18,6 +18,12 @@ Branch names use a short category and purpose, for example `feat/browser-downloa
 
 Direct pushes to `main`, force pushes, and branch deletion are blocked by repository protection. An exception requires an incident record and an explicit owner decision.
 
+### Completion ownership
+
+Repository automation owns the complete source-change lifecycle. After required checks pass, it updates the pull-request branch when necessary, squash-merges through local `gh`, verifies the resulting `main` commit, and removes the merged branch. A completed change must not remain indefinitely as an open pull request.
+
+Every release-relevant change advances the package version and is completed by an annotated `v<version>` tag plus a final GitHub Release for the exact successful `main` commit. The coding agent performs that tag and GitHub Release work by default through local `git`, `gh`, and `gh api`; repeated per-task authorization is not required. npm publication, Worker deployment, credential mutation, global installation, and daemon/service replacement remain separate live operations requiring explicit authorization.
+
 ### Local GitHub control plane
 
 Repository automation must use local `git`, `gh`, and `gh api` commands executed through Machine Bridge for every GitHub read or mutation. A hosted GitHub connector or ChatGPT GitHub plugin must not be used. Mixing control planes can produce stale refs, unreviewed remote-only commits, ambiguous credentials, and recovery paths that cannot be reproduced from the maintainer's machine. Fetch before mutation and verify the remote result afterward.

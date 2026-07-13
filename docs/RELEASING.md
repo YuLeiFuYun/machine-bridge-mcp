@@ -12,6 +12,12 @@ The release invariant is:
 
 `npm publish` runs `release:check` through `prepublishOnly`, so npm publication is blocked until all GitHub state is synchronized.
 
+## Default automation responsibility
+
+For every reviewed release-relevant change, repository automation completes the source release without requiring the owner to repeat the instruction: it merges the pull request, waits for successful push-triggered CI on the exact `main` commit, creates and pushes the annotated version tag, creates or updates the final GitHub Release, uploads the generated npm tarball, and verifies that all references identify the same commit. These GitHub operations use only local `git`, `gh`, and `gh api` through Machine Bridge.
+
+This standing responsibility does not authorize npm publication, Cloudflare Worker deployment, credential changes, global package installation, or local daemon/service replacement. Those operations change a registry or live machine and require explicit authorization.
+
 ## Prepare a version
 
 1. Set the new version without creating an automatic npm tag. The npm version hook synchronizes the Worker and packaged browser-extension versions:

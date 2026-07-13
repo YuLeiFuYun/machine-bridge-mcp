@@ -7,6 +7,7 @@
 - Define a risk-based project standard covering GitHub Flow, Conventional Commits, architecture boundaries, MCP contract ownership, testing, errors, logging, supply-chain security, documentation, review, and explicit exceptions. Add pull-request and structured issue templates plus area ownership through CODEOWNERS.
 - Add an executable Conventional Commit policy for pull-request and main-branch commit titles. Keep the repository on squash-based GitHub Flow rather than introducing permanent develop/release branches that do not match its single-maintainer, continuously released operating model.
 - Require all repository-host operations to use local `git`, `gh`, and `gh api` through Machine Bridge. Explicitly prohibit hosted GitHub connectors or ChatGPT GitHub plugins so remote mutations, credentials, refs, checks, and recovery remain observable from one local control plane.
+- Make repository automation responsible for closing the source-change lifecycle: after all required checks pass it squash-merges the pull request, verifies `main`, creates and pushes the annotated version tag, and creates or updates the matching GitHub Release. npm publication, Worker deployment, credentials, global installation, and daemon/service replacement remain separately authorized live operations.
 
 ### Generated contracts and security automation
 
