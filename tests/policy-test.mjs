@@ -22,7 +22,10 @@ const cliPolicy = resolvePolicy({}, {});
 const policyUpdatedAt = "2026-07-13T00:00:00.000Z";
 cliPolicy.updatedAt = policyUpdatedAt;
 assert(cliPolicy.updatedAt === policyUpdatedAt, "CLI policy state rejected persistence metadata");
-assert(!Object.isFrozen(cliPolicy), "CLI policy state unexpectedly shares the immutable canonical object");
+assert(Object.isSealed(cliPolicy), "CLI policy state accepts undeclared fields");
+assert(!Object.isFrozen(cliPolicy), "CLI policy state rejected its writable metadata field");
+assert(Reflect.set(cliPolicy, "profile", "review") === false, "CLI policy capability field remained writable");
+assert(cliPolicy.profile === contract.defaultProfile, "CLI policy capability was mutated");
 assert(Object.isFrozen(normalizePolicy(cliPolicy)), "canonical policy normalization lost immutability");
 
 const review = policyProfile("review");
