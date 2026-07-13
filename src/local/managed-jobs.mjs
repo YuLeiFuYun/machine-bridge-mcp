@@ -697,10 +697,17 @@ function runnerProcessIsCurrent(status, dir, { ownerOnly = false } = {}) {
 
 function scrubFinishedPlan(dir, status) {
   if (PLAN_RETAINING_STATES.has(status.status)) return;
-  rmSync(join(dir, "plan.json"), { force: true });
-  rmSync(join(dir, "runner.pid"), { force: true });
-  rmSync(join(dir, "recovery.lock"), { force: true });
-  rmSync(join(dir, "transition.lock"), { force: true });
+  const safeRm = (path) => {
+    try {
+      rmSync(path, { force: true });
+    } catch (error) {
+      if (!["ENOENT", "EPERM", "EACCES"].includes(error.code)) throw error;
+    }
+  };
+  safeRm(join(dir, "plan.json"));
+  safeRm(join(dir, "runner.pid"));
+  safeRm(join(dir, "recovery.lock"));
+  safeRm(join(dir, "transition.lock"));
 }
 
 function reviewablePlan(plan) {
