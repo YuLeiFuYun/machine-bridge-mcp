@@ -47,9 +47,37 @@ This default prioritizes usability, not least privilege. `run_process` and proce
 
 Node.js 26 or newer and npm 12 or newer are required. The repository pins the active development versions in `.node-version`, `.nvmrc`, and `packageManager`; project installs fail on older Node runtimes.
 
+Use a new temporary directory for the bootstrap. The existing `npm`/`npx` front-end may inspect nearby project metadata before it launches the requested npm version; starting from an empty directory prevents an unrelated legacy `devEngines` declaration from blocking the bootstrap. The actual installation is then executed by the pinned npm 12 CLI rather than whichever npm happens to be first on `PATH`.
+
+macOS/Linux:
+
 ```sh
-npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+install_dir="$(mktemp -d)"
+(
+  cd "$install_dir"
+  npx --yes npm@12.0.1 install --global npm@12.0.1
+  npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+)
+rm -rf "$install_dir"
+npm --version
+machine-mcp doctor
 ```
+
+Windows Command Prompt (`cmd.exe`):
+
+```bat
+set "MBM_INSTALL_DIR=%TEMP%\machine-bridge-mcp-install-%RANDOM%-%RANDOM%"
+mkdir "%MBM_INSTALL_DIR%"
+pushd "%MBM_INSTALL_DIR%"
+npx --yes npm@12.0.1 install --global npm@12.0.1
+npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+popd
+rmdir /s /q "%MBM_INSTALL_DIR%"
+npm --version
+machine-mcp doctor
+```
+
+`Unknown cli config "--allow-scripts"` proves the Machine Bridge install was executed by npm 11 or older rather than the required npm 12. `Invalid property "node"` or `Invalid property "devEngines.node"` means that npm parsed a legacy `devEngines` object; the npm debug log is required to identify which package supplied it. The empty-directory, pinned-npm procedure avoids relying on that old parser. If `npm --version` still reports an older version after the bootstrap, reopen the terminal and rerun `machine-mcp doctor`.
 
 Recent npm releases may otherwise warn that Wrangler's native dependencies (`esbuild`, `workerd`, and `sharp`) have install scripts awaiting approval. The scoped command approves the reviewed native script names that npm 12 evaluates during global resolution while `--omit=optional` keeps optional `fsevents` out of the installed runtime. `fsevents` is used for development-time filesystem watching rather than Machine Bridge runtime or deployment. Omitting `--omit=optional` can therefore produce a harmless blocked-script warning for `fsevents@2.3.3`; use the documented command rather than changing global npm policy. `machine-mcp doctor` remains the authoritative runtime check.
 
@@ -81,14 +109,13 @@ On first remote start, the CLI:
 
 A normal `machine-mcp` invocation is a foreground start: it remains attached to the terminal and prints `info` logs. Startup and other state-changing operations use an owner-token/process-identity lock and wait up to 30 seconds for an ordinary concurrent startup to finish instead of failing on a brief launchd/systemd race. After a global package upgrade, the CLI unloads the platform service and also checks the workspace lock for a detached/orphan `--daemon-only` process that the service manager no longer tracks. It terminates only a process whose PID, process start time, entrypoint, canonical workspace, canonical state root, and daemon-only arguments all match, waits up to 15 seconds for the PID and lock to disappear, and then starts the installed version in the foreground. A genuine foreground or unverifiable conflict is left untouched and reported with actionable guidance. To run only in the background, use `machine-mcp service start`; inspect its owner-only logs under `~/.local/state/machine-bridge-mcp/logs/`.
 
-Recommended upgrade sequence:
+Recommended upgrade sequence: repeat the package-free temporary-directory installation above, then run:
 
 ```sh
-npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
 machine-mcp --verbose
 ```
 
-The global install replaces files on disk but cannot hot-reload an already running Node process; the second command performs the bounded service and orphan-daemon takeover. Use the command exactly as shown: `--omit=optional` prevents the development-only optional `fsevents` package from producing a blocked-install-script warning. If takeover fails, run `machine-mcp service status` first; it reports the platform service and workspace daemon separately. Then run `machine-mcp service stop` and retry.
+The global install replaces files on disk but cannot hot-reload an already running Node process; the foreground command performs the bounded service and orphan-daemon takeover. Keep `--omit=optional` in the installation step to prevent the development-only optional `fsevents` package from producing a blocked-install-script warning. If takeover fails, run `machine-mcp service status` first; it reports the platform service and workspace daemon separately. Then run `machine-mcp service stop` and retry.
 
 Use the printed values in the MCP client:
 
@@ -97,7 +124,7 @@ MCP Server URL: https://<worker>.<account>.workers.dev/mcp
 MCP connection password: mcp_password_...
 ```
 
-The remote authorization flow uses an authorization code, PKCE S256, exact redirect/resource binding, expiring access tokens stored as hashes, and a token-version value for bulk revocation.
+The remote authorization flow uses an authorization code, PKCE S256, exact redirect/resource binding, expiring access tokens stored as hashes, and a token-version value for bulk revocation. After password approval, the Worker constructs the registered callback with the URL API and returns `303 See Other`, so OAuth response parameters are encoded and the browser performs a GET to the callback.
 
 ## Optional local stdio MCP
 

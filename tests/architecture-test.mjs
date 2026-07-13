@@ -163,16 +163,27 @@ const packaged = new Set(packageJson.files || []);
 if (!packaged.has("scripts") || !packaged.has("src/local")) throw new Error("package files omit executable script or local runtime directories");
 
 const installCommand = "npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
+const pinnedInstallCommand = "npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
+if (packageJson.engines?.npm !== ">=12.0.0") throw new Error("package metadata no longer declares the npm 12 runtime requirement");
+const installSmokeSource = readFileSync(join(root, "tests", "install-smoke-test.mjs"), "utf8");
+if (!installSmokeSource.includes("package-free-cwd") || !installSmokeSource.includes('pkg.engines?.npm !== ">=12.0.0"')) {
+  throw new Error("global install test no longer validates package-free npm 12 installation metadata");
+}
+for (const file of [join(root, "README.md"), join(root, "docs", "OPERATIONS.md")]) {
+  const guidance = readFileSync(file, "utf8").replace(/\s+/g, " ");
+  if (!guidance.includes(pinnedInstallCommand) || !guidance.includes('Invalid property "node"')) {
+    throw new Error(`pinned npm bootstrap guidance drifted in ${relative(root, file)}`);
+  }
+}
 for (const file of [
   join(root, "AGENTS.md"),
   join(root, "CONTRIBUTING.md"),
-  join(root, "README.md"),
   join(root, "docs", "ENGINEERING.md"),
 ]) {
   const normalized = readFileSync(file, "utf8").replace(/\s+/g, " ");
   if (!normalized.includes(installCommand)) throw new Error(`global install/activation guidance drifted in ${relative(root, file)}`);
 }
-if (!cliSource.replace(/\s+/g, " ").includes(`${installCommand} && machine-mcp`)) throw new Error("CLI usage install guidance drifted from repository documentation");
+if (!cliSource.replace(/\s+/g, " ").includes(`${pinnedInstallCommand} && machine-mcp`)) throw new Error("CLI pinned npm installation guidance drifted from user documentation");
 
 const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
 if (!engineering.includes("default profile is intentionally `full`") || !engineering.includes("`.project-local/`")) {

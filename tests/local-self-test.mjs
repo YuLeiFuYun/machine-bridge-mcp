@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
-import { cleanupStaleSecretFiles, isSupportedNodeVersion, knownProfileStates, knownWorkerNames, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { cleanupStaleSecretFiles, isSupportedNodeVersion, isSupportedNpmVersion, knownProfileStates, knownWorkerNames, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
@@ -722,8 +722,17 @@ function cliSelfTest() {
   validatePositionals("job", { _: ["inspect", "job_abcdefghijklmnopqrstuvwxyz"] });
   expectThrow(() => validatePositionals("resource", { _: ["add", "name", "path", "extra"] }), "too many positional");
 
-  if (isSupportedNodeVersion("25.9.0") || !isSupportedNodeVersion("26.0.0") || !isSupportedNodeVersion("27.1.0") || isSupportedNodeVersion("invalid")) {
+  if (isSupportedNodeVersion("25.9.0") || !isSupportedNodeVersion("26.0.0") || !isSupportedNodeVersion("v27.1.0") || isSupportedNodeVersion("invalid")) {
     throw new Error("Node runtime baseline predicate is incorrect");
+  }
+  if (isSupportedNpmVersion("11.9.9") || !isSupportedNpmVersion("12.0.0") || !isSupportedNpmVersion("v13.1.0") || isSupportedNpmVersion("invalid")) {
+    throw new Error("npm runtime baseline predicate is incorrect");
+  }
+  const windowsNpm = npmVersionCommand("win32", "C:\\Windows\\System32\\cmd.exe");
+  const posixNpm = npmVersionCommand("linux");
+  if (windowsNpm.file !== "C:\\Windows\\System32\\cmd.exe" || windowsNpm.args.join("|") !== "/d|/s|/c|npm --version"
+      || posixNpm.file !== "npm" || posixNpm.args.join("|") !== "--version") {
+    throw new Error("npm version command is not cross-platform safe");
   }
   if (workerHealthUserReason("version_mismatch:0.1.0!=0.2.0") !== "deployed version does not match the local package" || workerHealthUserReason("network_error") !== "network request failed") {
     throw new Error("Worker health user-facing reason mapping is incorrect");

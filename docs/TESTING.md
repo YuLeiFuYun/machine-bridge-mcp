@@ -48,7 +48,7 @@ The suite includes:
 - shared no-follow bounded-file reads for normal files, over-limit data, directories, and symbolic links;
 - CLI parsing, policy profiles, and client configuration boundaries;
 - live stdio MCP initialization with session instructions, capability resolution, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;
-- live local Worker OAuth registration, consent, PKCE, token replay rejection, throttling, CORS, protocol negotiation, daemon-backed session bootstrap, dynamic tool advertisement, rich content, daemon replacement, cancellation, malformed daemon JSON/non-object rejection, duplicate hello rejection, and unknown-message closure.
+- live local Worker OAuth registration, consent, URL-constructed `303` callbacks including the ChatGPT redirect URI and encoded state, PKCE, token replay rejection, throttling, CORS, protocol negotiation, daemon-backed session bootstrap, dynamic tool advertisement, rich content, daemon replacement, cancellation, malformed daemon JSON/non-object rejection, duplicate hello rejection, and unknown-message closure.
 
 ## Opt-in live desktop and browser validation
 
@@ -97,7 +97,7 @@ Run `npm run privacy:check` before committing and before packaging. Run and revi
 
 ## Package manifest
 
-`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, validates every packaged mode as `0644` or `0755`, and verifies that privacy/engineering guidance, runtime/relay/secure-file/lock/service/browser/app modules, all package-script helpers, the packaged browser extension, contribution discipline, and privacy/release-impact checkers are present. `npm run install:test` packs the real tarball, installs it into an isolated global prefix with the documented npm 12 options, rejects blocked-script warnings, confirms optional `fsevents` is absent, and runs the installed CLI.
+`npm run package:test` executes a real silent `npm pack --dry-run --json`, requires clean parseable JSON, rejects sensitive local artifacts and credential-like file classes, validates every packaged mode as `0644` or `0755`, and verifies that privacy/engineering guidance, runtime/relay/secure-file/lock/service/browser/app modules, all package-script helpers, the packaged browser extension, contribution discipline, and privacy/release-impact checkers are present. `npm run install:test` requires npm 12, installs the real tarball from a package-free directory into an isolated global prefix with the documented options, verifies the packaged npm engine requirement, rejects blocked-script warnings, confirms optional `fsevents` is absent, and runs the installed CLI. The test runs on Linux, macOS, and Windows CI.
 
 The stdio integration test also sends an oversized line, verifies bounded rejection, and confirms that the next valid request is still processed.
 

@@ -82,15 +82,17 @@ try {
   assert(invalidRegistration.status === 400, "non-loopback HTTP redirect URI was accepted");
 
   const redirectUriInput = "http://LOCALHOST:80/callback/../callback";
+  const chatGptRedirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
   const registration = await fetchJson(`${base}/oauth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_name: "Integration\u202e <Client>\u200b", redirect_uris: [redirectUriInput] }),
+    body: JSON.stringify({ client_name: "Integration\u202e <Client>\u200b", redirect_uris: [redirectUriInput, chatGptRedirectUri] }),
   });
   assert(registration.response.status === 200, `client registration failed: ${registration.response.status}`);
   assert(typeof registration.body.client_id === "string", "registration did not return client_id");
   assert(registration.body.client_name === "Integration <Client>", "registration retained Unicode display-control characters");
   assert(registration.body.redirect_uris?.[0] === "http://localhost/callback", "registration did not canonicalize redirect URI");
+  assert(registration.body.redirect_uris?.[1] === chatGptRedirectUri, "registration changed the ChatGPT redirect URI");
   const redirectUri = registration.body.redirect_uris[0];
 
   const verifier = randomBytes(32).toString("base64url");
@@ -137,13 +139,39 @@ try {
     body: new URLSearchParams({ ...authorization, login_token: "integration-password" }),
     redirect: "manual",
   });
-  assert(approved.status === 302, `valid authorization returned ${approved.status}`);
+  assert(approved.status === 303, `valid authorization returned ${approved.status}`);
   const location = approved.headers.get("location");
   assert(location, "authorization redirect omitted Location");
   const redirect = new URL(location);
   const code = redirect.searchParams.get("code");
   assert(code, "authorization redirect omitted code");
   assert(redirect.searchParams.get("state") === "integration-state", "authorization state was not preserved");
+
+  const chatGptAuthorization = {
+    response_type: "code",
+    client_id: registration.body.client_id,
+    redirect_uri: chatGptRedirectUri,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    scope: "machine-bridge-mcp",
+    resource: `${base}/mcp`,
+    state: "chatgpt-state:/?&=%",
+    login_token: "integration-password",
+  };
+  const chatGptApproved = await stableFetch(`${base}/oauth/authorize`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": "mbm-integration-chatgpt" },
+    body: new URLSearchParams(chatGptAuthorization),
+    redirect: "manual",
+  });
+  assert(chatGptApproved.status === 303, `ChatGPT authorization returned ${chatGptApproved.status}`);
+  const chatGptLocation = chatGptApproved.headers.get("location");
+  assert(chatGptLocation, "ChatGPT authorization redirect omitted Location");
+  const chatGptRedirect = new URL(chatGptLocation);
+  assert(chatGptRedirect.origin === "https://chatgpt.com", "ChatGPT authorization redirect changed origin");
+  assert(chatGptRedirect.pathname === "/connector_platform_oauth_redirect", "ChatGPT authorization redirect changed path");
+  assert(chatGptRedirect.searchParams.get("code")?.startsWith("mcp_code_"), "ChatGPT authorization redirect omitted a valid code");
+  assert(chatGptRedirect.searchParams.get("state") === chatGptAuthorization.state, "ChatGPT authorization redirect corrupted state");
 
   const wrongVerifier = await stableFetch(`${base}/oauth/token`, {
     method: "POST",

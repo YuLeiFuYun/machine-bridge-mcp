@@ -10,7 +10,7 @@ import { runStdioServer } from "./stdio.mjs";
 import { assertCanonicalFullPolicy, DEFAULT_POLICY_PROFILE, DEFAULT_POLICY_REVISION, POLICY_PROFILES, normalizePolicy, policyProfile, toolsForPolicy } from "./tools.mjs";
 import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
 import { activeManagedJobs, inspectResourceFile, loadManagedJobPlan, ManagedJobManager, publicResourceRegistry, validateResourceName } from "./managed-jobs.mjs";
-import { runWrangler } from "./shell.mjs";
+import { run, runWrangler } from "./shell.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
@@ -1124,6 +1124,10 @@ async function doctorCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const checks = [];
   checks.push({ name: "node", ok: isSupportedNodeVersion(), detail: process.version });
+  const npmCommand = npmVersionCommand();
+  const npm = await run(npmCommand.file, npmCommand.args, { capture: true, allowFailure: true, timeoutMs: 10_000 });
+  const npmDetail = sanitizeLines(npm.stdout || npm.stderr);
+  checks.push({ name: "npm", ok: npm.code === 0 && isSupportedNpmVersion(npmDetail), detail: npmDetail || "unavailable" });
   const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true });
   checks.push({ name: "wrangler", ok: wrangler.code === 0, detail: (wrangler.stdout || wrangler.stderr).trim() });
   const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
@@ -1557,8 +1561,20 @@ function validateWorkerName(value) {
 }
 
 export function isSupportedNodeVersion(version = process.versions.node) {
-  const major = Number(String(version || "").split(".")[0]);
+  const major = Number(String(version || "").replace(/^v/, "").split(".")[0]);
   return Number.isInteger(major) && major >= 26;
+}
+
+export function isSupportedNpmVersion(version) {
+  const major = Number(String(version || "").trim().replace(/^v/, "").split(".")[0]);
+  return Number.isInteger(major) && major >= 12;
+}
+
+export function npmVersionCommand(platform = process.platform, comspec = process.env.ComSpec) {
+  if (platform === "win32") {
+    return { file: comspec || "cmd.exe", args: ["/d", "/s", "/c", "npm --version"] };
+  }
+  return { file: "npm", args: ["--version"] };
 }
 
 function assertNodeVersion() {
@@ -1568,8 +1584,10 @@ function assertNodeVersion() {
 function usage() {
   console.log(`machine-bridge-mcp
 
+Installation (run from a package-free temporary directory; Node.js >=26):
+  npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
+
 Usage:
-  npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
   npx machine-bridge-mcp@latest                  # no global install; autostart may rely on npm cache
   ./mbm                                          # from source checkout
   .\\mbm.cmd                                      # from source checkout on Windows cmd

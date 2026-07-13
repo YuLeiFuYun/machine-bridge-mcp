@@ -76,14 +76,21 @@ machine-mcp service status
 machine-mcp --verbose
 ```
 
-Recommended upgrade:
+For installation or upgrade, launch a pinned npm 12 CLI from an empty temporary directory. This avoids depending on the old npm version currently on `PATH` and prevents its `npx` bootstrap from validating unrelated nearby project metadata first. On Windows Command Prompt:
 
-```sh
-npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+```bat
+set "MBM_INSTALL_DIR=%TEMP%\machine-bridge-mcp-install-%RANDOM%-%RANDOM%"
+mkdir "%MBM_INSTALL_DIR%"
+pushd "%MBM_INSTALL_DIR%"
+npx --yes npm@12.0.1 install --global npm@12.0.1
+npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+popd
+rmdir /s /q "%MBM_INSTALL_DIR%"
+npm --version
 machine-mcp --verbose
 ```
 
-Keep `--omit=optional` in the install command. Without it npm may resolve optional `fsevents` and warn that its install script was not included in `allowScripts`; Machine Bridge does not require that development-time watcher at runtime.
+`Unknown cli config "--allow-scripts"` proves the package installation ran under npm 11 or older. `Invalid property "node"` or `Invalid property "devEngines.node"` means npm parsed a legacy `devEngines` object; inspect the npm debug log to identify its source rather than assuming it belongs to Machine Bridge. The published package declares both Node.js 26 and npm 12 in `engines`, and `machine-mcp doctor` checks both active versions. Keep `--omit=optional` in the install command. Without it npm may resolve optional `fsevents` and warn that its install script was not included in `allowScripts`; Machine Bridge does not require that development-time watcher at runtime.
 
 ## State-root safety and removal
 
