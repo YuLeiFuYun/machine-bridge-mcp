@@ -11,10 +11,9 @@ const tests = [
   "tests/runtime-infrastructure-test.mjs",
   "tests/worker-runtime-infrastructure-test.mjs",
   "tests/logging-structure-test.mjs",
-  "tests/runtime-self-test.mjs",
+  "tests/runtime-handler-matrix-test.mjs",
+  "tests/cli-entrypoint-test.mjs",
   "tests/local-self-test.mjs",
-  "tests/stdio-integration-test.mjs",
-  "tests/worker-integration-test.mjs",
 ];
 
 try {

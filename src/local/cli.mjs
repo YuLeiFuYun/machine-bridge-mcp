@@ -1141,6 +1141,7 @@ Start options:
   --state-dir DIR       Override state root
   --json                Print connection details as JSON; credentials stay redacted unless explicitly requested
   --log-level LEVEL     error, warn, info (default), or debug
+  --log-format FORMAT   text (default) or newline-delimited json
   --verbose             Alias for --log-level debug; includes per-tool success/correlation logs
   --quiet               Alias for --log-level error
   --allow-insecure-permissions
