@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 const MAX_METADATA_FILE_BYTES = 1024 * 1024;
 const MAX_PACKAGE_COMMANDS = 64;
+const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 
 const PACKAGE_SCRIPT_INTENTS = Object.freeze({
   check: "check verify validate validation test lint typecheck 完整测试 检查 验证 测试 校验 审查",
@@ -89,18 +90,20 @@ export async function readProjectPackageMetadata(root, throwIfCancelled = () => 
   };
 }
 
-export function packageScriptCommand(manager, script) {
-  if (manager === "pnpm") return ["pnpm", "run", script];
-  if (manager === "yarn") return ["yarn", "run", script];
-  if (manager === "bun") return ["bun", "run", script];
-  return ["npm", "run", script];
+export function packageScriptCommand(manager, script, platform = process.platform, commandShell = process.env.ComSpec || "cmd.exe") {
+  const executable = PACKAGE_MANAGERS.has(manager) ? manager : "npm";
+  if (!validScriptName(script)) throw new Error("package script name is invalid");
+  if (platform === "win32") return [commandShell, "/d", "/s", "/c", `${executable} run ${script}`];
+  return [executable, "run", script];
 }
 
 export function packageScriptDisplayCommand(manager, script) {
-  return packageScriptCommand(manager, script).join(" ");
+  const executable = PACKAGE_MANAGERS.has(manager) ? manager : "npm";
+  if (!validScriptName(script)) throw new Error("package script name is invalid");
+  return `${executable} run ${script}`;
 }
 
-export function automaticPackageCommands(metadata, cwd) {
+export function automaticPackageCommands(metadata, cwd, platform = process.platform) {
   if (metadata?.packageState !== "valid" || !metadata.managerName || !metadata.scripts?.length) return new Map();
   const commands = new Map();
   for (const script of metadata.scripts.slice(0, MAX_PACKAGE_COMMANDS)) {
@@ -112,7 +115,7 @@ export function automaticPackageCommands(metadata, cwd) {
     commands.set(name, {
       name,
       description: `Run the declared package script '${script}' using the detected package manager.`,
-      argv: packageScriptCommand(metadata.managerName, script),
+      argv: packageScriptCommand(metadata.managerName, script, platform),
       cwd,
       timeoutSeconds: 600,
       allowExtraArgs: false,

@@ -3,11 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentContextManager, parseSkillMetadata } from "../src/local/agent-context.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
+import { packageScriptCommand } from "../src/local/project-package.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-agent-context-"));
 const workspace = join(root, "workspace");
 const jobs = join(root, "jobs");
 const nested = join(workspace, "packages", "example");
+
+const windowsPackageCommand = packageScriptCommand("npm", "test", "win32", "cmd.exe");
+if (JSON.stringify(windowsPackageCommand) !== JSON.stringify(["cmd.exe", "/d", "/s", "/c", "npm run test"])) {
+  throw new Error("Windows package command did not use the fixed command-shell wrapper");
+}
 
 try {
   await mkdir(join(workspace, ".git"), { recursive: true });
