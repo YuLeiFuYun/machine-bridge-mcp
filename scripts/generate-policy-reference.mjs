@@ -9,7 +9,7 @@ const generated = render(contract, catalog);
 
 if (process.argv.includes("--check")) {
   const current = await readFile(target, "utf8").catch(() => "");
-  if (current !== generated) {
+  if (normalizeLineEndings(current) !== generated) {
     console.error("docs/POLICY_REFERENCE.md is stale; run npm run policy-docs:generate");
     process.exitCode = 1;
   } else {
@@ -88,4 +88,8 @@ function requirementText(requirement) {
 function display(value) {
   if (typeof value === "boolean") return value ? "yes" : "no";
   return String(value);
+}
+
+function normalizeLineEndings(value) {
+  return String(value).replace(/\r\n/g, "\n");
 }
