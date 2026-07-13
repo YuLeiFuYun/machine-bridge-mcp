@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { executionEnv } from "./shell.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
+import { clampInteger } from "./numbers.mjs";
 
 export const MAX_COMMAND_BYTES = 64 * 1024;
 const MAX_ARGV_ITEMS = 256;
@@ -112,10 +113,10 @@ export class ProcessSessionManager {
   async read(args, context = {}) {
     this.authorizeTool("read_process");
     const session = this.get(args.session_id);
-    const stdoutOffset = clampInt(args.stdout_offset, 0, 0, Number.MAX_SAFE_INTEGER);
-    const stderrOffset = clampInt(args.stderr_offset, 0, 0, Number.MAX_SAFE_INTEGER);
-    const maxBytes = clampInt(args.max_bytes, 64 * 1024, 1, 256 * 1024);
-    const waitMs = clampInt(args.wait_ms, 0, 0, 30_000);
+    const stdoutOffset = clampInteger(args.stdout_offset, 0, 0, Number.MAX_SAFE_INTEGER);
+    const stderrOffset = clampInteger(args.stderr_offset, 0, 0, Number.MAX_SAFE_INTEGER);
+    const maxBytes = clampInteger(args.max_bytes, 64 * 1024, 1, 256 * 1024);
+    const waitMs = clampInteger(args.wait_ms, 0, 0, 30_000);
     this.throwIfCancelled(context);
     const waitForExit = args.wait_for_exit === true;
     if (waitMs > 0 && session.closedAt === null) {
@@ -340,10 +341,4 @@ function waitForSessionChange(session, waitMs, cancellationCheck) {
 function boundedErrorMessage(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/[\r\n]+/g, " ").slice(0, 4096) || "process failed";
-}
-
-function clampInt(value, fallback, min, max) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, min), max);
 }

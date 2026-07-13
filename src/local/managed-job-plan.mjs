@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
+import { clampInteger } from "./numbers.mjs";
 
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -112,7 +113,7 @@ function validateSteps(value, label, context, allowEmpty = false) {
       env_resources: envResources,
       stdin,
       stdin_resource: stdinResource,
-      timeout_seconds: clampInt(input.timeout_seconds, 600, 1, 3600),
+      timeout_seconds: clampInteger(input.timeout_seconds, 600, 1, 3600),
       allow_failure: input.allow_failure === true,
       capture_output: input.capture_output === "discard" ? "discard" : "redacted",
     };
@@ -226,10 +227,4 @@ function boundedString(value, maxBytes, label) {
   if (typeof value !== "string" || value.includes("\0")) throw new Error(`${label} must be a string without NUL bytes`);
   if (Buffer.byteLength(value) > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
   return value;
-}
-
-function clampInt(value, fallback, min, max) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, min), max);
 }

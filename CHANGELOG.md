@@ -6,11 +6,20 @@
 
 - Define a risk-based project standard covering GitHub Flow, Conventional Commits, architecture boundaries, MCP contract ownership, testing, errors, logging, supply-chain security, documentation, review, and explicit exceptions. Add pull-request and structured issue templates plus area ownership through CODEOWNERS.
 - Add an executable Conventional Commit policy for pull-request and main-branch commit titles. Keep the repository on squash-based GitHub Flow rather than introducing permanent develop/release branches that do not match its single-maintainer, continuously released operating model.
+- Require all repository-host operations to use local `git`, `gh`, and `gh api` through Machine Bridge. Explicitly prohibit hosted GitHub connectors or ChatGPT GitHub plugins so remote mutations, credentials, refs, checks, and recovery remain observable from one local control plane.
 
 ### Generated contracts and security automation
 
 - Generate a complete MCP tool reference from the shared tool catalog and reject stale output in the required suite. The tool catalog remains the single source for names, availability, annotations, and JSON input schemas; REST-specific Swagger documentation is not duplicated for the MCP surface.
 - Add pinned, least-privilege GitHub workflows for CodeQL analysis, pull-request dependency review, OpenSSF Scorecard publication, and governance checks. Preserve exact dependency versions, registry signature/attestation verification, SBOM generation, history privacy scanning, and cross-platform package tests.
+
+### Cohesion, reuse, and runtime reliability
+
+- Extract optional project-metadata reads, strict integer normalization, and uninstall/service state inventory into focused shared modules. Remove seven duplicate numeric clamping implementations and two duplicate no-follow UTF-8 metadata readers while preserving the distinct strict validation semantics used by browser and application commands.
+- Reduce the CLI entrypoint from 1,169 to 1,063 lines by moving profile, Worker, active-job, and process-lock inventory behind a dedicated boundary. Add direct failure-path tests and enforce 91% function/73% branch coverage for the new inventory module; raise the CLI branch floor from 5% to 10%.
+- Canonicalize existing state roots before profile enumeration, fixing macOS `/var` versus `/private/var` alias mismatches that could make service removal or lock inspection report inconsistent profile paths. Retry only the final daemon-lock handoff after a verified service stop, and keep daemon fixture subprocesses out of V8 coverage so process teardown does not create platform-timing failures.
+- Generate Wrangler environment declarations under ignored `.wrangler/` state instead of `src/worker`; packaging tests reject generated type declarations. This reduces the dry-run package from about 410 KB/1.8 MB unpacked to about 314 KB/1.22 MB while retaining every Worker runtime module.
+- Replace repeated empty WebSocket send/close catches in the Worker and browser extension with small module-local best-effort helpers whose comments preserve the primary failure semantics. Architecture checks reject unexplained empty catches on those protocol boundaries.
 
 ### Tests and documentation
 

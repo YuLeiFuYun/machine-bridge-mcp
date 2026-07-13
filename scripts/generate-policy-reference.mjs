@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import process from "node:process";
+import { normalizeLineEndings } from "./markdown.mjs";
 
 const root = new URL("../", import.meta.url);
 const contract = JSON.parse(await readFile(new URL("src/shared/policy-contract.json", root), "utf8"));
@@ -88,8 +89,4 @@ function requirementText(requirement) {
 function display(value) {
   if (typeof value === "boolean") return value ? "yes" : "no";
   return String(value);
-}
-
-function normalizeLineEndings(value) {
-  return String(value).replace(/\r\n/g, "\n");
 }

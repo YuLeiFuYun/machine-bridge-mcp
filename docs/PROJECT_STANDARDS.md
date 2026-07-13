@@ -18,6 +18,10 @@ Branch names use a short category and purpose, for example `feat/browser-downloa
 
 Direct pushes to `main`, force pushes, and branch deletion are blocked by repository protection. An exception requires an incident record and an explicit owner decision.
 
+### Local GitHub control plane
+
+Repository automation must use local `git`, `gh`, and `gh api` commands executed through Machine Bridge for every GitHub read or mutation. A hosted GitHub connector or ChatGPT GitHub plugin must not be used. Mixing control planes can produce stale refs, unreviewed remote-only commits, ambiguous credentials, and recovery paths that cannot be reproduced from the maintainer's machine. Fetch before mutation and verify the remote result afterward.
+
 ## 2. Commits and pull requests
 
 Commit and squash-merge subjects follow Conventional Commits:
@@ -51,6 +55,9 @@ The architectural dependency direction in [ENGINEERING.md](ENGINEERING.md) is no
 - Side effects are isolated behind small interfaces so policy and lifecycle behavior can be tested deterministically.
 - Dependency cycles are prohibited. Hidden global state and import-time operational side effects are avoided.
 - Line-count and complexity thresholds are diagnostic guardrails, not design goals. A threshold may not be satisfied by moving incoherent code into a generic utility module.
+- **High cohesion and low coupling:** one source file or function owns one coherent responsibility and reason to change; collaboration occurs through narrow explicit contracts rather than cross-layer reach-through.
+- **KISS:** prefer the simplest explicit implementation that satisfies current requirements. Do not introduce factories, registries, inheritance, generic frameworks, or configuration layers without an observed variation that needs them.
+- **DRY:** extract repeated business rules, validation, security boundaries, or lifecycle logic into one authoritative implementation. Do not merge merely similar code when its semantics or failure policy differ.
 - Design patterns are used only when they remove an observed variation or coupling. A direct function or small module is preferred over speculative abstractions.
 
 Any deliberate boundary exception must document the dependency, reason, owner, test coverage, and removal condition.

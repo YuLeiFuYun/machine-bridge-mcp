@@ -10,6 +10,17 @@ Unless the user explicitly expands the scope in the current task, a coding agent
 - run repository-local validation and inspection commands;
 - create commits and push the current branch to GitHub.
 
+## GitHub control plane
+
+GitHub operations for this repository must use the local authenticated command-line tools through Machine Bridge:
+
+- use `git` for local history, branches, commits, diffs, fetches, and pushes;
+- use `gh` and `gh api` for pull requests, checks, workflow logs, repository settings, releases, and GitHub REST/GraphQL operations;
+- never use a hosted GitHub connector, ChatGPT GitHub plugin, or a second remote mutation control plane;
+- fetch before writing, preserve unrelated remote work, and verify the resulting branch, pull request, checks, or repository setting after every remote mutation.
+
+Do not mix local `gh`/`git` writes with connector writes on the same branch. One local control plane keeps credentials, audit evidence, branch state, and failure recovery observable in the repository owner's environment.
+
 ## Operations that require explicit user authorization
 
 Do not perform any of the following merely because code or a version changed:

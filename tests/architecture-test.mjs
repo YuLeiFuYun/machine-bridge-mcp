@@ -53,6 +53,9 @@ const boundaryModules = new Set([
   "cli-local-admin.mjs",
   "capability-ranking.mjs",
   "managed-job-plan.mjs",
+  "numbers.mjs",
+  "project-metadata.mjs",
+  "state-inventory.mjs",
   "browser-extension-protocol.mjs",
   "browser-pairing-store.mjs",
 ]);
@@ -67,7 +70,7 @@ for (const name of boundaryModules) {
 
 const lineLimits = Object.freeze({
   "src/local/runtime.mjs": 900,
-  "src/local/cli.mjs": 1250,
+  "src/local/cli.mjs": 1100,
   "src/worker/index.ts": 1050,
   "src/local/process-execution.mjs": 300,
   "src/local/git-service.mjs": 220,
@@ -77,9 +80,14 @@ const lineLimits = Object.freeze({
   "src/local/lifecycle.mjs": 130,
   "src/local/cli-local-admin.mjs": 400,
   "src/local/agent-context.mjs": 950,
+  "src/local/default-instructions.mjs": 280,
+  "src/local/project-package.mjs": 240,
   "src/local/capability-ranking.mjs": 150,
   "src/local/managed-jobs.mjs": 900,
   "src/local/managed-job-plan.mjs": 300,
+  "src/local/numbers.mjs": 20,
+  "src/local/project-metadata.mjs": 80,
+  "src/local/state-inventory.mjs": 160,
   "src/local/browser-bridge.mjs": 850,
   "src/local/browser-extension-protocol.mjs": 120,
   "src/local/browser-pairing-store.mjs": 120,
@@ -211,6 +219,15 @@ if (!pageAutomationSource.includes("__machineBridgePageAutomation") || !pageAuto
 }
 if (!browserOperationsSource.includes("performPageAction") || !browserOperationsSource.includes("safeToFallback")) throw new Error("browser operations lost fixed trusted-input integration or replay protection");
 if (!serviceWorkerSource.includes('BROWSER_EXTENSION_PROTOCOL = 3') || !serviceWorkerSource.includes('hello_ack') || !serviceWorkerSource.includes('capabilities:')) throw new Error("browser extension lost its acknowledged versioned capability handshake");
+for (const [name, source] of [["src/worker/index.ts", workerSource], ["browser-extension/service-worker.js", serviceWorkerSource]]) {
+  if (/catch\s*(?:\([^)]*\))?\s*\{\s*\}/.test(source)) throw new Error(`${name} contains an unexplained empty catch`);
+}
+if (!workerSource.includes("function sendWebSocketQuietly") || !workerSource.includes("function closeWebSocketQuietly")) {
+  throw new Error("Worker WebSocket best-effort cleanup is not centralized");
+}
+if (!serviceWorkerSource.includes("function closeSocketQuietly") || !serviceWorkerSource.includes("function sendSocketQuietly") || !serviceWorkerSource.includes("function ignoreBrowserApiCall")) {
+  throw new Error("browser extension best-effort cleanup is not centralized");
+}
 if (!readFileSync(join(root, "src", "local", "browser-bridge.mjs"), "utf8").includes("extension hello required; reload the extension")) throw new Error("browser broker lost stale-extension rejection guidance");
 if (!serviceWorkerSource.includes("requires_manual_repair") || !serviceWorkerSource.includes("chrome.action.onClicked")) {
   throw new Error("browser extension no longer requires a user gesture to replace established pairing");
@@ -227,6 +244,11 @@ if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser
 if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
 if (packageJson.scripts?.["coverage:test"] !== "node scripts/coverage-check.mjs") throw new Error("critical-module coverage gate is missing");
 if (packageJson.scripts?.["policy-docs:check"] !== "node scripts/generate-policy-reference.mjs --check") throw new Error("generated policy documentation gate is missing");
+if (packageJson.scripts?.["markdown:test"] !== "node tests/markdown-test.mjs") throw new Error("shared Markdown helper test is missing");
+if (packageJson.scripts?.["project-metadata:test"] !== "node tests/project-metadata-test.mjs") throw new Error("project metadata helper test is missing");
+if (packageJson.scripts?.["numbers:test"] !== "node tests/numbers-test.mjs") throw new Error("integer normalization helper test is missing");
+if (packageJson.scripts?.["state-inventory:test"] !== "node tests/state-inventory-test.mjs") throw new Error("state inventory regression test is missing");
+if (packageJson.scripts?.["worker:types"] !== "wrangler types .wrangler/worker-configuration.d.ts") throw new Error("generated Worker types are not isolated from package sources");
 if (packageJson.scripts?.["tool-docs:check"] !== "node scripts/generate-tool-reference.mjs --check") throw new Error("generated MCP tool documentation gate is missing");
 if (packageJson.scripts?.["commit-message:test"] !== "node tests/commit-message-test.mjs") throw new Error("commit-message policy regression test is missing");
 if (packageJson.scripts?.["logging-structure:test"] !== "node tests/logging-structure-test.mjs") throw new Error("structured logging regression test is missing");
@@ -281,13 +303,20 @@ if (!engineering.includes("default profile is intentionally `full`") || !enginee
   throw new Error("engineering invariants omitted the owner-required full default or local-knowledge boundary");
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
 const sharedToolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
 if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || !toolReference.includes(`Tool count: **${sharedToolCatalog.length}**`)) {
   throw new Error("generated MCP tool reference is missing or malformed");
+}
+const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
+for (const required of ["GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes"]) {
+  if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
+}
+if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {
+  throw new Error("generated Worker type declarations returned to the package source tree");
 }
 if (!readFileSync(join(root, ".gitignore"), "utf8").split(/\r?\n/).includes(".project-local/")) {
   throw new Error("machine-specific project notes are not ignored");

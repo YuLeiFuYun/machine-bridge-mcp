@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import process from "node:process";
+import { escapeMarkdownTableCell, normalizeLineEndings } from "./markdown.mjs";
 
 const root = new URL("../", import.meta.url);
 const catalogUrl = new URL("src/shared/tool-catalog.json", root);
@@ -38,7 +39,7 @@ function renderToolReference(tools) {
 
   for (const tool of tools) {
     const annotations = tool.annotations || {};
-    lines.push(`| [\`${escapeCell(tool.name)}\`](#${anchor(tool.name)}) | \`${escapeCell(tool.availability)}\` | ${yesNo(annotations.readOnlyHint)} | ${yesNo(annotations.destructiveHint)} | ${yesNo(annotations.idempotentHint)} | ${yesNo(annotations.openWorldHint)} |`);
+    lines.push(`| [\`${escapeMarkdownTableCell(tool.name)}\`](#${anchor(tool.name)}) | \`${escapeMarkdownTableCell(tool.availability)}\` | ${yesNo(annotations.readOnlyHint)} | ${yesNo(annotations.destructiveHint)} | ${yesNo(annotations.idempotentHint)} | ${yesNo(annotations.openWorldHint)} |`);
   }
 
   for (const tool of tools) {
@@ -81,14 +82,6 @@ function anchor(name) {
   return name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
 }
 
-function escapeCell(value) {
-  return String(value).replace(/\|/g, "\\|");
-}
-
 function yesNo(value) {
   return value === true ? "yes" : "no";
-}
-
-function normalizeLineEndings(value) {
-  return String(value).replace(/\r\n/g, "\n");
 }

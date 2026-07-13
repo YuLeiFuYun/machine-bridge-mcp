@@ -1,0 +1,48 @@
+import { constants as fsConstants } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+
+const SKIPPABLE_METADATA_CODES = new Set(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "EBUSY"]);
+
+export function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function safeSingleLine(value, maxLength) {
+  if (typeof value !== "string") return "";
+  return value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+export function skippableMetadataError(error) {
+  return SKIPPABLE_METADATA_CODES.has(error?.code);
+}
+
+export async function isRegularNonSymlink(filePath) {
+  const info = await lstat(filePath).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
+  return Boolean(info && !info.isSymbolicLink() && info.isFile());
+}
+
+export async function readOptionalRegularUtf8(filePath, maxBytes) {
+  const info = await lstat(filePath).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
+  if (!info || info.isSymbolicLink() || !info.isFile() || info.size > maxBytes) return null;
+  const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0))
+    .catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
+  if (!handle) return null;
+  try {
+    const current = await handle.stat();
+    if (!current.isFile() || current.size > maxBytes) return null;
+    const buffer = Buffer.alloc(current.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
+    } catch {
+      return null;
+    }
+  } finally {
+    await handle.close();
+  }
+}

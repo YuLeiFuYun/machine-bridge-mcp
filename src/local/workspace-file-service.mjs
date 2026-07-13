@@ -3,6 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { chmod, link, lstat, mkdir, open, opendir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path, { basename, dirname, join, resolve } from "node:path";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
+import { clampInteger } from "./numbers.mjs";
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES = 10_000;
@@ -89,11 +90,11 @@ export class WorkspaceFileService {
     const { buffer, info } = await readBoundedFile(full, MAX_WRITE_BYTES, "readable text file");
     const content = decodeUtf8(buffer);
     this.throwIfCancelled(context);
-    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
-    const startLine = args.start_line === undefined ? 1 : clampInt(args.start_line, 1, 1, Number.MAX_SAFE_INTEGER);
+    const maxBytes = clampInteger(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
+    const startLine = args.start_line === undefined ? 1 : clampInteger(args.start_line, 1, 1, Number.MAX_SAFE_INTEGER);
     const rawLines = content.split(/\r?\n/);
     const totalLines = content.endsWith("\n") ? Math.max(1, rawLines.length - 1) : rawLines.length;
-    const endLine = args.end_line === undefined ? totalLines : clampInt(args.end_line, totalLines, 1, Number.MAX_SAFE_INTEGER);
+    const endLine = args.end_line === undefined ? totalLines : clampInteger(args.end_line, totalLines, 1, Number.MAX_SAFE_INTEGER);
     if (endLine < startLine) throw new Error("end_line must be greater than or equal to start_line");
     if (startLine > totalLines) throw new Error(`start_line exceeds total lines (${startLine} > ${totalLines})`);
     const selectedEnd = Math.min(endLine, totalLines);
@@ -237,8 +238,8 @@ export class WorkspaceFileService {
     const query = String(args.query || "");
     if (!query) throw new Error("query is required");
     const root = await this.resolveExistingPath(args.path || ".");
-    const max = clampInt(args.max_matches, 100, 1, 1000);
-    const maxFiles = clampInt(args.max_files, 10000, 1, 100000);
+    const max = clampInteger(args.max_matches, 100, 1, 1000);
+    const maxFiles = clampInteger(args.max_files, 10000, 1, 100000);
     let visitedFiles = 0;
     const matches = [];
     const rootInfo = await stat(root);
@@ -434,13 +435,6 @@ function countOccurrences(content, needle) {
 export function sha256(value) {
   return createHash("sha256").update(String(value)).digest("hex");
 }
-
-function clampInt(value, fallback, min, max) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, min), max);
-}
-
 
 function detectImageMime(buffer) {
   if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";

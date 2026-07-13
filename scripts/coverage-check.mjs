@@ -14,6 +14,9 @@ const tests = [
   "tests/runtime-handler-matrix-test.mjs",
   "tests/cli-entrypoint-test.mjs",
   "tests/local-self-test.mjs",
+  "tests/numbers-test.mjs",
+  "tests/project-metadata-test.mjs",
+  "tests/state-inventory-test.mjs",
 ];
 
 try {
@@ -41,9 +44,12 @@ try {
     "src/local/process-tracker.mjs": [65, 35],
     "src/local/log.mjs": [60, 40],
     "src/local/runtime.mjs": [60, 35],
-    "src/local/cli.mjs": [40, 5],
+    "src/local/cli.mjs": [40, 10],
     "src/local/cli-options.mjs": [65, 35],
     "src/local/cli-policy.mjs": [70, 35],
+    "src/local/numbers.mjs": [100, 100],
+    "src/local/project-metadata.mjs": [85, 55],
+    "src/local/state-inventory.mjs": [80, 50],
     "src/worker/pending-calls.ts": [85, null],
     "src/worker/policy.ts": [90, null],
     "src/worker/errors.ts": [100, null],

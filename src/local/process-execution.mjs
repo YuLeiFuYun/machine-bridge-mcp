@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
 import { MAX_COMMAND_BYTES, terminateProcessTreeWithEscalation, validateArgv } from "./process-sessions.mjs";
 import { BridgeError } from "./errors.mjs";
+import { clampInteger } from "./numbers.mjs";
 
 const MAX_STDIN_BYTES = 1024 * 1024;
 const DEFAULT_OUTPUT_BYTES = 512 * 1024;
@@ -25,7 +26,7 @@ export class ProcessExecutionService {
     const argv = validateArgv(args.argv);
     const cwd = await this.resolveExistingPath(args.cwd || ".");
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "cwd is not a directory");
-    return this.run(argv[0], argv.slice(1), clampInt(args.timeout_seconds, 120, 1, 600) * 1000, false, DEFAULT_OUTPUT_BYTES, context, cwd);
+    return this.run(argv[0], argv.slice(1), clampInteger(args.timeout_seconds, 120, 1, 600) * 1000, false, DEFAULT_OUTPUT_BYTES, context, cwd);
   }
 
   async runRegistered(args, context = {}) {
@@ -36,7 +37,7 @@ export class ProcessExecutionService {
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "registered command cwd is not a directory");
     const requested = args.timeout_seconds === undefined
       ? command.timeoutSeconds
-      : clampInt(args.timeout_seconds, command.timeoutSeconds, 1, 600);
+      : clampInteger(args.timeout_seconds, command.timeoutSeconds, 1, 600);
     const timeoutSeconds = Math.min(requested, command.timeoutSeconds);
     const result = await this.run(argv[0], argv.slice(1), timeoutSeconds * 1000, false, DEFAULT_OUTPUT_BYTES, context, cwd);
     return { name: command.name, cwd: this.displayPath(cwd), timeout_seconds: timeoutSeconds, ...result };
@@ -53,7 +54,7 @@ export class ProcessExecutionService {
     if (command.includes("\0")) throw new BridgeError("invalid_request", "command contains a NUL byte");
     if (Buffer.byteLength(command) > MAX_COMMAND_BYTES) throw new BridgeError("limit_exceeded", `command exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
     const shell = workspaceShellCommand(command);
-    return this.run(shell.cmd, shell.args, clampInt(timeoutSeconds, 120, 1, 600) * 1000, false, DEFAULT_OUTPUT_BYTES, context);
+    return this.run(shell.cmd, shell.args, clampInteger(timeoutSeconds, 120, 1, 600) * 1000, false, DEFAULT_OUTPUT_BYTES, context);
   }
 
   terminateAll(signal = "SIGTERM", escalate = false) {
@@ -144,10 +145,4 @@ function appendLimited(current, chunk, maximum) {
 
 function finalizeOutput(value, truncated) {
   return truncated > 0 ? `${value}\n\n[truncated ${truncated} bytes]` : value;
-}
-
-function clampInt(value, fallback, minimum, maximum) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, minimum), maximum);
 }

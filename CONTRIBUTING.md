@@ -4,7 +4,7 @@ This repository treats every Git-tracked or nonignored repository file as releas
 
 ## Development workflow
 
-Read [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md) and the relevant domain documentation before changing behavior. This repository uses GitHub Flow: branch from current `main`, keep the change coherent, open a pull request, satisfy required checks, squash-merge, and delete the branch. Permanent `develop` or generic release integration branches are not used unless an independently maintained release line creates a concrete need.
+Read [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md) and the relevant domain documentation before changing behavior. This repository uses GitHub Flow: branch from current `main`, keep the change coherent, open a pull request, satisfy required checks, squash-merge, and delete the branch. Permanent `develop` or generic release integration branches are not used unless an independently maintained release line creates a concrete need. Repository automation performs GitHub operations only through local `git`, `gh`, and `gh api` commands executed by Machine Bridge; hosted GitHub connectors and ChatGPT GitHub plugins are prohibited for this repository.
 
 Branch names use a category and purpose such as `feat/browser-downloads`, `fix/relay-timeout`, or `chore/dependency-policy`.
 

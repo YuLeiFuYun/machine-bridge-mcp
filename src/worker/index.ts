@@ -162,14 +162,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const size = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
     if (size > MAX_DAEMON_MESSAGE_BYTES) {
-      try { ws.close(1009, "message too large"); } catch {}
+      closeWebSocketQuietly(ws, 1009, "message too large");
       return;
     }
     let text: string;
     try {
       text = typeof message === "string" ? message : new TextDecoder("utf-8", { fatal: true }).decode(message);
     } catch {
-      try { ws.close(1007, "invalid UTF-8"); } catch {}
+      closeWebSocketQuietly(ws, 1007, "invalid UTF-8");
       return;
     }
     let parsed: unknown;
@@ -187,12 +187,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
     const socketAttachment = this.socketAttachment(ws);
     if (!socketAttachment) {
-      try { ws.close(1008, "missing daemon attachment"); } catch {}
+      closeWebSocketQuietly(ws, 1008, "missing daemon attachment");
       return;
     }
 
     if (socketAttachment.role === "expired") {
-      try { ws.close(1008, "expired daemon candidate"); } catch {}
+      closeWebSocketQuietly(ws, 1008, "expired daemon candidate");
       return;
     }
 
@@ -204,7 +204,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const previousDaemons = this.daemonSockets().filter((socket) => socket !== ws);
       if (socketAttachment.role === "candidate") {
         if (!isFreshDaemonCandidate(socketAttachment.connectedAt)) {
-          try { ws.close(1008, "stale daemon candidate"); } catch {}
+          closeWebSocketQuietly(ws, 1008, "stale daemon candidate");
           await this.scheduleCandidateAlarm();
           return;
         }
@@ -225,17 +225,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           role: "expired",
           connectedAt: socketAttachment.connectedAt,
         } satisfies DaemonAttachment);
-        try { ws.close(1011, "daemon hello acknowledgement failed"); } catch {}
+        closeWebSocketQuietly(ws, 1011, "daemon hello acknowledgement failed");
         return;
       }
       for (const socket of previousDaemons) {
-        try { socket.close(1012, "replaced by authenticated daemon"); } catch {}
+        closeWebSocketQuietly(socket, 1012, "replaced by authenticated daemon");
       }
       return;
     }
 
     if (socketAttachment.role !== "daemon") {
-      try { ws.close(1008, "daemon hello required"); } catch {}
+      closeWebSocketQuietly(ws, 1008, "daemon hello required");
       return;
     }
 
@@ -387,7 +387,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       clientRequestKey: requestKey,
       timeoutMs,
       onTimeout: (record) => {
-        try { record.socket.send(JSON.stringify({ type: "cancel_call", id: record.id })); } catch {}
+        sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
         return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
       },
     });
@@ -410,7 +410,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private cancelClientRequest(requestKey?: string): void {
     if (!requestKey) return;
     this.pending.cancelRequest(requestKey, (record) => {
-      try { record.socket.send(JSON.stringify({ type: "cancel_call", id: record.id })); } catch {}
+      sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
       return new WorkerToolError("cancelled", "tool call cancelled by client");
     });
   }
@@ -422,7 +422,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!expected || !(await safeEqual(supplied, expected))) return new Response("Unauthorized daemon", { status: 401 });
 
     for (const socket of this.nonDaemonSockets()) {
-      try { socket.close(1012, "replaced by newer daemon candidate"); } catch {}
+      closeWebSocketQuietly(socket, 1012, "replaced by newer daemon candidate");
     }
 
     const pair = new WebSocketPair();
@@ -508,8 +508,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           role: "expired",
           connectedAt: attachment?.connectedAt ?? new Date(0).toISOString(),
         } satisfies DaemonAttachment);
-        try { socket.send(JSON.stringify({ type: "error", error: "daemon_hello_timeout" })); } catch {}
-        try { socket.close(1008, "daemon hello timeout"); } catch {}
+        sendWebSocketQuietly(socket, { type: "error", error: "daemon_hello_timeout" });
+        closeWebSocketQuietly(socket, 1008, "daemon hello timeout");
         continue;
       }
       nextDeadline = Math.min(nextDeadline, deadline);
@@ -524,7 +524,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const attachment = this.socketAttachment(socket);
       const connectedAt = Date.parse(attachment?.connectedAt ?? "");
       if (!Number.isFinite(connectedAt)) {
-        try { socket.close(1008, "invalid daemon candidate timestamp"); } catch {}
+        closeWebSocketQuietly(socket, 1008, "invalid daemon candidate timestamp");
         continue;
       }
       nextDeadline = Math.min(nextDeadline, connectedAt + DAEMON_HELLO_TIMEOUT_MS);
@@ -885,8 +885,24 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function rejectDaemonMessage(ws: WebSocket, error: string, closeCode: number, closeReason: string): void {
-  try { ws.send(JSON.stringify({ type: "error", error })); } catch {}
-  try { ws.close(closeCode, closeReason); } catch {}
+  sendWebSocketQuietly(ws, { type: "error", error });
+  closeWebSocketQuietly(ws, closeCode, closeReason);
+}
+
+function sendWebSocketQuietly(ws: WebSocket, value: unknown): void {
+  try {
+    ws.send(typeof value === "string" ? value : JSON.stringify(value));
+  } catch {
+    // Best-effort protocol cleanup must not replace the primary timeout or rejection.
+  }
+}
+
+function closeWebSocketQuietly(ws: WebSocket, code?: number, reason?: string): void {
+  try {
+    ws.close(code, reason);
+  } catch {
+    // The socket may already be closed or detached; no recovery remains at this boundary.
+  }
 }
 
 function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {

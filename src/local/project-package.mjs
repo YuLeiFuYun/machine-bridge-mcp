@@ -1,6 +1,5 @@
-import { constants as fsConstants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
+import { isPlainRecord, isRegularNonSymlink, readOptionalRegularUtf8, safeSingleLine } from "./project-metadata.mjs";
 
 const MAX_METADATA_FILE_BYTES = 1024 * 1024;
 const MAX_PACKAGE_COMMANDS = 64;
@@ -188,47 +187,4 @@ function safePackageManager(value) {
   if (typeof value !== "string") return "";
   const normalized = value.trim();
   return /^(?:npm|pnpm|yarn|bun)@[A-Za-z0-9][A-Za-z0-9.+_-]{0,90}$/.test(normalized) ? normalized : "";
-}
-
-async function isRegularNonSymlink(filePath) {
-  const info = await lstat(filePath).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
-  return Boolean(info && !info.isSymbolicLink() && info.isFile());
-}
-
-async function readOptionalRegularUtf8(filePath, maxBytes) {
-  const info = await lstat(filePath).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
-  if (!info || info.isSymbolicLink() || !info.isFile() || info.size > maxBytes) return null;
-  const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0)).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
-  if (!handle) return null;
-  try {
-    const current = await handle.stat();
-    if (!current.isFile() || current.size > maxBytes) return null;
-    const buffer = Buffer.alloc(current.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (!bytesRead) break;
-      offset += bytesRead;
-    }
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
-    } catch {
-      return null;
-    }
-  } finally {
-    await handle.close();
-  }
-}
-
-function skippableMetadataError(error) {
-  return ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "EBUSY"].includes(error?.code);
-}
-
-function safeSingleLine(value, maxLength) {
-  if (typeof value !== "string") return "";
-  return value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
-}
-
-function isPlainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
