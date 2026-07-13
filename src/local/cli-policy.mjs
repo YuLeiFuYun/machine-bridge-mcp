@@ -15,14 +15,20 @@ export function resolvePolicy(args = {}, stored = {}) {
   const explicitKeys = ["profile", ...POLICY_OVERRIDE_KEYS];
   const hasExplicit = explicitKeys.some((key) => Object.prototype.hasOwnProperty.call(args, key));
   const base = { ...selectPolicyBase(args, stored, hasStored) };
-  if (!hasExplicit) return normalizePolicy(base);
+  if (!hasExplicit) return policyState(base);
   applyPolicyOverrides(base, args);
   if (args.profile === undefined || POLICY_OVERRIDE_KEYS.some((key) => Object.prototype.hasOwnProperty.call(args, key))) {
     base.profile = "custom";
     base.origin = "custom";
     base.revision = DEFAULT_POLICY_REVISION;
   }
-  return normalizePolicy(base);
+  return policyState(base);
+}
+
+function policyState(policy) {
+  // Canonical policies are immutable. CLI state owns a shallow record so it
+  // can attach persistence metadata such as updatedAt before saving.
+  return { ...normalizePolicy(policy) };
 }
 
 function selectPolicyBase(args, stored, hasStored) {
