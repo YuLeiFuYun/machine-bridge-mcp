@@ -61,7 +61,7 @@ function render(value, tools) {
     "A custom policy is evaluated by capabilities, not by its display name. Compound classes such as `write+direct-exec` require every listed capability.",
     "",
   );
-  return `${lines.join("\n")}\n`;
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 function allows(policy, requirement = {}) {
