@@ -1,48 +1,21 @@
 name: Repair changelog
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/cli-policy-state-metadata
-    paths:
-      - .github/workflows/repair-changelog.yml
+      - main
+    types: [synchronize]
 
 permissions:
   contents: write
 
 jobs:
   repair:
+    if: github.head_ref == 'fix/cli-policy-state-metadata'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           fetch-depth: 0
           persist-credentials: true
-      - name: Restore and prepend changelog
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git show 91008ce120c5d5c9198b6ccf47d3403bbd334ebc:CHANGELOG.md > /tmp/CHANGELOG.md
-          {
-            cat <<'EOF'
-          # Changelog
-
-          ## 0.16.1 - 2026-07-13
-
-          ### Fixed
-
-          - Fix `machine-mcp` startup after 0.16.0 by keeping normalized policy capabilities immutable while allowing the sealed CLI-owned state record to update persistence metadata.
-          - Add regression coverage proving `updatedAt` remains writable without permitting capability fields or undeclared fields to be mutated.
-
-          EOF
-            tail -n +2 /tmp/CHANGELOG.md
-          } > CHANGELOG.md
-          test "$(wc -l < CHANGELOG.md)" -ge 525
-          test "$(grep -c '^## ' CHANGELOG.md)" -ge 20
-          git diff --check
-          git diff --stat CHANGELOG.md
-          git add CHANGELOG.md
-          git commit -m "fix: restore changelog history for 0.16.1 release gate"
-          git push origin HEAD:fix/cli-policy-state-metadata
+      - name: Restore
