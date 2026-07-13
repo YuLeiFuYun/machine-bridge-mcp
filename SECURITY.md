@@ -145,7 +145,7 @@ Runner diagnostic logs are owner-only and do not receive child stdout/stderr. St
 
 ## OAuth and public endpoints
 
-Remote mode uses authorization code flow with PKCE S256, exact redirect/resource/client binding, expiring authorization codes and access tokens, hashed token storage, token-version revocation, and bounded dynamic client registration.
+Remote mode uses authorization code flow with PKCE S256, exact redirect/resource/client binding, expiring authorization codes and access tokens, hashed token storage, token-version revocation, and bounded dynamic client registration. Successful consent constructs the registered callback through the URL API and returns `303 See Other`; response parameters are encoded rather than concatenated into an unchecked header string.
 
 The authorization page displays the validated client name and redirect URI. Enter the connection password only after initiating the connection and recognizing both values.
 

@@ -817,6 +817,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       client.last_used_at = now;
 
       const code = randomToken("mcp_code");
+      const redirectLocation = authorizationRedirectLocation(redirectUri, code, state);
       store.codes[code] = {
         client_id: clientId,
         redirect_uri: redirectUri,
@@ -829,9 +830,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       pruneRecordByExpiry(store.codes, MAX_OAUTH_CODES);
       await this.ctx.storage.put("oauth", store);
 
-      const params = new URLSearchParams({ code });
-      if (state) params.set("state", state);
-      return oauthRedirect(`${redirectUri}${redirectUri.includes("?") ? "&" : "?"}${params.toString()}`);
+      return oauthRedirect(redirectLocation);
     });
   }
 
@@ -996,16 +995,23 @@ function methodNotAllowed(allow: string): Response {
   });
 }
 
-function oauthRedirect(location: string): Response {
+function oauthRedirect(location: URL): Response {
   return new Response(null, {
-    status: 302,
+    status: 303,
     headers: {
-      location,
+      location: location.href,
       "cache-control": "no-store",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
     },
   });
+}
+
+function authorizationRedirectLocation(redirectUri: string, code: string, state: string): URL {
+  const location = new URL(redirectUri);
+  location.searchParams.append("code", code);
+  if (state) location.searchParams.append("state", state);
+  return location;
 }
 
 function isFreshDaemonCandidate(connectedAt: string): boolean {

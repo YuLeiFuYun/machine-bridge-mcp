@@ -2,6 +2,12 @@
 
 ## 0.14.0 - 2026-07-13
 
+### Windows installation and OAuth callback reliability
+
+- Bootstrap installation through pinned npm 12.0.1 from an empty temporary directory before using `--allow-scripts`, declare the npm 12 requirement in package `engines`, and make `machine-mcp doctor` verify the active npm version. This removes the unsupported old-npm path shown by Windows and gives accurate diagnostics for `Unknown cli config "--allow-scripts"` and legacy `devEngines.node` errors without guessing which package supplied the invalid metadata.
+- Construct OAuth callback destinations with the URL API and return `303 See Other` after consent instead of manually concatenating a `Location` string. Add an end-to-end ChatGPT callback regression with reserved state characters and exact origin/path checks.
+- Extend the isolated install smoke test to require npm 12, install from an empty directory, verify the packaged npm engine requirement, and run the test on Linux, macOS, and Windows CI.
+
 ### Existing-profile browser automation
 
 - Keep the authenticated Manifest V3 extension as the primary browser backend so automation operates the user's ordinary Chromium profile, tabs, extensions, cookies, and login state instead of launching a separate profile. Add tab creation/activation/closure and explicit combined waits for URL, document readiness, page text, and element state.
