@@ -122,7 +122,7 @@ async function startupWaitTest() {
   await mkdir(workspace, { recursive: true });
   const helper = join(workspace, "hold-lock.mjs");
   const stateUrl = pathToFileURL(join(root, "src", "local", "state.mjs")).href;
-  await writeFile(helper, `import { acquireStartupLock, loadState } from ${JSON.stringify(stateUrl)};\nconst [workspace, stateRoot] = process.argv.slice(2);\nconst state = loadState(workspace, { stateDir: stateRoot });\nconst lock = acquireStartupLock(state, { operation: "fixture" });\nif (!lock.acquired) process.exit(4);\nprocess.stdout.write("locked\\n");\nsetTimeout(() => { lock.release(); process.exit(0); }, 250);\n`, "utf8");
+  await writeFile(helper, `import { acquireStartupLock, loadState } from ${JSON.stringify(stateUrl)};\nconst [workspace, stateRoot] = process.argv.slice(2);\nconst state = loadState(workspace, { stateDir: stateRoot });\nconst lock = acquireStartupLock(state, { operation: "fixture" });\nif (!lock.acquired) process.exit(4);\nprocess.stdout.write("locked\\n");\nsetTimeout(() => { lock.release(); process.exit(0); }, 1000);\n`, "utf8");
   const child = spawn(process.execPath, [helper, workspace, stateRoot], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const childResult = waitForChild(child);
   await waitForOutput(child, "locked", 5000);

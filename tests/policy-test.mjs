@@ -1,4 +1,5 @@
 import contract from "../src/shared/policy-contract.json" with { type: "json" };
+import { resolvePolicy } from "../src/local/cli-policy.mjs";
 import {
   DEFAULT_POLICY_REVISION,
   PolicyGate,
@@ -16,6 +17,16 @@ for (const name of Object.keys(contract.profiles)) {
   assert(policy.profile === name, `${name} profile identity drifted`);
   assert(Object.isFrozen(policy), `${name} normalized policy is mutable`);
 }
+
+const cliPolicy = resolvePolicy({}, {});
+const policyUpdatedAt = "2026-07-13T00:00:00.000Z";
+cliPolicy.updatedAt = policyUpdatedAt;
+assert(cliPolicy.updatedAt === policyUpdatedAt, "CLI policy state rejected persistence metadata");
+assert(Object.isSealed(cliPolicy), "CLI policy state accepts undeclared fields");
+assert(!Object.isFrozen(cliPolicy), "CLI policy state rejected its writable metadata field");
+assert(Reflect.set(cliPolicy, "profile", "review") === false, "CLI policy capability field remained writable");
+assert(cliPolicy.profile === contract.defaultProfile, "CLI policy capability was mutated");
+assert(Object.isFrozen(normalizePolicy(cliPolicy)), "canonical policy normalization lost immutability");
 
 const review = policyProfile("review");
 const edit = policyProfile("edit");

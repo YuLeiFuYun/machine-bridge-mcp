@@ -15,14 +15,26 @@ export function resolvePolicy(args = {}, stored = {}) {
   const explicitKeys = ["profile", ...POLICY_OVERRIDE_KEYS];
   const hasExplicit = explicitKeys.some((key) => Object.prototype.hasOwnProperty.call(args, key));
   const base = { ...selectPolicyBase(args, stored, hasStored) };
-  if (!hasExplicit) return normalizePolicy(base);
+  if (!hasExplicit) return policyState(base);
   applyPolicyOverrides(base, args);
   if (args.profile === undefined || POLICY_OVERRIDE_KEYS.some((key) => Object.prototype.hasOwnProperty.call(args, key))) {
     base.profile = "custom";
     base.origin = "custom";
     base.revision = DEFAULT_POLICY_REVISION;
   }
-  return normalizePolicy(base);
+  return policyState(base);
+}
+
+function policyState(policy) {
+  // Capability fields retain the canonical immutable contract. The CLI owns a
+  // sealed persistence record with exactly one writable metadata field.
+  const normalized = normalizePolicy(policy);
+  const state = {};
+  for (const [key, value] of Object.entries(normalized)) {
+    Object.defineProperty(state, key, { value, enumerable: true, writable: false, configurable: false });
+  }
+  Object.defineProperty(state, "updatedAt", { value: undefined, enumerable: true, writable: true, configurable: false });
+  return Object.seal(state);
 }
 
 function selectPolicyBase(args, stored, hasStored) {
