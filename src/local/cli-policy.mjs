@@ -26,9 +26,15 @@ export function resolvePolicy(args = {}, stored = {}) {
 }
 
 function policyState(policy) {
-  // Canonical policies are immutable. CLI state owns a shallow record so it
-  // can attach persistence metadata such as updatedAt before saving.
-  return { ...normalizePolicy(policy) };
+  // Capability fields retain the canonical immutable contract. The CLI owns a
+  // sealed persistence record with exactly one writable metadata field.
+  const normalized = normalizePolicy(policy);
+  const state = {};
+  for (const [key, value] of Object.entries(normalized)) {
+    Object.defineProperty(state, key, { value, enumerable: true, writable: false, configurable: false });
+  }
+  Object.defineProperty(state, "updatedAt", { value: undefined, enumerable: true, writable: true, configurable: false });
+  return Object.seal(state);
 }
 
 function selectPolicyBase(args, stored, hasStored) {
