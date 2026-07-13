@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 import { BridgeError } from "./errors.mjs";
+import { clampInteger } from "./numbers.mjs";
 
 export class GitService {
   constructor({ resolveExistingPath, displayPath, runProcess, maximumBytes }) {
@@ -20,7 +21,7 @@ export class GitService {
   }
 
   async diff(args = {}, context = {}) {
-    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, this.maximumBytes);
+    const maxBytes = clampInteger(args.max_bytes, 1024 * 1024, 1, this.maximumBytes);
     const git = await this.context(args.path || ".", context);
     if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
     const commandArgs = ["-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", git.root, "diff", "--no-ext-diff", "--no-textconv"];
@@ -33,7 +34,7 @@ export class GitService {
   async log(args = {}, context = {}) {
     const git = await this.context(args.path || ".", context);
     if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
-    const maxCount = clampInt(args.max_count, 20, 1, 100);
+    const maxCount = clampInteger(args.max_count, 20, 1, 100);
     const format = "%H%x1f%h%x1f%aI%x1f%an%x1f%ae%x1f%s%x1e";
     const commandArgs = ["-c", "core.fsmonitor=false", "-C", git.root, "log", `--max-count=${maxCount}`, `--format=${format}`];
     if (git.pathspec) commandArgs.push("--", git.pathspec);
@@ -51,7 +52,7 @@ export class GitService {
     const git = await this.context(args.path || ".", context);
     if (!git.ok) return { ...git.result, path: this.displayPath(git.target) };
     const revision = validateRevision(args.revision || "HEAD");
-    const maxBytes = clampInt(args.max_bytes, 1024 * 1024, 1, this.maximumBytes);
+    const maxBytes = clampInteger(args.max_bytes, 1024 * 1024, 1, this.maximumBytes);
     const commandArgs = ["-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", git.root, "show", "--no-ext-diff", "--no-textconv", "--decorate=no", revision];
     if (git.pathspec) commandArgs.push("--", git.pathspec);
     const result = await this.runProcess("git", commandArgs, 60_000, true, maxBytes, context);
@@ -79,10 +80,4 @@ function validateRevision(value) {
     throw new BridgeError("invalid_request", "invalid Git revision");
   }
   return revision;
-}
-
-function clampInt(value, fallback, minimum, maximum) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, minimum), maximum);
 }

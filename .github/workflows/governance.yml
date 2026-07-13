@@ -1,0 +1,38 @@
+name: Governance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: governance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-policy:
+    name: Governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Validate pull-request or commit title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title || '' }}
+        run: |
+          if [ -n "$PR_TITLE" ]; then
+            node scripts/commit-message-check.mjs --title "$PR_TITLE"
+          else
+            node scripts/commit-message-check.mjs
+          fi

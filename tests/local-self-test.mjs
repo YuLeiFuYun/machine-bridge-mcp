@@ -5,10 +5,11 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
-import { cleanupStaleSecretFiles, isSupportedNodeVersion, isSupportedNpmVersion, knownProfileStates, knownWorkerNames, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { cleanupStaleSecretFiles, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
 import { daemonArgs, launchdPlist, launchdServiceTarget, normalizeServiceCommandResult, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
 import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
@@ -353,6 +354,10 @@ setInterval(() => {}, 2 ** 31 - 1);
 }
 
 async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = []) {
+  const fixtureEnv = { ...process.env };
+  // The fixture models daemon ownership, not coverage. Inheriting V8 coverage
+  // delays process teardown and makes the lock-handoff assertion platform-timing dependent.
+  delete fixtureEnv.NODE_V8_COVERAGE;
   const child = spawn(process.execPath, [
     fixture,
     "start",
@@ -361,6 +366,7 @@ async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [])
     "--state-dir", stateRoot,
   ], {
     cwd: workspace,
+    env: fixtureEnv,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });

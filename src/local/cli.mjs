@@ -13,12 +13,11 @@ import { createLocalAdminCommands } from "./cli-local-admin.mjs";
 export { resolvePolicy } from "./cli-policy.mjs";
 export { parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
 import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
-import { activeManagedJobs } from "./managed-jobs.mjs";
 import { run, runWrangler } from "./shell.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
+import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
 import { createExclusiveFileSync } from "./exclusive-file.mjs";
 import {
   acquireMaintenanceLock,
@@ -908,37 +907,6 @@ async function deleteKnownWorkers(stateRoot) {
   }
 }
 
-export function knownWorkerNames(stateRoot) {
-  const profiles = resolve(expandHome(stateRoot), "profiles");
-  if (!existsSync(profiles)) return [];
-  const names = new Set();
-  for (const entry of readdirSync(profiles, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
-    const profileDir = resolve(profiles, entry.name);
-    const stateFile = resolve(profileDir, "state.json");
-    if (!existsSync(stateFile)) {
-      const evidence = readdirSync(profileDir).some((name) => /^state\.json\.corrupt-/.test(name) || name === "daemon.lock");
-      if (evidence) throw new Error(`cannot determine deployed Worker from profile ${entry.name}; local state was kept for inspection`);
-      continue;
-    }
-    let state;
-    try {
-      state = JSON.parse(readBoundedRegularFileSync(stateFile, 2 * 1024 * 1024).toString("utf8"));
-    } catch {
-      throw new Error(`cannot determine deployed Worker from profile ${entry.name}; local state was kept for inspection`);
-    }
-    if (!state || typeof state !== "object" || Array.isArray(state)) {
-      throw new Error(`cannot determine deployed Worker from profile ${entry.name}; local state was kept for inspection`);
-    }
-    const name = String(state?.worker?.name || "");
-    if (name && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
-      throw new Error(`profile ${entry.name} contains an invalid Worker name; local state was kept for inspection`);
-    }
-    if (name) names.add(name);
-  }
-  return [...names];
-}
-
 async function removeAutostartBestEffort(stateRoot) {
   const logger = structuredLogger(false);
   try {
@@ -961,80 +929,6 @@ async function removeAutostartBestEffort(stateRoot) {
     console.warn(`Autostart removal skipped or failed (${classifyOperationalError(error)}). Run machine-mcp service status for details.`);
     return false;
   }
-}
-
-export function knownProfileStates(stateRoot) {
-  const canonicalStateRoot = resolve(expandHome(stateRoot));
-  const profiles = resolve(canonicalStateRoot, "profiles");
-  if (!existsSync(profiles)) return [];
-  const states = [];
-  const seen = new Set();
-  for (const entry of readdirSync(profiles, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
-    const profileDir = resolve(profiles, entry.name);
-    const statePath = resolve(profileDir, "state.json");
-    const candidates = [];
-    if (existsSync(statePath)) {
-      try {
-        const value = JSON.parse(readBoundedRegularFileSync(statePath, 2 * 1024 * 1024).toString("utf8"));
-        if (typeof value?.workspace?.path === "string") candidates.push(value.workspace.path);
-      } catch {}
-    }
-    const daemonLock = resolve(profileDir, "daemon.lock");
-    const daemonOwner = readDaemonLockOwner(daemonLock);
-    if (existsSync(daemonLock) && !daemonOwner) {
-      throw new Error(`cannot inspect daemon lock for profile ${entry.name}; service definitions and state were kept`);
-    }
-    if (typeof daemonOwner?.workspace === "string") candidates.push(daemonOwner.workspace);
-    for (const candidate of candidates) {
-      try {
-        const workspace = resolveWorkspace(candidate);
-        if (seen.has(workspace)) break;
-        states.push({
-          schemaVersion: 5,
-          workspace: { path: workspace, hash: entry.name },
-          paths: { stateRoot: canonicalStateRoot, profileDir, statePath },
-        });
-        seen.add(workspace);
-        break;
-      } catch {}
-    }
-  }
-  return states;
-}
-
-function activeStateJobs(stateRoot) {
-  const profiles = resolve(expandHome(stateRoot), "profiles");
-  if (!existsSync(profiles)) return [];
-  const active = [];
-  for (const profile of readdirSync(profiles, { withFileTypes: true })) {
-    if (!profile.isDirectory()) continue;
-    for (const job of activeManagedJobs(resolve(profiles, profile.name, "jobs"))) {
-      active.push({ profile: profile.name, ...job });
-    }
-  }
-  return active;
-}
-
-function activeStateLocks(stateRoot) {
-  const profiles = resolve(expandHome(stateRoot), "profiles");
-  if (!existsSync(profiles)) return [];
-  const active = [];
-  for (const profile of readdirSync(profiles, { withFileTypes: true })) {
-    if (!profile.isDirectory()) continue;
-    for (const [kind, name] of [["daemon", "daemon.lock"], ["startup", "startup.lock"]]) {
-      const lockPath = resolve(profiles, profile.name, name);
-      if (!existsSync(lockPath)) continue;
-      const owner = readDaemonLockOwner(lockPath);
-      if (!owner) {
-        active.push({ kind, pid: null, path: lockPath, reason: "invalid_or_unreadable_lock" });
-        continue;
-      }
-      const identity = inspectProcessInstance(owner, { maxAgeMs: kind === "startup" ? 2 * 60 * 60 * 1000 : Number.POSITIVE_INFINITY });
-      if (identity.current || (identity.alive && !identity.reclaimable)) active.push({ kind, pid: owner.pid, path: lockPath, reason: identity.reason });
-    }
-  }
-  return active;
 }
 
 function structuredLogger(quiet) {

@@ -17,7 +17,7 @@
   },
   "include": [
     "src/worker/**/*.ts",
-    "src/worker/**/*.d.ts",
+    ".wrangler/worker-configuration.d.ts",
     "src/shared/**/*.json"
   ]
 }

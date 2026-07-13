@@ -13,13 +13,15 @@ const DEFAULT_TAKEOVER_POLL_MS = 100;
 
 export async function acquireDaemonLockWithTakeover(state, options = {}) {
   const ownerMetadata = options.ownerMetadata || {};
+  const timeoutMs = boundedPositiveInt(options.timeoutMs, DEFAULT_TAKEOVER_TIMEOUT_MS);
+  const pollMs = boundedPositiveInt(options.pollMs, DEFAULT_TAKEOVER_POLL_MS);
   let lock = acquireDaemonLock(state, ownerMetadata);
   if (lock.acquired || !options.takeOverServiceOwner) return lock;
 
   const stopped = await stopWorkspaceServiceDaemon(state, {
     owner: lock.owner,
-    timeoutMs: options.timeoutMs,
-    pollMs: options.pollMs,
+    timeoutMs,
+    pollMs,
     logger: options.logger,
     reason: "foreground startup",
   });
@@ -29,8 +31,18 @@ export async function acquireDaemonLockWithTakeover(state, options = {}) {
     throw new Error(`background daemon did not release the workspace within ${Math.ceil(stopped.timeout_ms / 1000)} seconds (${pid}); run \`machine-mcp service stop\`, verify \`machine-mcp service status\`, and retry`);
   }
 
-  lock = acquireDaemonLock(state, ownerMetadata);
-  if (lock.acquired) options.logger?.info?.("background daemon stopped; foreground startup is taking over the workspace");
+  // A terminated daemon can release its token immediately before the filesystem
+  // makes the lock removal visible to this process. Retry only this handoff.
+  const handoffDeadline = Date.now() + Math.min(timeoutMs, 1_000);
+  do {
+    lock = acquireDaemonLock(state, ownerMetadata);
+    if (lock.acquired) {
+      options.logger?.info?.("background daemon stopped; foreground startup is taking over the workspace");
+      return lock;
+    }
+    if (lock.owner?.pid && isPidAlive(lock.owner.pid)) return lock;
+    await sleep(Math.min(pollMs, Math.max(1, handoffDeadline - Date.now())));
+  } while (Date.now() < handoffDeadline);
   return lock;
 }
 

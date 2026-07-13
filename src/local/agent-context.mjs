@@ -5,6 +5,8 @@ import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from "./default-instructions.mjs";
 import { automaticPackageCommands, readProjectPackageMetadata } from "./project-package.mjs";
+import { clampInteger } from "./numbers.mjs";
+import { isPlainRecord } from "./records.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".machine-bridge", "agent.json");
 const GLOBAL_CONFIG_RELATIVE_PATH = join(".config", "machine-bridge-mcp", "agent.json");
@@ -42,7 +44,7 @@ export class AgentContextManager {
   async agentContext(args = {}, context = {}) {
     const state = await this.discoverState(args.path || ".", context);
     const includeContent = args.include_instruction_content !== false;
-    const skillLimit = clampInt(args.max_skills, 100, 1, MAX_SKILL_RESULTS);
+    const skillLimit = clampInteger(args.max_skills, 100, 1, MAX_SKILL_RESULTS);
     const discoveredSkills = await this.discoverSkills(state, { maxResults: MAX_SKILL_RESULTS }, context);
     const contextSkills = contextSkillSummaries(discoveredSkills.skills, this.displayPath, skillLimit, MAX_CONTEXT_SKILL_SUMMARY_CHARS);
     const result = {
@@ -111,7 +113,7 @@ export class AgentContextManager {
     if (task.length > 20_000) throw new Error("task exceeds 20000 characters");
     const state = await this.discoverState(args.path || ".", context);
     const discovered = await this.discoverSkills(state, { maxResults: MAX_SKILL_RESULTS }, context);
-    const maxSkills = clampInt(args.max_skills, 10, 1, 50);
+    const maxSkills = clampInteger(args.max_skills, 10, 1, 50);
     const skillMatches = discovered.skills
       .map((skill) => ({ skill, score: relevanceScore(task, `${skill.name} ${skill.description}`, skill.name) }))
       .filter((item) => item.score > 0)
@@ -169,7 +171,7 @@ export class AgentContextManager {
     const state = await this.discoverState(args.path || ".", context);
     const result = await this.discoverSkills(state, {
       query: typeof args.query === "string" ? args.query : "",
-      maxResults: clampInt(args.max_results, 100, 1, MAX_SKILL_RESULTS),
+      maxResults: clampInteger(args.max_results, 100, 1, MAX_SKILL_RESULTS),
     }, context);
     return {
       target: this.displayPath(state.target),
@@ -190,7 +192,7 @@ export class AgentContextManager {
     if (matches.length > 1) throw new Error(`local skill name is ambiguous; use its id: ${requested}`);
     const skill = matches[0];
     const content = await readRegularUtf8(skill.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
-    const inventory = await listSkillFiles(skill.directory, clampInt(args.max_files, 200, 1, MAX_SKILL_FILES), context, this.throwIfCancelled);
+    const inventory = await listSkillFiles(skill.directory, clampInteger(args.max_files, 200, 1, MAX_SKILL_FILES), context, this.throwIfCancelled);
     return {
       skill: publicSkill(skill, this.displayPath),
       instructions: content.text,
@@ -381,7 +383,7 @@ export class AgentContextManager {
 
   async discoverSkills(state, options = {}, context = {}) {
     const query = String(options.query || "").trim().toLowerCase();
-    const maxResults = clampInt(options.maxResults, 100, 1, MAX_SKILL_RESULTS);
+    const maxResults = clampInteger(options.maxResults, 100, 1, MAX_SKILL_RESULTS);
     const skills = [];
     const warnings = [];
     const seenEntrypoints = new Set();
@@ -581,7 +583,7 @@ function normalizeCommand(value, name, configPath) {
   const description = typeof value.description === "string" ? value.description.trim() : "";
   if (!description || description.length > 1000) throw new Error(`registered command '${name}' requires a description of at most 1000 characters: ${configPath}`);
   const cwd = value.cwd === undefined ? "." : requiredString(value.cwd, `commands.${name}.cwd`);
-  const timeoutSeconds = clampInt(value.timeout_seconds, 120, 1, 600);
+  const timeoutSeconds = clampInteger(value.timeout_seconds, 120, 1, 600);
   if (value.timeout_seconds !== undefined && timeoutSeconds !== value.timeout_seconds) {
     throw new Error(`registered command '${name}' timeout_seconds must be an integer from 1 to 600: ${configPath}`);
   }
@@ -877,9 +879,6 @@ function isContainedPath(root, target) {
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
 }
 
-function isPlainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function boundedMessage(error) {
   return String(error?.message || error || "invalid local skill").replace(/[\r\n]+/g, " ").slice(0, 1000);
@@ -897,12 +896,6 @@ function unquoteScalar(value) {
   return value;
 }
 
-function clampInt(value, fallback, min, max) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed)) return fallback;
-  return Math.min(Math.max(parsed, min), max);
-}
 
 function sha256(value) {
   return createHash("sha256").update(String(value)).digest("hex");

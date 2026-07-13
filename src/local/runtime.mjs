@@ -26,6 +26,8 @@ import { AppAutomationManager } from "./app-automation.mjs";
 import { BrowserBridgeManager } from "./browser-bridge.mjs";
 import { CapabilityObserver } from "./capability-observer.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { clampInteger } from "./numbers.mjs";
+import { isPlainRecord } from "./records.mjs";
 
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_CONCURRENT_TOOL_CALLS = 16;
@@ -58,7 +60,7 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   browser_upload_files: (runtime, args, context) => runtime.browserBridgeManager.uploadFiles(args, context),
   list_roots: (runtime) => runtime.listRoots(),
   list_dir: (runtime, args, context) => runtime.listDir(args.path || ".", context),
-  list_files: (runtime, args, context) => runtime.listFiles(args.path || ".", clampInt(args.max_files, 1000, 1, 10000), context),
+  list_files: (runtime, args, context) => runtime.listFiles(args.path || ".", clampInteger(args.max_files, 1000, 1, 10000), context),
   read_file: (runtime, args, context) => runtime.readFile(args, context),
   view_image: (runtime, args, context) => runtime.viewImage(args, context),
   write_file: (runtime, args, context) => runtime.writeFile(args, context),
@@ -82,7 +84,7 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   read_process: (runtime, args, context) => runtime.processSessionManager.read(args, context),
   write_process: (runtime, args, context) => runtime.processSessionManager.write(args, context),
   kill_process: (runtime, args, context) => runtime.processSessionManager.kill(args, context),
-  exec_command: (runtime, args, context) => runtime.execCommand(args.command, clampInt(args.timeout_seconds, 120, 1, 600), context),
+  exec_command: (runtime, args, context) => runtime.execCommand(args.command, clampInteger(args.timeout_seconds, 120, 1, 600), context),
 });
 
 export function runtimeToolHandlerNames() {
@@ -809,13 +811,10 @@ function normalizeRelayToolCall(message) {
     id,
     tool,
     arguments: argumentsValue,
-    timeoutMs: clampInt(message.timeout_ms, 60_000, 1000, 610_000),
+    timeoutMs: clampInteger(message.timeout_ms, 60_000, 1000, 610_000),
   };
 }
 
-function isPlainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 
 function collectToolPathCandidates(error, toolArgs, workspace) {
@@ -856,10 +855,4 @@ function replacePathPrefix(message, pathValue, replacement) {
 
 function shortCallId(value) {
   return String(value || "").slice(0, 20);
-}
-
-function clampInt(value, fallback, minimum, maximum) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, minimum), maximum);
 }

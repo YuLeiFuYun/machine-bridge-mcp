@@ -67,12 +67,33 @@ function setConnectionState(state) {
       : state === "unconfigured"
         ? "Machine Bridge Browser: click to open pairing"
         : "Machine Bridge Browser: disconnected; click to open pairing";
-  try { ignoreOptionalPromise(chrome.action.setBadgeText({ text: badge })); } catch {}
-  try { ignoreOptionalPromise(chrome.action.setTitle({ title })); } catch {}
+  ignoreBrowserApiCall(() => chrome.action.setBadgeText({ text: badge }));
+  ignoreBrowserApiCall(() => chrome.action.setTitle({ title }));
 }
 
-function ignoreOptionalPromise(value) {
-  if (value && typeof value.catch === "function") value.catch(() => {});
+function ignoreBrowserApiCall(operation) {
+  try {
+    const value = operation();
+    if (value && typeof value.catch === "function") value.catch(() => {});
+  } catch {
+    // Browser UI decoration is optional and must not disrupt broker connectivity.
+  }
+}
+
+function closeSocketQuietly(ws, code, reason) {
+  try {
+    ws?.close(code, reason);
+  } catch {
+    // The socket may already be closed; reconnect state remains authoritative.
+  }
+}
+
+function sendSocketQuietly(ws, payload) {
+  try {
+    ws.send(payload);
+  } catch {
+    // A response cannot be recovered after the broker socket closes.
+  }
 }
 
 async function pairConfiguration(rawEndpoint, rawToken, { replace, senderUrl }) {
@@ -119,25 +140,27 @@ async function confirmRepairFromTab(tab) {
       }),
     });
     const paired = await pairConfiguration(result?.result?.endpoint, result?.result?.token, { replace: true, senderUrl: tab.url });
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (ok) => {
-        const status = document.getElementById("status");
-        if (status) status.textContent = ok ? "Paired. You may close this tab." : "Pairing failed.";
-      },
-      args: [paired.ok === true],
-    });
+    await setPairingPageStatus(
+      tab.id,
+      paired.ok === true ? "Paired. You may close this tab." : "Pairing failed.",
+    );
   } catch {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          const status = document.getElementById("status");
-          if (status) status.textContent = "Pairing failed. Reload this page and confirm that the expected extension build is loaded.";
-        },
-      });
-    } catch {}
+    ignoreBrowserApiCall(() => setPairingPageStatus(
+      tab.id,
+      "Pairing failed. Reload this page and confirm that the expected extension build is loaded.",
+    ));
   }
+}
+
+function setPairingPageStatus(tabId, text) {
+  return chrome.scripting.executeScript({
+    target: { tabId },
+    func: (value) => {
+      const status = document.getElementById("status");
+      if (status) status.textContent = value;
+    },
+    args: [text],
+  });
 }
 
 ensureReconnectAlarm();
@@ -162,7 +185,7 @@ function connect(endpoint, token, { reconnect = true } = {}) {
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
   if (socket) {
-    try { socket.close(); } catch {}
+    closeSocketQuietly(socket);
   }
   const ws = new WebSocket(endpoint, [`mbm.${token}`]);
   socket = ws;
@@ -181,12 +204,12 @@ function connect(endpoint, token, { reconnect = true } = {}) {
     };
     ws.onopen = () => {
       if (socket !== ws) {
-        try { ws.close(); } catch {}
+        closeSocketQuietly(ws);
         settle(new Error("browser connection was superseded"));
         return;
       }
       ws.handshakeTimer = setTimeout(() => {
-        try { ws.close(1002, "browser broker handshake timed out"); } catch {}
+        closeSocketQuietly(ws, 1002, "browser broker handshake timed out");
       }, HANDSHAKE_TIMEOUT_MS);
     };
     ws.onmessage = (event) => void handleMessage(ws, event.data, () => settle());
@@ -214,12 +237,12 @@ function scheduleReconnect(endpoint, token) {
 async function handleMessage(ws, raw, onReady = () => {}) {
   let message;
   try { message = JSON.parse(String(raw)); } catch {
-    try { ws.close(1007, "invalid broker JSON"); } catch {}
+    closeSocketQuietly(ws, 1007, "invalid broker JSON");
     return;
   }
   if (message?.type === "hello") {
     if (ws.serverHelloSeen || message.role !== "extension" || message.protocol !== BROWSER_EXTENSION_PROTOCOL) {
-      try { ws.close(1002, "browser broker protocol mismatch"); } catch {}
+      closeSocketQuietly(ws, 1002, "browser broker protocol mismatch");
       return;
     }
     ws.serverHelloSeen = true;
@@ -237,7 +260,7 @@ async function handleMessage(ws, raw, onReady = () => {}) {
   }
   if (message?.type === "hello_ack") {
     if (ws.bridgeReady || !ws.serverHelloSeen || message.role !== "extension" || message.protocol !== BROWSER_EXTENSION_PROTOCOL) {
-      try { ws.close(1002, "invalid browser broker acknowledgement"); } catch {}
+      closeSocketQuietly(ws, 1002, "invalid browser broker acknowledgement");
       return;
     }
     clearTimeout(ws.handshakeTimer);
@@ -252,7 +275,7 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     return;
   }
   if (!ws.bridgeReady) {
-    try { ws.close(1002, "browser broker acknowledgement required"); } catch {}
+    closeSocketQuietly(ws, 1002, "browser broker acknowledgement required");
     return;
   }
   if (message?.type === "cancel" && typeof message.id === "string") {
@@ -291,7 +314,7 @@ function sendResponse(ws, id, ok, result, error = "") {
   if (new TextEncoder().encode(payload).byteLength > MAX_RESULT_BYTES) {
     payload = JSON.stringify({ type: "response", id, ok: false, error: "browser result exceeds maximum size" });
   }
-  try { ws.send(payload); } catch {}
+  sendSocketQuietly(ws, payload);
 }
 
 

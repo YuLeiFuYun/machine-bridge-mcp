@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { lstat, open, opendir } from "node:fs/promises";
+import { lstat, opendir } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { packageScriptDisplayCommand, readProjectPackageMetadata, safeVersionValue } from "./project-package.mjs";
+import { isRegularNonSymlink, readOptionalRegularUtf8, safeSingleLine, skippableMetadataError } from "./project-metadata.mjs";
 
 const MAX_PROJECT_CONTEXT_BYTES = 16 * 1024;
 const MAX_SCRIPT_NAMES = 24;
@@ -208,36 +208,6 @@ async function listWorkflowFiles(root, throwIfCancelled) {
   return files.sort((left, right) => left.localeCompare(right));
 }
 
-async function isRegularNonSymlink(filePath) {
-  const info = await lstat(filePath).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
-  return Boolean(info && !info.isSymbolicLink() && info.isFile());
-}
-
-async function readOptionalRegularUtf8(filePath, maxBytes) {
-  const info = await lstat(filePath).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
-  if (!info || info.isSymbolicLink() || !info.isFile() || info.size > maxBytes) return null;
-  const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0)).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
-  if (!handle) return null;
-  try {
-    const current = await handle.stat();
-    if (!current.isFile() || current.size > maxBytes) return null;
-    const buffer = Buffer.alloc(current.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (!bytesRead) break;
-      offset += bytesRead;
-    }
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
-    } catch {
-      return null;
-    }
-  } finally {
-    await handle.close();
-  }
-}
-
 function virtualInstruction(source, content, precedence, scope) {
   return {
     scope,
@@ -249,19 +219,6 @@ function virtualInstruction(source, content, precedence, scope) {
   };
 }
 
-function skippableMetadataError(error) {
-  return ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "EBUSY"].includes(error?.code);
-}
-
-function safeSingleLine(value, maxLength) {
-  if (typeof value !== "string") return "";
-  return value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
-}
-
 function escapeInlineCode(value) {
   return String(value).replaceAll("`", "'");
-}
-
-function isPlainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

@@ -1,0 +1,84 @@
+name: Bug report
+description: Report one reproducible defect in Machine Bridge MCP.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report one problem per issue. Do not include credentials, pairing tokens, private paths, command output containing secrets, or unrelated browser content.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `machine-mcp --version` or the npm package version.
+      placeholder: 0.16.2
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport or surface
+      options:
+        - stdio MCP
+        - OAuth relay / Worker
+        - CLI or service lifecycle
+        - Browser extension
+        - Local application automation
+        - Managed jobs or processes
+        - Files, Git, resources, or policy
+        - Packaging or installation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Minimal reproduction
+      description: Provide deterministic steps using synthetic data where possible.
+      placeholder: |
+        1. Configure ...
+        2. Call ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include redacted errors or logs. Do not paste secrets or unrelated user content.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: Add bounded, redacted output from `machine-mcp doctor` or `diagnose_runtime` when applicable.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues for the same causal failure.
+          required: true
+        - label: I removed credentials, private identifiers, unrelated browser data, and sensitive file contents.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true

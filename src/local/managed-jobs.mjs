@@ -11,6 +11,7 @@ import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError } from "./errors.mjs";
 import { inspectResourceFile, normalizeResourceRegistry, publicResourceRegistry, validatePlan, validateResourceName } from "./managed-job-plan.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
+import { clampInteger } from "./numbers.mjs";
 
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const MAX_JOBS = 50;
@@ -218,7 +219,7 @@ export class ManagedJobManager {
     this.authorizeTool("list_jobs");
     this.assertMaintenanceAvailable();
     this.prune();
-    const limit = clampInt(args.limit, 20, 1, MAX_JOBS);
+    const limit = clampInteger(args.limit, 20, 1, MAX_JOBS);
     const jobs = [];
     for (const entry of safeReadDir(this.jobRoot)) {
       if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
@@ -849,10 +850,4 @@ function boundedString(value, maxBytes, label) {
   if (typeof value !== "string" || value.includes("\0")) throw new Error(`${label} must be a string without NUL bytes`);
   if (Buffer.byteLength(value) > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
   return value;
-}
-
-function clampInt(value, fallback, min, max) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, min), max);
 }

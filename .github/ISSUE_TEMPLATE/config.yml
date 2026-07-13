@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/YuLeiFuYun/machine-bridge-mcp/security/advisories/new
+    about: Report vulnerabilities privately. Do not disclose secrets or exploit details in a public issue.
+  - name: Usage and operations documentation
+    url: https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/OPERATIONS.md
+    about: Review diagnosis and recovery procedures before opening a bug report.
