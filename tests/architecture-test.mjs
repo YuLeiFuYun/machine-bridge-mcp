@@ -32,6 +32,7 @@ const adapterModules = new Set(["cli.mjs", "daemon-process.mjs", "stdio.mjs", "s
 const boundaryModules = new Set([
   "agent-context.mjs",
   "app-automation.mjs",
+  "browser-command.mjs",
   "capability-observer.mjs",
   "default-instructions.mjs",
   "network-proxy.mjs",
@@ -83,6 +84,7 @@ const localAutomationFiles = [
   join(root, "src", "local", "app-automation.mjs"),
   join(root, "src", "local", "browser-bridge.mjs"),
   join(root, "browser-extension", "service-worker.js"),
+  join(root, "browser-extension", "devtools-input.js"),
   join(root, "browser-extension", "page-automation.js"),
   join(root, "browser-extension", "pairing.js"),
 ];
@@ -93,7 +95,7 @@ for (const file of localAutomationFiles) {
   }
 }
 const extensionManifest = JSON.parse(readFileSync(join(root, "browser-extension", "manifest.json"), "utf8"));
-if (extensionManifest.manifest_version !== 3 || !extensionManifest.permissions?.includes("scripting") || !extensionManifest.permissions?.includes("alarms")) {
+if (extensionManifest.manifest_version !== 3 || !extensionManifest.permissions?.includes("scripting") || !extensionManifest.permissions?.includes("alarms") || !extensionManifest.permissions?.includes("debugger")) {
   throw new Error("packaged browser extension is missing required Manifest V3 capabilities");
 }
 if (!extensionManifest.host_permissions?.includes("<all_urls>")) {
@@ -105,7 +107,7 @@ const appAutomationSource = readFileSync(join(root, "src", "local", "app-automat
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 
-if (!workerSource.includes('"browser_screenshot", "browser_upload_files"')) {
+if (!workerSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"') || !workerSource.includes('"browser_screenshot", "browser_upload_files"')) {
   throw new Error("Worker timeout classification omits browser_upload_files");
 }
 if (!cliSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
@@ -123,9 +125,12 @@ if (!serviceWorkerSource.includes('files: ["page-automation.js"]')) {
 for (const obsolete of ["func: inspectDocument", "func: performAction", "func: performFormFill", "func: performFileUpload"]) {
   if (serviceWorkerSource.includes(obsolete)) throw new Error(`browser service worker retained cross-world helper reference: ${obsolete}`);
 }
-if (!pageAutomationSource.includes("__machineBridgePageAutomation") || !pageAutomationSource.includes("shadowRoot")) {
+if (!pageAutomationSource.includes("__machineBridgePageAutomation") || !pageAutomationSource.includes("shadowRoot") || !pageAutomationSource.includes("waitForActionable") || !pageAutomationSource.includes("refFor")) {
   throw new Error("browser page automation module is missing its fixed API or open Shadow DOM traversal");
 }
+if (!serviceWorkerSource.includes('importScripts("devtools-input.js")') || !serviceWorkerSource.includes("performPageAction")) throw new Error("browser extension lost fixed trusted-input integration");
+if (!serviceWorkerSource.includes('protocol: 2') || !serviceWorkerSource.includes('type: "hello"') || !serviceWorkerSource.includes('capabilities:')) throw new Error("browser extension lost its versioned capability handshake");
+if (!readFileSync(join(root, "src", "local", "browser-bridge.mjs"), "utf8").includes("extension hello required; reload the extension")) throw new Error("browser broker lost stale-extension rejection guidance");
 if (!serviceWorkerSource.includes("requires_manual_repair") || !serviceWorkerSource.includes("chrome.action.onClicked")) {
   throw new Error("browser extension no longer requires a user gesture to replace established pairing");
 }

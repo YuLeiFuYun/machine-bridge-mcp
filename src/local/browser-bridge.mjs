@@ -7,6 +7,11 @@ import { WebSocket, WebSocketServer } from "ws";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { assertStateMaintenanceAvailable, ownerOnlyFile, packageRoot } from "./state.mjs";
+import {
+  clampInt, normalizeBrowserAction, normalizeBrowserSelector, normalizeBrowserWait, normalizeFormAction,
+  normalizeInputMode, normalizeNavigationWait, normalizeTabCommand, optionalInteger, optionalString,
+  validateNavigationUrl,
+} from "./browser-command.mjs";
 
 const DEFAULT_PORT = 39393;
 const MAX_PORT_ATTEMPTS = 10;
@@ -18,6 +23,11 @@ const MAX_FIELD_VALUE_CHARS = 128 * 1024;
 const MAX_FORM_VALUE_BYTES = 4 * 1024 * 1024;
 const PAIRING_FILE = "browser-bridge.json";
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
+const BROWSER_EXTENSION_PROTOCOL = 2;
+const EXTENSION_HANDSHAKE_MS = 3_000;
+const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
+  "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
+]);
 
 export class BrowserBridgeManager {
   constructor({ policy, stateRoot = "", runProcess, readResourceText, readResourceBinary, throwIfCancelled = () => {} }) {
@@ -30,10 +40,14 @@ export class BrowserBridgeManager {
     this.server = null;
     this.wss = null;
     this.socket = null;
+    this.pendingExtensionSocket = null;
     this.upstream = null;
     this.runtimeClients = new Set();
     this.proxyRoutes = new Map();
     this.proxyExtensionConnected = false;
+    this.extensionInfo = null;
+    this.proxyExtensionInfo = null;
+    this.proxyExtensionReloadRequired = false;
     this.recoveryTimer = null;
     this.stopping = false;
     this.pending = new Map();
@@ -47,16 +61,26 @@ export class BrowserBridgeManager {
     await this.ensureStarted(context);
     return {
       available: true,
-      connected: this.server ? this.socket?.readyState === 1 : this.proxyExtensionConnected,
+      connected: this.extensionConnected(),
       broker_role: this.server ? "owner" : this.upstream?.readyState === 1 ? "client" : "unavailable",
       endpoint: `ws://127.0.0.1:${this.port}/extension`,
       pairing_url: `http://127.0.0.1:${this.port}/pair`,
       extension_path: this.extensionPath,
+      extension_protocol: this.extensionStatusInfo()?.protocol || null,
+      extension_version: this.extensionStatusInfo()?.version || "",
+      extension_capabilities: this.extensionStatusInfo()?.capabilities || [],
+      extension_reload_required: this.extensionReloadRequired(),
       supported_browsers: ["Chrome", "Chromium", "Microsoft Edge", "Brave", "Vivaldi", "other Chromium browsers with Manifest V3"],
       controls_existing_profile: true,
       uses_existing_tabs_and_login_state: true,
       source_access: true,
+      semantic_snapshot_refs: true,
+      actionability_waits: true,
+      trusted_input: true,
+      input_modes: ["auto", "trusted", "dom"],
       complex_form_fill: true,
+      tab_management: true,
+      explicit_waits: true,
       screenshots: true,
       restricted_pages: ["browser-internal pages", "extension stores", "some PDF/plugin viewers", "pages blocked by enterprise policy"],
       security: {
@@ -98,6 +122,16 @@ export class BrowserBridgeManager {
     return response;
   }
 
+  async manageTabs(args = {}, context = {}) {
+    return this.request("manage_tabs", normalizeTabCommand(args), clampInt(args.timeout_seconds, 30, 1, 120), context);
+  }
+
+  async wait(args = {}, context = {}) {
+    const params = normalizeBrowserWait(args);
+    const conditionTimeoutSeconds = clampInt(args.timeout_seconds, 30, 1, 120);
+    return this.request("wait", params, conditionTimeoutSeconds + 5, context);
+  }
+
   async getSource(args = {}, context = {}) {
     const response = await this.request("get_source", {
       tabId: optionalInteger(args.tab_id, "tab_id", 1, Number.MAX_SAFE_INTEGER),
@@ -130,16 +164,21 @@ export class BrowserBridgeManager {
       url: action === "navigate" ? validateNavigationUrl(rawUrl) : "",
       value: null,
       key: optionalString(args.key, "key", 100),
-      waitFor: normalizeWait(args.wait_for),
+      waitFor: normalizeNavigationWait(args.wait_for),
+      inputMode: normalizeInputMode(args.input_mode),
+      elementTimeoutMs: clampInt(args.element_timeout_seconds, 10, 1, 60) * 1000,
     };
     if (action !== "navigate" && rawUrl) throw new Error("url is only valid for navigate");
     if (action !== "press" && payload.key) throw new Error("key is only valid for press");
+    if (payload.inputMode === "trusted" && !["click", "double_click", "hover", "press", "type_text"].includes(action)) {
+      throw new Error("input_mode=trusted supports click, double_click, hover, press, and type_text only");
+    }
     if (args.value !== undefined) payload.value = boundedValue(args.value, "value");
     if (args.value_resource !== undefined) {
       if (payload.value !== null) throw new Error("value and value_resource are mutually exclusive");
       payload.value = boundedValue(await this.readResourceText(validateResource(args.value_resource)), "value_resource");
     }
-    if (payload.value !== null && !["fill", "select", "press"].includes(action)) throw new Error(`value is not valid for browser action '${action}'`);
+    if (payload.value !== null && !["fill", "select", "press", "type_text"].includes(action)) throw new Error(`value is not valid for browser action '${action}'`);
     const response = await this.request("action", payload, clampInt(args.timeout_seconds, 30, 1, 120), context);
     return {
       ...response,
@@ -183,7 +222,8 @@ export class BrowserBridgeManager {
       fields,
       submit: args.submit === true,
       submitSelector: args.submit_selector ? normalizeBrowserSelector(args.submit_selector, "click") : null,
-      waitFor: normalizeWait(args.wait_for),
+      waitFor: normalizeNavigationWait(args.wait_for),
+      elementTimeoutMs: clampInt(args.element_timeout_seconds, 10, 1, 60) * 1000,
     }, clampInt(args.timeout_seconds, 60, 1, 180), context);
   }
 
@@ -213,6 +253,7 @@ export class BrowserBridgeManager {
       frameId: optionalInteger(args.frame_id, "frame_id", 0, Number.MAX_SAFE_INTEGER),
       selector: normalizeBrowserSelector(args.selector, "fill"),
       files,
+      elementTimeoutMs: clampInt(args.element_timeout_seconds, 10, 1, 60) * 1000,
     }, clampInt(args.timeout_seconds, 60, 1, 180), context);
     return { ...result, resource_names: args.resources.map(String), resource_contents_exposed: false };
   }
@@ -244,7 +285,7 @@ export class BrowserBridgeManager {
     await this.ensureStarted(context);
     this.throwIfCancelled(context);
     const transport = this.server ? this.socket : this.upstream;
-    const extensionConnected = this.server ? this.socket?.readyState === 1 : this.proxyExtensionConnected;
+    const extensionConnected = this.extensionConnected();
     if (!transport || transport.readyState !== 1 || !extensionConnected) {
       throw new Error("browser extension is not connected; call pair_browser_extension after loading the packaged extension");
     }
@@ -373,7 +414,9 @@ export class BrowserBridgeManager {
             return;
           }
           this.upstream = ws;
-          this.proxyExtensionConnected = message.extension_connected === true;
+          this.proxyExtensionInfo = message.extension_connected === true ? normalizeExtensionInfo(message.extension_info) : null;
+          this.proxyExtensionConnected = message.extension_connected === true && Boolean(this.proxyExtensionInfo);
+          this.proxyExtensionReloadRequired = message.extension_reload_required === true;
           finish(true);
           return;
         }
@@ -384,6 +427,8 @@ export class BrowserBridgeManager {
         if (this.upstream === ws) {
           this.upstream = null;
           this.proxyExtensionConnected = false;
+          this.proxyExtensionInfo = null;
+          this.proxyExtensionReloadRequired = false;
           this.rejectPending("browser broker disconnected");
           if (settled) this.scheduleBrokerRecovery();
         }
@@ -406,15 +451,33 @@ export class BrowserBridgeManager {
         }
       });
       ws.on("error", () => {});
-      safeSocketSend(ws, { type: "hello", role: "runtime", protocol: 1, extension_connected: this.socket?.readyState === 1 });
+      safeSocketSend(ws, {
+        type: "hello", role: "runtime", protocol: 1,
+        extension_connected: this.extensionConnected(),
+        extension_info: this.extensionStatusInfo(),
+        extension_reload_required: this.extensionReloadRequired(),
+      });
       return;
     }
-    if (this.socket && this.socket.readyState === 1) this.socket.close(4001, "superseded");
-    this.socket = ws;
+    if (this.pendingExtensionSocket && this.pendingExtensionSocket.readyState === 1) {
+      this.pendingExtensionSocket.close(4001, "superseded by a newer extension candidate");
+    }
+    this.pendingExtensionSocket = ws;
+    this.broadcastRuntimeStatus(this.extensionConnected());
+    ws.extensionReady = false;
+    ws.handshakeTimer = setTimeout(() => closeProtocolSocket(ws, 1002, "extension hello required; reload the extension"), EXTENSION_HANDSHAKE_MS);
+    ws.handshakeTimer.unref?.();
     ws.on("message", (data) => this.handleExtensionMessage(ws, data));
     ws.on("close", () => {
+      clearTimeout(ws.handshakeTimer);
+      if (this.pendingExtensionSocket === ws) {
+        this.pendingExtensionSocket = null;
+        this.broadcastRuntimeStatus(this.extensionConnected());
+        return;
+      }
       if (this.socket !== ws) return;
       this.socket = null;
+      this.extensionInfo = null;
       this.rejectPending("browser extension disconnected");
       for (const [id, route] of this.proxyRoutes) {
         clearTimeout(route.timeout);
@@ -424,18 +487,43 @@ export class BrowserBridgeManager {
       this.broadcastRuntimeStatus(false);
     });
     ws.on("error", () => {});
-    safeSocketSend(ws, { type: "hello", role: "extension", protocol: 1 });
-    this.broadcastRuntimeStatus(true);
+    safeSocketSend(ws, { type: "hello", role: "extension", protocol: BROWSER_EXTENSION_PROTOCOL });
   }
 
   handleExtensionMessage(socket, data) {
-    if (this.socket !== socket) return;
+    if (this.socket !== socket && this.pendingExtensionSocket !== socket) return;
     const parsed = parseBrowserSocketMessage(data);
     if (!parsed.ok) {
       closeProtocolSocket(socket, parsed.code, parsed.reason);
       return;
     }
     const message = parsed.message;
+    if (message.type === "hello") {
+      if (socket.extensionReady) {
+        closeProtocolSocket(socket, 1002, "duplicate extension hello");
+        return;
+      }
+      let info;
+      try { info = parseExtensionHello(message); }
+      catch (error) {
+        closeProtocolSocket(socket, 1002, String(error?.message || error).slice(0, 120));
+        return;
+      }
+      clearTimeout(socket.handshakeTimer);
+      socket.extensionReady = true;
+      if (this.pendingExtensionSocket === socket) this.pendingExtensionSocket = null;
+      const previous = this.socket;
+      this.socket = socket;
+      this.extensionInfo = info;
+      if (previous && previous !== socket && previous.readyState === 1) previous.close(4001, "superseded");
+      this.broadcastRuntimeStatus(true);
+      return;
+    }
+    if (!socket.extensionReady) {
+      closeProtocolSocket(socket, 1002, "extension hello required; reload the extension");
+      return;
+    }
+    if (message.type === "ping") return;
     if (message.type !== "response" || typeof message.id !== "string") {
       closeProtocolSocket(socket, 1002, "invalid extension protocol message");
       return;
@@ -476,7 +564,7 @@ export class BrowserBridgeManager {
       closeProtocolSocket(socket, 1002, "invalid runtime protocol message");
       return;
     }
-    if (!this.socket || this.socket.readyState !== 1) {
+    if (!this.extensionConnected()) {
       safeSocketSend(socket, { type: "response", id: message.id, ok: false, error: "browser extension is not connected" });
       return;
     }
@@ -511,7 +599,9 @@ export class BrowserBridgeManager {
 
   handleUpstreamMessage(message) {
     if (message.type === "status" && typeof message.extension_connected === "boolean") {
-      this.proxyExtensionConnected = message.extension_connected;
+      this.proxyExtensionInfo = message.extension_connected ? normalizeExtensionInfo(message.extension_info) : null;
+      this.proxyExtensionConnected = message.extension_connected && Boolean(this.proxyExtensionInfo);
+      this.proxyExtensionReloadRequired = message.extension_reload_required === true;
       if (!this.proxyExtensionConnected) this.rejectPending("browser extension disconnected");
       return true;
     }
@@ -526,7 +616,11 @@ export class BrowserBridgeManager {
   }
 
   broadcastRuntimeStatus(connected) {
-    const message = { type: "status", extension_connected: connected };
+    const message = {
+      type: "status", extension_connected: connected,
+      extension_info: connected ? this.extensionStatusInfo() : null,
+      extension_reload_required: this.extensionReloadRequired(),
+    };
     for (const client of this.runtimeClients) safeSocketSend(client, message);
   }
 
@@ -552,7 +646,7 @@ export class BrowserBridgeManager {
       return;
     }
     if (url.pathname === "/healthz") {
-      sendJson(response, { ok: true, connected: this.socket?.readyState === 1, broker: "machine-bridge-browser" });
+      sendJson(response, { ok: true, connected: this.extensionConnected(), broker: "machine-bridge-browser" });
       return;
     }
     if (url.pathname === "/pair") {
@@ -592,9 +686,15 @@ export class BrowserBridgeManager {
     this.rejectPending("browser bridge stopped");
     try { this.upstream?.close(1001, "runtime stopped"); } catch {}
     try { this.socket?.close(1001, "runtime stopped"); } catch {}
+    try { this.pendingExtensionSocket?.close(1001, "runtime stopped"); } catch {}
     for (const client of this.runtimeClients) try { client.close(1001, "runtime stopped"); } catch {}
     this.upstream = null;
     this.socket = null;
+    this.pendingExtensionSocket = null;
+    this.extensionInfo = null;
+    this.proxyExtensionConnected = false;
+    this.proxyExtensionInfo = null;
+    this.proxyExtensionReloadRequired = false;
     this.runtimeClients.clear();
     for (const route of this.proxyRoutes.values()) clearTimeout(route.timeout);
     this.proxyRoutes.clear();
@@ -604,11 +704,49 @@ export class BrowserBridgeManager {
     this.server = null;
   }
 
+  extensionConnected() {
+    return this.server
+      ? this.socket?.readyState === 1 && Boolean(this.extensionInfo)
+      : this.upstream?.readyState === 1 && this.proxyExtensionConnected && Boolean(this.proxyExtensionInfo);
+  }
+
+  extensionStatusInfo() {
+    return this.server ? this.extensionInfo : this.proxyExtensionInfo;
+  }
+
+  extensionReloadRequired() {
+    return this.server
+      ? this.pendingExtensionSocket?.readyState === 1 && !this.extensionConnected()
+      : this.proxyExtensionReloadRequired;
+  }
+
   assertFull(tool) {
     if (this.policy.profile !== "full" || this.policy.execMode !== "shell" || this.policy.unrestrictedPaths !== true) {
       throw new Error(`${tool} requires the canonical full profile`);
     }
   }
+}
+
+function parseExtensionHello(message) {
+  if (message.role !== "extension" || message.protocol !== BROWSER_EXTENSION_PROTOCOL) {
+    throw new Error(`extension protocol mismatch; expected ${BROWSER_EXTENSION_PROTOCOL}; reload the extension`);
+  }
+  const info = normalizeExtensionInfo(message);
+  if (!info) throw new Error("invalid extension hello; reload the extension");
+  const missing = REQUIRED_EXTENSION_CAPABILITIES.filter((capability) => !info.capabilities.includes(capability));
+  if (missing.length) throw new Error(`extension capability mismatch; reload the extension (${missing.join(",")})`);
+  return info;
+}
+
+function normalizeExtensionInfo(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const protocol = Number(value.protocol);
+  const version = typeof value.version === "string" && value.version.length <= 100 ? value.version : "";
+  const capabilities = Array.isArray(value.capabilities)
+    ? [...new Set(value.capabilities.filter((entry) => typeof entry === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(entry)))].slice(0, 32)
+    : [];
+  if (!Number.isInteger(protocol) || protocol < 1 || !version) return null;
+  return { protocol, version, capabilities };
 }
 
 async function loadOrCreatePairing(stateRoot) {
@@ -697,42 +835,6 @@ function sendJson(response, value) {
   response.end(`${JSON.stringify(value)}\n`);
 }
 
-function normalizeBrowserAction(value) {
-  const action = String(value || "").trim();
-  if (!["navigate", "click", "fill", "select", "check", "uncheck", "focus", "press", "submit", "reload", "back", "forward"].includes(action)) {
-    throw new Error("unsupported browser action");
-  }
-  return action;
-}
-
-function normalizeFormAction(value) {
-  const action = String(value || "").trim();
-  if (!["fill", "select", "check", "uncheck", "click"].includes(action)) throw new Error("unsupported form field action");
-  return action;
-}
-
-function normalizeBrowserSelector(value, action) {
-  if (["navigate", "reload", "back", "forward"].includes(action)) return null;
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("selector must be an object");
-  const allowed = new Set(["css", "id", "name", "label", "text", "role", "placeholder", "index"]);
-  for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`unknown selector field: ${key}`);
-  const output = {};
-  for (const key of ["css", "id", "name", "label", "text", "role", "placeholder"]) {
-    if (value[key] !== undefined) output[key] = optionalString(value[key], `selector.${key}`, 2000);
-  }
-  if (value.index !== undefined) output.index = optionalInteger(value.index, "selector.index", 0, 10000);
-  if (!Object.keys(output).length) throw new Error("selector requires at least one field");
-  return output;
-}
-
-function validateNavigationUrl(value) {
-  if (!value) throw new Error("navigate requires url");
-  let parsed;
-  try { parsed = new URL(value); } catch { throw new Error("url must be an absolute URL"); }
-  if (!["http:", "https:", "file:"].includes(parsed.protocol)) throw new Error("url protocol must be http, https, or file");
-  return parsed.href;
-}
-
 function normalizeUploadFilename(value, { derived = false } = {}) {
   let name = String(value || "");
   if (derived) name = name.replace(/[\u0000-\u001f\u007f/\\]+/g, "_").trim();
@@ -760,13 +862,6 @@ function optionalStringArray(value, label, maxItems, maxLength) {
   });
 }
 
-function normalizeWait(value) {
-  if (value === undefined || value === null || value === "") return "none";
-  const wait = String(value);
-  if (!["none", "domcontentloaded", "complete"].includes(wait)) throw new Error("wait_for must be none, domcontentloaded, or complete");
-  return wait;
-}
-
 function boundedValue(value, label) {
   const string = String(value);
   if (string.includes("\0") || string.length > MAX_FIELD_VALUE_CHARS) throw new Error(`${label} exceeds the maximum length or contains a NUL byte`);
@@ -777,24 +872,4 @@ function validateResource(value) {
   const name = String(value || "").trim();
   if (!RESOURCE_NAME.test(name)) throw new Error("value_resource is invalid");
   return name;
-}
-
-function optionalString(value, label, maxLength) {
-  if (value === undefined || value === null || value === "") return "";
-  if (typeof value !== "string" || value.includes("\0") || value.length > maxLength) throw new Error(`${label} must be a string of at most ${maxLength} characters without NUL bytes`);
-  return value;
-}
-
-function optionalInteger(value, label, min, max) {
-  if (value === undefined || value === null || value === "") return null;
-  const number = Number(value);
-  if (!Number.isInteger(number) || number < min || number > max) throw new Error(`${label} must be an integer from ${min} to ${max}`);
-  return number;
-}
-
-function clampInt(value, fallback, min, max) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const number = Number(value);
-  if (!Number.isInteger(number) || number < min || number > max) throw new Error(`expected an integer from ${min} to ${max}`);
-  return number;
 }

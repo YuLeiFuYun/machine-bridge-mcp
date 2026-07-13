@@ -3,7 +3,7 @@ import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.13.0";
+const SERVER_VERSION = "0.14.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -1187,7 +1187,7 @@ function daemonToolTimeoutMs(name: string, args: Record<string, unknown>): numbe
   const configurable = new Set([
     "exec_command", "run_process", "run_local_command", "open_local_application",
     "inspect_local_application", "operate_local_application", "browser_list_tabs",
-    "browser_get_source", "browser_inspect_page", "browser_action", "browser_fill_form",
+    "browser_manage_tabs", "browser_wait", "browser_get_source", "browser_inspect_page", "browser_action", "browser_fill_form",
     "browser_screenshot", "browser_upload_files",
   ]);
   if (!configurable.has(name)) return 60_000;
