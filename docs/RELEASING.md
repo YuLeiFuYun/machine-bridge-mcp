@@ -65,3 +65,9 @@ The npm lifecycle repeats the full project checks and the GitHub synchronization
 - An npm account that owns the package or has maintainer permission.
 
 GitHub Actions is a required publication boundary. The authenticated GitHub CLI must be able to read Actions runs, and a missing, pending, cancelled, skipped, or failed exact-commit push run blocks both `release:publish` and `release:check`. This prevents a machine-specific local pass from publishing a version that fails another supported platform.
+
+## Registry publication hardening
+
+The preferred target is npm trusted publishing from a narrowly scoped GitHub Actions release workflow using OIDC and a protected GitHub environment. This removes the need for a long-lived npm publication token and allows npm to generate provenance automatically. Enabling it requires an explicit package-owner configuration in npm and a reviewed change to the release workflow; repository code alone cannot complete that trust relationship.
+
+Until trusted publishing is configured, publication remains a deliberate local operator step after `release:check`. Do not add an npm token to repository or environment files, workflow YAML, logs, or local project notes. Restrict any fallback token to the shortest practical lifetime and minimum package scope.

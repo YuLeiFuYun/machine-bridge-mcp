@@ -1,0 +1,12 @@
+# Domain ownership requests informed review. A single-owner approval is not independent review.
+* @YuLeiFuYun
+
+/src/local/ @YuLeiFuYun
+/src/worker/ @YuLeiFuYun
+/src/shared/ @YuLeiFuYun
+/browser-extension/ @YuLeiFuYun
+/scripts/ @YuLeiFuYun
+/tests/ @YuLeiFuYun
+/.github/ @YuLeiFuYun
+/docs/ @YuLeiFuYun
+/SECURITY.md @YuLeiFuYun

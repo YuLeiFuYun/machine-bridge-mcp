@@ -1,6 +1,6 @@
 # Engineering principles and maintenance rules
 
-This document records project-wide decisions that must survive individual fixes, releases, and maintainers. It is normative for repository changes. Machine-specific observations belong in the ignored `.project-local/` directory instead.
+This document records project-wide decisions that must survive individual fixes, releases, and maintainers. It is normative for repository changes together with [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md). Machine-specific observations belong in the ignored `.project-local/` directory instead.
 
 ## Product and security invariants
 
@@ -146,6 +146,8 @@ Cross-platform tests must not depend on shell syntax, case-sensitive Windows pat
 - OPERATIONS contains diagnosis and recovery procedures.
 - TESTING records executable coverage and regression expectations.
 - CHANGELOG records externally relevant changes, including documentation and workflow changes.
+- PROJECT_STANDARDS defines collaboration, contract, testing, supply-chain, review, and exception policy.
+- TOOL_REFERENCE is generated from the shared MCP tool catalog and must never be maintained by hand.
 
 Documentation that claims a guarantee must identify the code or test enforcing it. Do not document an aspirational behavior as implemented.
 

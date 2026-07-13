@@ -129,9 +129,19 @@ const repositoryFiles = execFileSync("git", ["ls-files", "-z", "--cached", "--ot
 const workflowFiles = repositoryFiles.filter((name) => /^\.github\/workflows\/.*\.ya?ml$/i.test(name));
 for (const name of workflowFiles) {
   const source = readFileSync(join(root, name), "utf8");
+  const jobsIndex = source.search(/^jobs:/m);
+  const permissionsIndex = source.search(/^permissions:/m);
+  if (permissionsIndex === -1 || jobsIndex === -1 || permissionsIndex > jobsIndex) {
+    throw new Error(`GitHub workflow ${name} lacks explicit top-level permissions before jobs`);
+  }
+  if (/^\s*pull_request_target:/m.test(source)) throw new Error(`privileged pull_request_target trigger is prohibited in ${name}`);
+  if (/^permissions:\s*write-all\s*$/m.test(source)) throw new Error(`write-all workflow permissions are prohibited in ${name}`);
   for (const match of source.matchAll(/\buses:\s*([^@\s]+)@([^\s#]+)/g)) {
     if (!/^[0-9a-f]{40}$/.test(match[2])) throw new Error(`GitHub Action ${match[1]} in ${name} is not pinned to an immutable commit SHA`);
   }
+}
+for (const requiredWorkflow of ["ci.yml", "governance.yml", "codeql.yml", "dependency-review.yml", "scorecard.yml"]) {
+  if (!workflowFiles.includes(`.github/workflows/${requiredWorkflow}`)) throw new Error(`required workflow is missing: ${requiredWorkflow}`);
 }
 for (const name of repositoryFiles) {
   const file = join(root, name);
@@ -217,6 +227,8 @@ if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser
 if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
 if (packageJson.scripts?.["coverage:test"] !== "node scripts/coverage-check.mjs") throw new Error("critical-module coverage gate is missing");
 if (packageJson.scripts?.["policy-docs:check"] !== "node scripts/generate-policy-reference.mjs --check") throw new Error("generated policy documentation gate is missing");
+if (packageJson.scripts?.["tool-docs:check"] !== "node scripts/generate-tool-reference.mjs --check") throw new Error("generated MCP tool documentation gate is missing");
+if (packageJson.scripts?.["commit-message:test"] !== "node tests/commit-message-test.mjs") throw new Error("commit-message policy regression test is missing");
 if (packageJson.scripts?.["logging-structure:test"] !== "node tests/logging-structure-test.mjs") throw new Error("structured logging regression test is missing");
 if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
@@ -267,6 +279,15 @@ if (!cliSource.replace(/\s+/g, " ").includes(`${pinnedInstallCommand} && machine
 const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
 if (!engineering.includes("default profile is intentionally `full`") || !engineering.includes("`.project-local/`")) {
   throw new Error("engineering invariants omitted the owner-required full default or local-knowledge boundary");
+}
+const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing"]) {
+  if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
+}
+const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
+const sharedToolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
+if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || !toolReference.includes(`Tool count: **${sharedToolCatalog.length}**`)) {
+  throw new Error("generated MCP tool reference is missing or malformed");
 }
 if (!readFileSync(join(root, ".gitignore"), "utf8").split(/\r?\n/).includes(".project-local/")) {
   throw new Error("machine-specific project notes are not ignored");

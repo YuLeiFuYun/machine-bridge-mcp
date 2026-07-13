@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.0 - 2026-07-13
+
+### Project governance and contribution flow
+
+- Define a risk-based project standard covering GitHub Flow, Conventional Commits, architecture boundaries, MCP contract ownership, testing, errors, logging, supply-chain security, documentation, review, and explicit exceptions. Add pull-request and structured issue templates plus area ownership through CODEOWNERS.
+- Add an executable Conventional Commit policy for pull-request and main-branch commit titles. Keep the repository on squash-based GitHub Flow rather than introducing permanent develop/release branches that do not match its single-maintainer, continuously released operating model.
+
+### Generated contracts and security automation
+
+- Generate a complete MCP tool reference from the shared tool catalog and reject stale output in the required suite. The tool catalog remains the single source for names, availability, annotations, and JSON input schemas; REST-specific Swagger documentation is not duplicated for the MCP surface.
+- Add pinned, least-privilege GitHub workflows for CodeQL analysis, pull-request dependency review, OpenSSF Scorecard publication, and governance checks. Preserve exact dependency versions, registry signature/attestation verification, SBOM generation, history privacy scanning, and cross-platform package tests.
+
+### Tests and documentation
+
+- Extend architecture checks to require generated tool documentation, governance scripts, security workflows, explicit workflow permissions, immutable Action references, and rejection of privileged pull-request triggers or write-all permissions.
+- Document why aggregate 80% coverage is not a sufficient quality target, identify the current CLI orchestration branch-coverage weakness, and retain per-module risk thresholds plus behavior-level cross-platform, concurrency, fault-injection, and protocol tests.
+
 ## 0.16.2 - 2026-07-13
 
 ### Fixed
