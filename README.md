@@ -49,6 +49,8 @@ This default prioritizes usability, not least privilege. `run_process` and proce
 
 For prerequisites, first remote deployment, ChatGPT connection, stdio configuration, browser pairing, upgrades, troubleshooting, and removal, follow [Installation and first use](docs/GETTING_STARTED.md). The commands below are the compact installation reference.
 
+Version 1 supports only MCP protocol `2025-11-25`. Existing current-schema local state upgrades in place, but clients must reconnect and the unpacked browser extension must be reloaded after package upgrade.
+
 Node.js 26 or newer and npm 12 or newer are required. The repository pins the active development versions in `.node-version`, `.nvmrc`, and `packageManager`; project installs fail on older Node runtimes.
 
 Use a new temporary directory for the bootstrap. The existing `npm`/`npx` front-end may inspect nearby project metadata before it launches the requested npm version; starting from an empty directory prevents an unrelated outdated `devEngines` declaration from blocking the bootstrap. The actual installation is then executed by the pinned npm 12 CLI rather than whichever npm happens to be first on `PATH`.

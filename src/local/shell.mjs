@@ -4,11 +4,13 @@ import path from "node:path";
 import { packageRoot } from "./state.mjs";
 import { BoundedOutput } from "./bounded-output.mjs";
 
-export function run(command, args = [], options = {}) {
+export function runExecutable(command, args = [], options = {}) {
+  const executable = validateExecutable(command);
+  const argv = validateExecutableArgs(args);
   return new Promise((resolve, reject) => {
     const capture = Boolean(options.capture);
     const maxOutputBytes = Number.isFinite(Number(options.maxOutputBytes)) ? Math.max(1024, Number(options.maxOutputBytes)) : 2 * 1024 * 1024;
-    const child = spawn(command, args, {
+    const child = spawn(executable, argv, {
       cwd: options.cwd || process.cwd(),
       env: options.env || process.env,
       stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
@@ -54,7 +56,7 @@ export function run(command, args = [], options = {}) {
       };
       if ((!timedOut && code === 0) || options.allowFailure) resolve(result);
       else {
-        const error = new Error((result.stderr || result.stdout || `${command} exited ${result.code}`).trim());
+        const error = new Error((result.stderr || result.stdout || `${executable} exited ${result.code}`).trim());
         error.result = result;
         reject(error);
       }
@@ -62,6 +64,25 @@ export function run(command, args = [], options = {}) {
   });
 }
 
+
+function validateExecutable(value) {
+  if (typeof value !== "string" || !value || value.includes("\0")) {
+    throw new TypeError("executable must be a non-empty string without NUL bytes");
+  }
+  if (Buffer.byteLength(value) > 32 * 1024) throw new RangeError("executable path exceeds 32 KiB");
+  return value;
+}
+
+function validateExecutableArgs(value) {
+  if (!Array.isArray(value) || value.length > 4096) throw new TypeError("executable arguments must be an array with at most 4096 entries");
+  let totalBytes = 0;
+  return value.map((entry) => {
+    if (typeof entry !== "string" || entry.includes("\0")) throw new TypeError("executable arguments must be strings without NUL bytes");
+    totalBytes += Buffer.byteLength(entry);
+    if (totalBytes > 1024 * 1024) throw new RangeError("executable arguments exceed 1 MiB");
+    return entry;
+  });
+}
 
 function terminateCommandTree(child, force) {
   if (!child?.pid) return;
@@ -94,16 +115,14 @@ function capturedResult(code, stdout, stderr, extraStderr = "") {
 
 function findWranglerCommand() {
   const suffix = process.platform === "win32" ? ".cmd" : "";
-  const local = path.join(packageRoot, "node_modules", ".bin", `wrangler${suffix}`);
-  if (existsSync(local)) return { cmd: local, argsPrefix: [] };
-  throw new Error("Wrangler dependency is not installed. Run `npm install` in the package/source directory and retry.");
+  return { cmd: path.join(packageRoot, "node_modules", ".bin", `wrangler${suffix}`), argsPrefix: [] };
 }
 
 export async function runWrangler(args, options = {}) {
   const wrangler = findWranglerCommand();
   const operation = String(args[0] || "");
   const timeoutMs = options.timeoutMs ?? (operation === "login" || operation === "deploy" ? 10 * 60 * 1000 : 2 * 60 * 1000);
-  return run(wrangler.cmd, [...wrangler.argsPrefix, ...args], { cwd: packageRoot, timeoutMs, ...options });
+  return runExecutable(wrangler.cmd, [...wrangler.argsPrefix, ...args], { cwd: packageRoot, timeoutMs, ...options });
 }
 
 export function workspaceShellCommand(command) {

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, chmodSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,7 @@ import serverMetadata from "../shared/server-metadata.json" with { type: "json" 
 import { replaceFileSync } from "./atomic-fs.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
+import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const appName = String(serverMetadata.name);
@@ -401,28 +402,11 @@ function boundedPositiveInteger(value, fallback) {
 }
 
 function readBoundedUtf8(filePath, maxBytes, label) {
-  const pathInfo = lstatSync(filePath);
-  if (pathInfo.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
-  const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
-  const fd = openSync(filePath, Number(fsConstants.O_RDONLY) | noFollow);
+  const buffer = readBoundedRegularFileSync(filePath, maxBytes, label);
   try {
-    const info = fstatSync(fd);
-    if (!info.isFile()) throw new Error(`${label} is not a regular file`);
-    if (info.size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
-    const buffer = Buffer.alloc(info.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const count = readSync(fd, buffer, offset, buffer.length - offset, offset);
-      if (count === 0) break;
-      offset += count;
-    }
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
-    } catch {
-      throw new Error(`${label} is not valid UTF-8`);
-    }
-  } finally {
-    closeSync(fd);
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    throw new Error(`${label} is not valid UTF-8`);
   }
 }
 
@@ -511,31 +495,46 @@ function looksLikeSourceTree(root) {
 }
 
 function stateRootMatchesRecordedWorkspace(root) {
-  const config = path.join(root, "config.json");
-  if (existsSync(config)) {
-    try {
-      const value = JSON.parse(readBoundedUtf8(config, MAX_STATE_JSON_BYTES, "config JSON"));
-      if (typeof value?.selectedWorkspace === "string" && sameWorkspaceIdentity(value.selectedWorkspace, root)) return true;
-    } catch {}
-  }
+  const config = readOptionalRemovalJson(path.join(root, "config.json"), "state-root config");
+  if (typeof config?.selectedWorkspace === "string" && sameWorkspaceIdentity(config.selectedWorkspace, root)) return true;
+
   const profiles = path.join(root, "profiles");
-  if (!existsSync(profiles)) return false;
+  let entries;
   try {
-    for (const entry of readdirSync(profiles, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const profileDir = path.join(profiles, entry.name);
-      const stateFile = path.join(profileDir, "state.json");
-      if (existsSync(stateFile)) {
-        try {
-          const value = JSON.parse(readBoundedUtf8(stateFile, MAX_STATE_JSON_BYTES, "state JSON"));
-          if (typeof value?.workspace?.path === "string" && sameWorkspaceIdentity(value.workspace.path, root)) return true;
-        } catch {}
-      }
-      const owner = readDaemonLockOwner(path.join(profileDir, "daemon.lock"));
-      if (typeof owner?.workspace === "string" && sameWorkspaceIdentity(owner.workspace, root)) return true;
-    }
-  } catch {}
+    entries = readdirSync(profiles, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw new Error("could not inspect state-root profiles before removal", { cause: error });
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const profileDir = path.join(profiles, entry.name);
+    const state = readOptionalRemovalJson(path.join(profileDir, "state.json"), "profile state");
+    if (typeof state?.workspace?.path === "string" && sameWorkspaceIdentity(state.workspace.path, root)) return true;
+    const owner = readOptionalRemovalJson(path.join(profileDir, "daemon.lock"), "daemon lock");
+    if (typeof owner?.workspace === "string" && sameWorkspaceIdentity(owner.workspace, root)) return true;
+  }
   return false;
+}
+
+function readOptionalRemovalJson(file, label) {
+  let text;
+  try {
+    text = readBoundedUtf8(file, MAX_STATE_JSON_BYTES, label);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
+    throw new Error(`${label} could not be verified before state removal`, { cause: error });
+  }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${label} is not valid JSON; refusing state removal`, { cause: error });
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must contain a JSON object; refusing state removal`);
+  }
+  return value;
 }
 
 function atomicWriteJson(filePath, value) {
@@ -595,21 +594,12 @@ function randomToken(prefix) {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
 }
 
-function sha256(value) {
-  return createHash("sha256").update(String(value)).digest("hex");
-}
-
-
-export function ensureOwnerOnlyDir(dir) {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { chmodSync(dir, 0o700); } catch {}
+export function ensureOwnerOnlyDir(dir, options = {}) {
+  return ensureOwnerOnlyDirectorySync(dir, options);
 }
 
 export function ownerOnlyFile(filePath) {
-  const info = lstatSync(filePath);
-  if (info.isSymbolicLink()) throw new Error(`owner-only file must not be a symbolic link: ${filePath}`);
-  if (!info.isFile()) throw new Error(`owner-only path is not a regular file: ${filePath}`);
-  try { chmodSync(filePath, 0o600); } catch {}
+  chmodRegularFileSync(filePath, 0o600, "owner-only path");
 }
 
 export function redactState(state) {

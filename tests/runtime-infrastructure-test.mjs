@@ -8,9 +8,12 @@ import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs"
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { workspaceShellCommand } from "../src/local/shell.mjs";
+import { LocalRuntime } from "../src/local/runtime.mjs";
 
 await testCallRegistry();
 await testToolExecutor();
+await testToolExecutorConcurrency();
+testTerminalDeliveryFailure();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
 testErrors();
@@ -86,6 +89,56 @@ async function testToolExecutor() {
   ], async () => { order.push("handler"); return true; });
   await pipeline({});
   assert(order.join(",") === "a-before,b-before,handler,b-after,a-after", "middleware composition order is invalid");
+}
+
+async function testToolExecutorConcurrency() {
+  let releaseBlocked;
+  let markStarted;
+  const blocked = new Promise((resolve) => { releaseBlocked = resolve; });
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const registry = new CallRegistry({ maximum: 4 });
+  const executor = new ToolExecutor({
+    handlers: {
+      blocked: async () => {
+        markStarted();
+        await blocked;
+        return "blocked-complete";
+      },
+      fast: async () => "fast-complete",
+    },
+    policyGate: { assert() {} },
+    accountAccessGate: { assert() {} },
+    callRegistry: registry,
+    observability: new RuntimeObservability(),
+    logger: { event() {} },
+  });
+
+  const first = executor.execute("blocked", {}, { callId: "concurrent-first", origin: "relay", authorization: { role: "owner" } });
+  await started;
+  assert(registry.snapshot().active === 1, "blocked tool was not registered as active");
+  const second = await Promise.race([
+    executor.execute("fast", {}, { callId: "concurrent-second", origin: "relay", authorization: { role: "owner" } }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("independent tool call was serialized behind another call")), 250)),
+  ]);
+  assert(second === "fast-complete", "concurrent tool returned the wrong result");
+  assert(registry.snapshot().active === 1, "completing one concurrent call corrupted the other lifecycle");
+  releaseBlocked();
+  assert(await first === "blocked-complete", "blocked concurrent tool did not resume");
+  assert(registry.snapshot().active === 0, "concurrent tool calls leaked lifecycle state");
+}
+
+function testTerminalDeliveryFailure() {
+  let interrupted = "";
+  const events = [];
+  const runtime = {
+    send() { return false; },
+    relay: { interrupt(category) { interrupted = category; return true; } },
+    logger: { event(level, name, fields) { events.push({ level, name, fields }); } },
+  };
+  const delivered = LocalRuntime.prototype.deliverRelayToolResult.call(runtime, { id: "call_terminal_delivery", ok: true });
+  assert(delivered === false, "failed terminal delivery was reported as successful");
+  assert(interrupted === "relay_transport_error", "failed terminal delivery did not invalidate the relay transport");
+  assert(events.some((event) => event.name === "relay.tool_result.delivery_failed"), "failed terminal delivery was not observable");
 }
 
 async function testProcessCancellationSettlesBeforeClose() {

@@ -7,7 +7,7 @@ export function replaceFileSync(source, target, options = {}) {
   const rename = typeof options.rename === "function" ? options.rename : renameSync;
   const sleep = typeof options.sleep === "function" ? options.sleep : sleepSync;
   const random = typeof options.random === "function" ? options.random : Math.random;
-  const attempts = clampInteger(options.attempts, 16, 1, 64);
+  const attempts = clampInteger(options.attempts, 32, 1, 64);
   const baseDelayMs = clampInteger(options.baseDelayMs, 15, 0, 1000);
   const maxDelayMs = Math.max(baseDelayMs, clampInteger(options.maxDelayMs, 250, 0, 2000));
   let lastError;

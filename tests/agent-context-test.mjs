@@ -113,6 +113,7 @@ Follow the sample workflow.
     const context = await runtime.executeTool("agent_context", { path: "packages/example" });
     assert(context.scope_root === ".", `unexpected scope root: ${context.scope_root}`);
     assert(context.builtin_instructions?.content.includes("Make the smallest coherent change"), "default working agreements were not injected");
+    assert(context.builtin_instructions?.content.includes("never call a hosted GitHub connector or ChatGPT GitHub plugin") && context.builtin_instructions.content.includes("stop and report the boundary"), "default working agreements omitted the fail-closed local GitHub control-plane rule");
     assert(context.automatic_project_context?.content.includes("npm run check"), "automatic project context omitted declared package scripts");
     assert(context.automatic_project_context?.content.includes("package-lock.json") && context.automatic_project_context?.content.includes(".github/workflows/ci.yml"), "automatic project context omitted lockfile or CI facts");
     assert(context.automatic_project_context?.content.includes(".node-version") && context.automatic_project_context?.content.includes("26.5.0"), "automatic project context did not parse a bounded runtime-version hint");

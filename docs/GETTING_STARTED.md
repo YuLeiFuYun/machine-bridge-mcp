@@ -305,6 +305,9 @@ Do not point two logical trust domains at one broad parent directory merely to r
 
 ## 13. Upgrade
 
+Version 1 supports only MCP protocol `2025-11-25`; upgrade or reconnect clients that still request an older date. The current 0.18.x state schema remains valid and should be preserved.
+
+
 Repeat the isolated global installation, then start Machine Bridge in the target workspace:
 
 ```sh

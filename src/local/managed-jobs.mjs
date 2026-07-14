@@ -1,15 +1,15 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { closeSync, constants as fsConstants, existsSync, ftruncateSync, lstatSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMs } from "./process-identity.mjs";
-import { readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
+import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError } from "./errors.mjs";
-import { inspectResourceFile, normalizeResourceRegistry, publicResourceRegistry, validatePlan, validateResourceName } from "./managed-job-plan.mjs";
+import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./managed-job-plan.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { clampInteger } from "./numbers.mjs";
 
@@ -120,7 +120,7 @@ export class ManagedJobManager {
       status.status = "queued";
       status.updated_at = new Date().toISOString();
       status.approved_at = status.updated_at;
-      status.approval = localOperator ? "local-operator" : "mcp";
+      status.approval = "local-operator";
       status.cleanup_guarantee = "best-effort-finally-and-recovery";
       atomicWriteJson(statusFile, status, 256 * 1024);
       try {
@@ -589,22 +589,14 @@ function pidLockOwner(pid, startedAtMs) {
   };
 }
 
-function readPidLockOwner(file) {
-  return readPidLockSnapshot(file)?.owner || null;
-}
-
 function readPidLockSnapshot(file) {
   let info;
   try { info = lstatSync(file); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
   if (info.isSymbolicLink() || !info.isFile()) throw new Error("job lock must be a regular non-symbolic-link file");
   let owner = null;
   try {
-    const text = readBoundedFile(file, 1024).toString("utf8").trim();
-    if (/^\d+$/.test(text)) owner = { pid: Number(text), startedAt: new Date(info.mtimeMs).toISOString() };
-    else {
-      const parsed = JSON.parse(text);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
-    }
+    const parsed = JSON.parse(readBoundedFile(file, 1024).toString("utf8").trim());
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
   } catch (error) {
     if (error?.code === "ENOENT") return null;
   }
@@ -780,34 +772,27 @@ function readBoundedFile(file, maxBytes) {
 }
 
 function openPrivateAppendFile(file) {
-  if (existsSync(file)) {
-    const info = lstatSync(file);
-    if (info.isSymbolicLink() || !info.isFile()) throw new Error("runner diagnostic path must be a regular file and not a symbolic link");
-  }
-  const flags = Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND) | Number(fsConstants.O_NOFOLLOW || 0);
-  const fd = openSync(file, flags, 0o600);
-  try {
-    if (!fstatSync(fd).isFile()) throw new Error("runner diagnostic path is not a regular file");
-    chmodSync(file, 0o600);
-    return fd;
-  } catch (error) {
-    closeSync(fd);
-    throw error;
-  }
+  return openRegularFileSync(
+    file,
+    Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND),
+    { label: "runner diagnostic path", mode: 0o600, chmod: 0o600 },
+  ).fd;
 }
 
 function trimDiagnosticFile(file, maxBytes = 64 * 1024, keepBytes = 32 * 1024) {
   let fd;
   try {
-    const flags = Number(fsConstants.O_RDWR) | Number(fsConstants.O_NOFOLLOW || 0);
-    fd = openSync(file, flags);
-    const info = fstatSync(fd);
-    if (!info.isFile() || info.size <= maxBytes) return;
-    const length = Math.min(keepBytes, info.size);
+    const opened = openRegularFileSync(file, fsConstants.O_RDWR, {
+      label: "runner diagnostic path",
+      chmod: 0o600,
+    });
+    fd = opened.fd;
+    if (opened.info.size <= maxBytes) return;
+    const length = Math.min(keepBytes, opened.info.size);
     const buffer = Buffer.alloc(length);
     let offset = 0;
     while (offset < length) {
-      const count = readSync(fd, buffer, offset, length - offset, info.size - length + offset);
+      const count = readSync(fd, buffer, offset, length - offset, opened.info.size - length + offset);
       if (!count) break;
       offset += count;
     }
@@ -816,18 +801,15 @@ function trimDiagnosticFile(file, maxBytes = 64 * 1024, keepBytes = 32 * 1024) {
     if (newline >= 0 && newline < tail.length - 1) tail = tail.subarray(newline + 1);
     ftruncateSync(fd, 0);
     if (tail.length) writeSync(fd, tail, 0, tail.length, 0);
-    try { chmodSync(file, 0o600); } catch {}
-  } catch {
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   } finally {
-    if (fd !== undefined) try { closeSync(fd); } catch {}
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch {
+        // Descriptor close is best effort after the trim result is already determined.
+      }
+    }
   }
-}
-
-function realpathFile(path) {
-  const input = resolve(path);
-  const linkInfo = lstatSync(input);
-  if (!linkInfo.isFile() && !linkInfo.isSymbolicLink()) throw new Error("resource path is not a regular file");
-  return realpathSync.native ? realpathSync.native(input) : realpathSync(input);
 }
 
 function resourceErrorClass(error) {
@@ -842,10 +824,4 @@ function resourceErrorClass(error) {
 
 function safeReadDir(dir) {
   return readdirSync(dir, { withFileTypes: true });
-}
-
-function boundedString(value, maxBytes, label) {
-  if (typeof value !== "string" || value.includes("\0")) throw new Error(`${label} must be a string without NUL bytes`);
-  if (Buffer.byteLength(value) > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
-  return value;
 }

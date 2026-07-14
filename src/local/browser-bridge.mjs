@@ -5,11 +5,11 @@ import { WebSocket, WebSocketServer } from "ws";
 import { createToolAuthorizer } from "./policy.mjs";
 import { assertStateMaintenanceAvailable, packageRoot } from "./state.mjs";
 import {
-  BROWSER_EXTENSION_PROTOCOL, EXPECTED_EXTENSION_VERSION, MAX_BROWSER_MESSAGE_BYTES, REQUIRED_EXTENSION_CAPABILITIES,
+  BROWSER_EXTENSION_PROTOCOL, EXPECTED_EXTENSION_VERSION, MAX_BROWSER_MESSAGE_BYTES,
   closeProtocolSocket, normalizeCompatibleExtensionInfo, parseBrowserSocketMessage, parseExtensionHello, safeSocketSend,
 } from "./browser-extension-protocol.mjs";
 import {
-  DEFAULT_BROWSER_PORT, isAllowedExtensionOrigin, isAllowedLoopbackHost, loadOrCreatePairing,
+  isAllowedExtensionOrigin, isAllowedLoopbackHost, loadOrCreatePairing,
   pairingHtml, savePairing, securityHeaders, sendJson,
 } from "./browser-pairing-store.mjs";
 import {

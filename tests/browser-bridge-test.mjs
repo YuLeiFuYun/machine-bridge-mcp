@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -7,6 +7,7 @@ import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const root = await mkdtemp(join(tmpdir(), "mbm-browser-bridge-"));
+if (process.platform !== "win32") await chmod(root, 0o777);
 const policy = { profile: "full", execMode: "shell", unrestrictedPaths: true };
 const common = {
   policy,
@@ -29,6 +30,9 @@ let heldRequestId = "";
 let cancelledRequestId = "";
 try {
   const initial = await owner.status();
+  if (process.platform !== "win32" && ((await stat(root)).mode & 0o777) !== 0o700) {
+    throw new Error("browser pairing state root was not restricted to 0700");
+  }
   assert(initial.broker_role === "owner", "first browser bridge did not become owner");
   assert(initial.connected === false, "browser bridge unexpectedly reported an extension");
   assert(initial.semantic_snapshot_refs === true && initial.actionability_waits === true && initial.trusted_input === true, "browser status omitted production interaction capabilities");

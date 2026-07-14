@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import { LocalRuntime } from "./runtime.mjs";
 import { generateSshKeyPair } from "./ssh-key.mjs";
-import { run } from "./shell.mjs";
+import { runExecutable } from "./shell.mjs";
 import { allToolNames, assertCanonicalFullPolicy, policyProfile } from "./tools.mjs";
 
 const TERMINAL_JOB_STATES = new Set([
@@ -90,7 +90,7 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
     }));
 
     const nullConfig = process.platform === "win32" ? "NUL" : "/dev/null";
-    const sshConfig = await run("ssh", ["-F", nullConfig, "-G", "localhost"], {
+    const sshConfig = await runExecutable("ssh", ["-F", nullConfig, "-G", "localhost"], {
       capture: true,
       allowFailure: true,
       timeoutMs: 15_000,
@@ -98,14 +98,14 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
     });
     checks.push(check("ssh-client", sshConfig.code === 0));
 
-    const gcloud = await run("gcloud", ["--version"], {
+    const gcloud = await runExecutable("gcloud", ["--version"], {
       capture: true,
       allowFailure: true,
       timeoutMs: 30_000,
       maxOutputBytes: 64 * 1024,
     });
     const osLoginHelp = gcloud.code === 0
-      ? await run("gcloud", ["help", "compute", "os-login", "ssh-keys", "add"], {
+      ? await runExecutable("gcloud", ["help", "compute", "os-login", "ssh-keys", "add"], {
           capture: true,
           allowFailure: true,
           timeoutMs: 30_000,
@@ -119,7 +119,7 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
 
     const sudo = process.platform === "win32"
       ? { code: 0, skipped: true }
-      : await run("sudo", ["-n", "true"], {
+      : await runExecutable("sudo", ["-n", "true"], {
           capture: true,
           allowFailure: true,
           timeoutMs: 10_000,

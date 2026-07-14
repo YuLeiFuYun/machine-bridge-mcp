@@ -1,10 +1,10 @@
-import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, ftruncateSync, lstatSync, mkdirSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { run } from "./shell.mjs";
-import { ensureOwnerOnlyDir, expandHome, ownerOnlyFile } from "./state.mjs";
+import { runExecutable } from "./shell.mjs";
+import { ensureOwnerOnlyDir, expandHome } from "./state.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { waitForInactiveStatus } from "./service-convergence.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
@@ -13,7 +13,11 @@ const SERVICE_COMMAND_OUTPUT_BYTES = 64 * 1024;
 const AUTOSTART_LOG_SCHEMA_VERSION = 3;
 
 function serviceRun(command, args) {
-  return run(command, args, {
+  return runServiceCommand(command, args);
+}
+
+export function runServiceCommand(command, args, execute = runExecutable) {
+  return execute(command, args, {
     capture: true,
     allowFailure: true,
     maxOutputBytes: SERVICE_COMMAND_OUTPUT_BYTES,
@@ -34,9 +38,9 @@ export async function uninstallAutostart({ stateRoot, logger = console } = {}) {
 }
 
 export async function autostartStatus({ logger = console } = {}) {
-  if (process.platform === "darwin") return statusLaunchd(logger);
-  if (process.platform === "win32") return statusWindowsTask(logger);
-  return statusSystemd(logger);
+  if (process.platform === "darwin") return statusLaunchd();
+  if (process.platform === "win32") return statusWindowsTask();
+  return statusSystemd();
 }
 
 export async function startAutostart({ logger = console } = {}) {
@@ -82,21 +86,18 @@ export function trimAutostartLogs(stateRoot, options = {}) {
     const file = path.join(logs, name);
     let fd;
     try {
-      if (!existsSync(file)) continue;
-      const before = lstatSync(file);
-      if (before.isSymbolicLink() || !before.isFile()) continue;
-      const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
-      fd = openSync(file, Number(fsConstants.O_RDWR) | noFollow);
-      const info = fstatSync(fd);
-      if (!info.isFile()) continue;
+      const opened = openRegularFileSync(file, fsConstants.O_RDWR, {
+        label: "autostart log path",
+        chmod: 0o600,
+      });
+      fd = opened.fd;
       if (reset) {
         ftruncateSync(fd, 0);
-      } else if (info.size > maxBytes) {
-        const tail = readLogTail(fd, info.size, keepBytes);
+      } else if (opened.info.size > maxBytes) {
+        const tail = readLogTail(fd, opened.info.size, keepBytes);
         ftruncateSync(fd, 0);
         if (tail.length) writeSync(fd, tail, 0, tail.length, 0);
       }
-      try { chmodSync(file, 0o600); } catch {}
     } catch {
       // Log maintenance is best effort and must not stop daemon startup.
     } finally {
@@ -213,28 +214,17 @@ export function daemonArgs(spec) {
 }
 
 function ensurePrivateLogFile(file) {
-  if (existsSync(file)) {
-    const info = lstatSync(file);
-    if (info.isSymbolicLink() || !info.isFile()) throw new Error("autostart log path must be a regular non-symbolic-link file");
-  }
-  const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
-  const fd = openSync(file, Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND) | noFollow, 0o600);
-  try {
-    if (!fstatSync(fd).isFile()) throw new Error("autostart log path is not a regular file");
-  } finally {
-    closeSync(fd);
-  }
-  ownerOnlyFile(file);
+  const opened = openRegularFileSync(
+    file,
+    Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND),
+    { label: "autostart log path", mode: 0o600, chmod: 0o600 },
+  );
+  closeSync(opened.fd);
 }
 
 function writePrivateServiceFile(file, content) {
   mkdirSync(path.dirname(file), { recursive: true });
-  if (existsSync(file)) {
-    const info = lstatSync(file);
-    if (info.isSymbolicLink() || !info.isFile()) throw new Error("autostart configuration path must be a regular non-symbolic-link file");
-  }
   replaceFileAtomicallySync(file, content, { mode: 0o600 });
-  ownerOnlyFile(file);
 }
 
 function launchdPlistPath() {

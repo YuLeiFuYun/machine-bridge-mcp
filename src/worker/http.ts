@@ -43,15 +43,14 @@ export function authorizationRedirectLocation(redirectUri: string, code: string,
   return location;
 }
 
-export function json(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-    },
+export function json(value: unknown, status = 200, extraHeaders: HeadersInit = {}): Response {
+  const headers = new Headers({
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
   });
+  for (const [name, headerValue] of new Headers(extraHeaders)) headers.set(name, headerValue);
+  return new Response(JSON.stringify(value), { status, headers });
 }
 
 export function html(value: string, status = 200): Response {

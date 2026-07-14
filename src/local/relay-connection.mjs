@@ -118,6 +118,13 @@ export class RelayConnection {
     return this.sendOnSocket(this.socket, value);
   }
 
+  interrupt(category = "relay_transport_error") {
+    if (this.closed || !this.socket) return false;
+    this.pendingCloseCategory = String(category || "relay_transport_error");
+    terminateSocket(this.socket);
+    return true;
+  }
+
   observeWelcome(message = {}) {
     const socket = this.socket;
     if (this.closed || this.ready || !this.isSocketOpen(socket)) return false;

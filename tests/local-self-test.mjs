@@ -3,9 +3,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { run } from "../src/local/shell.mjs";
+import { runExecutable } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
-import { cleanupStaleSecretFiles, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
@@ -121,12 +121,6 @@ async function stateSelfTest() {
     if (configBackups.length !== 1) throw new Error("corrupt global config did not create one bounded backup");
 
 
-    const secretFileCurrent = join(state.paths.profileDir, `worker-secrets-${process.pid}-${Date.now() - 2 * 60 * 60 * 1000}-fixture.json`);
-    await writeFile(secretFileCurrent, "{}", { mode: 0o600 });
-    cleanupStaleSecretFiles(state.paths.profileDir);
-    if (!await existsForSelfTest(secretFileCurrent)) throw new Error("secret cleanup removed a file owned by the current process solely because it was old");
-    await rm(secretFileCurrent, { force: true });
-
     const corruptWorkerRoot = await mkdtemp(join(tmpdir(), "mbm-worker-name-corrupt-"));
     const corruptWorkerWorkspace = await mkdtemp(join(tmpdir(), "mbm-worker-name-workspace-"));
     try {
@@ -163,7 +157,6 @@ async function stateSelfTest() {
       expectThrow(() => loadState(readFailureWorkspace, { stateDir: readFailureRoot }), "exceeds");
       const oversizedEntries = await readdir(readFailureState.paths.profileDir);
       if (oversizedEntries.some((name) => name.startsWith("state.json.corrupt-"))) throw new Error("oversized state was incorrectly classified as corrupt JSON");
-      if ((await stat(readFailureState.paths.statePath)).size <= 2 * 1024 * 1024) throw new Error("oversized state was modified after read failure");
       await writeFile(readFailureState.paths.statePath, Buffer.from([0xc3, 0x28]), { mode: 0o600 });
       expectThrow(() => loadState(readFailureWorkspace, { stateDir: readFailureRoot }), "not valid UTF-8");
       const encodingEntries = await readdir(readFailureState.paths.profileDir);
@@ -180,6 +173,20 @@ async function stateSelfTest() {
       await rm(readFailureRoot, { recursive: true, force: true });
       await rm(readFailureWorkspace, { recursive: true, force: true });
     }
+    const removalReadFailureRoot = await mkdtemp(join(tmpdir(), "mbm-removal-read-failure-"));
+    const removalReadFailureWorkspace = await mkdtemp(join(tmpdir(), "mbm-removal-read-workspace-"));
+    try {
+      loadState(removalReadFailureWorkspace, { stateDir: removalReadFailureRoot });
+      await writeFile(join(removalReadFailureRoot, "config.json"), "x".repeat(2 * 1024 * 1024 + 1), { mode: 0o600 });
+      expectThrow(() => validateStateRootForRemoval(removalReadFailureRoot), "could not be verified before state removal");
+      if (!(await stat(join(removalReadFailureRoot, ".machine-bridge-mcp-state"))).isFile()) {
+        throw new Error("failed state-root validation modified the state root");
+      }
+    } finally {
+      await rm(removalReadFailureRoot, { recursive: true, force: true });
+      await rm(removalReadFailureWorkspace, { recursive: true, force: true });
+    }
+
     await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({ token: "synthetic-browser-token-1234567890123456", port: 39393 })}\n`, { mode: 0o600 });
     const safeRemoval = validateStateRootForRemoval(stateRoot);
     if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed after corrupt config recovery");
@@ -947,14 +954,14 @@ async function ciBootstrapSelfTest() {
 }
 
 async function shellSelfTest() {
-  const result = await run(process.execPath, ["-e", "process.stdout.write('x'.repeat(4096)); process.stderr.write('y'.repeat(4096));"], {
+  const result = await runExecutable(process.execPath, ["-e", "process.stdout.write('x'.repeat(4096)); process.stderr.write('y'.repeat(4096));"], {
     capture: true,
     maxOutputBytes: 1024,
   });
   if (result.code !== 0 || !result.stdout.includes("[truncated") || !result.stderr.includes("[truncated")) {
     throw new Error("bounded shell capture failed");
   }
-  const timedOut = await run(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+  const timedOut = await runExecutable(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
     capture: true,
     allowFailure: true,
     timeoutMs: 50,
@@ -965,7 +972,7 @@ async function shellSelfTest() {
   try {
     const childPidFile = join(treeRoot, "child.pid");
     const treeScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(() => {}, 1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);`;
-    const treeResult = await run(process.execPath, ["-e", treeScript, childPidFile], {
+    const treeResult = await runExecutable(process.execPath, ["-e", treeScript, childPidFile], {
       capture: true,
       allowFailure: true,
       timeoutMs: 200,

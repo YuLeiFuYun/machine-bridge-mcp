@@ -26,7 +26,7 @@ Every release-relevant change advances the package version and is completed by a
 
 ### Local GitHub control plane
 
-Repository automation must use local `git`, `gh`, and `gh api` commands executed through Machine Bridge for every GitHub read or mutation. A hosted GitHub connector or ChatGPT GitHub plugin must not be used. Mixing control planes can produce stale refs, unreviewed remote-only commits, ambiguous credentials, and recovery paths that cannot be reproduced from the maintainer's machine. Fetch before mutation and verify the remote result afterward.
+Before any GitHub read or mutation, repository automation must load the effective project instructions through Machine Bridge. It must then use local `git`, `gh`, and `gh api` commands executed through Machine Bridge for every GitHub read or mutation. A hosted GitHub connector, ChatGPT GitHub plugin, browser-side GitHub integration, or second remote control plane must not be used. If Machine Bridge or the local authenticated CLI is unavailable, the operation stops and reports that boundary rather than falling back. Mixing control planes can produce stale refs, unreviewed remote-only commits, ambiguous credentials, and recovery paths that cannot be reproduced from the maintainer's machine. Fetch before mutation and verify the remote result afterward.
 
 ## 2. Commits and pull requests
 

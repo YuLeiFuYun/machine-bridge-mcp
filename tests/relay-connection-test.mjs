@@ -223,6 +223,32 @@ errorScheduler.advance(5);
 assert(errorSockets.length === 2, "relay transport error did not schedule a reconnect");
 errorConnection.stop();
 
+const deliveryScheduler = new ManualScheduler();
+const deliverySockets = [];
+const deliveryConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      deliverySockets.push(this);
+    }
+  },
+  scheduler: deliveryScheduler,
+  now: () => deliveryScheduler.now,
+  reconnectDelay: () => 5,
+  outageWarnAfterMs: 100,
+});
+deliveryConnection.start();
+deliverySockets[0].open();
+deliveryConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+assert(deliveryConnection.interrupt("relay_transport_error"), "terminal-delivery failure could not interrupt the active relay");
+assert(deliverySockets[0].terminated, "terminal-delivery failure left the ambiguous relay socket open");
+deliveryScheduler.advance(5);
+assert(deliverySockets.length === 2, "terminal-delivery failure did not enter reconnect backoff");
+deliveryConnection.stop();
+
 const constructorScheduler = new ManualScheduler();
 let constructorAttempts = 0;
 const constructorSockets = [];

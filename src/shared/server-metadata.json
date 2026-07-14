@@ -2,13 +2,12 @@
   "name": "machine-bridge-mcp",
   "protocolVersion": "2025-11-25",
   "supportedProtocolVersions": [
-    "2025-11-25",
-    "2025-06-18",
-    "2025-03-26"
+    "2025-11-25"
   ],
   "instructions": [
     "You are connected to a local workspace through machine-bridge-mcp.",
     "At the start of each substantive local task, call resolve_task_capabilities with the current user request and target path. Apply the returned session/project instructions, follow the automatically selected relevant skill when present, and prefer registered local commands for repeatable workflows.",
+    "Before any GitHub read or mutation, apply the effective project control-plane instructions. When a project requires local git, gh, and gh api through Machine Bridge, never use a hosted GitHub connector or ChatGPT GitHub plugin; if the local control plane is unavailable, stop rather than substitute another GitHub tool.",
     "The MCP initialize response automatically appends conservative built-in working agreements, bounded automatic project facts, the configured global model_instructions_file, and the current root instruction chain when the local daemon is reachable; session_bootstrap exposes the same material explicitly.",
     "For existing-browser work, use the paired Machine Bridge browser extension. It operates the user current Chromium profile and tabs, can inspect DOM/source, fill complex forms, and inject sensitive text from registered local resources without returning those values.",
     "For local application work, use structured application discovery and Accessibility actions. Arbitrary caller-supplied AppleScript or JavaScript is intentionally not accepted.",

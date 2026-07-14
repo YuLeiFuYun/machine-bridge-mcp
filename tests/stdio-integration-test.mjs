@@ -6,6 +6,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { loadState } from "../src/local/state.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temp = await mkdtemp(join(tmpdir(), "mbm-stdio-test-"));
@@ -58,6 +59,7 @@ try {
   assert(initialized.result?.protocolVersion === "2025-11-25", "stdio protocol negotiation failed");
   assert(initialized.result?.capabilities?.tools, "stdio initialize omitted tools capability");
   assert(initialized.result?.instructions?.includes("Machine Bridge default working agreements"), "stdio initialize omitted built-in working agreements");
+  assert(initialized.result?.instructions?.includes("never call a hosted GitHub connector or ChatGPT GitHub plugin") && initialized.result.instructions.includes("stop and report the boundary"), "stdio initialize omitted the fail-closed local GitHub control-plane rule");
   assert(initialized.result?.instructions?.includes("Automatic project context") && initialized.result?.instructions?.includes("npm run check"), "stdio initialize omitted automatic project facts");
   assert(!initialized.result?.instructions?.includes("private-script-body.mjs"), "stdio initialize exposed a package script body");
   assert(initialized.result?.instructions?.includes("stdio global model instructions"), "stdio initialize did not inject model_instructions_file into the session context");
@@ -156,9 +158,11 @@ try {
   const generatedContent = generatedKey.result?.structuredContent;
   assert(generatedKey.result?.isError === false && generatedContent?.registered === true && generatedContent?.private_key_content_exposed === false, "generate_ssh_key_resource failed or exposed private content");
   assert(generatedContent?.paths_exposed === false && !("private_key_path" in generatedContent) && !JSON.stringify(generatedKey.result).includes(generatedKeyPath), "generate_ssh_key_resource exposed local paths by default");
-  assert((await stat(generatedKeyPath)).isFile() && (await stat(`${generatedKeyPath}.pub`)).isFile(), "generate_ssh_key_resource did not create a key pair");
-  if (process.platform !== "win32") assert(((await stat(generatedKeyPath)).mode & 0o777) === 0o600, "generated MCP private key mode is not 0600");
-  const privateBytes = await readFile(generatedKeyPath);
+  const privateSnapshot = readBoundedRegularFileWithInfoSync(generatedKeyPath, 1024 * 1024, "generated SSH private key");
+  const publicSnapshot = readBoundedRegularFileWithInfoSync(`${generatedKeyPath}.pub`, 64 * 1024, "generated SSH public key");
+  assert(privateSnapshot.info.isFile() && publicSnapshot.info.isFile(), "generate_ssh_key_resource did not create a key pair");
+  if (process.platform !== "win32") assert((privateSnapshot.info.mode & 0o777) === 0o600, "generated MCP private key mode is not 0600");
+  const privateBytes = privateSnapshot.buffer;
   assert(!JSON.stringify(generatedKey.result).includes(privateBytes.toString("base64")), "generate_ssh_key_resource returned encoded private key bytes");
   send({ jsonrpc: "2.0", id: 605, method: "tools/call", params: { name: "list_local_resources", arguments: {} } });
   const resourcesAfterGeneration = await responseFor(605);

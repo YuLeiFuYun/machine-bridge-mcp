@@ -1,8 +1,10 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, link, lstat, mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
-import { run } from "./shell.mjs";
+import { chmod, copyFile, link, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { tmpdir } from "node:os";
+import { runExecutable } from "./shell.mjs";
+import { chmodRegularFileSync, readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
 
 const KEY_TYPES = new Set(["ed25519", "rsa"]);
 
@@ -35,11 +37,10 @@ function normalizeKeyRequest(options) {
 }
 
 async function inspectExistingKeyFiles(privateKeyPath, publicKeyPath) {
-  const privateInfo = await safeLstat(privateKeyPath);
-  const publicInfo = await safeLstat(publicKeyPath);
-  if (privateInfo?.isSymbolicLink() || publicInfo?.isSymbolicLink()) throw new Error("SSH key path must not be a symbolic link");
-  if (!privateInfo && !publicInfo) return false;
-  if (!privateInfo?.isFile() || !publicInfo?.isFile()) throw new Error("SSH key pair is incomplete or not a pair of regular files");
+  const privateSnapshot = tryReadKeySnapshot(privateKeyPath, 1024 * 1024, "SSH private key");
+  const publicSnapshot = tryReadKeySnapshot(publicKeyPath, 64 * 1024, "SSH public key");
+  if (!privateSnapshot && !publicSnapshot) return false;
+  if (!privateSnapshot || !publicSnapshot) throw new Error("SSH key pair is incomplete or not a pair of regular files");
   return true;
 }
 
@@ -51,7 +52,7 @@ async function createSshKeyPair(request) {
     const args = ["-q", "-t", request.type];
     if (request.type === "rsa") args.push("-b", String(normalizeRsaBits(request.bits)));
     args.push("-N", "", "-f", tempPrivate, "-C", request.comment);
-    const generated = await run("ssh-keygen", args, { capture: true, timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+    const generated = await runExecutable("ssh-keygen", args, { capture: true, timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
     if (generated.code !== 0) throw new Error("ssh-keygen failed");
     await secureKeyModes(tempPrivate, tempPublic);
     await installNoReplace(tempPrivate, request.privateKeyPath);
@@ -70,37 +71,47 @@ async function createSshKeyPair(request) {
 }
 
 export async function inspectSshKeyPair(privateKeyPath, publicKeyPath = `${privateKeyPath}.pub`, created = false) {
-  const privateInfo = await stat(privateKeyPath);
-  const publicInfo = await stat(publicKeyPath);
-  if (!privateInfo.isFile() || !publicInfo.isFile()) throw new Error("SSH key pair is not composed of regular files");
-  const derived = await run("ssh-keygen", ["-y", "-P", "", "-f", privateKeyPath], {
-    capture: true,
-    allowFailure: true,
-    timeoutMs: 15_000,
-    maxOutputBytes: 64 * 1024,
-  });
-  if (derived.code !== 0) throw new Error("SSH private key cannot be used non-interactively or is invalid");
-  const publicLine = (await readFile(publicKeyPath, "utf8")).trim();
-  if (!/^(ssh-ed25519|ssh-rsa)\s+[A-Za-z0-9+/=]+(?:\s+.*)?$/.test(publicLine)) throw new Error("generated SSH public key is invalid");
-  const expectedFields = publicLine.split(/\s+/).slice(0, 2).join(" ");
-  const derivedFields = derived.stdout.trim().split(/\s+/).slice(0, 2).join(" ");
-  if (expectedFields !== derivedFields) throw new Error("SSH public key does not match the private key");
-  const fingerprint = await run("ssh-keygen", ["-lf", publicKeyPath, "-E", "sha256"], {
-    capture: true,
-    timeoutMs: 15_000,
-    maxOutputBytes: 64 * 1024,
-  });
-  const fingerprintValue = fingerprint.stdout.trim().split(/\s+/)[1] || "";
-  if (!/^SHA256:[A-Za-z0-9+/=]+$/.test(fingerprintValue)) throw new Error("SSH key fingerprint output is invalid");
-  return {
-    created,
-    privateKeyPath: resolve(privateKeyPath),
-    publicKeyPath: resolve(publicKeyPath),
-    privateMode: process.platform === "win32" ? null : `0${(privateInfo.mode & 0o777).toString(8)}`,
-    publicMode: process.platform === "win32" ? null : `0${(publicInfo.mode & 0o777).toString(8)}`,
-    fingerprint: fingerprintValue,
-    publicKeyType: publicLine.split(/\s+/, 1)[0],
-  };
+  const privateSnapshot = readKeySnapshot(privateKeyPath, 1024 * 1024, "SSH private key");
+  const publicSnapshot = readKeySnapshot(publicKeyPath, 64 * 1024, "SSH public key");
+  const inspectionRoot = await mkdtemp(join(tmpdir(), "machine-mcp-key-inspection-"));
+  const inspectionPrivate = join(inspectionRoot, "key");
+  const inspectionPublic = `${inspectionPrivate}.pub`;
+  try {
+    await writeFile(inspectionPrivate, privateSnapshot.buffer, { mode: 0o600, flag: "wx" });
+    await writeFile(inspectionPublic, publicSnapshot.buffer, { mode: 0o600, flag: "wx" });
+    const derived = await runExecutable("ssh-keygen", ["-y", "-P", "", "-f", inspectionPrivate], {
+      capture: true,
+      allowFailure: true,
+      timeoutMs: 15_000,
+      maxOutputBytes: 64 * 1024,
+    });
+    if (derived.code !== 0) throw new Error("SSH private key cannot be used non-interactively or is invalid");
+    const publicLine = new TextDecoder("utf-8", { fatal: true }).decode(publicSnapshot.buffer).trim();
+    if (!/^(ssh-ed25519|ssh-rsa)\s+[A-Za-z0-9+/=]+(?:\s+.*)?$/.test(publicLine)) throw new Error("generated SSH public key is invalid");
+    const expectedFields = publicLine.split(/\s+/).slice(0, 2).join(" ");
+    const derivedFields = derived.stdout.trim().split(/\s+/).slice(0, 2).join(" ");
+    if (expectedFields !== derivedFields) throw new Error("SSH public key does not match the private key");
+    const fingerprint = await runExecutable("ssh-keygen", ["-lf", inspectionPublic, "-E", "sha256"], {
+      capture: true,
+      timeoutMs: 15_000,
+      maxOutputBytes: 64 * 1024,
+    });
+    const fingerprintValue = fingerprint.stdout.trim().split(/\s+/)[1] || "";
+    if (!/^SHA256:[A-Za-z0-9+/=]+$/.test(fingerprintValue)) throw new Error("SSH key fingerprint output is invalid");
+    assertKeySnapshotCurrent(privateKeyPath, privateSnapshot, 1024 * 1024, "SSH private key");
+    assertKeySnapshotCurrent(publicKeyPath, publicSnapshot, 64 * 1024, "SSH public key");
+    return {
+      created,
+      privateKeyPath: resolve(privateKeyPath),
+      publicKeyPath: resolve(publicKeyPath),
+      privateMode: process.platform === "win32" ? null : `0${(privateSnapshot.info.mode & 0o777).toString(8)}`,
+      publicMode: process.platform === "win32" ? null : `0${(publicSnapshot.info.mode & 0o777).toString(8)}`,
+      fingerprint: fingerprintValue,
+      publicKeyType: publicLine.split(/\s+/, 1)[0],
+    };
+  } finally {
+    await rm(inspectionRoot, { recursive: true, force: true });
+  }
 }
 
 async function installNoReplace(source, target) {
@@ -120,15 +131,30 @@ async function installNoReplace(source, target) {
 
 async function secureKeyModes(privateKeyPath, publicKeyPath) {
   if (process.platform === "win32") return;
-  await chmod(privateKeyPath, 0o600);
-  await chmod(publicKeyPath, 0o644);
+  chmodRegularFileSync(privateKeyPath, 0o600, "SSH private key");
+  chmodRegularFileSync(publicKeyPath, 0o644, "SSH public key");
 }
 
-async function safeLstat(path) {
-  try { return await lstat(path); } catch (error) {
+function tryReadKeySnapshot(path, maxBytes, label) {
+  try { return readKeySnapshot(path, maxBytes, label); } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
+}
+
+function readKeySnapshot(path, maxBytes, label) {
+  return readBoundedRegularFileWithInfoSync(path, maxBytes, label);
+}
+
+function assertKeySnapshotCurrent(path, expected, maxBytes, label) {
+  const current = readKeySnapshot(path, maxBytes, label);
+  const sameIdentity = Number(current.info.dev) === Number(expected.info.dev)
+    && Number(current.info.ino) === Number(expected.info.ino)
+    && Number(current.info.size) === Number(expected.info.size)
+    && Number(current.info.mtimeMs) === Number(expected.info.mtimeMs);
+  const sameBytes = current.buffer.length === expected.buffer.length
+    && timingSafeEqual(current.buffer, expected.buffer);
+  if (!sameIdentity || !sameBytes) throw new Error(`${label} changed during inspection; retry`);
 }
 
 function boundedComment(value) {
