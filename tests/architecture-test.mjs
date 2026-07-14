@@ -223,7 +223,13 @@ for (const origin of ["https://chatgpt.com", "https://chat.openai.com", "https:/
   if (!workerHttpSource.includes(`"${origin}"`)) throw new Error(`Worker built-in browser origins omit ${origin}`);
 }
 if (!workerHttpSource.includes("BUILT_IN_BROWSER_ORIGIN_SET.has(origin)") || !workerHttpSource.includes("allowed.includes(origin)")) {
-  throw new Error("Worker browser-origin validation no longer combines built-in and configured exact origins");
+  throw new Error("Worker CORS validation no longer combines built-in and configured exact origins");
+}
+if (workerSource.includes("validateOrigin(request") || workerSource.includes('error: "origin_not_allowed"')) {
+  throw new Error("Worker actual requests are again being rejected solely by the Origin header");
+}
+if (!workerSource.includes('request.method === "OPTIONS"') || !workerSource.includes("corsPreflight(request, base, extraOrigins)")) {
+  throw new Error("Worker no longer gates browser CORS preflight through the exact-origin policy");
 }
 if (!cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
   throw new Error("browser CLI pairing state read is not bounded");

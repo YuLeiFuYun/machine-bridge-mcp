@@ -235,7 +235,7 @@ Removal first acquires a state-root maintenance lock that blocks new profile/sta
 
 OAuth metadata is pruned on access. Expired codes/tokens, old throttling records, and inactive clients without active credentials are removed. Source identities are deployment-keyed HMAC values, not stored source addresses or reversible unsalted hashes.
 
-Browser-origin validation accepts requests without an `Origin` header, the Worker's own origin, and a fixed first-party set for ChatGPT (`https://chatgpt.com`, `https://chat.openai.com`) and Grok (`https://grok.com`, `https://x.com`). `MBM_ALLOWED_ORIGINS` contributes optional exact comma-separated additions. It cannot remove the built-in origins, and wildcard or `null` origins are not accepted. Both preflight and actual requests use the same predicate.
+Browser-origin handling separates CORS response sharing from protocol authentication. Preflight succeeds only for the Worker's own origin, a fixed first-party set for ChatGPT (`https://chatgpt.com`, `https://chat.openai.com`) and Grok (`https://grok.com`, `https://x.com`), or optional exact comma-separated additions from `MBM_ALLOWED_ORIGINS`; wildcard and `null` origins are not granted CORS access. Actual requests are routed without using `Origin` as an authentication boundary, and `Access-Control-Allow-Origin` is added only when that exact predicate passes. This permits OAuth top-level navigation and form submission from opaque or client-specific containers while exact redirect/resource binding, PKCE, account credentials, bearer tokens, and private admin/daemon secrets enforce authority.
 
 ## Observability
 

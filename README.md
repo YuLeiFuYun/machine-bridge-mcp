@@ -138,7 +138,7 @@ MCP Server URL: https://<worker>.<account>.workers.dev/mcp
 
 During OAuth authorization, enter the name and password of a Machine Bridge account. The first start creates `owner` and prints its generated password once. Additional accounts are managed with `machine-mcp account`. The authorization flow uses PKCE S256, exact redirect/resource binding, expiring hashed access tokens, per-account version checks, and a deployment-wide token version for emergency bulk revocation.
 
-The Worker accepts the exact first-party browser origins used by ChatGPT (`https://chatgpt.com` and the legacy `https://chat.openai.com`) and Grok (`https://grok.com` and its X-hosted surface at `https://x.com`). Users do not need to run Wrangler or edit Cloudflare variables. `MBM_ALLOWED_ORIGINS` remains an operator-only, comma-separated extension point for other exact origins; it is additive and does not replace the built-in set. Wildcards and `null` are not accepted.
+The Worker grants browser CORS response access to the exact first-party origins used by ChatGPT (`https://chatgpt.com` and the legacy `https://chat.openai.com`) and Grok (`https://grok.com` and its X-hosted surface at `https://x.com`). Users do not need to run Wrangler or edit Cloudflare variables. `MBM_ALLOWED_ORIGINS` remains an operator-only, comma-separated extension point for other exact origins; it is additive and does not replace the built-in set. Wildcards and `null` do not receive CORS permission. Actual OAuth navigations and form submissions are not rejected solely because a browser container supplies an opaque or client-specific `Origin`; authorization still depends on exact redirect/resource binding, PKCE, account authentication, and bearer-token validation.
 
 ### Multiple clients and accounts
 

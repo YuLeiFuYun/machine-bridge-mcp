@@ -18,11 +18,11 @@ import {
 import {
   HttpError, applyCors, authorizationRedirectLocation, baseUrl, bearerToken, corsPreflight, escapeHtml,
   html, json, methodNotAllowed, normalizeDisplayText, normalizeRedirectUri, oauthRedirect, sanitizeMetadataText,
-  parseJsonRequest, parseRequestBody, searchParamsEntries, searchParamsObject, validateOrigin, workerErrorClass,
+  parseJsonRequest, parseRequestBody, searchParamsEntries, searchParamsObject, workerErrorClass,
 } from "./http";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.0.5";
+const SERVER_VERSION = "1.0.6";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -92,8 +92,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const base = baseUrl(request);
     const extraOrigins = this.env.MBM_ALLOWED_ORIGINS ?? "";
     let response: Response;
-    if (!validateOrigin(request, base, extraOrigins)) response = json({ error: "origin_not_allowed" }, 403);
-    else if (request.method === "OPTIONS" && request.headers.has("Origin")) response = corsPreflight(request, base, extraOrigins);
+    if (request.method === "OPTIONS" && request.headers.has("Origin")) response = corsPreflight(request, base, extraOrigins);
     else response = applyCors(await this.handleRequest(request, base), request, base, extraOrigins);
     this.observability.requestFinished(response.status);
     return response;

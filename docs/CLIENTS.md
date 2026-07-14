@@ -122,7 +122,7 @@ Run:
 machine-mcp --workspace /path/to/project
 ```
 
-Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering a Machine Bridge account name and password. The Worker has exact built-in CORS support for `https://chatgpt.com`, legacy `https://chat.openai.com`, `https://grok.com`, and the X-hosted Grok surface at `https://x.com`; no direct Wrangler command or Cloudflare variable edit is required.
+Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering a Machine Bridge account name and password. The Worker has exact built-in CORS response support for `https://chatgpt.com`, legacy `https://chat.openai.com`, `https://grok.com`, and the X-hosted Grok surface at `https://x.com`; no direct Wrangler command or Cloudflare variable edit is required. OAuth navigations and form submissions from opaque or client-specific browser containers are routed normally but receive no cross-origin response-sharing permission unless their exact origin is allowed.
 
 Several OAuth clients and named accounts can coexist. Accounts have independent passwords, roles, active state, versions, and targeted revocation. Their effective tool sets are intersected with the connected daemon policy. All accounts still share one daemon and OS user, so hard tenant isolation requires separate deployments; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
 
