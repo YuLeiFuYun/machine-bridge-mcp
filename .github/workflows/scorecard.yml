@@ -21,7 +21,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      security-events: write
       id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -34,15 +33,33 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
-      - name: Enforce reviewed Scorecard findings
-        run: node scripts/sarif-security-gate.mjs results.sarif --allowlist=.github/scorecard-accepted-findings.json
       - name: Upload SARIF artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: scorecard-results
           path: results.sarif
           retention-days: 5
+
+  gate:
+    name: Scorecard gate
+    needs: analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - name: Download Scorecard SARIF
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: scorecard-results
+          path: .scorecard-results
+      - name: Enforce reviewed Scorecard findings
+        run: node scripts/sarif-security-gate.mjs .scorecard-results/results.sarif --allowlist=.github/scorecard-accepted-findings.json
       - name: Upload to code scanning
         uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
         with:
-          sarif_file: results.sarif
+          sarif_file: .scorecard-results/results.sarif

@@ -284,7 +284,7 @@ if (packageJson.scripts?.["tool-docs:check"] !== "node scripts/generate-tool-ref
 if (packageJson.scripts?.["commit-message:test"] !== "node tests/commit-message-test.mjs") throw new Error("commit-message policy regression test is missing");
 if (packageJson.scripts?.["logging-structure:test"] !== "node tests/logging-structure-test.mjs") throw new Error("structured logging regression test is missing");
 if (packageJson.scripts?.["sarif-security:test"] !== "node tests/sarif-security-gate-test.mjs") throw new Error("SARIF security gate regression test is missing");
-if (packageJson.scripts?.["security-properties:test"] !== "node tests/security-properties-test.mjs") throw new Error("security property test suite is missing");
+if (packageJson.scripts?.["security-properties:test"] !== "node tests/security-properties-test.js") throw new Error("security property test suite is missing");
 if (packageJson.scripts?.["shell:test"] !== "node tests/shell-test.mjs") throw new Error("Wrangler executable boundary regression test is missing");
 if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
@@ -319,9 +319,17 @@ const codeqlWorkflowSource = readFileSync(join(root, ".github", "workflows", "co
 if (!codeqlWorkflowSource.includes("scripts/sarif-security-gate.mjs") || !codeqlWorkflowSource.includes("steps.analyze.outputs.sarif-output")) {
   throw new Error("CodeQL workflow no longer fails on unaccepted SARIF findings");
 }
-const scorecardWorkflowSource = readFileSync(join(root, ".github", "workflows", "scorecard.yml"), "utf8");
-if (!scorecardWorkflowSource.includes("scripts/sarif-security-gate.mjs results.sarif") || !scorecardWorkflowSource.includes(".github/scorecard-accepted-findings.json")) {
-  throw new Error("Scorecard workflow no longer rejects unreviewed supply-chain findings before upload");
+const scorecardWorkflowSource = readFileSync(join(root, ".github", "workflows", "scorecard.yml"), "utf8").replace(/\r\n/g, "\n");
+const scorecardAnalysisBlock = scorecardWorkflowSource.split(/\n  gate:\n/, 1)[0];
+if (!scorecardWorkflowSource.includes("name: Scorecard gate")
+    || !scorecardWorkflowSource.includes("needs: analysis")
+    || !scorecardWorkflowSource.includes("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c")
+    || !scorecardWorkflowSource.includes("scripts/sarif-security-gate.mjs .scorecard-results/results.sarif")
+    || !scorecardWorkflowSource.includes(".github/scorecard-accepted-findings.json")) {
+  throw new Error("Scorecard workflow no longer separates signed analysis from the reviewed SARIF gate");
+}
+if (scorecardAnalysisBlock.includes("\n        run:") || scorecardAnalysisBlock.includes("\n      - run:")) {
+  throw new Error("Scorecard signed analysis job contains a run step rejected by the Scorecard verifier");
 }
 const scorecardAccepted = JSON.parse(readFileSync(join(root, ".github", "scorecard-accepted-findings.json"), "utf8"));
 const acceptedScorecardRules = new Set((scorecardAccepted.accepted || []).map((item) => item.ruleId));
@@ -346,7 +354,7 @@ if (!processExecutionSource.includes('import { spawn } from "node:child_process"
     || processExecutionSource.includes("...options")) {
   throw new Error("direct process execution lost its fixed-option non-shell child_process boundary");
 }
-if (packageJson.devDependencies?.["fast-check"] !== "4.9.0" || !readFileSync(join(root, "tests", "security-properties-test.mjs"), "utf8").includes('from "fast-check"')) {
+if (packageJson.devDependencies?.["fast-check"] !== "4.9.0" || !readFileSync(join(root, "tests", "security-properties-test.js"), "utf8").includes('from "fast-check"')) {
   throw new Error("recognized JavaScript property-based fuzzing coverage is missing");
 }
 const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
