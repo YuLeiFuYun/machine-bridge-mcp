@@ -183,15 +183,15 @@ try {
   assert(pageHtml.includes(redirectUri), "authorization page omitted redirect URI");
   const authorizationCsp = page.headers.get("content-security-policy") ?? "";
   assert(authorizationCsp.includes("frame-ancestors 'none'"), "authorization page lacks CSP frame protection");
-  assert(authorizationCsp.includes("form-action 'self' http://localhost"), "authorization page CSP omitted the validated loopback redirect origin");
-  assert(!authorizationCsp.includes("https:"), "authorization page CSP broadened form redirects to every HTTPS origin");
+  const authorizationFormActions = cspDirectiveSources(authorizationCsp, "form-action");
+  assert(authorizationFormActions.size === 2 && authorizationFormActions.has("'self'") && authorizationFormActions.has("http://localhost"), "authorization page CSP did not contain only self and the validated loopback redirect origin");
   assert(page.headers.get("cache-control") === "no-store", "authorization page is cacheable");
 
   const chatGptPage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: chatGptRedirectUri, state: "chatgpt-page-state" })}`);
   const chatGptPageCsp = chatGptPage.headers.get("content-security-policy") ?? "";
   assert(chatGptPage.status === 200, `ChatGPT authorization page failed: ${chatGptPage.status}`);
-  assert(chatGptPageCsp.includes("form-action 'self' https://chatgpt.com"), "ChatGPT authorization page CSP omitted its validated redirect origin");
-  assert(!chatGptPageCsp.includes("https://example.com"), "ChatGPT authorization page CSP included an unrelated redirect origin");
+  const chatGptFormActions = cspDirectiveSources(chatGptPageCsp, "form-action");
+  assert(chatGptFormActions.size === 2 && chatGptFormActions.has("'self'") && chatGptFormActions.has("https://chatgpt.com"), "ChatGPT authorization page CSP did not contain only self and its validated redirect origin");
 
   const wrongPassword = await stableFetch(`${base}/oauth/authorize`, {
     method: "POST",
@@ -967,6 +967,14 @@ function terminate(processHandle, signal) {
 function appendBounded(current, chunk) {
   const next = current + String(chunk);
   return next.length <= 100_000 ? next : next.slice(-100_000);
+}
+
+function cspDirectiveSources(policy, directiveName) {
+  for (const directive of String(policy || "").split(";")) {
+    const tokens = directive.trim().split(/\s+/).filter(Boolean);
+    if (tokens[0] === directiveName) return new Set(tokens.slice(1));
+  }
+  return new Set();
 }
 
 function assert(condition, message) {
