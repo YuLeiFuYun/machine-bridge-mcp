@@ -5,6 +5,7 @@ import { run } from "./shell.mjs";
 import { ensureOwnerOnlyDir, expandHome, ownerOnlyFile } from "./state.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { waitForInactiveStatus } from "./service-convergence.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
 const WINDOWS_TASK = "MachineBridgeMCP";
@@ -299,9 +300,10 @@ async function stopLaunchd(logger) {
   const byPlist = byServiceTarget.code === 0
     ? null
     : await serviceRun("launchctl", ["bootout", domainTarget, plistPath]);
-  const after = await statusLaunchd();
+  const after = await waitForInactiveStatus(statusLaunchd);
   const rawResult = byPlist || byServiceTarget;
-  const ok = !after.active;
+  const active = after?.active !== false;
+  const ok = !active;
   if (ok) logger.info?.("launchd service stopped");
   else logger.warn?.("launchd service is still active after the stop request");
   return {
@@ -310,7 +312,7 @@ async function stopLaunchd(logger) {
     provider: "launchd",
     installed: existsSync(plistPath),
     active_before: true,
-    active: after.active,
+    active,
     already_stopped: false,
     code: ok ? 0 : rawResult.code,
     bootout_service_target: byServiceTarget,
