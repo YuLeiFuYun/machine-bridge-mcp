@@ -102,7 +102,7 @@
     "tool-docs:check": "node scripts/generate-tool-reference.mjs --check",
     "account:test": "node tests/account-admin-test.mjs",
     "sarif-security:test": "node tests/sarif-security-gate-test.mjs",
-    "security-properties:test": "node tests/security-properties-test.mjs",
+    "security-properties:test": "node tests/security-properties-test.js",
     "lint": "eslint eslint.config.mjs bin src/local scripts tests browser-extension",
     "lint:test": "node tests/lint-gate-test.mjs",
     "shell:test": "node tests/shell-test.mjs",
