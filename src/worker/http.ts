@@ -1,5 +1,14 @@
 const UNSAFE_DISPLAY_CONTROLS = /[\u0000-\u001f\u007f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
+export const BUILT_IN_BROWSER_ORIGINS = Object.freeze([
+  "https://chatgpt.com",
+  "https://chat.openai.com",
+  "https://grok.com",
+  "https://x.com",
+]);
+
+const BUILT_IN_BROWSER_ORIGIN_SET = new Set(BUILT_IN_BROWSER_ORIGINS);
+
 export class HttpError extends Error {
   readonly status: number;
   readonly code: string;
@@ -233,7 +242,7 @@ function appendVary(headers: Headers, value: string): void {
 }
 
 function isConfiguredOrSameOrigin(origin: string, base: string, configured: string): boolean {
-  if (isDefaultAllowedOrigin(origin, base)) return true;
+  if (isDefaultAllowedOrigin(origin, base) || BUILT_IN_BROWSER_ORIGIN_SET.has(origin)) return true;
   const allowed = configured.split(",").map((item) => item.trim()).filter((item) => item && item !== "null");
   return allowed.includes(origin);
 }

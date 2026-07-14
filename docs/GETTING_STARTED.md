@@ -204,7 +204,7 @@ Current ChatGPT developer-mode flow, as documented in OpenAI's [Connect from Cha
 7. Enter the Machine Bridge account name and password only after those values are recognized.
 8. Create a new chat and enable the app for that conversation.
 
-ChatGPT navigation labels can change. The invariant is that the client must connect to the public `/mcp` endpoint and complete the OAuth authorization page served by the Worker.
+ChatGPT navigation labels can change. The invariant is that the client must connect to the public `/mcp` endpoint and complete the OAuth authorization page served by the Worker. The same public `/mcp` URL can be entered in Grok where remote MCP configuration is available. Machine Bridge accepts the exact `https://grok.com` and `https://x.com` browser origins as well as ChatGPT's current and legacy origins without requiring a Wrangler command.
 
 ## 8. Verify the first connection
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.5 - 2026-07-14
+
+### Built-in ChatGPT and Grok origins
+
+- Allow the exact first-party browser origins used by ChatGPT (`https://chatgpt.com` and legacy `https://chat.openai.com`) and Grok (`https://grok.com` and `https://x.com`) directly in Worker origin validation. Users no longer need to run Wrangler or edit Cloudflare variables to complete OAuth from those clients.
+- Keep `MBM_ALLOWED_ORIGINS` as an additive exact-origin extension point, preserve same-origin and no-Origin requests, reject unrelated and `null` origins, and apply one predicate to preflight and actual requests. Integration tests exercise every built-in origin alongside a configured custom origin.
+
 ## 1.0.4 - 2026-07-14
 
 ### Windows first-run workspace
