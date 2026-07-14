@@ -72,13 +72,10 @@ export function trimAutostartLogs(stateRoot, options = {}) {
   const root = expandHome(stateRoot);
   const maxBytes = Number.isFinite(Number(options.maxBytes)) ? Math.max(1024, Number(options.maxBytes)) : 2 * 1024 * 1024;
   const keepBytes = Math.min(maxBytes, Number.isFinite(Number(options.keepBytes)) ? Math.max(1024, Number(options.keepBytes)) : 1024 * 1024);
-  const schemaVersion = String(Number.isInteger(Number(options.schemaVersion)) && Number(options.schemaVersion) > 0
-    ? Number(options.schemaVersion)
-    : AUTOSTART_LOG_SCHEMA_VERSION);
+  const schemaVersion = String(AUTOSTART_LOG_SCHEMA_VERSION);
   const logs = path.join(root, "logs");
   const schemaFile = path.join(logs, ".log-schema");
-  const migrate = readLogSchema(schemaFile) !== schemaVersion;
-  let migrationComplete = true;
+  const reset = readLogSchema(schemaFile) !== schemaVersion;
 
   for (const name of ["daemon.out.log", "daemon.err.log"]) {
     const file = path.join(logs, name);
@@ -86,20 +83,12 @@ export function trimAutostartLogs(stateRoot, options = {}) {
     try {
       if (!existsSync(file)) continue;
       const before = lstatSync(file);
-      if (before.isSymbolicLink() || !before.isFile()) {
-        if (migrate) migrationComplete = false;
-        continue;
-      }
+      if (before.isSymbolicLink() || !before.isFile()) continue;
       const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
       fd = openSync(file, Number(fsConstants.O_RDWR) | noFollow);
       const info = fstatSync(fd);
-      if (!info.isFile()) {
-        if (migrate) migrationComplete = false;
-        continue;
-      }
-      if (migrate && info.size > 0) {
-        const legacy = readLogTail(fd, info.size, maxBytes);
-        if (legacy.length) writePrivateServiceFile(path.join(logs, legacyLogName(name)), legacy);
+      if (!info.isFile()) continue;
+      if (reset) {
         ftruncateSync(fd, 0);
       } else if (info.size > maxBytes) {
         const tail = readLogTail(fd, info.size, keepBytes);
@@ -108,16 +97,13 @@ export function trimAutostartLogs(stateRoot, options = {}) {
       }
       try { chmodSync(file, 0o600); } catch {}
     } catch {
-      if (migrate) migrationComplete = false;
-      // Operational log maintenance is best effort and must not stop startup.
+      // Log maintenance is best effort and must not stop daemon startup.
     } finally {
       if (fd !== undefined) try { closeSync(fd); } catch {}
     }
   }
 
-  if (migrate && migrationComplete) {
-    try { writePrivateServiceFile(schemaFile, `${schemaVersion}\n`); } catch {}
-  }
+  try { writePrivateServiceFile(schemaFile, `${schemaVersion}\n`); } catch {}
 }
 
 function readLogSchema(file) {
@@ -129,10 +115,6 @@ function readLogTail(fd, size, limit) {
   const buffer = Buffer.alloc(length);
   readSync(fd, buffer, 0, length, Math.max(0, size - length));
   return lineSafeTail(buffer);
-}
-
-function legacyLogName(name) {
-  return name.endsWith(".log") ? `${name.slice(0, -4)}.legacy.log` : `${name}.legacy`;
 }
 
 function lineSafeTail(buffer) {
@@ -224,7 +206,6 @@ export function daemonArgs(spec) {
     "--daemon-only",
     "--workspace", spec.workspace,
     "--state-dir", spec.stateRoot,
-    "--no-print-credentials",
     "--log-level", "warn",
     "--log-format", "json",
   ];

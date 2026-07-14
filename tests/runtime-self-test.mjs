@@ -42,6 +42,7 @@ export async function runtimeSelfTest() {
   const previousSecret = process.env.MBM_DAEMON_SELFTEST_SECRET;
   process.env.MBM_DAEMON_SELFTEST_SECRET = "should-not-leak";
   try {
+    const ownerAuthorization = { account_id: "acct_testowner_12345678901234567890", account_version: 1, role: "owner" };
     const relayMessages = [];
     const originalSend = restricted.send.bind(restricted);
     restricted.send = (value) => { relayMessages.push(value); return true; };
@@ -51,11 +52,12 @@ export async function runtimeSelfTest() {
       tool: "run_process",
       arguments: { argv: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], timeout_seconds: 10 },
       timeout_ms: 1000,
+      authorization: ownerAuthorization,
     }));
     const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
     if (deadlineResult?.ok !== false || deadlineResult.error?.code !== "timeout" || deadlineResult.error?.retryable !== true) throw new Error(`relay deadline did not return a structured retryable timeout: ${JSON.stringify(deadlineResult)}`);
     relayMessages.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [] }));
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }));
     const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
     if (invalidEnvelope?.ok !== false || invalidEnvelope.error?.code !== "invalid_request" || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
     restricted.send = originalSend;
@@ -94,7 +96,7 @@ export async function runtimeSelfTest() {
     }
 
     logEvents.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" } }));
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" }, authorization: ownerAuthorization }));
     if (logEvents.some(event => event.level === "info" && event.event === "tool.call.completed")) {
       throw new Error("remote daemon emitted routine success at info level");
     }
@@ -105,7 +107,7 @@ export async function runtimeSelfTest() {
     logEvents.length = 0;
     relayMessages.length = 0;
     restricted.send = (value) => { relayMessages.push(value); return true; };
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" } }));
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }));
     restricted.send = originalSend;
     const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
     if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");

@@ -59,7 +59,7 @@ async function stateSelfTest() {
     setSelectedWorkspace(workspace, stateRoot);
     if (selectedWorkspace(stateRoot) !== canonicalWorkspace) throw new Error("selected workspace was not persisted canonically");
     const state = loadState(workspace, { stateDir: stateRoot });
-    if (state.schemaVersion !== 5) throw new Error("unexpected state schema version");
+    if (state.schemaVersion !== 6) throw new Error("unexpected state schema version");
     ensureWorkerSecrets(state, { rotateSecrets: true });
     state.oversized = "x".repeat(2 * 1024 * 1024 + 1);
     expectThrow(() => saveState(state), "state JSON exceeds");
@@ -87,33 +87,21 @@ async function stateSelfTest() {
     startupAgain.release();
 
     const redacted = redactState(state);
-    if (redacted.worker.oauthPassword !== "<redacted>") throw new Error("oauthPassword was not fully redacted");
+    if (redacted.worker.accountAdminSecret !== "<redacted>") throw new Error("accountAdminSecret was not fully redacted");
     if (redacted.worker.daemonSecret !== "<redacted>") throw new Error("daemonSecret was not fully redacted");
     if (redacted.worker.oauthTokenVersion !== "<redacted>") throw new Error("oauthTokenVersion was not fully redacted");
-    if (previewSecret(state.worker.oauthPassword) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
+    if (previewSecret(state.worker.accountAdminSecret) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
     state.resources = { "private-key": { kind: "file", path: join(workspace, "private-key"), size: 10, mode: "0600" } };
     const resourceRedacted = redactState(state);
     if (resourceRedacted.resources["private-key"].path !== "<local-resource-path>") throw new Error("redacted state exposed a local resource path");
 
-    state.localApi = {
-      apiKey: "old-local-api-key",
-      upstreamUrl: "https://api.example.test/v1",
-      upstreamKey: "old-upstream-key",
-      upstreamModel: "old-upstream-model",
-    };
+    state.policy = resolvePolicy({ profile: "full" }, {});
     saveState(state);
     const profileEntries = await readdir(state.paths.profileDir);
     if (profileEntries.some(name => name.endsWith(".tmp"))) throw new Error("atomic state write left a temporary file");
-    const migrated = loadState(workspace, { stateDir: stateRoot });
-    if ("localApi" in migrated) throw new Error("legacy local API state was not removed");
-    migrated.policy = { profile: "custom", allowWrite: true, execMode: "shell", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false };
-    saveState(migrated);
-    const policyReload = loadState(workspace, { stateDir: stateRoot });
-    policyReload.policy = resolvePolicy({}, policyReload.policy);
-    saveState(policyReload);
     const policyPersisted = loadState(workspace, { stateDir: stateRoot });
-    if (policyPersisted.policy.profile !== "full" || policyPersisted.policy.origin !== "migrated" || policyPersisted.policy.revision !== 4) {
-      throw new Error("migrated policy origin/revision was not persisted");
+    if (policyPersisted.policy.profile !== "full" || policyPersisted.policy.origin !== "explicit" || policyPersisted.policy.revision !== 5) {
+      throw new Error("current policy origin/revision was not persisted");
     }
 
     const backupsBefore = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
@@ -127,7 +115,8 @@ async function stateSelfTest() {
       throw new Error("corrupt state backup did not preserve the original bytes");
     }
     await writeFile(join(stateRoot, "config.json"), "{invalid-config", { mode: 0o600 });
-    loadGlobalConfig(stateRoot);
+    const recoveredConfig = loadGlobalConfig(stateRoot);
+    if (recoveredConfig.schemaVersion !== 1) throw new Error("corrupt global config did not recover to the current schema");
     const configBackups = (await readdir(stateRoot)).filter(name => /^config\.json\.corrupt-/.test(name));
     if (configBackups.length !== 1) throw new Error("corrupt global config did not create one bounded backup");
 
@@ -195,42 +184,35 @@ async function stateSelfTest() {
     const safeRemoval = validateStateRootForRemoval(stateRoot);
     if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed after corrupt config recovery");
 
-    const legacyStateRoot = await mkdtemp(join(tmpdir(), "mbm-legacy-state-"));
+    const obsoleteMarkerRoot = await mkdtemp(join(tmpdir(), "mbm-obsolete-marker-"));
     try {
-      await writeFile(join(legacyStateRoot, ".machine-bridge-mcp-state"), "machine-bridge-mcp state root\n", "utf8");
-      const legacyState = loadState(workspace, { stateDir: legacyStateRoot });
-      const marker = JSON.parse(await readFile(join(legacyState.paths.stateRoot, ".machine-bridge-mcp-state"), "utf8"));
-      if (marker.app !== "machine-bridge-mcp" || marker.schema !== 1) throw new Error("legacy state marker was not migrated");
-      removeStateRoot(legacyStateRoot);
+      await writeFile(join(obsoleteMarkerRoot, ".machine-bridge-mcp-state"), `${JSON.stringify({ app: "machine-bridge-mcp", schema: 1 })}\n`, { mode: 0o600 });
+      expectThrow(() => loadState(workspace, { stateDir: obsoleteMarkerRoot }), "schema is obsolete");
     } finally {
-      await rm(legacyStateRoot, { recursive: true, force: true }).catch(() => {});
+      await rm(obsoleteMarkerRoot, { recursive: true, force: true });
     }
 
-    const aliasStateRoot = await mkdtemp(join(tmpdir(), "mbm-alias-state-"));
+    const obsoleteProfileRoot = await mkdtemp(join(tmpdir(), "mbm-obsolete-profile-"));
+    const obsoleteProfileWorkspace = await mkdtemp(join(tmpdir(), "mbm-obsolete-profile-workspace-"));
     try {
-      const legacyHash = "a".repeat(24);
-      const legacyProfile = join(aliasStateRoot, "profiles", legacyHash);
-      await mkdir(legacyProfile, { recursive: true });
-      await writeFile(join(legacyProfile, "state.json"), `${JSON.stringify({
-        schemaVersion: 4,
-        workspace: { path: workspace, hash: legacyHash },
-        worker: { oauthPassword: "legacy-password", daemonSecret: "legacy-daemon", oauthTokenVersion: "legacy-version" },
+      const obsoleteState = loadState(obsoleteProfileWorkspace, { stateDir: obsoleteProfileRoot });
+      await writeFile(obsoleteState.paths.statePath, `${JSON.stringify({
+        schemaVersion: 5,
+        workspace: obsoleteState.workspace,
+        worker: {},
         policy: {},
-      }, null, 2)}
-`, { mode: 0o600 });
-      const adoptedAlias = loadState(canonicalWorkspace, { stateDir: aliasStateRoot });
-      if (await realpath(adoptedAlias.paths.profileDir) !== await realpath(legacyProfile) || adoptedAlias.workspace.hash !== legacyHash || adoptedAlias.worker.oauthPassword !== "legacy-password") {
-        throw new Error("canonical workspace did not reuse a matching legacy alias profile");
-      }
-      removeStateRoot(aliasStateRoot);
+        resources: {},
+      }, null, 2)}\n`, { mode: 0o600 });
+      expectThrow(() => loadState(obsoleteProfileWorkspace, { stateDir: obsoleteProfileRoot }), "schema is obsolete");
     } finally {
-      await rm(aliasStateRoot, { recursive: true, force: true }).catch(() => {});
+      await rm(obsoleteProfileRoot, { recursive: true, force: true });
+      await rm(obsoleteProfileWorkspace, { recursive: true, force: true });
     }
 
     const lookalike = await mkdtemp(join(tmpdir(), "mbm-lookalike-state-"));
     try {
       await import("node:fs/promises").then(({ mkdir }) => mkdir(join(lookalike, "profiles")));
-      expectThrow(() => loadState(workspace, { stateDir: lookalike }), "does not contain recognizable");
+      expectThrow(() => loadState(workspace, { stateDir: lookalike }), "must be empty");
     } finally {
       await rm(lookalike, { recursive: true, force: true }).catch(() => {});
     }
@@ -260,7 +242,7 @@ const args = process.argv.slice(2);
 const value = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; };
 const workspace = value("--workspace");
 const stateRoot = value("--state-dir");
-const metadata = args.includes("--legacy-lock") ? {} : { mode: args.includes("--foreground-lock") ? "foreground" : "service", version: "0.11.0" };
+const metadata = { mode: args.includes("--foreground-lock") ? "foreground" : "service", version: "0.18.0" };
 const state = loadState(workspace, { stateDir: stateRoot });
 const lock = acquireDaemonLock(state, metadata);
 if (!lock.acquired) process.exit(3);
@@ -277,17 +259,17 @@ setInterval(() => {}, 2 ** 31 - 1);
   let child = null;
   try {
     const state = loadState(workspace, { stateDir: stateRoot });
-    child = await startDaemonFixture(fixture, workspace, stateRoot, ["--legacy-lock", "--daemon-only"]);
-    const legacy = inspectWorkspaceDaemon(state);
-    if (!legacy.alive || !legacy.verified_service_daemon || legacy.mode !== "legacy") {
-      throw new Error("legacy daemon-only process was not identified as a service daemon");
+    child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only"]);
+    const serviceDaemon = inspectWorkspaceDaemon(state);
+    if (!serviceDaemon.alive || !serviceDaemon.verified_service_daemon || serviceDaemon.mode !== "service") {
+      throw new Error("service daemon was not identified from current lock metadata");
     }
 
     const immediate = await acquireDaemonLockWithTakeover(state, {
       takeOverServiceOwner: false,
       ownerMetadata: { mode: "foreground", version: "0.11.1" },
     });
-    if (immediate.acquired) throw new Error("non-takeover lock attempt replaced a live legacy daemon");
+    if (immediate.acquired) throw new Error("non-takeover lock attempt replaced a live service daemon");
 
     const messages = [];
     const foregroundLock = await acquireDaemonLockWithTakeover(state, {
@@ -299,7 +281,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     });
     await waitForChildExit(child);
     child = null;
-    if (!foregroundLock.acquired) throw new Error("foreground takeover did not acquire the legacy daemon lock");
+    if (!foregroundLock.acquired) throw new Error("foreground takeover did not acquire the service daemon lock");
     if (!messages.some((message) => message.includes("stopping detached background daemon"))
       || !messages.some((message) => message.includes("foreground startup is taking over"))) {
       throw new Error("foreground takeover did not report orphan termination and successful takeover");
@@ -427,7 +409,6 @@ async function activeDaemonPolicyMutationSelfTest() {
         "--daemon-only",
         "--workspace", workspace,
         "--state-dir", stateRoot,
-        "--no-print-credentials",
         "--log-level", "warn",
       ], {
         cwd: workspace,
@@ -458,8 +439,8 @@ async function activeDaemonPolicyMutationSelfTest() {
       if (output.requested_changes_applied !== false || !String(output.notice || "").includes("not applied")) {
         throw new Error("locked JSON start did not report that policy changes were rejected");
       }
-      if (output.mcp?.connection_password !== "<redacted>" || child.stdout.includes("mcp_password_")) {
-        throw new Error("JSON start exposed connection credentials without an explicit print flag");
+      if (Object.prototype.hasOwnProperty.call(output.mcp || {}, "connection_password") || child.stdout.includes("account_admin_")) {
+        throw new Error("JSON start exposed account administration credentials");
       }
       const unchanged = loadState(workspace, { stateDir: stateRoot });
       if (unchanged.policy.profile !== "review" || unchanged.policy.allowWrite || unchanged.policy.execMode !== "off") {
@@ -758,27 +739,21 @@ function cliSelfTest() {
   }
   assertCanonicalFullPolicy(defaultPolicy);
   if (toolsForPolicy(defaultPolicy).length !== allToolNames().length) throw new Error("canonical full policy does not expose every tool");
-  const inconsistentFull = resolvePolicy({}, { profile: "full", origin: "explicit", revision: 3, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
-  if (inconsistentFull.profile !== "full" || !inconsistentFull.allowWrite || inconsistentFull.execMode !== "shell" || !inconsistentFull.unrestrictedPaths || inconsistentFull.minimalEnv || !inconsistentFull.exposeAbsolutePaths) {
-    throw new Error("declared full profile was not repaired to canonical maximum permissions");
-  }
-  assertCanonicalFullPolicy(inconsistentFull);
   const review = resolvePolicy({ profile: "review" }, {});
-  const legacy = resolvePolicy({}, { profile: "custom", allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
-  if (legacy.profile !== "full" || legacy.origin !== "migrated" || !legacy.unrestrictedPaths || legacy.minimalEnv || !legacy.exposeAbsolutePaths) {
-    throw new Error("legacy implicit default policy was not migrated to full");
-  }
-  const staleDefault = resolvePolicy({}, { profile: "review", origin: "default", revision: 1, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
-  if (staleDefault.profile !== "full" || staleDefault.origin !== "default" || staleDefault.revision !== 4) {
-    throw new Error("outdated default-origin policy did not follow the current policy revision");
-  }
-  const staleExplicit = resolvePolicy({}, { profile: "review", origin: "explicit", revision: 1, allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
-  if (staleExplicit.profile !== "review" || staleExplicit.origin !== "explicit") {
-    throw new Error("explicit policy was overwritten by a default revision upgrade");
-  }
-  const legacyReview = resolvePolicy({}, { profile: "review", allowWrite: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
-  if (legacyReview.profile !== "review" || legacyReview.origin !== "legacy-preserved" || legacyReview.allowWrite) {
-    throw new Error("legacy explicit restrictive policy was not preserved");
+  expectThrow(() => resolvePolicy({}, {
+    profile: "full", origin: "explicit", revision: 4, allowWrite: true, execMode: "shell",
+    unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true,
+  }), "schema is obsolete");
+  expectThrow(() => resolvePolicy({}, {
+    profile: "review", allowWrite: false, execMode: "off",
+    unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false,
+  }), "schema is obsolete");
+  const persistedReview = resolvePolicy({}, {
+    profile: "review", origin: "explicit", revision: 5, allowWrite: false, execMode: "off",
+    unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false,
+  });
+  if (persistedReview.profile !== "review" || persistedReview.origin !== "explicit" || persistedReview.allowWrite) {
+    throw new Error("current explicit policy was not preserved");
   }
   const agent = resolvePolicy({ profile: "agent" }, {});
   if (!agent.allowWrite || agent.execMode !== "direct") throw new Error("agent profile is incorrect");
@@ -799,7 +774,7 @@ function cliSelfTest() {
 function logSelfTest() {
   const rendered = formatFields({
     token: "mcp_at_should-not-appear",
-    nested: { password: "secret", message: "mcp_password_abcdef\nforged" },
+    nested: { password: "secret", message: "account_password_abcdef\nforged" },
     authorization: "Bearer abcdefghijklmnopqrstuvwxyz",
   });
   if (rendered.includes("should-not-appear") || rendered.includes("password_abcdef") || rendered.includes("Bearer abcdef")) {
@@ -819,8 +794,8 @@ function logSelfTest() {
   const syntheticGoogleKey = ["AI", "za", "A".repeat(35)].join("");
   const syntheticJwt = ["eyJ" + "A".repeat(12), "B".repeat(12), "C".repeat(12)].join(".");
   const syntheticCredentialUrl = ["https://operator", "private-value@host.example/path"].join(":");
-  if (classifyOperationalError(new Error("Unexpected server response: 401")) !== "authentication_failed") {
-    throw new Error("HTTP authentication error classification failed");
+  if (classifyOperationalError(new Error("Unexpected server response: 401")) !== "execution_failed") {
+    throw new Error("untyped operational errors were classified from message text");
   }
   const sensitiveText = sanitizeLogText(`contact person@example.com at ${privateHome}/project ${syntheticAwsKey} ${syntheticNpmToken} ${syntheticSlackToken} ${syntheticGoogleKey} ${syntheticJwt} ${syntheticCredentialUrl} abc\u202Etxt`);
   for (const secret of ["person@example.com", privateHome, syntheticAwsKey, syntheticNpmToken, syntheticSlackToken, syntheticGoogleKey, syntheticJwt, syntheticCredentialUrl, "\u202E"]) {
@@ -850,9 +825,9 @@ async function serviceSelfTest() {
     await writeFile(join(stateRoot, "placeholder"), "", "utf8");
     await import("node:fs/promises").then(({ mkdir }) => mkdir(logs, { recursive: true }));
     const file = join(logs, "daemon.err.log");
-    await writeFile(join(logs, ".log-schema"), "7\n", "utf8");
+    await writeFile(join(logs, ".log-schema"), "3\n", "utf8");
     await writeFile(file, `${"discarded-line\n".repeat(300)}kept-unicode-日志\nlast-line\n`, "utf8");
-    trimAutostartLogs(stateRoot, { maxBytes: 2048, keepBytes: 1024, schemaVersion: 7 });
+    trimAutostartLogs(stateRoot, { maxBytes: 2048, keepBytes: 1024 });
     const trimmed = await readFile(file, "utf8");
     if ((await stat(file)).size > 1024 || trimmed.startsWith("�") || !trimmed.endsWith("last-line\n")) {
       throw new Error("autostart log tail trimming was not line/UTF-8 safe");
@@ -863,7 +838,7 @@ async function serviceSelfTest() {
       await writeFile(outsideTarget, "must-remain-unchanged", "utf8");
       try {
         await symlink(outsideTarget, linkedLog);
-        trimAutostartLogs(stateRoot, { maxBytes: 1024, keepBytes: 1024, schemaVersion: 7 });
+        trimAutostartLogs(stateRoot, { maxBytes: 1024, keepBytes: 1024 });
         if (await readFile(outsideTarget, "utf8") !== "must-remain-unchanged") {
           throw new Error("autostart log trimming followed a symbolic link");
         }
@@ -871,45 +846,25 @@ async function serviceSelfTest() {
         if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
       }
     }
-    const migrationRoot = await mkdtemp(join(tmpdir(), "mbm-log-schema-test-"));
+    const obsoleteLogRoot = await mkdtemp(join(tmpdir(), "mbm-obsolete-log-schema-"));
     try {
-      const migrationLogs = join(migrationRoot, "logs");
-      await mkdir(migrationLogs, { recursive: true });
-      const currentLog = join(migrationLogs, "daemon.err.log");
-      await writeFile(join(migrationLogs, ".log-schema"), "1\n", "utf8");
-      await writeFile(currentLog, "legacy-close-line\nlegacy-tail\n", "utf8");
-      trimAutostartLogs(migrationRoot, { maxBytes: 2048, keepBytes: 1024, schemaVersion: 2 });
-      const legacyLog = join(migrationLogs, "daemon.err.legacy.log");
-      if (await readFile(currentLog, "utf8") !== "" || !(await readFile(legacyLog, "utf8")).includes("legacy-tail")) {
-        throw new Error("autostart log schema migration did not archive and clear the prior format");
-      }
-      if ((await readFile(join(migrationLogs, ".log-schema"), "utf8")).trim() !== "2") {
-        throw new Error("autostart log schema marker was not updated");
+      const obsoleteLogs = join(obsoleteLogRoot, "logs");
+      await mkdir(obsoleteLogs, { recursive: true });
+      const currentLog = join(obsoleteLogs, "daemon.err.log");
+      await writeFile(join(obsoleteLogs, ".log-schema"), "1\n", "utf8");
+      await writeFile(currentLog, "obsolete-format-line\n", "utf8");
+      trimAutostartLogs(obsoleteLogRoot, { maxBytes: 2048, keepBytes: 1024 });
+      if (await readFile(currentLog, "utf8") !== "") throw new Error("obsolete active log was not cleared");
+      if ((await readFile(join(obsoleteLogs, ".log-schema"), "utf8")).trim() !== "3") {
+        throw new Error("current autostart log schema marker was not written");
       }
       await writeFile(currentLog, "current-format-line\n", "utf8");
-      trimAutostartLogs(migrationRoot, { maxBytes: 2048, keepBytes: 1024, schemaVersion: 2 });
+      trimAutostartLogs(obsoleteLogRoot, { maxBytes: 2048, keepBytes: 1024 });
       if (await readFile(currentLog, "utf8") !== "current-format-line\n") {
-        throw new Error("autostart log migration repeated after the schema marker was current");
+        throw new Error("current-format log was reset unexpectedly");
       }
     } finally {
-      await rm(migrationRoot, { recursive: true, force: true });
-    }
-
-    const defaultSchemaRoot = await mkdtemp(join(tmpdir(), "mbm-current-log-schema-test-"));
-    try {
-      const defaultSchemaLogs = join(defaultSchemaRoot, "logs");
-      await mkdir(defaultSchemaLogs, { recursive: true });
-      await writeFile(join(defaultSchemaLogs, ".log-schema"), "2\n", "utf8");
-      await writeFile(join(defaultSchemaLogs, "daemon.err.log"), "0.8.1-format-line\n", "utf8");
-      trimAutostartLogs(defaultSchemaRoot, { maxBytes: 2048, keepBytes: 1024 });
-      if ((await readFile(join(defaultSchemaLogs, ".log-schema"), "utf8")).trim() !== "3") {
-        throw new Error("current autostart log schema version did not advance to 3");
-      }
-      if (await readFile(join(defaultSchemaLogs, "daemon.err.log"), "utf8") !== "") {
-        throw new Error("current autostart log schema migration did not clear the old active log");
-      }
-    } finally {
-      await rm(defaultSchemaRoot, { recursive: true, force: true });
+      await rm(obsoleteLogRoot, { recursive: true, force: true });
     }
 
     const nodeBin = join(stateRoot, "node-bin");

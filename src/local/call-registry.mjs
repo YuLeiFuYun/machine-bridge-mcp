@@ -62,6 +62,16 @@ export class CallRegistry {
     return true;
   }
 
+  cancelOrigin(origin, reason = "transport disconnected") {
+    const expected = String(origin || "");
+    let cancelled = 0;
+    for (const [id, record] of this.calls) {
+      if (record.origin !== expected) continue;
+      if (this.cancel(id, reason)) cancelled += 1;
+    }
+    return cancelled;
+  }
+
   cancelAll(reason = "runtime stopped") {
     for (const id of [...this.calls.keys()]) {
       this.cancel(id, reason);

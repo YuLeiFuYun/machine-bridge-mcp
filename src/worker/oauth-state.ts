@@ -1,3 +1,21 @@
+import { normalizeAccountRole, type AccountRole } from "./access";
+
+export const OAUTH_STORE_SCHEMA_VERSION = 1;
+const PASSWORD_TOKEN_PATTERN = /^[a-z][a-z0-9_]{2,31}_[A-Za-z0-9_-]{43}$/;
+
+export interface AccountRecord {
+  account_id: string;
+  name: string;
+  display_name: string;
+  role: AccountRole;
+  active: boolean;
+  version: number;
+  password_salt: string;
+  password_hash: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface OAuthClient {
   client_id: string;
   client_name: string;
@@ -9,6 +27,9 @@ export interface OAuthClient {
 
 export interface OAuthCode {
   client_id: string;
+  account_id: string;
+  account_version: number;
+  role: AccountRole;
   redirect_uri: string;
   code_challenge: string;
   scope: string;
@@ -18,6 +39,9 @@ export interface OAuthCode {
 
 export interface OAuthToken {
   client_id: string;
+  account_id: string;
+  account_version: number;
+  role: AccountRole;
   scope: string;
   resource: string;
   version: string;
@@ -32,6 +56,8 @@ export interface OAuthFailure {
 }
 
 export interface OAuthStore {
+  schema_version: number;
+  accounts: Record<string, AccountRecord>;
   clients: Record<string, OAuthClient>;
   codes: Record<string, OAuthCode>;
   tokens: Record<string, OAuthToken>;
@@ -51,6 +77,28 @@ export interface ValidatedAuthorization {
 const AUTH_FAILURE_WINDOW_SECONDS = 10 * 60;
 export const AUTH_BLOCK_SECONDS = 15 * 60;
 const AUTH_FAILURE_LIMIT = 10;
+
+export function emptyOAuthStore(): OAuthStore {
+  return {
+    schema_version: OAUTH_STORE_SCHEMA_VERSION,
+    accounts: {},
+    clients: {},
+    codes: {},
+    tokens: {},
+    auth_failures: {},
+  };
+}
+
+export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const store = value as Partial<OAuthStore>;
+  return store.schema_version === OAUTH_STORE_SCHEMA_VERSION
+    && isRecord(store.accounts)
+    && isRecord(store.clients)
+    && isRecord(store.codes)
+    && isRecord(store.tokens)
+    && isRecord(store.auth_failures);
+}
 
 export function validateAuthorizationRequest(
   body: Record<string, unknown>,
@@ -79,6 +127,106 @@ export function validateAuthorizationRequest(
   if (!client) return { error: "Unknown OAuth client.", status: 400 };
   if (!client.redirect_uris.includes(redirectUri)) return { error: "redirect_uri is not registered.", status: 400 };
   return { value: { client, clientId, redirectUri, codeChallenge, requestedResource, scope, state } };
+}
+
+export function normalizeAccountName(value: unknown): string | null {
+  const name = String(value ?? "").trim().toLowerCase();
+  return /^[a-z0-9](?:[a-z0-9._-]{1,62}[a-z0-9])?$/.test(name) ? name : null;
+}
+
+export function accountByName(store: OAuthStore, name: unknown): AccountRecord | null {
+  const normalized = normalizeAccountName(name);
+  if (!normalized) return null;
+  return Object.values(store.accounts).find((account) => account.name === normalized) ?? null;
+}
+
+export async function createAccount(input: { name: unknown; displayName?: unknown; role: unknown; password: unknown; now: number }): Promise<AccountRecord> {
+  const name = normalizeAccountName(input.name);
+  const role = normalizeAccountRole(input.role);
+  const password = normalizePassword(input.password);
+  if (!name) throw new Error("account name must be 3-64 lowercase letters, digits, dots, underscores, or hyphens");
+  if (!role) throw new Error("account role is invalid");
+  const displayName = normalizeDisplayName(input.displayName, name);
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  return {
+    account_id: randomToken("acct"),
+    name,
+    display_name: displayName,
+    role,
+    active: true,
+    version: 1,
+    password_salt: base64Url(salt),
+    password_hash: await derivePasswordHash(password, salt),
+    created_at: input.now,
+    updated_at: input.now,
+  };
+}
+
+export async function replaceAccountPassword(account: AccountRecord, passwordValue: unknown, now: number): Promise<void> {
+  const password = normalizePassword(passwordValue);
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  account.password_salt = base64Url(salt);
+  account.password_hash = await derivePasswordHash(password, salt);
+  account.version += 1;
+  account.updated_at = now;
+}
+
+export async function verifyAccountPassword(account: AccountRecord, passwordValue: unknown): Promise<boolean> {
+  try {
+    const password = normalizePassword(passwordValue);
+    const salt = base64UrlDecode(account.password_salt);
+    const hash = await derivePasswordHash(password, salt);
+    return safeEqual(hash, account.password_hash);
+  } catch {
+    return false;
+  }
+}
+
+export function publicAccount(account: AccountRecord): Record<string, unknown> {
+  return {
+    account_id: account.account_id,
+    name: account.name,
+    display_name: account.display_name,
+    role: account.role,
+    active: account.active,
+    version: account.version,
+    created_at: account.created_at,
+    updated_at: account.updated_at,
+  };
+}
+
+export function updateAccount(account: AccountRecord, input: { displayName?: unknown; role?: unknown; active?: unknown }, now: number): void {
+  let changed = false;
+  if (input.displayName !== undefined) {
+    account.display_name = normalizeDisplayName(input.displayName, account.name);
+    changed = true;
+  }
+  if (input.role !== undefined) {
+    const role = normalizeAccountRole(input.role);
+    if (!role) throw new Error("account role is invalid");
+    if (role !== account.role) {
+      account.role = role;
+      changed = true;
+    }
+  }
+  if (input.active !== undefined) {
+    if (typeof input.active !== "boolean") throw new Error("active must be a boolean");
+    if (account.active !== input.active) {
+      account.active = input.active;
+      changed = true;
+    }
+  }
+  if (changed) {
+    account.version += 1;
+    account.updated_at = now;
+  }
+}
+
+export function revokeAccountCredentials(store: OAuthStore, accountId: string): void {
+  for (const [key, value] of Object.entries(store.codes)) if (value.account_id === accountId) delete store.codes[key];
+  for (const [key, value] of Object.entries(store.tokens)) if (value.account_id === accountId) delete store.tokens[key];
 }
 
 export function pruneClientRecordByExpiry<T extends { client_id: string; expires_at: number }>(record: Record<string, T>, clientId: string, keep: number): void {
@@ -111,7 +259,7 @@ export async function authorizationIdentity(request: Request, keyMaterial: strin
     ["sign"],
   );
   const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(source));
-  return `hmac-sha256:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  return `hmac-sha256:${hex(new Uint8Array(digest))}`;
 }
 
 export function recordAuthorizationFailure(store: OAuthStore, identity: string, now: number): void {
@@ -142,7 +290,7 @@ export function randomToken(prefix: string): string {
 
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return hex(new Uint8Array(digest));
 }
 
 export async function safeEqual(left: string, right: string): Promise<boolean> {
@@ -165,6 +313,40 @@ export async function pkceS256(verifier: string): Promise<string> {
   return base64Url(new Uint8Array(digest));
 }
 
+function normalizePassword(value: unknown): string {
+  if (typeof value !== "string" || !PASSWORD_TOKEN_PATTERN.test(value)) {
+    throw new Error("account password must be a generated 256-bit token");
+  }
+  return value;
+}
+
+function normalizeDisplayName(value: unknown, fallback: string): string {
+  const text = typeof value === "string" ? value.trim().replace(/[\r\n\t\u0000-\u001f\u007f]/g, " ").slice(0, 128) : "";
+  return text || fallback;
+}
+
+async function derivePasswordHash(password: string, salt: Uint8Array): Promise<string> {
+  if (salt.byteLength !== 16) throw new Error("account password salt is invalid");
+  const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
+  const key = await crypto.subtle.importKey("raw", saltBuffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(password));
+  return base64Url(new Uint8Array(signature));
+}
+
 function base64Url(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function base64UrlDecode(value: string): Uint8Array {
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+}
+
+function hex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

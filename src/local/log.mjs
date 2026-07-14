@@ -18,7 +18,7 @@ const MAX_LOG_OBJECT_KEYS = 48;
 const LEVEL_RANK = Object.freeze({ debug: 10, info: 20, success: 20, warn: 30, error: 40 });
 const SENSITIVE_KEY = /(authorization|cookie|password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)/i;
 const LOCAL_PATH_KEY = /(path|paths|cwd|workspace|directory|(?:^|[_-])dir(?:$|[_-])|root|home)/i;
-const SECRET_VALUE = /\b(?:mcp_password|daemon_secret|token_version|mcp_at|mcp_code)_[A-Za-z0-9_-]+\b/g;
+const SECRET_VALUE = /\b(?:account_admin|account_password|daemon_secret|token_version|mcp_at|mcp_code)_[A-Za-z0-9_-]+\b/g;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*\b/gi;
 const EMAIL_VALUE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;

@@ -13,6 +13,8 @@ const port = await openPort();
 const base = `http://127.0.0.1:${port}`;
 const persistDir = await mkdtemp(path.join(os.tmpdir(), "mbm-worker-test-"));
 const wrangler = path.join(packageRoot, "node_modules", "wrangler", "bin", "wrangler.js");
+const OWNER_PASSWORD = `integration_owner_${"A".repeat(43)}`;
+const REVIEWER_PASSWORD = `integration_reviewer_${"B".repeat(43)}`;
 const args = [
   "dev",
   "--local",
@@ -20,7 +22,7 @@ const args = [
   "--port", String(port),
   "--persist-to", persistDir,
   "--show-interactive-dev-session=false",
-  "--var", "MCP_OAUTH_PASSWORD:integration-password",
+  "--var", "ACCOUNT_ADMIN_SECRET:integration-admin-secret",
   "--var", "DAEMON_SHARED_SECRET:integration-daemon-secret",
   "--var", "OAUTH_TOKEN_VERSION:integration-token-version",
   "--var", "MBM_ALLOWED_ORIGINS:http://localhost:3001",
@@ -74,6 +76,30 @@ try {
   assert(corsHealth.status === 200, "configured browser origin could not access health endpoint");
   assert(corsHealth.headers.get("access-control-allow-origin") === "http://localhost:3001", "actual response omitted CORS origin");
 
+  const unauthenticatedAdmin = await stableFetch(`${base}/admin/accounts`);
+  assert(unauthenticatedAdmin.status === 401, "account administration accepted an unauthenticated request");
+  const weakPasswordAccount = await fetchJson(`${base}/admin/accounts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
+    body: JSON.stringify({ name: "weak", role: "owner", password: "human-chosen-password" }),
+  });
+  assert(weakPasswordAccount.response.status === 400, "account administration accepted a human-chosen password");
+  assert(weakPasswordAccount.body.message === "account name, display name, role, or password is invalid", "account validation exposed an internal error message");
+
+  const ownerAccount = await fetchJson(`${base}/admin/accounts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
+    body: JSON.stringify({ name: "owner", display_name: "Integration Owner", role: "owner", password: OWNER_PASSWORD }),
+  });
+  assert(ownerAccount.response.status === 201, `owner account creation failed: ${ownerAccount.response.status}`);
+  assert(ownerAccount.body.account?.role === "owner", "first account was not created as owner");
+  const reviewerAccount = await fetchJson(`${base}/admin/accounts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
+    body: JSON.stringify({ name: "reviewer", role: "reviewer", password: REVIEWER_PASSWORD }),
+  });
+  assert(reviewerAccount.response.status === 201, `reviewer account creation failed: ${reviewerAccount.response.status}`);
+
   const invalidRegistration = await stableFetch(`${base}/oauth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -111,7 +137,7 @@ try {
   const unknownPage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, client_id: "unknown", resource: `https://safe.example/\u202eresource` })}`);
   const unknownHtml = await unknownPage.text();
   assert(unknownPage.status === 400, "unknown OAuth client did not fail on GET authorization");
-  assert(!unknownHtml.includes('name="login_token"'), "invalid authorization request displayed a password form");
+  assert(!unknownHtml.includes('name="account_password"'), "invalid authorization request displayed a password form");
   assert(!unknownHtml.includes("\u202e"), "invalid authorization page retained a Unicode display control in resource text");
 
   const page = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams(authorization)}`);
@@ -125,18 +151,18 @@ try {
   const wrongPassword = await stableFetch(`${base}/oauth/authorize`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": "mbm-integration-wrong" },
-    body: new URLSearchParams({ ...authorization, login_token: "wrong-password" }),
+    body: new URLSearchParams({ ...authorization, account_name: "owner", account_password: `invalid_owner_${"C".repeat(43)}` }),
     redirect: "manual",
   });
   const wrongHtml = await wrongPassword.text();
   assert(wrongPassword.status === 401, `wrong password returned ${wrongPassword.status}`);
-  assert(!wrongHtml.includes("wrong-password"), "authorization response reflected the submitted password");
+  assert(!wrongHtml.includes("invalid_owner_"), "authorization response reflected the submitted password");
   assert(wrongHtml.includes("Integration &lt;Client&gt;"), "retry page omitted validated client context");
 
   const approved = await stableFetch(`${base}/oauth/authorize`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": "mbm-integration-valid" },
-    body: new URLSearchParams({ ...authorization, login_token: "integration-password" }),
+    body: new URLSearchParams({ ...authorization, account_name: "owner", account_password: OWNER_PASSWORD }),
     redirect: "manual",
   });
   assert(approved.status === 303, `valid authorization returned ${approved.status}`);
@@ -156,7 +182,7 @@ try {
     scope: "machine-bridge-mcp",
     resource: `${base}/mcp`,
     state: "chatgpt-state:/?&=%",
-    login_token: "integration-password",
+    account_name: "owner", account_password: OWNER_PASSWORD,
   };
   const chatGptApproved = await stableFetch(`${base}/oauth/authorize`, {
     method: "POST",
@@ -201,6 +227,14 @@ try {
   });
   assert(token.response.status === 200, `token exchange failed: ${token.response.status}`);
   assert(typeof token.body.access_token === "string", "token exchange omitted access_token");
+  const reviewerToken = await issueAccountToken({
+    base,
+    clientId: registration.body.client_id,
+    redirectUri,
+    accountName: "reviewer",
+    password: REVIEWER_PASSWORD,
+    state: "reviewer-state",
+  });
 
   const replay = await stableFetch(`${base}/oauth/token`, {
     method: "POST",
@@ -370,6 +404,38 @@ try {
   assert(!activeTools.some((tool) => tool.name === "read_file"), "active tool list retained a replaced daemon tool");
   assert(activeTools.find((tool) => tool.name === "list_dir")?.annotations?.readOnlyHint === true, "tool annotations were not returned");
 
+  const reviewerTools = await callToolsList(base, reviewerToken, 27);
+  assert(reviewerTools.some((tool) => tool.name === "list_dir"), "reviewer could not access a read-only daemon tool");
+  assert(!reviewerTools.some((tool) => tool.name === "run_process"), "reviewer was shown a process-execution tool");
+
+  const reviewerDenied = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${reviewerToken}`,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 271, method: "tools/call", params: { name: "run_process", arguments: { argv: ["true"] } } }),
+  });
+  assert(reviewerDenied.body.result?.isError === true, "reviewer process execution was not rejected");
+  assert(JSON.stringify(reviewerDenied.body.result).includes("not allowed for this account role"), "reviewer denial returned the wrong reason");
+
+  const reviewerReadPromise = fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${reviewerToken}`,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 272, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  });
+  const reviewerRelay = await waitForWsMessage(candidateDaemon, "tool_call");
+  assert(reviewerRelay.authorization?.role === "reviewer", "reviewer role was not forwarded to the daemon");
+  assert(reviewerRelay.authorization?.account_id === reviewerAccount.body.account.account_id, "reviewer account id was not forwarded to the daemon");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: reviewerRelay.id, ok: true, result: { entries: [] } }));
+  const reviewerRead = await reviewerReadPromise;
+  assert(reviewerRead.body.result?.isError === false, "reviewer read-only call failed");
+
   const remoteImageCall = fetchJson(`${base}/mcp`, {
     method: "POST",
     headers: {
@@ -445,6 +511,28 @@ try {
   assert(cancelledResult.body.result?.isError === true, "cancelled tools/call was not marked as an error");
   assert(JSON.stringify(cancelledResult.body.result).includes("cancelled"), "cancelled tools/call returned the wrong error");
 
+  const demoteLastOwner = await stableFetch(`${base}/admin/accounts`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
+    body: JSON.stringify({ account_id: ownerAccount.body.account.account_id, role: "reviewer" }),
+  });
+  assert(demoteLastOwner.status === 409, "last active owner could be demoted");
+
+  const reviewerRoleChange = await fetchJson(`${base}/admin/accounts`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
+    body: JSON.stringify({ account_id: reviewerAccount.body.account.account_id, role: "editor" }),
+  });
+  assert(reviewerRoleChange.response.status === 200, "reviewer role change failed");
+  const revokedReviewer = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${reviewerToken}` },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 273, method: "ping", params: {} }),
+  });
+  assert(revokedReviewer.status === 401, "role change did not revoke the changed account token");
+  const ownerAfterReviewerChange = await callServerInfo(base, token.body.access_token, 274);
+  assert(ownerAfterReviewerChange.account?.role === "owner", "another account change invalidated the owner token");
+
   for (let index = 0; index < 4; index += 1) {
     const extraRegistration = await stableFetch(`${base}/oauth/register`, {
       method: "POST",
@@ -464,7 +552,7 @@ try {
     const failedLogin = await stableFetch(`${base}/oauth/authorize`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ ...authorization, login_token: `wrong-${attempt}` }),
+      body: new URLSearchParams({ ...authorization, account_name: "owner", account_password: `invalid_attempt_${String(attempt).padStart(2, "0")}${"D".repeat(41)}` }),
       redirect: "manual",
     });
     const expectedStatus = attempt === 10 ? 429 : 401;
@@ -473,7 +561,7 @@ try {
   const blockedLogin = await stableFetch(`${base}/oauth/authorize`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ ...authorization, login_token: "integration-password" }),
+    body: new URLSearchParams({ ...authorization, account_name: "owner", account_password: OWNER_PASSWORD }),
     redirect: "manual",
   });
   assert(blockedLogin.status === 429, "blocked source could immediately retry with the correct password");
@@ -509,6 +597,46 @@ try {
   await Promise.race([closed, sleep(3000)]);
   terminate(child, "SIGKILL");
   await rm(persistDir, { recursive: true, force: true }).catch(() => {});
+}
+
+async function issueAccountToken({ base, clientId, redirectUri, accountName, password, state }) {
+  const verifier = randomBytes(32).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const authorization = {
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    scope: "machine-bridge-mcp",
+    resource: `${base}/mcp`,
+    state,
+    account_name: accountName,
+    account_password: password,
+  };
+  const approved = await stableFetch(`${base}/oauth/authorize`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(authorization),
+    redirect: "manual",
+  });
+  assert(approved.status === 303, `account authorization failed: ${approved.status}`);
+  const code = new URL(approved.headers.get("location")).searchParams.get("code");
+  assert(code, "account authorization omitted code");
+  const token = await fetchJson(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+      resource: `${base}/mcp`,
+    }),
+  });
+  assert(token.response.status === 200, `account token exchange failed: ${token.response.status}`);
+  return token.body.access_token;
 }
 
 async function connectDaemon(origin) {

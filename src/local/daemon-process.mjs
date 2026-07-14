@@ -153,10 +153,11 @@ function inspectWorkspaceDaemonOwner(state, owner) {
   if (!processIdentity.current) return { verified_service_daemon: false, reason: processIdentity.reason };
   if (!sameCanonicalPath(owner.workspace, state.workspace.path)) return { verified_service_daemon: false, reason: "workspace_mismatch" };
   if (owner.mode === "foreground") return { verified_service_daemon: false, reason: "foreground_daemon" };
+  if (owner.mode !== "service") return { verified_service_daemon: false, reason: "invalid_daemon_mode" };
 
   const command = processCommandLine(pid);
   if (!command) {
-    return { verified_service_daemon: false, reason: owner.mode === "service" ? "service_identity_unavailable" : "legacy_identity_unavailable" };
+    return { verified_service_daemon: false, reason: "service_identity_unavailable" };
   }
   const argv = splitProcessCommandLine(command);
   const entryName = path.basename(String(owner.entryScript || "machine-mcp"));
@@ -198,7 +199,7 @@ function publicDaemonOwner(owner) {
 }
 
 function publicDaemonMode(owner) {
-  return owner?.mode === "service" || owner?.mode === "foreground" ? owner.mode : "legacy";
+  return owner?.mode === "service" || owner?.mode === "foreground" ? owner.mode : "invalid";
 }
 
 function boundedPositiveInt(value, fallback) {

@@ -5,6 +5,7 @@ export class ToolExecutor {
     this.handlers = options.handlers || {};
     this.policyGate = options.policyGate;
     this.callRegistry = options.callRegistry;
+    this.accountAccessGate = options.accountAccessGate;
     this.observability = options.observability;
     this.logger = options.logger || console;
     this.safeMessage = typeof options.safeMessage === "function" ? options.safeMessage : (error) => String(error?.message || error || "operation failed");
@@ -12,7 +13,7 @@ export class ToolExecutor {
     this.pipeline = composeMiddleware([
       lifecycleMiddleware(this.callRegistry),
       observabilityMiddleware(this.observability, this.logger, this.safeMessage, this.slowMs),
-      authorizeMiddleware(this.policyGate),
+      authorizeMiddleware(this.policyGate, this.accountAccessGate),
     ], invokeHandler(this.handlers));
   }
 
@@ -25,9 +26,14 @@ export function composeMiddleware(middleware, terminal) {
   return middleware.reduceRight((next, current) => (operation) => current(operation, next), terminal);
 }
 
-function authorizeMiddleware(policyGate) {
+function authorizeMiddleware(policyGate, accountAccessGate) {
   return async (operation, next) => {
     policyGate.assert(operation.tool);
+    if (operation.context.origin === "relay") {
+      const role = operation.request.authorization?.role;
+      if (!role) throw new Error("relay tool call is missing an account role");
+      accountAccessGate.assert(role, operation.tool);
+    }
     return next(operation);
   };
 }

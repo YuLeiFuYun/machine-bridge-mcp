@@ -28,6 +28,7 @@ import { CapabilityObserver } from "./capability-observer.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { isPlainRecord } from "./records.mjs";
+import { AccountAccessGate, normalizeAccountRole } from "./account-access.mjs";
 
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_CONCURRENT_TOOL_CALLS = 16;
@@ -100,6 +101,7 @@ export class LocalRuntime {
     this.workspaceCanonicalPromise = null;
     this.policy = normalizePolicy(policy);
     this.policyGate = new PolicyGate(this.policy);
+    this.accountAccessGate = new AccountAccessGate();
     this.logger = logger;
     this.onSuperseded = typeof onSuperseded === "function" ? onSuperseded : null;
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
@@ -210,6 +212,7 @@ export class LocalRuntime {
         (args, context) => handler(this, args, context),
       ])),
       policyGate: this.policyGate,
+      accountAccessGate: this.accountAccessGate,
       callRegistry: this.callRegistry,
       observability: this.observability,
       logger: this.logger,
@@ -372,6 +375,7 @@ export class LocalRuntime {
         callId: envelope.id,
         origin: "relay",
         timeoutMs: envelope.timeoutMs,
+        authorization: envelope.authorization,
       });
       this.send({ type: "tool_result", id: envelope.id, ok: true, result });
     } catch (error) {
@@ -388,12 +392,21 @@ export class LocalRuntime {
     return this.callRegistry.cancel(callId, reason);
   }
 
+  handleRelayDisconnect() {
+    const cancelled = this.callRegistry.cancelOrigin("relay", "remote relay disconnected");
+    this.terminateActiveProcesses("SIGTERM", true);
+    if (cancelled > 0) {
+      this.logger.event?.("debug", "relay.calls.cancelled_on_disconnect", { cancelled_calls: cancelled });
+    }
+  }
+
   async executeTool(tool, args, context = {}) {
     this.lifecycle.assertOperational();
     return this.toolExecutor.execute(tool, args, {
       callId: context.callId,
       origin: context.origin || "local",
       timeoutMs: context.timeoutMs,
+      authorization: context.authorization,
       context,
     });
   }
@@ -778,7 +791,7 @@ function createRelayConnection(runtime, { workerUrl, secret, expectedVersion, on
       protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
     }),
     onMessage: (data) => handleRelayData(runtime, data),
-    onDisconnect: () => runtime.terminateActiveProcesses("SIGTERM", true),
+    onDisconnect: () => runtime.handleRelayDisconnect(),
     onSuperseded: () => {
       runtime.terminateActiveProcesses("SIGKILL");
       runtime.processSessionManager.clear();
@@ -805,14 +818,26 @@ function normalizeRelayToolCall(message) {
   const id = typeof message.id === "string" && message.id.length <= 256 ? message.id : "";
   const tool = typeof message.tool === "string" && message.tool.length <= 128 ? message.tool : "";
   const argumentsValue = message.arguments === undefined ? {} : message.arguments;
-  if (!id || !tool || !isPlainRecord(argumentsValue)) return { ok: false, id };
+  const authorization = normalizeRelayAuthorization(message.authorization);
+  if (!id || !tool || !isPlainRecord(argumentsValue) || !authorization) return { ok: false, id };
   return {
     ok: true,
     id,
     tool,
     arguments: argumentsValue,
+    authorization,
     timeoutMs: clampInteger(message.timeout_ms, 60_000, 1000, 610_000),
   };
+}
+
+function normalizeRelayAuthorization(value) {
+  if (!isPlainRecord(value)) return null;
+  const accountId = typeof value.account_id === "string" && /^acct_[A-Za-z0-9_-]{20,96}$/.test(value.account_id) ? value.account_id : "";
+  const accountVersion = Number(value.account_version);
+  let role;
+  try { role = normalizeAccountRole(value.role); } catch { return null; }
+  if (!accountId || !Number.isInteger(accountVersion) || accountVersion < 1) return null;
+  return Object.freeze({ account_id: accountId, account_version: accountVersion, role });
 }
 
 

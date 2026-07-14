@@ -11,6 +11,10 @@ import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-ide
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const appName = String(serverMetadata.name);
 const STATE_MARKER = ".machine-bridge-mcp-state";
+const STATE_MARKER_SCHEMA = 2;
+export const STATE_SCHEMA_VERSION = 6;
+const GLOBAL_CONFIG_SCHEMA = 1;
+const CORRUPT_RECOVERY = Symbol("corrupt-recovery");
 const MAX_STATE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_LOCK_BYTES = 64 * 1024;
 const MAX_MARKER_BYTES = 4096;
@@ -47,9 +51,14 @@ export function loadGlobalConfig(stateRoot = defaultStateRoot()) {
   const root = path.resolve(expandHome(stateRoot));
   assertNoForeignMaintenance(root);
   const file = configPath(root);
-  if (!existsSync(file)) return {};
+  if (!existsSync(file)) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
   ownerOnlyFile(file);
-  return readJsonObjectOrBackup(file);
+  const config = readJsonObjectOrBackup(file);
+  if (config[CORRUPT_RECOVERY]) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
+  if (config.schemaVersion !== GLOBAL_CONFIG_SCHEMA) {
+    throw new Error("global configuration schema is obsolete; remove the state root and initialize the current version");
+  }
+  return config;
 }
 
 export function saveGlobalConfig(config, stateRoot = defaultStateRoot()) {
@@ -58,7 +67,7 @@ export function saveGlobalConfig(config, stateRoot = defaultStateRoot()) {
   const root = ensureStateRoot(requestedRoot);
   assertNoForeignMaintenance(root);
   const file = configPath(root);
-  atomicWriteJson(file, { ...config, updatedAt: new Date().toISOString() });
+  atomicWriteJson(file, { ...config, schemaVersion: GLOBAL_CONFIG_SCHEMA, updatedAt: new Date().toISOString() });
 }
 
 export function setSelectedWorkspace(workspace, stateRoot = defaultStateRoot()) {
@@ -127,26 +136,6 @@ function assertStateRootSeparatedFromWorkspace(stateRoot, workspace) {
   }
 }
 
-function matchingLegacyProfileDir(canonicalWorkspace, stateRoot) {
-  const profilesRoot = path.join(stateRoot, "profiles");
-  if (!existsSync(profilesRoot)) return "";
-  const matches = [];
-  for (const entry of readdirSync(profilesRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
-    const profileDir = path.join(profilesRoot, entry.name);
-    const stateFile = path.join(profileDir, "state.json");
-    if (!existsSync(stateFile)) continue;
-    try {
-      const value = JSON.parse(readBoundedUtf8(stateFile, MAX_STATE_JSON_BYTES, "state JSON"));
-      const storedWorkspace = value?.workspace?.path;
-      if (typeof storedWorkspace !== "string") continue;
-      if (sameWorkspaceIdentity(storedWorkspace, canonicalWorkspace)) matches.push(profileDir);
-    } catch {}
-  }
-  if (matches.length > 1) throw new Error("multiple Machine Bridge profiles refer to the same canonical workspace; remove or merge the duplicate state profiles");
-  return matches[0] || "";
-}
-
 function sameWorkspaceIdentity(left, right) {
   try {
     const a = resolveWorkspace(left);
@@ -164,18 +153,18 @@ export function loadState(workspace, options = {}) {
   assertNoForeignMaintenance(requestedStateRoot);
   const stateRoot = ensureStateRoot(requestedStateRoot);
   assertNoForeignMaintenance(stateRoot);
-  const canonicalProfileDir = profileDirForWorkspace(canonicalWorkspace, stateRoot);
-  const profileDir = existsSync(canonicalProfileDir)
-    ? canonicalProfileDir
-    : matchingLegacyProfileDir(canonicalWorkspace, stateRoot) || canonicalProfileDir;
+  const profileDir = profileDirForWorkspace(canonicalWorkspace, stateRoot);
   const statePath = path.join(profileDir, "state.json");
   ensureOwnerOnlyDir(profileDir);
   let state = {};
   if (existsSync(statePath)) {
     ownerOnlyFile(statePath);
     state = readJsonObjectOrBackup(statePath);
+    if (!state[CORRUPT_RECOVERY] && state.schemaVersion !== STATE_SCHEMA_VERSION) {
+      throw new Error("workspace state schema is obsolete; remove the state root and initialize the current version");
+    }
   }
-  state.schemaVersion = 5;
+  state.schemaVersion = STATE_SCHEMA_VERSION;
   state.workspace = {
     path: canonicalWorkspace,
     hash: path.basename(profileDir),
@@ -185,7 +174,6 @@ export function loadState(workspace, options = {}) {
   state.worker ||= {};
   state.policy ||= {};
   state.resources ||= {};
-  delete state.localApi;
   return state;
 }
 
@@ -450,7 +438,9 @@ function readJsonObjectOrBackup(filePath) {
     replaceFileSync(filePath, backupPath);
     ownerOnlyFile(backupPath);
     pruneBackups(filePath, 3);
-    return {};
+    const recovered = {};
+    Object.defineProperty(recovered, CORRUPT_RECOVERY, { value: true });
+    return recovered;
   }
 }
 
@@ -466,23 +456,10 @@ function ensureStateRoot(inputRoot) {
   const marker = path.join(root, STATE_MARKER);
   if (!existsSync(marker)) {
     const entries = readdirSync(root);
-    if (entries.length) {
-      if (!hasOnlyStateEntries(entries)) {
-        throw new Error(`state root must be a dedicated directory; unexpected entries found in ${root}`);
-      }
-      if (!isRecognizableLegacyStateRoot(root)) {
-        throw new Error(`state root is non-empty but does not contain recognizable Machine Bridge state: ${root}`);
-      }
-    }
-    try {
-      createExclusiveFileSync(marker, `${JSON.stringify({ app: appName, schema: 1 })}\n`, { mode: 0o600 });
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      assertValidStateMarker(marker, { migrateLegacy: true });
-    }
-  } else {
-    assertValidStateMarker(marker, { migrateLegacy: true });
+    if (entries.length) throw new Error(`state root must be empty before initializing the current schema: ${root}`);
+    createExclusiveFileSync(marker, `${JSON.stringify({ app: appName, schema: STATE_MARKER_SCHEMA })}\n`, { mode: 0o600 });
   }
+  assertValidStateMarker(marker);
   ensureOwnerOnlyDir(root);
   ownerOnlyFile(marker);
   cleanupStaleAtomicTemps(root);
@@ -512,21 +489,16 @@ function assertSafeStateRootForRemoval(root) {
     assertValidStateMarker(marker);
     return canonical;
   }
-  if (isRecognizableLegacyStateRoot(canonical)) return canonical;
   throw new Error(`refusing to remove unrecognized state root without ${STATE_MARKER}: ${canonical}`);
 }
 
-function assertValidStateMarker(marker, options = {}) {
+function assertValidStateMarker(marker) {
   const content = readBoundedUtf8(marker, MAX_MARKER_BYTES, "state marker");
-  try {
-    const value = JSON.parse(content);
-    if (value?.app === appName && value?.schema === 1) return;
-  } catch {}
-  if (content.trim() === `${appName} state root`) {
-    if (options.migrateLegacy) atomicWriteJson(marker, { app: appName, schema: 1 });
-    return;
+  let value;
+  try { value = JSON.parse(content); } catch { throw new Error(`invalid state root marker: ${marker}`); }
+  if (value?.app !== appName || value?.schema !== STATE_MARKER_SCHEMA) {
+    throw new Error("state root schema is obsolete; remove it and initialize the current version");
   }
-  throw new Error(`invalid state root marker: ${marker}`);
 }
 
 function hasOnlyStateEntries(entries) {
@@ -561,33 +533,6 @@ function stateRootMatchesRecordedWorkspace(root) {
       }
       const owner = readDaemonLockOwner(path.join(profileDir, "daemon.lock"));
       if (typeof owner?.workspace === "string" && sameWorkspaceIdentity(owner.workspace, root)) return true;
-    }
-  } catch {}
-  return false;
-}
-
-function isRecognizableLegacyStateRoot(root) {
-  const config = path.join(root, "config.json");
-  try {
-    if (existsSync(config)) {
-      const value = JSON.parse(readBoundedUtf8(config, MAX_STATE_JSON_BYTES, "config JSON"));
-      if (
-        value &&
-        typeof value.selectedWorkspace === "string" &&
-        typeof value.selectedWorkspaceHash === "string" &&
-        workspaceHash(value.selectedWorkspace) === value.selectedWorkspaceHash
-      ) return true;
-    }
-  } catch {}
-  const profiles = path.join(root, "profiles");
-  if (!existsSync(profiles)) return false;
-  try {
-    for (const entry of readdirSync(profiles, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
-      const stateFile = path.join(profiles, entry.name, "state.json");
-      if (!existsSync(stateFile)) continue;
-      const value = JSON.parse(readBoundedUtf8(stateFile, MAX_STATE_JSON_BYTES, "state JSON"));
-      if (value?.workspace?.hash === entry.name && typeof value?.workspace?.path === "string") return true;
     }
   } catch {}
   return false;
@@ -636,7 +581,7 @@ function pruneBackups(filePath, keep) {
 
 export function ensureWorkerSecrets(state, options = {}) {
   state.worker ||= {};
-  if (!state.worker.oauthPassword || options.rotateSecrets) state.worker.oauthPassword = randomToken("mcp_password");
+  if (!state.worker.accountAdminSecret || options.rotateSecrets) state.worker.accountAdminSecret = randomToken("account_admin");
   if (!state.worker.daemonSecret || options.rotateSecrets) state.worker.daemonSecret = randomToken("daemon_secret");
   if (!state.worker.oauthTokenVersion || options.rotateSecrets) state.worker.oauthTokenVersion = randomToken("token_version");
   if (!state.worker.name || options.workerName) state.worker.name = options.workerName || defaultWorkerName(state.workspace.hash);
@@ -669,7 +614,7 @@ export function ownerOnlyFile(filePath) {
 
 export function redactState(state) {
   const clone = redactHomeInValue(JSON.parse(JSON.stringify(state)));
-  if (clone.worker?.oauthPassword) clone.worker.oauthPassword = "<redacted>";
+  if (clone.worker?.accountAdminSecret) clone.worker.accountAdminSecret = "<redacted>";
   if (clone.worker?.daemonSecret) clone.worker.daemonSecret = "<redacted>";
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = "<redacted>";
   if (clone.resources && typeof clone.resources === "object") {

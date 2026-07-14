@@ -122,9 +122,9 @@ Run:
 machine-mcp --workspace /path/to/project
 ```
 
-Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering the connection password.
+Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering a Machine Bridge account name and password.
 
-Several OAuth clients and access tokens can coexist, but the current release does not model separate human/service principals. Every authorization that uses the shared workspace password receives the same workspace authority. Do not treat separate ChatGPT accounts as isolated Machine Bridge accounts; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
+Several OAuth clients and named accounts can coexist. Accounts have independent passwords, roles, active state, versions, and targeted revocation. Their effective tool sets are intersected with the connected daemon policy. All accounts still share one daemon and OS user, so hard tenant isolation requires separate deployments; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
 
 ## Profile guidance
 

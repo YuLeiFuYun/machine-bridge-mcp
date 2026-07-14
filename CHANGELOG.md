@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.18.0 - 2026-07-14
+
+### Isolated multi-account authorization
+
+- Replace the workspace-wide shared OAuth password with named accounts and four roles: reviewer, editor, operator, and owner. OAuth codes and tokens are bound to one account id, account version, and role; account changes revoke only that account's credentials.
+- Intersect each account role with the connected daemon policy when listing or invoking tools. The Worker rejects unauthorized tools before relay, and every relayed call carries immutable account authorization metadata for a second local enforcement check.
+- Add owner-only account administration for listing, creating, enabling, disabling, changing roles, rotating passwords, and removing accounts. Passwords are generated 256-bit tokens stored as independent salted HMAC-SHA-256 verifiers; arbitrary human-chosen passwords are rejected, plaintext tokens are shown once, and they are not retained in local state.
+- Upgrade the existing Cloudflare Worker and Durable Object in place. A one-time release operation converts the current shared credential into the initial owner account and annotates existing OAuth codes and tokens without changing their keys or the global token version, preserving the existing ChatGPT connector authorization.
+
+### Runtime reliability and diagnostics
+
+- Cancel all relay-owned local calls immediately when the relay disconnects. Process execution now rejects cancellation before a child emits `close`, while process ownership remains tracked until actual exit, preventing permanently active calls without losing process cleanup.
+- Replace prefix-only command capture with bounded beginning-and-end retention. Long stdout and stderr report exact omitted byte counts and preserve the diagnostic tail where test and compiler failures normally appear.
+- Consume rejected authenticated MCP request bodies before returning 401, preventing workerd request-stream exceptions after per-account token revocation.
+
+### Breaking state and maintenance model
+
+- Advance local state to schema 6, the state-root marker to schema 2, and policy to revision 5. Final runtime code accepts only the current formats; valid obsolete state is rejected instead of migrated, while syntactically corrupt JSON is isolated and rebuilt as current empty state.
+- Remove shared-password CLI flags, policy migration branches, old daemon-lock interpretation, numeric managed-job PID compatibility, and old log-format archival. The one-time in-place release operation updates live state and deletes obsolete artifacts before the final runtime is installed.
+
 ## 0.17.1 - 2026-07-14
 
 ### Installation and first use

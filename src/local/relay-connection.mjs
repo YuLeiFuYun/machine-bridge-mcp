@@ -209,7 +209,7 @@ export class RelayConnection {
         this.failPermanently("relay_proxy_configuration");
         return;
       }
-      this.lastTransportErrorClass = classifyOperationalError(error);
+      this.lastTransportErrorClass = classifyRelayTransportError(error);
       this.logger.debug?.("remote relay connection could not be created", { error_class: this.lastTransportErrorClass });
       this.scheduleReconnect("connection_interrupted");
       return;
@@ -306,7 +306,7 @@ export class RelayConnection {
 
     socket.on("error", (error) => {
       if (this.socket !== socket || this.closed) return;
-      this.lastTransportErrorClass = classifyOperationalError(error);
+      this.lastTransportErrorClass = classifyRelayTransportError(error);
       this.logger.debug?.("remote relay transport error", { error_class: this.lastTransportErrorClass });
       if (this.lastTransportErrorClass === "authentication_failed") {
         this.failPermanently("relay_authentication_failed");
@@ -373,7 +373,7 @@ export class RelayConnection {
       socket.send(JSON.stringify(value));
       return true;
     } catch (error) {
-      this.lastTransportErrorClass = classifyOperationalError(error);
+      this.lastTransportErrorClass = classifyRelayTransportError(error);
       this.pendingCloseCategory = "relay_transport_error";
       this.logger.debug?.("remote relay send failed", { error_class: this.lastTransportErrorClass });
       terminateSocket(socket);
@@ -583,6 +583,14 @@ function redactUrl(value) {
   } catch {
     return "<relay-url>";
   }
+}
+
+function classifyRelayTransportError(error) {
+  const directStatus = Number(error?.statusCode ?? error?.response?.statusCode);
+  if (directStatus === 401 || directStatus === 403) return "authentication_failed";
+  const match = /^Unexpected server response: (\d{3})$/.exec(String(error?.message || ""));
+  if (match && [401, 403].includes(Number(match[1]))) return "authentication_failed";
+  return classifyOperationalError(error);
 }
 
 function boundedPositiveInteger(value, fallback) {

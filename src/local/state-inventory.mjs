@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { activeManagedJobs } from "./managed-jobs.mjs";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { expandHome, readDaemonLockOwner, resolveWorkspace } from "./state.mjs";
+import { STATE_SCHEMA_VERSION, expandHome, readDaemonLockOwner, resolveWorkspace } from "./state.mjs";
 
 const PROFILE_NAME = /^[a-f0-9]{24}$/;
 const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -66,7 +66,7 @@ export function knownProfileStates(stateRoot) {
         const workspace = resolveWorkspace(candidate);
         if (seen.has(workspace)) break;
         states.push({
-          schemaVersion: 5,
+          schemaVersion: STATE_SCHEMA_VERSION,
           workspace: { path: workspace, hash: entry.name },
           paths: { stateRoot: canonicalStateRoot, profileDir, statePath },
         });
