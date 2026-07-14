@@ -36,6 +36,14 @@ An authorized client can invoke every tool exposed by the selected profile and r
 
 The Worker is a remote authentication and relay boundary. The local runtime is the filesystem and process boundary. Stdio bypasses the Worker and relies on local process/configuration trust.
 
+### Multiple clients are not isolated accounts
+
+The current remote design accepts multiple OAuth client registrations and can issue multiple access tokens, but it has one per-workspace connection password and one workspace policy. An OAuth `client_id` identifies client software and redirect URIs; it is not a human or service principal. Different ChatGPT accounts or MCP applications that authorize with the same password therefore enter the same trust domain and receive the same Machine Bridge authority.
+
+The current release has no per-account role, suspension, membership expiry, targeted principal revocation, or account-specific audit boundary. Secret rotation invalidates all outstanding access tokens for the workspace. Do not present this behavior as multi-user tenancy.
+
+Mutually untrusted users must use separate bridge instances and external isolation appropriate to the authority exposed: a dedicated low-privilege OS account, container, or VM, a narrow workspace, an independent state root and Worker credential set, and the narrowest useful profile. Worker-side account records alone cannot isolate direct processes, shells, browser sessions, Accessibility actions, credential stores, or network authority inherited from the local OS user. See [Multi-client, multi-account, and tenancy architecture](docs/MULTI_ACCOUNT.md).
+
 ## Profiles are capability sets, not sandboxes
 
 The default for newly selected workspaces is `full`, which prioritizes ease of use over least privilege. Named profiles are canonical capability contracts. A stored `full` label is repaired on load to the complete maximum-permission field set and tool catalog; a deliberate per-capability override is represented as `custom`, not as a partially restricted `full`.
@@ -152,7 +160,7 @@ Runner diagnostic logs are owner-only and do not receive child stdout/stderr. St
 
 ## OAuth and public endpoints
 
-Remote mode uses authorization code flow with PKCE S256, exact redirect/resource/client binding, expiring authorization codes and access tokens, hashed token storage, token-version revocation, and bounded dynamic client registration. Successful consent constructs the registered callback through the URL API and returns `303 See Other`; response parameters are encoded rather than concatenated into an unchecked header string.
+Remote mode uses authorization code flow with PKCE S256, exact redirect/resource/client binding, expiring authorization codes and access tokens, hashed token storage, token-version revocation, and bounded dynamic client registration. Client registrations and tokens may coexist, but all authorizations currently share one workspace credential and authority; there is no principal-aware account model. Successful consent constructs the registered callback through the URL API and returns `303 See Other`; response parameters are encoded rather than concatenated into an unchecked header string.
 
 The authorization page displays the validated client name and redirect URI. Enter the connection password only after initiating the connection and recognizing both values.
 
