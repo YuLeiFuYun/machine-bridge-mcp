@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -106,6 +106,14 @@ function assertInstalledDefaultStartup(installedPackage, temp) {
     : join(stateHome, "machine-bridge-mcp");
   if (!readFileSync(join(stateRoot, ".machine-bridge-mcp-state"), "utf8").includes("machine-bridge-mcp")) {
     throw new Error("installed zero-argument startup did not initialize isolated state before the external boundary");
+  }
+  const config = JSON.parse(readFileSync(join(stateRoot, "config.json"), "utf8"));
+  const canonicalRealpath = realpathSync.native || realpathSync;
+  const expectedWorkspace = process.platform === "win32"
+    ? canonicalRealpath(join(home, "MachineBridge"))
+    : canonicalRealpath(workspace);
+  if (config.selectedWorkspace !== expectedWorkspace) {
+    throw new Error(`installed zero-argument startup selected ${config.selectedWorkspace} instead of ${expectedWorkspace}`);
   }
 }
 

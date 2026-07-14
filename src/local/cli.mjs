@@ -26,8 +26,10 @@ import {
   acquireStartupLockWithWait,
   appName,
   daemonLockPathForState,
+  defaultFirstRunWorkspace,
   defaultStateRoot,
   ensureWorkerSecrets,
+  ensureWorkspaceDirectory,
   expandHome,
   loadGlobalConfig,
   loadState,
@@ -95,15 +97,19 @@ async function chooseWorkspace(args, { promptOnFirstRun, save, allowPositional =
   const remembered = selectedWorkspace(stateRoot);
   if (remembered) return resolveWorkspace(remembered);
 
-  const fallback = process.cwd();
+  const fallback = promptOnFirstRun ? defaultFirstRunWorkspace() : process.cwd();
   if (!promptOnFirstRun || !process.stdin.isTTY) {
-    const workspace = resolveWorkspace(fallback);
+    const workspace = promptOnFirstRun && process.platform === "win32"
+      ? ensureWorkspaceDirectory(fallback)
+      : resolveWorkspace(fallback);
     if (save) setSelectedWorkspace(workspace, stateRoot);
     return workspace;
   }
 
-  const answer = await ask(`Workspace path [${fallback}]: `);
-  const workspace = resolveWorkspace(answer.trim() || fallback);
+  const answer = await ask(`Workspace folder [${fallback}] (press Enter to use the default): `);
+  const workspace = process.platform === "win32"
+    ? ensureWorkspaceDirectory(answer.trim() || fallback)
+    : resolveWorkspace(answer.trim() || fallback);
   if (save) setSelectedWorkspace(workspace, stateRoot);
   return workspace;
 }

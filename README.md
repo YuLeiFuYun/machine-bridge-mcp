@@ -97,7 +97,13 @@ npm install
 
 ## Remote MCP for ChatGPT
 
-Start the bridge from the project directory or select a workspace explicitly:
+After a global installation, `machine-mcp` can be launched from any Command Prompt or terminal; the package installation directory is not the workspace. On the first interactive Windows start, the CLI asks:
+
+```text
+Workspace folder [C:\Users\Alice\MachineBridge] (press Enter to use the default):
+```
+
+Press Enter to create and remember `%USERPROFILE%\MachineBridge`. No `cd` command or directory selection is required. Enter another folder when desired; an interactively selected Windows folder is created if it does not yet exist. Later starts reuse the remembered workspace. Advanced users and automation may still select an existing workspace explicitly:
 
 ```sh
 machine-mcp --workspace /path/to/project

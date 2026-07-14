@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4 - 2026-07-14
+
+### Windows first-run workspace
+
+- Keep the first interactive workspace question on Windows, but default it to `%USERPROFILE%\MachineBridge` instead of the Command Prompt current directory. Pressing Enter creates, canonicalizes, and remembers that folder, so users do not need `cd` or directory knowledge and an elevated prompt cannot accidentally select `C:\Windows\System32`.
+- Preserve explicit `--workspace` semantics for automation, while allowing an interactively entered Windows workspace folder to be created when it does not yet exist. The installed zero-argument startup test now verifies the remembered platform default.
+
 ## 1.0.3 - 2026-07-14
 
 ### Code-scanning and supply-chain integrity

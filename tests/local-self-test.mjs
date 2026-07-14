@@ -12,7 +12,7 @@ import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
 import { daemonArgs, launchdPlist, launchdServiceTarget, normalizeServiceCommandResult, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
-import { acquireDaemonLock, acquireStartupLock, ensureWorkerSecrets, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
+import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensureWorkerSecrets, ensureWorkspaceDirectory, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
 await runtimeSelfTest();
 await stateSelfTest();
@@ -29,6 +29,21 @@ await workerSourceSelfTest();
 console.log("local daemon/state/cli/log/service/worker self-test ok");
 
 async function stateSelfTest() {
+  const defaultWorkspaceHome = await mkdtemp(join(tmpdir(), "mbm-default-workspace-home-"));
+  try {
+    const windowsDefault = defaultFirstRunWorkspace({ platform: "win32", home: defaultWorkspaceHome, cwd: join(defaultWorkspaceHome, "ignored-cwd") });
+    if (windowsDefault !== join(defaultWorkspaceHome, "MachineBridge")) throw new Error("Windows first-run workspace did not use the dedicated home directory");
+    const created = ensureWorkspaceDirectory(windowsDefault);
+    if (created !== await realpath(windowsDefault)) throw new Error("Windows first-run workspace was not created and canonicalized");
+    const posixCwd = join(defaultWorkspaceHome, "posix-cwd");
+    await mkdir(posixCwd);
+    if (defaultFirstRunWorkspace({ platform: "linux", home: defaultWorkspaceHome, cwd: posixCwd }) !== posixCwd) {
+      throw new Error("non-Windows first-run workspace no longer preserves the current-directory default");
+    }
+  } finally {
+    await rm(defaultWorkspaceHome, { recursive: true, force: true });
+  }
+
   const unsafeCombinedRoot = await mkdtemp(join(tmpdir(), "mbm-state-workspace-collision-"));
   try {
     expectThrow(() => loadState(unsafeCombinedRoot, { stateDir: unsafeCombinedRoot }), "must be separate");
