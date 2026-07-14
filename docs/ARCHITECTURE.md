@@ -235,6 +235,8 @@ Removal first acquires a state-root maintenance lock that blocks new profile/sta
 
 OAuth metadata is pruned on access. Expired codes/tokens, old throttling records, and inactive clients without active credentials are removed. Source identities are deployment-keyed HMAC values, not stored source addresses or reversible unsalted hashes.
 
+Browser-origin validation accepts requests without an `Origin` header, the Worker's own origin, and a fixed first-party set for ChatGPT (`https://chatgpt.com`, `https://chat.openai.com`) and Grok (`https://grok.com`, `https://x.com`). `MBM_ALLOWED_ORIGINS` contributes optional exact comma-separated additions. It cannot remove the built-in origins, and wildcard or `null` origins are not accepted. Both preflight and actual requests use the same predicate.
+
 ## Observability
 
 Public health exposes only server identity and version. Authenticated `server_info` exposes bounded runtime status, policy origin/revision, managed-job counts, resource alias names without paths or values, daemon/relay-advertised tool counts, relay route state without endpoint details, and privacy-preserving capability-routing evidence. It explicitly reports that the host-exposed subset is unknown to the server. `diagnose_runtime` runs fixed local probes and explicitly reports that its own request reached the daemon.

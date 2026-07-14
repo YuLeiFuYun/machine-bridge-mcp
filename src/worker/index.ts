@@ -22,7 +22,7 @@ import {
 } from "./http";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.0.4";
+const SERVER_VERSION = "1.0.5";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -90,11 +90,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const base = baseUrl(request);
-    const configuredOrigins = this.env.MBM_ALLOWED_ORIGINS ?? "";
+    const extraOrigins = this.env.MBM_ALLOWED_ORIGINS ?? "";
     let response: Response;
-    if (!validateOrigin(request, base, configuredOrigins)) response = json({ error: "origin_not_allowed" }, 403);
-    else if (request.method === "OPTIONS" && request.headers.has("Origin")) response = corsPreflight(request, base, configuredOrigins);
-    else response = applyCors(await this.handleRequest(request, base), request, base, configuredOrigins);
+    if (!validateOrigin(request, base, extraOrigins)) response = json({ error: "origin_not_allowed" }, 403);
+    else if (request.method === "OPTIONS" && request.headers.has("Origin")) response = corsPreflight(request, base, extraOrigins);
+    else response = applyCors(await this.handleRequest(request, base), request, base, extraOrigins);
     this.observability.requestFinished(response.status);
     return response;
   }

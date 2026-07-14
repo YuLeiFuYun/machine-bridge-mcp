@@ -213,10 +213,17 @@ const appAutomationSource = readFileSync(join(root, "src", "local", "app-automat
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+const workerHttpSource = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
 
 if (!workerToolTimeoutSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"') || !workerToolTimeoutSource.includes('"browser_screenshot", "browser_upload_files"')) {
   throw new Error("Worker timeout classification omits browser_upload_files");
+}
+for (const origin of ["https://chatgpt.com", "https://chat.openai.com", "https://grok.com", "https://x.com"]) {
+  if (!workerHttpSource.includes(`"${origin}"`)) throw new Error(`Worker built-in browser origins omit ${origin}`);
+}
+if (!workerHttpSource.includes("BUILT_IN_BROWSER_ORIGIN_SET.has(origin)") || !workerHttpSource.includes("allowed.includes(origin)")) {
+  throw new Error("Worker browser-origin validation no longer combines built-in and configured exact origins");
 }
 if (!cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
   throw new Error("browser CLI pairing state read is not bounded");

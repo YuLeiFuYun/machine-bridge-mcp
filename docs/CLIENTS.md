@@ -114,7 +114,7 @@ args = ["/absolute/path/to/machine-mcp.mjs", "stdio", "--workspace", "/path/to/p
 
 Codex CLI, the Codex IDE extension, and supported ChatGPT Desktop Codex hosts can share MCP configuration on the same Codex host. ChatGPT web does not read local Codex configuration files; web use requires a hosted plugin/connector or a reachable remote MCP endpoint.
 
-## Remote ChatGPT connection
+## Remote ChatGPT and Grok connection
 
 Run:
 
@@ -122,7 +122,7 @@ Run:
 machine-mcp --workspace /path/to/project
 ```
 
-Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering a Machine Bridge account name and password.
+Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering a Machine Bridge account name and password. The Worker has exact built-in CORS support for `https://chatgpt.com`, legacy `https://chat.openai.com`, `https://grok.com`, and the X-hosted Grok surface at `https://x.com`; no direct Wrangler command or Cloudflare variable edit is required.
 
 Several OAuth clients and named accounts can coexist. Accounts have independent passwords, roles, active state, versions, and targeted revocation. Their effective tool sets are intersected with the connected daemon policy. All accounts still share one daemon and OS user, so hard tenant isolation requires separate deployments; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
 

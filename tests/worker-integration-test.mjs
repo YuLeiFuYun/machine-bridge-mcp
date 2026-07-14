@@ -62,6 +62,25 @@ try {
     headers: { origin: "http://localhost:3000" },
   });
   assert(crossOrigin.status === 403, "an unconfigured loopback browser origin was accepted");
+  const unrelatedOrigin = await stableFetch(`${base}/healthz`, { headers: { origin: "https://example.com" } });
+  assert(unrelatedOrigin.status === 403, "an unrelated browser origin was accepted");
+  const opaqueOrigin = await stableFetch(`${base}/healthz`, { headers: { origin: "null" } });
+  assert(opaqueOrigin.status === 403, "an opaque null browser origin was accepted");
+  for (const origin of ["https://chatgpt.com", "https://chat.openai.com", "https://grok.com", "https://x.com"]) {
+    const builtInPreflight = await stableFetch(`${base}/oauth/register`, {
+      method: "OPTIONS",
+      headers: {
+        origin,
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    });
+    assert(builtInPreflight.status === 204, `built-in origin preflight failed for ${origin}: ${builtInPreflight.status}`);
+    assert(builtInPreflight.headers.get("access-control-allow-origin") === origin, `built-in preflight omitted ${origin}`);
+    const builtInHealth = await stableFetch(`${base}/healthz`, { headers: { origin } });
+    assert(builtInHealth.status === 200, `built-in origin could not access health for ${origin}`);
+    assert(builtInHealth.headers.get("access-control-allow-origin") === origin, `built-in response omitted ${origin}`);
+  }
   const preflight = await stableFetch(`${base}/oauth/register`, {
     method: "OPTIONS",
     headers: {
