@@ -110,7 +110,7 @@ export function workspaceShellCommand(command) {
   if (process.platform === "win32") {
     return { cmd: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", command] };
   }
-  const shell = process.env.MBM_EXEC_SHELL || (existsSync("/bin/zsh") ? "/bin/zsh" : existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh");
+  const shell = existsSync("/bin/zsh") ? "/bin/zsh" : existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
   const base = path.basename(shell);
   if (base === "zsh") return { cmd: shell, args: ["-f", "-c", command] };
   if (base === "bash") return { cmd: shell, args: ["--noprofile", "--norc", "-c", command] };

@@ -48,8 +48,8 @@ async function create(
   let account: AccountRecord;
   try {
     account = await createAccount({ name: body.name, displayName: body.display_name, role: body.role, password: body.password, now });
-  } catch (error) {
-    return json({ error: "invalid_account", message: String((error as Error)?.message || error) }, 400);
+  } catch {
+    return json({ error: "invalid_account", message: "account name, display name, role, or password is invalid" }, 400);
   }
   store.accounts[account.account_id] = account;
   await save();
@@ -64,8 +64,8 @@ async function update(body: Record<string, unknown>, store: OAuthStore, save: ()
   if (removesLastOwner) return json({ error: "last_owner_required" }, 409);
   try {
     updateAccount(account, { displayName: body.display_name, role: body.role, active: body.active }, now);
-  } catch (error) {
-    return json({ error: "invalid_account", message: String((error as Error)?.message || error) }, 400);
+  } catch {
+    return json({ error: "invalid_account", message: "account display name, role, or active state is invalid" }, 400);
   }
   revokeAccountCredentials(store, account.account_id);
   await save();
@@ -90,8 +90,8 @@ async function rotatePassword(request: Request, store: OAuthStore, save: () => P
   if (!account) return json({ error: "account_not_found" }, 404);
   try {
     await replaceAccountPassword(account, body.password, now);
-  } catch (error) {
-    return json({ error: "invalid_password", message: String((error as Error)?.message || error) }, 400);
+  } catch {
+    return json({ error: "invalid_password", message: "account password must be a generated 256-bit token" }, 400);
   }
   revokeAccountCredentials(store, account.account_id);
   await save();

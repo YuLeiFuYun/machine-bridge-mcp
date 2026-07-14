@@ -78,12 +78,13 @@ try {
 
   const unauthenticatedAdmin = await stableFetch(`${base}/admin/accounts`);
   assert(unauthenticatedAdmin.status === 401, "account administration accepted an unauthenticated request");
-  const weakPasswordAccount = await stableFetch(`${base}/admin/accounts`, {
+  const weakPasswordAccount = await fetchJson(`${base}/admin/accounts`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
     body: JSON.stringify({ name: "weak", role: "owner", password: "human-chosen-password" }),
   });
-  assert(weakPasswordAccount.status === 400, "account administration accepted a human-chosen password");
+  assert(weakPasswordAccount.response.status === 400, "account administration accepted a human-chosen password");
+  assert(weakPasswordAccount.body.message === "account name, display name, role, or password is invalid", "account validation exposed an internal error message");
 
   const ownerAccount = await fetchJson(`${base}/admin/accounts`, {
     method: "POST",

@@ -7,12 +7,14 @@ import { ProcessTracker } from "../src/local/process-tracker.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
+import { workspaceShellCommand } from "../src/local/shell.mjs";
 
 await testCallRegistry();
 await testToolExecutor();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
 testErrors();
+testWorkspaceShellSelection();
 testBoundedOutput();
 console.log("runtime infrastructure test ok");
 
@@ -167,6 +169,18 @@ function testErrors() {
   assert(publicValue.code === "network_error" && publicValue.retryable === true, "public error lost retryability");
   const remote = remoteBridgeError({ code: "limit_exceeded", message: "busy", retryable: true });
   assert(remote.code === "limit_exceeded" && remote.retryable === true, "remote structured error was not preserved");
+}
+
+function testWorkspaceShellSelection() {
+  const previous = process.env.MBM_EXEC_SHELL;
+  process.env.MBM_EXEC_SHELL = "/tmp/untrusted-shell";
+  try {
+    const shell = workspaceShellCommand("echo ok");
+    assert(shell.cmd !== "/tmp/untrusted-shell", "workspace shell trusted an environment-provided executable path");
+  } finally {
+    if (previous === undefined) delete process.env.MBM_EXEC_SHELL;
+    else process.env.MBM_EXEC_SHELL = previous;
+  }
 }
 
 function testBoundedOutput() {

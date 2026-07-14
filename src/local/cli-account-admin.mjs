@@ -72,7 +72,7 @@ function printAccountResult(action, result) {
   }
   if (result.account) console.log(`${result.account.name}: ${result.account.role}; ${result.account.active ? "active" : "disabled"}`);
   if (result.password) {
-    console.log(`Password: ${result.password}`);
+    process.stdout.write(`Password: ${result.password}\n`);
     console.log("Save this password now; it is not stored locally or shown again.");
   }
   if (result.removed) console.log("Account removed.");
