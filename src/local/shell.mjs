@@ -113,13 +113,16 @@ function capturedResult(code, stdout, stderr, extraStderr = "") {
   };
 }
 
-function findWranglerCommand() {
-  const suffix = process.platform === "win32" ? ".cmd" : "";
-  return { cmd: path.join(packageRoot, "node_modules", ".bin", `wrangler${suffix}`), argsPrefix: [] };
+export function wranglerCommand(options = {}) {
+  const root = path.resolve(String(options.packageRoot || packageRoot));
+  const node = path.resolve(String(options.node || process.execPath));
+  const script = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+  if (!existsSync(script)) throw new Error(`Wrangler JavaScript entrypoint is missing: ${script}`);
+  return { cmd: node, argsPrefix: [script] };
 }
 
 export async function runWrangler(args, options = {}) {
-  const wrangler = findWranglerCommand();
+  const wrangler = wranglerCommand();
   const operation = String(args[0] || "");
   const timeoutMs = options.timeoutMs ?? (operation === "login" || operation === "deploy" ? 10 * 60 * 1000 : 2 * 60 * 1000);
   return runExecutable(wrangler.cmd, [...wrangler.argsPrefix, ...args], { cwd: packageRoot, timeoutMs, ...options });

@@ -1,10 +1,11 @@
 import { createHmac } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path, { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalRuntime } from "./runtime.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "./daemon-process.mjs";
+import { inspectProcessInstance } from "./process-identity.mjs";
 import { runStdioServer } from "./stdio.mjs";
 import { assertCanonicalFullPolicy, POLICY_PROFILES, toolsForPolicy } from "./tools.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
