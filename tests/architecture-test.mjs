@@ -59,6 +59,7 @@ const boundaryModules = new Set([
   "state-inventory.mjs",
   "browser-extension-protocol.mjs",
   "browser-pairing-store.mjs",
+  "worker-secret-file.mjs",
 ]);
 for (const name of boundaryModules) {
   const file = join(localRoot, name);
@@ -93,6 +94,10 @@ const lineLimits = Object.freeze({
   "src/local/browser-bridge.mjs": 850,
   "src/local/browser-extension-protocol.mjs": 120,
   "src/local/browser-pairing-store.mjs": 120,
+  "src/local/worker-secret-file.mjs": 180,
+  "src/worker/mcp-session.ts": 120,
+  "src/worker/tool-timeout.ts": 80,
+  "src/worker/pending-calls.ts": 180,
 });
 for (const [name, maximum] of Object.entries(lineLimits)) {
   const lines = readFileSync(join(root, name), "utf8").split(/\r?\n/).length;
@@ -120,7 +125,7 @@ const workerIndexBoundary = readFileSync(join(root, "src", "worker", "index.ts")
 for (const duplicate of ["function validateAuthorizationRequest", "function readBoundedText", "class HttpError", "new Map<string, PendingCall>"]) {
   if (workerIndexBoundary.includes(duplicate)) throw new Error(`Worker index regained extracted responsibility: ${duplicate}`);
 }
-for (const module of ["pending-calls", "policy", "errors", "http", "oauth-state", "observability"]) {
+for (const module of ["pending-calls", "policy", "errors", "http", "oauth-state", "observability", "mcp-session", "tool-timeout"]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
 
@@ -313,8 +318,18 @@ const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
 if (!engineering.includes("default profile is intentionally `full`") || !engineering.includes("`.project-local/`")) {
   throw new Error("engineering invariants omitted the owner-required full default or local-knowledge boundary");
 }
+
+for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTING.md")]) {
+  const releaseContract = readFileSync(file, "utf8").replace(/\s+/g, " ");
+  if (!releaseContract.includes("source release") || !releaseContract.includes("annotated version tag") || !releaseContract.includes("npm")) {
+    throw new Error(`release ownership contract drifted in ${relative(root, file)}`);
+  }
+  if (/automation must not[^.]{0,200}(?:create tags|GitHub Releases)/i.test(releaseContract)) {
+    throw new Error(`release ownership still contradicts AGENTS.md in ${relative(root, file)}`);
+  }
+}
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Completion ownership", "annotated `v<version>` tag", "repeated per-task authorization is not required"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Completion ownership", "annotated `v<version>` tag", "repeated per-task authorization is not required", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
@@ -323,7 +338,7 @@ if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || 
   throw new Error("generated MCP tool reference is missing or malformed");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
-for (const required of ["GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "standing authorization for repository source completion", "squash-merge its pull request", "run `npm run release:publish`"]) {
+for (const required of ["GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "standing authorization for repository source completion", "squash-merge its pull request", "run `npm run release:publish`", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
 }
 if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {

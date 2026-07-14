@@ -1,5 +1,5 @@
-import { createHmac, randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { createHmac } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path, { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
@@ -17,22 +17,19 @@ export { parseArgs, validateCommandOptions, validateLoggingOptions, validatePosi
 import { classifyOperationalError, createLogger, sanitizeLogText } from "./log.mjs";
 import { runExecutable, runWrangler } from "./shell.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
-import { inspectProcessInstance } from "./process-identity.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
-import { createExclusiveFileSync } from "./exclusive-file.mjs";
+import { withWorkerSecretsFile } from "./worker-secret-file.mjs";
 import {
   acquireMaintenanceLock,
   acquireStartupLockWithWait,
   appName,
   daemonLockPathForState,
   defaultStateRoot,
-  ensureOwnerOnlyDir,
   ensureWorkerSecrets,
   expandHome,
   loadGlobalConfig,
   loadState,
-  ownerOnlyFile,
   packageRoot,
   readDaemonLockOwner,
   redactState,
@@ -383,7 +380,7 @@ async function ensureWorker(state, args) {
   }
 
   logger.info("Deploying Cloudflare Worker", { name: state.worker.name });
-  const deploy = await withSecretsFile(state, secretFile => runWrangler([
+  const deploy = await withWorkerSecretsFile(state, secretFile => runWrangler([
     "deploy",
     "--name", state.worker.name,
     "--minify",
@@ -409,39 +406,6 @@ async function ensureWorker(state, args) {
   return state.worker;
 }
 
-async function withSecretsFile(state, callback) {
-  const dir = state.paths.profileDir;
-  ensureOwnerOnlyDir(dir);
-  cleanupStaleSecretFiles(dir);
-  const tempPath = resolve(dir, `worker-secrets-${process.pid}-${Date.now()}-${randomBytes(6).toString("hex")}.json`);
-  const payload = {
-    ACCOUNT_ADMIN_SECRET: state.worker.accountAdminSecret,
-    DAEMON_SHARED_SECRET: state.worker.daemonSecret,
-    OAUTH_TOKEN_VERSION: state.worker.oauthTokenVersion,
-  };
-  createExclusiveFileSync(tempPath, JSON.stringify(payload), { mode: 0o600 });
-  ownerOnlyFile(tempPath);
-  try {
-    return await callback(tempPath);
-  } finally {
-    try { unlinkSync(tempPath); } catch {}
-  }
-}
-
-export function cleanupStaleSecretFiles(dir) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const match = /^worker-secrets-(\d+)-(\d+)(?:-[a-f0-9]+)?\.json$/.exec(entry.name);
-    if (!match) continue;
-    const file = resolve(dir, entry.name);
-    try {
-      const pid = Number(match[1]);
-      const createdAt = Number(match[2]);
-      const identity = inspectProcessInstance({ pid, startedAt: new Date(createdAt).toISOString() });
-      if (!identity.current) unlinkSync(file);
-    } catch {}
-  }
-}
 
 function workerDeploymentFingerprint(state) {
   const keyMaterial = [

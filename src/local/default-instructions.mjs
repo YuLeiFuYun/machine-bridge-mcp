@@ -8,8 +8,8 @@ const MAX_PROJECT_CONTEXT_BYTES = 16 * 1024;
 const MAX_SCRIPT_NAMES = 24;
 const MAX_WORKFLOW_FILES = 20;
 
-export const BUILTIN_INSTRUCTIONS_SOURCE = "machine-bridge://defaults/working-agreements";
-export const AUTOMATIC_PROJECT_CONTEXT_SOURCE = "machine-bridge://project-context/current";
+const BUILTIN_INSTRUCTIONS_SOURCE = "machine-bridge://defaults/working-agreements";
+const AUTOMATIC_PROJECT_CONTEXT_SOURCE = "machine-bridge://project-context/current";
 
 const BUILTIN_INSTRUCTIONS = `# Machine Bridge default working agreements
 
@@ -43,8 +43,9 @@ These are conservative defaults. Explicit current-user requests and more specifi
 
 ## Git and delivery
 
+- Before any GitHub read or mutation, read the effective project instructions. If they require local git, gh, and gh api through Machine Bridge, never call a hosted GitHub connector or ChatGPT GitHub plugin; if that local control plane is unavailable, stop and report the boundary instead of substituting another control plane.
 - Do not amend, rebase, force-push, delete branches or tags, or discard working-tree changes unless explicitly requested.
-- Commit or push only when the current task or repository instructions authorize it. Do not create tags, releases, or package publications merely because a version changed.
+- Commit or push only when the current task or repository instructions authorize it. Follow repository-specific source-release ownership when it explicitly authorizes tags and GitHub Releases; otherwise do not create them merely because a version changed.
 - Summarize what changed, which checks ran, and any remaining limitations or operator steps.
 `;
 

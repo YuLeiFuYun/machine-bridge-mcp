@@ -4,7 +4,7 @@ import { packageRoot } from "./state.mjs";
 
 export const BROWSER_EXTENSION_PROTOCOL = 3;
 export const EXPECTED_EXTENSION_VERSION = extensionVersion();
-export const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
+const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
   "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
 ]);
 export const MAX_BROWSER_MESSAGE_BYTES = 8 * 1024 * 1024;

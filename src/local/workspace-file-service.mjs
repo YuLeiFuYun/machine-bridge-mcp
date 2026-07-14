@@ -331,12 +331,20 @@ async function readUtf8File(filePath) {
   return decodeUtf8(buffer);
 }
 
+async function applyExactMode(filePath, mode) {
+  try {
+    await chmod(filePath, mode);
+  } catch (error) {
+    if (process.platform !== "win32") throw error;
+  }
+}
+
 async function atomicWriteText(full, content, existing = null, options = {}) {
   await mkdir(dirname(full), { recursive: true });
   const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
   try {
     await writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: existing ? existing.mode & 0o777 : 0o600 });
-    if (existing) await chmod(temp, existing.mode & 0o777).catch(() => {});
+    if (existing) await applyExactMode(temp, existing.mode & 0o777);
     if (options.expectedHash) {
       const current = await readUtf8File(full).catch(() => null);
       if (current === null || sha256(current) !== options.expectedHash) throw new Error("file changed before atomic commit");
@@ -377,7 +385,7 @@ async function commitPatchTransaction(operations) {
       await mkdir(dirname(operation.target), { recursive: true });
       const temp = join(dirname(operation.target), `.${basename(operation.target)}.mbm-patch-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
       await writeFile(temp, operation.content, { encoding: "utf8", flag: "wx", mode: operation.mode });
-      await chmod(temp, operation.mode).catch(() => {});
+      await applyExactMode(temp, operation.mode);
       staged.push({ operation, temp });
     }
 

@@ -1,19 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { assertStateMaintenanceAvailable, ownerOnlyFile } from "./state.mjs";
+import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
 import { EXPECTED_EXTENSION_VERSION } from "./browser-extension-protocol.mjs";
 
-export const DEFAULT_BROWSER_PORT = 39393;
+const DEFAULT_BROWSER_PORT = 39393;
 const PAIRING_FILE = "browser-bridge.json";
 
 export async function loadOrCreatePairing(stateRoot) {
   if (!stateRoot) return { token: randomBytes(32).toString("base64url"), port: DEFAULT_BROWSER_PORT };
   assertStateMaintenanceAvailable(stateRoot);
-  await mkdir(stateRoot, { recursive: true, mode: 0o700 });
+  ensureOwnerOnlyDir(stateRoot);
   const file = join(stateRoot, PAIRING_FILE);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (existsSync(file)) {

@@ -801,9 +801,14 @@ function trimDiagnosticFile(file, maxBytes = 64 * 1024, keepBytes = 32 * 1024) {
     if (newline >= 0 && newline < tail.length - 1) tail = tail.subarray(newline + 1);
     ftruncateSync(fd, 0);
     if (tail.length) writeSync(fd, tail, 0, tail.length, 0);
-  } catch {
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   } finally {
-    if (fd !== undefined) try { closeSync(fd); } catch {}
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch {
+        // Descriptor close is best effort after the trim result is already determined.
+      }
+    }
   }
 }
 

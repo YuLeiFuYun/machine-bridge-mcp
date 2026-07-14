@@ -48,6 +48,7 @@ The suite includes:
 - log redaction, control-character handling, message/field bounds, suppression of both successful and failed per-tool events outside debug, service warning-level configuration, current-schema reset, and bounded tail trimming;
 - deterministic relay connection lifecycle coverage for transport construction/error/deadline, pre-handshake `welcome` validation, authenticated `hello_ack` readiness, identity/version mismatch, retryable Worker handshake errors, fatal protocol errors, autonomous outage-reminder backoff, handshake and heartbeat timeout, brief-outage suppression, sustained-outage escalation, recovery summaries, and supersession;
 - shared no-follow bounded-file reads for normal files, over-limit data, directories, and symbolic links;
+- owner-only directory enforcement rejecting final symlinks, failing closed on POSIX chmod errors, verifying `0700`, and retaining Windows portability; Worker temporary-secret lifecycle coverage for process-start-bound names, valid stale-owner reclamation, ambiguous-owner retention, `0600` mode, deletion failures, and simultaneous deployment/cleanup failures;
 - SARIF security-gate behavior for unknown findings, exact accepted rule/path matches, path mismatch rejection, rationale quality, and exception expiry;
 - deterministic property tests over hostile browser-protocol byte strings, canonical/custom policy combinations, argv bounds/NULs, and a real direct process proving shell metacharacters remain literal argv;
 - CLI parsing, policy profiles, and client configuration boundaries;

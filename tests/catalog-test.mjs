@@ -8,6 +8,7 @@ assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
 assert(metadata.protocolVersion === "2025-11-25", "shared protocol version is invalid");
 assert(JSON.stringify(metadata.supportedProtocolVersions) === JSON.stringify([metadata.protocolVersion]), "v1 must expose only the current MCP protocol version");
 assert(Array.isArray(metadata.instructions) && metadata.instructions.length >= 4, "shared server instructions are missing");
+assert(metadata.instructions.some((line) => line.includes("never use a hosted GitHub connector or ChatGPT GitHub plugin") && line.includes("stop rather than substitute")), "shared initialization omitted the fail-closed local GitHub control-plane rule");
 assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
 const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
 const workerCatalogSource = await readFile(new URL("../src/worker/tool-catalog.ts", import.meta.url), "utf8");

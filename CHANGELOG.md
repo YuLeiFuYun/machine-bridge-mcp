@@ -19,6 +19,11 @@
 
 ### Enforced security evidence
 
+- Move the repository's local GitHub control-plane prohibition into shared MCP initialization and built-in working agreements so it is visible before project-specific task execution. If local Machine Bridge `git`/`gh` access is unavailable, automation must stop rather than fall back to a hosted GitHub connector or ChatGPT plugin. Align `ENGINEERING.md` and `CONTRIBUTING.md` with the source-release ownership contract.
+- Fail closed when owner-only directories are symlinks, non-directories, cannot be restricted to `0700` on POSIX, or remain group/other-accessible. Extract Worker deployment secret-file lifecycle from the CLI, bind temporary names to process-start identity, delete only positively reclaimable stale files, and surface cleanup failures instead of silently retaining management secrets.
+- Apply the same private-directory boundary to browser pairing, fail managed-job launch when existing diagnostic logs cannot be safely trimmed, and roll back POSIX file/patch commits when exact mode application fails. State-root removal now blocks on unreadable, malformed, symbolic-link, oversized, or otherwise unverifiable config/profile/daemon records instead of treating them as absent.
+- Remove the unused local error factory and default-role constant and make internal-only protocol, pairing, instruction, file, and OAuth helpers non-exported, reducing dead and misleading module surface.
+
 - Add a SARIF security gate to the required CodeQL workflow. Any new security-tagged result fails the required check; intentional high-authority process boundaries require an exact rule/path exception with a substantive rationale and expiry date.
 - Add deterministic property tests over hostile browser-protocol bytes, policy combinations, argv values, and shell-metacharacter arguments. Add production-path service command coverage and remove test-only filesystem check/use patterns that obscured CodeQL results.
 - Preserve the complete cross-platform, Worker, stdio, browser, lifecycle, atomic-file, process-tree, package, privacy-history, dependency, and release-integrity suite as the release gate.

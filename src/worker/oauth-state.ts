@@ -1,6 +1,6 @@
 import { normalizeAccountRole, type AccountRole } from "./access";
 
-export const OAUTH_STORE_SCHEMA_VERSION = 1;
+const OAUTH_STORE_SCHEMA_VERSION = 1;
 const PASSWORD_TOKEN_PATTERN = /^[a-z][a-z0-9_]{2,31}_[A-Za-z0-9_-]{43}$/;
 
 export interface AccountRecord {

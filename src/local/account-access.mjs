@@ -6,7 +6,6 @@ export const ACCOUNT_ACCESS_REVISION = Number(accessContract.revision);
 export const ACCOUNT_ROLES = Object.freeze(Object.fromEntries(
   Object.entries(accessContract.roles).map(([name, value]) => [name, Object.freeze({ ...value })]),
 ));
-export const DEFAULT_ACCOUNT_ROLE = String(accessContract.defaultRole);
 export const OWNER_ACCOUNT_ROLE = String(accessContract.ownerRole);
 
 export function normalizeAccountRole(value) {

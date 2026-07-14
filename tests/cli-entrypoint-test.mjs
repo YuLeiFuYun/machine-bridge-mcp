@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -14,6 +15,15 @@ assert(version.stdout.trim() === `${pkg.name} ${pkg.version}`, "version command 
 const help = run(["help"]);
 assert(help.status === 0, `help command failed: ${help.stderr}`);
 assert(help.stdout.includes("Usage:") && help.stdout.includes("--log-format"), "help output omitted current CLI options");
+
+const stateRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-"));
+try {
+  const workspace = run(["workspace", "show", "--state-dir", stateRoot]);
+  assert(workspace.status === 0, `workspace show failed: ${workspace.stderr}`);
+  assert(workspace.stdout.includes("No workspace selected yet"), "workspace show returned an unexpected initial state");
+} finally {
+  rmSync(stateRoot, { recursive: true, force: true });
+}
 console.log("CLI entrypoint test ok");
 
 function run(args) {

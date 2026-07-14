@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
-import { cleanupStaleSecretFiles, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
@@ -121,12 +121,6 @@ async function stateSelfTest() {
     if (configBackups.length !== 1) throw new Error("corrupt global config did not create one bounded backup");
 
 
-    const secretFileCurrent = join(state.paths.profileDir, `worker-secrets-${process.pid}-${Date.now() - 2 * 60 * 60 * 1000}-fixture.json`);
-    await writeFile(secretFileCurrent, "{}", { mode: 0o600 });
-    cleanupStaleSecretFiles(state.paths.profileDir);
-    if (!await existsForSelfTest(secretFileCurrent)) throw new Error("secret cleanup removed a file owned by the current process solely because it was old");
-    await rm(secretFileCurrent, { force: true });
-
     const corruptWorkerRoot = await mkdtemp(join(tmpdir(), "mbm-worker-name-corrupt-"));
     const corruptWorkerWorkspace = await mkdtemp(join(tmpdir(), "mbm-worker-name-workspace-"));
     try {
@@ -179,6 +173,20 @@ async function stateSelfTest() {
       await rm(readFailureRoot, { recursive: true, force: true });
       await rm(readFailureWorkspace, { recursive: true, force: true });
     }
+    const removalReadFailureRoot = await mkdtemp(join(tmpdir(), "mbm-removal-read-failure-"));
+    const removalReadFailureWorkspace = await mkdtemp(join(tmpdir(), "mbm-removal-read-workspace-"));
+    try {
+      loadState(removalReadFailureWorkspace, { stateDir: removalReadFailureRoot });
+      await writeFile(join(removalReadFailureRoot, "config.json"), "x".repeat(2 * 1024 * 1024 + 1), { mode: 0o600 });
+      expectThrow(() => validateStateRootForRemoval(removalReadFailureRoot), "could not be verified before state removal");
+      if (!(await stat(join(removalReadFailureRoot, ".machine-bridge-mcp-state"))).isFile()) {
+        throw new Error("failed state-root validation modified the state root");
+      }
+    } finally {
+      await rm(removalReadFailureRoot, { recursive: true, force: true });
+      await rm(removalReadFailureWorkspace, { recursive: true, force: true });
+    }
+
     await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({ token: "synthetic-browser-token-1234567890123456", port: 39393 })}\n`, { mode: 0o600 });
     const safeRemoval = validateStateRootForRemoval(stateRoot);
     if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed after corrupt config recovery");

@@ -16,6 +16,8 @@ This is standing authorization for repository source completion. Do not leave a 
 
 ## GitHub control plane
 
+Before any GitHub read or mutation, load and apply this repository contract through Machine Bridge. If the local Machine Bridge control plane is unavailable, stop and report the boundary; do not substitute a hosted connector, plugin, browser integration, or other remote control plane.
+
 GitHub operations for this repository must use the local authenticated command-line tools through Machine Bridge:
 
 - use `git` for local history, branches, commits, diffs, fetches, and pushes;

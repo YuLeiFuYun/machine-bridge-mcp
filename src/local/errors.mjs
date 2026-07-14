@@ -19,10 +19,6 @@ export class BridgeError extends Error {
   }
 }
 
-export function bridgeError(code, message, options) {
-  return new BridgeError(code, message, options);
-}
-
 export function normalizeBridgeError(error, options = {}) {
   if (error instanceof BridgeError) return error;
   const code = errorCode(error, options.defaultCode);
@@ -70,7 +66,7 @@ export function remoteBridgeError(value, fallbackMessage = "remote operation fai
   return new BridgeError("execution_failed", fallbackMessage);
 }
 
-export function normalizeErrorCode(value, fallback = "execution_failed") {
+function normalizeErrorCode(value, fallback = "execution_failed") {
   const code = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 64);
   return ERROR_CODES.has(code) ? code : fallback;
 }

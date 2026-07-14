@@ -59,6 +59,7 @@ try {
   assert(initialized.result?.protocolVersion === "2025-11-25", "stdio protocol negotiation failed");
   assert(initialized.result?.capabilities?.tools, "stdio initialize omitted tools capability");
   assert(initialized.result?.instructions?.includes("Machine Bridge default working agreements"), "stdio initialize omitted built-in working agreements");
+  assert(initialized.result?.instructions?.includes("never call a hosted GitHub connector or ChatGPT GitHub plugin") && initialized.result.instructions.includes("stop and report the boundary"), "stdio initialize omitted the fail-closed local GitHub control-plane rule");
   assert(initialized.result?.instructions?.includes("Automatic project context") && initialized.result?.instructions?.includes("npm run check"), "stdio initialize omitted automatic project facts");
   assert(!initialized.result?.instructions?.includes("private-script-body.mjs"), "stdio initialize exposed a package script body");
   assert(initialized.result?.instructions?.includes("stdio global model instructions"), "stdio initialize did not inject model_instructions_file into the session context");
