@@ -43,7 +43,7 @@ const allowedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=1`
 
 const profile = await mkdtemp(path.join(os.tmpdir(), "mbm-oauth-browser-"));
 const debuggingPort = await openPort();
-const child = spawn(chrome, [
+const chromeArgs = [
   "--headless=new",
   "--disable-gpu",
   "--no-first-run",
@@ -51,8 +51,10 @@ const child = spawn(chrome, [
   "--disable-background-networking",
   `--remote-debugging-port=${debuggingPort}`,
   `--user-data-dir=${profile}`,
-  blockedAuthorizationUrl,
-], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+];
+if (process.platform === "linux") chromeArgs.push("--no-sandbox", "--disable-dev-shm-usage");
+chromeArgs.push(blockedAuthorizationUrl);
+const child = spawn(chrome, chromeArgs, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
 let chromeStderr = "";
 child.stderr.on("data", (chunk) => { chromeStderr = `${chromeStderr}${chunk}`.slice(-16_384); });
 const childClosed = new Promise((resolve) => child.once("close", resolve));
@@ -134,7 +136,7 @@ function openPort() {
 }
 
 async function waitForPageTarget(port) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json`);
       if (response.ok) {
