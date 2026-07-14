@@ -214,6 +214,7 @@ const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const workerHttpSource = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
+const oauthBrowserNavigationSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
 
 if (!workerToolTimeoutSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"') || !workerToolTimeoutSource.includes('"browser_screenshot", "browser_upload_files"')) {
@@ -230,6 +231,15 @@ if (workerSource.includes("validateOrigin(request") || workerSource.includes('er
 }
 if (!workerSource.includes('request.method === "OPTIONS"') || !workerSource.includes("corsPreflight(request, base, extraOrigins)")) {
   throw new Error("Worker no longer gates browser CORS preflight through the exact-origin policy");
+}
+if (!workerHttpSource.includes("new URL(formActionOrigin).origin") || !workerHttpSource.includes("form-action ${formAction}")) {
+  throw new Error("authorization HTML no longer constrains form navigation to normalized exact origins");
+}
+if (!workerSource.includes("new URL(authorization.redirectUri).origin") || !workerSource.includes("status, redirectOrigin")) {
+  throw new Error("authorization pages no longer bind CSP form navigation to the validated redirect origin");
+}
+if (!oauthBrowserNavigationSource.includes("negative control unexpectedly reached") || !oauthBrowserNavigationSource.includes("authorization callback omitted code") || !oauthBrowserNavigationSource.includes("authorization callback omitted state")) {
+  throw new Error("real-browser OAuth callback regression lost its blocking control or callback assertions");
 }
 if (!cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
   throw new Error("browser CLI pairing state read is not bounded");
@@ -289,6 +299,7 @@ if (packageJson.scripts?.["markdown:test"] !== "node tests/markdown-test.mjs") t
 if (packageJson.scripts?.["project-metadata:test"] !== "node tests/project-metadata-test.mjs") throw new Error("project metadata helper test is missing");
 if (packageJson.scripts?.["numbers:test"] !== "node tests/numbers-test.mjs") throw new Error("integer normalization helper test is missing");
 if (packageJson.scripts?.["deadline:test"] !== "node tests/monotonic-deadline-test.mjs") throw new Error("monotonic deadline regression test is missing");
+if (packageJson.scripts?.["oauth-browser:test"] !== "node tests/oauth-browser-navigation-test.mjs") throw new Error("real-browser OAuth navigation regression test is missing");
 if (packageJson.scripts?.["records:test"] !== "node tests/records-test.mjs") throw new Error("plain-record helper test is missing");
 if (packageJson.scripts?.["state-inventory:test"] !== "node tests/state-inventory-test.mjs") throw new Error("state inventory regression test is missing");
 if (!existsSync(join(root, "scripts", "generate-worker-types.mjs"))) throw new Error("cross-platform Worker type generator is missing");
@@ -318,7 +329,7 @@ if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local script
 if (packageJson.scripts?.["lint:test"] !== "node tests/lint-gate-test.mjs") {
   throw new Error("semantic lint configuration regression test is missing");
 }
-if (!String(packageJson.scripts?.check || "").includes("npm run shell:test") || !String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run deadline:test") || !String(packageJson.scripts?.check || "").includes("npm run install:test")) {
+if (!String(packageJson.scripts?.check || "").includes("npm run shell:test") || !String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run deadline:test") || !String(packageJson.scripts?.check || "").includes("npm run install:test") || !String(packageJson.scripts?.check || "").includes("npm run oauth-browser:test")) {
   throw new Error("complete check no longer includes static undefined-identifier and installed-default-startup gates");
 }
 if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
