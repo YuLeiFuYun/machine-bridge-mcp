@@ -288,6 +288,13 @@ if (packageJson.scripts?.["security-properties:test"] !== "node tests/security-p
 if (packageJson.scripts?.["shell:test"] !== "node tests/shell-test.mjs") throw new Error("Wrangler executable boundary regression test is missing");
 if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
+const stateSource = readFileSync(join(root, "src", "local", "state.mjs"), "utf8");
+if (!cliSource.includes('promptOnFirstRun ? defaultFirstRunWorkspace() : process.cwd()')
+    || !cliSource.includes("Workspace folder [${fallback}] (press Enter to use the default): ")
+    || !cliSource.includes("ensureWorkspaceDirectory(answer.trim() || fallback)")
+    || !stateSource.includes('path.join(home, "MachineBridge")')) {
+  throw new Error("Windows first-run workspace prompt/default behavior is missing");
+}
 if (packageJson.scripts?.["capability-ranking:test"] !== "node tests/capability-ranking-test.mjs") throw new Error("capability ranking regression test is missing");
 if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
   throw new Error("package syntax check is not using the dynamic repository scanner");

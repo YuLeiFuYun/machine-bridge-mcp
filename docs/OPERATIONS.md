@@ -99,6 +99,8 @@ machine-mcp --verbose
 
 `Unknown cli config "--allow-scripts"` proves the package installation ran under npm 11 or older. `Invalid property "node"` or `Invalid property "devEngines.node"` means npm parsed an outdated `devEngines` object; inspect the npm debug log to identify its source rather than assuming it belongs to Machine Bridge. The published package declares both Node.js 26 and npm 12 in `engines`, and `machine-mcp doctor` checks both active versions. Keep `--omit=optional` in the install command. Without it npm may resolve optional `fsevents` and warn that its install script was not included in `allowScripts`; Machine Bridge does not require that development-time watcher at runtime.
 
+After global installation, Windows users may open any `cmd.exe` window and run `machine-mcp`; they do not need to navigate to a project or package directory. On the first interactive start, the CLI asks for a workspace folder and displays `%USERPROFILE%\MachineBridge` as the default. Pressing Enter creates and remembers that folder. This avoids inheriting an arbitrary Command Prompt current directory such as `C:\Windows\System32`. Typing another folder in the prompt creates that folder when necessary. Explicit `--workspace PATH` remains a strict automation interface and requires an existing path.
+
 ## Version 1 upgrade convergence
 
 Version 1 advertises only MCP protocol `2025-11-25`. Upgrade the MCP client/host if it cannot negotiate that version; Machine Bridge does not retain an obsolete protocol dispatcher. The current local state schema is unchanged from the final 0.18.x release, so do not delete the state root merely to upgrade.

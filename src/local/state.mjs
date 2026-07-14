@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,16 @@ export function expandHome(input = "") {
 export function resolveWorkspace(input = process.cwd()) {
   const resolved = path.resolve(expandHome(input));
   return realpathSync.native ? realpathSync.native(resolved) : realpathSync(resolved);
+}
+
+export function defaultFirstRunWorkspace({ platform = process.platform, home = os.homedir(), cwd = process.cwd() } = {}) {
+  return path.resolve(platform === "win32" ? path.join(home, "MachineBridge") : cwd);
+}
+
+export function ensureWorkspaceDirectory(input) {
+  const requested = path.resolve(expandHome(input));
+  mkdirSync(requested, { recursive: true });
+  return resolveWorkspace(requested);
 }
 
 export function defaultStateRoot() {
