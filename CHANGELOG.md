@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2 - 2026-07-14
+
+### Deadline and architecture integrity
+
+- Replace wall-clock arithmetic in startup-lock waits, verified daemon takeover/stop, process-session exit waits, managed-job recovery-lock handoff, full-access diagnostics, browser waits, page actionability/stability checks, application-discovery cache freshness, and local/Worker duration metrics with monotonic elapsed time. System clock rollback can no longer extend these bounded state machines, and a forward correction cannot force premature timeout; persisted expiry and retention timestamps remain wall-clock based.
+- Add deterministic clock-fault regressions at the shared deadline primitive, startup-lock production path, and browser-extension production path, and make the deadline suite a mandatory part of `npm run check`.
+- Correct stale architecture claims after the state-schema-6 and named-account releases: remote tokens are bound to named account principals and roles, duplicate JSON-RPC ids are scoped to one signed MCP session, and application-level account isolation is distinguished from OS/browser tenancy. Architecture tests reject a return to the obsolete statements.
+
 ## 1.0.1 - 2026-07-14
 
 ### Startup and release-gate reliability

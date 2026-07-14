@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { performance } from "node:perf_hooks";
 
 const serviceWorkerSource = await readFile(new URL("../browser-extension/service-worker.js", import.meta.url), "utf8");
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -10,6 +11,7 @@ await testFailedReplacementPreservesPairing();
 await testTrustedFallbackBoundary();
 await testScreenshotRestoresActiveTab();
 await testNavigationWaitStopsWhenTabCloses();
+await testBrowserWaitIgnoresWallClockRollback();
 await testAggregateFrameAndSourceBudgets();
 console.log("browser service worker test ok");
 
@@ -214,6 +216,28 @@ async function testNavigationWaitStopsWhenTabCloses() {
   assert(removedListener === null, "navigation wait did not remove its tab-removal listener");
 }
 
+async function testBrowserWaitIgnoresWallClockRollback() {
+  const tabs = {
+    async get(id) { return { id, windowId: 1, active: true, status: "complete", title: "Clock", url: "https://example.test/pending" }; },
+    async query() { return []; },
+  };
+  const context = createContext({
+    Date: { now: () => 0 },
+    chrome: baseChrome({ tabs }),
+  });
+  const api = loadBrowserOperations(context);
+  let error = null;
+  try {
+    await Promise.race([
+      api.dispatch("wait", { tabId: 7, urlContains: "/complete", timeoutMs: 30 }, { cancelled: false }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("wall-clock watchdog expired")), 1000)),
+    ]);
+  } catch (caught) {
+    error = caught;
+  }
+  assert(String(error?.message || "").includes("browser wait timed out"), "browser wait did not use an elapsed monotonic deadline when wall time was frozen");
+}
+
 async function testAggregateFrameAndSourceBudgets() {
   let frameResults = Array.from({ length: 70 }, (_, frameId) => ({ frameId, result: { url: `https://example.test/frame-${frameId}` } }));
   const allocatedElements = [];
@@ -306,6 +330,7 @@ function createContext(overrides = {}) {
     JSON,
     URL,
     Promise,
+    performance,
     setTimeout,
     clearTimeout,
     setInterval: () => 1,

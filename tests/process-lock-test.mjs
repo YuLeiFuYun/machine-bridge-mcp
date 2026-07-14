@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { performance } from "node:perf_hooks";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
@@ -17,6 +18,7 @@ try {
   await atomicReplacementTest();
   processIdentityTest();
   await startupWaitTest();
+  await startupWaitIgnoresWallClockRollbackTest();
   await maintenanceLockTest();
   await malformedAndReusedPidLockTest();
   await symbolicLinkLockTest();
@@ -141,6 +143,35 @@ async function startupWaitTest() {
   lock.release();
   const result = await childResult;
   assert(result.code === 0, `startup lock fixture failed: ${result.stderr}`);
+}
+
+async function startupWaitIgnoresWallClockRollbackTest() {
+  const workspace = join(temp, "wall-clock-workspace");
+  const stateRoot = join(temp, "wall-clock-state");
+  await mkdir(workspace, { recursive: true });
+  const state = loadState(workspace, { stateDir: stateRoot });
+  const held = acquireStartupLock(state, { operation: "wall-clock-fixture" });
+  assert(held.acquired, "wall-clock fixture could not acquire its competing lock");
+  const originalDateNow = Date.now;
+  const wallClockBeforeRollback = originalDateNow();
+  const watchdog = setTimeout(() => { Date.now = originalDateNow; }, 1000);
+  const started = performance.now();
+  try {
+    Date.now = () => wallClockBeforeRollback - 60 * 60 * 1000;
+    let error = null;
+    try {
+      await acquireStartupLockWithWait(state, { operation: "wall-clock-parent", timeoutMs: 50, pollMs: 5 });
+    } catch (caught) {
+      error = caught;
+    }
+    const elapsed = performance.now() - started;
+    assert(String(error?.message || "").includes("did not finish within"), "startup wait did not reach its bounded timeout under a wall-clock rollback");
+    assert(elapsed < 500, `wall-clock rollback extended the 50 ms startup deadline to ${elapsed} ms`);
+  } finally {
+    Date.now = originalDateNow;
+    clearTimeout(watchdog);
+    held.release();
+  }
 }
 
 async function maintenanceLockTest() {

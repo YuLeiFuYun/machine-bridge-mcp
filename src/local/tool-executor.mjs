@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { errorCode, normalizeBridgeError } from "./errors.mjs";
 
 export class ToolExecutor {
@@ -60,7 +61,7 @@ function lifecycleMiddleware(callRegistry) {
 
 function observabilityMiddleware(observability, logger, safeMessage, slowMs) {
   return async (operation, next) => {
-    const started = Date.now();
+    const started = performance.now();
     observability.start(operation.tool);
     logger.event?.("debug", "tool.call.started", {
       call_id: shortCallId(operation.context.callId),
@@ -69,7 +70,7 @@ function observabilityMiddleware(observability, logger, safeMessage, slowMs) {
     });
     try {
       const result = await next(operation);
-      const durationMs = Date.now() - started;
+      const durationMs = performance.now() - started;
       const slow = durationMs >= slowMs;
       observability.finish(operation.tool, { status: "completed", durationMs, slow });
       logger.event?.("debug", slow ? "tool.call.slow" : "tool.call.completed", {
@@ -78,7 +79,7 @@ function observabilityMiddleware(observability, logger, safeMessage, slowMs) {
       return result;
     } catch (error) {
       const normalized = normalizeBridgeError(error, { safeMessage: () => safeMessage(error, operation.args) });
-      const durationMs = Date.now() - started;
+      const durationMs = performance.now() - started;
       const code = errorCode(normalized);
       const status = code === "cancelled" ? "cancelled" : code === "timeout" ? "timeout" : "failed";
       observability.finish(operation.tool, { status, durationMs, errorCode: code, slow: durationMs >= slowMs });

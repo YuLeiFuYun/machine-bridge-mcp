@@ -1,6 +1,17 @@
 # Engineering and security audit
 
-This document records the cross-cutting audit initiated for version 0.12.0, the 0.12.2 cross-platform CI follow-up, and the 0.13.0 architecture/automatic-routing follow-up, the 0.15.0 daily-browser and cross-platform hardening review, and the 0.16.0 runtime-boundary review. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
+This document records the cross-cutting audit initiated for version 0.12.0, its later architecture, browser, lifecycle, authorization, release-gate, and version 1 follow-ups, plus the version 1.0.2 elapsed-time and documentation-integrity review. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
+
+
+## 2026-07-14 version 1.0.2 elapsed-time and documentation-integrity audit
+
+The review began from exact released commit `10931c11d7cdab1051018059fc461b73bb5505ff` (tag and npm version 1.0.1), with a clean worktree, zero high-severity npm audit findings, no open issue or pull request, and successful required Linux, macOS, Windows, governance, CodeQL, dependency-review, and Scorecard checks. The threat-model pass separated persisted wall-clock facts—token expiry, file age, retention, alarms, and operator timestamps—from in-memory elapsed durations.
+
+A confirmed lifecycle defect remained across otherwise bounded code paths: startup-lock acquisition, verified daemon takeover/stop, process-session exit waits, managed-job recovery-lock release, full-access diagnostics, and browser/page waits calculated deadlines from `Date.now()`. A backward system-clock correction could extend those state machines beyond their documented maximum, while a forward correction could trigger premature timeout. Application-discovery cache freshness and local/Worker duration metrics had the same clock-domain error, with lower impact. One shared Node monotonic-deadline primitive now owns bounded elapsed waits; browser contexts use their native monotonic `performance.now()`. Persisted timestamps deliberately remain wall-clock based. Deterministic tests freeze or roll back wall time while exercising the real startup-lock and extension wait paths, and the shared helper clamps anomalous backward samples.
+
+The same review confirmed architecture-documentation drift introduced by earlier releases. The document still named state schema 5 after schema 6, described OAuth tokens as lacking independently authorized human principals after named accounts and roles shipped, scoped duplicate request IDs to an entire access token after signed MCP sessions shipped, and listed per-principal authorization as absent. The corrected model distinguishes named application-level account principals and targeted revocation from OS/browser-profile tenancy: all authorized accounts still converge on one daemon, workspace, browser profile, and local OS user. Architecture tests now reject the obsolete statements.
+
+External comparison retained the existing conservative product boundary. Current MCP authorization and security guidance supports exact redirect/resource binding, PKCE S256, server-side authorization, and no token passthrough; the implementation already enforces those controls. Browser projects that expose arbitrary page scripts were not copied because Machine Bridge intentionally restricts callers to packaged structured operations. Remaining limits are explicit: a same-user malicious process, MCP host filtering, browser/OS enforcement, Cloudflare lifecycle behavior, and live deployment state are outside repository-only guarantees.
 
 
 ## 2026-07-14 version 1.0.1 installed-startup incident

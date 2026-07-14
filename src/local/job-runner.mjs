@@ -2,9 +2,11 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { executionEnv } from "./shell.mjs";
 import { terminateProcessTree } from "./process-sessions.mjs";
 import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
@@ -66,8 +68,8 @@ try {
 async function releaseRecoveryClaim() {
   if (!/^[a-f0-9]{32}$/.test(recoveryLockToken)) throw new Error("recovery runner is missing its ownership token");
   const file = join(jobDir, "recovery.lock");
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
+  const deadline = createMonotonicDeadline(5000);
+  while (!deadline.expired()) {
     if (removeOwnedJsonFileSync(file, { pid: process.pid, token: recoveryLockToken })) return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
@@ -224,7 +226,7 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
     : step.stdin === null || step.stdin === undefined
       ? null
       : Buffer.from(step.stdin, "utf8");
-  const started = Date.now();
+  const started = performance.now();
   const raw = await spawnStep(argv, {
     cwd: step.cwd,
     env,
@@ -242,7 +244,7 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
     code: raw.code,
     signal: raw.signal,
     timed_out: raw.timedOut,
-    duration_ms: Date.now() - started,
+    duration_ms: performance.now() - started,
     stdout: step.capture_output === "discard" ? "" : redactOutput(raw.stdout, resourceContext),
     stderr: step.capture_output === "discard" ? "" : redactOutput(raw.stderr, resourceContext),
     output_discarded: step.capture_output === "discard",

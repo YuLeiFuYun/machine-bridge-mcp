@@ -20,7 +20,7 @@ No transport is treated as a sandbox. Both transports invoke the same local runt
 
 The CLI canonicalizes workspaces, resolves policy profiles, maintains per-workspace state and credentials, serializes startup/deploy/rotation with process-identity locks, deploys the Worker, installs optional platform-native autostart, and starts either remote daemon or stdio mode.
 
-A canonical workspace receives an independent profile, Worker name, secret set, resource registry, managed-job directory, daemon/startup locks, and state file. State schema version 5 records policy origin/revision and local resource metadata in addition to the capability fields. `exclusive-file.mjs` owns complete-before-visible exclusive claims and flushed atomic replacement. `process-identity.mjs` owns PID liveness, process start-time comparison, bounded command-line inspection, and PID-reuse classification. `service-lifecycle.mjs` owns the fail-closed stop-daemons-before-remove state machine shared by service removal and full uninstall.
+A canonical workspace receives an independent profile, Worker name, secret set, resource registry, managed-job directory, daemon/startup locks, and state file. State schema version 6 records named accounts, policy origin/revision, and local resource metadata in addition to the capability fields. `exclusive-file.mjs` owns complete-before-visible exclusive claims and flushed atomic replacement. `process-identity.mjs` owns PID liveness, process start-time comparison, bounded command-line inspection, and PID-reuse classification. `service-lifecycle.mjs` owns the fail-closed stop-daemons-before-remove state machine shared by service removal and full uninstall.
 
 ### Local runtime
 
@@ -140,7 +140,7 @@ flowchart LR
   CLI --> S[Autostart provider]
 ```
 
-Remote OAuth currently determines which registered client token may call tools; it does not distinguish independently authorized human principals. Local stdio access relies on the local process and configuration boundary. Policy determines which tools the local daemon and relay advertise. A connector host can independently present a smaller tool subset to a session; this post-relay filtering is outside the protocol state visible to Machine Bridge. Canonical resolution limits direct filesystem tools. Processes retain local-user authority and can escape workspace constraints through their own code or system calls.
+Remote OAuth binds each code and token to a named Machine Bridge account, account version, and role, so accounts are independent application-level authorization principals. The Worker intersects that role with the connected daemon policy, and the local runtime enforces the relayed authorization again. This distinction is not operating-system tenancy: every account still reaches one daemon, workspace, browser profile, and OS user authority. Local stdio access relies on the local process and configuration boundary. A connector host can independently present a smaller tool subset to a session; this post-relay filtering is outside the protocol state visible to Machine Bridge. Canonical resolution limits direct filesystem tools. Processes retain local-user authority and can escape workspace constraints through their own code or system calls.
 
 ## Remote request lifecycle
 
@@ -158,7 +158,7 @@ Remote OAuth currently determines which registered client token may call tools; 
 12. A matching cancellation notification removes the pending call, tells the daemon to cancel, and terminates any ordinary child processes bound to it.
 13. `start_job` is different: after durable acceptance, the detached runner is no longer bound to the relay call or socket. Later cancellation uses `cancel_job` or the local CLI.
 
-Duplicate in-flight JSON-RPC IDs for the same access token are rejected so cancellation cannot ambiguously target multiple calls.
+Duplicate in-flight JSON-RPC IDs are rejected only within the same authenticated MCP session. The request key includes OAuth token identity, the HMAC-bound MCP session, JSON-RPC id type, and id value, so separate initialized clients may safely reuse the same numeric id.
 
 ## Stdio request lifecycle
 
@@ -204,7 +204,7 @@ This is a process-level transaction, not a filesystem-wide atomic transaction ac
 
 The default `full` profile passes the complete parent environment. Isolated environment mode, used by the narrower named profiles unless overridden, creates private runtime HOME, temporary, and cache directories and passes only a small set of path/locale/platform variables. It reduces accidental credential inheritance but cannot prevent explicit access to known filesystem paths, credential stores, network services, or other user resources.
 
-One-shot calls have bounded output and timeouts. Process sessions retain bounded byte buffers with monotonic offsets, accept bounded stdin, support short output/exit waits, and are capped per runtime. Valid UTF-8 is returned as text; byte slices that are not valid UTF-8 also include lossless base64 data. Session IDs are random. Sessions are memory-only and are killed on runtime stop, remote disconnect, or daemon replacement.
+One-shot calls have bounded output and timeouts. Startup-lock waits, daemon takeover, process-session reads, managed-job recovery handoff, browser/page waits, application-cache freshness, and in-memory duration metrics use monotonic elapsed time, so wall-clock correction cannot extend or prematurely terminate their configured duration. Persisted timestamps and retention/credential expiry continue to use wall time. Process sessions retain bounded byte buffers with monotonic offsets, accept bounded stdin, support short output/exit waits, and are capped per runtime. Valid UTF-8 is returned as text; byte slices that are not valid UTF-8 also include lossless base64 data. Session IDs are random. Sessions are memory-only and are killed on runtime stop, remote disconnect, or daemon replacement.
 
 Child processes run in a separate process group where supported. Timeout, cancellation, disconnect, and replacement send termination to process trees, with a referenced forced-escalation timer that remains alive even when the direct child exits before a resistant descendant. Windows uses tree-aware task termination.
 
@@ -260,4 +260,4 @@ Third-party workflow actions are pinned to immutable commit SHAs. Dependabot pro
 - model-level prompt-injection prevention or semantic validation of browser/application actions;
 - universal desktop UI automation beyond the implemented OS Accessibility backend;
 - scripting browser-internal/enterprise-blocked pages or inaccessible cross-origin frames;
-- isolated multi-user tenancy or per-principal authorization in one Worker deployment; multiple OAuth client registrations currently share one workspace authority.
+- operating-system or browser-profile isolation between mutually distrustful account principals in one Worker/daemon deployment; named accounts provide Worker/local authorization and targeted revocation, but all authorized roles still converge on one local OS user and workspace trust domain.

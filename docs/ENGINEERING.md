@@ -110,6 +110,7 @@ A higher branch count is acceptable only when the function is an explicit state 
 - Preserve a stable coarse error class for automation and a concise human message for operators.
 - Do not retry an operation merely because it failed; retry only when the error is positively classified as transient and the operation is idempotent or server state is checked after ambiguity.
 - When a remote write may have succeeded before the response was lost, query authoritative state before repeating it.
+- Duration-based deadlines must use a monotonic clock. Wall time remains appropriate for persisted timestamps, credential expiry, retention, and operator-visible dates, but a system clock correction must not extend or prematurely terminate an in-process wait.
 - Timeouts must terminate the relevant process tree. Forced escalation must remain referenced until resistant descendants are handled; do not clear it merely because the direct child exited.
 - Half-open connections need liveness detection, not only periodic writes.
 - Lock reclamation must consider process liveness, process start time, absolute age, ownership token, and file identity to defend against PID reuse and replacement races.

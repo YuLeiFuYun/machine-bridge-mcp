@@ -60,6 +60,7 @@ const boundaryModules = new Set([
   "browser-extension-protocol.mjs",
   "browser-pairing-store.mjs",
   "worker-secret-file.mjs",
+  "monotonic-deadline.mjs",
 ]);
 for (const name of boundaryModules) {
   const file = join(localRoot, name);
@@ -95,6 +96,7 @@ const lineLimits = Object.freeze({
   "src/local/browser-extension-protocol.mjs": 120,
   "src/local/browser-pairing-store.mjs": 120,
   "src/local/worker-secret-file.mjs": 180,
+  "src/local/monotonic-deadline.mjs": 60,
   "src/worker/mcp-session.ts": 120,
   "src/worker/tool-timeout.ts": 80,
   "src/worker/pending-calls.ts": 180,
@@ -102,6 +104,17 @@ const lineLimits = Object.freeze({
 for (const [name, maximum] of Object.entries(lineLimits)) {
   const lines = readFileSync(join(root, name), "utf8").split(/\r?\n/).length;
   if (lines > maximum) throw new Error(`${name} exceeds its responsibility boundary (${lines} > ${maximum} lines)`);
+}
+
+for (const file of [
+  ...modules.map((name) => join(localRoot, name)),
+  join(root, "browser-extension", "browser-operations.js"),
+  join(root, "browser-extension", "page-automation.js"),
+]) {
+  const source = readFileSync(file, "utf8");
+  if (/deadline\s*=\s*Date\.now\(\)/.test(source) || /while\s*\([^)]*Date\.now\(\)/.test(source)) {
+    throw new Error(`duration wait uses wall time in ${relative(root, file)}`);
+  }
 }
 
 for (const name of ["app-automation.mjs", "browser-bridge.mjs", "managed-jobs.mjs", "process-sessions.mjs"]) {
@@ -262,6 +275,7 @@ if (packageJson.scripts?.["policy-docs:check"] !== "node scripts/generate-policy
 if (packageJson.scripts?.["markdown:test"] !== "node tests/markdown-test.mjs") throw new Error("shared Markdown helper test is missing");
 if (packageJson.scripts?.["project-metadata:test"] !== "node tests/project-metadata-test.mjs") throw new Error("project metadata helper test is missing");
 if (packageJson.scripts?.["numbers:test"] !== "node tests/numbers-test.mjs") throw new Error("integer normalization helper test is missing");
+if (packageJson.scripts?.["deadline:test"] !== "node tests/monotonic-deadline-test.mjs") throw new Error("monotonic deadline regression test is missing");
 if (packageJson.scripts?.["records:test"] !== "node tests/records-test.mjs") throw new Error("plain-record helper test is missing");
 if (packageJson.scripts?.["state-inventory:test"] !== "node tests/state-inventory-test.mjs") throw new Error("state inventory regression test is missing");
 if (!existsSync(join(root, "scripts", "generate-worker-types.mjs"))) throw new Error("cross-platform Worker type generator is missing");
@@ -284,7 +298,7 @@ if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local script
 if (packageJson.scripts?.["lint:test"] !== "node tests/lint-gate-test.mjs") {
   throw new Error("semantic lint configuration regression test is missing");
 }
-if (!String(packageJson.scripts?.check || "").includes("npm run shell:test") || !String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run install:test")) {
+if (!String(packageJson.scripts?.check || "").includes("npm run shell:test") || !String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run deadline:test") || !String(packageJson.scripts?.check || "").includes("npm run install:test")) {
   throw new Error("complete check no longer includes static undefined-identifier and installed-default-startup gates");
 }
 if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
@@ -333,6 +347,19 @@ for (const file of [
   if (!normalized.includes(installCommand)) throw new Error(`global install/activation guidance drifted in ${relative(root, file)}`);
 }
 if (!cliSource.replace(/\s+/g, " ").includes(`${pinnedInstallCommand} && machine-mcp`)) throw new Error("CLI pinned npm installation guidance drifted from user documentation");
+
+const architecture = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
+for (const stale of [
+  "State schema version 5",
+  "does not distinguish independently authorized human principals",
+  "Duplicate in-flight JSON-RPC IDs for the same access token",
+  "multiple OAuth client registrations currently share one workspace authority",
+]) {
+  if (architecture.includes(stale)) throw new Error(`architecture documentation retained stale authorization/state claim: ${stale}`);
+}
+if (!architecture.includes("State schema version 6") || !architecture.includes("monotonic elapsed time") || !architecture.includes("Persisted timestamps and retention/credential expiry continue to use wall time")) {
+  throw new Error("architecture documentation omitted the current state schema or monotonic deadline contract");
+}
 
 const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
 if (!engineering.includes("default profile is intentionally `full`") || !engineering.includes("`.project-local/`")) {

@@ -53,7 +53,7 @@ export class PendingCallRegistry {
     if (input.clientRequestKey && this.byRequestKey.has(input.clientRequestKey)) {
       throw new PendingCallRegistrationError("conflict", "duplicate in-flight JSON-RPC request id within this MCP session");
     }
-    const startedAt = Date.now();
+    const startedAt = performance.now();
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         const record = this.take(input.id);
@@ -111,7 +111,7 @@ export class PendingCallRegistry {
   }
 
   snapshot(): { active: number; request_keys: number; maximum: number; oldest_ms: number; by_tool: Record<string, number> } {
-    const now = Date.now();
+    const now = performance.now();
     const byTool: Record<string, number> = {};
     let oldestMs = 0;
     for (const record of this.byId.values()) {

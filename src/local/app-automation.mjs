@@ -1,6 +1,7 @@
 import { opendir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { createToolAuthorizer } from "./policy.mjs";
 
 const MAX_APPLICATIONS = 1000;
@@ -13,7 +14,7 @@ const APP_NAME_PATTERN = /^[^\0\r\n]{1,300}$/;
 const DEFAULT_APPLICATION_CACHE_MS = 30_000;
 
 export class AppAutomationManager {
-  constructor({ policy, authorizeTool = null, displayPath, runProcess, readResourceText, throwIfCancelled = () => {}, platform = process.platform, home = homedir(), applicationRoots = null, applicationCacheMs = DEFAULT_APPLICATION_CACHE_MS, now = () => Date.now() }) {
+  constructor({ policy, authorizeTool = null, displayPath, runProcess, readResourceText, throwIfCancelled = () => {}, platform = process.platform, home = homedir(), applicationRoots = null, applicationCacheMs = DEFAULT_APPLICATION_CACHE_MS, now = () => performance.now() }) {
     this.policy = policy || {};
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.displayPath = displayPath;

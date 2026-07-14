@@ -58,9 +58,10 @@
   
   async function browserWait(params, state) {
     const tab = await resolveTab(params.tabId);
-    const deadline = Date.now() + Math.max(1, Number(params.timeoutMs) || 30000);
+    const timeoutMs = Math.max(1, Number(params.timeoutMs) || 30000);
+    const startedAt = performance.now();
     let last = null;
-    while (Date.now() <= deadline) {
+    while (performance.now() - startedAt <= timeoutMs) {
       throwIfCancelled(state);
       const current = await chrome.tabs.get(tab.id);
       const urlMatched = !params.urlContains || String(current.url || "").includes(params.urlContains);

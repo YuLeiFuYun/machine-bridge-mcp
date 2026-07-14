@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { executionEnv } from "./shell.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
+import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { clampInteger } from "./numbers.mjs";
 
 export const MAX_COMMAND_BYTES = 64 * 1024;
@@ -120,10 +121,10 @@ export class ProcessSessionManager {
     this.throwIfCancelled(context);
     const waitForExit = args.wait_for_exit === true;
     if (waitMs > 0 && session.closedAt === null) {
-      const deadline = Date.now() + waitMs;
+      const deadline = createMonotonicDeadline(waitMs);
       if (waitForExit) {
-        while (session.closedAt === null && Date.now() < deadline) {
-          await waitForSessionChange(session, Math.max(1, deadline - Date.now()), () => this.throwIfCancelled(context));
+        while (session.closedAt === null && !deadline.expired()) {
+          await waitForSessionChange(session, Math.max(1, deadline.remainingMs()), () => this.throwIfCancelled(context));
         }
       } else if (!sessionHasOutputAfter(session, stdoutOffset, stderrOffset)) {
         await waitForSessionChange(session, waitMs, () => this.throwIfCancelled(context));

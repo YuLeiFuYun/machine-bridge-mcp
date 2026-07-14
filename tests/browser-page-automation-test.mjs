@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { performance } from "node:perf_hooks";
 
 const source = await readFile(new URL("../browser-extension/page-automation.js", import.meta.url), "utf8");
 
@@ -117,6 +118,7 @@ const context = vm.createContext({
   Date,
   URL,
   Promise,
+  performance,
   setTimeout,
   clearTimeout,
   console,

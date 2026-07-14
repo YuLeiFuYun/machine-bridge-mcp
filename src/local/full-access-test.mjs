@@ -2,6 +2,7 @@ import { chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
+import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { LocalRuntime } from "./runtime.mjs";
 import { generateSshKeyPair } from "./ssh-key.mjs";
 import { runExecutable } from "./shell.mjs";
@@ -178,8 +179,8 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
 }
 
 async function waitForJob(manager, jobId, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const deadline = createMonotonicDeadline(timeoutMs);
+  while (!deadline.expired()) {
     const value = manager.read({ job_id: jobId });
     if (TERMINAL_JOB_STATES.has(value.status)) return value;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
