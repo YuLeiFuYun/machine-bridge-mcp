@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { BridgeError, errorCode, publicError, remoteBridgeError } from "../src/local/errors.mjs";
 import { CallRegistry } from "../src/local/call-registry.mjs";
@@ -14,6 +17,7 @@ await testCallRegistry();
 await testToolExecutor();
 await testToolExecutorConcurrency();
 testTerminalDeliveryFailure();
+await testProcessExecutionNoShell();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
 testErrors();
@@ -141,6 +145,32 @@ function testTerminalDeliveryFailure() {
   assert(events.some((event) => event.name === "relay.tool_result.delivery_failed"), "failed terminal delivery was not observable");
 }
 
+async function testProcessExecutionNoShell() {
+  const temp = mkdtempSync(join(tmpdir(), "mbm-process-execution-"));
+  const marker = join(temp, "must-not-exist");
+  const tracker = new ProcessTracker();
+  const service = new ProcessExecutionService({
+    workspace: temp,
+    policy: { minimalEnv: false },
+    policyGate: { assert() {} },
+    runtimeDir: temp,
+    processTracker: tracker,
+    resolveExistingPath: async (value) => value,
+    resolveLocalCommand: async () => ({}),
+    displayPath: (value) => value,
+    throwIfCancelled() {},
+  });
+  try {
+    const payload = `$(touch ${marker}); echo injected`;
+    const result = await service.run(process.execPath, ["-e", "process.stdout.write(process.argv[1])", payload], 10_000, false, 1024);
+    assert(result.stdout === payload, "direct process execution changed an argv value through shell interpretation");
+    assert(!existsSync(marker), "direct process execution evaluated shell syntax from argv");
+    assert(tracker.snapshot().active_processes === 0, "direct process execution leaked process tracking state");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+}
+
 async function testProcessCancellationSettlesBeforeClose() {
   class NeverClosingChild extends EventEmitter {
     constructor() {
@@ -153,6 +183,7 @@ async function testProcessCancellationSettlesBeforeClose() {
   }
   const child = new NeverClosingChild();
   let terminated = 0;
+  let spawnInvocation = null;
   const tracker = new ProcessTracker({ terminateWithEscalation() { terminated += 1; } });
   const service = new ProcessExecutionService({
     workspace: process.cwd(),
@@ -164,11 +195,15 @@ async function testProcessCancellationSettlesBeforeClose() {
     resolveLocalCommand: async () => ({}),
     displayPath: (value) => value,
     throwIfCancelled(context) { if (context.signal?.aborted) throw context.signal.reason; },
-    spawnProcess: () => child,
+    spawnProcess: (cmd, args, options) => {
+      spawnInvocation = { cmd, args, options };
+      return child;
+    },
     terminateProcess: () => { terminated += 1; return null; },
   });
   const controller = new AbortController();
   const running = service.run("never", [], 60_000, false, 1024, { callId: "stuck", signal: controller.signal });
+  assert(spawnInvocation?.options?.shell === false, "direct process execution did not explicitly disable shell interpretation");
   controller.abort(new BridgeError("cancelled", "relay disconnected"));
   await expectReject(() => Promise.race([running, new Promise((_, reject) => setTimeout(() => reject(new Error("cancellation did not settle")), 100))]), "cancelled", "relay disconnected");
   assert(terminated === 1, "cancelled process was not terminated");

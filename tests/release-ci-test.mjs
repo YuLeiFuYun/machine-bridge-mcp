@@ -1,4 +1,4 @@
-import { requireSuccessfulCiRun } from "../scripts/release-ci.mjs";
+import { requireSuccessfulCiRun, requireSuccessfulWorkflowRun } from "../scripts/release-ci.mjs";
 
 const head = "a".repeat(40);
 const other = "b".repeat(40);
@@ -18,8 +18,10 @@ const selected = requireSuccessfulCiRun([
   success,
 ], head);
 assert(selected.databaseId === 101, "successful head push run was not selected");
+assert(requireSuccessfulWorkflowRun([success], head, "CodeQL").databaseId === 101, "named release workflow was not selected");
 
 expectThrow(() => requireSuccessfulCiRun([], head), "no push-triggered CI run exists");
+expectThrow(() => requireSuccessfulWorkflowRun([], head, "OpenSSF Scorecard"), "no push-triggered OpenSSF Scorecard run exists");
 expectThrow(() => requireSuccessfulCiRun([{ ...success, status: "in_progress", conclusion: "" }], head), "is in_progress");
 expectThrow(() => requireSuccessfulCiRun([{ ...success, conclusion: "failure" }], head), "concluded failure");
 expectThrow(() => requireSuccessfulCiRun([

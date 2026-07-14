@@ -306,14 +306,56 @@ if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs
 }
 const ciSource = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
 if (!ciSource.includes("npm run privacy:history")) throw new Error("CI package audit no longer scans reachable Git history");
+if ((ciSource.match(/node scripts\/prepare-pinned-npm\.mjs/g) || []).length !== 2 || ciSource.includes("npm install --global npm@")) {
+  throw new Error("CI no longer bootstraps the npm baseline from an integrity-verified immutable tarball");
+}
+const npmBootstrapSource = readFileSync(join(root, "scripts", "prepare-pinned-npm.mjs"), "utf8");
+if (!npmBootstrapSource.includes("npm-12.0.1.tgz") || !npmBootstrapSource.includes("sha512-L5T9i/YAQWQWqTS/") || !npmBootstrapSource.includes('redirect: "error"') || !npmBootstrapSource.includes("readBoundedBody(response, MAX_TARBALL_BYTES)")) {
+  throw new Error("pinned npm bootstrap lost its exact version, bounded download, SHA-512 integrity, or redirect boundary");
+}
+const sourceWrapper = readFileSync(join(root, "mbm"), "utf8");
+if (!sourceWrapper.includes("npm ci") || /npm install(?:\s|$)/.test(sourceWrapper)) throw new Error("source wrapper no longer installs from the committed lockfile");
 const codeqlWorkflowSource = readFileSync(join(root, ".github", "workflows", "codeql.yml"), "utf8");
 if (!codeqlWorkflowSource.includes("scripts/sarif-security-gate.mjs") || !codeqlWorkflowSource.includes("steps.analyze.outputs.sarif-output")) {
-  throw new Error("CodeQL workflow no longer fails on unaccepted SARIF security findings");
+  throw new Error("CodeQL workflow no longer fails on unaccepted SARIF findings");
+}
+const scorecardWorkflowSource = readFileSync(join(root, ".github", "workflows", "scorecard.yml"), "utf8");
+if (!scorecardWorkflowSource.includes("scripts/sarif-security-gate.mjs results.sarif") || !scorecardWorkflowSource.includes(".github/scorecard-accepted-findings.json")) {
+  throw new Error("Scorecard workflow no longer rejects unreviewed supply-chain findings before upload");
+}
+const scorecardAccepted = JSON.parse(readFileSync(join(root, ".github", "scorecard-accepted-findings.json"), "utf8"));
+const acceptedScorecardRules = new Set((scorecardAccepted.accepted || []).map((item) => item.ruleId));
+for (const rule of ["CodeReviewID", "MaintainedID", "CIIBestPracticesID", "SASTID"]) {
+  if (!acceptedScorecardRules.has(rule)) throw new Error(`Scorecard governance exception is missing: ${rule}`);
+}
+for (const rule of ["PinnedDependenciesID", "FuzzingID"]) {
+  if (acceptedScorecardRules.has(rule)) throw new Error(`remediable Scorecard finding was incorrectly accepted: ${rule}`);
+}
+const codeqlAccepted = JSON.parse(readFileSync(join(root, ".github", "codeql-accepted-findings.json"), "utf8"));
+const acceptedCodeql = codeqlAccepted.accepted || [];
+if (acceptedCodeql.length !== 1
+    || acceptedCodeql[0].ruleId !== "js/shell-command-injection-from-environment"
+    || acceptedCodeql[0].path !== "src/local/process-execution.mjs") {
+  throw new Error("CodeQL exception inventory must contain only the reviewed non-shell process boundary");
+}
+const processExecutionSource = readFileSync(join(root, "src", "local", "process-execution.mjs"), "utf8");
+if (!processExecutionSource.includes('import { spawn } from "node:child_process";')
+    || !processExecutionSource.includes("function spawnDirectProcess")
+    || !processExecutionSource.includes("return spawn(command, args, {")
+    || !processExecutionSource.includes("shell: false,")
+    || processExecutionSource.includes("...options")) {
+  throw new Error("direct process execution lost its fixed-option non-shell child_process boundary");
+}
+if (packageJson.devDependencies?.["fast-check"] !== "4.9.0" || !readFileSync(join(root, "tests", "security-properties-test.mjs"), "utf8").includes('from "fast-check"')) {
+  throw new Error("recognized JavaScript property-based fuzzing coverage is missing");
 }
 const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
-if (!releaseSource.includes('import { requireSuccessfulCiRun } from "./release-ci.mjs";')
-    || (releaseSource.match(/assertSuccessfulCi\(head\);/g) || []).length !== 2) {
-  throw new Error("GitHub release orchestration no longer requires exact-commit successful CI for publish and verification");
+if (!releaseSource.includes('import { requireSuccessfulWorkflowRun } from "./release-ci.mjs";')
+    || (releaseSource.match(/assertSuccessfulCi\(head\);/g) || []).length !== 2
+    || !releaseSource.includes(".github/workflows/codeql.yml")
+    || !releaseSource.includes(".github/workflows/scorecard.yml")
+    || !releaseSource.includes(".github/workflows/governance.yml")) {
+  throw new Error("GitHub release orchestration no longer requires all exact-commit security and governance workflows");
 }
 for (const [name, command] of Object.entries(packageJson.scripts || {})) {
   const match = /^node\s+([^\s]+\.mjs)(?:\s|$)/.exec(String(command));

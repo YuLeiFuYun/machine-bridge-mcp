@@ -114,9 +114,9 @@ Flaky tests are defects. A retry may diagnose environmental instability but may 
 
 - GitHub workflow permissions default to read-only and are expanded per job only when required.
 - Third-party Actions are pinned to immutable commit SHAs and reviewed when Dependabot updates them.
-- npm dependencies use exact versions and a committed lockfile. Registry signatures and attestations are verified in CI.
-- Dependency review blocks newly introduced vulnerable dependencies. CodeQL performs JavaScript/TypeScript and workflow analysis. OpenSSF Scorecard periodically audits repository supply-chain posture.
-- CI generates and validates a CycloneDX SBOM. Release artifacts must be reproducible from a reviewed commit and tied to successful exact-commit CI evidence.
+- npm dependencies use exact versions and a committed lockfile. Source bootstrap uses `npm ci`; the CI npm baseline itself is downloaded from an exact URL and verified against a pinned SHA-512 SRI before use. Registry signatures and attestations are verified in CI.
+- Dependency review blocks newly introduced vulnerable dependencies. CodeQL performs JavaScript/TypeScript and workflow analysis. OpenSSF Scorecard audits supply-chain posture, and both SARIF streams are failing gates with exact, expiring exceptions rather than advisory-only uploads.
+- CI generates and validates a CycloneDX SBOM. Release artifacts must be reproducible from a reviewed commit and tied to successful exact-commit CI, CodeQL, Governance, and Scorecard evidence.
 - Secret scanning and push protection are enabled. Repository examples use synthetic identities and reserved domains; reachable history is scanned before release.
 - Long-lived publication tokens should be replaced by npm trusted publishing with GitHub OIDC. Until that external registry configuration is completed, release credentials remain an explicit operator responsibility and must never be stored in the repository.
 - Security reports follow [SECURITY.md](../SECURITY.md), not public issue templates.

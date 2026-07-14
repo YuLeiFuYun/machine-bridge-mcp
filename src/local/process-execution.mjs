@@ -9,8 +9,20 @@ import { clampInteger } from "./numbers.mjs";
 const MAX_STDIN_BYTES = 1024 * 1024;
 const DEFAULT_OUTPUT_BYTES = 512 * 1024;
 
+function spawnDirectProcess(command, args, options) {
+  // Keep the production child_process API call structurally separate from the
+  // injectable test seam and enforce non-shell execution at the final boundary.
+  return spawn(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    detached: options.detached,
+    windowsHide: options.windowsHide,
+    shell: false,
+  });
+}
+
 export class ProcessExecutionService {
-  constructor({ workspace, policy, policyGate, runtimeDir, processTracker, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, spawnProcess = spawn, terminateProcess = terminateProcessTreeWithEscalation }) {
+  constructor({ workspace, policy, policyGate, runtimeDir, processTracker, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, spawnProcess = spawnDirectProcess, terminateProcess = terminateProcessTreeWithEscalation }) {
     this.workspace = workspace;
     this.policy = policy;
     this.policyGate = policyGate;
@@ -80,6 +92,7 @@ export class ProcessExecutionService {
           env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false, runtimeDir: this.runtimeDir }),
           detached: process.platform !== "win32",
           windowsHide: true,
+          shell: false,
         });
       } catch (error) {
         rejectPromise(error);

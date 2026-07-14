@@ -4,6 +4,6 @@ DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 cd "$DIR"
 if [ ! -d node_modules ] || [ ! -x node_modules/.bin/wrangler ]; then
   echo "Installing local dependencies..."
-  npm install
+  npm ci
 fi
 exec node bin/machine-mcp.mjs "$@"

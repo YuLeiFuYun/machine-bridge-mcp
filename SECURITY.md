@@ -23,7 +23,7 @@ Tests, examples, documentation, release notes, and package metadata are publicat
 
 Removing a value from the current branch does not remove it from Git history, caches, forks, or an already published npm package. Rotate any exposed credential immediately and coordinate destructive history rewriting separately when its risk is justified.
 
-CodeQL is enforced as a security gate, not merely uploaded as advisory output. The workflow parses generated SARIF and rejects every security-tagged result unless `.github/codeql-accepted-findings.json` contains the exact rule and path, a substantive authority-boundary rationale, and a non-expired review date. Rule-wide suppression is not an acceptable substitute.
+CodeQL and OpenSSF Scorecard are enforced as gates, not merely uploaded as advisory output. The shared SARIF gate rejects every security result and fails closed when a result omits the rule metadata needed to prove it non-security. Any exception requires an exact rule/path entry, a substantive rationale, and a non-expired review date; rule-wide suppression is not acceptable. CodeQL has one exact, expiring accepted result for the authorized non-shell direct-process boundary; its fixed option set and metacharacter behavior are tested. Scorecard exceptions are limited to documented governance or time-dependent conditions that repository code cannot truthfully repair, while remediable dependency-pinning and fuzzing findings remain release-blocking.
 
 ## Core trust model
 

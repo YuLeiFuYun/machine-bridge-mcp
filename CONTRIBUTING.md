@@ -26,7 +26,7 @@ Before the reviewed code is pushed to `main`:
 4. inspect the complete diff and the npm package manifest;
 5. commit and push the reviewed change to GitHub.
 
-After all required pull-request checks pass, repository automation completes the source release under [AGENTS.md](AGENTS.md): squash-merge through local `gh`, verify the exact `main` push CI, create the annotated version tag, and create or update the matching final GitHub Release. The release operator separately publishes the same version to npm and performs any live machine update. Automation must not publish, deprecate, or unpublish npm packages; install the CLI globally; deploy the Worker; rotate credentials; mutate live deployment state; or start/stop/install/remove the daemon or autostart service without explicit user authorization.
+After all required pull-request checks pass, repository automation completes the source release under [AGENTS.md](AGENTS.md): squash-merge through local `gh`, verify the exact `main` push CI, CodeQL, Governance, and Scorecard runs, create the annotated version tag, and create or update the matching final GitHub Release. The release operator separately publishes the same version to npm and performs any live machine update. Automation must not publish, deprecate, or unpublish npm packages; install the CLI globally; deploy the Worker; rotate credentials; mutate live deployment state; or start/stop/install/remove the daemon or autostart service without explicit user authorization.
 
 After npm publication, the standard machine update is:
 

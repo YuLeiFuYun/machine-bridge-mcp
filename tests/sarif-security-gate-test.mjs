@@ -25,6 +25,10 @@ try {
   const accepted = run(sarif, allowlist);
   assert(accepted.status === 0 && accepted.stderr.includes("explicitly accepted"), "matching accepted finding did not pass the gate");
 
+  writeFileSync(sarif, JSON.stringify(document("src/local/example.mjs", { includeRules: false })));
+  const missingMetadata = run(sarif, join(temp, "missing-allowlist.json"));
+  assert(missingMetadata.status !== 0 && missingMetadata.stderr.includes("rejected 1 unaccepted"), "finding with omitted rule metadata bypassed the fail-closed gate");
+
   writeFileSync(sarif, JSON.stringify(document("src/local/other.mjs")));
   const wrongPath = run(sarif, allowlist);
   assert(wrongPath.status !== 0, "accepted finding incorrectly matched a different path");
@@ -40,11 +44,11 @@ function run(sarif, allowlist) {
   });
 }
 
-function document(path) {
+function document(path, options = {}) {
   return {
     version: "2.1.0",
     runs: [{
-      tool: { driver: { name: "CodeQL", rules: [{
+      tool: { driver: { name: "CodeQL", rules: options.includeRules === false ? [] : [{
         id: "js/example-security-rule",
         properties: { tags: ["security"], "security-severity": "7.0" },
       }] } },

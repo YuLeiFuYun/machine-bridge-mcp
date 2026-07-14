@@ -34,6 +34,8 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
+      - name: Enforce reviewed Scorecard findings
+        run: node scripts/sarif-security-gate.mjs results.sarif --allowlist=.github/scorecard-accepted-findings.json
       - name: Upload SARIF artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:

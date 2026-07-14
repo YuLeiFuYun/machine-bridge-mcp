@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "accepted": [
+    {
+      "ruleId": "CodeReviewID",
+      "path": "no file associated with this alert",
+      "reason": "The repository currently has one human maintainer, so requiring a second human approval would make source maintenance impossible; this must be revisited when another trusted maintainer is available.",
+      "expires": "2027-01-14"
+    },
+    {
+      "ruleId": "MaintainedID",
+      "path": "no file associated with this alert",
+      "reason": "OpenSSF cannot score maintenance until the repository is at least ninety days old; active commits, issues, dependency updates, and required CI remain visible in GitHub meanwhile.",
+      "expires": "2026-10-14"
+    },
+    {
+      "ruleId": "CIIBestPracticesID",
+      "path": "no file associated with this alert",
+      "reason": "OpenSSF Best Practices enrollment requires an external project registration and maintainer attestations that cannot be truthfully created by repository automation alone.",
+      "expires": "2027-01-14"
+    },
+    {
+      "ruleId": "SASTID",
+      "path": "no file associated with this alert",
+      "reason": "CodeQL is now mandatory on every pull request and main push, but Scorecard still observes early commits created before that workflow existed; the exception expires as scanned history replaces them.",
+      "expires": "2026-10-14"
+    }
+  ]
+}

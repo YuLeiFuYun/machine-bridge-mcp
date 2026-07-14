@@ -935,10 +935,14 @@ async function ciBootstrapSelfTest() {
       throw new Error("setup-node automatic package-manager cache must stay disabled until npm 12 is installed");
     }
   }
-  const temporaryDirectoryCount = lines.filter((line) => line.includes("working-directory: ${{ runner.temp }}")).length;
-  const npmUpgradeCount = lines.filter((line) => line.includes("npm install --global npm@12.0.1")).length;
-  if (temporaryDirectoryCount !== 2 || npmUpgradeCount !== 2) {
-    throw new Error("CI must bootstrap npm 12 from the runner temporary directory in both jobs");
+  const pinnedBootstrapCount = lines.filter((line) => line.includes("node scripts/prepare-pinned-npm.mjs")).length;
+  const versionCheckCount = lines.filter((line) => line.trim() === "- run: npm --version").length;
+  if (pinnedBootstrapCount !== 2 || versionCheckCount !== 2 || workflow.includes("npm install --global npm@")) {
+    throw new Error("CI must prepare and verify integrity-pinned npm 12 in both jobs without a mutable global install");
+  }
+  const bootstrap = await readFile(new URL("../scripts/prepare-pinned-npm.mjs", import.meta.url), "utf8");
+  if (!bootstrap.includes("npm-12.0.1.tgz") || !bootstrap.includes("sha512-L5T9i/YAQWQWqTS/") || !bootstrap.includes('redirect: "error"') || !bootstrap.includes("readBoundedBody(response, MAX_TARBALL_BYTES)")) {
+    throw new Error("CI npm bootstrap lost its exact tarball, bounded download, SHA-512 integrity, or redirect rejection");
   }
   if (workflow.includes("> sbom.json") || !workflow.includes('> "$RUNNER_TEMP/sbom.json"')) {
     throw new Error("CI SBOM output must stay outside the repository publication surface");

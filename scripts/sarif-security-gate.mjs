@@ -12,7 +12,7 @@ if (!targets.length) throw new Error("usage: node scripts/sarif-security-gate.mj
 
 const accepted = loadAcceptedFindings(allowlistPath);
 const sarifFiles = targets.flatMap((target) => collectSarifFiles(resolve(target)));
-if (!sarifFiles.length) throw new Error("CodeQL security gate received no SARIF files");
+if (!sarifFiles.length) throw new Error("SARIF gate received no SARIF files");
 
 const blocked = [];
 const acknowledged = [];
@@ -22,28 +22,30 @@ for (const file of sarifFiles) {
 }
 
 for (const finding of acknowledged) {
-  process.stderr.write(`accepted CodeQL finding: ${finding.ruleId} at ${finding.path} (${finding.reason}; expires ${finding.expires})\n`);
+  process.stderr.write(`accepted SARIF finding: ${finding.ruleId} at ${finding.path} (${finding.reason}; expires ${finding.expires})\n`);
 }
 if (blocked.length) {
   for (const finding of blocked.slice(0, 100)) {
     process.stderr.write(`${finding.path}:${finding.line}: ${finding.ruleId}: ${finding.message}\n`);
   }
-  if (blocked.length > 100) process.stderr.write(`... ${blocked.length - 100} additional security findings omitted\n`);
-  throw new Error(`CodeQL security gate rejected ${blocked.length} unaccepted security finding(s)`);
+  if (blocked.length > 100) process.stderr.write(`... ${blocked.length - 100} additional SARIF findings omitted\n`);
+  throw new Error(`SARIF gate rejected ${blocked.length} unaccepted SARIF finding(s)`);
 }
-process.stderr.write(`CodeQL security gate ok (${sarifFiles.length} SARIF file(s); ${acknowledged.length} explicitly accepted finding(s))\n`);
+process.stderr.write(`SARIF gate ok (${sarifFiles.length} SARIF file(s); ${acknowledged.length} explicitly accepted finding(s))\n`);
 
 function inspectRun(run, file, allowlist, blockedFindings, acceptedFindings) {
   const rules = new Map();
   for (const rule of run.tool?.driver?.rules || []) rules.set(rule.id, rule);
   for (const result of run.results || []) {
-    const ruleId = String(result.ruleId || "");
-    const rule = rules.get(ruleId) || {};
-    if (!isSecurityRule(rule)) continue;
+    const ruleId = String(result.ruleId || "<unknown-rule>");
+    const rule = rules.get(ruleId);
+    // CodeQL's post-upload SARIF can omit rule metadata even when results exist.
+    // Missing metadata must fail closed because the result cannot be proven non-security.
+    if (rule && !isSecurityRule(rule)) continue;
     const location = primaryLocation(result);
     const path = normalizeSarifPath(location.path, run, file);
     const line = Number(location.line) || 1;
-    const message = boundedMessage(result.message?.text || result.message?.markdown || rule.shortDescription?.text || "security finding");
+    const message = boundedMessage(result.message?.text || result.message?.markdown || rule?.shortDescription?.text || "SARIF finding");
     const exception = allowlist.get(`${ruleId}\0${path}`);
     if (exception) acceptedFindings.push({ ruleId, path, ...exception });
     else blockedFindings.push({ ruleId, path, line, message });
@@ -101,7 +103,7 @@ function loadAcceptedFindings(file) {
     }
     if (expires < today) throw new Error(`accepted CodeQL finding expired: ${ruleId} at ${path}`);
     const key = `${ruleId}\0${path}`;
-    if (entries.has(key)) throw new Error(`duplicate accepted CodeQL finding: ${ruleId} at ${path}`);
+    if (entries.has(key)) throw new Error(`duplicate accepted SARIF finding: ${ruleId} at ${path}`);
     entries.set(key, { reason, expires });
   }
   return entries;
