@@ -9,7 +9,7 @@ This document records project-wide decisions that must survive individual fixes,
 3. **Machine Bridge authority and host authority are separate.** `full` removes Machine Bridge's own policy, path, shell, and environment restrictions. It cannot override an MCP host, connector gateway, operating system, endpoint-security product, cloud IAM, remote authentication, or `sudo`.
 4. **Publication surfaces contain no real environment metadata.** Source, tests, fixtures, examples, release notes, filenames, package contents, tags, and release assets use synthetic identifiers and reserved example domains.
 5. **Secrets are never operational log data.** Tool arguments, command text, stdin, stdout, stderr, file content, OAuth bodies, credentials, and local resource values are not logged.
-6. **A release is one version with successful cross-platform evidence.** Package metadata, Worker version, browser-extension version/name, Git tag, GitHub Release, npm version, documentation, and deployed health version must agree, and the exact `origin/main` commit must have a completed successful push-triggered GitHub Actions run before a tag or release is created.
+6. **A release is one version with successful cross-platform evidence.** Package metadata, Worker version, browser-extension version/name, Git tag, GitHub Release, npm version, documentation, and deployed health version must agree, and the exact `origin/main` commit must have completed successful push-triggered CI, CodeQL, Governance, and OpenSSF Scorecard runs before a tag or release is created.
 7. **Generic local automation is structured, not arbitrary evaluation.** Browser/application features may expose broad user authority under canonical `full`, but must not accept caller-provided JavaScript, AppleScript, JXA, or extension code.
 8. **Daily-browser integration uses the existing profile.** The supported primary browser path is the packaged authenticated extension and machine-level loopback broker, preserving current tabs/login state; a separate automation profile is not an equivalent replacement.
 9. **Pairing and resource secrets are not conversation or log data.** Tokens and injected local-resource values must not be returned, embedded in URLs, or written to operational logs.
@@ -17,7 +17,7 @@ This document records project-wide decisions that must survive individual fixes,
 11. **Service and state removal are fail-closed state machines.** Stop the platform provider and every verified daemon before removing definitions or recursive state. An unreadable lock, failed stop, active job, or ambiguous identity retains state for diagnosis.
 12. **Read failure is not empty state.** Permission, type, symbolic-link, size, encoding, and I/O errors must propagate. Corrupt backup/reconstruction applies only after a successful read proves that JSON content is invalid.
 13. **The public protocol contract is current-only.** Shared metadata advertises only the current MCP protocol version. Compatibility code for obsolete protocol dates, lock formats, or state schemas is not retained in the final runtime; upgrade safety comes from explicit version negotiation, fail-closed state validation, and bounded operator convergence.
-14. **Security analysis is a failing gate.** CodeQL execution alone is not success. Generated SARIF must contain no unaccepted security result; an intentional authority boundary requires an exact rule/path record with a substantive rationale and an expiry date.
+14. **Security analysis is a failing gate.** CodeQL or Scorecard execution alone is not success. Generated SARIF must contain no unaccepted result, and missing rule metadata fails closed rather than being interpreted as non-security. An intentional or externally constrained finding requires an exact rule/path record with a substantive rationale and an expiry date.
 
 A proposed change that conflicts with an invariant requires an explicit owner decision and corresponding documentation update. It must not be hidden inside an unrelated refactor.
 
@@ -127,7 +127,7 @@ Every defect fix includes a regression test that fails for the original reason. 
 The required matrix includes:
 
 - Linux, macOS, and Windows on the pinned Node/npm baseline;
-- current-tree and reachable-history privacy gates, release-impact enforcement, and exact-commit release-CI gating;
+- current-tree and reachable-history privacy gates, release-impact enforcement, and exact-commit CI/CodeQL/Governance/Scorecard release gating;
 - package-manifest and sensitive-artifact inspection;
 - generated type checks and recursively discovered JavaScript/shell syntax checks;
 - static undefined-identifier/redeclaration checks over all production JavaScript, tests, scripts, and browser-extension code;
@@ -185,7 +185,7 @@ A thorough review asks:
 - Are persistent files atomic, owner-only, size-bounded, and symlink-aware?
 - Can browser/app automation be expressed without arbitrary evaluation, and are pairing/resource values absent from results and logs?
 - Can a stale PID, stale socket, duplicate request, partial write, or ambiguous remote response violate integrity?
-- Are package, CI, Worker, service, and release behavior tested on every supported platform, and does publication verify the exact successful push CI run?
+- Are package, CI, Worker, service, and release behavior tested on every supported platform, and does publication verify every required exact-commit push workflow?
 - Does the complete diff contain any real identifier, path, host, account, or credential-shaped value?
 - Does the change require a new npm version and deployment?
 

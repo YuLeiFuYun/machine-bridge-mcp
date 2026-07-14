@@ -52,7 +52,7 @@ These are release-operator or machine-operator actions, not implicit parts of a 
 After a release-relevant pull request passes every required check, the coding agent completes the repository source release without another confirmation:
 
 1. squash-merge the pull request through local `gh`;
-2. fetch and fast-forward local `main`, then wait for the exact merge commit's push-triggered CI to succeed;
+2. fetch and fast-forward local `main`, then wait for the exact merge commit's push-triggered CI, CodeQL, Governance, and Scorecard runs to succeed;
 3. run `npm run release:publish` from a clean `main` worktree;
 4. verify that the local and remote annotated tag, final GitHub Release, uploaded npm tarball, and `main` all identify the same commit.
 

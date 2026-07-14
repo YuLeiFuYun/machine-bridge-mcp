@@ -31,9 +31,9 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - name: Upgrade npm
-        working-directory: ${{ runner.temp }}
-        run: npm install --global npm@12.0.1
+      - name: Prepare integrity-verified npm
+        run: node scripts/prepare-pinned-npm.mjs
+      - run: npm --version
       - run: npm ci
       - run: npm run check
       - name: Test documented global installation
@@ -51,9 +51,9 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - name: Upgrade npm
-        working-directory: ${{ runner.temp }}
-        run: npm install --global npm@12.0.1
+      - name: Prepare integrity-verified npm
+        run: node scripts/prepare-pinned-npm.mjs
+      - run: npm --version
       - run: npm ci
       - run: npm run privacy:history
       - run: npm run install:test

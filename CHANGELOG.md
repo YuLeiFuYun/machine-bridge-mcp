@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3 - 2026-07-14
+
+### Code-scanning and supply-chain integrity
+
+- Fix the SARIF gate so results with omitted rule metadata fail closed instead of being silently classified as non-security. Remove stale broad CodeQL exceptions, harden the generic process boundary with a fixed-option non-shell `child_process.spawn` wrapper and behavior regression, and retain only one exact, expiring false-positive record for that intentional authority boundary.
+- Gate OpenSSF Scorecard SARIF before upload. Replace mutable npm bootstrap commands with an exact npm 12.0.1 tarball plus pinned SHA-512 verification, make the source wrapper use `npm ci`, and convert randomized security properties to deterministic `fast-check` tests recognized as JavaScript fuzzing.
+- Record only four expiring Scorecard governance/time exceptions that cannot be repaired by source code alone, reject remediable pinning/fuzzing exceptions, and require exact-commit CI, CodeQL, Governance, and Scorecard success before creating a source release.
+
 ## 1.0.2 - 2026-07-14
 
 ### Deadline and architecture integrity
