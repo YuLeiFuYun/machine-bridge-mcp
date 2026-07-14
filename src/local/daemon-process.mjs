@@ -6,6 +6,7 @@ import {
   readDaemonLockOwner,
   resolveWorkspace,
 } from "./state.mjs";
+import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { inspectProcessInstance, isPidAlive, processCommandLine, splitProcessCommandLine } from "./process-identity.mjs";
 
 const DEFAULT_TAKEOVER_TIMEOUT_MS = 15_000;
@@ -33,7 +34,7 @@ export async function acquireDaemonLockWithTakeover(state, options = {}) {
 
   // A terminated daemon can release its token immediately before the filesystem
   // makes the lock removal visible to this process. Retry only this handoff.
-  const handoffDeadline = Date.now() + Math.min(timeoutMs, 1_000);
+  const handoffDeadline = createMonotonicDeadline(Math.min(timeoutMs, 1_000));
   do {
     lock = acquireDaemonLock(state, ownerMetadata);
     if (lock.acquired) {
@@ -41,8 +42,8 @@ export async function acquireDaemonLockWithTakeover(state, options = {}) {
       return lock;
     }
     if (lock.owner?.pid && isPidAlive(lock.owner.pid)) return lock;
-    await sleep(Math.min(pollMs, Math.max(1, handoffDeadline - Date.now())));
-  } while (Date.now() < handoffDeadline);
+    await sleep(Math.min(pollMs, Math.max(1, handoffDeadline.remainingMs())));
+  } while (!handoffDeadline.expired());
   return lock;
 }
 
@@ -50,7 +51,7 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
   const timeoutMs = boundedPositiveInt(options.timeoutMs, DEFAULT_TAKEOVER_TIMEOUT_MS);
   const pollMs = boundedPositiveInt(options.pollMs, DEFAULT_TAKEOVER_POLL_MS);
   const logger = options.logger || { info() {}, warn() {} };
-  const deadline = Date.now() + timeoutMs;
+  const deadline = createMonotonicDeadline(timeoutMs);
   const signalled = new Set();
   let owner = options.owner || readDaemonLockOwner(daemonLockPathForState(state));
   let verified = false;
@@ -96,7 +97,7 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
     const currentOwnerAlive = Boolean(owner?.pid && isPidAlive(owner.pid));
     if (!currentOwnerAlive && liveSignalled.length === 0) break;
 
-    if (Date.now() >= deadline) {
+    if (deadline.expired()) {
       logger.warn?.(`detached background daemon did not stop within ${Math.ceil(timeoutMs / 1000)} seconds`);
       const remainingPid = Number(owner?.pid) || liveSignalled[0] || null;
       return {
@@ -111,7 +112,7 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
         version: typeof lastOwner?.version === "string" ? lastOwner.version : "unknown",
       };
     }
-    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+    await sleep(Math.min(pollMs, Math.max(1, deadline.remainingMs())));
     owner = readDaemonLockOwner(daemonLockPathForState(state));
   }
 

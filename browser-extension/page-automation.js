@@ -310,9 +310,10 @@
   }
 
   async function waitForActionable(selector, actionName, timeoutMs) {
-    const deadline = Date.now() + Math.max(1, timeoutMs);
+    const boundedTimeoutMs = Math.max(1, timeoutMs);
+    const startedAt = performance.now();
     let lastProblem = "no element matched selector";
-    while (Date.now() <= deadline) {
+    while (performance.now() - startedAt <= boundedTimeoutMs) {
       const element = findOne(selector);
       if (!element && selector?.ref) throw new Error("element reference is stale; inspect the page again");
       if (element) {
@@ -337,9 +338,10 @@
   }
 
   async function waitForStableBox(element, timeoutMs) {
-    const deadline = Date.now() + Math.max(1, timeoutMs);
+    const boundedTimeoutMs = Math.max(1, timeoutMs);
+    const startedAt = performance.now();
     let previous = boundingBox(element);
-    while (Date.now() <= deadline) {
+    while (performance.now() - startedAt <= boundedTimeoutMs) {
       await delay(50);
       const current = boundingBox(element);
       if (current && previous && boxDistance(previous, current) <= 0.5) return current;
@@ -349,9 +351,10 @@
   }
 
   async function waitForPointerTarget(element, timeoutMs) {
-    const deadline = Date.now() + Math.max(1, timeoutMs);
+    const boundedTimeoutMs = Math.max(1, timeoutMs);
+    const startedAt = performance.now();
     let lastProblem = "element does not receive pointer events";
-    while (Date.now() <= deadline) {
+    while (performance.now() - startedAt <= boundedTimeoutMs) {
       const point = actionTarget(element).point;
       if (!point) lastProblem = "element has no usable viewport box";
       else if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight) lastProblem = "element is outside the viewport";

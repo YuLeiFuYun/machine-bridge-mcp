@@ -1,10 +1,11 @@
 import { randomBytes } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { BridgeError } from "./errors.mjs";
 
 export class CallRegistry {
   constructor(options = {}) {
     this.maximum = positiveInteger(options.maximum, 16);
-    this.now = typeof options.now === "function" ? options.now : Date.now;
+    this.now = typeof options.now === "function" ? options.now : () => performance.now();
     this.scheduler = options.scheduler || { setTimeout, clearTimeout };
     this.onCancel = typeof options.onCancel === "function" ? options.onCancel : () => {};
     this.onFinish = typeof options.onFinish === "function" ? options.onFinish : () => {};

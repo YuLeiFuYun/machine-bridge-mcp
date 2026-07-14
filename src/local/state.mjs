@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 import { replaceFileSync } from "./atomic-fs.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 
@@ -266,9 +267,9 @@ export async function acquireStartupLockWithWait(state, options = {}) {
   if (lock.acquired) return lock;
   const ownerPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "another process";
   logger.info?.(`waiting for ${ownerPid} to finish the current startup/state operation`);
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+  const deadline = createMonotonicDeadline(timeoutMs);
+  while (!deadline.expired()) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline.remainingMs()))));
     lock = acquireStartupLock(state, metadata);
     if (lock.acquired) {
       logger.info?.("the previous startup/state operation finished; continuing");

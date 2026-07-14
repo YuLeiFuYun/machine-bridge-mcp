@@ -3,7 +3,7 @@ const MAX_TOOLS = 128;
 const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|secret|token|verifier|private[_-]?key)/i;
 
 export class WorkerObservability {
-  private readonly startedAt = Date.now();
+  private readonly startedAt = performance.now();
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
   private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0 };
   private readonly sockets = { candidates: 0, authenticated: 0, disconnected: 0, protocol_errors: 0 };
@@ -49,7 +49,7 @@ export class WorkerObservability {
 
   snapshot(): Record<string, unknown> {
     return {
-      uptime_ms: Math.max(0, Date.now() - this.startedAt),
+      uptime_ms: Math.max(0, performance.now() - this.startedAt),
       requests: { ...this.requests },
       calls: { ...this.calls },
       sockets: { ...this.sockets },
