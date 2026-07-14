@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.1 - 2026-07-14
+
+### Fixed
+
+- Wait for launchd service state to converge after a successful `bootout` before deciding that stop or restart failed. The bounded poll handles macOS's asynchronous unload window while still failing closed when the service remains active.
+- Add deterministic coverage for delayed launchd inactivity and for the bounded failure path.
+
 ## 0.18.0 - 2026-07-14
 
 ### Isolated multi-account authorization
