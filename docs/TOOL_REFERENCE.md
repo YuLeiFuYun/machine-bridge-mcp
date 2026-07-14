@@ -66,7 +66,7 @@ Tool count: **51**.
 
 **Server information**
 
-Return bridge/runtime metadata, active policy, protocol versions, and available tools.
+Return authenticated account authority, effective policy/tools, daemon capability ceiling, runtime metadata, and protocol status. Treat authorization.effective_policy and authorization.effective_tools as authoritative; daemon.policy is only a ceiling.
 
 | Contract field | Value |
 |---|---|
@@ -89,7 +89,7 @@ Return bridge/runtime metadata, active policy, protocol versions, and available 
 
 **Project overview**
 
-Summarize the connected workspace, repository root, local policy, and top-level entries.
+Summarize the connected workspace and repository. Remote responses report the authenticated account effective policy/tools at policy and tools, with the daemon capability ceiling preserved separately as daemonPolicy and daemonTools.
 
 | Contract field | Value |
 |---|---|

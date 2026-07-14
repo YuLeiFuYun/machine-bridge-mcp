@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.8 - 2026-07-14
+
+### Effective account authority reporting
+
+- Separate the authenticated account authority from the local daemon capability ceiling in remote diagnostics. `server_info.authorization.effective_policy` and `effective_tools` are now the authoritative account fields, while `daemon.policy` and `daemon.tools` are explicitly scoped as pre-role ceilings. The response also includes a deterministic authority summary and scope labels so clients cannot reasonably equate an `editor` account with a `full` daemon.
+- Make remote `project_overview` return the role-intersected policy and tools at its existing top-level fields, while preserving the daemon values separately as `daemonPolicy` and `daemonTools`. Add a Worker integration regression that authorizes an `editor` account against a canonical `full` daemon and proves shell/browser tools remain excluded at both reporting surfaces and at relay enforcement.
+- Update MCP initialization guidance, tool descriptions, operations diagnostics, architecture, client, account, testing, and generated tool-reference documentation to use the effective-account fields when diagnosing permissions.
+
 ## 1.0.7 - 2026-07-14
 
 ### Browser-complete OAuth callback navigation

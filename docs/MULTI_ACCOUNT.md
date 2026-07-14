@@ -25,6 +25,8 @@ The effective tool set is the intersection of:
 
 The Worker filters `tools/list` and rejects unauthorized calls before relay. Every accepted relay call also carries `account_id`, `account_version`, and `role`; the local runtime validates the role again before dispatch. The shared policy contract remains the single source of capability semantics.
 
+Authenticated `server_info` deliberately reports both layers. `authorization.effective_policy` and `authorization.effective_tools` are authoritative for the current account. The nested `daemon.policy` and `daemon.tools` fields are only the local capability ceiling before account-role filtering; a `full` daemon does not make an `editor` account full. Remote `project_overview` uses the effective values at top-level `policy` and `tools` and preserves the daemon values as `daemonPolicy` and `daemonTools`.
+
 ## Account lifecycle
 
 List accounts:

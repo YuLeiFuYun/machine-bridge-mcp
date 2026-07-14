@@ -7,6 +7,7 @@ import { WorkerObservability } from "./observability";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools, type DaemonPolicy } from "./policy";
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access";
+import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority";
 import { accountAdminAuthorized, handleAccountAdminOperation } from "./account-admin";
 import { serverInfoTool, workspaceTools } from "./tool-catalog";
 import {
@@ -22,7 +23,7 @@ import {
 } from "./http";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.0.7";
+const SERVER_VERSION = "1.0.8";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -342,17 +343,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     return rpcError(request.id, -32601, `Method not found: ${request.method}`);
   }
-
   private async callTool(name: string, args: Record<string, unknown>, base: string, authorized: AuthorizedToken, requestKey?: string): Promise<unknown> {
     if (name === "server_info") {
-      const daemon = this.daemonStatus(true);
-      const tools = this.allTools(authorized.role).map((tool) => tool.name);
+      const { daemon, tools, authorization } = this.authorityContext(authorized);
       return {
         name: SERVER_NAME,
         version: SERVER_VERSION,
         mcp_url: `${base}/mcp`,
         oauth: this.authorizationServerMetadata(base),
-        account: { account_id: authorized.accountId, role: authorized.role, version: authorized.accountVersion },
+        account: authorization.account,
+        authorization,
+        authority_summary: authorization.summary,
         daemon,
         worker: {
           pending_calls: this.pending.snapshot(),
@@ -360,10 +361,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           observability: this.observability.snapshot(),
         },
         tools,
+        tools_scope: "authenticated_account_effective_tools_before_host_filtering",
         tool_delivery: {
-          full_profile_scope: "local-daemon-and-relay-advertisement",
+          full_profile_scope: "daemon-capability-ceiling-before-account-filtering",
           daemon_advertised_tool_count: daemon.tool_count,
           relay_advertised_tool_count: tools.length,
+          effective_account_tool_count: tools.length,
+          relay_advertised_scope: "authenticated_account_effective_tools_before_host_filtering",
           host_exposed_tools_known_to_server: false,
           host_may_expose_subset: true,
         },
@@ -372,11 +376,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!this.daemonToolEnabled(name)) throw new Error(`tool disabled by local daemon policy: ${name}`);
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
-      return this.callDaemonTool(name, args, authorized, requestKey);
+      const result = await this.callDaemonTool(name, args, authorized, requestKey);
+      return name === "project_overview" ? decorateProjectOverview(result, { accountId: authorized.accountId,
+        accountVersion: authorized.accountVersion, role: authorized.role }) : result;
     }
     throw new Error(`unknown tool: ${name}`);
   }
-
   private async callDaemonTool(name: string, args: Record<string, unknown>, authorized: AuthorizedToken, requestKey?: string): Promise<unknown> {
     const socket = this.daemonSockets()[0];
     if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
@@ -419,7 +424,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       throw error;
     }
   }
-
   private cancelClientRequest(requestKey?: string): void {
     if (!requestKey) return;
     this.pending.cancelRequest(requestKey, (record) => {
@@ -456,11 +460,16 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const localTools = workspaceTools.filter((tool) => advertised.has(tool.name));
     return [serverInfoTool, ...localTools].map((tool) => structuredClone(tool));
   }
-
+  private authorityContext(authorized: AuthorizedToken) {
+    const daemon = describeDaemonCeiling(this.daemonStatus(true));
+    const tools = this.allTools(authorized.role).map((tool) => String(tool.name));
+    const authorization = accountAuthoritySnapshot({ accountId: authorized.accountId, accountVersion: authorized.accountVersion,
+      role: authorized.role, daemonPolicy: daemon.policy, effectiveTools: tools });
+    return { daemon, tools, authorization };
+  }
   private daemonToolEnabled(name: string): boolean {
     return this.daemonAdvertisedTools().has(name);
   }
-
   private daemonAdvertisedTools(): Set<string> {
     const socket = this.daemonSockets()[0];
     if (!socket) return new Set();

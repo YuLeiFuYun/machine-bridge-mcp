@@ -2,7 +2,7 @@
   {
     "name": "server_info",
     "title": "Server information",
-    "description": "Return bridge/runtime metadata, active policy, protocol versions, and available tools.",
+    "description": "Return authenticated account authority, effective policy/tools, daemon capability ceiling, runtime metadata, and protocol status. Treat authorization.effective_policy and authorization.effective_tools as authoritative; daemon.policy is only a ceiling.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -18,7 +18,7 @@
   {
     "name": "project_overview",
     "title": "Project overview",
-    "description": "Summarize the connected workspace, repository root, local policy, and top-level entries.",
+    "description": "Summarize the connected workspace and repository. Remote responses report the authenticated account effective policy/tools at policy and tools, with the daemon capability ceiling preserved separately as daemonPolicy and daemonTools.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
