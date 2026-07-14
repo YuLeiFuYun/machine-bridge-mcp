@@ -19,6 +19,7 @@
 
 ### Enforced security evidence
 
+- Extend classified Windows atomic-replacement retries from 16 to 32 bounded attempts after hosted Windows runners reproduced an `EPERM` sharing window beyond the previous budget. The algorithm still uses one same-directory atomic rename, exponential backoff with jitter, and no delete-destination fallback.
 - Move the repository's local GitHub control-plane prohibition into shared MCP initialization and built-in working agreements so it is visible before project-specific task execution. If local Machine Bridge `git`/`gh` access is unavailable, automation must stop rather than fall back to a hosted GitHub connector or ChatGPT plugin. Align `ENGINEERING.md` and `CONTRIBUTING.md` with the source-release ownership contract.
 - Fail closed when owner-only directories are symlinks, non-directories, cannot be restricted to `0700` on POSIX, or remain group/other-accessible. Extract Worker deployment secret-file lifecycle from the CLI, bind temporary names to process-start identity, delete only positively reclaimable stale files, and surface cleanup failures instead of silently retaining management secrets.
 - Apply the same private-directory boundary to browser pairing, fail managed-job launch when existing diagnostic logs cannot be safely trimmed, and roll back POSIX file/patch commits when exact mode application fails. State-root removal now blocks on unreadable, malformed, symbolic-link, oversized, or otherwise unverifiable config/profile/daemon records instead of treating them as absent.

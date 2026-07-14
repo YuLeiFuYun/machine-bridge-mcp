@@ -36,14 +36,14 @@ try {
     baseDelayMs: 0,
     rename() {
       extendedCalls += 1;
-      if (extendedCalls <= 12) {
+      if (extendedCalls <= 24) {
         const error = new Error("simulated sustained Windows sharing violation");
         error.code = "EPERM";
         throw error;
       }
     },
   });
-  assert(extended.attempts === 13 && extendedCalls === 13, "default replacement retry budget did not survive sustained transient contention");
+  assert(extended.attempts === 25 && extendedCalls === 25, "default replacement retry budget did not survive sustained transient contention");
 
   const missing = join(root, "missing.json");
   let nonTransientCalls = 0;
