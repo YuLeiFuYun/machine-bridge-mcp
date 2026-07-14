@@ -149,7 +149,7 @@ For SSH automation, prefer `generate_ssh_key_resource` under canonical full, or 
 
 The local `full` profile controls Machine Bridge's own tool catalog, path resolver, path display, process environment, and shell availability. It does not control the MCP host's model policy, approval UI, connector gateway, or platform execution filters.
 
-Machine Bridge itself does not block files because their names look sensitive. If `server_info` reports `full` and a direct call is still rejected before a structured tool result, the host/connector may have blocked delivery. If `diagnose_runtime` responds but its fixed process or shell probe fails, the likely source is local OS policy, endpoint-security software, permissions, or shell configuration. Changing `--profile`, `--unrestricted-paths`, or `--absolute-paths` cannot override either layer.
+Machine Bridge itself does not block files because their names look sensitive. In remote mode, first inspect `server_info.authorization.effective_policy` and `effective_tools`; `daemon.policy` is only the local ceiling. If the effective profile is `full` and the effective tool is present but a direct call is still rejected before a structured result, the host/connector may have blocked delivery. If `diagnose_runtime` responds but its fixed process or shell probe fails, the likely source is local OS policy, endpoint-security software, permissions, or shell configuration. Changing `--profile`, `--unrestricted-paths`, or `--absolute-paths` cannot override either layer.
 
 Do not attempt to evade a host refusal by renaming, encoding, or switching to another arbitrary execution tool. Instead:
 

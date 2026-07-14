@@ -144,6 +144,8 @@ The Worker grants browser CORS response access to the exact first-party origins 
 
 One Worker supports several named accounts and OAuth clients. Accounts have independent passwords, roles, active state, versions, codes, and tokens. The roles are `reviewer`, `editor`, `operator`, and `owner`; their effective authority is intersected with the connected daemon policy and enforced in both the Worker and local runtime. Role changes, suspension, password rotation, and removal revoke only the affected account.
 
+For remote connections, `server_info.authorization.effective_policy` and `server_info.authorization.effective_tools` are the authoritative account-permission fields. `server_info.daemon.policy` and `server_info.daemon.tools` describe only the local daemon capability ceiling before account-role filtering. Remote `project_overview` likewise places the effective account policy/tools in `policy` and `tools`, while preserving the daemon ceiling separately as `daemonPolicy` and `daemonTools`.
+
 This is application-level authorization, not kernel or browser-profile isolation. All accounts reach one daemon running as one OS user. Use separate Workers and preferably separate low-privilege OS accounts, containers, or VMs for mutually untrusted users or hard tenant isolation. See [Multi-account authorization and tenancy](docs/MULTI_ACCOUNT.md).
 
 ## Optional local stdio MCP

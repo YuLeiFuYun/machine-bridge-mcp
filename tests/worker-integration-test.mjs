@@ -15,6 +15,7 @@ const persistDir = await mkdtemp(path.join(os.tmpdir(), "mbm-worker-test-"));
 const wrangler = path.join(packageRoot, "node_modules", "wrangler", "bin", "wrangler.js");
 const OWNER_PASSWORD = `integration_owner_${"A".repeat(43)}`;
 const REVIEWER_PASSWORD = `integration_reviewer_${"B".repeat(43)}`;
+const EDITOR_PASSWORD = `integration_editor_${"E".repeat(43)}`;
 const args = [
   "dev",
   "--local",
@@ -135,6 +136,12 @@ try {
     body: JSON.stringify({ name: "reviewer", role: "reviewer", password: REVIEWER_PASSWORD }),
   });
   assert(reviewerAccount.response.status === 201, `reviewer account creation failed: ${reviewerAccount.response.status}`);
+  const editorAccount = await fetchJson(`${base}/admin/accounts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
+    body: JSON.stringify({ name: "editor", role: "editor", password: EDITOR_PASSWORD }),
+  });
+  assert(editorAccount.response.status === 201, `editor account creation failed: ${editorAccount.response.status}`);
 
   const invalidRegistration = await stableFetch(`${base}/oauth/register`, {
     method: "POST",
@@ -282,6 +289,14 @@ try {
     accountName: "reviewer",
     password: REVIEWER_PASSWORD,
     state: "reviewer-state",
+  });
+  const editorToken = await issueAccountToken({
+    base,
+    clientId: registration.body.client_id,
+    redirectUri,
+    accountName: "editor",
+    password: EDITOR_PASSWORD,
+    state: "editor-state",
   });
 
   const replay = await stableFetch(`${base}/oauth/token`, {
@@ -702,6 +717,45 @@ try {
     redirect: "manual",
   });
   assert(blockedLogin.status === 429, "blocked source could immediately retry with the correct password");
+
+  const fullDaemon = await connectDaemon(base);
+  daemonSockets.push(fullDaemon);
+  await sendDaemonHello(fullDaemon, ["project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"], {
+    profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell",
+    unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true,
+  });
+  const editorStatus = await callServerInfo(base, editorToken, 275);
+  assert(editorStatus.account?.account_id === editorAccount.body.account.account_id && editorStatus.account?.role === "editor", "server_info reported the wrong authenticated editor account");
+  assert(editorStatus.daemon?.policy?.profile === "full", "full daemon ceiling was not preserved");
+  assert(editorStatus.daemon?.policy_scope === "daemon_capability_ceiling_not_account_authority", "daemon policy scope remained ambiguous");
+  assert(editorStatus.tool_delivery?.full_profile_scope === "daemon-capability-ceiling-before-account-filtering", "full-profile delivery scope remained ambiguous");
+  assert(editorStatus.authorization?.account_policy?.profile === "edit", "editor account policy was not reported");
+  assert(editorStatus.authorization?.effective_policy?.profile === "edit", "editor effective policy was incorrectly reported as full");
+  assert(editorStatus.authorization?.effective_profile_is_full === false, "editor was marked as full authority");
+  assert(editorStatus.authorization?.effective_tools?.includes("write_file"), "editor effective tools omitted deterministic mutation");
+  assert(!editorStatus.authorization?.effective_tools?.includes("exec_command"), "editor effective tools exposed shell execution");
+  assert(!editorStatus.authorization?.effective_tools?.includes("browser_action"), "editor effective tools exposed browser authority");
+  assert(JSON.stringify(editorStatus.tools) === JSON.stringify(editorStatus.authorization.effective_tools), "top-level tools diverged from authoritative effective tools");
+  assert(editorStatus.authority_summary?.includes("not this account's permission"), "authority summary did not reject the daemon-policy misinterpretation");
+
+  const editorOverviewPromise = toolCallRequest(base, editorToken, "", 276, "project_overview", {});
+  const editorOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
+  assert(editorOverviewRelay.authorization?.role === "editor", "project_overview did not relay the editor role");
+  fullDaemon.send(JSON.stringify({
+    type: "tool_result", id: editorOverviewRelay.id, ok: true,
+    result: {
+      workspace: "/synthetic/workspace", workspaceName: "workspace", gitRoot: "",
+      policy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      tools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      topLevel: [],
+    },
+  }));
+  const editorOverview = (await editorOverviewPromise).body.result?.structuredContent;
+  assert(editorOverview?.policy?.profile === "edit", "remote project_overview exposed the daemon full policy as editor authority");
+  assert(editorOverview?.daemonPolicy?.profile === "full", "remote project_overview lost the daemon capability ceiling");
+  assert(editorOverview?.tools?.includes("write_file") && !editorOverview?.tools?.includes("exec_command") && !editorOverview?.tools?.includes("browser_action"), "remote project_overview did not expose editor-effective tools");
+  assert(editorOverview?.daemonTools?.includes("exec_command") && editorOverview?.daemonTools?.includes("browser_action"), "remote project_overview did not preserve daemon-advertised tools separately");
+  assert(editorOverview?.policyScope === "authenticated_account_effective_authority", "remote project_overview policy scope remained ambiguous");
 
   const duplicateHelloDaemon = await connectDaemon(base);
   daemonSockets.push(duplicateHelloDaemon);

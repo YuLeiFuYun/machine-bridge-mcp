@@ -14,7 +14,8 @@ machine-mcp service status
 
 | Result | Interpretation |
 |---|---|
-| `server_info` reports full and all relay tools, but the current session UI exposes fewer tools | Host/connector post-relay filtering; Machine Bridge cannot enumerate or override that subset |
+| `authorization.effective_policy.profile` is `full` and the tool is in `authorization.effective_tools`, but the current session UI exposes fewer tools | Host/connector post-relay filtering; Machine Bridge cannot enumerate or override that subset |
+| `daemon.policy.profile` is `full` but `authorization.effective_policy.profile` is `review`, `edit`, or `agent` | Expected account-role narrowing; the daemon field is only a capability ceiling and must not be reported as the account permission |
 | `capability_routing.bootstrap_observed` is false | The current local runtime has not received `session_bootstrap`; reconnect or inspect host initialization handling |
 | `task_resolution_observed` is false after a substantive task | The host/model did not call `resolve_task_capabilities`; server-side discovery cannot force that host decision |
 | Task resolution ran but all match counts are zero | The resolver ran successfully but found no sufficiently relevant local skill, command, or application |
