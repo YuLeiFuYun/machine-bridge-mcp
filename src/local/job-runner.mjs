@@ -54,8 +54,8 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
 const initial = readJson(statusFile, MAX_STATUS_BYTES);
 assertLaunchState(initial);
 createExclusiveFileSync(runnerPidFile, `${JSON.stringify({ pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT })}\n`, { mode: 0o600 });
-if (recover) rmSync(join(jobDir, "recovery.lock"), { force: true });
 try {
+  if (recover) await releaseRecoveryClaim();
   const plan = readJson(planFile, 1024 * 1024);
   assertPlanIntegrity(plan, initial);
   await main(plan, initial);

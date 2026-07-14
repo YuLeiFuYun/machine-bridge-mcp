@@ -1,9 +1,12 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
+import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
 import { WorkerObservability } from "../src/worker/observability.ts";
 
+await testMcpSessions();
 await testRequestKeyReuse();
+await testRegistrationFailures();
 await testTerminalPaths();
 await testTimeoutCallbackFailure();
 testWorkerPolicyParity();
@@ -11,25 +14,66 @@ testWorkerErrors();
 testWorkerObservability();
 console.log("worker runtime infrastructure test ok");
 
+
+async function testMcpSessions() {
+  const identityKey = "identity-key-for-synthetic-worker-test";
+  const tokenKey = "sha256:synthetic-token-key";
+  const first = await createMcpSessionId(identityKey, tokenKey);
+  const second = await createMcpSessionId(identityKey, tokenKey);
+  assert(first !== second, "separate MCP initializations reused a session id");
+  assert(await validateMcpSessionId(first, identityKey, tokenKey), "fresh MCP session id did not validate");
+  assert(!(await validateMcpSessionId(first, identityKey, `${tokenKey}-other`)), "MCP session id was not bound to the OAuth token");
+  assert(!(await validateMcpSessionId(tamperSessionId(first), identityKey, tokenKey)), "tampered MCP session id validated");
+}
+
 async function testRequestKeyReuse() {
   const socket = {};
   const registry = new PendingCallRegistry(2);
   const first = registry.register({
-    id: "one", socket, clientRequestKey: "client:1", timeoutMs: 10_000,
+    id: "one", tool: "read_file", socket, clientRequestKey: "client:1", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
   assert(registry.hasRequestKey("client:1"), "request key was not indexed");
+  assert(registry.snapshot().by_tool.read_file === 1, "pending snapshot omitted the active tool");
   assert(registry.resolve("one", socket, { ok: 1 }), "pending result was not resolved");
   assert((await first).ok === 1, "pending result value was lost");
   assert(!registry.hasRequestKey("client:1"), "resolved request key leaked");
 
   const reused = registry.register({
-    id: "two", socket, clientRequestKey: "client:1", timeoutMs: 10_000,
+    id: "two", tool: "read_file", socket, clientRequestKey: "client:1", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
   registry.resolve("two", socket, { ok: 2 });
   assert((await reused).ok === 2, "request id could not be reused immediately after completion");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "terminal resolution leaked pending indexes");
+  assert(registry.snapshot().oldest_ms === 0 && Object.keys(registry.snapshot().by_tool).length === 0, "empty pending snapshot retained activity metadata");
+}
+
+async function testRegistrationFailures() {
+  const socket = {};
+  const conflictRegistry = new PendingCallRegistry(2);
+  const original = conflictRegistry.register({
+    id: "original", tool: "list_dir", socket, clientRequestKey: "session:1", timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  });
+  expectRegistrationError(() => conflictRegistry.register({
+    id: "duplicate", tool: "list_dir", socket, clientRequestKey: "session:1", timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  }), "conflict", false);
+  conflictRegistry.resolve("original", socket, { ok: true });
+  await original;
+
+  const limitRegistry = new PendingCallRegistry(1);
+  const first = limitRegistry.register({
+    id: "first", tool: "run_process", socket, clientRequestKey: "session:2", timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  });
+  expectRegistrationError(() => limitRegistry.register({
+    id: "overflow", tool: "read_file", socket, clientRequestKey: "session:3", timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  }), "limit_exceeded", true);
+  limitRegistry.resolve("first", socket, { ok: true });
+  await first;
 }
 
 async function testTerminalPaths() {
@@ -37,7 +81,7 @@ async function testTerminalPaths() {
   const socketB = {};
   const registry = new PendingCallRegistry(4);
   const cancelled = registry.register({
-    id: "cancel", socket: socketA, clientRequestKey: "cancel-key", timeoutMs: 10_000,
+    id: "cancel", tool: "list_dir", socket: socketA, clientRequestKey: "cancel-key", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
   assert(registry.cancelRequest("cancel-key", () => new WorkerToolError("cancelled", "cancelled")), "cancel did not find request key");
@@ -45,11 +89,11 @@ async function testTerminalPaths() {
   assert(!registry.hasRequestKey("cancel-key"), "cancelled request key leaked");
 
   const disconnected = registry.register({
-    id: "socket", socket: socketA, clientRequestKey: "socket-key", timeoutMs: 10_000,
+    id: "socket", tool: "list_dir", socket: socketA, clientRequestKey: "socket-key", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
   const other = registry.register({
-    id: "other", socket: socketB, clientRequestKey: "other-key", timeoutMs: 10_000,
+    id: "other", tool: "read_file", socket: socketB, clientRequestKey: "other-key", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
   assert(registry.rejectSocket(socketA, () => new WorkerToolError("unavailable", "disconnected", true)) === 1, "socket cleanup rejected unrelated calls");
@@ -63,7 +107,7 @@ async function testTerminalPaths() {
 async function testTimeoutCallbackFailure() {
   const registry = new PendingCallRegistry(1);
   const timedOut = registry.register({
-    id: "timeout-callback", socket: {}, clientRequestKey: "timeout-key", timeoutMs: 1,
+    id: "timeout-callback", tool: "run_process", socket: {}, clientRequestKey: "timeout-key", timeoutMs: 1,
     onTimeout: () => { throw new Error("callback implementation failed"); },
   });
   await expectReject(timedOut, "pending daemon call timed out");
@@ -127,6 +171,20 @@ function testWorkerObservability() {
   const event = JSON.parse(lines[0]);
   assert(event.access_token === "<redacted>" && !lines[0].includes("must-not-leak"), "Worker structured event leaked a sensitive field");
   assert(event.path === "/mcp", "Worker structured event removed a safe route field");
+}
+
+function tamperSessionId(value) {
+  const signatureStart = value.lastIndexOf("_") + 1;
+  const replacement = value[signatureStart] === "A" ? "B" : "A";
+  return `${value.slice(0, signatureStart)}${replacement}${value.slice(signatureStart + 1)}`;
+}
+
+function expectRegistrationError(operation, code, retryable) {
+  try { operation(); } catch (error) {
+    assert(error?.code === code && error?.retryable === retryable, `expected pending registration error ${code}`);
+    return;
+  }
+  throw new Error(`expected pending registration error ${code}`);
 }
 
 async function expectReject(promise, expected) {

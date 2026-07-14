@@ -1,6 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import serverMetadata from "../shared/server-metadata.json";
-import { PendingCallRegistry } from "./pending-calls";
+import { PendingCallRegistrationError, PendingCallRegistry } from "./pending-calls";
+import { mcpClientRequestKey, resolveMcpSession } from "./mcp-session";
+import { daemonToolTimeoutMs } from "./tool-timeout";
 import { WorkerObservability } from "./observability";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools, type DaemonPolicy } from "./policy";
@@ -20,7 +22,7 @@ import {
 } from "./http";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.18.1";
+const SERVER_VERSION = "1.0.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -289,12 +291,15 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!isJsonRpcRequest(body)) return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
     const protocolError = validateProtocolVersionHeader(request, body);
     if (protocolError) return json(protocolError, 400);
-    const response = await this.dispatchJsonRpc(body, base, authorized);
+
+    const session = await resolveMcpSession(request, body.method, this.identityKey(), authorized.tokenKey);
+    if (session.kind === "invalid") return json(rpcError(body.id, -32001, "MCP session not found"), 404);
+    const response = await this.dispatchJsonRpc(body, base, authorized, session.kind === "active" ? session.sessionId : "");
     if (response === null) return new Response(null, { status: 202 });
-    return json(response);
+    return session.kind === "initialize" ? json(response, 200, { "mcp-session-id": session.sessionId }) : json(response);
   }
 
-  private async dispatchJsonRpc(request: JsonRpcRequest, base: string, authorized: AuthorizedToken): Promise<Record<string, unknown> | null> {
+  private async dispatchJsonRpc(request: JsonRpcRequest, base: string, authorized: AuthorizedToken, sessionId: string): Promise<Record<string, unknown> | null> {
     if (request.method === "initialize") {
       const requested = asObject(request.params).protocolVersion;
       const protocolVersion = typeof requested === "string" && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested as typeof MCP_SUPPORTED_PROTOCOL_VERSIONS[number])
@@ -318,7 +323,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     if (request.method === "notifications/initialized") return null;
     if (request.method === "notifications/cancelled") {
-      this.cancelClientRequest(clientRequestKey(authorized, asObject(request.params).requestId));
+      this.cancelClientRequest(mcpClientRequestKey(authorized.tokenKey, sessionId, asObject(request.params).requestId));
       return null;
     }
     if (request.method === "logging/setLevel") return rpcResult(request.id, {});
@@ -330,7 +335,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const name = requiredString(params, "name");
       const args = asObject(params.arguments);
       try {
-        const result = await this.callTool(name, args, base, authorized, clientRequestKey(authorized, request.id));
+        const result = await this.callTool(name, args, base, authorized, mcpClientRequestKey(authorized.tokenKey, sessionId, request.id));
         return rpcResult(request.id, textToolResult(result));
       } catch (error) {
         return rpcResult(request.id, textToolResult({ error: publicWorkerToolError(error) }, true));
@@ -378,16 +383,25 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
     const id = randomToken("call");
     const timeoutMs = daemonToolTimeoutMs(name, args);
-    const result = this.pending.register({
-      id,
-      socket,
-      clientRequestKey: requestKey,
-      timeoutMs,
-      onTimeout: (record) => {
-        sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
-        return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
-      },
-    });
+    let result: Promise<unknown>;
+    try {
+      result = this.pending.register({
+        id,
+        socket,
+        clientRequestKey: requestKey,
+        tool: name,
+        timeoutMs,
+        onTimeout: (record) => {
+          sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
+          return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
+        },
+      });
+    } catch (error) {
+      if (error instanceof PendingCallRegistrationError) {
+        throw new WorkerToolError(error.code, error.message, error.retryable);
+      }
+      throw error;
+    }
     this.observability.callStarted(name);
     try {
       socket.send(JSON.stringify({
@@ -1004,25 +1018,6 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
-  const number = typeof value === "number" && Number.isFinite(value) ? value : Number.parseInt(String(value ?? ""), 10);
-  const safe = Number.isFinite(number) ? number : fallback;
-  return Math.min(Math.max(Math.floor(safe), min), max);
-}
-
-function daemonToolTimeoutMs(name: string, args: Record<string, unknown>): number {
-  if (name === "session_bootstrap") return 10_000;
-  const configurable = new Set([
-    "exec_command", "run_process", "run_local_command", "open_local_application",
-    "inspect_local_application", "operate_local_application", "browser_list_tabs",
-    "browser_manage_tabs", "browser_wait", "browser_get_source", "browser_inspect_page", "browser_action", "browser_fill_form",
-    "browser_screenshot", "browser_upload_files",
-  ]);
-  if (!configurable.has(name)) return 60_000;
-  const seconds = clampNumber(args.timeout_seconds, name === "browser_fill_form" ? 60 : 120, 1, 600);
-  return Math.min((seconds + 5) * 1000, 610_000);
-}
-
 function sessionInstructionText(value: unknown): string {
   const object = asObject(value);
   const instructions = typeof object.instructions === "string" ? object.instructions : "";
@@ -1041,9 +1036,4 @@ function validateProtocolVersionHeader(request: Request, body: JsonRpcRequest): 
     requested: version,
     supported: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
   });
-}
-
-function clientRequestKey(authorized: AuthorizedToken, requestId: unknown): string | undefined {
-  if (requestId === null || (typeof requestId !== "string" && typeof requestId !== "number")) return undefined;
-  return `${authorized.tokenKey}:${typeof requestId}:${String(requestId)}`;
 }

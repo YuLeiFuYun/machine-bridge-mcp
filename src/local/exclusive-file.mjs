@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
-  chmodSync,
+  fchmodSync,
   closeSync,
   fsyncSync,
   linkSync,
@@ -21,12 +21,12 @@ export function createExclusiveFileSync(target, content, options = {}) {
   try {
     fd = openSync(temporary, "wx", mode);
     writeFileSync(fd, content);
+    setDescriptorMode(fd, mode);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
     linkSync(temporary, target);
     linked = true;
-    try { chmodSync(target, mode); } catch {}
     return { created: true, path: target };
   } finally {
     if (fd !== undefined) try { closeSync(fd); } catch {}
@@ -44,11 +44,11 @@ export function replaceFileAtomicallySync(target, content, options = {}) {
   try {
     fd = openSync(temporary, "wx", mode);
     writeFileSync(fd, content);
+    setDescriptorMode(fd, mode);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
     replaceFileSync(temporary, target);
-    try { chmodSync(target, mode); } catch {}
     return { replaced: true, path: target };
   } catch (error) {
     if (fd !== undefined) try { closeSync(fd); } catch {}
@@ -91,4 +91,10 @@ function sameIdentity(left, right) {
     && Number(left.ino) === Number(right.ino)
     && Number(left.size) === Number(right.size)
     && Number(left.mtimeMs) === Number(right.mtimeMs);
+}
+
+function setDescriptorMode(fd, mode) {
+  try { fchmodSync(fd, mode); } catch (error) {
+    if (process.platform !== "win32") throw error;
+  }
 }

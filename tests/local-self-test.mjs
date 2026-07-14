@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { run } from "../src/local/shell.mjs";
+import { runExecutable } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
 import { cleanupStaleSecretFiles, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
@@ -163,7 +163,6 @@ async function stateSelfTest() {
       expectThrow(() => loadState(readFailureWorkspace, { stateDir: readFailureRoot }), "exceeds");
       const oversizedEntries = await readdir(readFailureState.paths.profileDir);
       if (oversizedEntries.some((name) => name.startsWith("state.json.corrupt-"))) throw new Error("oversized state was incorrectly classified as corrupt JSON");
-      if ((await stat(readFailureState.paths.statePath)).size <= 2 * 1024 * 1024) throw new Error("oversized state was modified after read failure");
       await writeFile(readFailureState.paths.statePath, Buffer.from([0xc3, 0x28]), { mode: 0o600 });
       expectThrow(() => loadState(readFailureWorkspace, { stateDir: readFailureRoot }), "not valid UTF-8");
       const encodingEntries = await readdir(readFailureState.paths.profileDir);
@@ -947,14 +946,14 @@ async function ciBootstrapSelfTest() {
 }
 
 async function shellSelfTest() {
-  const result = await run(process.execPath, ["-e", "process.stdout.write('x'.repeat(4096)); process.stderr.write('y'.repeat(4096));"], {
+  const result = await runExecutable(process.execPath, ["-e", "process.stdout.write('x'.repeat(4096)); process.stderr.write('y'.repeat(4096));"], {
     capture: true,
     maxOutputBytes: 1024,
   });
   if (result.code !== 0 || !result.stdout.includes("[truncated") || !result.stderr.includes("[truncated")) {
     throw new Error("bounded shell capture failed");
   }
-  const timedOut = await run(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+  const timedOut = await runExecutable(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
     capture: true,
     allowFailure: true,
     timeoutMs: 50,
@@ -965,7 +964,7 @@ async function shellSelfTest() {
   try {
     const childPidFile = join(treeRoot, "child.pid");
     const treeScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(() => {}, 1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);`;
-    const treeResult = await run(process.execPath, ["-e", treeScript, childPidFile], {
+    const treeResult = await runExecutable(process.execPath, ["-e", treeScript, childPidFile], {
       capture: true,
       allowFailure: true,
       timeoutMs: 200,

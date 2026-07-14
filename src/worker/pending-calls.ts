@@ -1,7 +1,21 @@
+export class PendingCallRegistrationError extends Error {
+  readonly code: "conflict" | "limit_exceeded";
+  readonly retryable: boolean;
+
+  constructor(code: "conflict" | "limit_exceeded", message: string, retryable = false) {
+    super(message);
+    this.name = "PendingCallRegistrationError";
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
 export interface PendingCallRecord {
   id: string;
   socket: WebSocket;
   clientRequestKey?: string;
+  tool: string;
+  startedAt: number;
   timeout: ReturnType<typeof setTimeout>;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -11,6 +25,7 @@ interface RegisterPendingCall {
   id: string;
   socket: WebSocket;
   clientRequestKey?: string;
+  tool: string;
   timeoutMs: number;
   onTimeout: (record: PendingCallRecord) => Error;
 }
@@ -33,11 +48,12 @@ export class PendingCallRegistry {
   }
 
   register(input: RegisterPendingCall): Promise<unknown> {
-    if (this.byId.size >= this.maximum) throw new Error("too many concurrent daemon tool calls");
-    if (this.byId.has(input.id)) throw new Error("duplicate internal daemon call id");
+    if (this.byId.size >= this.maximum) throw new PendingCallRegistrationError("limit_exceeded", "too many concurrent daemon tool calls", true);
+    if (this.byId.has(input.id)) throw new PendingCallRegistrationError("conflict", "duplicate internal daemon call id");
     if (input.clientRequestKey && this.byRequestKey.has(input.clientRequestKey)) {
-      throw new Error("duplicate in-flight JSON-RPC request id for this access token");
+      throw new PendingCallRegistrationError("conflict", "duplicate in-flight JSON-RPC request id within this MCP session");
     }
+    const startedAt = Date.now();
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         const record = this.take(input.id);
@@ -51,6 +67,8 @@ export class PendingCallRegistry {
         id: input.id,
         socket: input.socket,
         clientRequestKey: input.clientRequestKey,
+        tool: String(input.tool || "unknown"),
+        startedAt,
         timeout,
         resolve,
         reject,
@@ -92,8 +110,21 @@ export class PendingCallRegistry {
     return ids.length;
   }
 
-  snapshot(): { active: number; request_keys: number; maximum: number } {
-    return { active: this.byId.size, request_keys: this.byRequestKey.size, maximum: this.maximum };
+  snapshot(): { active: number; request_keys: number; maximum: number; oldest_ms: number; by_tool: Record<string, number> } {
+    const now = Date.now();
+    const byTool: Record<string, number> = {};
+    let oldestMs = 0;
+    for (const record of this.byId.values()) {
+      byTool[record.tool] = (byTool[record.tool] || 0) + 1;
+      oldestMs = Math.max(oldestMs, now - record.startedAt);
+    }
+    return {
+      active: this.byId.size,
+      request_keys: this.byRequestKey.size,
+      maximum: this.maximum,
+      oldest_ms: oldestMs,
+      by_tool: byTool,
+    };
   }
 
   private take(id: string): PendingCallRecord | undefined {

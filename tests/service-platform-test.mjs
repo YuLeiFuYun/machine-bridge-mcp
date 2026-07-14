@@ -1,4 +1,4 @@
-import { windowsCommandLineArgument } from "../src/local/service.mjs";
+import { runServiceCommand, windowsCommandLineArgument } from "../src/local/service.mjs";
 import { waitForInactiveStatus } from "../src/local/service-convergence.mjs";
 
 assert(windowsCommandLineArgument("plain") === '"plain"', "plain Windows argument was not quoted");
@@ -6,6 +6,10 @@ assert(windowsCommandLineArgument("C:\\") === '"C:\\\\"', "trailing Windows path
 assert(windowsCommandLineArgument('a\\"b') === '"a\\\\\\"b"', "backslashes before an embedded quote were not escaped with Windows CRT semantics");
 assert(windowsCommandLineArgument("") === '""', "empty Windows argument was not preserved");
 await expectReject(() => windowsCommandLineArgument("bad\0value"), "NUL byte");
+
+const serviceInvocation = await runServiceCommand("synthetic-service", ["status"], async (command, args, options) => ({ command, args, options }));
+assert(serviceInvocation.command === "synthetic-service" && serviceInvocation.args[0] === "status", "service command adapter changed executable or argv");
+assert(serviceInvocation.options.capture === true && serviceInvocation.options.allowFailure === true && serviceInvocation.options.maxOutputBytes === 64 * 1024, "service command adapter lost bounded failure-capturing options");
 await delayedLaunchdStopTest();
 await stuckLaunchdStopTest();
 console.log("service platform quoting test ok");

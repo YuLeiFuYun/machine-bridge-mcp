@@ -14,7 +14,7 @@ No transport is treated as a sandbox. Both transports invoke the same local runt
 
 ### Shared protocol metadata and tool catalog
 
-`src/shared/server-metadata.json` is the single source of truth for server identity, MCP protocol versions, and host instructions. `src/shared/tool-catalog.json` is the single source of truth for tool names, descriptions, input schemas, annotations, and policy availability. The Worker and local runtime import both directly. Catalog tests reject metadata drift, duplicate names, unknown availability classes, open schemas, missing annotations, profile drift, and second hand-maintained Worker definitions.
+`src/shared/server-metadata.json` is the single source of truth for server identity, the sole current MCP protocol version, and host instructions. `src/shared/tool-catalog.json` is the single source of truth for tool names, descriptions, input schemas, annotations, and policy availability. The Worker and local runtime import both directly. Catalog tests reject metadata drift, duplicate names, unknown availability classes, open schemas, missing annotations, profile drift, and second hand-maintained Worker definitions.
 
 ### CLI and state layer
 
@@ -150,7 +150,7 @@ Remote OAuth currently determines which registered client token may call tools; 
 4. The user verifies client name and redirect URI and enters a Machine Bridge account name and password.
 5. The Worker creates a five-minute code bound to client, redirect, resource, scope, and PKCE challenge.
 6. A valid verifier exchanges the one-time code for an expiring bearer token; only its hash is stored.
-7. The MCP client initializes and negotiates a supported protocol version. When the daemon advertises `session_bootstrap`, the Worker requests bounded local instructions and appends them to the initialization result; failure degrades to static instructions.
+7. The MCP client initializes against the sole current protocol version; an obsolete client must upgrade rather than enter a legacy execution path. The Worker returns a stateless HMAC-bound `MCP-Session-Id`, and later request/cancellation correlation is scoped by OAuth token, MCP session, JSON-RPC id type, and id value. Two clients may therefore reuse the same JSON-RPC id concurrently without collision. Sessionless POSTs remain independent and are not inserted into a token-global cancellation index. When the daemon advertises `session_bootstrap`, the Worker requests bounded local instructions and appends them to the initialization result; failure degrades to static instructions.
 8. `tools/list` is derived from the active daemon handshake; without a daemon, only `server_info` is advertised.
 9. `tools/call` receives a random relay call ID and is bound to the current socket and authenticated client request key.
 10. The runtime validates policy and arguments, executes the tool, and returns a bounded result.

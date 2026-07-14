@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import path, { join, resolve } from "node:path";
 import process from "node:process";
@@ -14,8 +14,8 @@ import { generateAccountPassword } from "./account-admin.mjs";
 import { accountAdminClient, createAccountCommand } from "./cli-account-admin.mjs";
 export { resolvePolicy } from "./cli-policy.mjs";
 export { parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
-import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
-import { run, runWrangler } from "./shell.mjs";
+import { classifyOperationalError, createLogger, sanitizeLogText } from "./log.mjs";
+import { runExecutable, runWrangler } from "./shell.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
@@ -362,7 +362,7 @@ async function clientConfigCommand(args) {
 
 async function ensureWorker(state, args) {
   const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "worker" });
-  const desiredHash = workerDeployHash(state);
+  const desiredHash = workerDeploymentFingerprint(state);
   const expectedVersion = currentPackageVersion();
   const complete = state.worker.url && state.worker.mcpServerUrl && state.worker.accountAdminSecret && state.worker.daemonSecret && state.worker.oauthTokenVersion && state.worker.name;
   if (!args.forceWorker && !args.rotateSecrets && complete && state.worker.deployHash === desiredHash) {
@@ -443,18 +443,20 @@ export function cleanupStaleSecretFiles(dir) {
   }
 }
 
-function workerDeployHash(state) {
-  const hash = createHash("sha256");
-  hash.update("mbm-worker-deploy-v2");
-  hash.update(String(state.worker.name || ""));
-  hash.update(String(state.worker.accountAdminSecret || ""));
-  hash.update(String(state.worker.daemonSecret || ""));
-  hash.update(String(state.worker.oauthTokenVersion || ""));
+function workerDeploymentFingerprint(state) {
+  const keyMaterial = [
+    String(state.worker.accountAdminSecret || ""),
+    String(state.worker.daemonSecret || ""),
+    String(state.worker.oauthTokenVersion || ""),
+  ].join("\0");
+  const fingerprint = createHmac("sha256", keyMaterial);
+  fingerprint.update("mbm-worker-deploy-v3");
+  fingerprint.update(String(state.worker.name || ""));
   for (const file of workerDeployHashFiles()) {
-    hash.update(path.relative(packageRoot, file));
-    hash.update(workerHashContent(file));
+    fingerprint.update(path.relative(packageRoot, file));
+    fingerprint.update(workerHashContent(file));
   }
-  return hash.digest("hex");
+  return fingerprint.digest("hex");
 }
 
 function workerHashContent(file) {
@@ -606,7 +608,7 @@ async function doctorCommand(args) {
   const checks = [];
   checks.push({ name: "node", ok: isSupportedNodeVersion(), detail: process.version });
   const npmCommand = npmVersionCommand();
-  const npm = await run(npmCommand.file, npmCommand.args, { capture: true, allowFailure: true, timeoutMs: 10_000 });
+  const npm = await runExecutable(npmCommand.file, npmCommand.args, { capture: true, allowFailure: true, timeoutMs: 10_000 });
   const npmDetail = sanitizeLines(npm.stdout || npm.stderr);
   checks.push({ name: "npm", ok: npm.code === 0 && isSupportedNpmVersion(npmDetail), detail: npmDetail || "unavailable" });
   const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true });
@@ -805,7 +807,7 @@ async function stopAutostartBestEffort(logger) {
 async function uninstallCommand(args) {
   const stateRoot = stateRootFromArgs(args);
   const deleteRemote = !args.keepWorker;
-  const validation = validateStateRootForRemoval(stateRoot);
+  validateStateRootForRemoval(stateRoot);
   const action = deleteRemote
     ? `delete deployed Worker(s), remove autostart entries, and remove local state at ${stateRoot}`
     : `remove autostart entries and local state at ${stateRoot} while keeping deployed Worker(s)`;

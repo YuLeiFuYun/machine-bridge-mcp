@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const selfPath = "scripts/privacy-check.mjs";
@@ -19,19 +20,18 @@ for (const relativePath of candidates) {
   scanDenylistPath(relativePath, denylist, findings);
   scanSensitivePath(relativePath, findings);
   const fullPath = path.join(root, relativePath);
-  let info;
-  try { info = lstatSync(fullPath); } catch {
-    findings.push({ path: relativePath, line: 1, rule: "publication file metadata could not be read" });
-    continue;
-  }
-  if (info.isSymbolicLink()) {
-    findings.push({ path: relativePath, line: 1, rule: "symbolic link in publication surface" });
-    continue;
-  }
-  if (!info.isFile()) continue;
   let buffer;
-  try { buffer = readFileSync(fullPath); } catch {
-    findings.push({ path: relativePath, line: 1, rule: "publication file content could not be read" });
+  try {
+    buffer = readBoundedRegularFileSync(fullPath, 5 * 1024 * 1024 + 1);
+  } catch (error) {
+    const code = String(error?.code || "");
+    const message = String(error?.message || error || "");
+    const rule = code === "ELOOP" || /symbolic link/i.test(message)
+      ? "symbolic link in publication surface"
+      : /exceeds/i.test(message)
+        ? "file exceeds privacy scanner size limit and requires manual review"
+        : "publication file content could not be read";
+    findings.push({ path: relativePath, line: 1, rule });
     continue;
   }
   if (buffer.length > 5 * 1024 * 1024) {

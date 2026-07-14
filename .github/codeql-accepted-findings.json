@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "accepted": [
+    {
+      "ruleId": "js/indirect-command-line-injection",
+      "path": "src/local/process-execution.mjs",
+      "reason": "exec_command is an explicitly authorized full-profile shell boundary; the runtime validates size and NUL bytes, invokes a fixed platform shell, and documents that commands execute with the local user's authority.",
+      "expires": "2027-07-14"
+    },
+    {
+      "ruleId": "js/shell-command-injection-from-environment",
+      "path": "src/local/process-execution.mjs",
+      "reason": "run_process and exec_command intentionally accept caller-selected executable or shell input after PolicyGate authorization; child_process.spawn receives argv separately and shell mode remains disabled at the spawn boundary.",
+      "expires": "2027-07-14"
+    },
+    {
+      "ruleId": "js/indirect-command-line-injection",
+      "path": "src/local/shell.mjs",
+      "reason": "The shared internal executable runner always uses spawn with shell false and a separately validated argv array; explicit shell parsing is constructed only by workspaceShellCommand at the authorized exec_command boundary.",
+      "expires": "2027-07-14"
+    },
+    {
+      "ruleId": "js/shell-command-injection-from-environment",
+      "path": "src/local/shell.mjs",
+      "reason": "Environment-derived paths are passed as discrete argv values to spawn with shell false; executable and argument strings reject NUL bytes and are bounded before process creation.",
+      "expires": "2027-07-14"
+    }
+  ]
+}

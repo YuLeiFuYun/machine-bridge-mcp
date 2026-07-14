@@ -2,11 +2,11 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { lstat, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import path, { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { RelayConnection } from "./relay-connection.mjs";
-import { MAX_COMMAND_BYTES, ProcessSessionManager } from "./process-sessions.mjs";
+import { ProcessSessionManager } from "./process-sessions.mjs";
 export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
-import { allToolNames, assertCanonicalFullPolicy, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, POLICY_PROFILES, PolicyGate, SERVER_NAME } from "./tools.mjs";
+import { allToolNames, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, POLICY_PROFILES, PolicyGate, SERVER_NAME } from "./tools.mjs";
 import { publicError } from "./errors.mjs";
 import { ProcessTracker } from "./process-tracker.mjs";
 import { CallRegistry } from "./call-registry.mjs";
@@ -367,9 +367,15 @@ export class LocalRuntime {
     const envelope = normalizeRelayToolCall(message);
     if (!envelope.ok) {
       this.logger.event?.("warn", "relay.tool_call.invalid", { has_call_id: Boolean(envelope.id) });
-      if (envelope.id) this.send({ type: "tool_result", id: envelope.id, ok: false, error: { code: "invalid_request", message: "invalid tool_call envelope", retryable: false } });
+      if (envelope.id) this.deliverRelayToolResult({
+        type: "tool_result",
+        id: envelope.id,
+        ok: false,
+        error: { code: "invalid_request", message: "invalid tool_call envelope", retryable: false },
+      });
       return;
     }
+    let response;
     try {
       const result = await this.executeTool(envelope.tool, envelope.arguments, {
         callId: envelope.id,
@@ -377,10 +383,18 @@ export class LocalRuntime {
         timeoutMs: envelope.timeoutMs,
         authorization: envelope.authorization,
       });
-      this.send({ type: "tool_result", id: envelope.id, ok: true, result });
+      response = { type: "tool_result", id: envelope.id, ok: true, result };
     } catch (error) {
-      this.send({ type: "tool_result", id: envelope.id, ok: false, error: publicError(error) });
+      response = { type: "tool_result", id: envelope.id, ok: false, error: publicError(error) };
     }
+    this.deliverRelayToolResult(response);
+  }
+
+  deliverRelayToolResult(response) {
+    if (this.send(response)) return true;
+    this.logger.event?.("warn", "relay.tool_result.delivery_failed", { call_id: shortCallId(response?.id) });
+    this.relay?.interrupt?.("relay_transport_error");
+    return false;
   }
 
   finishCall(callId) {

@@ -9,7 +9,9 @@ const temp = mkdtempSync(join(tmpdir(), "mbm-privacy-test-"));
 const privateName = ["private", "alias+fixture"].join(".");
 try {
   mkdirSync(join(temp, "scripts"), { recursive: true });
+  mkdirSync(join(temp, "src", "local"), { recursive: true });
   cpSync(join(root, "scripts", "privacy-check.mjs"), join(temp, "scripts", "privacy-check.mjs"));
+  cpSync(join(root, "src", "local", "secure-file.mjs"), join(temp, "src", "local", "secure-file.mjs"));
   writeFileSync(join(temp, ".privacy-denylist"), `${privateName}\n`, { mode: 0o600 });
   git(["init", "-q"]);
   git(["config", "user.name", "Privacy Test"]);

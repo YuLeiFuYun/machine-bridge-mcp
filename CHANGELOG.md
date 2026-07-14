@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.0 - 2026-07-14
+
+### Current-only protocol and runtime contract
+
+- Declare only MCP protocol `2025-11-25` across shared metadata, stdio, the local runtime, daemon handshakes, and the Cloudflare Worker. Older protocol dates are no longer advertised as supported; clients must negotiate the current protocol before invoking tools.
+- Add stateless, HMAC-bound `MCP-Session-Id` issuance. Concurrent chat windows using the same OAuth token now have independent JSON-RPC request-id and cancellation domains; sessionless independent POST requests no longer share a token-wide request-id lock.
+- Make terminal relay delivery fail closed: when a completed daemon call cannot return its `tool_result`, the daemon interrupts the ambiguous socket so Worker socket cleanup releases pending calls immediately instead of retaining a phantom active call until its long timeout.
+- Remove numeric-only managed-job lock interpretation and the remaining dead compatibility branches, unused imports, unreachable conditions, and stale orchestration variables. Current JSON ownership records with process start identity and random tokens are the only accepted lock contract.
+- Keep the current local state schema intact so an existing 0.18.x state root upgrades in place. The source upgrade remains operationally bounded: install the new package, run one normal `machine-mcp` startup to converge Worker and daemon versions, then reload the unpacked browser extension.
+
+### Descriptor-first file and process security
+
+- Centralize regular-file opens behind a no-follow descriptor primitive that validates the opened object, applies permissions through the descriptor, and performs bounded reads without a separate path check. State, privacy scanning, service logs, managed-job diagnostics, and owner-only files now use this boundary.
+- Inspect SSH key pairs from private, bounded snapshots copied into a private temporary directory. Fingerprinting and public/private correspondence no longer operate on mutable caller paths, and the original files are revalidated by identity and constant-time byte comparison before success is returned.
+- Fix managed-job recovery handoff so the recovery runner must remove `recovery.lock` with the exact handed-off PID and ownership token. It can no longer delete a replacement claim by path alone.
+- Separate the internal `runExecutable` argv boundary from explicit shell execution, bound executable/argv sizes, reject NUL bytes, and retain `shell: false` for direct execution. Worker deployment consistency now uses an HMAC fingerprint keyed by deployment secrets rather than an ordinary digest over secret values.
+
+### Enforced security evidence
+
+- Add a SARIF security gate to the required CodeQL workflow. Any new security-tagged result fails the required check; intentional high-authority process boundaries require an exact rule/path exception with a substantive rationale and expiry date.
+- Add deterministic property tests over hostile browser-protocol bytes, policy combinations, argv values, and shell-metacharacter arguments. Add production-path service command coverage and remove test-only filesystem check/use patterns that obscured CodeQL results.
+- Preserve the complete cross-platform, Worker, stdio, browser, lifecycle, atomic-file, process-tree, package, privacy-history, dependency, and release-integrity suite as the release gate.
+
 ## 0.18.1 - 2026-07-14
 
 ### Fixed

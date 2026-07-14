@@ -16,6 +16,8 @@ This document records project-wide decisions that must survive individual fixes,
 10. **Exclusive claims are complete before visible.** Never create a final lock/PID claim and then populate it. Use the shared exclusive-file primitive, ownership tokens, process-start identity, and snapshot-checked reclamation.
 11. **Service and state removal are fail-closed state machines.** Stop the platform provider and every verified daemon before removing definitions or recursive state. An unreadable lock, failed stop, active job, or ambiguous identity retains state for diagnosis.
 12. **Read failure is not empty state.** Permission, type, symbolic-link, size, encoding, and I/O errors must propagate. Corrupt backup/reconstruction applies only after a successful read proves that JSON content is invalid.
+13. **The public protocol contract is current-only.** Shared metadata advertises only the current MCP protocol version. Compatibility code for obsolete protocol dates, lock formats, or state schemas is not retained in the final runtime; upgrade safety comes from explicit version negotiation, fail-closed state validation, and bounded operator convergence.
+14. **Security analysis is a failing gate.** CodeQL execution alone is not success. Generated SARIF must contain no unaccepted security result; an intentional authority boundary requires an exact rule/path record with a substantive rationale and an expiry date.
 
 A proposed change that conflicts with an invariant requires an explicit owner decision and corresponding documentation update. It must not be hidden inside an unrelated refactor.
 

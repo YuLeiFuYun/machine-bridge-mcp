@@ -27,6 +27,12 @@ machine-mcp service status
 
 A successful diagnostic result applies only to that probe. An MCP host can still deny a later call based on its own request context. This is expected layering, not a defect in the `full` profile: `full` removes Machine Bridge's own denials, while host delivery remains independent.
 
+### Concurrent chat windows and pending calls
+
+Machine Bridge supports concurrent calls: the Worker admits up to 32 pending daemon calls and the local runtime admits up to 16 active tool calls. These are capacity limits, not a single global execution queue. Each successful MCP initialization receives a signed `MCP-Session-Id`; JSON-RPC ids and cancellation are scoped to that session, so separate chat windows may reuse the same numeric ids safely even when they share one OAuth account and token.
+
+`server_info.worker.pending_calls` reports `active`, `request_keys`, `maximum`, `oldest_ms`, and `by_tool`. A nonzero `active` count means work is in flight, not that the bridge is locked. Calls for simple reads and probes should continue while another independent process call runs. A value that remains after the underlying local task completed indicates a transport-delivery defect; version 1 interrupts and reconnects the ambiguous daemon socket so Worker cleanup releases those records. Refreshing a chat page is not the recovery mechanism and should not be required.
+
 ### Relay interruption messages
 
 A brief relay interruption is retried automatically and is visible only with `--verbose`. Default logs do not print raw WebSocket values such as `code=1006` with an empty reason. If a transient outage persists for 10 seconds, the daemon emits a readable duration/cause/reconnect summary; later reminders use autonomous exponential backoff capped at 15 minutes, and recovery produces one readable summary. Each transport connection attempt also has a deadline, so a socket stuck in `CONNECTING` cannot freeze retries. Identity/version mismatch, authentication rejection, and unexpected protocol messages are not retried as ordinary network faults: the daemon emits an immediate actionable error and exits, requiring upgrade/redeployment or credential repair. A Worker-side daemon handshake timeout remains retryable.
@@ -92,6 +98,20 @@ machine-mcp --verbose
 ```
 
 `Unknown cli config "--allow-scripts"` proves the package installation ran under npm 11 or older. `Invalid property "node"` or `Invalid property "devEngines.node"` means npm parsed an outdated `devEngines` object; inspect the npm debug log to identify its source rather than assuming it belongs to Machine Bridge. The published package declares both Node.js 26 and npm 12 in `engines`, and `machine-mcp doctor` checks both active versions. Keep `--omit=optional` in the install command. Without it npm may resolve optional `fsevents` and warn that its install script was not included in `allowScripts`; Machine Bridge does not require that development-time watcher at runtime.
+
+## Version 1 upgrade convergence
+
+Version 1 advertises only MCP protocol `2025-11-25`. Upgrade the MCP client/host if it cannot negotiate that version; Machine Bridge does not retain an obsolete protocol dispatcher. The current local state schema is unchanged from the final 0.18.x release, so do not delete the state root merely to upgrade.
+
+Use this sequence:
+
+1. Install the released version with the documented pinned npm 12 command.
+2. Run `machine-mcp --verbose` once. Startup verifies package/Worker versions, performs the ordinary authenticated Worker convergence when needed, stops only a verified service-style old daemon, waits for its lock, and starts the installed version.
+3. Run `machine-mcp status` and `machine-mcp doctor`.
+4. Reload the unpacked browser extension and revisit the pairing page. Exact package version and capability equality are required before browser readiness is reported.
+5. Reconnect MCP clients so they initialize with the current protocol and tool metadata.
+
+A failed state read, unverifiable process owner, active managed job, Worker authentication failure, or extension version mismatch remains fail closed. Preserve the state root and logs for diagnosis rather than deleting them to force apparent success.
 
 ## State-root safety and removal
 

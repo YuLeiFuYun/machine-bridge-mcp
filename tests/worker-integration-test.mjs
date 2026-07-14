@@ -280,6 +280,36 @@ try {
   assert(initialized.body.result?.protocolVersion === "2025-11-25", "initialize did not negotiate the latest supported protocol");
   assert(initialized.body.result?.serverInfo?.version === pkg.version, "initialize returned the wrong Worker version");
   assert(initialized.body.result?.capabilities?.tools, "initialize omitted tools capability");
+  const primarySession = initialized.response.headers.get("mcp-session-id");
+  assert(/^mcp_[A-Za-z0-9_-]{32}_[A-Za-z0-9_-]{43}$/.test(primarySession || ""), "initialize did not issue a valid MCP session id");
+
+  const secondInitialized = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "integration-second-window", version: "1" } },
+    }),
+  });
+  const secondarySession = secondInitialized.response.headers.get("mcp-session-id");
+  assert(secondInitialized.response.status === 200 && secondarySession && secondarySession !== primarySession, "independent initialize did not create an isolated MCP session");
+
+  const invalidSession = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token.body.access_token}`,
+      "mcp-protocol-version": "2025-11-25",
+      "mcp-session-id": tamperSessionId(primarySession),
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping", params: {} }),
+  });
+  assert(invalidSession.response.status === 404 && invalidSession.body.error?.code === -32001, "tampered MCP session id was accepted");
 
   const unsupportedProtocol = await fetchJson(`${base}/mcp`, {
     method: "POST",
@@ -367,6 +397,63 @@ try {
   assert(statusAfterHello.daemon?.tools?.includes("run_process"), "agent policy did not retain direct process execution");
   assert(!statusAfterHello.daemon?.tools?.includes("exec_command"), "agent policy did not filter shell execution");
   assert(!statusAfterHello.daemon?.tools?.includes("read_file"), "replaced daemon tools remained active");
+
+  const firstWindowRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const firstWindowCall = toolCallRequest(base, token.body.access_token, primarySession, 880, "list_dir", { path: "." });
+  const firstWindowRelay = await firstWindowRelayPromise;
+  const secondWindowRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const secondWindowCall = toolCallRequest(base, token.body.access_token, secondarySession, 880, "list_dir", { path: "." });
+  const secondWindowRelay = await secondWindowRelayPromise;
+  assert(firstWindowRelay.id !== secondWindowRelay.id, "two MCP sessions reused an internal daemon call id");
+  const concurrentStatus = await callServerInfo(base, token.body.access_token, 8810);
+  assert(concurrentStatus.worker?.pending_calls?.active === 2, "Worker did not retain two concurrent session calls");
+  assert(concurrentStatus.worker?.pending_calls?.request_keys === 2, "Worker did not index concurrent calls by isolated session");
+  assert(concurrentStatus.worker?.pending_calls?.by_tool?.list_dir === 2, "pending-call diagnostics omitted concurrent tool counts");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: secondWindowRelay.id, ok: true, result: { window: "second" } }));
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: firstWindowRelay.id, ok: true, result: { window: "first" } }));
+  const [firstWindowResult, secondWindowResult] = await Promise.all([firstWindowCall, secondWindowCall]);
+  assert(firstWindowResult.body.result?.structuredContent?.window === "first", "first MCP session received another session's result");
+  assert(secondWindowResult.body.result?.structuredContent?.window === "second", "second MCP session received another session's result");
+
+  const sessionlessFirstRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const sessionlessFirst = toolCallRequest(base, token.body.access_token, "", 881, "list_dir", { path: "." });
+  const sessionlessFirstRelay = await sessionlessFirstRelayPromise;
+  const sessionlessSecondRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const sessionlessSecond = toolCallRequest(base, token.body.access_token, "", 881, "list_dir", { path: "." });
+  const sessionlessSecondRelay = await sessionlessSecondRelayPromise;
+  const sessionlessStatus = await callServerInfo(base, token.body.access_token, 8811);
+  assert(sessionlessStatus.worker?.pending_calls?.active === 2 && sessionlessStatus.worker?.pending_calls?.request_keys === 0, "sessionless independent POST requests shared a token-level request-id lock");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: sessionlessFirstRelay.id, ok: true, result: { request: "one" } }));
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: sessionlessSecondRelay.id, ok: true, result: { request: "two" } }));
+  await Promise.all([sessionlessFirst, sessionlessSecond]);
+
+  const cancelFirstRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const cancelFirstCall = toolCallRequest(base, token.body.access_token, primarySession, 882, "list_dir", { path: "." });
+  const cancelFirstRelay = await cancelFirstRelayPromise;
+  const cancelSecondRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const cancelSecondCall = toolCallRequest(base, token.body.access_token, secondarySession, 882, "list_dir", { path: "." });
+  const cancelSecondRelay = await cancelSecondRelayPromise;
+  const isolatedCancelNotice = waitForWsMessage(candidateDaemon, "cancel_call");
+  const isolatedCancellation = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: mcpHeaders(token.body.access_token, primarySession),
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 882, reason: "cancel first window only" } }),
+  });
+  assert(isolatedCancellation.status === 202, "session-scoped cancellation notification failed");
+  assert((await isolatedCancelNotice).id === cancelFirstRelay.id, "session-scoped cancellation targeted the wrong window");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: cancelSecondRelay.id, ok: true, result: { window: "still-running" } }));
+  const [cancelFirstResult, cancelSecondResult] = await Promise.all([cancelFirstCall, cancelSecondCall]);
+  assert(cancelFirstResult.body.result?.isError === true && JSON.stringify(cancelFirstResult.body.result).includes("cancelled"), "cancelled session did not settle as cancelled");
+  assert(cancelSecondResult.body.result?.structuredContent?.window === "still-running", "cancelling one MCP session interrupted another session");
+
+  const duplicateRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const duplicateOriginal = toolCallRequest(base, token.body.access_token, primarySession, 883, "list_dir", { path: "." });
+  const duplicateRelay = await duplicateRelayPromise;
+  const duplicateRequest = await toolCallRequest(base, token.body.access_token, primarySession, 883, "list_dir", { path: "." });
+  assert(duplicateRequest.body.result?.isError === true && JSON.stringify(duplicateRequest.body.result).includes("MCP session"), "same-session duplicate request id was not rejected precisely");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: duplicateRelay.id, ok: true, result: { original: true } }));
+  assert((await duplicateOriginal).body.result?.structuredContent?.original === true, "same-session duplicate corrupted the original call");
+
   const initializedWithDaemonPromise = fetchJson(`${base}/mcp`, {
     method: "POST",
     headers: {
@@ -488,6 +575,7 @@ try {
       "content-type": "application/json",
       authorization: `Bearer ${token.body.access_token}`,
       "mcp-protocol-version": "2025-11-25",
+      "mcp-session-id": primarySession,
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 77, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
   });
@@ -500,6 +588,7 @@ try {
       "content-type": "application/json",
       authorization: `Bearer ${token.body.access_token}`,
       "mcp-protocol-version": "2025-11-25",
+      "mcp-session-id": primarySession,
     },
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 77, reason: "integration test" } }),
   });
@@ -657,7 +746,7 @@ async function sendDaemonHello(socket, tools, policy = { profile: "review", allo
     type: "hello",
     tools,
     policy,
-    protocol_versions: ["2025-11-25", "2025-06-18", "2025-03-26"],
+    protocol_versions: ["2025-11-25"],
   }));
   await acknowledged;
 }
@@ -690,6 +779,29 @@ function waitForWsClose(socket, timeoutMs = 5000) {
     socket.once("close", (code, reason) => resolve({ code, reason: String(reason) }));
     socket.once("error", reject);
   }), timeoutMs, "daemon close");
+}
+
+function tamperSessionId(value) {
+  const signatureStart = value.lastIndexOf("_") + 1;
+  const replacement = value[signatureStart] === "A" ? "B" : "A";
+  return `${value.slice(0, signatureStart)}${replacement}${value.slice(signatureStart + 1)}`;
+}
+
+function mcpHeaders(accessToken, sessionId = "") {
+  return {
+    "content-type": "application/json",
+    authorization: `Bearer ${accessToken}`,
+    "mcp-protocol-version": "2025-11-25",
+    ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+  };
+}
+
+function toolCallRequest(origin, accessToken, sessionId, id, name, argumentsValue) {
+  return fetchJson(`${origin}/mcp`, {
+    method: "POST",
+    headers: mcpHeaders(accessToken, sessionId),
+    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: argumentsValue } }),
+  });
 }
 
 async function callServerInfo(origin, accessToken, id) {

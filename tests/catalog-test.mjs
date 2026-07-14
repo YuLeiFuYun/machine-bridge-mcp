@@ -6,7 +6,7 @@ const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.js
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
 assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
 assert(metadata.protocolVersion === "2025-11-25", "shared protocol version is invalid");
-assert(Array.isArray(metadata.supportedProtocolVersions) && metadata.supportedProtocolVersions.includes(metadata.protocolVersion), "shared supported protocol versions are invalid");
+assert(JSON.stringify(metadata.supportedProtocolVersions) === JSON.stringify([metadata.protocolVersion]), "v1 must expose only the current MCP protocol version");
 assert(Array.isArray(metadata.instructions) && metadata.instructions.length >= 4, "shared server instructions are missing");
 assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
 const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");

@@ -572,7 +572,6 @@
   }
 
   function boxDistance(left, right) {
-    if (!left || !right) return Number.POSITIVE_INFINITY;
     return Math.max(
       Math.abs(left.x - right.x), Math.abs(left.y - right.y),
       Math.abs(left.width - right.width), Math.abs(left.height - right.height),

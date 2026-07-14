@@ -195,8 +195,9 @@ const appAutomationSource = readFileSync(join(root, "src", "local", "app-automat
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
 
-if (!workerSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"') || !workerSource.includes('"browser_screenshot", "browser_upload_files"')) {
+if (!workerToolTimeoutSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"') || !workerToolTimeoutSource.includes('"browser_screenshot", "browser_upload_files"')) {
   throw new Error("Worker timeout classification omits browser_upload_files");
 }
 if (!cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
@@ -256,6 +257,8 @@ if (packageJson.scripts?.["worker:types"] !== "node scripts/generate-worker-type
 if (packageJson.scripts?.["tool-docs:check"] !== "node scripts/generate-tool-reference.mjs --check") throw new Error("generated MCP tool documentation gate is missing");
 if (packageJson.scripts?.["commit-message:test"] !== "node tests/commit-message-test.mjs") throw new Error("commit-message policy regression test is missing");
 if (packageJson.scripts?.["logging-structure:test"] !== "node tests/logging-structure-test.mjs") throw new Error("structured logging regression test is missing");
+if (packageJson.scripts?.["sarif-security:test"] !== "node tests/sarif-security-gate-test.mjs") throw new Error("SARIF security gate regression test is missing");
+if (packageJson.scripts?.["security-properties:test"] !== "node tests/security-properties-test.mjs") throw new Error("security property test suite is missing");
 if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
 if (packageJson.scripts?.["capability-ranking:test"] !== "node tests/capability-ranking-test.mjs") throw new Error("capability ranking regression test is missing");
@@ -267,6 +270,10 @@ if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs
 }
 const ciSource = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
 if (!ciSource.includes("npm run privacy:history")) throw new Error("CI package audit no longer scans reachable Git history");
+const codeqlWorkflowSource = readFileSync(join(root, ".github", "workflows", "codeql.yml"), "utf8");
+if (!codeqlWorkflowSource.includes("scripts/sarif-security-gate.mjs") || !codeqlWorkflowSource.includes("steps.analyze.outputs.sarif-output")) {
+  throw new Error("CodeQL workflow no longer fails on unaccepted SARIF security findings");
+}
 const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
 if (!releaseSource.includes('import { requireSuccessfulCiRun } from "./release-ci.mjs";')
     || (releaseSource.match(/assertSuccessfulCi\(head\);/g) || []).length !== 2) {

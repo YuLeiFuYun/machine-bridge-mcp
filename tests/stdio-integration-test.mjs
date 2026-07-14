@@ -6,6 +6,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { loadState } from "../src/local/state.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temp = await mkdtemp(join(tmpdir(), "mbm-stdio-test-"));
@@ -156,9 +157,11 @@ try {
   const generatedContent = generatedKey.result?.structuredContent;
   assert(generatedKey.result?.isError === false && generatedContent?.registered === true && generatedContent?.private_key_content_exposed === false, "generate_ssh_key_resource failed or exposed private content");
   assert(generatedContent?.paths_exposed === false && !("private_key_path" in generatedContent) && !JSON.stringify(generatedKey.result).includes(generatedKeyPath), "generate_ssh_key_resource exposed local paths by default");
-  assert((await stat(generatedKeyPath)).isFile() && (await stat(`${generatedKeyPath}.pub`)).isFile(), "generate_ssh_key_resource did not create a key pair");
-  if (process.platform !== "win32") assert(((await stat(generatedKeyPath)).mode & 0o777) === 0o600, "generated MCP private key mode is not 0600");
-  const privateBytes = await readFile(generatedKeyPath);
+  const privateSnapshot = readBoundedRegularFileWithInfoSync(generatedKeyPath, 1024 * 1024, "generated SSH private key");
+  const publicSnapshot = readBoundedRegularFileWithInfoSync(`${generatedKeyPath}.pub`, 64 * 1024, "generated SSH public key");
+  assert(privateSnapshot.info.isFile() && publicSnapshot.info.isFile(), "generate_ssh_key_resource did not create a key pair");
+  if (process.platform !== "win32") assert((privateSnapshot.info.mode & 0o777) === 0o600, "generated MCP private key mode is not 0600");
+  const privateBytes = privateSnapshot.buffer;
   assert(!JSON.stringify(generatedKey.result).includes(privateBytes.toString("base64")), "generate_ssh_key_resource returned encoded private key bytes");
   send({ jsonrpc: "2.0", id: 605, method: "tools/call", params: { name: "list_local_resources", arguments: {} } });
   const resourcesAfterGeneration = await responseFor(605);
