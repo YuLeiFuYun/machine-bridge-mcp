@@ -181,8 +181,17 @@ try {
   assert(page.status === 200, `authorization page failed: ${page.status}`);
   assert(pageHtml.includes("Integration &lt;Client&gt;") && !pageHtml.includes("\u202e") && !pageHtml.includes("\u200b"), "authorization page omitted, failed to escape, or retained display controls in client name");
   assert(pageHtml.includes(redirectUri), "authorization page omitted redirect URI");
-  assert(page.headers.get("content-security-policy")?.includes("frame-ancestors 'none'"), "authorization page lacks CSP frame protection");
+  const authorizationCsp = page.headers.get("content-security-policy") ?? "";
+  assert(authorizationCsp.includes("frame-ancestors 'none'"), "authorization page lacks CSP frame protection");
+  assert(authorizationCsp.includes("form-action 'self' http://localhost"), "authorization page CSP omitted the validated loopback redirect origin");
+  assert(!authorizationCsp.includes("https:"), "authorization page CSP broadened form redirects to every HTTPS origin");
   assert(page.headers.get("cache-control") === "no-store", "authorization page is cacheable");
+
+  const chatGptPage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: chatGptRedirectUri, state: "chatgpt-page-state" })}`);
+  const chatGptPageCsp = chatGptPage.headers.get("content-security-policy") ?? "";
+  assert(chatGptPage.status === 200, `ChatGPT authorization page failed: ${chatGptPage.status}`);
+  assert(chatGptPageCsp.includes("form-action 'self' https://chatgpt.com"), "ChatGPT authorization page CSP omitted its validated redirect origin");
+  assert(!chatGptPageCsp.includes("https://example.com"), "ChatGPT authorization page CSP included an unrelated redirect origin");
 
   const wrongPassword = await stableFetch(`${base}/oauth/authorize`, {
     method: "POST",
@@ -193,6 +202,9 @@ try {
   const wrongHtml = await wrongPassword.text();
   assert(wrongPassword.status === 401, `wrong password returned ${wrongPassword.status}`);
   assert(!wrongHtml.includes("invalid_owner_"), "authorization response reflected the submitted password");
+  assert(wrongHtml.includes("Invalid account credentials."), "retry page omitted the credential error");
+  assert(wrongHtml.includes('role="alert"') && wrongHtml.includes('aria-live="assertive"'), "retry page does not expose an accessible error status");
+  assert(wrongHtml.includes('name="account_name" value="owner"'), "retry page did not preserve the non-secret account name");
   assert(wrongHtml.includes("Integration &lt;Client&gt;"), "retry page omitted validated client context");
 
   const approved = await stableFetch(`${base}/oauth/authorize`, {

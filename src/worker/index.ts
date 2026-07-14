@@ -22,7 +22,7 @@ import {
 } from "./http";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.0.6";
+const SERVER_VERSION = "1.0.7";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -746,15 +746,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       ? `<p><strong>Client:</strong> ${escapeHtml(authorization.client.client_name)}</p>
     <p><strong>Redirect URI:</strong> <code>${escapeHtml(authorization.redirectUri)}</code></p>`
       : "";
-    const errorBlock = error ? `<p role="alert" style="color:#b91c1c">${escapeHtml(error)}</p>` : "";
+    const errorBlock = error ? `<p role="alert" aria-live="assertive" style="color:#b91c1c; font-weight:600">${escapeHtml(error)}</p>` : "";
+    const accountName = normalizeDisplayText(String(submitted?.account_name ?? ""), 64, "");
     const form = allowSubmit
       ? `<form method="post" action="/oauth/authorize">
       ${hidden}
-      <label>Account name<br><input name="account_name" autocomplete="username" autofocus required style="width: 100%; box-sizing: border-box; padding: 8px;"></label>
+      <label>Account name<br><input name="account_name" value="${escapeHtml(accountName)}" autocomplete="username" autofocus required style="width: 100%; box-sizing: border-box; padding: 8px;"></label>
       <p><label>Account password<br><input name="account_password" type="password" autocomplete="current-password" required style="width: 100%; box-sizing: border-box; padding: 8px;"></label></p>
       <p><button type="submit">Authorize</button></p>
     </form>`
       : "<p>Authorization cannot continue. Return to the MCP client and start the connection again.</p>";
+    const redirectOrigin = authorization ? new URL(authorization.redirectUri).origin : "";
     return html(`<!doctype html>
 <html>
   <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize ${SERVER_NAME}</title></head>
@@ -766,7 +768,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     ${errorBlock}
     ${form}
   </body>
-</html>`, status);
+</html>`, status, redirectOrigin);
   }
 
   private async authorizeSubmit(request: Request, base: string): Promise<Response> {

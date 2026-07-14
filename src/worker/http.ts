@@ -62,13 +62,23 @@ export function json(value: unknown, status = 200, extraHeaders: HeadersInit = {
   return new Response(JSON.stringify(value), { status, headers });
 }
 
-export function html(value: string, status = 200): Response {
+export function html(value: string, status = 200, formActionOrigin = ""): Response {
+  const allowedFormActions = new Set(["'self'"]);
+  if (formActionOrigin) {
+    try {
+      const origin = new URL(formActionOrigin).origin;
+      if (origin !== "null") allowedFormActions.add(origin);
+    } catch {
+      // Invalid values are ignored; callers pass a validated OAuth redirect origin.
+    }
+  }
+  const formAction = [...allowedFormActions].join(" ");
   return new Response(value, {
     status,
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; base-uri 'none'; frame-ancestors 'none'`,
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",

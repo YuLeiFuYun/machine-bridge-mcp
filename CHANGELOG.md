@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.7 - 2026-07-14
+
+### Browser-complete OAuth callback navigation
+
+- Fix the authorization page CSP so a successful same-origin form POST may follow its `303 See Other` to the exact, already registered and validated OAuth redirect origin. The previous static `form-action 'self'` policy let the Worker issue a correct redirect but caused Chromium to block the callback navigation and leave the user on the consent page.
+- Keep the policy narrow: each consent page receives only `'self'` plus that request's exact redirect origin, never a wildcard or scheme-wide allowance. Add a real headless-Chrome negative/positive regression proving the old policy blocks the callback and the new policy preserves `code` and `state`; retain Worker-level CSP, PKCE, redirect/resource, password, and token tests. Invalid credentials now preserve only the non-secret account name and display an accessible error while never reflecting the password.
+
 ## 1.0.6 - 2026-07-14
 
 ### OAuth navigation origin handling
