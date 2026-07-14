@@ -18,10 +18,12 @@ try {
   await mkdir(target);
   await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
   expectThrow(() => ensureOwnerOnlyDirectorySync(link), "real directory");
-  expectThrow(() => ensureOwnerOnlyDirectorySync(join(root, "chmod-failure"), {
-    platform: "linux",
-    fchmodSync() { throw Object.assign(new Error("denied"), { code: "EPERM" }); },
-  }), "could not restrict");
+  if (process.platform !== "win32") {
+    expectThrow(() => ensureOwnerOnlyDirectorySync(join(root, "chmod-failure"), {
+      platform: process.platform,
+      fchmodSync() { throw Object.assign(new Error("denied"), { code: "EPERM" }); },
+    }), "could not restrict");
+  }
   ensureOwnerOnlyDirectorySync(join(root, "windows-chmod-unsupported"), {
     platform: "win32",
     fchmodSync() { throw new Error("must not be called"); },
