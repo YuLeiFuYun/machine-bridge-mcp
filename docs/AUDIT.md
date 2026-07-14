@@ -7,7 +7,7 @@ This document records the cross-cutting audit initiated for version 0.12.0, the 
 
 This review confirmed that earlier safety controls existed but were distributed across duplicated policy checks, transport-specific pending maps, message-regex errors, and oversized composition files. It reproduced a production-visible Worker defect where a completed client JSON-RPC request key could remain indexed and cause unrelated later calls to fail as duplicate in-flight IDs. Pending calls now use one atomic double-index registry whose terminal `take` operation clears the internal ID, request key, and timer before resolution or rejection; success, daemon error, cancellation, timeout, send failure, and socket loss have behavior coverage.
 
-Policy revision 4 replaces local/Worker/manager interpretations with one contract. The audit found a concrete compound-ACL error: `start_job` was advertised by direct-exec alone even though it creates persistent files. It now requires write plus direct execution; read-only job/resource inspection no longer inherits mutation requirements. Typed errors, shared middleware, explicit runtime lifecycle, process ownership, structured JSON logs, and local/Worker metrics replace ad hoc message parsing and invisible pending state.
+Policy revision 5 supplies one authorization contract to the local runtime, Worker role intersection, and manager-level checks. The audit found a concrete compound-ACL error: `start_job` was advertised by direct-exec alone even though it creates persistent files. It now requires write plus direct execution; read-only job/resource inspection no longer inherits mutation requirements. Typed errors, shared middleware, explicit runtime lifecycle, process ownership, structured JSON logs, and local/Worker metrics replace ad hoc message parsing and invisible pending state.
 
 The composition roots were reduced by extracting filesystem, process, Git, CLI parsing/admin, ranking, managed-job validation, browser protocol/pairing, Worker HTTP, OAuth, policy, errors, pending calls, and observability. Executable architecture limits prevent these responsibilities from returning. During extraction, a missing local ESM binding was initially hidden by a broad catch and surfaced only as `resource_unavailable`; the catch now rethrows unknown faults, and the stdio generated-resource test exercises the complete state reload path.
 
@@ -47,7 +47,7 @@ The review also found three governance gaps not represented by the original fail
 - Workflow actions used movable major-version tags. They are now pinned to immutable official commit SHAs, with an executable invariant.
 - Repository privacy checks covered only the current tree. Package audit now scans reachable historical paths, bounded UTF-8 blobs, and commit messages; deleted credential fixtures fail without echoing their values.
 
-No generic active credential pattern was found in the current tree or reachable history after excluding standard public automation trailers. The developer-local denylist does match legacy historical identifiers, and the Git metadata audit found a legacy non-noreply author/committer identity. These are identity/privacy metadata rather than active credentials. Removing them would require a coordinated history rewrite and force-update of affected refs, which is intentionally not performed as an incidental code fix.
+No generic active credential pattern was found in the current tree or reachable history after excluding standard public automation trailers. The developer-local denylist does match historical identifiers, and the Git metadata audit found an older non-noreply author/committer identity. These are identity/privacy metadata rather than active credentials. Removing them would require a coordinated history rewrite and force-update of affected refs, which is intentionally not performed as an incidental code fix.
 
 ## Scope
 
@@ -77,7 +77,7 @@ The runtime now:
 - gives a recent malformed lock a grace period rather than deleting a possibly in-progress claim;
 - waits a bounded interval for ordinary startup/state operations instead of failing immediately.
 
-Managed-job transition, recovery, and runner identity follow the same principles while retaining compatibility with legacy numeric PID files.
+Managed-job transition, recovery, and runner identity follow the same ownership and process-start-time rules. Numeric-only runner records are rejected.
 
 ### Service lifecycle
 

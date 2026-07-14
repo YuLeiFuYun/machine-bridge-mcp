@@ -1,0 +1,23 @@
+{
+  "revision": 1,
+  "defaultRole": "reviewer",
+  "ownerRole": "owner",
+  "roles": {
+    "reviewer": {
+      "profile": "review",
+      "description": "Read-only access to the selected workspace."
+    },
+    "editor": {
+      "profile": "edit",
+      "description": "Read and deterministic file mutation without process execution."
+    },
+    "operator": {
+      "profile": "agent",
+      "description": "Workspace-confined file mutation and direct process execution."
+    },
+    "owner": {
+      "profile": "full",
+      "description": "Complete bridge authority, including shell, browser, applications, unrestricted paths, and account administration."
+    }
+  }
+}

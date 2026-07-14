@@ -34,7 +34,7 @@ A newly selected workspace starts with the maximum-permission `full` profile for
 - tool results may return absolute paths;
 - child processes inherit the complete parent environment.
 
-Policy state records whether it came from the default, an explicit named profile, or custom overrides. Named profiles are canonical contracts: a stored `full` profile is repaired on load to enable writes, shell execution, unrestricted paths, full parent environment, absolute path output, and the complete tool catalog. Any explicit per-capability narrowing is stored as `custom`. Policy revision 4 normalizes named profiles from the shared contract, refreshes default/migrated state, preserves explicit restrictive/custom profiles, and applies compound tool requirements consistently in the local daemon and Worker.
+Policy state records whether it came from the default, an explicit named profile, or custom overrides. Named profiles are canonical contracts: a stored `full` profile always enables writes, shell execution, unrestricted paths, the full parent environment, absolute path output, and the complete tool catalog. Any explicit per-capability narrowing is stored as `custom`. Policy revision 5 is the only accepted persisted policy format and applies compound tool requirements consistently in the local daemon and Worker.
 
 | Profile | File edits | Direct argv processes | Shell commands | Filesystem scope | Process environment |
 |---|---:|---:|---:|---|---|
@@ -51,7 +51,7 @@ For prerequisites, first remote deployment, ChatGPT connection, stdio configurat
 
 Node.js 26 or newer and npm 12 or newer are required. The repository pins the active development versions in `.node-version`, `.nvmrc`, and `packageManager`; project installs fail on older Node runtimes.
 
-Use a new temporary directory for the bootstrap. The existing `npm`/`npx` front-end may inspect nearby project metadata before it launches the requested npm version; starting from an empty directory prevents an unrelated legacy `devEngines` declaration from blocking the bootstrap. The actual installation is then executed by the pinned npm 12 CLI rather than whichever npm happens to be first on `PATH`.
+Use a new temporary directory for the bootstrap. The existing `npm`/`npx` front-end may inspect nearby project metadata before it launches the requested npm version; starting from an empty directory prevents an unrelated outdated `devEngines` declaration from blocking the bootstrap. The actual installation is then executed by the pinned npm 12 CLI rather than whichever npm happens to be first on `PATH`.
 
 macOS/Linux:
 
@@ -81,7 +81,7 @@ npm --version
 machine-mcp doctor
 ```
 
-`Unknown cli config "--allow-scripts"` proves the Machine Bridge install was executed by npm 11 or older rather than the required npm 12. `Invalid property "node"` or `Invalid property "devEngines.node"` means that npm parsed a legacy `devEngines` object; the npm debug log is required to identify which package supplied it. The empty-directory, pinned-npm procedure avoids relying on that old parser. If `npm --version` still reports an older version after the bootstrap, reopen the terminal and rerun `machine-mcp doctor`.
+`Unknown cli config "--allow-scripts"` proves the Machine Bridge install was executed by npm 11 or older rather than the required npm 12. `Invalid property "node"` or `Invalid property "devEngines.node"` means that npm parsed an outdated `devEngines` object; the npm debug log is required to identify which package supplied it. The empty-directory, pinned-npm procedure avoids relying on that old parser. If `npm --version` still reports an older version after the bootstrap, reopen the terminal and rerun `machine-mcp doctor`.
 
 Recent npm releases may otherwise warn that Wrangler's native dependencies (`esbuild`, `workerd`, and `sharp`) have install scripts awaiting approval. The scoped command approves the reviewed native script names that npm 12 evaluates during global resolution while `--omit=optional` keeps optional `fsevents` out of the installed runtime. `fsevents` is used for development-time filesystem watching rather than Machine Bridge runtime or deployment. Omitting `--omit=optional` can therefore produce a harmless blocked-script warning for `fsevents@2.3.3`; use the documented command rather than changing global npm policy. `machine-mcp doctor` remains the authoritative runtime check.
 
@@ -109,7 +109,8 @@ On first remote start, the CLI:
 4. deploys a per-workspace Worker;
 5. installs a platform-native login service unless `--no-autostart` is used;
 6. starts an outbound-only daemon connection;
-7. prints the Remote MCP URL and connection password.
+7. creates the initial `owner` account when needed and prints its password once;
+8. prints the Remote MCP URL.
 
 A normal `machine-mcp` invocation is a foreground start: it remains attached to the terminal and prints `info` logs. Startup and other state-changing operations use an owner-token/process-identity lock and wait up to 30 seconds for an ordinary concurrent startup to finish instead of failing on a brief launchd/systemd race. After a global package upgrade, the CLI unloads the platform service and also checks the workspace lock for a detached/orphan `--daemon-only` process that the service manager no longer tracks. It terminates only a process whose PID, process start time, entrypoint, canonical workspace, canonical state root, and daemon-only arguments all match, waits up to 15 seconds for the PID and lock to disappear, and then starts the installed version in the foreground. A genuine foreground or unverifiable conflict is left untouched and reported with actionable guidance. To run only in the background, use `machine-mcp service start`; inspect its owner-only logs under `~/.local/state/machine-bridge-mcp/logs/`.
 
@@ -121,20 +122,19 @@ machine-mcp --verbose
 
 The global install replaces files on disk but cannot hot-reload an already running Node process; the foreground command performs the bounded service and orphan-daemon takeover. Keep `--omit=optional` in the installation step to prevent the development-only optional `fsevents` package from producing a blocked-install-script warning. If takeover fails, run `machine-mcp service status` first; it reports the platform service and workspace daemon separately. Then run `machine-mcp service stop` and retry.
 
-Use the printed values in the MCP client:
+Use the printed URL in the MCP client:
 
 ```text
 MCP Server URL: https://<worker>.<account>.workers.dev/mcp
-MCP connection password: mcp_password_...
 ```
 
-The remote authorization flow uses an authorization code, PKCE S256, exact redirect/resource binding, expiring access tokens stored as hashes, and a token-version value for bulk revocation. After password approval, the Worker constructs the registered callback with the URL API and returns `303 See Other`, so OAuth response parameters are encoded and the browser performs a GET to the callback.
+During OAuth authorization, enter the name and password of a Machine Bridge account. The first start creates `owner` and prints its generated password once. Additional accounts are managed with `machine-mcp account`. The authorization flow uses PKCE S256, exact redirect/resource binding, expiring hashed access tokens, per-account version checks, and a deployment-wide token version for emergency bulk revocation.
 
 ### Multiple clients and accounts
 
-One Worker can hold several OAuth client registrations and access tokens, so the same trusted owner or team can connect more than one MCP application or ChatGPT account. This is **multi-client access, not isolated multi-account tenancy**: the current release uses one workspace connection password, one workspace policy, and one active daemon authority. It has no principal records, per-account roles, targeted account revocation, or account-specific audit boundary.
+One Worker supports several named accounts and OAuth clients. Accounts have independent passwords, roles, active state, versions, codes, and tokens. The roles are `reviewer`, `editor`, `operator`, and `owner`; their effective authority is intersected with the connected daemon policy and enforced in both the Worker and local runtime. Role changes, suspension, password rotation, and removal revoke only the affected account.
 
-Do not share a `full` bridge with mutually untrusted users. Use a separate bridge and preferably a separate low-privilege OS account, container, or VM for each trust domain. See [Multi-client, multi-account, and tenancy architecture](docs/MULTI_ACCOUNT.md) for the current support matrix and the proposed principal/grant design.
+This is application-level authorization, not kernel or browser-profile isolation. All accounts reach one daemon running as one OS user. Use separate Workers and preferably separate low-privilege OS accounts, containers, or VMs for mutually untrusted users or hard tenant isolation. See [Multi-account authorization and tenancy](docs/MULTI_ACCOUNT.md).
 
 ## Optional local stdio MCP
 
@@ -218,7 +218,7 @@ Foreground logging defaults to human-readable text. Installed background service
 
 ## Policy controls
 
-Policy revision 4 is defined once in `src/shared/policy-contract.json`. The local runtime, Worker advertisement filter, manager-level defense-in-depth checks, tests, and generated [policy reference](docs/POLICY_REFERENCE.md) consume that same contract. A custom policy is authorized by capabilities rather than its display name; compound classes such as `write+direct-exec` require every capability.
+Policy revision 5 is defined once in `src/shared/policy-contract.json`. The local runtime, Worker advertisement filter, manager-level defense-in-depth checks, tests, and generated [policy reference](docs/POLICY_REFERENCE.md) consume that same contract. A custom policy is authorized by capabilities rather than its display name; compound classes such as `write+direct-exec` require every capability.
 
 The default is `full`. Narrow or customize it with explicit flags:
 
@@ -436,9 +436,9 @@ machine-mcp status
 machine-mcp doctor
 machine-mcp rotate-secrets
 machine-mcp resource add|list|check|remove
+machine-mcp account list|add|role|enable|disable|rotate-password|remove
 machine-mcp browser status|setup|pair|path
 machine-mcp job submit|inspect|approve|list|read|cancel
-machine-mcp --print-mcp-credentials
 machine-mcp uninstall [--keep-worker] [--yes]
 ```
 
@@ -458,10 +458,9 @@ The service definition contains neither credentials nor a duplicate policy. It l
 
 ```sh
 machine-mcp rotate-secrets
-machine-mcp --print-mcp-credentials
 ```
 
-Rotation stops the installed service, refuses to proceed while another foreground daemon owns the workspace lock, rotates the MCP password, daemon secret, and OAuth token version, and requires redeployment. Rotated values are redacted by default; only the client connection password can be printed through the explicit reconnect flag. Previously issued access tokens then fail validation.
+Rotation stops the installed service, refuses to proceed while another foreground daemon owns the workspace lock, and rotates the account-administration secret, daemon secret, and deployment-wide OAuth token version. It invalidates every account access token and requires all clients to authorize again. Use `machine-mcp account rotate-password NAME` for targeted password rotation without affecting other accounts.
 
 ## State and observability
 

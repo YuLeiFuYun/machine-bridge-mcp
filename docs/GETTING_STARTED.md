@@ -163,7 +163,8 @@ The first start performs these operations:
 4. deploys a Worker and Durable Object for that workspace;
 5. installs a platform-native login service unless `--no-autostart` is supplied;
 6. starts an outbound authenticated WebSocket from the local daemon to the Worker;
-7. prints the remote `/mcp` URL and a connection password.
+7. creates the initial `owner` account when no account exists and prints its generated password once;
+8. prints the remote `/mcp` URL.
 
 The foreground command remains attached to the terminal. Keep it running while testing. The remote Worker cannot execute local tools when no authenticated daemon is connected.
 
@@ -182,14 +183,15 @@ machine-mcp --workspace /path/to/project --no-autostart
 
 ## 7. Connect ChatGPT
 
-Machine Bridge prints values in this form:
+Machine Bridge prints the remote endpoint and, only when creating the first account, a one-time owner password:
 
 ```text
 MCP Server URL: https://<worker>.<account>.workers.dev/mcp
-MCP connection password: mcp_password_...
+Account: owner
+Password: account_password_...
 ```
 
-Treat the connection password as a credential. Do not place it in a repository, issue, screenshot, chat message, shell history note, or shared document.
+Save the generated password in a password manager. It is not stored locally or shown again. Do not place it in a repository, issue, screenshot, chat message, shell history note, or shared document.
 
 Current ChatGPT developer-mode flow, as documented in OpenAI's [Connect from ChatGPT](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt) guide:
 
@@ -199,7 +201,7 @@ Current ChatGPT developer-mode flow, as documented in OpenAI's [Connect from Cha
 4. Enter a descriptive name and the exact printed `/mcp` URL.
 5. Start the connection.
 6. On the Machine Bridge authorization page, verify the displayed client name, redirect URI, and resource.
-7. Enter the printed connection password only after those values are recognized.
+7. Enter the Machine Bridge account name and password only after those values are recognized.
 8. Create a new chat and enable the app for that conversation.
 
 ChatGPT navigation labels can change. The invariant is that the client must connect to the public `/mcp` endpoint and complete the OAuth authorization page served by the Worker.
@@ -273,7 +275,7 @@ machine-mcp doctor
 machine-mcp workspace show
 machine-mcp service status
 machine-mcp browser status
-machine-mcp --print-mcp-credentials
+machine-mcp account list
 ```
 
 Useful operational actions:
@@ -282,11 +284,13 @@ Useful operational actions:
 machine-mcp service stop
 machine-mcp service start
 machine-mcp rotate-secrets
+machine-mcp account add alice reviewer
+machine-mcp account rotate-password alice
 machine-mcp resource list
 machine-mcp job list
 ```
 
-`rotate-secrets` invalidates previously issued OAuth access tokens and requires clients to reconnect. It is a whole-workspace revocation mechanism in the current release.
+`rotate-secrets` invalidates every account access token and requires all clients to authorize again. For targeted revocation, disable an account, change its role, rotate its password, or remove it.
 
 ## 12. Work with more than one workspace
 
@@ -315,7 +319,7 @@ rm -rf "$install_dir"
 machine-mcp --workspace /path/to/project --verbose
 ```
 
-The foreground start performs bounded takeover of an old verified daemon when safe. If it refuses:
+The foreground start performs bounded takeover of an earlier verified daemon when safe. If it refuses:
 
 ```sh
 machine-mcp service status
@@ -397,4 +401,4 @@ Uninstall is fail-closed. If a verified daemon, active managed job, unreadable l
 
 ## 16. Before sharing access
 
-The current release supports multiple OAuth client registrations but not isolated multi-user tenancy. Different ChatGPT accounts can technically authorize against the same Worker if they know the shared connection password, but they receive the same workspace authority and cannot be managed as independent principals. Read [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md) before sharing a deployment.
+The current release supports named accounts with targeted revocation and four roles: `reviewer`, `editor`, `operator`, and `owner`. Roles are enforced in the Worker and local runtime, but all accounts still share one daemon and OS user. Use separate deployments and external isolation for mutually untrusted users or hard tenant boundaries. Read [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md) before sharing a deployment.

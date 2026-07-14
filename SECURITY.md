@@ -15,7 +15,7 @@ Do not open a public issue for an undisclosed vulnerability. Use GitHub private 
 - expected and observed impact;
 - whether credentials, filesystem data, process authority, or network access were exposed.
 
-Do not include live MCP passwords, daemon secrets, OAuth tokens, Cloudflare credentials, private keys, or unrelated local files. Rotate credentials used in a reproduction.
+Do not include live account passwords, account-administration secrets, daemon secrets, OAuth tokens, Cloudflare credentials, private keys, or unrelated local files. Rotate credentials used in a reproduction.
 
 ## Repository and documentation privacy
 
@@ -36,13 +36,13 @@ An authorized client can invoke every tool exposed by the selected profile and r
 
 The Worker is a remote authentication and relay boundary. The local runtime is the filesystem and process boundary. Stdio bypasses the Worker and relies on local process/configuration trust.
 
-### Multiple clients are not isolated accounts
+### Accounts are authorization boundaries, not OS sandboxes
 
-The current remote design accepts multiple OAuth client registrations and can issue multiple access tokens, but it has one per-workspace connection password and one workspace policy. An OAuth `client_id` identifies client software and redirect URIs; it is not a human or service principal. Different ChatGPT accounts or MCP applications that authorize with the same password therefore enter the same trust domain and receive the same Machine Bridge authority.
+Remote mode supports named accounts with independent passwords, roles, active state, versions, OAuth codes, and access tokens. The roles `reviewer`, `editor`, `operator`, and `owner` map to the local review, edit, agent, and full policy profiles. The Worker intersects the account role with the connected daemon policy, and the local runtime validates the account role again before dispatch. Account suspension, role changes, password rotation, and removal revoke only that account.
 
-The current release has no per-account role, suspension, membership expiry, targeted principal revocation, or account-specific audit boundary. Secret rotation invalidates all outstanding access tokens for the workspace. Do not present this behavior as multi-user tenancy.
+An OAuth `client_id` still identifies client software and redirect URIs; it is not an account. One account can authorize several clients, and one client can be authorized by several accounts.
 
-Mutually untrusted users must use separate bridge instances and external isolation appropriate to the authority exposed: a dedicated low-privilege OS account, container, or VM, a narrow workspace, an independent state root and Worker credential set, and the narrowest useful profile. Worker-side account records alone cannot isolate direct processes, shells, browser sessions, Accessibility actions, credential stores, or network authority inherited from the local OS user. See [Multi-client, multi-account, and tenancy architecture](docs/MULTI_ACCOUNT.md).
+All accounts ultimately reach one daemon running as one OS user. Application roles cannot isolate direct processes, shells, browser sessions, Accessibility actions, credential stores, or network authority inherited from that user. Mutually untrusted users or hard tenant boundaries require separate bridge instances and external isolation: dedicated low-privilege OS accounts, containers, or VMs, narrow workspaces, independent state roots, and separate Workers. See [Multi-account authorization and tenancy](docs/MULTI_ACCOUNT.md).
 
 ## Profiles are capability sets, not sandboxes
 
@@ -90,7 +90,7 @@ Text and file resources can be injected locally so their contents do not appear 
 
 ## Shared authorization contract
 
-Policy revision 4 is a single source of truth shared by the local daemon and Worker. The catalog availability class controls both advertisement and execution; manager-level checks invoke the same gate as defense in depth. Custom policies are evaluated by capabilities, so a label cannot impersonate `full`. Persistent job start requires both write and direct-execution authority; read-only job/resource inventory does not imply mutation authority.
+Policy revision 5 is a single source of truth shared by the local daemon and Worker. The catalog availability class controls both advertisement and execution; manager-level checks invoke the same gate as defense in depth. Custom policies are evaluated by capabilities, so a label cannot impersonate `full`. Persistent job start requires both write and direct-execution authority; read-only job/resource inventory does not imply mutation authority.
 
 Transport-visible failures use stable error codes and retryability. Unexpected implementation errors are not downgraded to ordinary resource state, and raw internal exceptions are not returned by the Worker. This reduces both authorization drift and accidental disclosure through error strings.
 
@@ -124,11 +124,11 @@ A custom state root is rejected if it overlaps the selected workspace in either 
 
 ## Credential exposure
 
-Local state contains the MCP connection password and daemon secret. State, lock, temporary secret, runtime, and service-log files use owner-only permissions where supported. State writes are flushed and atomically replaced. A read/type/permission/size/symbolic-link failure is not treated as empty or corrupt state; only successfully read invalid JSON is moved to a bounded corrupt backup.
+Local state contains the account-administration secret, daemon secret, and deployment-wide token version. Account passwords are generated 256-bit tokens and are not stored locally; the Worker stores only independent salted HMAC-SHA-256 verifiers. The fixed high-entropy token format is mandatory, so the verifier does not rely on a CPU-intensive human-password KDF inside the Worker request budget. State, lock, temporary secret, runtime, and service-log files use owner-only permissions where supported. State writes are flushed and atomically replaced. A read/type/permission/size/symbolic-link failure is not treated as empty or corrupt state; only successfully read invalid JSON is moved to a bounded corrupt backup.
 
 Logs recursively redact known credential fields, private-key headers, npm/GitHub/GitLab/Slack/Google/AWS/live-payment/API token forms, JWT-shaped bearer values, embedded-credential URLs, email addresses, user-home paths, and control characters. These patterns are defense in depth; unknown, transformed, split, encrypted, or application-specific secret forms can still pass through an explicitly requested tool result.
 
-First-run or explicit reconnect output can intentionally display the MCP connection password. JSON output and standalone secret rotation redact credentials by default; printing requires the explicit reconnect flag. The daemon secret is never printed in full. Avoid shared terminal logs, shell recordings, screenshots, CI output, or support tickets.
+A new deployment prints the generated initial owner password once. Account creation and targeted password rotation also print the generated password once. JSON output includes a generated password only for the command that created it; status, diagnostics, and secret rotation never reveal stored secrets. The account-administration and daemon secrets are never printed. Avoid shared terminal logs, shell recordings, screenshots, CI output, or support tickets.
 
 The default `full` profile passes the complete parent environment. Narrower profiles replace HOME, temp, and common cache paths and do not pass arbitrary parent variables. The isolated mode reduces accidental environment-secret leakage; it does not prevent code from explicitly accessing known resources.
 
@@ -160,9 +160,9 @@ Runner diagnostic logs are owner-only and do not receive child stdout/stderr. St
 
 ## OAuth and public endpoints
 
-Remote mode uses authorization code flow with PKCE S256, exact redirect/resource/client binding, expiring authorization codes and access tokens, hashed token storage, token-version revocation, and bounded dynamic client registration. Client registrations and tokens may coexist, but all authorizations currently share one workspace credential and authority; there is no principal-aware account model. Successful consent constructs the registered callback through the URL API and returns `303 See Other`; response parameters are encoded rather than concatenated into an unchecked header string.
+Remote mode uses authorization code flow with PKCE S256, exact redirect/resource/client binding, expiring authorization codes and access tokens, hashed token storage, per-account version checks, deployment-wide token-version revocation, and bounded dynamic client registration. Authorization codes and tokens are bound to one account ID, account version, and role. Successful consent constructs the registered callback through the URL API and returns `303 See Other`; response parameters are encoded rather than concatenated into an unchecked header string.
 
-The authorization page displays the validated client name and redirect URI. Enter the connection password only after initiating the connection and recognizing both values.
+The authorization page displays the validated client name and redirect URI. Enter an account name and password only after initiating the connection and recognizing both values.
 
 Password failures and registrations are limited by deployment-keyed HMAC source identity. Browser requests are same-origin unless an exact origin is listed in `MBM_ALLOWED_ORIGINS`; loopback OAuth redirect permission does not grant browser-origin access.
 
@@ -199,13 +199,13 @@ No logging policy can prevent data from being returned to a client that explicit
 For sensitive review:
 
 ```sh
-machine-mcp --workspace /narrow/project --profile review --no-print-credentials
+machine-mcp --workspace /narrow/project --profile review
 ```
 
 For controlled editing without execution:
 
 ```sh
-machine-mcp --workspace /narrow/project --profile edit --no-print-credentials
+machine-mcp --workspace /narrow/project --profile edit
 ```
 
 Also:
@@ -217,7 +217,7 @@ Also:
 - treat an unreadable or malformed live lock as an incident to inspect, not a file to delete blindly;
 - select `agent`, `edit`, or `review` instead of the default `full` when broad authority is unnecessary;
 - inspect client names and OAuth redirect URIs;
-- rotate secrets after suspected disclosure;
+- rotate one account password after a targeted disclosure, or rotate deployment secrets after a bridge-wide incident;
 - inspect `status`, `doctor`, and service status;
 - register credential files as local resources instead of reading them into a model conversation;
 - use `capture_output: "discard"` for credential-consuming steps and idempotent finally steps for cleanup;

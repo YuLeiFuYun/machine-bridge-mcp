@@ -1,13 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
-import toolCatalog from "../shared/tool-catalog.json";
 import serverMetadata from "../shared/server-metadata.json";
 import { PendingCallRegistry } from "./pending-calls";
 import { WorkerObservability } from "./observability";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools, type DaemonPolicy } from "./policy";
+import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access";
+import { accountAdminAuthorized, handleAccountAdminOperation } from "./account-admin";
+import { serverInfoTool, workspaceTools } from "./tool-catalog";
 import {
-  AUTH_BLOCK_SECONDS, authorizationIdentity, pkceS256, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry,
-  randomToken, recordAuthorizationFailure, safeEqual, sha256Hex, validateAuthorizationRequest,
+  AUTH_BLOCK_SECONDS, accountByName, authorizationIdentity, emptyOAuthStore, isCurrentOAuthStore,
+  pkceS256, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
+  recordAuthorizationFailure, safeEqual, sha256Hex, validateAuthorizationRequest, verifyAccountPassword,
   type OAuthClient, type OAuthStore, type ValidatedAuthorization,
 } from "./oauth-state";
 import {
@@ -17,7 +20,7 @@ import {
 } from "./http";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "0.17.1";
+const SERVER_VERSION = "0.18.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -41,7 +44,7 @@ const AUTHORIZATION_FIELDS = new Set(["response_type", "client_id", "redirect_ur
 
 interface BridgeEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
-  MCP_OAUTH_PASSWORD: string;
+  ACCOUNT_ADMIN_SECRET: string;
   DAEMON_SHARED_SECRET: string;
   OAUTH_TOKEN_VERSION: string;
   MBM_WORKER_MAX_BODY_BYTES?: string;
@@ -64,26 +67,15 @@ interface DaemonAttachment {
   tools?: string[];
 }
 
-
-
 interface AuthorizedToken {
   tokenKey: string;
   clientId: string;
+  accountId: string;
+  accountVersion: number;
+  role: AccountRole;
 }
-
-type ToolDefinition = Record<string, unknown> & { name: string; availability?: string };
-
-const allCatalogTools = toolCatalog as ToolDefinition[];
-const serverInfoTool = publicTool(allCatalogTools.find((tool) => tool.name === "server_info")!);
-const workspaceTools = allCatalogTools.filter((tool) => tool.name !== "server_info").map(publicTool);
 
 const MCP_INSTRUCTIONS = serverMetadata.instructions.map((value) => String(value)).join("\n");
-
-
-function publicTool(tool: ToolDefinition): ToolDefinition {
-  const { availability: _availability, ...definition } = tool;
-  return structuredClone(definition) as ToolDefinition;
-}
 
 export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS);
@@ -133,7 +125,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         if (request.method !== "GET") return methodNotAllowed("GET");
         return json(this.protectedResourceMetadata(base));
       }
-      if (url.pathname === "/oauth/register") {
+      if (url.pathname === "/admin/accounts") return await this.handleAccountAdmin(request, "accounts");
+      if (url.pathname === "/admin/accounts/rotate-password") return await this.handleAccountAdmin(request, "rotate-password");
+            if (url.pathname === "/oauth/register") {
         if (request.method !== "POST") return methodNotAllowed("POST");
         return await this.registerClient(request);
       }
@@ -278,6 +272,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
     const authorized = await this.verifyAccessToken(bearerToken(request), base);
     if (!authorized) {
+      try { await request.arrayBuffer(); } catch { /* The rejected body may already be unavailable; the 401 remains authoritative. */ }
       return new Response("OAuth bearer token required", {
         status: 401,
         headers: {
@@ -306,7 +301,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         ? requested
         : MCP_PROTOCOL_VERSION;
       const bootstrap = this.daemonToolEnabled("session_bootstrap")
-        ? await this.callDaemonTool("session_bootstrap", { path: "." }).catch(() => null)
+        ? await this.callDaemonTool("session_bootstrap", { path: "." }, authorized).catch(() => null)
         : null;
       const localInstructions = sessionInstructionText(bootstrap);
       return rpcResult(request.id, {
@@ -328,14 +323,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     if (request.method === "logging/setLevel") return rpcResult(request.id, {});
     if (request.method === "ping") return rpcResult(request.id, {});
-    if (request.method === "tools/list") return rpcResult(request.id, { tools: this.allTools() });
+    if (request.method === "tools/list") return rpcResult(request.id, { tools: this.allTools(authorized.role) });
     if (request.method === "tools/call") {
       if (request.id === undefined || request.id === null) return rpcError(null, -32600, "tools/call requires a non-null request id");
       const params = asObject(request.params);
       const name = requiredString(params, "name");
       const args = asObject(params.arguments);
       try {
-        const result = await this.callTool(name, args, base, clientRequestKey(authorized, request.id));
+        const result = await this.callTool(name, args, base, authorized, clientRequestKey(authorized, request.id));
         return rpcResult(request.id, textToolResult(result));
       } catch (error) {
         return rpcResult(request.id, textToolResult({ error: publicWorkerToolError(error) }, true));
@@ -344,15 +339,16 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return rpcError(request.id, -32601, `Method not found: ${request.method}`);
   }
 
-  private async callTool(name: string, args: Record<string, unknown>, base: string, requestKey?: string): Promise<unknown> {
+  private async callTool(name: string, args: Record<string, unknown>, base: string, authorized: AuthorizedToken, requestKey?: string): Promise<unknown> {
     if (name === "server_info") {
       const daemon = this.daemonStatus(true);
-      const tools = this.allTools().map((tool) => tool.name);
+      const tools = this.allTools(authorized.role).map((tool) => tool.name);
       return {
         name: SERVER_NAME,
         version: SERVER_VERSION,
         mcp_url: `${base}/mcp`,
         oauth: this.authorizationServerMetadata(base),
+        account: { account_id: authorized.accountId, role: authorized.role, version: authorized.accountVersion },
         daemon,
         worker: {
           pending_calls: this.pending.snapshot(),
@@ -371,12 +367,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!this.daemonToolEnabled(name)) throw new Error(`tool disabled by local daemon policy: ${name}`);
-      return this.callDaemonTool(name, args, requestKey);
+      if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
+      return this.callDaemonTool(name, args, authorized, requestKey);
     }
     throw new Error(`unknown tool: ${name}`);
   }
 
-  private async callDaemonTool(name: string, args: Record<string, unknown>, requestKey?: string): Promise<unknown> {
+  private async callDaemonTool(name: string, args: Record<string, unknown>, authorized: AuthorizedToken, requestKey?: string): Promise<unknown> {
     const socket = this.daemonSockets()[0];
     if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
     const id = randomToken("call");
@@ -393,7 +390,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     });
     this.observability.callStarted(name);
     try {
-      socket.send(JSON.stringify({ type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutMs }));
+      socket.send(JSON.stringify({
+        type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutMs,
+        authorization: { account_id: authorized.accountId, account_version: authorized.accountVersion, role: authorized.role },
+      }));
     } catch {
       this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
     }
@@ -438,8 +438,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private allTools(): Array<Record<string, unknown>> {
-    const advertised = this.daemonAdvertisedTools();
+  private allTools(role: AccountRole): Array<Record<string, unknown>> {
+    const advertised = accountRoleToolNames(role, this.daemonAdvertisedTools());
     const localTools = workspaceTools.filter((tool) => advertised.has(tool.name));
     return [serverInfoTool, ...localTools].map((tool) => structuredClone(tool));
   }
@@ -587,21 +587,24 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   private async oauthStore(): Promise<OAuthStore> {
-    const store = (await this.ctx.storage.get<OAuthStore>("oauth")) ?? { clients: {}, codes: {}, tokens: {}, auth_failures: {} };
-    store.clients ||= {};
-    store.codes ||= {};
-    store.tokens ||= {};
-    store.auth_failures ||= {};
-    const now = Math.floor(Date.now() / 1000);
+    const raw = await this.ctx.storage.get<unknown>("oauth");
+    if (raw !== undefined && !isCurrentOAuthStore(raw)) {
+      throw new HttpError(503, "oauth_state_schema_mismatch", "OAuth state requires the one-time multi-account upgrade");
+    }
+    const store = isCurrentOAuthStore(raw) ? raw : emptyOAuthStore();
     let changed = false;
+    const now = Math.floor(Date.now() / 1000);
+
     for (const [code, value] of Object.entries(store.codes)) {
-      if (value.expires_at <= now) {
+      const account = store.accounts[value.account_id];
+      if (value.expires_at <= now || !account || !account.active || account.version !== value.account_version || account.role !== value.role) {
         delete store.codes[code];
         changed = true;
       }
     }
     for (const [token, value] of Object.entries(store.tokens)) {
-      if (value.expires_at <= now) {
+      const account = store.accounts[value.account_id];
+      if (value.expires_at <= now || !account || !account.active || account.version !== value.account_version || account.role !== value.role) {
         delete store.tokens[token];
         changed = true;
       }
@@ -621,10 +624,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         delete client.registration_identity;
         changed = true;
       }
-      if (!client.last_used_at) {
-        client.last_used_at = client.created_at;
-        changed = true;
-      }
       const ttl = client.last_used_at === client.created_at ? OAUTH_UNUSED_CLIENT_TTL_SECONDS : OAUTH_CLIENT_IDLE_TTL_SECONDS;
       if (!activeClientIds.has(clientId) && client.last_used_at + ttl <= now) {
         delete store.clients[clientId];
@@ -633,6 +632,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     if (changed) await this.ctx.storage.put("oauth", store);
     return store;
+  }
+
+  private async handleAccountAdmin(request: Request, operation: "accounts" | "rotate-password"): Promise<Response> {
+    if (!(await accountAdminAuthorized(request, this.env.ACCOUNT_ADMIN_SECRET ?? ""))) return json({ error: "unauthorized" }, 401);
+    return this.withOAuthLock(async () => {
+      const store = await this.oauthStore();
+      return handleAccountAdminOperation({
+        request, operation, store, now: Math.floor(Date.now() / 1000),
+        save: () => this.ctx.storage.put("oauth", store),
+      });
+    });
   }
 
   private async registerClient(request: Request): Promise<Response> {
@@ -727,7 +737,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const form = allowSubmit
       ? `<form method="post" action="/oauth/authorize">
       ${hidden}
-      <label>Connection password<br><input name="login_token" type="password" autocomplete="current-password" autofocus required style="width: 100%; box-sizing: border-box; padding: 8px;"></label>
+      <label>Account name<br><input name="account_name" autocomplete="username" autofocus required style="width: 100%; box-sizing: border-box; padding: 8px;"></label>
+      <p><label>Account password<br><input name="account_password" type="password" autocomplete="current-password" required style="width: 100%; box-sizing: border-box; padding: 8px;"></label></p>
       <p><button type="submit">Authorize</button></p>
     </form>`
       : "<p>Authorization cannot continue. Return to the MCP client and start the connection again.</p>";
@@ -761,13 +772,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return this.authorizePage(request, base, "Too many failed attempts. Try again later.", body, 429, validation.value);
       }
 
-      const expectedLogin = this.env.MCP_OAUTH_PASSWORD ?? "";
-      if (!expectedLogin || !(await safeEqual(String(body.login_token ?? ""), expectedLogin))) {
+      const account = accountByName(store, body.account_name);
+      const credentialsValid = Boolean(account?.active && await verifyAccountPassword(account, body.account_password));
+      if (!account || !credentialsValid) {
         recordAuthorizationFailure(store, identity, now);
         pruneAuthFailures(store, MAX_AUTH_FAILURE_IDENTITIES);
         await this.ctx.storage.put("oauth", store);
         const status = store.auth_failures[identity]?.blocked_until > now ? 429 : 401;
-        return this.authorizePage(request, base, "Invalid connection password.", body, status, validation.value);
+        return this.authorizePage(request, base, "Invalid account credentials.", body, status, validation.value);
       }
       delete store.auth_failures[identity];
       client.last_used_at = now;
@@ -776,6 +788,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const redirectLocation = authorizationRedirectLocation(redirectUri, code, state);
       store.codes[code] = {
         client_id: clientId,
+        account_id: account.account_id,
+        account_version: account.version,
+        role: account.role,
         redirect_uri: redirectUri,
         code_challenge: codeChallenge,
         scope,
@@ -817,6 +832,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const accessToken = randomToken("mcp_at");
       store.tokens[`sha256:${await sha256Hex(accessToken)}`] = {
         client_id: record.client_id,
+        account_id: record.account_id,
+        account_version: record.account_version,
+        role: record.role,
         scope: record.scope,
         resource: `${base}/mcp`,
         version: tokenVersion,
@@ -844,7 +862,16 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const currentVersion = this.env.OAUTH_TOKEN_VERSION ?? "";
       if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
       if (record.resource !== `${base}/mcp`) return null;
-      return { tokenKey: key, clientId: record.client_id };
+      const account = store.accounts[record.account_id];
+      if (!account || !account.active || account.version !== record.account_version || account.role !== record.role) {
+        delete store.tokens[key];
+        await this.ctx.storage.put("oauth", store);
+        return null;
+      }
+      return {
+        tokenKey: key, clientId: record.client_id, accountId: account.account_id,
+        accountVersion: account.version, role: account.role,
+      };
     });
   }
 
@@ -861,7 +888,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   private identityKey(): string {
-    const key = this.env.OAUTH_TOKEN_VERSION || this.env.DAEMON_SHARED_SECRET || this.env.MCP_OAUTH_PASSWORD;
+    const key = this.env.OAUTH_TOKEN_VERSION || this.env.DAEMON_SHARED_SECRET || this.env.ACCOUNT_ADMIN_SECRET;
     if (!key) throw new HttpError(503, "server_not_configured", "OAuth identity key is not configured");
     return key;
   }

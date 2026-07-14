@@ -2,8 +2,7 @@ import { normalizeLogLevel } from "./log.mjs";
 
 const BOOLEAN_OPTIONS = new Set([
   "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
-  "daemonOnly", "noAutostart", "noPrintCredentials", "printMcpCredentials",
-  "printCredentials", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
+  "daemonOnly", "noAutostart", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
   "yes", "keepWorker", "allowInsecurePermissions", "showPaths",
 ]);
 const VALUE_OPTIONS = new Set([
@@ -15,7 +14,7 @@ const LOG_FORMATS = new Set(["text", "json"]);
 const COMMAND_OPTIONS = {
   start: new Set([
     "workspace", "stateDir", "workerName", "quiet", "json", "verbose", "logLevel", "logFormat", "rotateSecrets", "forceWorker",
-    "daemonOnly", "noAutostart", "noPrintCredentials", "printMcpCredentials", "printCredentials",
+    "daemonOnly", "noAutostart",
     "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
   ]),
   stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose", "quiet", "logLevel", "logFormat"]),
@@ -23,11 +22,12 @@ const COMMAND_OPTIONS = {
   status: new Set(["workspace", "stateDir"]),
   doctor: new Set(["workspace", "stateDir"]),
   "full-test": new Set(["workspace", "stateDir", "json"]),
-  "rotate-secrets": new Set(["workspace", "stateDir", "workerName", "noPrintCredentials", "printMcpCredentials", "printCredentials", "quiet"]),
+  "rotate-secrets": new Set(["workspace", "stateDir", "workerName", "quiet"]),
   workspace: new Set(["workspace", "stateDir"]),
   service: new Set(["workspace", "stateDir", "quiet"]),
   autostart: new Set(["workspace", "stateDir", "quiet"]),
   resource: new Set(["workspace", "stateDir", "allowInsecurePermissions", "showPaths", "json"]),
+  account: new Set(["workspace", "stateDir", "json", "yes"]),
   browser: new Set(["workspace", "stateDir", "json"]),
   job: new Set(["workspace", "stateDir", "json", "yes"]),
   uninstall: new Set(["stateDir", "keepWorker", "yes"]),
@@ -40,6 +40,7 @@ const STATIC_POSITIONAL_RULES = Object.freeze({
 });
 const RESOURCE_POSITIONAL_LIMITS = Object.freeze({ add: 3, "generate-ssh-key": 3, remove: 2, check: 2 });
 const JOB_POSITIONAL_LIMITS = Object.freeze({ read: 2, inspect: 2, cancel: 2, approve: 2, submit: 2 });
+const ACCOUNT_POSITIONAL_LIMITS = Object.freeze({ list: 1, add: 3, role: 3, enable: 2, disable: 2, "rotate-password": 2, remove: 2 });
 const ACTION_POSITIONAL_RULES = Object.freeze({
   workspace(args) {
     const action = String(args._[0] || "show");
@@ -53,6 +54,10 @@ const ACTION_POSITIONAL_RULES = Object.freeze({
   resource(args) {
     const action = String(args._[0] || "list");
     return { max: RESOURCE_POSITIONAL_LIMITS[action] ?? 1, tooMany: `resource ${action} received too many positional arguments` };
+  },
+  account(args) {
+    const action = String(args._[0] || "list");
+    return { max: ACCOUNT_POSITIONAL_LIMITS[action] ?? 1, tooMany: `account ${action} received too many positional arguments` };
   },
   browser(args) {
     const action = String(args._[0] || "status");

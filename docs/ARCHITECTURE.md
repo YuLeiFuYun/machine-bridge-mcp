@@ -86,9 +86,9 @@ Local resource registrations remain in owner-only state and are reloaded for eve
 
 ### Canonical policy contracts
 
-Policy revision 4 is loaded from one shared JSON contract by both local and Worker policy evaluators. Tool advertisement and execution authorization use catalog availability classes; managers receive the same authorizer instead of reimplementing profile conditionals. Read-only job/resource inspection is `always`, job cancellation is write-gated, and starting a persistent job requires `write+direct-exec`.
+Policy revision 5 is loaded from one shared JSON contract by both local and Worker policy evaluators. Tool advertisement and execution authorization use catalog availability classes; managers receive the same authorizer instead of reimplementing profile conditionals. Read-only job/resource inspection is `always`, job cancellation is write-gated, and starting a persistent job requires `write+direct-exec`.
 
-Named profiles are normalized to their complete capability sets. In particular, `full` always means write enabled, shell execution, unrestricted paths, complete parent environment, absolute-path display, and every catalog tool. CLI flags that alter an individual capability deliberately change the profile identity to `custom`. Policy revision 4 repairs stale or manually edited named-profile fields rather than allowing a misleading partially restricted `full` label, and applies compound availability requirements from the shared contract.
+Named profiles are normalized to their complete capability sets. In particular, `full` always means write enabled, shell execution, unrestricted paths, complete parent environment, absolute-path display, and every catalog tool. CLI flags that alter an individual capability deliberately change the profile identity to `custom`. Policy revision 5 defines the only accepted persisted policy shape. Named profiles are normalized to their canonical capability sets, and persisted data from another revision is rejected rather than interpreted. Compound availability requirements come from the shared contract.
 
 The full-only `generate_ssh_key_resource` operation is implemented locally. The Worker only filters and relays its shared catalog definition. Local generation uses `ssh-keygen`, verifies public/private correspondence, registers the private file through the same owner-only state transaction as the CLI, and rolls back a newly created pair if state persistence fails.
 
@@ -109,7 +109,7 @@ All requests for a deployed Worker route to one named Durable Object. It owns:
 
 The Worker verifies OAuth, validates MCP envelopes and optional protocol headers, converts `tools/call` into WebSocket messages, correlates cancellation by access-token hash and JSON-RPC ID, and formats text/structured/image results. It has no local filesystem or process API.
 
-The current OAuth store is multi-client but not principal-aware. `client_id` identifies an MCP application/installation; it does not identify a human or service account. Every successful authorization uses the same per-workspace connection password and receives the same workspace policy ceiling. Isolated account support therefore requires explicit principals, memberships, named grants, targeted revocation, and dual Worker/local enforcement rather than treating client registrations as users. The recommended design retains one bridge-specific Durable Object and one local runtime per workspace/trust domain; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
+The OAuth store separates client registrations from named accounts. A `client_id` identifies an MCP application and redirect URIs; account records identify the authorized human or service identity. Codes and tokens bind client ID, account ID, account version, role, scope, resource, and expiration. The Worker intersects the role with the active daemon policy before advertising or relaying tools, and the local runtime validates the relayed role again. One bridge-specific Durable Object and one local runtime remain the normal topology for a workspace/trust domain; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
 
 The daemon attachment deliberately omits workspace path/name/hash and process ID. Explicit authenticated tools may return workspace metadata according to local path-display policy.
 
@@ -147,7 +147,7 @@ Remote OAuth currently determines which registered client token may call tools; 
 1. The MCP client discovers protected-resource and authorization-server metadata.
 2. It dynamically registers bounded redirect metadata.
 3. The Worker validates authorization parameters before displaying a password form.
-4. The user verifies client name and redirect URI and enters the connection password.
+4. The user verifies client name and redirect URI and enters a Machine Bridge account name and password.
 5. The Worker creates a five-minute code bound to client, redirect, resource, scope, and PKCE challenge.
 6. A valid verifier exchanges the one-time code for an expiring bearer token; only its hash is stored.
 7. The MCP client initializes and negotiates a supported protocol version. When the daemon advertises `session_bootstrap`, the Worker requests bounded local instructions and appends them to the initialization result; failure degrades to static instructions.
@@ -226,7 +226,7 @@ Local state and global config are owner-only, versioned, and size-bounded. Share
 
 Process locks contain purpose, workspace, ownership token, lock time, and process start time. Stale removal rechecks device/inode/size/mtime and token so an old observer cannot delete a replacement lock. Recent malformed claims receive a grace period. Startup/state operations wait a bounded interval; daemon and runner identity remain process-lifetime locks. Managed-job transition and recovery locks use the same ownership/snapshot principles and support an atomic runner handoff.
 
-Only successfully read but syntactically invalid JSON is moved to a bounded `.corrupt-*` backup. Permission, type, symbolic-link, size, encoding, and I/O failures propagate. A state root must be disjoint from its selected workspace. Resource paths are omitted from redacted status output. Custom roots are adopted only when empty or recognizable as legacy Machine Bridge state.
+Only successfully read but syntactically invalid JSON is moved to a bounded `.corrupt-*` backup. Permission, type, symbolic-link, size, encoding, and I/O failures propagate. A state root must be disjoint from its selected workspace. Resource paths are omitted from redacted status output. A custom root is initialized only when empty and must contain the current state marker on subsequent use. Valid state from another schema is rejected; syntactically invalid JSON is isolated as a bounded corrupt backup and rebuilt as current empty state.
 
 Active managed jobs persist an owner-only plan, status, runner process identity, and bounded runner diagnostics. Terminal jobs delete the full plan and retain only bounded status/redacted results for up to seven days. This balances crash cleanup with minimization of scripts, stdin, argv, environment overrides, and resource source paths.
 

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
+import { BoundedOutput } from "./bounded-output.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
 import { MAX_COMMAND_BYTES, terminateProcessTreeWithEscalation, validateArgv } from "./process-sessions.mjs";
 import { BridgeError } from "./errors.mjs";
@@ -9,7 +10,7 @@ const MAX_STDIN_BYTES = 1024 * 1024;
 const DEFAULT_OUTPUT_BYTES = 512 * 1024;
 
 export class ProcessExecutionService {
-  constructor({ workspace, policy, policyGate, runtimeDir, processTracker, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled }) {
+  constructor({ workspace, policy, policyGate, runtimeDir, processTracker, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, spawnProcess = spawn, terminateProcess = terminateProcessTreeWithEscalation }) {
     this.workspace = workspace;
     this.policy = policy;
     this.policyGate = policyGate;
@@ -19,6 +20,8 @@ export class ProcessExecutionService {
     this.resolveLocalCommand = resolveLocalCommand;
     this.displayPath = displayPath;
     this.throwIfCancelled = throwIfCancelled;
+    this.spawnProcess = spawnProcess;
+    this.terminateProcess = terminateProcess;
   }
 
   async runDirect(args, context = {}) {
@@ -66,83 +69,110 @@ export class ProcessExecutionService {
     if (stdin !== null && Buffer.byteLength(String(stdin)) > MAX_STDIN_BYTES) {
       throw new BridgeError("limit_exceeded", "process stdin exceeds 1 MiB");
     }
+
     return new Promise((resolvePromise, rejectPromise) => {
-      const child = spawn(cmd, args, {
-        cwd,
-        env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false, runtimeDir: this.runtimeDir }),
-        detached: process.platform !== "win32",
-        windowsHide: true,
-      });
+      const stdout = new BoundedOutput(maxOutputBytes);
+      const stderr = new BoundedOutput(maxOutputBytes);
+      let child;
+      try {
+        child = this.spawnProcess(cmd, args, {
+          cwd,
+          env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false, runtimeDir: this.runtimeDir }),
+          detached: process.platform !== "win32",
+          windowsHide: true,
+        });
+      } catch (error) {
+        rejectPromise(error);
+        return;
+      }
+
       this.processTracker.track(child, context.callId);
       if (stdin !== null) {
-        child.stdin.on("error", () => {});
-        child.stdin.end(String(stdin));
+        child.stdin?.on?.("error", () => {});
+        child.stdin?.end?.(String(stdin));
       }
-      let stdout = "";
-      let stderr = "";
-      let stdoutTruncated = 0;
-      let stderrTruncated = 0;
-      let timedOut = false;
+
       let settled = false;
-      let killTimer = null;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        killTimer = terminateProcessTreeWithEscalation(child);
-      }, timeoutMs);
-      timer.unref?.();
-      const cleanup = () => {
-        clearTimeout(timer);
-        if (killTimer && !timedOut) clearTimeout(killTimer);
+      let processClosed = false;
+      let terminationTimer = null;
+      let timeoutTimer = null;
+      const signal = context.signal;
+
+      const cleanupAfterClose = () => {
+        if (processClosed) return;
+        processClosed = true;
+        clearTimeout(timeoutTimer);
+        signal?.removeEventListener?.("abort", onAbort);
         this.processTracker.untrack(child);
       };
-      const finish = (callback) => {
-        if (settled) return;
+
+      const settle = (callback) => {
+        if (settled) return false;
         settled = true;
-        cleanup();
         callback();
+        return true;
       };
-      child.stdout.on("data", (chunk) => {
-        const next = appendLimited(stdout, chunk, maxOutputBytes);
-        stdout = next.value;
-        stdoutTruncated += next.truncated;
+
+      const terminate = () => {
+        if (terminationTimer || processClosed) return;
+        terminationTimer = this.terminateProcess(child);
+      };
+
+      const rejectCancelled = () => {
+        terminate();
+        const reason = signal?.reason;
+        settle(() => rejectPromise(reason instanceof Error ? reason : new BridgeError("cancelled", "tool call cancelled")));
+      };
+
+      const onAbort = () => rejectCancelled();
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+
+      timeoutTimer = setTimeout(() => {
+        terminate();
+        settle(() => rejectPromise(new BridgeError("timeout", `command timed out after ${timeoutMs}ms`, { retryable: true })));
+      }, timeoutMs);
+      timeoutTimer.unref?.();
+
+      child.stdout?.on?.("data", (chunk) => stdout.append(chunk));
+      child.stderr?.on?.("data", (chunk) => stderr.append(chunk));
+
+      child.on("error", (error) => {
+        cleanupAfterClose();
+        settle(() => {
+          if (allowFailure) resolvePromise(processResult(127, stdout, error.message || stderr.text()));
+          else rejectPromise(error);
+        });
       });
-      child.stderr.on("data", (chunk) => {
-        const next = appendLimited(stderr, chunk, maxOutputBytes);
-        stderr = next.value;
-        stderrTruncated += next.truncated;
-      });
-      child.on("error", (error) => finish(() => {
-        if (allowFailure) resolvePromise({ code: 127, stdout: finalizeOutput(stdout, stdoutTruncated), stderr: boundedErrorMessage(error) });
-        else rejectPromise(error);
-      }));
-      child.on("close", (code) => finish(() => {
-        const result = { code, stdout: finalizeOutput(stdout, stdoutTruncated), stderr: finalizeOutput(stderr, stderrTruncated) };
-        try { this.throwIfCancelled(context); } catch (error) { rejectPromise(error); return; }
-        if (timedOut) {
-          rejectPromise(new BridgeError("timeout", `command timed out after ${timeoutMs}ms`, { retryable: true }));
+
+      child.on("close", (code) => {
+        cleanupAfterClose();
+        if (settled) return;
+        try { this.throwIfCancelled(context); } catch (error) {
+          settle(() => rejectPromise(error));
           return;
         }
-        if (code === 0 || allowFailure) resolvePromise(result);
-        else rejectPromise(new BridgeError("execution_failed", stderr.trim() || stdout.trim() || `${cmd} exited ${code}`));
-      }));
+        const result = processResult(code, stdout, stderr);
+        if (code === 0 || allowFailure) settle(() => resolvePromise(result));
+        else settle(() => rejectPromise(new BridgeError("execution_failed", result.stderr.trim() || result.stdout.trim() || `${cmd} exited ${code}`)));
+      });
+
+      if (signal?.aborted) rejectCancelled();
     });
   }
+}
+
+function processResult(code, stdout, stderr) {
+  const stderrBuffer = stderr instanceof BoundedOutput ? stderr : null;
+  return {
+    code,
+    stdout: stdout instanceof BoundedOutput ? stdout.text() : String(stdout || ""),
+    stderr: stderrBuffer ? stderrBuffer.text() : boundedErrorMessage(stderr),
+    stdout_truncated_bytes: stdout instanceof BoundedOutput ? stdout.truncatedBytes : 0,
+    stderr_truncated_bytes: stderrBuffer ? stderrBuffer.truncatedBytes : 0,
+  };
 }
 
 export function boundedErrorMessage(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/[\r\n]+/g, " ").slice(0, 4096) || "tool call failed";
-}
-
-function appendLimited(current, chunk, maximum) {
-  const text = String(chunk || "");
-  const budget = Math.max(0, maximum - Buffer.byteLength(current));
-  const textBytes = Buffer.byteLength(text);
-  if (textBytes <= budget) return { value: current + text, truncated: 0 };
-  const slice = Buffer.from(text).subarray(0, budget).toString();
-  return { value: current + slice, truncated: textBytes - Buffer.byteLength(slice) };
-}
-
-function finalizeOutput(value, truncated) {
-  return truncated > 0 ? `${value}\n\n[truncated ${truncated} bytes]` : value;
 }

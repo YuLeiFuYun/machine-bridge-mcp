@@ -674,9 +674,7 @@ function launchRunner(dir, recover = false, recoveryToken = "") {
 
 function readRunnerOwner(dir, fallback = {}) {
   try {
-    const text = readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8").trim();
-    if (/^\d+$/.test(text)) return { pid: Number(text), ...fallback };
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...fallback };
     return { ...fallback, ...parsed };
   } catch {

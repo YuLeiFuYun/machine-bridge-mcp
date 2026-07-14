@@ -1,6 +1,7 @@
 import {
   DEFAULT_POLICY_PROFILE,
   DEFAULT_POLICY_REVISION,
+  POLICY_ORIGINS,
   POLICY_PROFILES,
   normalizePolicy,
   policyProfile,
@@ -9,9 +10,7 @@ import {
 const POLICY_OVERRIDE_KEYS = Object.freeze(["execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths"]);
 
 export function resolvePolicy(args = {}, stored = {}) {
-  const hasStored = stored && typeof stored === "object" && (
-    typeof stored.allowWrite === "boolean" || typeof stored.allowExec === "boolean" || typeof stored.execMode === "string"
-  );
+  const hasStored = stored && typeof stored === "object" && typeof stored.profile === "string";
   const explicitKeys = ["profile", ...POLICY_OVERRIDE_KEYS];
   const hasExplicit = explicitKeys.some((key) => Object.prototype.hasOwnProperty.call(args, key));
   const base = { ...selectPolicyBase(args, stored, hasStored) };
@@ -26,8 +25,6 @@ export function resolvePolicy(args = {}, stored = {}) {
 }
 
 function policyState(policy) {
-  // Capability fields retain the canonical immutable contract. The CLI owns a
-  // sealed persistence record with exactly one writable metadata field.
   const normalized = normalizePolicy(policy);
   const state = {};
   for (const [key, value] of Object.entries(normalized)) {
@@ -43,8 +40,11 @@ function selectPolicyBase(args, stored, hasStored) {
     if (!POLICY_PROFILES[profile]) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
     return policyProfile(profile, "explicit");
   }
-  if (hasStored) return migrateLegacyPolicy(stored);
-  return policyProfile(DEFAULT_POLICY_PROFILE, "default");
+  if (!hasStored) return policyProfile(DEFAULT_POLICY_PROFILE, "default");
+  if (stored.revision !== DEFAULT_POLICY_REVISION || !POLICY_ORIGINS.has(stored.origin)) {
+    throw new Error("stored policy schema is obsolete; remove the state root and initialize the current version");
+  }
+  return normalizePolicy(stored);
 }
 
 function applyPolicyOverrides(policy, args) {
@@ -65,25 +65,4 @@ function applyPolicyOverrides(policy, args) {
 
 function applyBooleanOverride(args, key, apply) {
   if (typeof args[key] === "boolean") apply(args[key]);
-}
-
-function migrateLegacyPolicy(stored = {}) {
-  if (stored.origin === "default" && Number(stored.revision || 0) < DEFAULT_POLICY_REVISION) {
-    return policyProfile(DEFAULT_POLICY_PROFILE, "default");
-  }
-  if (stored.origin === "migrated" && Number(stored.revision || 0) < DEFAULT_POLICY_REVISION) {
-    return policyProfile(DEFAULT_POLICY_PROFILE, "migrated");
-  }
-  if (stored.origin) return normalizePolicy(stored);
-  const normalized = normalizePolicy(stored);
-  const looksLikeLegacyImplicitDefault = (
-    normalized.profile === "custom"
-    && normalized.allowWrite === true
-    && normalized.execMode === "shell"
-    && normalized.unrestrictedPaths === false
-    && normalized.minimalEnv === true
-    && normalized.exposeAbsolutePaths === false
-  );
-  if (looksLikeLegacyImplicitDefault) return policyProfile("full", "migrated");
-  return normalizePolicy({ ...normalized, origin: "legacy-preserved", revision: DEFAULT_POLICY_REVISION });
 }

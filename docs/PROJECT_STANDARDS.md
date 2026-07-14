@@ -36,7 +36,7 @@ Commit and squash-merge subjects follow Conventional Commits:
 <type>[optional scope][optional !]: <imperative description>
 ```
 
-Allowed types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `security`, `release`, and `revert`. `feat` and `fix` carry their normal semantic-version meaning. A breaking change uses `!` and explains migration impact in the body or a `BREAKING CHANGE:` footer.
+Allowed types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `security`, `release`, and `revert`. `feat` and `fix` carry their normal semantic-version meaning. A breaking change uses `!` and explains upgrade impact in the body or a `BREAKING CHANGE:` footer.
 
 A good change explains both **what changed and why**. Commits should be logically coherent, but intermediate branch history may be amended because the final pull request is squash-merged. Pull-request titles must satisfy the same format because they become the `main` commit subject.
 

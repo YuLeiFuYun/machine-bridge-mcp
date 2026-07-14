@@ -10,6 +10,8 @@ import { assertCanonicalFullPolicy, POLICY_PROFILES, toolsForPolicy } from "./to
 import { resolvePolicy } from "./cli-policy.mjs";
 import { effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
 import { createLocalAdminCommands } from "./cli-local-admin.mjs";
+import { generateAccountPassword } from "./account-admin.mjs";
+import { accountAdminClient, createAccountCommand } from "./cli-account-admin.mjs";
 export { resolvePolicy } from "./cli-policy.mjs";
 export { parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
 import { classifyOperationalError, createLogger, normalizeLogLevel, sanitizeLogText } from "./log.mjs";
@@ -32,7 +34,6 @@ import {
   loadState,
   ownerOnlyFile,
   packageRoot,
-  previewSecret,
   readDaemonLockOwner,
   redactState,
   removeStateRoot,
@@ -45,6 +46,7 @@ import {
 } from "./state.mjs";
 
 const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm });
+const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
 
 const COMMAND_HANDLERS = Object.freeze({
   start: startCommand,
@@ -58,6 +60,7 @@ const COMMAND_HANDLERS = Object.freeze({
   autostart: serviceCommand,
   "rotate-secrets": rotateSecretsCommand,
   resource: localAdminCommands.resourceCommand,
+  account: accountCommand,
   browser: localAdminCommands.browserCommand,
   job: localAdminCommands.jobCommand,
   uninstall: uninstallCommand,
@@ -68,7 +71,6 @@ export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(rest);
   if (args.help || command === "help") return usage();
   if (args.version || command === "version") return version();
-  if (command === "api") throw removedLocalApiError();
   validateCommandOptions(command, args);
   validatePositionals(command, args);
   validateLoggingOptions(args);
@@ -192,7 +194,7 @@ async function prepareStartMode(args, state, logger) {
   }
   // A normal foreground start first asks the platform service manager to
   // unload the job, then independently reclaims a verified daemon-only
-  // process. The second step handles legacy/orphan daemons that launchd or
+  // process. The second step handles orphaned service daemons that launchd or
   // another service manager no longer tracks.
   return stopAutostartBestEffort(logger);
 }
@@ -208,11 +210,7 @@ function reportExistingDaemon(args, state, owner, logger) {
   const notice = `${mode} daemon already running for this workspace (${pid}${version}); it was not restarted and requested changes were not applied`;
   logger.warn(notice);
   if (args.json) {
-    printStartJson(state, {
-      showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
-      requestedChangesApplied: false,
-      notice,
-    });
+    printStartJson(state, { requestedChangesApplied: false, notice });
     return;
   }
   if (owner?.mode === "foreground") {
@@ -236,8 +234,6 @@ function isIdempotentDaemonOnlyStart(args) {
     || args.fullEnv
     || args.unrestrictedPaths
     || args.absolutePaths
-    || args.printMcpCredentials
-    || args.printCredentials
   );
 }
 
@@ -257,27 +253,33 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }
 }
 
 async function prepareRemoteState({ args, workspace, state, logger }) {
-  const previousMcpServerUrl = state.worker?.mcpServerUrl || "";
-  const firstMcpConnection = !previousMcpServerUrl || !state.worker?.oauthPassword;
   const workerName = validateWorkerName(args.workerName);
   ensureWorkerSecrets(state, { rotateSecrets: Boolean(args.rotateSecrets), workerName });
-  const previousPolicyOrigin = state.policy?.origin;
   state.policy = resolvePolicy(args, state.policy);
-  const policyMigrated = !previousPolicyOrigin && state.policy.origin === "migrated";
   state.policy.updatedAt = new Date().toISOString();
   saveState(state);
 
-  if (!args.daemonOnly) await ensureWorker(state, args);
-  else if (!state.worker.url) throw new Error("--daemon-only requires an existing worker URL in state; run start once without --daemon-only");
+  let initialOwner = null;
+  if (!args.daemonOnly) {
+    await ensureWorker(state, args);
+    initialOwner = await ensureInitialOwnerAccount(state);
+  } else if (!state.worker.url) {
+    throw new Error("--daemon-only requires an existing Worker URL; run start once without --daemon-only");
+  }
 
   if (!args.daemonOnly && !args.noAutostart) {
     await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
   }
-  const mcpConnectionChanged = Boolean(previousMcpServerUrl && previousMcpServerUrl !== state.worker.mcpServerUrl);
-  return {
-    policyMigrated,
-    shouldPrintMcpCredentials: Boolean(args.printMcpCredentials || args.printCredentials || firstMcpConnection || args.rotateSecrets || mcpConnectionChanged),
-  };
+  return { initialOwner };
+}
+
+async function ensureInitialOwnerAccount(state) {
+  const client = accountAdminClient(state);
+  const existing = await client.list();
+  if (existing.accounts.length > 0) return null;
+  const password = generateAccountPassword();
+  const created = await client.create({ name: "owner", role: "owner", password, displayName: "Bridge Owner" });
+  return { ...created.account, password };
 }
 
 function createRemoteRuntime({ args, workspace, state, daemonLock, logger }) {
@@ -305,18 +307,13 @@ function createRemoteRuntime({ args, workspace, state, daemonLock, logger }) {
 
 function reportRemoteReady(args, state, readiness) {
   if (args.json) {
-    printStartJson(state, {
-      showCredentials: Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials),
-      notice: readiness.policyMigrated ? "legacy implicit policy migrated to full access" : "",
-    });
+    printStartJson(state, { initialOwner: readiness.initialOwner });
     return;
   }
   printMcpConnection(state, {
-    noPrintCredentials: Boolean(args.noPrintCredentials),
-    includeCredentials: readiness.shouldPrintMcpCredentials,
     quiet: Boolean(args.quiet),
     verbose: Boolean(args.verbose),
-    policyMigrated: readiness.policyMigrated,
+    initialOwner: readiness.initialOwner,
   });
 }
 
@@ -363,16 +360,11 @@ async function clientConfigCommand(args) {
   }
 }
 
-function removedLocalApiError() {
-  return new Error("Local /v1 API support has been removed. Use the printed Remote MCP Server URL/password with an MCP client instead.");
-}
-
-
 async function ensureWorker(state, args) {
   const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "worker" });
   const desiredHash = workerDeployHash(state);
   const expectedVersion = currentPackageVersion();
-  const complete = state.worker.url && state.worker.mcpServerUrl && state.worker.oauthPassword && state.worker.daemonSecret && state.worker.oauthTokenVersion && state.worker.name;
+  const complete = state.worker.url && state.worker.mcpServerUrl && state.worker.accountAdminSecret && state.worker.daemonSecret && state.worker.oauthTokenVersion && state.worker.name;
   if (!args.forceWorker && !args.rotateSecrets && complete && state.worker.deployHash === desiredHash) {
     const health = await workerHealth(state.worker.url, expectedVersion);
     if (health.ok) {
@@ -423,7 +415,7 @@ async function withSecretsFile(state, callback) {
   cleanupStaleSecretFiles(dir);
   const tempPath = resolve(dir, `worker-secrets-${process.pid}-${Date.now()}-${randomBytes(6).toString("hex")}.json`);
   const payload = {
-    MCP_OAUTH_PASSWORD: state.worker.oauthPassword,
+    ACCOUNT_ADMIN_SECRET: state.worker.accountAdminSecret,
     DAEMON_SHARED_SECRET: state.worker.daemonSecret,
     OAUTH_TOKEN_VERSION: state.worker.oauthTokenVersion,
   };
@@ -453,9 +445,9 @@ export function cleanupStaleSecretFiles(dir) {
 
 function workerDeployHash(state) {
   const hash = createHash("sha256");
-  hash.update("mbm-worker-deploy-v1");
+  hash.update("mbm-worker-deploy-v2");
   hash.update(String(state.worker.name || ""));
-  hash.update(String(state.worker.oauthPassword || ""));
+  hash.update(String(state.worker.accountAdminSecret || ""));
   hash.update(String(state.worker.daemonSecret || ""));
   hash.update(String(state.worker.oauthTokenVersion || ""));
   for (const file of workerDeployHashFiles()) {
@@ -542,14 +534,14 @@ function extractWorkerUrl(text = "") {
   return anyHttps.find(match => /workers\.dev|\/healthz|\/mcp/.test(match[0]))?.[0]?.replace(/[),.]+$/, "") || "";
 }
 
-function printStartJson(state, { showCredentials = false, requestedChangesApplied = true, notice = "" } = {}) {
+function printStartJson(state, { requestedChangesApplied = true, notice = "", initialOwner = null } = {}) {
   createLogger({ component: "ready" }).json({
     mcp: {
       server_url: state.worker.mcpServerUrl,
-      connection_password: showCredentials ? state.worker.oauthPassword : previewSecret(state.worker.oauthPassword),
       worker_url: state.worker.url,
       worker_name: state.worker.name,
     },
+    ...(initialOwner ? { initial_owner: initialOwner } : {}),
     workspace: state.workspace.path,
     state_path: state.paths.statePath,
     policy: state.policy,
@@ -558,36 +550,20 @@ function printStartJson(state, { showCredentials = false, requestedChangesApplie
   });
 }
 
-function printMcpConnection(state, {
-  noPrintCredentials = false,
-  includeCredentials = false,
-  quiet = false,
-  verbose = false,
-  policyMigrated = false,
-} = {}) {
+function printMcpConnection(state, { quiet = false, verbose = false, initialOwner = null } = {}) {
   const logger = createLogger({ component: "ready", quiet, level: quiet ? "error" : verbose ? "debug" : "info" });
-  const payload = {
-    mcp_server_url: state.worker.mcpServerUrl,
-    mcp_connection_password: state.worker.oauthPassword,
-    workspace: state.workspace.path,
-    state_path: state.paths.statePath,
-    policy: state.policy,
-  };
-  if (includeCredentials) {
-    logger.success("Remote MCP bridge is ready; save these connection details if your ChatGPT app needs to reconnect");
-    logger.plain(`  MCP Server URL: ${payload.mcp_server_url}`);
-    if (!noPrintCredentials) logger.plain(`  MCP connection password: ${payload.mcp_connection_password}`);
-    else logger.plain(`  MCP connection password: ${previewSecret(payload.mcp_connection_password)} (redacted)`);
+  logger.success("Remote MCP bridge is ready");
+  logger.plain(`  MCP Server URL: ${state.worker.mcpServerUrl}`);
+  if (initialOwner) {
+    logger.warn("Initial owner account created; save the password now because it is not stored locally or shown again.");
+    logger.plain(`  Account: ${initialOwner.name}`);
+    logger.plain(`  Password: ${initialOwner.password}`);
   } else {
-    logger.success("Remote MCP bridge is ready");
-    logger.safePlain("  Connection credentials unchanged; use --print-mcp-credentials only when reconnecting a client.");
+    logger.safePlain("  Use `machine-mcp account` to manage account access.");
   }
-  if (policyMigrated) {
-    logger.warn("Legacy implicit policy migrated to full access; use --profile agent, edit, or review to narrow it.");
-  }
-  logger.plain(`  Workspace: ${payload.workspace}`);
-  logger.safePlain(`  Policy: ${formatPolicySummary(payload.policy)}`);
-  if (verbose) logger.plain(`  State: ${payload.state_path}`);
+  logger.plain(`  Workspace: ${state.workspace.path}`);
+  logger.safePlain(`  Policy: ${formatPolicySummary(state.policy)}`);
+  if (verbose) logger.plain(`  State: ${state.paths.statePath}`);
 }
 
 function formatPolicySummary(policy = {}) {
@@ -616,12 +592,10 @@ function keepProcessAlive({ daemon = null, lock = null, logger = createLogger({ 
 async function statusCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
-  const storedPolicyOrigin = state.policy?.origin;
   state.policy = resolvePolicy({}, state.policy);
   const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
   const payload = {
     ...redactState(state),
-    policyMigrationPending: !storedPolicyOrigin && state.policy.origin === "migrated",
     workerHealth: health,
   };
   console.log(JSON.stringify(payload, null, 2));
@@ -640,7 +614,6 @@ async function doctorCommand(args) {
   const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
   checks.push({ name: "cloudflare-login", ok: whoami.code === 0, detail: whoami.code === 0 ? "authenticated" : sanitizeLines(whoami.stderr || whoami.stdout) });
   const state = loadState(workspace, { stateDir: args.stateDir });
-  const storedPolicyOrigin = state.policy?.origin;
   state.policy = resolvePolicy({}, state.policy);
   checks.push({ name: "policy", ok: true, detail: formatPolicySummary(state.policy) });
   if (state.policy.profile === "full") {
@@ -679,7 +652,6 @@ async function doctorCommand(args) {
     ok: checks.every(check => check.ok),
     checks,
     runtimeDiagnostics,
-    policyMigrationPending: !storedPolicyOrigin && state.policy.origin === "migrated",
     state: redactState(state),
   }, null, 2));
 }
@@ -713,10 +685,8 @@ async function rotateSecretsCommand(args) {
     }
     ensureWorkerSecrets(state, { rotateSecrets: true, workerName: validateWorkerName(args.workerName) });
     saveState(state);
-    const showMcpPassword = Boolean((args.printMcpCredentials || args.printCredentials) && !args.noPrintCredentials);
-    console.log(`Rotated MCP connection password: ${showMcpPassword ? state.worker.oauthPassword : previewSecret(state.worker.oauthPassword)}`);
-    console.log(`Rotated daemon secret: ${previewSecret(state.worker.daemonSecret)}`);
-    console.log("Run `machine-mcp --print-mcp-credentials` to redeploy and display the new client connection credentials when needed.");
+    console.log("Rotated account administration, daemon, and global token-version secrets.");
+    console.log("All account access tokens are invalid. Run machine-mcp to redeploy, then reconnect clients.");
   } finally {
     startupLock.release();
   }
@@ -1008,7 +978,9 @@ Commands:
   status            Print redacted local profile state and Worker health
   doctor            Check Node, Wrangler, Cloudflare login, Worker health
   full-test         Run real local full-profile capability tests in a temporary sandbox
-  rotate-secrets    Rotate MCP password and daemon secret in local state
+  rotate-secrets    Rotate account-admin, daemon, and global token-version secrets
+  account list|add|role|enable|disable|rotate-password|remove
+                    Manage isolated remote accounts and targeted revocation
   resource generate-ssh-key NAME [PATH]
                     Generate/reuse an Ed25519 key locally and register its private file by alias
   browser status    Show browser-extension bridge and connection status
@@ -1023,8 +995,6 @@ Start options:
   --rotate-secrets      Rotate secrets before deploying
   --daemon-only         Skip deploy and only connect daemon from existing state
   --no-autostart        Do not install login autostart during start
-  --no-print-credentials Redact credentials in console output
-  --print-mcp-credentials Print MCP URL/password again for reconnecting ChatGPT apps
   --profile NAME        Policy profile: full (default), agent, edit, or review
   --exec-mode MODE      Command mode: off, direct argv, or full shell
   --no-write            Disable write_file, edit_file, and apply_patch
@@ -1033,7 +1003,7 @@ Start options:
   --unrestricted-paths  Allow filesystem tools outside the workspace
   --absolute-paths      Return absolute local paths (enabled by the full profile)
   --state-dir DIR       Override state root
-  --json                Print connection details as JSON; credentials stay redacted unless explicitly requested
+  --json                Print machine-readable output; secrets are never included
   --log-level LEVEL     error, warn, info (default), or debug
   --log-format FORMAT   text (default) or newline-delimited json
   --verbose             Alias for --log-level debug; includes per-tool success/correlation logs

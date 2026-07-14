@@ -49,20 +49,6 @@ export function errorCode(error, fallback = "execution_failed") {
   if (["ECONNRESET", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND", "EAI_AGAIN"].includes(nodeCode)) return "network_error";
   if (["EEXIST", "ENOTEMPTY", "EBUSY"].includes(nodeCode)) return "conflict";
 
-  // Legacy errors are classified once at the boundary. New code should throw BridgeError directly.
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  if (/cancel/i.test(message)) return "cancelled";
-  if (/timed out/i.test(message)) return "timeout";
-  if (/unauthorized|authentication|\b401\b/i.test(message)) return "authentication_failed";
-  if (/forbidden|authorization|\b403\b/i.test(message)) return "authorization_denied";
-  if (/outside the configured workspace/i.test(message)) return "path_boundary";
-  if (/disabled|requires .* mode|requires the canonical .* profile/i.test(message)) return "policy_denied";
-  if (/not found|ENOENT/i.test(message)) return "not_found";
-  if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
-  if (/maximum|exceeds|max_bytes|too many|limit reached/i.test(message)) return "limit_exceeded";
-  if (/integrity|hash mismatch|changed during/i.test(message)) return "integrity_error";
-  if (/protocol|unexpected .* message|invalid .* envelope/i.test(message)) return "protocol_error";
-  if (/invalid|must|requires|ambiguous|mismatch/i.test(message)) return "invalid_request";
   return normalizeErrorCode(fallback);
 }
 

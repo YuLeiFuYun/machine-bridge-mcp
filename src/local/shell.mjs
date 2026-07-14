@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { packageRoot } from "./state.mjs";
+import { BoundedOutput } from "./bounded-output.mjs";
 
 export function run(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
@@ -15,10 +16,8 @@ export function run(command, args = [], options = {}) {
       detached: process.platform !== "win32",
       windowsHide: true,
     });
-    let stdout = "";
-    let stderr = "";
-    let stdoutTruncated = 0;
-    let stderrTruncated = 0;
+    const stdout = new BoundedOutput(maxOutputBytes);
+    const stderr = new BoundedOutput(maxOutputBytes);
     let settled = false;
     let timedOut = false;
     let timer = null;
@@ -40,28 +39,18 @@ export function run(command, args = [], options = {}) {
       callback();
     };
     if (capture) {
-      child.stdout?.on("data", chunk => {
-        const next = appendLimited(stdout, chunk, maxOutputBytes);
-        stdout = next.value;
-        stdoutTruncated += next.truncated;
-      });
-      child.stderr?.on("data", chunk => {
-        const next = appendLimited(stderr, chunk, maxOutputBytes);
-        stderr = next.value;
-        stderrTruncated += next.truncated;
-      });
+      child.stdout?.on("data", chunk => stdout.append(chunk));
+      child.stderr?.on("data", chunk => stderr.append(chunk));
     }
     child.on("error", error => finish(() => {
-      const result = { code: 127, stdout: finalizeOutput(stdout, stdoutTruncated), stderr: finalizeOutput(error.message || stderr, stderrTruncated) };
+      const result = capturedResult(127, stdout, stderr, error.message);
       if (options.allowFailure) resolve(result);
       else reject(error);
     }));
     child.on("close", code => finish(() => {
       const timeoutMessage = timedOut ? `command timed out after ${timeoutMs}ms` : "";
       const result = {
-        code: timedOut ? 124 : code,
-        stdout: finalizeOutput(stdout, stdoutTruncated),
-        stderr: finalizeOutput([stderr, timeoutMessage].filter(Boolean).join("\n"), stderrTruncated),
+        ...capturedResult(timedOut ? 124 : code, stdout, stderr, timeoutMessage),
       };
       if ((!timedOut && code === 0) || options.allowFailure) resolve(result);
       else {
@@ -92,16 +81,15 @@ function terminateCommandTree(child, force) {
   }
 }
 
-function appendLimited(current, chunk, max) {
-  const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
-  const budget = Math.max(0, max - Buffer.byteLength(current));
-  if (buffer.length <= budget) return { value: current + buffer.toString("utf8"), truncated: 0 };
-  const slice = buffer.subarray(0, budget).toString("utf8");
-  return { value: current + slice, truncated: buffer.length - Buffer.byteLength(slice) };
-}
-
-function finalizeOutput(value, truncated) {
-  return truncated > 0 ? `${value}\n\n[truncated ${truncated} bytes]` : value;
+function capturedResult(code, stdout, stderr, extraStderr = "") {
+  const stderrText = [stderr.text(), extraStderr].filter(Boolean).join("\n");
+  return {
+    code,
+    stdout: stdout.text(),
+    stderr: stderrText,
+    stdout_truncated_bytes: stdout.truncatedBytes,
+    stderr_truncated_bytes: stderr.truncatedBytes,
+  };
 }
 
 function findWranglerCommand() {

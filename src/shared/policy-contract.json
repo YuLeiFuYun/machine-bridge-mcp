@@ -1,7 +1,11 @@
 {
-  "revision": 4,
+  "revision": 5,
   "defaultProfile": "full",
-  "origins": ["default", "explicit", "custom", "migrated", "legacy-preserved"],
+  "origins": [
+    "default",
+    "explicit",
+    "custom"
+  ],
   "profiles": {
     "review": {
       "profile": "review",
@@ -38,14 +42,33 @@
   },
   "availability": {
     "always": {},
-    "write": { "allowWrite": true },
-    "direct-exec": { "execModes": ["direct", "shell"] },
-    "write+direct-exec": { "allowWrite": true, "execModes": ["direct", "shell"] },
-    "shell-exec": { "execModes": ["shell"] },
+    "write": {
+      "allowWrite": true
+    },
+    "direct-exec": {
+      "execModes": [
+        "direct",
+        "shell"
+      ]
+    },
+    "write+direct-exec": {
+      "allowWrite": true,
+      "execModes": [
+        "direct",
+        "shell"
+      ]
+    },
+    "shell-exec": {
+      "execModes": [
+        "shell"
+      ]
+    },
     "full": {
       "profile": "full",
       "allowWrite": true,
-      "execModes": ["shell"],
+      "execModes": [
+        "shell"
+      ],
       "unrestrictedPaths": true,
       "minimalEnv": false,
       "exposeAbsolutePaths": true

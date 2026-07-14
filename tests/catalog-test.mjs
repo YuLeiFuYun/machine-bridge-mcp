@@ -10,6 +10,7 @@ assert(Array.isArray(metadata.supportedProtocolVersions) && metadata.supportedPr
 assert(Array.isArray(metadata.instructions) && metadata.instructions.length >= 4, "shared server instructions are missing");
 assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
 const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
+const workerCatalogSource = await readFile(new URL("../src/worker/tool-catalog.ts", import.meta.url), "utf8");
 assert(workerSource.includes('server-metadata.json'), "Worker does not import shared server metadata");
 assert(!workerSource.includes("const MCP_INSTRUCTIONS = ["), "Worker retains a second hand-maintained instruction catalog");
 assert(!workerSource.includes('const MCP_PROTOCOL_VERSION = "'), "Worker retains a second hand-maintained protocol version");
@@ -36,7 +37,7 @@ for (const tool of catalog) {
 const review = new Set(toolsForPolicy({ profile: "review", allowWrite: false, execMode: "off" }).map((tool) => tool.name));
 const edit = new Set(toolsForPolicy({ profile: "edit", allowWrite: true, execMode: "off" }).map((tool) => tool.name));
 const agent = new Set(toolsForPolicy({ profile: "agent", allowWrite: true, execMode: "direct" }).map((tool) => tool.name));
-const full = new Set(toolsForPolicy({ profile: "full", origin: "explicit", revision: 4, allowWrite: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }).map((tool) => tool.name));
+const full = new Set(toolsForPolicy({ profile: "full", origin: "explicit", revision: 5, allowWrite: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }).map((tool) => tool.name));
 
 assert(review.has("read_file") && review.has("list_jobs") && review.has("read_job") && review.has("list_local_resources") && !review.has("write_file") && !review.has("run_process"), "review profile inventory is invalid");
 assert(edit.has("apply_patch") && !edit.has("run_process"), "edit profile inventory is invalid");
@@ -53,8 +54,9 @@ assert(result.isError === false, "successful tool result was marked as an error"
 assert(result.structuredContent?.nested?.value === 1, "structuredContent was not preserved");
 assert(JSON.parse(result.content[0].text).nested.value === 1, "text and structured tool content diverged");
 
-assert(workerSource.includes('../shared/tool-catalog.json'), "Worker does not import the shared tool catalog");
-assert(!workerSource.includes('const workspaceTools = ['), "Worker contains a second hand-maintained tool catalog");
+assert(workerSource.includes('./tool-catalog'), "Worker entrypoint does not use the catalog boundary");
+assert(workerCatalogSource.includes('../shared/tool-catalog.json'), "Worker catalog boundary does not import the shared tool catalog");
+assert(!workerCatalogSource.includes('const workspaceTools = ['), "Worker contains a second hand-maintained tool catalog");
 
 console.log("shared tool catalog test ok");
 
