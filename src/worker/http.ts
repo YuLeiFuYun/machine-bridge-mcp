@@ -190,11 +190,6 @@ export function applyCors(response: Response, request: Request, base: string, co
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-export function validateOrigin(request: Request, base: string, configured = ""): boolean {
-  const origin = request.headers.get("Origin");
-  return !origin || isConfiguredOrSameOrigin(origin, base, configured);
-}
-
 export function searchParamsEntries(params: URLSearchParams): Array<[string, string]> {
   const entries: Array<[string, string]> = [];
   params.forEach((value, key) => entries.push([key, value]));

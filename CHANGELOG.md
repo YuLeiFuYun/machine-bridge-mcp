@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6 - 2026-07-14
+
+### OAuth navigation origin handling
+
+- Stop treating the browser `Origin` header as an authentication boundary for actual Worker requests. OAuth authorization navigations and form submissions from opaque or client-specific browser containers now reach normal protocol validation instead of failing early with `origin_not_allowed`.
+- Keep CORS response sharing strict: only the Worker origin, the built-in ChatGPT/Grok origins, and exact `MBM_ALLOWED_ORIGINS` additions pass preflight and receive `Access-Control-Allow-Origin`. Unrelated and `null` origins receive no CORS permission, while PKCE, exact redirect/resource binding, account authentication, bearer tokens, and admin/daemon secrets remain authoritative.
+
 ## 1.0.5 - 2026-07-14
 
 ### Built-in ChatGPT and Grok origins

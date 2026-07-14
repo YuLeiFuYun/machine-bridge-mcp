@@ -57,15 +57,32 @@ try {
   assert(wrongHealthMethod.status === 405, "health endpoint accepted an unsupported method");
   assert(wrongHealthMethod.headers.get("allow") === "GET", "method rejection omitted the Allow header");
 
-  const crossOrigin = await stableFetch(`${base}/oauth/register`, {
-    method: "POST",
-    headers: { origin: "http://localhost:3000" },
+  const unrelatedPreflight = await stableFetch(`${base}/oauth/register`, {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://example.com",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type",
+    },
   });
-  assert(crossOrigin.status === 403, "an unconfigured loopback browser origin was accepted");
+  assert(unrelatedPreflight.status === 403, "an unrelated browser origin passed CORS preflight");
   const unrelatedOrigin = await stableFetch(`${base}/healthz`, { headers: { origin: "https://example.com" } });
-  assert(unrelatedOrigin.status === 403, "an unrelated browser origin was accepted");
+  assert(unrelatedOrigin.status === 200, "an unrelated actual request was rejected before normal routing");
+  assert(unrelatedOrigin.headers.get("access-control-allow-origin") === null, "an unrelated origin received CORS response access");
   const opaqueOrigin = await stableFetch(`${base}/healthz`, { headers: { origin: "null" } });
-  assert(opaqueOrigin.status === 403, "an opaque null browser origin was accepted");
+  assert(opaqueOrigin.status === 200, "an opaque-origin actual request was rejected before normal routing");
+  assert(opaqueOrigin.headers.get("access-control-allow-origin") === null, "an opaque origin received CORS response access");
+  const opaqueAuthorization = await stableFetch(`${base}/oauth/authorize`, {
+    method: "POST",
+    headers: {
+      origin: "null",
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: "response_type=code",
+  });
+  assert(opaqueAuthorization.status === 400, `opaque-origin authorization did not reach OAuth validation: ${opaqueAuthorization.status}`);
+  assert(opaqueAuthorization.headers.get("access-control-allow-origin") === null, "opaque-origin authorization received CORS response access");
+  assert((await opaqueAuthorization.text()).includes("Authorization cannot continue"), "opaque-origin authorization did not render the normal OAuth error page");
   for (const origin of ["https://chatgpt.com", "https://chat.openai.com", "https://grok.com", "https://x.com"]) {
     const builtInPreflight = await stableFetch(`${base}/oauth/register`, {
       method: "OPTIONS",
