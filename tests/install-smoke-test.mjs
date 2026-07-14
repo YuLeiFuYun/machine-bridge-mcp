@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,19 +65,12 @@ try {
 }
 
 function assertInstalledDefaultStartup(installedPackage, temp) {
-  const wranglerShim = join(
-    installedPackage,
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "wrangler.cmd" : "wrangler",
+  const wranglerEntrypoint = join(installedPackage, "node_modules", "wrangler", "bin", "wrangler.js");
+  writeFileSync(
+    wranglerEntrypoint,
+    'process.stderr.write("startup-probe-wrangler\\n");\nprocess.exit(73);\n',
+    "utf8",
   );
-  rmSync(wranglerShim, { force: true });
-  if (process.platform === "win32") {
-    writeFileSync(wranglerShim, "@echo startup-probe-wrangler 1>&2\r\n@exit /b 73\r\n", "utf8");
-  } else {
-    writeFileSync(wranglerShim, "#!/bin/sh\nprintf '%s\\n' startup-probe-wrangler >&2\nexit 73\n", { mode: 0o755 });
-    chmodSync(wranglerShim, 0o755);
-  }
 
   const workspace = join(temp, "startup-workspace");
   const home = join(temp, "startup-home");

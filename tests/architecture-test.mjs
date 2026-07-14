@@ -271,6 +271,7 @@ if (packageJson.scripts?.["commit-message:test"] !== "node tests/commit-message-
 if (packageJson.scripts?.["logging-structure:test"] !== "node tests/logging-structure-test.mjs") throw new Error("structured logging regression test is missing");
 if (packageJson.scripts?.["sarif-security:test"] !== "node tests/sarif-security-gate-test.mjs") throw new Error("SARIF security gate regression test is missing");
 if (packageJson.scripts?.["security-properties:test"] !== "node tests/security-properties-test.mjs") throw new Error("security property test suite is missing");
+if (packageJson.scripts?.["shell:test"] !== "node tests/shell-test.mjs") throw new Error("Wrangler executable boundary regression test is missing");
 if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
 if (packageJson.scripts?.["capability-ranking:test"] !== "node tests/capability-ranking-test.mjs") throw new Error("capability ranking regression test is missing");
@@ -283,7 +284,7 @@ if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local script
 if (packageJson.scripts?.["lint:test"] !== "node tests/lint-gate-test.mjs") {
   throw new Error("semantic lint configuration regression test is missing");
 }
-if (!String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run install:test")) {
+if (!String(packageJson.scripts?.check || "").includes("npm run shell:test") || !String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run install:test")) {
   throw new Error("complete check no longer includes static undefined-identifier and installed-default-startup gates");
 }
 if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
@@ -314,7 +315,7 @@ const installSmokeSource = readFileSync(join(root, "tests", "install-smoke-test.
 if (!installSmokeSource.includes("package-free-cwd") || !installSmokeSource.includes('pkg.engines?.npm !== ">=12.0.0"')) {
   throw new Error("global install test no longer validates package-free npm 12 installation metadata");
 }
-for (const required of ["assertInstalledDefaultStartup", "startup-probe-wrangler", "installed zero-argument startup", "ReferenceError", "is not defined"]) {
+for (const required of ["assertInstalledDefaultStartup", "node_modules", "wrangler", "bin", "wrangler.js", "startup-probe-wrangler", "installed zero-argument startup", "ReferenceError", "is not defined"]) {
   if (!installSmokeSource.includes(required)) throw new Error(`global install test lost default-startup assertion: ${required}`);
 }
 for (const file of [join(root, "README.md"), join(root, "docs", "OPERATIONS.md")]) {
