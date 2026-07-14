@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1 - 2026-07-14
+
+### Startup and release-gate reliability
+
+- Fix two production CLI references that were used without imports: `readdirSync` in the default Worker deployment fingerprint path and `inspectProcessInstance` in secret rotation. The former made a freshly installed 1.0.0 package fail immediately on zero-argument startup even though syntax, package, and cross-platform CI checks were green.
+- Add an ESLint correctness gate over Node production code, tests, scripts, and the packaged browser extension. Undefined identifiers, redeclarations, duplicate keys, unreachable statements, and non-loop constant conditions now fail `npm run check` before packaging or publication. A configuration self-test injects synthetic undefined Node/browser bindings so retaining a no-op or mis-scoped lint script cannot satisfy the gate.
+- Strengthen `install:test` to install the real `npm pack` tarball into an isolated global prefix and execute the installed CLI with zero arguments from a package-free workspace and isolated state root. A cross-platform fake Wrangler shim provides a controlled external boundary; the test requires state initialization, rejects `ReferenceError`/`is not defined`, and proves that default startup reaches Worker orchestration rather than only supporting `--version`.
+- Make both static lint and the installed zero-argument startup probe mandatory parts of the complete local, prepublish, Linux, macOS, and Windows release gate. Architecture checks prevent either gate from being removed silently and now enforce the existing exact-semver dependency policy instead of leaving it as documentation only.
+
 ## 1.0.0 - 2026-07-14
 
 ### Current-only protocol and runtime contract

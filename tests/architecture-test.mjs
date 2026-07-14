@@ -248,6 +248,13 @@ if (!pageAutomationSource.includes("isSensitiveElement") || !pageAutomationSourc
 }
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+  for (const [name, version] of Object.entries(packageJson[field] || {})) {
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(String(version))) {
+      throw new Error(`${field} must pin ${name} to one exact semantic version, received ${version}`);
+    }
+  }
+}
 if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser-service-worker-test.mjs") throw new Error("browser service-worker behavior test is missing");
 if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
 if (packageJson.scripts?.["coverage:test"] !== "node scripts/coverage-check.mjs") throw new Error("critical-module coverage gate is missing");
@@ -269,6 +276,15 @@ if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-
 if (packageJson.scripts?.["capability-ranking:test"] !== "node tests/capability-ranking-test.mjs") throw new Error("capability ranking regression test is missing");
 if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
   throw new Error("package syntax check is not using the dynamic repository scanner");
+}
+if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local scripts tests browser-extension") {
+  throw new Error("production/test undefined-identifier lint gate is missing or drifted");
+}
+if (packageJson.scripts?.["lint:test"] !== "node tests/lint-gate-test.mjs") {
+  throw new Error("semantic lint configuration regression test is missing");
+}
+if (!String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run install:test")) {
+  throw new Error("complete check no longer includes static undefined-identifier and installed-default-startup gates");
 }
 if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
   throw new Error("package privacy history check is missing or drifted");
@@ -297,6 +313,9 @@ if (packageJson.engines?.npm !== ">=12.0.0") throw new Error("package metadata n
 const installSmokeSource = readFileSync(join(root, "tests", "install-smoke-test.mjs"), "utf8");
 if (!installSmokeSource.includes("package-free-cwd") || !installSmokeSource.includes('pkg.engines?.npm !== ">=12.0.0"')) {
   throw new Error("global install test no longer validates package-free npm 12 installation metadata");
+}
+for (const required of ["assertInstalledDefaultStartup", "startup-probe-wrangler", "installed zero-argument startup", "ReferenceError", "is not defined"]) {
+  if (!installSmokeSource.includes(required)) throw new Error(`global install test lost default-startup assertion: ${required}`);
 }
 for (const file of [join(root, "README.md"), join(root, "docs", "OPERATIONS.md")]) {
   const guidance = readFileSync(file, "utf8").replace(/\s+/g, " ");

@@ -3,6 +3,14 @@
 This document records the cross-cutting audit initiated for version 0.12.0, the 0.12.2 cross-platform CI follow-up, and the 0.13.0 architecture/automatic-routing follow-up, the 0.15.0 daily-browser and cross-platform hardening review, and the 0.16.0 runtime-boundary review. It complements, but does not replace, the continuously enforced contracts in `SECURITY.md`, `docs/ENGINEERING.md`, and the test suite.
 
 
+## 2026-07-14 version 1.0.1 installed-startup incident
+
+Version 1.0.0 passed the complete repository suite, three operating-system CI jobs, package manifest inspection, and a real isolated global installation, but the installed CLI failed immediately on the documented zero-argument command with `readdirSync is not defined`. The direct cause was a missing `node:fs` import in a function reached only while hashing Worker deployment inputs. The installation smoke test invoked only `--version`, which loaded the module but did not execute the default startup function body; `node --check` validates syntax, not lexical name resolution inside unexecuted branches. A second scan found another latent missing import, `inspectProcessInstance`, in secret rotation.
+
+The correction uses independent evidence layers. ESLint now rejects undefined bindings across Node production code, scripts, tests, and browser-extension code. The real-tarball installation test still verifies package layout and documented npm options, but now replaces only the isolated package's Wrangler shim with a deterministic failing executable and starts the installed CLI with no arguments from a package-free workspace and private temporary state root. Success means the process initializes current state, computes the packaged Worker fingerprint, and reaches the controlled Wrangler boundary without `ReferenceError` or any `is not defined` failure. Existing workerd/WebSocket and runtime integration tests continue from that external boundary through authenticated readiness. Both gates are part of `npm run check`, prepublish validation, and every supported OS matrix job; architecture tests reject their removal.
+
+The incident establishes a release rule: entrypoint existence, module import, `--help`, or `--version` are not startup evidence. Every user-documented primary command must be executed from the final packed artifact far enough to cross its composition root and reach either a verified ready state or a deliberately controlled external boundary.
+
 ## 2026-07-14 version 1.0 security-boundary audit
 
 The 1.0 review began from a clean `0.18.1` main branch whose complete local suite and required GitHub checks passed. The green status was incomplete evidence: GitHub still contained open CodeQL findings because the workflow uploaded SARIF but did not fail on security results. The review separated real path races and one lifecycle defect from intentional high-authority process boundaries and static-analysis noise.

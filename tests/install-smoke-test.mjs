@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,9 +57,63 @@ try {
     throw new Error(`installed CLI failed: ${cli.stderr || cli.stdout}`);
   }
 
-  console.log(`global install smoke test ok (${pkg.version}; optional fsevents omitted)`);
+  assertInstalledDefaultStartup(installedPackage, temp);
+
+  console.log(`global install smoke test ok (${pkg.version}; default startup reached controlled external boundary; optional fsevents omitted)`);
 } finally {
   rmSync(temp, { recursive: true, force: true });
+}
+
+function assertInstalledDefaultStartup(installedPackage, temp) {
+  const wranglerShim = join(
+    installedPackage,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "wrangler.cmd" : "wrangler",
+  );
+  rmSync(wranglerShim, { force: true });
+  if (process.platform === "win32") {
+    writeFileSync(wranglerShim, "@echo startup-probe-wrangler 1>&2\r\n@exit /b 73\r\n", "utf8");
+  } else {
+    writeFileSync(wranglerShim, "#!/bin/sh\nprintf '%s\\n' startup-probe-wrangler >&2\nexit 73\n", { mode: 0o755 });
+    chmodSync(wranglerShim, 0o755);
+  }
+
+  const workspace = join(temp, "startup-workspace");
+  const home = join(temp, "startup-home");
+  const stateHome = join(temp, "startup-state");
+  const appData = join(temp, "startup-appdata");
+  for (const directory of [workspace, home, stateHome, appData]) mkdirSync(directory, { recursive: true });
+
+  const result = spawnSync(process.execPath, [join(installedPackage, "bin", "machine-mcp.mjs")], {
+    cwd: workspace,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      XDG_STATE_HOME: stateHome,
+      APPDATA: appData,
+      MBM_DEBUG: "1",
+      CI: "1",
+    },
+    timeout: 30_000,
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (result.status !== 1 || !output.includes("startup-probe-wrangler")) {
+    throw new Error(`installed zero-argument startup did not reach the controlled Wrangler boundary: ${output.slice(0, 2000)}`);
+  }
+  if (/ReferenceError|\bis not defined\b/.test(output)) {
+    throw new Error(`installed zero-argument startup crashed on an undefined identifier: ${output.slice(0, 2000)}`);
+  }
+  const stateRoot = process.platform === "win32"
+    ? join(appData, "machine-bridge-mcp")
+    : join(stateHome, "machine-bridge-mcp");
+  if (!readFileSync(join(stateRoot, ".machine-bridge-mcp-state"), "utf8").includes("machine-bridge-mcp")) {
+    throw new Error("installed zero-argument startup did not initialize isolated state before the external boundary");
+  }
 }
 
 function spawnNpm(args, cwd) {

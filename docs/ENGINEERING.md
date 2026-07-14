@@ -129,6 +129,8 @@ The required matrix includes:
 - current-tree and reachable-history privacy gates, release-impact enforcement, and exact-commit release-CI gating;
 - package-manifest and sensitive-artifact inspection;
 - generated type checks and recursively discovered JavaScript/shell syntax checks;
+- static undefined-identifier/redeclaration checks over all production JavaScript, tests, scripts, and browser-extension code;
+- a real packed-tarball isolated global installation whose zero-argument CLI startup initializes state and reaches a controlled external Worker-deployment boundary; `--version` or import-only smoke tests are insufficient release evidence;
 - concurrent exclusive-lock/atomic-replacement tests, PID-reuse/age tests, and fail-closed service-lifecycle tests;
 - real process-tree timeout/cancellation tests with descendants that ignore graceful termination;
 - local runtime and real `full` acceptance tests;
