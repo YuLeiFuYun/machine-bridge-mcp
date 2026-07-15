@@ -18,6 +18,7 @@ This document records project-wide decisions that must survive individual fixes,
 12. **Read failure is not empty state.** Permission, type, symbolic-link, size, encoding, and I/O errors must propagate. Corrupt backup/reconstruction applies only after a successful read proves that JSON content is invalid.
 13. **The public protocol contract is current-only.** Shared metadata advertises only the current MCP protocol version. Compatibility code for obsolete protocol dates, lock formats, or state schemas is not retained in the final runtime; upgrade safety comes from explicit version negotiation, fail-closed state validation, and bounded operator convergence.
 14. **Security analysis is a failing gate.** CodeQL or Scorecard execution alone is not success. Generated SARIF must contain no unaccepted result, and missing rule metadata fails closed rather than being interpreted as non-security. An intentional or externally constrained finding requires an exact rule/path record with a substantive rationale and an expiry date.
+15. **Ambiguous health is not permission to repeat a remote write.** A successful Wrangler deployment is recorded before secondary health verification. Timeout, proxy, TLS, network, and temporary service failures preserve the deployment fingerprint and fail for diagnosis; only bounded evidence of a stale identity/version permits automatic same-name redeployment. Changing the Worker name is an explicit remote-resource transition, not a retry strategy.
 
 A proposed change that conflicts with an invariant requires an explicit owner decision and corresponding documentation update. It must not be hidden inside an unrelated refactor.
 
@@ -109,7 +110,7 @@ A higher branch count is acceptable only when the function is an explicit state 
 
 - Preserve a stable coarse error class for automation and a concise human message for operators.
 - Do not retry an operation merely because it failed; retry only when the error is positively classified as transient and the operation is idempotent or server state is checked after ambiguity.
-- When a remote write may have succeeded before the response was lost, query authoritative state before repeating it.
+- When a remote write may have succeeded before the response was lost, query authoritative state before repeating it. When the write itself returned success but a later verification read failed, persist the successful write evidence before returning the verification error.
 - Duration-based deadlines must use a monotonic clock. Wall time remains appropriate for persisted timestamps, credential expiry, retention, and operator-visible dates, but a system clock correction must not extend or prematurely terminate an in-process wait.
 - Timeouts must terminate the relevant process tree. Forced escalation must remain referenced until resistant descendants are handled; do not clear it merely because the direct child exited.
 - Half-open connections need liveness detection, not only periodic writes.

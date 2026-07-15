@@ -18,6 +18,7 @@ const tests = [
   "tests/records-test.mjs",
   "tests/project-metadata-test.mjs",
   "tests/state-inventory-test.mjs",
+  "tests/worker-deployment-test.mjs",
 ];
 
 try {
@@ -45,13 +46,16 @@ try {
     "src/local/process-tracker.mjs": [65, 35],
     "src/local/log.mjs": [60, 40],
     "src/local/runtime.mjs": [60, 35],
-    "src/local/cli.mjs": [40, 10],
+    "src/local/cli.mjs": [45, 20],
     "src/local/cli-options.mjs": [65, 35],
     "src/local/cli-policy.mjs": [70, 35],
     "src/local/numbers.mjs": [100, 100],
     "src/local/records.mjs": [100, 100],
     "src/local/project-metadata.mjs": [85, 55],
-    "src/local/state-inventory.mjs": [80, 50],
+    "src/local/state-inventory.mjs": [85, 55],
+    "src/local/network-proxy.mjs": [90, 65],
+    "src/local/worker-health.mjs": [85, 60],
+    "src/local/worker-deployment.mjs": [80, 55],
     "src/worker/pending-calls.ts": [85, null],
     "src/worker/policy.ts": [90, null],
     "src/worker/errors.ts": [100, null],

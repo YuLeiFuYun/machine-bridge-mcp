@@ -1,6 +1,5 @@
-import { createHmac } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import path, { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalRuntime } from "./runtime.mjs";
@@ -19,12 +18,13 @@ import { classifyOperationalError, createLogger, sanitizeLogText } from "./log.m
 import { runExecutable, runWrangler } from "./shell.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
+import { ensureWorkerDeployment } from "./worker-deployment.mjs";
+import { workerHealth } from "./worker-health.mjs";
+export { workerHealthUserReason } from "./worker-health.mjs";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
-import { withWorkerSecretsFile } from "./worker-secret-file.mjs";
 import {
   acquireMaintenanceLock,
   acquireStartupLockWithWait,
-  appName,
   daemonLockPathForState,
   defaultFirstRunWorkspace,
   defaultStateRoot,
@@ -225,7 +225,7 @@ function reportExistingDaemon(args, state, owner, logger) {
   logger.plain(`  Workspace: ${state.workspace.path}`);
 }
 
-function isIdempotentDaemonOnlyStart(args) {
+export function isIdempotentDaemonOnlyStart(args) {
   if (!args.daemonOnly || args.json) return false;
   return !Boolean(
     args.profile
@@ -258,7 +258,11 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }
 
 async function prepareRemoteState({ args, workspace, state, logger }) {
   const workerName = validateWorkerName(args.workerName);
-  ensureWorkerSecrets(state, { rotateSecrets: Boolean(args.rotateSecrets), workerName });
+  ensureWorkerSecrets(state, {
+    rotateSecrets: Boolean(args.rotateSecrets),
+    workerName,
+    allowWorkerRename: Boolean(args.forceWorker),
+  });
   state.policy = resolvePolicy(args, state.policy);
   state.policy.updatedAt = new Date().toISOString();
   saveState(state);
@@ -366,146 +370,9 @@ async function clientConfigCommand(args) {
 
 async function ensureWorker(state, args) {
   const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "worker" });
-  const desiredHash = workerDeploymentFingerprint(state);
-  const expectedVersion = currentPackageVersion();
-  const complete = state.worker.url && state.worker.mcpServerUrl && state.worker.accountAdminSecret && state.worker.daemonSecret && state.worker.oauthTokenVersion && state.worker.name;
-  if (!args.forceWorker && !args.rotateSecrets && complete && state.worker.deployHash === desiredHash) {
-    const health = await workerHealth(state.worker.url, expectedVersion);
-    if (health.ok) {
-      logger.success("Worker unchanged and healthy", { url: state.worker.url });
-      return state.worker;
-    }
-    logger.warn("Worker is not healthy at the expected version; redeploying automatically", { reason: workerHealthUserReason(health.error) });
-    logger.debug("Worker health check detail", { health_error: health.error });
-  }
-
-  logger.info("Checking Cloudflare Wrangler login");
-  const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
-  if (whoami.code !== 0) {
-    logger.info("Wrangler is not logged in; opening Cloudflare login");
-    await runWrangler(["login"]);
-  }
-
-  logger.info("Deploying Cloudflare Worker", { name: state.worker.name });
-  const deploy = await withWorkerSecretsFile(state, secretFile => runWrangler([
-    "deploy",
-    "--name", state.worker.name,
-    "--minify",
-    "--keep-vars",
-    "--secrets-file", secretFile,
-  ], { capture: true }));
-
-  const workerUrl = extractWorkerUrl(deploy.stdout) || extractWorkerUrl(deploy.stderr) || state.worker.url;
-  if (!workerUrl) throw new Error("Worker deployed but URL could not be detected. Re-run with --worker-name or inspect Wrangler output.");
-  state.worker.url = workerUrl.replace(/\/+$/, "");
-  state.worker.mcpServerUrl = `${state.worker.url}/mcp`;
-  delete state.worker.deployHash;
-  state.worker.updatedAt = new Date().toISOString();
-  saveState(state);
-
-  const health = await retryHealth(state.worker.url, expectedVersion, 8);
-  if (!health.ok) {
-    throw new Error(`Worker deployment did not become healthy at the expected version: ${health.error}`);
-  }
-  state.worker.deployHash = desiredHash;
-  saveState(state);
-  logger.success("Worker ready", { url: state.worker.url, version: health.version });
-  return state.worker;
+  return ensureWorkerDeployment(state, args, { logger });
 }
 
-
-function workerDeploymentFingerprint(state) {
-  const keyMaterial = [
-    String(state.worker.accountAdminSecret || ""),
-    String(state.worker.daemonSecret || ""),
-    String(state.worker.oauthTokenVersion || ""),
-  ].join("\0");
-  const fingerprint = createHmac("sha256", keyMaterial);
-  fingerprint.update("mbm-worker-deploy-v3");
-  fingerprint.update(String(state.worker.name || ""));
-  for (const file of workerDeployHashFiles()) {
-    fingerprint.update(path.relative(packageRoot, file));
-    fingerprint.update(workerHashContent(file));
-  }
-  return fingerprint.digest("hex");
-}
-
-function workerHashContent(file) {
-  return readFileSync(file, "utf8");
-}
-
-function workerDeployHashFiles() {
-  const files = [];
-  for (const item of ["src/worker", "src/shared", "wrangler.jsonc", "tsconfig.json"]) {
-    collectHashFiles(resolve(packageRoot, item), files);
-  }
-  return files.sort();
-}
-
-function collectHashFiles(target, out) {
-  if (!existsSync(target)) return;
-  const info = statSync(target);
-  if (info.isFile()) {
-    if (/\.(ts|js|mjs|json|jsonc|yaml|yml|lock)$/.test(target)) out.push(target);
-    return;
-  }
-  if (!info.isDirectory()) return;
-  for (const entry of readdirSync(target, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name === ".wrangler" || entry.name.endsWith(".d.ts")) continue;
-    collectHashFiles(resolve(target, entry.name), out);
-  }
-}
-
-async function workerHealth(workerUrl, expectedVersion = currentPackageVersion()) {
-  if (!workerUrl) return { ok: false, error: "missing_worker_url" };
-  try {
-    const response = await fetch(`${String(workerUrl).replace(/\/+$/, "")}/healthz`, { signal: AbortSignal.timeout(5000) });
-    if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
-    const body = await response.json().catch(() => null);
-    if (body?.ok !== true || body?.server !== appName) return { ok: false, error: "unexpected_health_response" };
-    if (body?.version !== expectedVersion) return { ok: false, error: `version_mismatch:${body?.version || "unknown"}!=${expectedVersion}` };
-    return { ok: true, version: body.version };
-  } catch (error) {
-    return { ok: false, error: workerHealthError(error) };
-  }
-}
-
-export function workerHealthUserReason(value) {
-  const reason = String(value || "");
-  if (reason.startsWith("version_mismatch:")) return "deployed version does not match the local package";
-  if (/^HTTP \d+$/.test(reason)) return "health endpoint returned an HTTP error";
-  if (reason === "unexpected_health_response") return "health endpoint returned an unexpected response";
-  if (reason === "timeout") return "health check timed out";
-  if (reason === "tls_error") return "TLS validation failed";
-  if (reason === "network_error") return "network request failed";
-  if (reason === "missing_worker_url") return "Worker URL is missing";
-  return "health check failed";
-}
-
-function workerHealthError(error) {
-  const message = String(error?.message || error || "");
-  if (/timeout|aborted/i.test(message)) return "timeout";
-  if (/certificate|TLS|SSL/i.test(message)) return "tls_error";
-  if (/fetch failed|network|ECONN|ENOTFOUND|EAI_AGAIN/i.test(message)) return "network_error";
-  return "request_failed";
-}
-
-async function retryHealth(workerUrl, expectedVersion, attempts) {
-  let last = { ok: false, error: "not_checked" };
-  for (let i = 0; i < attempts; i += 1) {
-    last = await workerHealth(workerUrl, expectedVersion);
-    if (last.ok) return last;
-    await sleep(1000 + i * 500);
-  }
-  return last;
-}
-
-function extractWorkerUrl(text = "") {
-  const matches = [...String(text).matchAll(/https:\/\/[^\s"'<>]+\.workers\.dev[^\s"'<>]*/g)];
-  if (matches.length) return matches.at(-1)[0].replace(/[),.]+$/, "");
-  const anyHttps = [...String(text).matchAll(/https:\/\/[^\s"'<>]+/g)];
-  return anyHttps.find(match => /workers\.dev|\/healthz|\/mcp/.test(match[0]))?.[0]?.replace(/[),.]+$/, "") || "";
-}
 
 function printStartJson(state, { requestedChangesApplied = true, notice = "", initialOwner = null } = {}) {
   createLogger({ component: "ready" }).json({
@@ -566,7 +433,7 @@ async function statusCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
   state.policy = resolvePolicy({}, state.policy);
-  const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
+  const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion()) : { ok: false, error: "no worker url" };
   const payload = {
     ...redactState(state),
     workerHealth: health,
@@ -597,7 +464,7 @@ async function doctorCommand(args) {
       checks.push({ name: "full-policy-contract", ok: false, detail: sanitizeLines(error?.message || error) });
     }
   }
-  const health = state.worker?.url ? await workerHealth(state.worker.url) : { ok: false, error: "no worker url" };
+  const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion()) : { ok: false, error: "no worker url" };
   checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
   const diagnosticRuntime = new LocalRuntime({
     workspace,
@@ -656,7 +523,7 @@ async function rotateSecretsCommand(args) {
     if (daemonIdentity?.current) {
       throw new Error(`refusing to rotate secrets while the daemon is active (pid ${daemonOwner.pid}); stop the foreground daemon and retry`);
     }
-    ensureWorkerSecrets(state, { rotateSecrets: true, workerName: validateWorkerName(args.workerName) });
+    ensureWorkerSecrets(state, { rotateSecrets: true });
     saveState(state);
     console.log("Rotated account administration, daemon, and global token-version secrets.");
     console.log("All account access tokens are invalid. Run machine-mcp to redeploy, then reconnect clients.");
@@ -963,8 +830,8 @@ Commands:
 
 Start options:
   --workspace PATH      Use and remember this workspace path
-  --worker-name NAME    Worker name (default: mbm-<workspace-hash>)
-  --force-worker        Force wrangler deploy even if hash and health match
+  --worker-name NAME    Worker name (default: mbm-<workspace-hash>); changing an existing name requires --force-worker
+  --force-worker        Force same-name deployment, or explicitly allow an intentional --worker-name replacement
   --rotate-secrets      Rotate secrets before deploying
   --daemon-only         Skip deploy and only connect daemon from existing state
   --no-autostart        Do not install login autostart during start

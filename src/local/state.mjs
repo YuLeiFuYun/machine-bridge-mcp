@@ -594,7 +594,26 @@ export function ensureWorkerSecrets(state, options = {}) {
   if (!state.worker.accountAdminSecret || options.rotateSecrets) state.worker.accountAdminSecret = randomToken("account_admin");
   if (!state.worker.daemonSecret || options.rotateSecrets) state.worker.daemonSecret = randomToken("daemon_secret");
   if (!state.worker.oauthTokenVersion || options.rotateSecrets) state.worker.oauthTokenVersion = randomToken("token_version");
-  if (!state.worker.name || options.workerName) state.worker.name = options.workerName || defaultWorkerName(state.workspace.hash);
+
+  const requestedName = options.workerName || "";
+  if (!state.worker.name) {
+    state.worker.name = requestedName || defaultWorkerName(state.workspace.hash);
+    return;
+  }
+  if (!requestedName || requestedName === state.worker.name) return;
+  if (!options.allowWorkerRename) {
+    throw new Error(`this workspace already uses Worker ${state.worker.name}; changing --worker-name to ${requestedName} would create another Worker. Re-run with --force-worker only when that replacement is intentional`);
+  }
+
+  const previous = String(state.worker.name);
+  const previousNames = Array.isArray(state.worker.previousNames) ? state.worker.previousNames : [];
+  state.worker.previousNames = [...new Set([...previousNames, previous])].slice(-32);
+  state.worker.name = requestedName;
+  delete state.worker.url;
+  delete state.worker.mcpServerUrl;
+  delete state.worker.deployHash;
+  delete state.worker.deployedVersion;
+  delete state.worker.updatedAt;
 }
 
 function defaultWorkerName(hash) {

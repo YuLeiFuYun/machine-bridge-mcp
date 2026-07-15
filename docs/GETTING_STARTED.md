@@ -140,6 +140,7 @@ Common installation failures:
 | `Invalid property "node"` or `Invalid property "devEngines.node"` | An old npm parser inspected incompatible project metadata | Run the install from a new empty temporary directory |
 | `machine-mcp: command not found` | The global npm binary directory is not on `PATH` | Reopen the terminal, inspect `npm prefix -g`, and add its binary directory to `PATH` |
 | Native package install warning | npm did not approve reviewed native build scripts | Use the documented `--allow-scripts` and `--omit=optional` command exactly |
+| Worker deployment completed, then health verification timed out | The independent `/healthz` route is blocked, mis-proxied, or temporarily unavailable; the upload may already be valid | Keep the recorded Worker name, run `machine-mcp status` and `machine-mcp doctor` from the same proxy environment, then retry normally. Do not invent a suffixed `--worker-name`; the saved fingerprint prevents a duplicate upload. |
 
 ## 6. First remote start
 
@@ -167,6 +168,8 @@ The first start performs these operations:
 8. prints the remote `/mcp` URL.
 
 The foreground command remains attached to the terminal. Keep it running while testing. The remote Worker cannot execute local tools when no authenticated daemon is connected.
+
+The Worker name is a persistent workspace identity, not a retry counter. A successful Wrangler upload is recorded before health verification, so a later timeout does not require a new name and does not make the next start upload again. Supplying a different `--worker-name` for an initialized workspace requires `--force-worker` because it intentionally creates/replaces a separate Cloudflare Worker identity.
 
 To run only in the background after setup:
 

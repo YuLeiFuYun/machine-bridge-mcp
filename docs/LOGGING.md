@@ -33,6 +33,12 @@ Foreground mode defaults to `info` and human-readable text. Platform autostart s
 | `info` | Deployment/startup transitions, authenticated relay readiness, and recovery after a visible outage |
 | `debug` | Transport open/close codes and reasons, brief self-healing interruptions, retry timing, per-tool outcomes, and shortened correlation IDs |
 
+## Worker deployment and health event policy
+
+Wrangler upload and `/healthz` verification are logged as separate state transitions. A successful upload followed by ambiguous health failure must say that the deployment fingerprint was retained and that retry will verify rather than redeploy. Existing-state timeout, proxy, TLS, network, and temporary server failures must say that no deployment was attempted. Only a persistent stale identity/version result may emit the warning that the same Worker is being redeployed.
+
+Health routing records only `direct` or `proxy` at debug level. Proxy URLs, credentials, request headers, Worker secrets, and raw response bodies are never fields. Repeated per-attempt health failures remain debug-only; the terminal startup error contains one user-readable classification and corrective commands.
+
 ## Relay connection event policy
 
 A TCP/WebSocket `open` event is only transport availability. The daemon is reported as connected only after the Worker returns `hello_ack` for the authenticated `hello` message.

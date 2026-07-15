@@ -22,7 +22,7 @@ const COMMAND_OPTIONS = {
   status: new Set(["workspace", "stateDir"]),
   doctor: new Set(["workspace", "stateDir"]),
   "full-test": new Set(["workspace", "stateDir", "json"]),
-  "rotate-secrets": new Set(["workspace", "stateDir", "workerName", "quiet"]),
+  "rotate-secrets": new Set(["workspace", "stateDir", "quiet"]),
   workspace: new Set(["workspace", "stateDir"]),
   service: new Set(["workspace", "stateDir", "quiet"]),
   autostart: new Set(["workspace", "stateDir", "quiet"]),
