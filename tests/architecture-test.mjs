@@ -236,14 +236,22 @@ if (workerSource.includes("validateOrigin(request") || workerSource.includes('er
 if (!workerSource.includes('request.method === "OPTIONS"') || !workerSource.includes("corsPreflight(request, base, extraOrigins)")) {
   throw new Error("Worker no longer gates browser CORS preflight through the exact-origin policy");
 }
-if (!workerHttpSource.includes("new URL(formActionOrigin).origin") || !workerHttpSource.includes("form-action ${formAction}")) {
-  throw new Error("authorization HTML no longer constrains form navigation to normalized exact origins");
+if (!workerHttpSource.includes("authorizationFormActionSources(formActionOrigin)") || !workerHttpSource.includes("const sources = [url.origin]") || !workerHttpSource.includes("form-action ${formAction}")) {
+  throw new Error("authorization HTML no longer constrains form navigation to normalized validated origins");
+}
+if (!workerHttpSource.includes('url.hostname === "consent.azure-apim.net"')
+  || !workerHttpSource.includes('url.hostname.endsWith(".consent.azure-apim.net")')
+  || !workerHttpSource.includes('sources.push("https://*.consent.azure-apim.net")')) {
+  throw new Error("authorization HTML no longer permits only validated Microsoft consent callbacks to use the regional subdomain handoff");
 }
 if (!workerSource.includes("new URL(authorization.redirectUri).origin") || !workerSource.includes("status, redirectOrigin")) {
   throw new Error("authorization pages no longer bind CSP form navigation to the validated redirect origin");
 }
-if (!oauthBrowserNavigationSource.includes("negative control unexpectedly reached") || !oauthBrowserNavigationSource.includes("authorization callback omitted code") || !oauthBrowserNavigationSource.includes("authorization callback omitted state")) {
-  throw new Error("real-browser OAuth callback regression lost its blocking control or callback assertions");
+if (!oauthBrowserNavigationSource.includes("negative control reached the first callback")
+  || !oauthBrowserNavigationSource.includes("first-hop-only policy unexpectedly followed the cross-origin callback redirect")
+  || !oauthBrowserNavigationSource.includes("authorization callback omitted code")
+  || !oauthBrowserNavigationSource.includes("authorization state was not preserved")) {
+  throw new Error("real-browser OAuth callback regression lost its first-hop, redirect-chain, or callback assertions");
 }
 if (!cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
   throw new Error("browser CLI pairing state read is not bounded");

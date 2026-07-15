@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.2 - 2026-07-15
+
+### Copilot Studio regional OAuth callback
+
+- Allow a validated Microsoft `consent.azure-apim.net` OAuth callback to continue through Power Platform's HTTPS regional consent subdomains. Chromium applies the authorization page's `form-action` policy across redirects; the previous exact-global-origin policy let the Worker issue a valid authorization code but blocked Microsoft's `global` to `asia-001` handoff before token exchange, leaving Copilot Studio disconnected.
+- Keep the exception narrow: every authorization page still allows only `'self'` and its exact validated redirect origin, and only callbacks already validated on the Microsoft consent domain receive `https://*.consent.azure-apim.net`. Other OAuth clients, CORS rules, redirect binding, PKCE, account authentication, and token validation are unchanged.
+- Add Worker integration coverage for the Copilot Studio CSP and a real headless-Chrome three-stage regression proving that self-only policy blocks the first callback, exact-first-hop policy blocks the regional redirect, and the completed policy preserves `code` and `state` through the two-hop chain.
+
 ## 1.1.1 - 2026-07-15
 
 ### Windows Worker deployment convergence
