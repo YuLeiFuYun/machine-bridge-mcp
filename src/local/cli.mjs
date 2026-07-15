@@ -433,7 +433,7 @@ async function statusCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
   state.policy = resolvePolicy({}, state.policy);
-  const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion()) : { ok: false, error: "no worker url" };
+  const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion(), { expectedWorkerName: state.worker.name }) : { ok: false, error: "no worker url" };
   const payload = {
     ...redactState(state),
     workerHealth: health,
@@ -464,7 +464,7 @@ async function doctorCommand(args) {
       checks.push({ name: "full-policy-contract", ok: false, detail: sanitizeLines(error?.message || error) });
     }
   }
-  const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion()) : { ok: false, error: "no worker url" };
+  const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion(), { expectedWorkerName: state.worker.name }) : { ok: false, error: "no worker url" };
   checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
   const diagnosticRuntime = new LocalRuntime({
     workspace,

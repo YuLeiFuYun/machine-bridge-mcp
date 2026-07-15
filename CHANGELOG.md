@@ -4,7 +4,7 @@
 
 ### Windows Worker deployment convergence
 
-- Make Worker health probes use the same standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` routing model as the relay. The previous direct `fetch` probe could time out on Windows or managed networks after Wrangler had already completed a valid deployment.
+- Make Worker health probes use the same standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` routing model as the relay. The previous direct `fetch` probe could time out on Windows or managed networks after Wrangler had already completed a valid deployment. Restrict probes to the recorded HTTPS `workers.dev` origin and reject redirects so persisted state cannot redirect the verifier to an arbitrary network target.
 - Persist the successful Wrangler deployment URL, content/secret fingerprint, and deployed package version before the secondary health probe. A timeout, proxy failure, TLS failure, network failure, or temporary HTTP 5xx response now stops with corrective guidance and a later start verifies the same Worker instead of uploading it again; only bounded, definitive stale-version/identity evidence triggers automatic same-name redeployment.
 - Prevent accidental Worker proliferation by rejecting a changed `--worker-name` for an initialized workspace unless `--force-worker` explicitly authorizes the replacement. Retain prior names in local inventory so full uninstall can delete intentionally replaced Workers. Add a real local CONNECT-proxy regression, deployment ambiguity/idempotency tests, worker-name replacement tests, expanded CLI/state coverage, and higher critical-module coverage floors.
 

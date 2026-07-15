@@ -18,7 +18,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   const saveStateFn = options.saveState || saveState;
   const retryHealthFn = options.retryHealth || retryWorkerHealth;
   const withSecretsFileFn = options.withSecretsFile || withWorkerSecretsFile;
-  const healthOptions = options.healthOptions || {};
+  const healthOptions = { expectedWorkerName: state.worker.name, ...(options.healthOptions || {}) };
   const complete = hasCompleteWorkerState(state.worker);
 
   if (!args.forceWorker && !args.rotateSecrets && complete && state.worker.deployHash === desiredHash) {

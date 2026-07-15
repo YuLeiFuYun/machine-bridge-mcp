@@ -29,7 +29,7 @@ try {
   const selected = run(["workspace", "set", workspaceRoot, "--state-dir", stateRoot]);
   assert(selected.status === 0 && selected.stdout.includes("Selected workspace:"), `workspace set failed: ${selected.stderr}`);
   const remembered = run(["workspace", "show", "--state-dir", stateRoot]);
-  assert(remembered.status === 0 && remembered.stdout.includes(workspaceRoot), "workspace selection was not persisted");
+  assert(remembered.status === 0 && normalizePathText(remembered.stdout).includes(normalizePathText(workspaceRoot)), "workspace selection was not persisted");
 
   const status = run(["status", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
   assert(status.status === 0, `status command failed without a Worker: ${status.stderr}`);
@@ -51,6 +51,10 @@ try {
   rmSync(workspaceRoot, { recursive: true, force: true });
 }
 console.log("CLI entrypoint test ok");
+
+function normalizePathText(value) {
+  return String(value).split("\\").join("/").toLowerCase();
+}
 
 function run(args) {
   return spawnSync(process.execPath, [entry, ...args], {

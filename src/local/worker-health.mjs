@@ -4,23 +4,22 @@ import { appName } from "./state.mjs";
 import { proxyAgentForHttp } from "./network-proxy.mjs";
 
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
-const MAX_HEALTH_REDIRECTS = 3;
 const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
 const NON_RETRYABLE_HEALTH_ERRORS = new Set(["missing_worker_url", "invalid_worker_url", "proxy_configuration"]);
+const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const WORKERS_DEV_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.workers\.dev$/;
 
 export async function workerHealth(workerUrl, expectedVersion, options = {}) {
   if (!workerUrl) return { ok: false, error: "missing_worker_url" };
   let healthUrl;
   try {
-    const base = new URL(`${String(workerUrl).replace(/\/+$/, "")}/`);
-    if (base.protocol !== "http:" && base.protocol !== "https:") return { ok: false, error: "invalid_worker_url" };
-    healthUrl = new URL("healthz", base).href;
+    healthUrl = workerHealthUrl(workerUrl, options.expectedWorkerName);
   } catch {
     return { ok: false, error: "invalid_worker_url" };
   }
 
   try {
-    const probe = typeof options.probe === "function" ? options.probe : requestWorkerHealthJson;
+    const probe = typeof options.probe === "function" ? options.probe : requestAllowedWorkerHealthJson;
     const result = await probe(healthUrl, {
       timeoutMs: options.timeoutMs,
       proxyResolver: options.proxyResolver,
@@ -52,6 +51,20 @@ export async function retryWorkerHealth(workerUrl, expectedVersion, attempts, op
     if (index + 1 < count) await wait(1_000 + index * 500);
   }
   return last;
+}
+
+export function workerHealthUrl(workerUrl, expectedWorkerName = "") {
+  const base = new URL(`${String(workerUrl).replace(/\/+$/, "")}/`);
+  const hostname = base.hostname.toLowerCase();
+  const expectedName = String(expectedWorkerName || "").toLowerCase();
+  if (base.protocol !== "https:" || base.port || base.username || base.password || base.search || base.hash || base.pathname !== "/") {
+    throw new Error("Worker URL must be an HTTPS workers.dev origin");
+  }
+  if (!WORKERS_DEV_HOST.test(hostname)) throw new Error("Worker URL must use a workers.dev hostname");
+  if (expectedName && (!WORKER_NAME.test(expectedName) || hostname.split(".")[0] !== expectedName)) {
+    throw new Error("Worker URL hostname does not match the recorded Worker name");
+  }
+  return `https://${hostname}/healthz`;
 }
 
 export function isRetryableWorkerHealthError(value) {
@@ -93,7 +106,20 @@ export function requestWorkerHealthJson(url, options = {}) {
     timeoutMs: boundedTimeout(options.timeoutMs),
     proxyResolver: options.proxyResolver,
     proxyAgentForUrl: options.proxyAgentForUrl,
-    redirectsRemaining: MAX_HEALTH_REDIRECTS,
+  });
+}
+
+function requestAllowedWorkerHealthJson(url, options = {}) {
+  const target = new URL(String(url));
+  if (target.protocol !== "https:" || target.port || target.pathname !== "/healthz" || target.search || target.hash || !WORKERS_DEV_HOST.test(target.hostname)) {
+    const error = new Error("health request target is not an allowed workers.dev endpoint");
+    error.code = "ERR_INVALID_WORKER_HEALTH_URL";
+    throw error;
+  }
+  return requestJson(target, {
+    timeoutMs: boundedTimeout(options.timeoutMs),
+    proxyResolver: options.proxyResolver,
+    proxyAgentForUrl: options.proxyAgentForUrl,
   });
 }
 
@@ -109,8 +135,12 @@ function requestJson(target, options) {
     }
     const networkRoute = proxy?.agent ? "proxy" : "direct";
     const transport = target.protocol === "https:" ? https : http;
-    const request = transport.request(target, {
+    const request = transport.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || undefined,
       method: "GET",
+      path: `${target.pathname}${target.search}`,
       headers: {
         Accept: "application/json",
         "User-Agent": "machine-bridge-mcp-health",
@@ -124,9 +154,7 @@ function requestJson(target, options) {
       clearTimeout(timer);
       callback();
     };
-    const rejectWithRoute = (error) => {
-      finish(() => rejectPromise(withNetworkRoute(error, networkRoute)));
-    };
+    const rejectWithRoute = (error) => finish(() => rejectPromise(withNetworkRoute(error, networkRoute)));
     const timer = setTimeout(() => {
       const error = new Error(`health request timed out after ${options.timeoutMs}ms`);
       error.code = "ETIMEDOUT";
@@ -136,29 +164,6 @@ function requestJson(target, options) {
 
     request.on("response", (response) => {
       const statusCode = Number(response.statusCode || 0);
-      const location = response.headers.location;
-      if (location && isRedirectStatus(statusCode)) {
-        response.resume();
-        if (options.redirectsRemaining <= 0) {
-          const error = new Error("health response exceeded the redirect limit");
-          error.code = "ERR_TOO_MANY_REDIRECTS";
-          rejectWithRoute(error);
-          return;
-        }
-        let redirected;
-        try {
-          redirected = new URL(location, target);
-        } catch (error) {
-          rejectWithRoute(error);
-          return;
-        }
-        finish(() => {
-          requestJson(redirected, { ...options, redirectsRemaining: options.redirectsRemaining - 1 })
-            .then(resolvePromise, rejectPromise);
-        });
-        return;
-      }
-
       const chunks = [];
       let bytes = 0;
       response.on("data", (chunk) => {
@@ -181,11 +186,7 @@ function requestJson(target, options) {
         } catch {
           // Invalid JSON is reported through the normal unexpected-health-response classification.
         }
-        finish(() => resolvePromise({
-          statusCode,
-          body,
-          networkRoute,
-        }));
+        finish(() => resolvePromise({ statusCode, body, networkRoute }));
       });
     });
     request.on("error", rejectWithRoute);
@@ -238,10 +239,6 @@ function errorMessages(error) {
 function boundedTimeout(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? Math.min(60_000, Math.floor(numeric)) : DEFAULT_HEALTH_TIMEOUT_MS;
-}
-
-function isRedirectStatus(statusCode) {
-  return statusCode === 301 || statusCode === 302 || statusCode === 303 || statusCode === 307 || statusCode === 308;
 }
 
 function sleep(ms) {

@@ -10,10 +10,12 @@ import {
   workerUrlMatchesName,
 } from "../src/local/worker-deployment.mjs";
 import {
+  requestWorkerHealthJson,
   retryWorkerHealth,
   workerHealth,
   workerHealthError,
   workerHealthRequiresRedeploy,
+  workerHealthUrl,
   workerHealthUserReason,
 } from "../src/local/worker-health.mjs";
 import { proxyAgentForHttp, proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
@@ -68,28 +70,72 @@ proxy.on("connect", (_request, clientSocket, head) => {
 await listen(proxy);
 
 try {
-  const direct = await workerHealth(`http://127.0.0.1:${address(target).port}`, version, { proxyResolver: () => "" });
-  assert.deepEqual(direct, { ok: true, version, networkRoute: "direct" });
-  const redirected = await workerHealth(`http://127.0.0.1:${address(target).port}/redirect`, version, { proxyResolver: () => "" });
-  assert.equal(redirected.ok, true);
-  const invalidBody = await workerHealth(`http://127.0.0.1:${address(target).port}/invalid`, version, { proxyResolver: () => "" });
-  assert.equal(invalidBody.error, "unexpected_health_response");
-  const wrongIdentity = await workerHealth(`http://127.0.0.1:${address(target).port}/wrong`, version, { proxyResolver: () => "" });
+  const workerUrl = "https://worker-health.account-example.workers.dev";
+  const expectedWorkerName = "worker-health";
+  assert.equal(workerHealthUrl(workerUrl, expectedWorkerName), `${workerUrl}/healthz`);
+  for (const invalid of [
+    "http://worker-health.account-example.workers.dev",
+    "https://worker-health.example.invalid",
+    "https://worker-health.extra.account-example.workers.dev",
+    ["https://", "test-user", ":", "test-pass", "@", "worker-health.account-example.workers.dev"].join(""),
+    "https://worker-health.account-example.workers.dev/path",
+    "https://worker-health.account-example.workers.dev?query=1",
+  ]) {
+    assert.throws(() => workerHealthUrl(invalid, expectedWorkerName));
+  }
+  assert.throws(() => workerHealthUrl(workerUrl, "other-worker"), /does not match/);
+  assert.equal((await workerHealth("not a URL", version)).error, "invalid_worker_url");
+  assert.equal((await workerHealth("ftp://worker-health.account-example.workers.dev", version)).error, "invalid_worker_url");
+
+  const direct = await requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/healthz`, { proxyResolver: () => "" });
+  assert.equal(direct.statusCode, 200);
+  assert.equal(direct.body.version, version);
+  assert.equal(direct.networkRoute, "direct");
+
+  const redirected = await requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/redirect/healthz`, { proxyResolver: () => "" });
+  assert.equal(redirected.statusCode, 302, "health transport followed an untrusted redirect");
+  const invalidBody = await requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/invalid/healthz`, { proxyResolver: () => "" });
+  assert.equal(invalidBody.body, null);
+
+  const healthy = await workerHealth(workerUrl, version, {
+    expectedWorkerName,
+    probe: async () => direct,
+  });
+  assert.deepEqual(healthy, { ok: true, version, networkRoute: "direct" });
+  const wrongIdentity = await workerHealth(workerUrl, version, {
+    expectedWorkerName,
+    probe: async () => ({ statusCode: 200, body: { ok: true, server: "other-server", version }, networkRoute: "direct" }),
+  });
   assert.equal(wrongIdentity.error, "unexpected_health_response");
-  const largeBody = await workerHealth(`http://127.0.0.1:${address(target).port}/large`, version, { proxyResolver: () => "" });
-  assert.equal(largeBody.error, "request_failed");
-  const timedOut = await workerHealth(`http://127.0.0.1:${address(target).port}/slow`, version, { proxyResolver: () => "", timeoutMs: 10 });
+  const versionMismatch = await workerHealth(workerUrl, version, {
+    expectedWorkerName,
+    probe: async () => ({ statusCode: 200, body: { ok: true, server: "machine-bridge-mcp", version: "1.0.0" }, networkRoute: "direct" }),
+  });
+  assert.equal(versionMismatch.error, "version_mismatch:1.0.0!=9.8.7");
+
+  await assert.rejects(
+    requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/large/healthz`, { proxyResolver: () => "" }),
+    /size limit/,
+  );
+  const timedOut = await workerHealth(workerUrl, version, {
+    expectedWorkerName,
+    timeoutMs: 10,
+    proxyResolver: () => "",
+    probe: (_url, options) => requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/slow/healthz`, options),
+  });
   assert.equal(timedOut.error, "timeout");
   assert.equal(timedOut.networkRoute, "direct");
-  const unavailable = await workerHealth(`http://127.0.0.1:${address(target).port}/unavailable`, version, { proxyResolver: () => "" });
+  const unavailable = await workerHealth(workerUrl, version, {
+    expectedWorkerName,
+    proxyResolver: () => "",
+    probe: (_url, options) => requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/unavailable/healthz`, options),
+  });
   assert.equal(unavailable.error, "HTTP 503");
-  assert.equal((await workerHealth("not a URL", version)).error, "invalid_worker_url");
-  assert.equal((await workerHealth("ftp://worker-health.example.invalid", version)).error, "invalid_worker_url");
 
-  const proxied = await workerHealth(`http://worker-health.example.invalid:${address(target).port}`, version, {
+  const proxied = await requestWorkerHealthJson(`http://worker-health.example.invalid:${address(target).port}/healthz`, {
     proxyResolver: () => `http://127.0.0.1:${address(proxy).port}`,
   });
-  assert.equal(proxied.ok, true);
+  assert.equal(proxied.statusCode, 200);
   assert.equal(proxied.networkRoute, "proxy");
   assert.equal(proxyConnects, 1);
 
@@ -99,21 +145,22 @@ try {
     process.env.http_proxy = process.env.HTTP_PROXY;
     process.env.NO_PROXY = "";
     process.env.no_proxy = "";
-    const environmentProxied = await workerHealth(`http://worker-env.example.invalid:${address(target).port}`, version);
-    assert.equal(environmentProxied.ok, true);
+    const environmentProxied = await requestWorkerHealthJson(`http://worker-env.example.invalid:${address(target).port}/healthz`);
+    assert.equal(environmentProxied.statusCode, 200);
     assert.equal(environmentProxied.networkRoute, "proxy");
     const connectsBeforeBypass = proxyConnects;
     process.env.NO_PROXY = "127.0.0.1";
     process.env.no_proxy = "127.0.0.1";
-    const environmentBypass = await workerHealth(`http://127.0.0.1:${address(target).port}`, version);
-    assert.equal(environmentBypass.ok, true);
+    const environmentBypass = await requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/healthz`);
+    assert.equal(environmentBypass.statusCode, 200);
     assert.equal(environmentBypass.networkRoute, "direct");
     assert.equal(proxyConnects, connectsBeforeBypass);
   } finally {
     restoreEnvironment(environmentBefore);
   }
 
-  const invalidProxy = await workerHealth("https://worker-health.example.invalid", version, {
+  const invalidProxy = await workerHealth(workerUrl, version, {
+    expectedWorkerName,
     proxyResolver: () => "socks5://proxy.example.invalid:1080",
   });
   assert.equal(invalidProxy.error, "proxy_configuration");
@@ -133,7 +180,8 @@ try {
   assert.equal(workerHealthError(Object.assign(new Error("cert"), { code: "CERT_HAS_EXPIRED" })), "tls_error");
 
   let probes = 0;
-  const retried = await retryWorkerHealth("https://worker-health.example.invalid", version, 3, {
+  const retried = await retryWorkerHealth(workerUrl, version, 3, {
+    expectedWorkerName,
     wait: async () => {},
     probe: async () => {
       probes += 1;
@@ -144,7 +192,8 @@ try {
   assert.equal(retried.ok, true);
   assert.equal(probes, 3);
   let staleProbes = 0;
-  const stale = await retryWorkerHealth("https://worker-health.example.invalid", version, 4, {
+  const stale = await retryWorkerHealth(workerUrl, version, 4, {
+    expectedWorkerName,
     wait: async () => {},
     probe: async () => {
       staleProbes += 1;
@@ -155,7 +204,8 @@ try {
   assert.equal(staleProbes, 4, "definitive stale evidence was not allowed to converge after deployment propagation");
 
   let configurationProbes = 0;
-  const configuration = await retryWorkerHealth("https://worker-health.example.invalid", version, 4, {
+  const configuration = await retryWorkerHealth(workerUrl, version, 4, {
+    expectedWorkerName,
     wait: async () => { throw new Error("non-retryable proxy configuration waited unexpectedly"); },
     probe: async () => {
       configurationProbes += 1;
