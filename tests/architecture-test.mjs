@@ -129,6 +129,17 @@ for (const name of ["app-automation.mjs", "browser-bridge.mjs", "managed-jobs.mj
   if (!source.includes("authorizeTool")) throw new Error(`${name} lost the shared authorization gate`);
 }
 
+const workspaceFileSource = readFileSync(join(localRoot, "workspace-file-service.mjs"), "utf8");
+if (!workspaceFileSource.includes("async function writeFlushedText")
+    || !workspaceFileSource.includes("await handle.sync()")
+    || !workspaceFileSource.includes("staged file write failed and cleanup was incomplete")
+    || (workspaceFileSource.match(/await writeFlushedText\(/g) || []).length !== 2) {
+  throw new Error("workspace writes no longer flush both whole-file and patch staging files before commit");
+}
+if (!workspaceFileSource.includes("patch transaction failed and recovery was incomplete")
+    || !workspaceFileSource.includes("Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed")) {
+  throw new Error("patch transaction failures or committed-artifact cleanup errors can be silently swallowed");
+}
 const runtimeBoundarySource = readFileSync(join(localRoot, "runtime.mjs"), "utf8");
 for (const forbidden of ["spawn(", "parsePatchEnvelope", "applyUpdateHunks", "workspaceShellCommand("]) {
   if (runtimeBoundarySource.includes(forbidden)) throw new Error(`LocalRuntime regained low-level responsibility: ${forbidden}`);

@@ -843,7 +843,7 @@ Start options:
   --unrestricted-paths  Allow filesystem tools outside the workspace
   --absolute-paths      Return absolute local paths (enabled by the full profile)
   --state-dir DIR       Override state root
-  --json                Print machine-readable output; secrets are never included
+  --json                Print machine-readable output; newly generated account passwords are included once
   --log-level LEVEL     error, warn, info (default), or debug
   --log-format FORMAT   text (default) or newline-delimited json
   --verbose             Alias for --log-level debug; includes per-tool success/correlation logs

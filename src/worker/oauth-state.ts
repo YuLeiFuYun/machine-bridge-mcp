@@ -4,6 +4,8 @@ const OAUTH_STORE_SCHEMA_VERSION = 1;
 const OAUTH_REFRESH_STORE_SCHEMA_VERSION = 1;
 export const OFFLINE_ACCESS_SCOPE = "offline_access";
 const PASSWORD_TOKEN_PATTERN = /^[a-z][a-z0-9_]{2,31}_[A-Za-z0-9_-]{43}$/;
+const ACCOUNT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/;
+const LEGACY_ACCOUNT_NAME_PATTERN = /^(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{1,62}[a-z0-9])$/;
 
 export interface AccountRecord {
   account_id: string;
@@ -166,11 +168,12 @@ export function validateAuthorizationRequest(
 
 export function normalizeAccountName(value: unknown): string | null {
   const name = String(value ?? "").trim().toLowerCase();
-  return /^[a-z0-9](?:[a-z0-9._-]{1,62}[a-z0-9])?$/.test(name) ? name : null;
+  return ACCOUNT_NAME_PATTERN.test(name) ? name : null;
 }
 
 export function accountByName(store: OAuthStore, name: unknown): AccountRecord | null {
-  const normalized = normalizeAccountName(name);
+  const candidate = String(name ?? "").trim().toLowerCase();
+  const normalized = LEGACY_ACCOUNT_NAME_PATTERN.test(candidate) ? candidate : null;
   if (!normalized) return null;
   return Object.values(store.accounts).find((account) => account.name === normalized) ?? null;
 }

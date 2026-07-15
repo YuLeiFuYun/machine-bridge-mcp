@@ -94,7 +94,7 @@ function normalizeWorkerUrl(value) {
 
 function normalizeAccountName(value) {
   const name = String(value || "").trim().toLowerCase();
-  if (!/^[a-z0-9](?:[a-z0-9._-]{1,62}[a-z0-9])?$/.test(name)) throw new BridgeError("invalid_request", "account name must contain 3-64 lowercase letters, digits, dots, underscores, or hyphens");
+  if (!/^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/.test(name)) throw new BridgeError("invalid_request", "account name must contain 3-64 lowercase letters, digits, dots, underscores, or hyphens");
   return name;
 }
 

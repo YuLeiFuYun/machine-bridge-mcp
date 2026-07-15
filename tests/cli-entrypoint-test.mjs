@@ -18,6 +18,7 @@ assert(versionFlag.status === 0 && versionFlag.stdout.trim() === `${pkg.name} ${
 const help = run(["help"]);
 assert(help.status === 0, `help command failed: ${help.stderr}`);
 assert(help.stdout.includes("Usage:") && help.stdout.includes("--log-format"), "help output omitted current CLI options");
+assert(help.stdout.includes("newly generated account passwords are included once"), "help output incorrectly claims JSON can never contain a generated password");
 
 const stateRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-state-"));
 const workspaceRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-workspace-"));
