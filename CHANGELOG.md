@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.3 - 2026-07-15
+
+### Copilot Studio final OAuth callback
+
+- Complete the Power Platform browser callback chain by allowing `https://copilotstudio.microsoft.com` only when the already validated OAuth redirect URI belongs to Microsoft's HTTPS `consent.azure-apim.net` domain. Copilot Studio redirects global consent to a regional consent endpoint and then to its own `/connection/oauth/redirect` page; Chromium applies the originating authorization page's `form-action` policy across every hop.
+- Preserve the narrow security boundary: ordinary OAuth clients still receive only `'self'` plus their exact validated redirect origin, Microsoft consent callbacks retain the consent-subdomain allowance, and lookalike domains receive neither the regional nor Copilot Studio exception.
+- Extend the real Chrome regression to prove four policy states: self-only blocks the first callback, global-only blocks the regional handoff, global-plus-regional blocks the final Studio handoff, and the complete policy preserves `code` and `state` through the entire chain.
+
 ## 1.1.2 - 2026-07-15
 
 ### Copilot Studio regional OAuth callback

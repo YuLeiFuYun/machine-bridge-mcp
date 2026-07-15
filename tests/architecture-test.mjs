@@ -241,17 +241,18 @@ if (!workerHttpSource.includes("authorizationFormActionSources(formActionOrigin)
 }
 if (!workerHttpSource.includes('url.hostname === "consent.azure-apim.net"')
   || !workerHttpSource.includes('url.hostname.endsWith(".consent.azure-apim.net")')
-  || !workerHttpSource.includes('sources.push("https://*.consent.azure-apim.net")')) {
-  throw new Error("authorization HTML no longer permits only validated Microsoft consent callbacks to use the regional subdomain handoff");
+  || !workerHttpSource.includes('sources.push("https://*.consent.azure-apim.net", "https://copilotstudio.microsoft.com")')) {
+  throw new Error("authorization HTML no longer permits only validated Microsoft consent callbacks to use the complete Power Platform callback chain");
 }
 if (!workerSource.includes("new URL(authorization.redirectUri).origin") || !workerSource.includes("status, redirectOrigin")) {
   throw new Error("authorization pages no longer bind CSP form navigation to the validated redirect origin");
 }
 if (!oauthBrowserNavigationSource.includes("negative control reached the first callback")
-  || !oauthBrowserNavigationSource.includes("first-hop-only policy unexpectedly followed the cross-origin callback redirect")
+  || !oauthBrowserNavigationSource.includes("first-hop-only policy unexpectedly followed the regional redirect")
+  || !oauthBrowserNavigationSource.includes("regional-only policy unexpectedly followed the final Copilot Studio redirect")
   || !oauthBrowserNavigationSource.includes("authorization callback omitted code")
   || !oauthBrowserNavigationSource.includes("authorization state was not preserved")) {
-  throw new Error("real-browser OAuth callback regression lost its first-hop, redirect-chain, or callback assertions");
+  throw new Error("real-browser OAuth callback regression lost its first-hop, regional-hop, final-hop, or callback assertions");
 }
 if (!cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
   throw new Error("browser CLI pairing state read is not bounded");
