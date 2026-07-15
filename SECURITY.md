@@ -40,7 +40,7 @@ The Worker is a remote authentication and relay boundary. The local runtime is t
 
 ### Accounts are authorization boundaries, not OS sandboxes
 
-Remote mode supports named accounts with independent passwords, roles, active state, versions, OAuth codes, and access tokens. The roles `reviewer`, `editor`, `operator`, and `owner` map to the local review, edit, agent, and full policy profiles. The Worker intersects the account role with the connected daemon policy, and the local runtime validates the account role again before dispatch. Account suspension, role changes, password rotation, and removal revoke only that account.
+Remote mode supports named accounts with independent passwords, roles, active state, versions, OAuth authorization codes, access tokens, and rotating refresh tokens. The roles `reviewer`, `editor`, `operator`, and `owner` map to the local review, edit, agent, and full policy profiles. The Worker intersects the account role with the connected daemon policy, and the local runtime validates the account role again before dispatch. Account suspension, role changes, password rotation, and removal revoke only that account.
 
 An OAuth `client_id` still identifies client software and redirect URIs; it is not an account. One account can authorize several clients, and one client can be authorized by several accounts.
 
@@ -162,11 +162,11 @@ Runner diagnostic logs are owner-only and do not receive child stdout/stderr. Ex
 
 ## OAuth and public endpoints
 
-Remote mode uses authorization code flow with PKCE S256, exact redirect/resource/client binding, expiring authorization codes and access tokens, hashed token storage, per-account version checks, deployment-wide token-version revocation, and bounded dynamic client registration. Authorization codes and tokens are bound to one account ID, account version, and role. Successful consent constructs the registered callback through the URL API and returns `303 See Other`; response parameters are encoded rather than concatenated into an unchecked header string.
+Remote mode uses authorization code flow with PKCE S256, exact redirect/resource/client binding, protected-resource and authorization-server discovery, bounded dynamic client registration, `offline_access`, expiring authorization codes, access tokens, and refresh tokens, hashed bearer-token storage, per-account version checks, and deployment-wide token-version revocation. Authorization codes and both token classes are bound to one client ID, account ID, account version, role, scope, and resource. Public-client refresh tokens are single-use: a successful refresh atomically stores a new access/refresh pair and removes the presented refresh token; replay and account/version invalidation return RFC 6749 `invalid_grant`. Successful consent constructs the registered callback through the URL API and returns `303 See Other`; response parameters are encoded rather than concatenated into an unchecked header string.
 
 The authorization page displays the validated client name and redirect URI. Enter an account name and password only after initiating the connection and recognizing both values.
 
-Password failures and registrations are limited by deployment-keyed HMAC source identity. Browser requests are same-origin unless an exact origin is listed in `MBM_ALLOWED_ORIGINS`; loopback OAuth redirect permission does not grant browser-origin access.
+Password failures and pending, not-yet-authorized client registrations are limited by deployment-keyed HMAC source identity; successfully authorized DCR clients no longer consume that pending-registration quota, while the global client cap remains authoritative. Browser requests are same-origin unless an exact origin is listed in `MBM_ALLOWED_ORIGINS`; loopback OAuth redirect permission does not grant browser-origin access.
 
 Public health and metadata do not expose live workspace or daemon status. The daemon handshake omits workspace path/name/hash and process ID.
 
@@ -174,7 +174,7 @@ Public health and metadata do not expose live workspace or daemon status. The da
 
 Only one authenticated daemon is active. Candidates have a handshake deadline and cannot displace the current daemon before success. Pending calls are socket-bound, client-request-bound, concurrency-limited, size-limited, and timed out. Duplicate in-flight request IDs are rejected only within the same authenticated MCP session. Initialization returns a stateless HMAC-bound `MCP-Session-Id`; the signature binds the session nonce to the OAuth token identity, so one account can use multiple concurrent chat windows without sharing a cancellation or request-id namespace. Independent sessionless POST requests are not indexed by token and request id. A session id is an integrity/correlation token, not a second authorization credential.
 
-Request bodies, WebSocket messages, tool outputs, traversals, sessions, stdin writes, OAuth records, clients, codes, tokens, and failure identities are bounded. Disconnect/replacement terminates active child process trees.
+Request bodies, WebSocket messages, tool outputs, traversals, sessions, stdin writes, OAuth records, clients, codes, access tokens, refresh tokens, and failure identities are bounded. Disconnect/replacement terminates active child process trees.
 
 These controls reduce accidental exhaustion and simple abuse. They do not replace Cloudflare account MFA, WAF/rate limits, usage alerts, or cost controls for an internet-facing Worker.
 

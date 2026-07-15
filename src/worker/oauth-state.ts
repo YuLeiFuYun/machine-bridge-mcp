@@ -1,6 +1,8 @@
 import { normalizeAccountRole, type AccountRole } from "./access";
 
 const OAUTH_STORE_SCHEMA_VERSION = 1;
+const OAUTH_REFRESH_STORE_SCHEMA_VERSION = 1;
+export const OFFLINE_ACCESS_SCOPE = "offline_access";
 const PASSWORD_TOKEN_PATTERN = /^[a-z][a-z0-9_]{2,31}_[A-Za-z0-9_-]{43}$/;
 
 export interface AccountRecord {
@@ -22,6 +24,7 @@ export interface OAuthClient {
   redirect_uris: string[];
   created_at: number;
   last_used_at: number;
+  has_been_authorized?: boolean;
   registration_identity?: string;
 }
 
@@ -46,6 +49,13 @@ export interface OAuthToken {
   resource: string;
   version: string;
   expires_at: number;
+}
+
+export type OAuthRefreshToken = OAuthToken;
+
+export interface OAuthRefreshStore {
+  schema_version: number;
+  tokens: Record<string, OAuthRefreshToken>;
 }
 
 export interface OAuthFailure {
@@ -89,6 +99,13 @@ export function emptyOAuthStore(): OAuthStore {
   };
 }
 
+export function emptyOAuthRefreshStore(): OAuthRefreshStore {
+  return {
+    schema_version: OAUTH_REFRESH_STORE_SCHEMA_VERSION,
+    tokens: {},
+  };
+}
+
 export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const store = value as Partial<OAuthStore>;
@@ -98,6 +115,24 @@ export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
     && isRecord(store.codes)
     && isRecord(store.tokens)
     && isRecord(store.auth_failures);
+}
+
+export function isCurrentOAuthRefreshStore(value: unknown): value is OAuthRefreshStore {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const store = value as Partial<OAuthRefreshStore>;
+  return store.schema_version === OAUTH_REFRESH_STORE_SCHEMA_VERSION && isRecord(store.tokens);
+}
+
+export function normalizeOAuthScope(value: unknown, serverName: string): string | null {
+  const raw = value === undefined ? serverName : String(value).trim();
+  if (!raw) return null;
+  const requested = raw.split(/\s+/);
+  const scopes = new Set(requested);
+  if (scopes.size !== requested.length || !scopes.has(serverName)) return null;
+  for (const scope of scopes) {
+    if (scope !== serverName && scope !== OFFLINE_ACCESS_SCOPE) return null;
+  }
+  return scopes.has(OFFLINE_ACCESS_SCOPE) ? `${serverName} ${OFFLINE_ACCESS_SCOPE}` : serverName;
 }
 
 export function validateAuthorizationRequest(
@@ -112,12 +147,12 @@ export function validateAuthorizationRequest(
   const codeChallenge = String(body.code_challenge ?? "");
   const codeChallengeMethod = String(body.code_challenge_method ?? "");
   const requestedResource = String(body.resource ?? `${base}/mcp`);
-  const scope = String(body.scope ?? serverName).trim();
+  const scope = normalizeOAuthScope(body.scope, serverName);
   const state = body.state === undefined ? "" : typeof body.state === "string" ? body.state : "";
 
   if (responseType !== "code") return { error: "response_type must be code.", status: 400 };
   if (requestedResource !== `${base}/mcp`) return { error: "resource mismatch.", status: 400 };
-  if (scope !== serverName) return { error: "unsupported scope.", status: 400 };
+  if (!scope) return { error: "unsupported scope.", status: 400 };
   if (body.state !== undefined && typeof body.state !== "string") return { error: "state must be a string.", status: 400 };
   if (state.length > 1024) return { error: "state is too long.", status: 400 };
   if (codeChallengeMethod !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)) {

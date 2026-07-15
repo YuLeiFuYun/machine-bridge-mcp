@@ -9,10 +9,11 @@ import { sanitizeDaemonPolicy, sanitizeDaemonTools, type DaemonPolicy } from "./
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access";
 import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority";
 import { accountAdminAuthorized, handleAccountAdminOperation } from "./account-admin";
+import { exchangeOAuthToken } from "./oauth-tokens";
 import { serverInfoTool, workspaceTools } from "./tool-catalog";
 import {
-  AUTH_BLOCK_SECONDS, accountByName, authorizationIdentity, emptyOAuthStore, isCurrentOAuthStore,
-  pkceS256, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
+  AUTH_BLOCK_SECONDS, OFFLINE_ACCESS_SCOPE, accountByName, authorizationIdentity, emptyOAuthStore,
+  isCurrentOAuthStore, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
   recordAuthorizationFailure, safeEqual, sha256Hex, validateAuthorizationRequest, verifyAccountPassword,
   type OAuthClient, type OAuthStore, type ValidatedAuthorization,
 } from "./oauth-state";
@@ -23,13 +24,12 @@ import {
 } from "./http";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.0.8";
+const SERVER_VERSION = "1.1.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
-const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_BODY_LIMIT_BYTES = 64 * 1024;
 const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
@@ -38,10 +38,8 @@ const OAUTH_UNUSED_CLIENT_TTL_SECONDS = 60 * 60;
 const MAX_OAUTH_CLIENTS = 50;
 const MAX_OAUTH_CLIENTS_PER_IDENTITY = 5;
 const OAUTH_CLIENT_IDLE_TTL_SECONDS = 60 * 60 * 24 * 90;
-const MAX_TOKENS_PER_CLIENT = 20;
 const MAX_CODES_PER_CLIENT = 10;
 const MAX_OAUTH_CODES = 200;
-const MAX_OAUTH_TOKENS = 500;
 const MAX_AUTH_FAILURE_IDENTITIES = 200;
 const AUTHORIZATION_FIELDS = new Set(["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "scope", "resource", "state"]);
 
@@ -591,10 +589,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       token_endpoint: `${base}/oauth/token`,
       registration_endpoint: `${base}/oauth/register`,
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
       token_endpoint_auth_methods_supported: ["none"],
       code_challenge_methods_supported: ["S256"],
-      scopes_supported: [SERVER_NAME],
+      scopes_supported: [SERVER_NAME, OFFLINE_ACCESS_SCOPE],
     };
   }
 
@@ -602,7 +600,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return {
       resource: `${base}/mcp`,
       authorization_servers: [base],
-      scopes_supported: [SERVER_NAME],
+      scopes_supported: [SERVER_NAME, OFFLINE_ACCESS_SCOPE],
       bearer_methods_supported: ["header"],
       resource_name: SERVER_NAME,
     };
@@ -646,7 +644,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         delete client.registration_identity;
         changed = true;
       }
-      const ttl = client.last_used_at === client.created_at ? OAUTH_UNUSED_CLIENT_TTL_SECONDS : OAUTH_CLIENT_IDLE_TTL_SECONDS;
+      const ttl = client.has_been_authorized === false ? OAUTH_UNUSED_CLIENT_TTL_SECONDS : OAUTH_CLIENT_IDLE_TTL_SECONDS;
       if (!activeClientIds.has(clientId) && client.last_used_at + ttl <= now) {
         delete store.clients[clientId];
         changed = true;
@@ -689,9 +687,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return this.withOAuthLock(async () => {
       const store = await this.oauthStore();
       const registrationIdentity = await authorizationIdentity(request, this.identityKey());
-      const identityClientCount = Object.values(store.clients).filter((client) => client.registration_identity === registrationIdentity).length;
-      if (identityClientCount >= MAX_OAUTH_CLIENTS_PER_IDENTITY) {
-        return json({ error: "too_many_requests", error_description: "client registration limit reached for this source" }, 429);
+      const pendingIdentityClientCount = Object.values(store.clients).filter((client) => (
+        client.registration_identity === registrationIdentity && client.has_been_authorized === false
+      )).length;
+      if (pendingIdentityClientCount >= MAX_OAUTH_CLIENTS_PER_IDENTITY) {
+        return json({ error: "too_many_requests", error_description: "pending client registration limit reached for this source" }, 429);
       }
       if (Object.keys(store.clients).length >= MAX_OAUTH_CLIENTS) {
         return json({ error: "temporarily_unavailable", error_description: "client registry is full; remove stale state or retry after inactive clients expire" }, 503);
@@ -703,6 +703,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         redirect_uris: normalized,
         created_at: now,
         last_used_at: now,
+        has_been_authorized: false,
         registration_identity: registrationIdentity,
       };
       store.clients[client.client_id] = client;
@@ -711,7 +712,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         client_id: client.client_id,
         client_name: client.client_name,
         redirect_uris: client.redirect_uris,
-        grant_types: ["authorization_code"],
+        grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
         token_endpoint_auth_method: "none",
         client_id_issued_at: client.created_at,
@@ -807,6 +808,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       delete store.auth_failures[identity];
       client.last_used_at = now;
+      client.has_been_authorized = true;
 
       const code = randomToken("mcp_code");
       const redirectLocation = authorizationRedirectLocation(redirectUri, code, state);
@@ -829,45 +831,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     });
   }
 
-  private async exchangeToken(request: Request, base: string): Promise<Response> {
-    const body = await parseRequestBody(request, OAUTH_BODY_LIMIT_BYTES);
-    if (String(body.grant_type ?? "") !== "authorization_code") return json({ error: "unsupported_grant_type" }, 400);
-
-    const code = String(body.code ?? "");
-    const verifier = String(body.code_verifier ?? "");
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return json({ error: "invalid_grant", error_description: "invalid code_verifier" }, 400);
-    return this.withOAuthLock(async () => {
-      const store = await this.oauthStore();
-      const record = store.codes[code];
-      if (!record) return json({ error: "invalid_grant" }, 400);
-      if (String(body.client_id ?? "") !== record.client_id || String(body.redirect_uri ?? "") !== record.redirect_uri) {
-        return json({ error: "invalid_grant", error_description: "client or redirect mismatch" }, 400);
-      }
-      if (String(body.resource ?? record.resource) !== record.resource) {
-        return json({ error: "invalid_target", error_description: "resource mismatch" }, 400);
-      }
-      if (!(await safeEqual(await pkceS256(verifier), record.code_challenge))) {
-        return json({ error: "invalid_grant", error_description: "invalid code_verifier" }, 400);
-      }
-
-      const tokenVersion = this.env.OAUTH_TOKEN_VERSION ?? "";
-      if (!tokenVersion) return json({ error: "server_error", error_description: "OAuth token version is not configured" }, 503);
-      delete store.codes[code];
-      const accessToken = randomToken("mcp_at");
-      store.tokens[`sha256:${await sha256Hex(accessToken)}`] = {
-        client_id: record.client_id,
-        account_id: record.account_id,
-        account_version: record.account_version,
-        role: record.role,
-        scope: record.scope,
-        resource: `${base}/mcp`,
-        version: tokenVersion,
-        expires_at: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS,
-      };
-      pruneClientRecordByExpiry(store.tokens, record.client_id, MAX_TOKENS_PER_CLIENT);
-      pruneRecordByExpiry(store.tokens, MAX_OAUTH_TOKENS);
-      await this.ctx.storage.put("oauth", store);
-      return json({ access_token: accessToken, token_type: "Bearer", expires_in: TOKEN_TTL_SECONDS, scope: record.scope });
+  private exchangeToken(request: Request, base: string): Promise<Response> {
+    return exchangeOAuthToken(request, base, {
+      storage: this.ctx.storage,
+      tokenVersion: this.env.OAUTH_TOKEN_VERSION ?? "",
+      serverName: SERVER_NAME,
+      loadOAuthStore: () => this.oauthStore(),
+      withLock: (callback) => this.withOAuthLock(callback),
     });
   }
 

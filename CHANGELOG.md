@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 - 2026-07-15
+
+### Claude and Microsoft Copilot Studio remote MCP
+
+- Add hosted-client OAuth interoperability for Claude custom connectors and Microsoft Copilot Studio while preserving the existing Streamable HTTP transport and current MCP protocol contract. Authorization-server and protected-resource discovery now advertise `offline_access` and the refresh-token grant; dynamic client registration declares both authorization-code and refresh-token grants.
+- Issue hashed access and refresh-token records from authorization-code exchange. Public-client refresh requests are form-encoded, bound to the original client/account/version/role/scope/resource, and rotate the refresh token atomically. Reuse, expiry, account changes, or deployment token-version changes return `invalid_grant`. Refresh state uses a separate versioned Durable Object key, so existing primary OAuth state does not require migration. The per-source DCR throttle now counts only registrations that have not completed authorization, preventing legitimate Claude or Copilot reconnections from consuming the abuse quota while retaining the deployment-wide client cap.
+- Exercise the exact hosted Claude callback, the unauthenticated `resource_metadata` challenge, discovery/DCR metadata, refreshed MCP access, refresh replay rejection, and account-targeted refresh revocation in the real Worker integration. Document Claude and Copilot Studio setup, and retain the narrow ChatGPT/Grok browser CORS set because Claude and Copilot Studio connect through cloud-side infrastructure rather than browser-origin response sharing.
+
 ## 1.0.8 - 2026-07-14
 
 ### Effective account authority reporting

@@ -1008,7 +1008,7 @@ async function shellSelfTest() {
 async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const workerModules = await Promise.all([
-    "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "observability.ts",
+    "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts", "observability.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
   const unawaitedAsyncRoutes = [
@@ -1030,7 +1030,8 @@ async function workerSourceSelfTest() {
     "OAUTH_BODY_LIMIT_BYTES",
     "PendingCallRegistry",
     "isJsonRpcId(candidate.id)",
-    "pruneRecordByExpiry(store.tokens, MAX_OAUTH_TOKENS)",
+    "pruneRecordByExpiry(oauthStore.tokens, MAX_ACCESS_TOKENS)",
+    "pruneRecordByExpiry(refreshStore.tokens, MAX_REFRESH_TOKENS)",
     "A valid PKCE S256 challenge is required.",
     "hmac-sha256:",
     "DAEMON_HELLO_TIMEOUT_MS",
