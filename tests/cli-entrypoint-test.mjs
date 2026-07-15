@@ -31,7 +31,7 @@ try {
   const persistedConfig = JSON.parse(readFileSync(join(stateRoot, "config.json"), "utf8"));
   const persistedWorkspace = String(persistedConfig.selectedWorkspace || "");
   assert(
-    normalizePathText(persistedWorkspace) === normalizePathText(realpathSync(workspaceRoot)),
+    normalizePathText(persistedWorkspace) === normalizePathText(realpathSync.native ? realpathSync.native(workspaceRoot) : realpathSync(workspaceRoot)),
     "workspace selection config did not contain the canonical workspace",
   );
   const remembered = run(["workspace", "show", "--state-dir", stateRoot]);
