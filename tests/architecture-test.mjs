@@ -75,6 +75,7 @@ const lineLimits = Object.freeze({
   "src/local/runtime.mjs": 900,
   "src/local/cli.mjs": 1100,
   "src/worker/index.ts": 1050,
+  "src/worker/oauth-tokens.ts": 260,
   "src/local/process-execution.mjs": 300,
   "src/local/git-service.mjs": 220,
   "src/local/workspace-file-service.mjs": 550,

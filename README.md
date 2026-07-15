@@ -5,7 +5,7 @@
 It supports two transports:
 
 ```text
-Remote clients such as ChatGPT
+Remote clients such as ChatGPT, Claude, and Copilot Studio
         HTTPS + OAuth 2.1 / PKCE
                   |
        Cloudflare Worker + Durable Object
@@ -47,7 +47,7 @@ This default prioritizes usability, not least privilege. `run_process` and proce
 
 ## Install
 
-For prerequisites, first remote deployment, ChatGPT connection, stdio configuration, browser pairing, upgrades, troubleshooting, and removal, follow [Installation and first use](docs/GETTING_STARTED.md). The commands below are the compact installation reference.
+For prerequisites, first remote deployment, hosted-client connection, stdio configuration, browser pairing, upgrades, troubleshooting, and removal, follow [Installation and first use](docs/GETTING_STARTED.md). The commands below are the compact installation reference.
 
 Version 1 supports only MCP protocol `2025-11-25`. Existing current-schema local state upgrades in place, but clients must reconnect and the unpacked browser extension must be reloaded after package upgrade.
 
@@ -95,7 +95,7 @@ npm install
 .\mbm.cmd             # Windows cmd
 ```
 
-## Remote MCP for ChatGPT
+## Remote MCP for hosted clients
 
 After a global installation, `machine-mcp` can be launched from any Command Prompt or terminal; the package installation directory is not the workspace. On the first interactive Windows start, the CLI asks:
 
@@ -136,13 +136,21 @@ Use the printed URL in the MCP client:
 MCP Server URL: https://<worker>.<account>.workers.dev/mcp
 ```
 
-During OAuth authorization, enter the name and password of a Machine Bridge account. The first start creates `owner` and prints its generated password once. Additional accounts are managed with `machine-mcp account`. The authorization flow uses PKCE S256, exact redirect/resource binding, expiring hashed access tokens, per-account version checks, and a deployment-wide token version for emergency bulk revocation.
+During OAuth authorization, enter the name and password of a Machine Bridge account. The first start creates `owner` and prints its generated password once. Additional accounts are managed with `machine-mcp account`. The authorization flow exposes protected-resource and authorization-server discovery, dynamic client registration, PKCE S256, exact redirect/resource binding, `offline_access`, expiring hashed access and refresh-token records, public-client refresh-token rotation, per-account version checks, and a deployment-wide token version for emergency bulk revocation.
 
-The Worker grants browser CORS response access to the exact first-party origins used by ChatGPT (`https://chatgpt.com` and the legacy `https://chat.openai.com`) and Grok (`https://grok.com` and its X-hosted surface at `https://x.com`). Users do not need to run Wrangler or edit Cloudflare variables. `MBM_ALLOWED_ORIGINS` remains an operator-only, comma-separated extension point for other exact origins; it is additive and does not replace the built-in set. Wildcards and `null` do not receive CORS permission. Actual OAuth navigations and form submissions are not rejected solely because a browser container supplies an opaque or client-specific `Origin`; authorization still depends on exact redirect/resource binding, PKCE, account authentication, and bearer-token validation. The consent page CSP permits form navigation only to the Worker itself and the exact validated redirect origin for that request, so Chromium can follow the successful `303` callback without granting arbitrary form destinations.
+The same `/mcp` endpoint supports the current hosted-client paths documented by their vendors:
+
+- ChatGPT and Grok can use the public Streamable HTTP endpoint and browser OAuth flow.
+- Claude custom connectors can add the exact `/mcp` URL and use dynamic client registration. The hosted Claude callback `https://claude.ai/api/mcp/auth_callback`, `offline_access`, form-encoded token exchange, proactive/reactive refresh, and one-time refresh-token rotation are covered by the Worker integration contract.
+- Microsoft Copilot Studio can use **Tools > Add a tool > New tool > Model Context Protocol**, select **OAuth 2.0 > Dynamic discovery**, and point **Server URL** at the exact `/mcp` endpoint. Machine Bridge advertises the Streamable transport, discovery metadata, DCR, access tokens, and rotating refresh tokens expected by that path.
+
+These are protocol and integration-contract claims, not evidence that every external tenant, plan, administrator policy, or host-side tool filter has been tested. Claude remote connectors originate from Anthropic's cloud, and Copilot Studio reaches MCP servers through Power Platform connectivity; neither requires adding a browser origin to Machine Bridge's CORS list.
+
+The Worker grants browser CORS response access to the exact first-party origins used by ChatGPT (`https://chatgpt.com` and the legacy `https://chat.openai.com`) and Grok (`https://grok.com` and its X-hosted surface at `https://x.com`). Users do not need to run Wrangler or edit Cloudflare variables. `MBM_ALLOWED_ORIGINS` remains an operator-only, comma-separated extension point for other exact browser origins; it is additive and does not replace the built-in set. Wildcards and `null` do not receive CORS permission. Actual OAuth navigations and form submissions are not rejected solely because a browser container supplies an opaque or client-specific `Origin`; authorization still depends on exact redirect/resource binding, PKCE, account authentication, and bearer-token validation. The consent page CSP permits form navigation only to the Worker itself and the exact validated redirect origin for that request, so Chromium can follow the successful `303` callback without granting arbitrary form destinations.
 
 ### Multiple clients and accounts
 
-One Worker supports several named accounts and OAuth clients. Accounts have independent passwords, roles, active state, versions, codes, and tokens. The roles are `reviewer`, `editor`, `operator`, and `owner`; their effective authority is intersected with the connected daemon policy and enforced in both the Worker and local runtime. Role changes, suspension, password rotation, and removal revoke only the affected account.
+One Worker supports several named accounts and OAuth clients. Accounts have independent passwords, roles, active state, versions, authorization codes, access tokens, and refresh tokens. The roles are `reviewer`, `editor`, `operator`, and `owner`; their effective authority is intersected with the connected daemon policy and enforced in both the Worker and local runtime. Role changes, suspension, password rotation, and removal revoke only the affected account.
 
 For remote connections, `server_info.authorization.effective_policy` and `server_info.authorization.effective_tools` are the authoritative account-permission fields. `server_info.daemon.policy` and `server_info.daemon.tools` describe only the local daemon capability ceiling before account-role filtering. Remote `project_overview` likewise places the effective account policy/tools in `policy` and `tools`, while preserving the daemon ceiling separately as `daemonPolicy` and `daemonTools`.
 
@@ -219,7 +227,7 @@ machine-mcp browser status
 
 Load the printed unpacked-extension directory in the Chromium profile you actually use; Machine Bridge does not install it into Playwright or a separate automation profile. After every Machine Bridge upgrade, reload the unpacked extension and accept any new browser permission. `machine-mcp browser status` reports both the expected packaged extension build and the authenticated connected build/protocol, and states that Machine Bridge did not launch the browser. It cannot infer whether the extension was loaded into a daily or isolated profile; that is determined by where the user installed it. Trusted input uses the Chromium `debugger` permission only for fixed, short-lived DevTools Input commands. The badge shows `ON` only after the broker acknowledges the version/capability handshake. The local pairing token remains in owner-only state and non-cacheable loopback HTML; it is not returned through MCP. For a mass-market release, distribute the same extension as a signed browser-store build rather than asking end users to enable Developer mode. See [Local application and browser automation](docs/LOCAL_AUTOMATION.md).
 
-Machine Bridge can discover, refresh, rank, and load capabilities automatically. The ChatGPT/MCP host still owns tool selection and approval, so the server cannot force a host to expose or invoke a recommended skill, command, app, or browser operation. Check `server_info.observability.capability_routing` or `project_overview.capabilityRouting` to distinguish “the host never called the resolver” from “the resolver ran but found no relevant capability.”
+Machine Bridge can discover, refresh, rank, and load capabilities automatically. The MCP host still owns tool selection and approval, so the server cannot force a host to expose or invoke a recommended skill, command, app, or browser operation. Check `server_info.observability.capability_routing` or `project_overview.capabilityRouting` to distinguish “the host never called the resolver” from “the resolver ran but found no relevant capability.”
 
 
 ## Runtime lifecycle and observability
@@ -472,7 +480,7 @@ The service definition contains neither credentials nor a duplicate policy. It l
 machine-mcp rotate-secrets
 ```
 
-Rotation stops the installed service, refuses to proceed while another foreground daemon owns the workspace lock, and rotates the account-administration secret, daemon secret, and deployment-wide OAuth token version. It invalidates every account access token and requires all clients to authorize again. Use `machine-mcp account rotate-password NAME` for targeted password rotation without affecting other accounts.
+Rotation stops the installed service, refuses to proceed while another foreground daemon owns the workspace lock, and rotates the account-administration secret, daemon secret, and deployment-wide OAuth token version. It invalidates every account access and refresh token and requires all clients to authorize again. Use `machine-mcp account rotate-password NAME` for targeted password rotation without affecting other accounts.
 
 ## State and observability
 
@@ -499,7 +507,7 @@ npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```
 
-`npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, recursively discovered JavaScript syntax, semantic undefined-identifier checks, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, concurrent lock/atomic-replacement/PID-reuse fixtures, fail-closed service lifecycle tests, descendant process-tree termination, local path/write/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/mode/sensitive-artifact check, an isolated installation of the actual packed tarball whose zero-argument CLI startup must reach a controlled Worker-deployment boundary, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, a live local OAuth/Worker/WebSocket/MCP flow, and a real Chromium negative/positive test for CSP-governed OAuth callback navigation. GitHub Actions runs the complete suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline.
+`npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, recursively discovered JavaScript syntax, semantic undefined-identifier checks, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, concurrent lock/atomic-replacement/PID-reuse fixtures, fail-closed service lifecycle tests, descendant process-tree termination, local path/write/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/mode/sensitive-artifact check, an isolated installation of the actual packed tarball whose zero-argument CLI startup must reach a controlled Worker-deployment boundary, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, a live local OAuth/Worker/WebSocket/MCP flow covering discovery, Claude callback routing, rotating refresh tokens, replay rejection, and account-targeted refresh revocation, plus a real Chromium negative/positive test for CSP-governed OAuth callback navigation. GitHub Actions runs the complete suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline.
 
 The cross-cutting 0.12.0 review, corrected failure modes, and residual OS-level limits are recorded in [docs/AUDIT.md](docs/AUDIT.md). See also [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md), [docs/MULTI_ACCOUNT.md](docs/MULTI_ACCOUNT.md), [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), the generated [MCP tool reference](docs/TOOL_REFERENCE.md), and [SECURITY.md](SECURITY.md).
 

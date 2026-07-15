@@ -79,7 +79,7 @@ The implementation omits:
 - stdin, stdout, and stderr;
 - file, patch, image, and temporary-file content;
 - OAuth request bodies;
-- account passwords, account-administration secrets, daemon secrets, authorization codes, and access tokens;
+- account passwords, account-administration secrets, daemon secrets, authorization codes, access tokens, and refresh tokens;
 - registered resource values and source paths;
 - browser pairing tokens, page URLs/source, DOM metadata, form values, uploaded file bytes, and screenshots;
 - application names, Accessibility trees, selectors, and entered values;

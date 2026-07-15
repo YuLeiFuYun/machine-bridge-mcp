@@ -7,7 +7,7 @@ An MCP server is not a model provider. It exposes tools, resources, or prompts. 
 For this project:
 
 ```text
-Claude Desktop / Cursor / Codex / ChatGPT Desktop / another MCP host
+Claude Desktop / Cursor / Codex / ChatGPT Desktop / another local MCP host
         owns the model, account, conversation, approvals, and tool-selection loop
                               |
                               | stdio or Streamable HTTP
@@ -32,7 +32,7 @@ For many users, the client's native filesystem, patch, terminal, and approval sy
 The stdio mode exists for narrower cases:
 
 1. **One tool contract across several clients.** The same tool names, schemas, patch behavior, Git handling, process sessions, result formats, and logging work in Claude Desktop, Cursor, Codex, ChatGPT Desktop, and other MCP hosts.
-2. **Transport parity.** The local client can use essentially the same Machine Bridge runtime that remote ChatGPT access uses, without maintaining a second implementation.
+2. **Transport parity.** The local client can use essentially the same Machine Bridge runtime that hosted ChatGPT, Claude, Grok, and Copilot Studio connections use, without maintaining a second implementation.
 3. **No remote relay for same-machine use.** The host launches the server directly, so no Cloudflare Worker, public URL, OAuth flow, or network round trip is needed.
 4. **Capabilities missing from a particular host.** Exact edit semantics, transactional multi-file patches, retained process sessions, image results, or the project's policy profiles may be useful even when the host has basic shell tools.
 5. **Durable managed jobs.** The same detached job/resource/finally semantics are available to local and remote hosts, while local CLI remains an operator fallback.
@@ -44,7 +44,7 @@ It is therefore an optional compatibility and reuse surface, not a replacement f
 
 | Situation | Recommended path |
 |---|---|
-| ChatGPT web or another service must reach this computer remotely | Remote Worker with HTTPS/OAuth |
+| ChatGPT, Claude, Grok, Copilot Studio, or another hosted service must reach this computer remotely | Remote Worker with Streamable HTTPS/OAuth |
 | A local MCP host needs Machine Bridge-specific tools | stdio |
 | The local coding client already provides everything needed | Use the client's native tools; do not configure Machine Bridge stdio |
 | Several local clients should share identical tool semantics | stdio |
@@ -56,7 +56,7 @@ The MCP specification defines stdio and Streamable HTTP as standard transports. 
 
 MCP initialization and `resolve_task_capabilities` give the host a current view of conservative built-in working agreements, bounded project facts, explicit global/project instructions, skills, explicit/automatic package commands, applications, and browser capability. The resolver rescans rather than relying on a stale dynamic tool list and can return the best matching skill instructions in one call. No instruction file is required for the default layers, and no repository file is written automatically.
 
-The host still owns the agent loop. ChatGPT web may use the recommendation automatically, ask for confirmation, expose only part of the catalog, or ignore server instructions. No MCP implementation can guarantee automatic invocation from the server side. Machine Bridge models that limitation explicitly instead of treating a recommendation as execution.
+The host still owns the agent loop. A hosted client may use the recommendation automatically, ask for confirmation, expose only part of the catalog, or ignore server instructions. No MCP implementation can guarantee automatic invocation from the server side. Machine Bridge models that limitation explicitly instead of treating a recommendation as execution.
 
 For browser tasks, the remote host reaches the local extension through the Worker and daemon. The extension controls the existing Chromium profile; it is not a separate Playwright profile.
 
@@ -114,7 +114,7 @@ args = ["/absolute/path/to/machine-mcp.mjs", "stdio", "--workspace", "/path/to/p
 
 Codex CLI, the Codex IDE extension, and supported ChatGPT Desktop Codex hosts can share MCP configuration on the same Codex host. ChatGPT web does not read local Codex configuration files; web use requires a hosted plugin/connector or a reachable remote MCP endpoint.
 
-## Remote ChatGPT and Grok connection
+## Remote hosted-client connection
 
 Run:
 
@@ -122,9 +122,17 @@ Run:
 machine-mcp --workspace /path/to/project
 ```
 
-Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering a Machine Bridge account name and password. The Worker has exact built-in CORS response support for `https://chatgpt.com`, legacy `https://chat.openai.com`, `https://grok.com`, and the X-hosted Grok surface at `https://x.com`; no direct Wrangler command or Cloudflare variable edit is required. OAuth navigations and form submissions from opaque or client-specific browser containers are routed normally but receive no cross-origin response-sharing permission unless their exact origin is allowed. The authorization page also permits form navigation only to itself and the exact validated redirect origin, which is required for Chromium to follow the successful `303` back to the client.
+Enter the printed `/mcp` URL in the remote MCP connector. During OAuth authorization, verify the displayed client name and redirect URI before entering a Machine Bridge account name and password. The Worker exposes Streamable HTTP plus protected-resource discovery, authorization-server discovery, dynamic client registration, PKCE S256, `offline_access`, and rotating refresh tokens.
 
-Several OAuth clients and named accounts can coexist. Accounts have independent passwords, roles, active state, versions, and targeted revocation. Their effective tool sets are intersected with the connected daemon policy. All accounts still share one daemon and OS user, so hard tenant isolation requires separate deployments; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
+Supported configuration paths are:
+
+- **ChatGPT and Grok:** enter the `/mcp` URL in the corresponding remote connector. The Worker has exact built-in CORS response support for `https://chatgpt.com`, legacy `https://chat.openai.com`, `https://grok.com`, and the X-hosted Grok surface at `https://x.com`.
+- **Claude custom connectors:** add the exact `/mcp` URL under Claude's connector settings and leave static OAuth client credentials empty so Claude can use DCR. Hosted Claude surfaces use `https://claude.ai/api/mcp/auth_callback`; the Worker accepts that exact registered redirect and rotates refresh tokens for the public client. See Anthropic's [remote custom connector guide](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) and [authentication contract](https://claude.com/docs/connectors/building/authentication).
+- **Microsoft Copilot Studio:** from the agent's **Tools** page, select **Add a tool > New tool > Model Context Protocol**, enter the `/mcp` URL, then select **OAuth 2.0 > Dynamic discovery**. Create the connection and add it to the agent. See Microsoft's [existing MCP server guide](https://learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-add-existing-server-to-agent).
+
+OAuth navigations and form submissions from opaque or client-specific browser containers are routed normally but receive no cross-origin response-sharing permission unless their exact origin is allowed. The authorization page permits form navigation only to itself and the exact validated redirect origin. Claude remote connectors originate from Anthropic infrastructure, while Copilot Studio connectivity runs through Power Platform connectors, so neither is a reason to broaden the browser CORS allowlist.
+
+Several OAuth clients and named accounts can coexist. Accounts have independent passwords, roles, active state, versions, authorization codes, access tokens, refresh tokens, and targeted revocation. Their effective tool sets are intersected with the connected daemon policy. All accounts still share one daemon and OS user, so hard tenant isolation requires separate deployments; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md).
 
 ## Profile guidance
 

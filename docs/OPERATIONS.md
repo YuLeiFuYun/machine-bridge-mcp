@@ -198,6 +198,12 @@ Uninstall refuses to remove local state while any managed job remains active. Ac
 
 See [MANAGED_JOBS.md](MANAGED_JOBS.md).
 
+## Hosted OAuth reconnection
+
+Hosted clients may refresh access without asking the user to authorize again. Machine Bridge returns a replacement refresh token on every successful public-client refresh and invalidates the presented token. `invalid_grant` therefore means the token was already rotated, expired, or revoked by an account change or deployment-wide token-version rotation. Remove and reconnect the hosted connector; repeatedly retrying the stale token cannot recover it.
+
+Claude and Copilot Studio call the public Worker from their cloud connectivity layers. Do not add broad Anthropic or Microsoft domains to `MBM_ALLOWED_ORIGINS` as a connectivity workaround; that variable controls browser response sharing, not server-to-server reachability, tenant policy, WAF rules, or Power Platform data policy.
+
 ## Reconnect and replacement
 
 The daemon sends heartbeats and reconnects with bounded exponential backoff and jitter. A new socket remains a candidate until it authenticates and sends a valid `hello`; only then does it replace the previous daemon.

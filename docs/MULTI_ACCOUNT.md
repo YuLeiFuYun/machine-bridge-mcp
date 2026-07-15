@@ -2,7 +2,7 @@
 
 ## What isolation means
 
-Machine Bridge remote mode supports several named accounts on one workspace Worker. Each account has an independent password, role, active state, version, OAuth authorization codes, and access tokens. Account changes revoke only that account's outstanding credentials.
+Machine Bridge remote mode supports several named accounts on one workspace Worker. Each account has an independent password, role, active state, version, OAuth authorization codes, access tokens, and refresh tokens. Account changes revoke only that account's outstanding credentials.
 
 This is application-level authorization, not operating-system isolation. All accounts ultimately reach one local daemon running as one OS user. Roles limit which Machine Bridge tools can be listed and invoked; they do not create separate filesystems, browser profiles, process namespaces, keychains, network identities, or kernel security boundaries.
 

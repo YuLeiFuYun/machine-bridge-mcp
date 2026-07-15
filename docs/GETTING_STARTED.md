@@ -1,6 +1,6 @@
 # Installation and first-use guide
 
-This guide covers a clean installation, the first remote ChatGPT connection, local stdio clients, browser setup, routine operation, upgrades, troubleshooting, and removal.
+This guide covers a clean installation, first remote connections from ChatGPT, Claude, Grok, and Microsoft Copilot Studio, local stdio clients, browser setup, routine operation, upgrades, troubleshooting, and removal.
 
 ## 1. Decide which connection mode you need
 
@@ -8,7 +8,7 @@ Machine Bridge has two transports. Choose one before installing:
 
 | Requirement | Use | Cloudflare required | Process that must remain available |
 |---|---|---:|---|
-| ChatGPT web, a hosted agent, or another device must reach this computer | Remote HTTPS/OAuth | Yes | Machine Bridge daemon or installed login service |
+| ChatGPT, Claude, Grok, Copilot Studio, a hosted agent, or another device must reach this computer | Remote Streamable HTTPS/OAuth | Yes | Machine Bridge daemon or installed login service |
 | Claude Desktop, Cursor, Codex, ChatGPT Desktop, or another local host runs on this computer | Local stdio | No | The MCP host launches Machine Bridge as a subprocess |
 | The local coding client already has equivalent file, Git, patch, and terminal tools | Neither | No | None |
 
@@ -181,7 +181,7 @@ To avoid installing autostart during a temporary test:
 machine-mcp --workspace /path/to/project --no-autostart
 ```
 
-## 7. Connect ChatGPT
+## 7. Connect a hosted MCP client
 
 Machine Bridge prints the remote endpoint and, only when creating the first account, a one-time owner password:
 
@@ -204,7 +204,35 @@ Current ChatGPT developer-mode flow, as documented in OpenAI's [Connect from Cha
 7. Enter the Machine Bridge account name and password only after those values are recognized.
 8. Create a new chat and enable the app for that conversation.
 
-ChatGPT navigation labels can change. The invariant is that the client must connect to the public `/mcp` endpoint and complete the OAuth authorization page served by the Worker. The same public `/mcp` URL can be entered in Grok where remote MCP configuration is available. Machine Bridge grants CORS response access to the exact `https://grok.com` and `https://x.com` browser origins as well as ChatGPT's current and legacy origins without requiring a Wrangler command. OAuth navigation and form POST requests are not failed solely because an embedded authorization container reports an opaque or different origin. After validation, the consent page CSP includes only the exact registered callback origin so the browser can complete the `303` return to ChatGPT or Grok.
+ChatGPT navigation labels can change. The invariant is that the client must connect to the public `/mcp` endpoint and complete the OAuth authorization page served by the Worker. The same public `/mcp` URL can be entered in Grok where remote MCP configuration is available. Machine Bridge grants CORS response access to the exact `https://grok.com` and `https://x.com` browser origins as well as ChatGPT's current and legacy origins without requiring a Wrangler command. OAuth navigation and form POST requests are not failed solely because an embedded authorization container reports an opaque or different origin. After validation, the consent page CSP includes only the exact registered callback origin so the browser can complete the `303` return.
+
+### Claude custom connector
+
+For an individual Pro or Max account, Anthropic currently documents this flow:
+
+1. Open **Customize > Connectors**.
+2. Select **+ > Add custom connector**.
+3. Enter the exact printed `/mcp` URL.
+4. Leave optional static OAuth client credentials empty; Machine Bridge supports dynamic client registration.
+5. Add the connector, select **Connect**, and complete the Machine Bridge authorization page.
+6. Enable the connector for a conversation from the chat's connector menu.
+
+For Team and Enterprise organizations, an Owner first adds **Custom > Web** under **Organization settings > Connectors**, after which members connect individually. Hosted Claude surfaces register `https://claude.ai/api/mcp/auth_callback`, request `offline_access` when advertised, and refresh tokens before or after access-token expiry. Machine Bridge accepts that callback and rotates each public-client refresh token exactly once. See Anthropic's [custom connector guide](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) and [connector authentication requirements](https://claude.com/docs/connectors/building/authentication).
+
+### Microsoft Copilot Studio
+
+Microsoft currently recommends the MCP onboarding wizard:
+
+1. Open the agent's **Tools** page.
+2. Select **Add a tool > New tool > Model Context Protocol**.
+3. Enter a server name, description, and the exact printed `/mcp` URL.
+4. Select **OAuth 2.0**, then **Dynamic discovery**.
+5. Select **Create**, then **Next**.
+6. Create or select a connection and choose **Add to agent**.
+
+Copilot Studio supports Streamable transport rather than the obsolete SSE transport. Its dynamic-discovery path uses the Worker's protected-resource metadata, authorization-server metadata, DCR endpoint, authorization-code exchange, and refresh-token exchange. See Microsoft's [existing MCP server guide](https://learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-add-existing-server-to-agent). Power Platform data policies and tenant administration can still block a connection independently of Machine Bridge.
+
+Claude remote connectors originate from Anthropic's cloud, and Copilot Studio reaches the endpoint through Power Platform connectors. Those server-to-server paths do not require adding Claude or Microsoft browser domains to `MBM_ALLOWED_ORIGINS`; widening CORS would not solve tenant, firewall, or Power Platform policy failures.
 
 ## 8. Verify the first connection
 
@@ -368,7 +396,9 @@ A connected Worker with no authenticated daemon can authorize OAuth successfully
 
 ### MCP-host layer
 
-If `server_info` or `project_overview` never returns a structured Machine Bridge result, the host may not have delivered the call. Check the host's plugin/app enablement, tool permissions, approval UI, and connection status.
+If `server_info` or `project_overview` never returns a structured Machine Bridge result, the host may not have delivered the call. Check the host's plugin/app enablement, tool permissions, approval UI, connection status, tenant policy, and whether its configured server URL exactly ends in `/mcp`.
+
+An OAuth refresh response of `invalid_grant` is intentional after refresh-token rotation, account suspension, role change, password rotation, removal, or deployment-wide token-version rotation. Remove and reconnect the hosted connector rather than retrying the stale refresh token.
 
 ### Operating-system layer
 
