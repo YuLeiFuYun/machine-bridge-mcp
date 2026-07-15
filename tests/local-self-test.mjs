@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
-import { isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { isIdempotentDaemonOnlyStart, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
@@ -718,6 +718,7 @@ function cliSelfTest() {
   validateCommandOptions("client-config", { _: [], client: "cursor", profile: "review" });
   validateCommandOptions("resource", { _: ["add", "key", "/tmp/key"], allowInsecurePermissions: true, showPaths: true, json: true });
   validateCommandOptions("job", { _: ["read", "job_abcdefghijklmnopqrstuvwxyz"], json: true });
+  expectThrow(() => validateCommandOptions("rotate-secrets", { _: [], workerName: "mbm-test" }), "not valid for rotate-secrets");
   validatePositionals("workspace", { _: ["set", "/tmp/project"] });
   validatePositionals("service", { _: ["install", "/tmp/project"] });
   validatePositionals("stdio", { _: ["/tmp/project"] });
@@ -731,15 +732,23 @@ function cliSelfTest() {
   validatePositionals("job", { _: ["inspect", "job_abcdefghijklmnopqrstuvwxyz"] });
   expectThrow(() => validatePositionals("resource", { _: ["add", "name", "path", "extra"] }), "too many positional");
 
-  if (isSupportedNodeVersion("25.9.0") || !isSupportedNodeVersion("26.0.0") || !isSupportedNodeVersion("v27.1.0") || isSupportedNodeVersion("invalid")) {
+  if (isSupportedNodeVersion("25.9.0") || !isSupportedNodeVersion("26.0.0") || !isSupportedNodeVersion("v27.1.0") || isSupportedNodeVersion("invalid") || isSupportedNodeVersion("")) {
     throw new Error("Node runtime baseline predicate is incorrect");
   }
-  if (isSupportedNpmVersion("11.9.9") || !isSupportedNpmVersion("12.0.0") || !isSupportedNpmVersion("v13.1.0") || isSupportedNpmVersion("invalid")) {
+  if (isSupportedNpmVersion("11.9.9") || !isSupportedNpmVersion("12.0.0") || !isSupportedNpmVersion("v13.1.0") || isSupportedNpmVersion("invalid") || isSupportedNpmVersion("")) {
     throw new Error("npm runtime baseline predicate is incorrect");
   }
+  if (!isIdempotentDaemonOnlyStart({ daemonOnly: true })
+      || isIdempotentDaemonOnlyStart({ daemonOnly: false })
+      || isIdempotentDaemonOnlyStart({ daemonOnly: true, forceWorker: true })
+      || isIdempotentDaemonOnlyStart({ daemonOnly: true, workerName: "mbm-test" })) {
+    throw new Error("daemon-only idempotency predicate is incorrect");
+  }
   const windowsNpm = npmVersionCommand("win32", "C:\\Windows\\System32\\cmd.exe");
+  const windowsDefaultNpm = npmVersionCommand("win32", "");
   const posixNpm = npmVersionCommand("linux");
   if (windowsNpm.file !== "C:\\Windows\\System32\\cmd.exe" || windowsNpm.args.join("|") !== "/d|/s|/c|npm --version"
+      || windowsDefaultNpm.file !== "cmd.exe" || windowsDefaultNpm.args.join("|") !== "/d|/s|/c|npm --version"
       || posixNpm.file !== "npm" || posixNpm.args.join("|") !== "--version") {
     throw new Error("npm version command is not cross-platform safe");
   }

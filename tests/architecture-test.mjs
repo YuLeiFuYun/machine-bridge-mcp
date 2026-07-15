@@ -28,7 +28,7 @@ const visiting = new Set();
 const visited = new Set();
 for (const file of graph.keys()) visitModule(file, []);
 
-const adapterModules = new Set(["cli.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs", "relay-connection.mjs"]);
+const adapterModules = new Set(["cli.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs", "relay-connection.mjs", "worker-deployment.mjs"]);
 const boundaryModules = new Set([
   "agent-context.mjs",
   "app-automation.mjs",
@@ -36,6 +36,7 @@ const boundaryModules = new Set([
   "capability-observer.mjs",
   "default-instructions.mjs",
   "network-proxy.mjs",
+  "worker-health.mjs",
   "process-sessions.mjs",
   "project-package.mjs",
   "policy.mjs",
@@ -92,7 +93,9 @@ const lineLimits = Object.freeze({
   "src/local/numbers.mjs": 20,
   "src/local/project-metadata.mjs": 80,
   "src/local/records.mjs": 10,
-  "src/local/state-inventory.mjs": 160,
+  "src/local/state-inventory.mjs": 170,
+  "src/local/worker-health.mjs": 280,
+  "src/local/worker-deployment.mjs": 220,
   "src/local/browser-bridge.mjs": 850,
   "src/local/browser-extension-protocol.mjs": 120,
   "src/local/browser-pairing-store.mjs": 120,
@@ -295,6 +298,7 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
 if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser-service-worker-test.mjs") throw new Error("browser service-worker behavior test is missing");
 if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
 if (packageJson.scripts?.["coverage:test"] !== "node scripts/coverage-check.mjs") throw new Error("critical-module coverage gate is missing");
+if (packageJson.scripts?.["worker-deployment:test"] !== "node tests/worker-deployment-test.mjs") throw new Error("Worker deployment idempotency/proxy regression test is missing");
 if (packageJson.scripts?.["policy-docs:check"] !== "node scripts/generate-policy-reference.mjs --check") throw new Error("generated policy documentation gate is missing");
 if (packageJson.scripts?.["markdown:test"] !== "node tests/markdown-test.mjs") throw new Error("shared Markdown helper test is missing");
 if (packageJson.scripts?.["project-metadata:test"] !== "node tests/project-metadata-test.mjs") throw new Error("project metadata helper test is missing");

@@ -28,11 +28,15 @@ export function knownWorkerNames(stateRoot) {
       throw unreadableWorkerState(entry.name);
     }
     if (!state || typeof state !== "object" || Array.isArray(state)) throw unreadableWorkerState(entry.name);
-    const name = String(state?.worker?.name || "");
-    if (name && !WORKER_NAME.test(name)) {
-      throw new Error(`profile ${entry.name} contains an invalid Worker name; local state was kept for inspection`);
+    const currentName = String(state?.worker?.name || "");
+    const previousNames = Array.isArray(state?.worker?.previousNames) ? state.worker.previousNames : [];
+    for (const name of [currentName, ...previousNames]) {
+      if (!name) continue;
+      if (typeof name !== "string" || !WORKER_NAME.test(name)) {
+        throw new Error(`profile ${entry.name} contains an invalid Worker name; local state was kept for inspection`);
+      }
+      names.add(name);
     }
-    if (name) names.add(name);
   }
   return [...names];
 }

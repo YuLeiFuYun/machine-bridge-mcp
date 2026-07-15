@@ -10,6 +10,24 @@ machine-mcp service status
 
 `status` prints redacted profile state and verifies the deployed Worker version. Resource source paths remain redacted. `doctor` checks Node.js, the package-installed Wrangler binary, Cloudflare login, Worker health, and the same fixed local filesystem/process/shell/job-storage/resource probes exposed by `diagnose_runtime`. Public `/healthz` output contains only server identity and version; daemon details require an authenticated `server_info` call.
 
+### Worker deployment and health convergence
+
+Wrangler upload and public health verification are two separate observations. Once Wrangler reports a successful deployment and supplies the `workers.dev` URL, Machine Bridge immediately records that URL together with the exact deployment fingerprint and package version. It then verifies `/healthz` through the standard `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` environment route. If that secondary probe times out or encounters a proxy, TLS, network, or temporary HTTP 5xx failure, startup stops with an actionable error, but the successful deployment evidence remains. The next ordinary start verifies the same Worker and does not repeat the upload.
+
+Automatic redeployment is limited to bounded health evidence that the recorded endpoint is genuinely stale: a persistent package-version mismatch, an unexpected Machine Bridge identity, or a persistent `404`/`410`. Unreachability is not proof of absence. `--force-worker` remains the explicit override when an operator deliberately wants an upload despite matching state.
+
+Each workspace has one stable Worker name. A command that supplies a different `--worker-name` after initialization is rejected unless `--force-worker` is present. A name such as `mbm-example-r2` is a separate Cloudflare Worker, not a revision of `mbm-example`. If an older release already created duplicates, first run `machine-mcp status` and verify the active URL/name, then remove only the confirmed unused Workers in the Cloudflare dashboard or with Wrangler. Source upgrades do not delete ambiguous live deployments automatically.
+
+For a health timeout on Windows or a managed network:
+
+```powershell
+machine-mcp status
+machine-mcp doctor
+machine-mcp --verbose
+```
+
+Run these commands from the same environment used for startup so `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` are identical. Debug logs expose only the selected route and classified error; they never print a proxy endpoint or credentials.
+
 ### Blocking-layer decision table
 
 | Result | Interpretation |

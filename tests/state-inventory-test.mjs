@@ -16,8 +16,9 @@ try {
   const state = loadState(workspace, { stateDir: stateRoot });
   await mkdir(join(stateRoot, "profiles", "not-a-profile"), { recursive: true });
   state.worker.name = "machine-bridge-test";
+  state.worker.previousNames = ["machine-bridge-previous"];
   saveState(state);
-  assert.deepEqual(knownWorkerNames(stateRoot), ["machine-bridge-test"]);
+  assert.deepEqual(knownWorkerNames(stateRoot), ["machine-bridge-test", "machine-bridge-previous"]);
   const profiles = knownProfileStates(stateRoot);
   assert.equal(profiles.length, 1);
   assert.equal(profiles[0].workspace.path, state.workspace.path);
@@ -29,6 +30,13 @@ try {
   saveState(state);
   assert.throws(() => knownWorkerNames(stateRoot), /invalid Worker name/);
   state.worker.name = "machine-bridge-test";
+  state.worker.previousNames = ["machine-bridge-previous"];
+  saveState(state);
+
+  state.worker.previousNames = ["-invalid"];
+  saveState(state);
+  assert.throws(() => knownWorkerNames(stateRoot), /invalid Worker name/);
+  state.worker.previousNames = ["machine-bridge-previous"];
   saveState(state);
 
   const daemonLock = acquireDaemonLock(state, { mode: "foreground", version: "0.17.0" });
