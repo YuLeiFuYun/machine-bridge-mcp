@@ -172,10 +172,12 @@ try {
   const redirectUriInput = "http://LOCALHOST:80/callback/../callback";
   const chatGptRedirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
   const claudeRedirectUri = "https://claude.ai/api/mcp/auth_callback";
+  const copilotRedirectUri = "https://global.consent.azure-apim.net/redirect/machine-bridge-mcp-test";
+  const consentLookalikeRedirectUri = "https://global.consent.azure-apim.net.example.com/callback";
   const registration = await fetchJson(`${base}/oauth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_name: "Integration\u202e <Client>\u200b", redirect_uris: [redirectUriInput, chatGptRedirectUri, claudeRedirectUri] }),
+    body: JSON.stringify({ client_name: "Integration\u202e <Client>\u200b", redirect_uris: [redirectUriInput, chatGptRedirectUri, claudeRedirectUri, copilotRedirectUri, consentLookalikeRedirectUri] }),
   });
   assert(registration.response.status === 200, `client registration failed: ${registration.response.status}`);
   assert(typeof registration.body.client_id === "string", "registration did not return client_id");
@@ -183,6 +185,8 @@ try {
   assert(registration.body.redirect_uris?.[0] === "http://localhost/callback", "registration did not canonicalize redirect URI");
   assert(registration.body.redirect_uris?.[1] === chatGptRedirectUri, "registration changed the ChatGPT redirect URI");
   assert(registration.body.redirect_uris?.[2] === claudeRedirectUri, "registration changed the Claude redirect URI");
+  assert(registration.body.redirect_uris?.[3] === copilotRedirectUri, "registration changed the Copilot Studio redirect URI");
+  assert(registration.body.redirect_uris?.[4] === consentLookalikeRedirectUri, "registration changed the consent-domain lookalike redirect URI");
   assert(registration.body.grant_types?.includes("refresh_token"), "dynamic client registration omitted refresh-token support");
   const redirectUri = registration.body.redirect_uris[0];
 
@@ -227,6 +231,30 @@ try {
   assert(claudePage.status === 200, `Claude authorization page failed: ${claudePage.status}`);
   const claudeFormActions = cspDirectiveSources(claudePageCsp, "form-action");
   assert(claudeFormActions.size === 2 && claudeFormActions.has("'self'") && claudeFormActions.has("https://claude.ai"), "Claude authorization page CSP did not contain only self and its validated redirect origin");
+
+  const copilotPage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: copilotRedirectUri, state: "copilot-page-state" })}`);
+  const copilotPageCsp = copilotPage.headers.get("content-security-policy") ?? "";
+  assert(copilotPage.status === 200, `Copilot Studio authorization page failed: ${copilotPage.status}`);
+  const copilotFormActions = cspDirectiveSources(copilotPageCsp, "form-action");
+  assert(
+    copilotFormActions.size === 3
+      && copilotFormActions.has("'self'")
+      && copilotFormActions.has("https://global.consent.azure-apim.net")
+      && copilotFormActions.has("https://*.consent.azure-apim.net"),
+    "Copilot Studio authorization page CSP did not allow only self, the validated global callback, and Microsoft consent subdomains",
+  );
+
+  const consentLookalikePage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: consentLookalikeRedirectUri, state: "consent-lookalike-state" })}`);
+  const consentLookalikeCsp = consentLookalikePage.headers.get("content-security-policy") ?? "";
+  assert(consentLookalikePage.status === 200, `consent-domain lookalike authorization page failed: ${consentLookalikePage.status}`);
+  const consentLookalikeFormActions = cspDirectiveSources(consentLookalikeCsp, "form-action");
+  assert(
+    consentLookalikeFormActions.size === 2
+      && consentLookalikeFormActions.has("'self'")
+      && consentLookalikeFormActions.has("https://global.consent.azure-apim.net.example.com")
+      && !consentLookalikeFormActions.has("https://*.consent.azure-apim.net"),
+    "consent-domain lookalike received the Microsoft regional callback exception",
+  );
 
   const wrongPassword = await stableFetch(`${base}/oauth/authorize`, {
     method: "POST",

@@ -14,32 +14,51 @@ if (!chrome) {
   process.exit(0);
 }
 
-const callbackServer = http.createServer((_request, response) => {
+let regionalCallbackHits = 0;
+const regionalCallbackServer = http.createServer((_request, response) => {
+  regionalCallbackHits += 1;
   response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
   response.end("<!doctype html><title>OAuth callback reached</title><p id=done>done</p>");
 });
-const callbackPort = await listen(callbackServer);
-const callbackOrigin = `http://127.0.0.1:${callbackPort}`;
+const regionalCallbackPort = await listen(regionalCallbackServer);
+const regionalCallbackOrigin = `http://127.0.0.1:${regionalCallbackPort}`;
+
+let globalCallbackHits = 0;
+const globalCallbackServer = http.createServer((request, response) => {
+  globalCallbackHits += 1;
+  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  response.writeHead(302, {
+    location: `${regionalCallbackOrigin}/callback${requestUrl.search}`,
+    "cache-control": "no-store",
+  });
+  response.end();
+});
+const globalCallbackPort = await listen(globalCallbackServer);
+const globalCallbackOrigin = `http://127.0.0.1:${globalCallbackPort}`;
 
 const authorizationServer = http.createServer((request, response) => {
   const requestUrl = new URL(request.url, "http://127.0.0.1");
   if (request.method === "POST" && requestUrl.pathname === "/oauth/authorize") {
-    response.writeHead(303, { location: `${callbackOrigin}/callback?code=test-code&state=test-state`, "cache-control": "no-store" });
+    response.writeHead(303, { location: `${globalCallbackOrigin}/redirect?code=test-code&state=test-state`, "cache-control": "no-store" });
     response.end();
     return;
   }
-  const callbackSource = requestUrl.searchParams.get("allow") === "1" ? ` ${callbackOrigin}` : "";
+  const allow = Number(requestUrl.searchParams.get("allow") ?? "0");
+  const formActionSources = ["'self'"];
+  if (allow >= 1) formActionSources.push(globalCallbackOrigin);
+  if (allow >= 2) formActionSources.push(regionalCallbackOrigin);
   response.writeHead(200, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
-    "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${callbackSource}; base-uri 'none'; frame-ancestors 'none'`,
+    "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action ${formActionSources.join(" ")}; base-uri 'none'; frame-ancestors 'none'`,
   });
   response.end(`<!doctype html><title>Authorize</title><form method="post" action="/oauth/authorize"><button id="authorize" type="submit">Authorize</button></form>`);
 });
 const authorizationPort = await listen(authorizationServer);
 const authorizationOrigin = `http://127.0.0.1:${authorizationPort}`;
 const blockedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=0`;
-const allowedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=1`;
+const firstHopOnlyAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=1`;
+const allowedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=2`;
 
 const profile = await mkdtemp(path.join(os.tmpdir(), "mbm-oauth-browser-"));
 const debuggingPort = await openPort();
@@ -69,20 +88,26 @@ try {
     await waitForExpression(client, "document.readyState === 'complete' && Boolean(document.getElementById('authorize'))");
     await client.send("Runtime.evaluate", { expression: "document.getElementById('authorize').click()" });
     await sleep(500);
-    const blockedResult = await client.send("Runtime.evaluate", { expression: "location.href", returnByValue: true });
-    const blockedUrl = String(blockedResult.result?.result?.value ?? "");
-    assert(!blockedUrl.startsWith(callbackOrigin), "negative control unexpectedly reached the callback under form-action 'self'");
+    assert(globalCallbackHits === 0, "negative control reached the first callback under form-action 'self'");
+    assert(regionalCallbackHits === 0, "negative control unexpectedly reached the regional callback");
+
+    await client.send("Page.navigate", { url: firstHopOnlyAuthorizationUrl });
+    await waitForExpression(client, "document.readyState === 'complete' && Boolean(document.getElementById('authorize'))");
+    await client.send("Runtime.evaluate", { expression: "document.getElementById('authorize').click()" });
+    await sleep(500);
+    assert(globalCallbackHits === 1, "first-hop policy did not reach the registered callback origin");
+    assert(regionalCallbackHits === 0, "first-hop-only policy unexpectedly followed the cross-origin callback redirect");
 
     await client.send("Page.navigate", { url: allowedAuthorizationUrl });
     await waitForExpression(client, "document.readyState === 'complete' && Boolean(document.getElementById('authorize'))");
     await client.send("Runtime.evaluate", { expression: "document.getElementById('authorize').click()" });
-    await waitForExpression(client, `location.origin === ${JSON.stringify(callbackOrigin)} && location.pathname === '/callback'`);
+    await waitForExpression(client, `location.origin === ${JSON.stringify(regionalCallbackOrigin)} && location.pathname === '/callback'`);
     const result = await client.send("Runtime.evaluate", { expression: "location.href", returnByValue: true });
     const finalUrl = String(result.result?.result?.value ?? "");
     const parsed = new URL(finalUrl);
-    assert(parsed.origin === callbackOrigin, `authorization did not reach the callback origin: ${finalUrl}`);
+    assert(parsed.origin === regionalCallbackOrigin, `authorization did not reach the regional callback origin: ${finalUrl}`);
     assert(parsed.searchParams.get("code") === "test-code", "authorization callback omitted code");
-    assert(parsed.searchParams.get("state") === "test-state", "authorization callback omitted state");
+    assert(parsed.searchParams.get("state") === "test-state", "authorization state was not preserved");
   } finally {
     client.close();
   }
@@ -93,7 +118,8 @@ try {
   child.kill("SIGTERM");
   await Promise.race([childClosed, sleep(5000)]);
   authorizationServer.close();
-  callbackServer.close();
+  globalCallbackServer.close();
+  regionalCallbackServer.close();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       await rm(profile, { recursive: true, force: true });
@@ -136,7 +162,7 @@ function openPort() {
 }
 
 async function waitForPageTarget(port) {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json`);
       if (response.ok) {

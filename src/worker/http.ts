@@ -64,14 +64,7 @@ export function json(value: unknown, status = 200, extraHeaders: HeadersInit = {
 
 export function html(value: string, status = 200, formActionOrigin = ""): Response {
   const allowedFormActions = new Set(["'self'"]);
-  if (formActionOrigin) {
-    try {
-      const origin = new URL(formActionOrigin).origin;
-      if (origin !== "null") allowedFormActions.add(origin);
-    } catch {
-      // Invalid values are ignored; callers pass a validated OAuth redirect origin.
-    }
-  }
+  for (const source of authorizationFormActionSources(formActionOrigin)) allowedFormActions.add(source);
   const formAction = [...allowedFormActions].join(" ");
   return new Response(value, {
     status,
@@ -84,6 +77,24 @@ export function html(value: string, status = 200, formActionOrigin = ""): Respon
       "x-frame-options": "DENY",
     },
   });
+}
+
+function authorizationFormActionSources(value: string): string[] {
+  if (!value) return [];
+  try {
+    const url = new URL(value);
+    if (url.origin === "null") return [];
+    const sources = [url.origin];
+    const microsoftConsentHost = url.hostname === "consent.azure-apim.net" || url.hostname.endsWith(".consent.azure-apim.net");
+    if (url.protocol === "https:" && !url.port && microsoftConsentHost) {
+      // Power Platform redirects its global consent callback to a regional subdomain, and CSP checks every hop.
+      sources.push("https://*.consent.azure-apim.net");
+    }
+    return sources;
+  } catch {
+    // Invalid values are ignored; callers pass a validated OAuth redirect origin.
+    return [];
+  }
 }
 
 export function baseUrl(request: Request): string {
