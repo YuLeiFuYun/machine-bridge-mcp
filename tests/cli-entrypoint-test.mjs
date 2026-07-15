@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -28,8 +28,17 @@ try {
 
   const selected = run(["workspace", "set", workspaceRoot, "--state-dir", stateRoot]);
   assert(selected.status === 0 && selected.stdout.includes("Selected workspace:"), `workspace set failed: ${selected.stderr}`);
+  const persistedConfig = JSON.parse(readFileSync(join(stateRoot, "config.json"), "utf8"));
+  const persistedWorkspace = String(persistedConfig.selectedWorkspace || "");
+  assert(
+    normalizePathText(persistedWorkspace) === normalizePathText(realpathSync(workspaceRoot)),
+    "workspace selection config did not contain the canonical workspace",
+  );
   const remembered = run(["workspace", "show", "--state-dir", stateRoot]);
-  assert(remembered.status === 0 && normalizePathText(remembered.stdout).includes(normalizePathText(workspaceRoot)), "workspace selection was not persisted");
+  assert(
+    remembered.status === 0 && normalizePathText(remembered.stdout.trim()) === normalizePathText(persistedWorkspace),
+    "workspace show did not return the persisted selection",
+  );
 
   const status = run(["status", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
   assert(status.status === 0, `status command failed without a Worker: ${status.stderr}`);
