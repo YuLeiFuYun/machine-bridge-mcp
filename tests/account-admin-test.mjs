@@ -51,6 +51,7 @@ assert(requests.some((request) => request.url.endsWith("/admin/accounts/rotate-p
 expectThrow(() => new AccountAdminClient({ workerUrl: "http://bridge.example.test", adminSecret: "account_admin_test_secret_123456789" }), "HTTPS origin");
 expectThrow(() => new AccountAdminClient({ workerUrl: "https://bridge.example.test/path", adminSecret: "account_admin_test_secret_123456789" }), "HTTPS origin");
 expectThrow(() => client.create({ name: "INVALID NAME", role: "reviewer", password: generated }), "account name");
+expectThrow(() => client.create({ name: "a", role: "reviewer", password: generated }), "3-64");
 
 console.log("account authorization/admin client test ok");
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.4 - 2026-07-15
+
+### File integrity and contract corrections
+
+- Preserve exact UTF-8 line endings in `read_file` whole-file and line-range results. CRLF files no longer return LF-normalized content paired with a SHA-256 value for different text.
+- Flush workspace write and patch staging files through their open descriptors before atomic commit, remove partial staging files after failed writes, and report incomplete staging cleanup instead of leaving hidden residual data silently. This aligns `write_file`, `edit_file`, and `apply_patch` with the documented durability contract while retaining exact POSIX mode application.
+- Surface incomplete `apply_patch` rollback as an explicit recovery error, and return a warning when a committed transaction cannot remove an internal staging or backup artifact instead of silently hiding residual workspace state.
+- Enforce the documented 3-64 character account-name rule for newly created accounts in both the local administration client and Worker. Existing one-character accounts created by older versions remain discoverable for login and administration.
+- Correct CLI `--json` guidance to state that a newly generated account password is intentionally included once during initial creation or rotation; stored administration, daemon, and token-version secrets remain omitted.
+
 ## 1.1.3 - 2026-07-15
 
 ### Copilot Studio final OAuth callback

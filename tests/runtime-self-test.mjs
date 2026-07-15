@@ -145,6 +145,13 @@ export async function runtimeSelfTest() {
     await restricted.writeFile({ path: "nested/written.txt", content: "updated\nsecond\nthird\n", expected_sha256: sha256("written") });
     const slice = await restricted.readFile({ path: "nested/written.txt", start_line: 2, end_line: 3, max_bytes: 1024 });
     if (slice.content !== "second\nthird\n" || slice.start_line !== 2 || slice.total_lines !== 3) throw new Error("read_file line range failed");
+    const crlfText = "first\r\nsecond\r\n";
+    await restricted.writeFile({ path: "nested/crlf.txt", content: crlfText, create_only: true });
+    const crlfWhole = await restricted.readFile({ path: "nested/crlf.txt", max_bytes: 1024 });
+    const crlfSlice = await restricted.readFile({ path: "nested/crlf.txt", start_line: 2, end_line: 2, max_bytes: 1024 });
+    if (crlfWhole.content !== crlfText || crlfWhole.sha256 !== sha256(crlfWhole.content) || crlfSlice.content !== "second\r\n") {
+      throw new Error("read_file normalized CRLF content or returned a hash for different text");
+    }
     const edited = await restricted.editFile({ path: "nested/written.txt", old_text: "second", new_text: "SECOND", expected_sha256: slice.sha256 });
     if (edited.replacements !== 1 || !(await readFile(join(workspace, "nested/written.txt"), "utf8")).includes("SECOND")) throw new Error("edit_file failed");
     const patch = await restricted.applyPatch({ patch: `*** Begin Patch

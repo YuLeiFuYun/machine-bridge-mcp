@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { chmod, link, lstat, mkdir, open, opendir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, open, opendir, rename, rm, stat } from "node:fs/promises";
 import path, { basename, dirname, join, resolve } from "node:path";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { clampInteger } from "./numbers.mjs";
@@ -92,14 +92,18 @@ export class WorkspaceFileService {
     this.throwIfCancelled(context);
     const maxBytes = clampInteger(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
     const startLine = args.start_line === undefined ? 1 : clampInteger(args.start_line, 1, 1, Number.MAX_SAFE_INTEGER);
-    const rawLines = content.split(/\r?\n/);
-    const totalLines = content.endsWith("\n") ? Math.max(1, rawLines.length - 1) : rawLines.length;
+    const lineStarts = [0];
+    for (let index = 0; index < content.length; index += 1) {
+      if (content[index] === "\n" && index + 1 < content.length) lineStarts.push(index + 1);
+    }
+    const totalLines = lineStarts.length;
     const endLine = args.end_line === undefined ? totalLines : clampInteger(args.end_line, totalLines, 1, Number.MAX_SAFE_INTEGER);
     if (endLine < startLine) throw new Error("end_line must be greater than or equal to start_line");
     if (startLine > totalLines) throw new Error(`start_line exceeds total lines (${startLine} > ${totalLines})`);
     const selectedEnd = Math.min(endLine, totalLines);
-    let selected = rawLines.slice(startLine - 1, selectedEnd).join("\n");
-    if (selectedEnd < totalLines || content.endsWith("\n")) selected += "\n";
+    const selectedStartOffset = lineStarts[startLine - 1];
+    const selectedEndOffset = selectedEnd < totalLines ? lineStarts[selectedEnd] : content.length;
+    const selected = content.slice(selectedStartOffset, selectedEndOffset);
     const selectedBytes = Buffer.byteLength(selected);
     if (selectedBytes > maxBytes) throw new Error(`selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`);
     return {
@@ -221,9 +225,10 @@ export class WorkspaceFileService {
       }
       assertNoResolvedPatchCollisions(prepared);
       this.throwIfCancelled(context);
-      await commitPatchTransaction(prepared);
+      const transaction = await commitPatchTransaction(prepared);
       return {
         ok: true,
+        ...(transaction.warnings.length ? { warnings: transaction.warnings } : {}),
         files: prepared.map((item) => ({
           operation: item.kind,
           path: this.displayPath(item.target || item.source),
@@ -331,11 +336,22 @@ async function readUtf8File(filePath) {
   return decodeUtf8(buffer);
 }
 
-async function applyExactMode(filePath, mode) {
+async function writeFlushedText(filePath, content, mode) {
+  const handle = await open(filePath, "wx", mode);
+  let failure = null;
   try {
-    await chmod(filePath, mode);
+    await handle.writeFile(content, { encoding: "utf8" });
+    try { await handle.chmod(mode); } catch (error) { if (process.platform !== "win32") throw error; }
+    await handle.sync();
   } catch (error) {
-    if (process.platform !== "win32") throw error;
+    failure = error;
+  }
+  try { await handle.close(); } catch (error) { failure ||= error; }
+  if (failure) {
+    try { await rm(filePath, { force: true }); } catch {
+      throw new Error("staged file write failed and cleanup was incomplete; inspect the destination directory before retrying", { cause: failure });
+    }
+    throw failure;
   }
 }
 
@@ -343,8 +359,7 @@ async function atomicWriteText(full, content, existing = null, options = {}) {
   await mkdir(dirname(full), { recursive: true });
   const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
   try {
-    await writeFile(temp, content, { encoding: "utf8", flag: "wx", mode: existing ? existing.mode & 0o777 : 0o600 });
-    if (existing) await applyExactMode(temp, existing.mode & 0o777);
+    await writeFlushedText(temp, content, existing ? existing.mode & 0o777 : 0o600);
     if (options.expectedHash) {
       const current = await readUtf8File(full).catch(() => null);
       if (current === null || sha256(current) !== options.expectedHash) throw new Error("file changed before atomic commit");
@@ -376,7 +391,9 @@ function assertNoResolvedPatchCollisions(operations) {
   }
 }
 
-async function commitPatchTransaction(operations) {
+export async function commitPatchTransaction(operations, options = {}) {
+  const move = options.rename || rename;
+  const remove = options.remove || rm;
   const staged = [];
   const committed = [];
   try {
@@ -384,8 +401,7 @@ async function commitPatchTransaction(operations) {
       if (operation.content === undefined) continue;
       await mkdir(dirname(operation.target), { recursive: true });
       const temp = join(dirname(operation.target), `.${basename(operation.target)}.mbm-patch-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-      await writeFile(temp, operation.content, { encoding: "utf8", flag: "wx", mode: operation.mode });
-      await applyExactMode(temp, operation.mode);
+      await writeFlushedText(temp, operation.content, operation.mode);
       staged.push({ operation, temp });
     }
 
@@ -403,26 +419,50 @@ async function commitPatchTransaction(operations) {
       let backup = null;
       if (operation.source) {
         backup = join(dirname(operation.source), `.${basename(operation.source)}.mbm-backup-${process.pid}-${randomBytes(6).toString("hex")}`);
-        await rename(operation.source, backup);
+        await move(operation.source, backup);
       }
       const record = { operation, backup, targetCreated: false };
       committed.push(record);
       const stage = staged.find((item) => item.operation === operation);
       if (stage) {
-        await rename(stage.temp, operation.target);
+        await move(stage.temp, operation.target);
         record.targetCreated = true;
       }
     }
   } catch (error) {
-    for (const item of committed.reverse()) {
-      if (item.targetCreated) await rm(item.operation.target, { force: true }).catch(() => {});
-      if (item.backup) await rename(item.backup, item.operation.source).catch(() => {});
+    const recoveryFailures = [];
+    for (const item of [...committed].reverse()) {
+      if (item.targetCreated) {
+        try { await remove(item.operation.target, { force: true }); } catch (failure) { recoveryFailures.push(failure); }
+      }
+      if (item.backup) {
+        try { await move(item.backup, item.operation.source); } catch (failure) { recoveryFailures.push(failure); }
+      }
+    }
+    recoveryFailures.push(...await removePatchArtifacts(staged.map((item) => item.temp), remove));
+    if (recoveryFailures.length) {
+      throw new Error(`patch transaction failed and recovery was incomplete (${recoveryFailures.length} recovery operation(s) failed); inspect the workspace before retrying`, { cause: error });
     }
     throw error;
-  } finally {
-    for (const item of staged) await rm(item.temp, { force: true }).catch(() => {});
   }
-  for (const item of committed) if (item.backup) await rm(item.backup, { force: true }).catch(() => {});
+
+  const cleanupFailures = await removePatchArtifacts([
+    ...staged.map((item) => item.temp),
+    ...committed.map((item) => item.backup).filter(Boolean),
+  ], remove);
+  return {
+    warnings: cleanupFailures.length
+      ? [`Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed; inspect affected directories for .mbm-backup-* or .mbm-patch-* files.`]
+      : [],
+  };
+}
+
+async function removePatchArtifacts(paths, remove) {
+  const failures = [];
+  for (const path of paths) {
+    try { await remove(path, { force: true }); } catch (error) { failures.push(error); }
+  }
+  return failures;
 }
 
 function assertTextSize(content, label) {

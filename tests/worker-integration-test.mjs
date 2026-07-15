@@ -134,6 +134,12 @@ try {
 
   const unauthenticatedAdmin = await stableFetch(`${base}/admin/accounts`);
   assert(unauthenticatedAdmin.status === 401, "account administration accepted an unauthenticated request");
+  const shortNameAccount = await fetchJson(`${base}/admin/accounts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
+    body: JSON.stringify({ name: "a", role: "owner", password: OWNER_PASSWORD }),
+  });
+  assert(shortNameAccount.response.status === 400, "account administration accepted a one-character account name despite the 3-64 character contract");
   const weakPasswordAccount = await fetchJson(`${base}/admin/accounts`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },

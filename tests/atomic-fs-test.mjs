@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isTransientReplaceError, replaceFileSync } from "../src/local/atomic-fs.mjs";
+import { commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-atomic-replace-test-"));
 try {
@@ -58,7 +59,42 @@ try {
   assert(nonTransientCalls === 1, "non-transient replacement error was retried");
   assert(isTransientReplaceError({ code: "EACCES" }) && !isTransientReplaceError({ code: "ENOENT" }), "transient error classification is incorrect");
 
-  console.log("atomic file replacement retry test ok");
+  const cleanupTarget = join(root, "cleanup-warning.txt");
+  await writeFile(cleanupTarget, "old", { encoding: "utf8", mode: 0o600 });
+  const cleanupResult = await commitPatchTransaction([{
+    kind: "update",
+    source: cleanupTarget,
+    target: cleanupTarget,
+    content: "new",
+    originalHash: sha256("old"),
+    mode: 0o600,
+  }], {
+    async remove(path, options) {
+      if (path.includes(".mbm-backup-")) throw new Error("simulated backup cleanup failure");
+      return rm(path, options);
+    },
+  });
+  assert(await readFile(cleanupTarget, "utf8") === "new", "patch cleanup warning test did not commit content");
+  assert(cleanupResult.warnings.length === 1 && cleanupResult.warnings[0].includes("Patch committed"), "committed patch cleanup failure was silently swallowed");
+
+  const rollbackTarget = join(root, "rollback-warning.txt");
+  await writeFile(rollbackTarget, "old", { encoding: "utf8", mode: 0o600 });
+  await expectAsyncThrow(() => commitPatchTransaction([{
+    kind: "update",
+    source: rollbackTarget,
+    target: rollbackTarget,
+    content: "new",
+    originalHash: sha256("old"),
+    mode: 0o600,
+  }], {
+    async rename(from, to) {
+      if (from.includes(".mbm-patch-")) throw new Error("simulated commit failure");
+      if (from.includes(".mbm-backup-")) throw new Error("simulated rollback failure");
+      return rename(from, to);
+    },
+  }), "recovery was incomplete");
+
+  console.log("atomic file replacement and patch recovery test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
 }
@@ -73,4 +109,12 @@ function expectThrow(callback, pattern) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function expectAsyncThrow(callback, pattern) {
+  try { await callback(); } catch (error) {
+    if (String(error?.message || error).includes(pattern)) return;
+    throw error;
+  }
+  throw new Error(`expected async throw containing: ${pattern}`);
 }
