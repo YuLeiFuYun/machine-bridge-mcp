@@ -14,11 +14,24 @@ if (!chrome) {
   process.exit(0);
 }
 
-let regionalCallbackHits = 0;
-const regionalCallbackServer = http.createServer((_request, response) => {
-  regionalCallbackHits += 1;
+let studioCallbackHits = 0;
+const studioCallbackServer = http.createServer((_request, response) => {
+  studioCallbackHits += 1;
   response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
   response.end("<!doctype html><title>OAuth callback reached</title><p id=done>done</p>");
+});
+const studioCallbackPort = await listen(studioCallbackServer);
+const studioCallbackOrigin = `http://127.0.0.1:${studioCallbackPort}`;
+
+let regionalCallbackHits = 0;
+const regionalCallbackServer = http.createServer((request, response) => {
+  regionalCallbackHits += 1;
+  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  response.writeHead(302, {
+    location: `${studioCallbackOrigin}/connection/oauth/redirect${requestUrl.search}`,
+    "cache-control": "no-store",
+  });
+  response.end();
 });
 const regionalCallbackPort = await listen(regionalCallbackServer);
 const regionalCallbackOrigin = `http://127.0.0.1:${regionalCallbackPort}`;
@@ -28,7 +41,7 @@ const globalCallbackServer = http.createServer((request, response) => {
   globalCallbackHits += 1;
   const requestUrl = new URL(request.url, "http://127.0.0.1");
   response.writeHead(302, {
-    location: `${regionalCallbackOrigin}/callback${requestUrl.search}`,
+    location: `${regionalCallbackOrigin}/redirect${requestUrl.search}`,
     "cache-control": "no-store",
   });
   response.end();
@@ -47,6 +60,7 @@ const authorizationServer = http.createServer((request, response) => {
   const formActionSources = ["'self'"];
   if (allow >= 1) formActionSources.push(globalCallbackOrigin);
   if (allow >= 2) formActionSources.push(regionalCallbackOrigin);
+  if (allow >= 3) formActionSources.push(studioCallbackOrigin);
   response.writeHead(200, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
@@ -58,7 +72,8 @@ const authorizationPort = await listen(authorizationServer);
 const authorizationOrigin = `http://127.0.0.1:${authorizationPort}`;
 const blockedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=0`;
 const firstHopOnlyAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=1`;
-const allowedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=2`;
+const regionalOnlyAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=2`;
+const allowedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=3`;
 
 const profile = await mkdtemp(path.join(os.tmpdir(), "mbm-oauth-browser-"));
 const debuggingPort = await openPort();
@@ -90,22 +105,32 @@ try {
     await sleep(500);
     assert(globalCallbackHits === 0, "negative control reached the first callback under form-action 'self'");
     assert(regionalCallbackHits === 0, "negative control unexpectedly reached the regional callback");
+    assert(studioCallbackHits === 0, "negative control unexpectedly reached the studio callback");
 
     await client.send("Page.navigate", { url: firstHopOnlyAuthorizationUrl });
     await waitForExpression(client, "document.readyState === 'complete' && Boolean(document.getElementById('authorize'))");
     await client.send("Runtime.evaluate", { expression: "document.getElementById('authorize').click()" });
     await sleep(500);
     assert(globalCallbackHits === 1, "first-hop policy did not reach the registered callback origin");
-    assert(regionalCallbackHits === 0, "first-hop-only policy unexpectedly followed the cross-origin callback redirect");
+    assert(regionalCallbackHits === 0, "first-hop-only policy unexpectedly followed the regional redirect");
+    assert(studioCallbackHits === 0, "first-hop-only policy unexpectedly reached the studio callback");
+
+    await client.send("Page.navigate", { url: regionalOnlyAuthorizationUrl });
+    await waitForExpression(client, "document.readyState === 'complete' && Boolean(document.getElementById('authorize'))");
+    await client.send("Runtime.evaluate", { expression: "document.getElementById('authorize').click()" });
+    await sleep(500);
+    assert(globalCallbackHits === 2, "regional policy did not reach the registered callback origin");
+    assert(regionalCallbackHits === 1, "regional policy did not follow the consent subdomain redirect");
+    assert(studioCallbackHits === 0, "regional-only policy unexpectedly followed the final Copilot Studio redirect");
 
     await client.send("Page.navigate", { url: allowedAuthorizationUrl });
     await waitForExpression(client, "document.readyState === 'complete' && Boolean(document.getElementById('authorize'))");
     await client.send("Runtime.evaluate", { expression: "document.getElementById('authorize').click()" });
-    await waitForExpression(client, `location.origin === ${JSON.stringify(regionalCallbackOrigin)} && location.pathname === '/callback'`);
+    await waitForExpression(client, `location.origin === ${JSON.stringify(studioCallbackOrigin)} && location.pathname === '/connection/oauth/redirect'`);
     const result = await client.send("Runtime.evaluate", { expression: "location.href", returnByValue: true });
     const finalUrl = String(result.result?.result?.value ?? "");
     const parsed = new URL(finalUrl);
-    assert(parsed.origin === regionalCallbackOrigin, `authorization did not reach the regional callback origin: ${finalUrl}`);
+    assert(parsed.origin === studioCallbackOrigin, `authorization did not reach the Copilot Studio callback origin: ${finalUrl}`);
     assert(parsed.searchParams.get("code") === "test-code", "authorization callback omitted code");
     assert(parsed.searchParams.get("state") === "test-state", "authorization state was not preserved");
   } finally {
@@ -120,6 +145,7 @@ try {
   authorizationServer.close();
   globalCallbackServer.close();
   regionalCallbackServer.close();
+  studioCallbackServer.close();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       await rm(profile, { recursive: true, force: true });

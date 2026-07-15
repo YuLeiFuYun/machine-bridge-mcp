@@ -237,11 +237,12 @@ try {
   assert(copilotPage.status === 200, `Copilot Studio authorization page failed: ${copilotPage.status}`);
   const copilotFormActions = cspDirectiveSources(copilotPageCsp, "form-action");
   assert(
-    copilotFormActions.size === 3
+    copilotFormActions.size === 4
       && copilotFormActions.has("'self'")
       && copilotFormActions.has("https://global.consent.azure-apim.net")
-      && copilotFormActions.has("https://*.consent.azure-apim.net"),
-    "Copilot Studio authorization page CSP did not allow only self, the validated global callback, and Microsoft consent subdomains",
+      && copilotFormActions.has("https://*.consent.azure-apim.net")
+      && copilotFormActions.has("https://copilotstudio.microsoft.com"),
+    "Copilot Studio authorization page CSP did not allow only self, the validated global callback, Microsoft consent subdomains, and the final studio callback",
   );
 
   const consentLookalikePage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: consentLookalikeRedirectUri, state: "consent-lookalike-state" })}`);
@@ -252,8 +253,9 @@ try {
     consentLookalikeFormActions.size === 2
       && consentLookalikeFormActions.has("'self'")
       && consentLookalikeFormActions.has("https://global.consent.azure-apim.net.example.com")
-      && !consentLookalikeFormActions.has("https://*.consent.azure-apim.net"),
-    "consent-domain lookalike received the Microsoft regional callback exception",
+      && !consentLookalikeFormActions.has("https://*.consent.azure-apim.net")
+      && !consentLookalikeFormActions.has("https://copilotstudio.microsoft.com"),
+    "consent-domain lookalike received the Microsoft callback-chain exception",
   );
 
   const wrongPassword = await stableFetch(`${base}/oauth/authorize`, {

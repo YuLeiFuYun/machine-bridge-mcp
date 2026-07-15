@@ -87,8 +87,8 @@ function authorizationFormActionSources(value: string): string[] {
     const sources = [url.origin];
     const microsoftConsentHost = url.hostname === "consent.azure-apim.net" || url.hostname.endsWith(".consent.azure-apim.net");
     if (url.protocol === "https:" && !url.port && microsoftConsentHost) {
-      // Power Platform redirects its global consent callback to a regional subdomain, and CSP checks every hop.
-      sources.push("https://*.consent.azure-apim.net");
+      // Power Platform redirects global consent to a regional endpoint and then back to Copilot Studio; CSP checks every hop.
+      sources.push("https://*.consent.azure-apim.net", "https://copilotstudio.microsoft.com");
     }
     return sources;
   } catch {
