@@ -46,7 +46,7 @@ const queuedContext = vm.createContext({
   setTimeout,
   chrome: { debugger: {
     async attach() { activeSessions += 1; maxActiveSessions = Math.max(maxActiveSessions, activeSessions); },
-    async sendCommand() { await new Promise((resolve) => setTimeout(resolve, 10)); },
+    async sendCommand() { await new Promise((resolve) => { setTimeout(resolve, 10); }); },
     async detach() { activeSessions -= 1; },
   } },
 });

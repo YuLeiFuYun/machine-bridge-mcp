@@ -183,7 +183,7 @@ async function waitForJob(manager, jobId, timeoutMs) {
   while (!deadline.expired()) {
     const value = manager.read({ job_id: jobId });
     if (TERMINAL_JOB_STATES.has(value.status)) return value;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 50); });
   }
   throw new Error("full access managed-job test timed out");
 }

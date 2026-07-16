@@ -1,8 +1,8 @@
-import { json, methodNotAllowed, parseRequestBody } from "./http";
+import { json, methodNotAllowed, parseRequestBody } from "./http.ts";
 import {
   accountByName, createAccount, publicAccount, replaceAccountPassword, revokeAccountCredentials,
   safeEqual, updateAccount, type AccountRecord, type OAuthStore,
-} from "./oauth-state";
+} from "./oauth-state.ts";
 
 const BODY_LIMIT_BYTES = 64 * 1024;
 const MAX_ACCOUNTS = 64;

@@ -338,7 +338,7 @@ async function waitFor(predicate, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
   }
   throw new Error("timed out waiting for browser bridge state");
 }

@@ -402,7 +402,7 @@ async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [])
 
 function waitForChildExit(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolvePromise) => child.once("exit", resolvePromise));
+  return new Promise((resolvePromise) => { child.once("exit", resolvePromise); });
 }
 
 function isProcessAlive(pid) {
@@ -614,7 +614,7 @@ async function resourceCliSelfTest() {
     if (cliApproved.status !== 0 || JSON.parse(cliApproved.stdout).approval !== "local-operator") throw new Error(`local job approve failed: ${cliApproved.stderr || cliApproved.stdout}`);
     for (let attempt = 0; attempt < 200; attempt += 1) {
       if (await existsForSelfTest(approvedMarker)) break;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
     if (await readFile(approvedMarker, "utf8") !== "cli-approved") throw new Error("local job approve did not execute the staged job");
 
@@ -648,7 +648,7 @@ async function resourceCliSelfTest() {
       if (read.status !== 0) throw new Error(`local job read failed: ${read.stderr || read.stdout}`);
       submittedStatus = JSON.parse(read.stdout).status;
       if (submittedTerminal.has(submittedStatus)) break;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
     if (submittedStatus !== "succeeded" || await readFile(submittedMarker, "utf8").catch(() => "") !== "submitted") {
       const currentState = loadState(workspace, { stateDir: stateRoot });
@@ -667,7 +667,7 @@ async function resourceCliSelfTest() {
     for (let attempt = 0; attempt < 200; attempt += 1) {
       const value = manager.read({ job_id: activeJob.job_id });
       if (value.status === "running") break;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
     const uninstallBlocked = spawnSync(process.execPath, [entry, "uninstall", "--state-dir", stateRoot, "--keep-worker", "--yes"], {
       encoding: "utf8", timeout: 10_000,
@@ -679,7 +679,7 @@ async function resourceCliSelfTest() {
     for (let attempt = 0; attempt < 400; attempt += 1) {
       const value = manager.read({ job_id: activeJob.job_id });
       if (!["queued", "running", "cleaning", "interrupted"].includes(value.status)) break;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
 
     const removed = spawnSync(process.execPath, [entry, "resource", "remove", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
@@ -1019,13 +1019,14 @@ async function shellSelfTest() {
 async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const workerModules = await Promise.all([
-    "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts", "observability.ts",
+    "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
+    "oauth-controller.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
   const unawaitedAsyncRoutes = [
-    "return this.registerClient(request);",
-    "return this.authorizeSubmit(request, base);",
-    "return this.exchangeToken(request, base);",
+    "return this.oauth.registerClient(request);",
+    "return this.oauth.authorizeSubmit(request, base);",
+    "return this.oauth.exchangeToken(request, base);",
     "return this.acceptDaemonWebSocket(request);",
     "return this.handleMcp(request, base);",
   ].filter(snippet => source.includes(snippet));
@@ -1073,7 +1074,7 @@ async function waitForPidExit(pid, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { process.kill(pid, 0); } catch (error) { if (error?.code === "ESRCH") return true; }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
   }
   try { process.kill(pid, 0); return false; } catch { return true; }
 }

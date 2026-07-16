@@ -1,4 +1,4 @@
-import toolCatalog from "../shared/tool-catalog.json";
+import toolCatalog from "../shared/tool-catalog.json" with { type: "json" };
 
 export type WorkerToolDefinition = Record<string, unknown> & { name: string; availability?: string };
 

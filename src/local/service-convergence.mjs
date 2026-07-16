@@ -16,5 +16,5 @@ export async function waitForInactiveStatus(
 }
 
 function delay(milliseconds) {
-  return new Promise(resolve => setTimeout(resolve, milliseconds));
+  return new Promise(resolve => { setTimeout(resolve, milliseconds); });
 }

@@ -1,3 +1,4 @@
+// @ts-check
 const TOKEN_STOP_WORDS = new Set(["the", "and", "for", "with", "from", "this", "that", "use", "using", "into", "of", "to", "a", "an", "in", "on", "is", "are", "or", "及", "和", "的", "了", "在", "用", "使用", "进行", "根据"]);
 const ENGLISH_TOKEN_CANONICAL = new Map([
   ["created", "create"], ["creating", "create"], ["creation", "create"], ["creator", "create"],
@@ -9,6 +10,7 @@ const ENGLISH_TOKEN_CANONICAL = new Map([
   ["factcheck", "verify"], ["fact-check", "verify"], ["testing", "test"], ["tests", "test"],
   ["building", "build"], ["built", "build"], ["deployment", "deploy"], ["deployed", "deploy"],
 ]);
+/** @type {ReadonlyArray<readonly [RegExp, readonly string[]]>} */
 const HAN_TOKEN_ALIASES = Object.freeze([
   [/创建|新建|编写/u, ["create", "creator"]],
   [/改进|优化|更新|维护/u, ["improve", "update"]],
@@ -29,10 +31,14 @@ const HAN_TOKEN_ALIASES = Object.freeze([
   [/安全|漏洞/u, ["security", "audit"]],
 ]);
 
+/**
+ * @param {{name: string, description: string, argv: string[], searchTerms?: string}} command
+ */
 export function commandMatchText(command) {
   return `${command.name} ${command.description} ${command.argv.join(" ")} ${command.searchTerms || ""}`;
 }
 
+/** @param {unknown} task @param {unknown} candidate @param {unknown} [identity] */
 export function relevanceScore(task, candidate, identity = "") {
   const taskTokens = tokenize(task);
   const candidateTokens = tokenize(candidate);
@@ -51,6 +57,10 @@ export function relevanceScore(task, candidate, identity = "") {
   return score;
 }
 
+/**
+ * @param {unknown} task
+ * @param {{commandsAvailable: boolean, commandRelevant: boolean, skillRelevant: boolean}} options
+ */
 export function recommendTools(task, { commandsAvailable, commandRelevant, skillRelevant }) {
   const lower = String(task || "").toLowerCase();
   const tools = ["agent_context"];
@@ -64,6 +74,7 @@ export function recommendTools(task, { commandsAvailable, commandRelevant, skill
   return [...new Set(tools)];
 }
 
+/** @param {unknown} value @returns {Set<string>} */
 export function tokenize(value) {
   const text = String(value || "").toLowerCase();
   const tokens = new Set();
@@ -86,6 +97,7 @@ export function tokenize(value) {
   return tokens;
 }
 
+/** @param {unknown} value */
 function comparableText(value) {
   return String(value || "")
     .toLowerCase()
@@ -94,6 +106,7 @@ function comparableText(value) {
     .replace(/\s+/g, " ");
 }
 
+/** @param {Set<string>} tokens @param {unknown} raw */
 function addToken(tokens, raw) {
   const token = String(raw || "").replace(/^[.-]+|[.-]+$/g, "");
   if (token.length < 2 || TOKEN_STOP_WORDS.has(token)) return;

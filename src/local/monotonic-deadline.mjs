@@ -1,5 +1,11 @@
+// @ts-check
+
 import { performance } from "node:perf_hooks";
 
+/**
+ * @param {number} timeoutMs
+ * @param {() => number} [now]
+ */
 export function createMonotonicDeadline(timeoutMs, now = () => performance.now()) {
   const durationMs = Number(timeoutMs);
   if (!Number.isFinite(durationMs) || durationMs < 0) throw new TypeError("timeoutMs must be a finite non-negative number");
@@ -23,6 +29,7 @@ export function createMonotonicDeadline(timeoutMs, now = () => performance.now()
   });
 }
 
+/** @param {() => number} now */
 function readSample(now) {
   const value = Number(now());
   if (!Number.isFinite(value)) throw new TypeError("monotonic clock returned a non-finite value");

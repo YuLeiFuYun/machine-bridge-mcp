@@ -250,7 +250,7 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }
   let runtime = null;
   try {
     const readiness = await prepareRemoteState({ args, workspace, state, logger });
-    runtime = createRemoteRuntime({ args, workspace, state, daemonLock, logger });
+    runtime = createRemoteRuntime({ args, workspace, state, daemonLock });
     await runtime.start();
     reportRemoteReady(args, state, readiness);
     keepProcessAlive({ daemon: runtime, lock: daemonLock, logger });
@@ -295,7 +295,7 @@ async function ensureInitialOwnerAccount(state) {
   return { ...created.account, password };
 }
 
-function createRemoteRuntime({ args, workspace, state, daemonLock, logger }) {
+function createRemoteRuntime({ args, workspace, state, daemonLock }) {
   return new LocalRuntime({
     workerUrl: state.worker.url,
     secret: state.worker.daemonSecret,
@@ -542,7 +542,7 @@ async function serviceCommand(args) {
   const stateRoot = stateRootFromArgs(args);
   const { installAutostart, uninstallAutostart, autostartStatus, startAutostart, stopAutostart } = await import("./service.mjs");
   if (action === "status") {
-    const status = await autostartStatus({ logger: structuredLogger(Boolean(args.quiet)) });
+    const status = await autostartStatus();
     const state = optionalServiceState(args, stateRoot);
     const workspaceDaemon = state ? inspectWorkspaceDaemon(state) : null;
     console.log(JSON.stringify({
@@ -878,5 +878,5 @@ function version() {
 }
 
 function sleep(ms) {
-  return new Promise(resolvePromise => setTimeout(resolvePromise, ms));
+  return new Promise(resolvePromise => { setTimeout(resolvePromise, ms); });
 }

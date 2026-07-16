@@ -32,7 +32,11 @@ try {
   if (!record.files.some((item) => item.path === "docs/AUDIT.md")) throw new Error("npm package omitted the engineering/security audit record");
   if (!record.files.some((item) => item.path === "src/local/relay-connection.mjs")) throw new Error("npm package omitted the relay lifecycle module");
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
+  for (const module of ["runtime-reporting.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs"]) {
+    if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted runtime boundary ${module}`);
+  }
   if (!record.files.some((item) => item.path === "src/local/agent-context.mjs")) throw new Error("npm package omitted the agent-context module");
+  if (!record.files.some((item) => item.path === "src/local/agent-contract.mjs")) throw new Error("npm package omitted the agent contract module");
   if (!record.files.some((item) => item.path === "src/local/default-instructions.mjs")) throw new Error("npm package omitted the default-instructions module");
   if (!record.files.some((item) => item.path === "src/local/daemon-process.mjs")) throw new Error("npm package omitted the daemon-process module");
   if (!record.files.some((item) => item.path === "src/local/process-identity.mjs")) throw new Error("npm package omitted the process-identity module");
@@ -40,11 +44,13 @@ try {
   if (!record.files.some((item) => item.path === "src/local/service-lifecycle.mjs")) throw new Error("npm package omitted the service-lifecycle module");
   if (!record.files.some((item) => item.path === "src/local/app-automation.mjs")) throw new Error("npm package omitted the application-automation module");
   if (!record.files.some((item) => item.path === "src/local/browser-bridge.mjs")) throw new Error("npm package omitted the browser-bridge module");
+  if (!record.files.some((item) => item.path === "src/local/browser-operation-service.mjs")) throw new Error("npm package omitted browser operation semantics");
   if (!record.files.some((item) => item.path === "src/worker/index.ts")) throw new Error("npm package omitted the worker entrypoint");
   if (!record.files.some((item) => item.path === "src/worker/pending-calls.ts")) throw new Error("npm package omitted the worker pending calls module");
   if (!record.files.some((item) => item.path === "src/worker/policy.ts")) throw new Error("npm package omitted the worker policy module");
   if (!record.files.some((item) => item.path === "src/worker/errors.ts")) throw new Error("npm package omitted the worker errors module");
   if (!record.files.some((item) => item.path === "src/worker/oauth-state.ts")) throw new Error("npm package omitted the worker oauth state module");
+  if (!record.files.some((item) => item.path === "src/worker/oauth-controller.ts")) throw new Error("npm package omitted the Worker OAuth controller");
   if (!record.files.some((item) => item.path === "src/worker/observability.ts")) throw new Error("npm package omitted the worker observability module");
   if (!record.files.some((item) => item.path === "src/worker/http.ts")) throw new Error("npm package omitted the worker http module");
   if (record.files.some((item) => item.path.endsWith("worker-configuration.d.ts"))) throw new Error("npm package contains generated Worker type declarations");
@@ -60,6 +66,9 @@ try {
   if (!record.files.some((item) => item.path === "scripts/syntax-check.mjs")) throw new Error("npm package omitted the dynamic syntax checker");
   if (!record.files.some((item) => item.path === "scripts/github-release.mjs")) throw new Error("npm package omitted the release helper referenced by package scripts");
   if (!record.files.some((item) => item.path === "CONTRIBUTING.md")) throw new Error("npm package omitted contribution/release discipline");
+  for (const file of ["CODE_OF_CONDUCT.md", "SUPPORT.md", "GOVERNANCE.md", "docs/UPGRADING.md", "tsconfig.local.json"]) {
+    if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);
+  }
   const badModes = record.files.filter((item) => ![0o644, 0o755].includes(Number(item.mode))).map((item) => `${item.path}:${item.mode}`);
   if (badModes.length) throw new Error(`npm package contains unexpected file modes: ${badModes.join(", ")}`);
   console.log(`npm package manifest test ok (${record.files.length} files)`);

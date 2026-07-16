@@ -1,24 +1,59 @@
+// @ts-check
+
 import { randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { BridgeError } from "./errors.mjs";
 
+/** @typedef {ReturnType<typeof setTimeout>} TimerHandle */
+/**
+ * @typedef {{
+ *   id: string,
+ *   tool: string,
+ *   origin: string,
+ *   startedAt: number,
+ *   deadlineAt: number | null,
+ *   controller: AbortController,
+ *   cancelReason: string,
+ *   timer: TimerHandle | null,
+ * }} CallRecord
+ */
+/**
+ * @typedef {{
+ *   maximum?: unknown,
+ *   now?: () => number,
+ *   scheduler?: {setTimeout: typeof setTimeout, clearTimeout: typeof clearTimeout},
+ *   onCancel?: (record: CallRecord) => void,
+ *   onFinish?: (record: CallRecord) => void,
+ * }} CallRegistryOptions
+ */
+/**
+ * @typedef {{callId?: unknown, tool?: unknown, origin?: unknown, timeoutMs?: unknown}} OpenCallInput
+ */
+/** @typedef {{signal?: AbortSignal, callId?: unknown}} CancellationContext */
+
 export class CallRegistry {
+  /** @param {CallRegistryOptions} [options] */
   constructor(options = {}) {
     this.maximum = positiveInteger(options.maximum, 16);
     this.now = typeof options.now === "function" ? options.now : () => performance.now();
     this.scheduler = options.scheduler || { setTimeout, clearTimeout };
     this.onCancel = typeof options.onCancel === "function" ? options.onCancel : () => {};
     this.onFinish = typeof options.onFinish === "function" ? options.onFinish : () => {};
+    /** @type {Map<string, CallRecord>} */
     this.calls = new Map();
   }
 
+  /** @param {OpenCallInput} [input] */
   open({ callId = "", tool = "", origin = "local", timeoutMs = 0 } = {}) {
     const id = String(callId || `call_${randomBytes(16).toString("hex")}`);
     if (this.calls.has(id)) throw new BridgeError("conflict", "duplicate in-flight call id");
-    if (this.calls.size >= this.maximum) throw new BridgeError("limit_exceeded", `too many concurrent tool calls (${this.maximum})`, { retryable: true });
+    if (this.calls.size >= this.maximum) {
+      throw new BridgeError("limit_exceeded", `too many concurrent tool calls (${this.maximum})`, { retryable: true });
+    }
     const controller = new AbortController();
     const startedAt = this.now();
     const timeout = positiveInteger(timeoutMs, 0);
+    /** @type {CallRecord} */
     const record = {
       id,
       tool: String(tool || ""),
@@ -44,6 +79,7 @@ export class CallRegistry {
     });
   }
 
+  /** @param {unknown} callId @param {unknown} [reason] @param {string} [code] */
   cancel(callId, reason = "cancelled", code = "cancelled") {
     const record = this.calls.get(String(callId || ""));
     if (!record || record.controller.signal.aborted) return false;
@@ -53,6 +89,7 @@ export class CallRegistry {
     return true;
   }
 
+  /** @param {unknown} callId */
   finish(callId) {
     const id = String(callId || "");
     const record = this.calls.get(id);
@@ -63,6 +100,7 @@ export class CallRegistry {
     return true;
   }
 
+  /** @param {unknown} origin @param {unknown} [reason] */
   cancelOrigin(origin, reason = "transport disconnected") {
     const expected = String(origin || "");
     let cancelled = 0;
@@ -73,6 +111,7 @@ export class CallRegistry {
     return cancelled;
   }
 
+  /** @param {unknown} [reason] */
   cancelAll(reason = "runtime stopped") {
     for (const id of [...this.calls.keys()]) {
       this.cancel(id, reason);
@@ -80,6 +119,7 @@ export class CallRegistry {
     }
   }
 
+  /** @param {unknown} callId */
   context(callId) {
     const record = this.calls.get(String(callId || ""));
     if (!record) return null;
@@ -93,6 +133,7 @@ export class CallRegistry {
     };
   }
 
+  /** @param {CancellationContext} [context] */
   throwIfCancelled(context = {}) {
     const signal = context.signal || this.calls.get(String(context.callId || ""))?.controller.signal;
     if (!signal?.aborted) return;
@@ -103,6 +144,7 @@ export class CallRegistry {
 
   snapshot() {
     const now = this.now();
+    /** @type {Record<string, number>} */
     const byOrigin = {};
     let oldestMs = 0;
     for (const call of this.calls.values()) {
@@ -118,6 +160,7 @@ export class CallRegistry {
   }
 }
 
+/** @param {unknown} value @param {number} fallback */
 function positiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;

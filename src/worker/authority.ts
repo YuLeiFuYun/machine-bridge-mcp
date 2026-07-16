@@ -1,6 +1,6 @@
-import policyContract from "../shared/policy-contract.json";
-import { accountRolePolicy, accountRoleToolNames, type AccountRole } from "./access";
-import type { DaemonPolicy } from "./policy";
+import policyContract from "../shared/policy-contract.json" with { type: "json" };
+import { accountRolePolicy, accountRoleToolNames, type AccountRole } from "./access.ts";
+import type { DaemonPolicy } from "./policy.ts";
 
 type EffectivePolicy = {
   scope: "authenticated_account_effective_authority";

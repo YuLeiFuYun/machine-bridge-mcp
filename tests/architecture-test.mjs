@@ -31,8 +31,10 @@ for (const file of graph.keys()) visitModule(file, []);
 const adapterModules = new Set(["cli.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs", "windows-service.mjs", "relay-connection.mjs", "worker-deployment.mjs"]);
 const boundaryModules = new Set([
   "agent-context.mjs",
+  "agent-contract.mjs",
   "app-automation.mjs",
   "browser-command.mjs",
+  "browser-operation-service.mjs",
   "capability-observer.mjs",
   "default-instructions.mjs",
   "network-proxy.mjs",
@@ -63,6 +65,9 @@ const boundaryModules = new Set([
   "worker-secret-file.mjs",
   "service-environment.mjs",
   "monotonic-deadline.mjs",
+  "runtime-capabilities.mjs",
+  "runtime-diagnostics.mjs",
+  "runtime-reporting.mjs",
 ]);
 for (const name of boundaryModules) {
   const file = join(localRoot, name);
@@ -74,31 +79,37 @@ for (const name of boundaryModules) {
 }
 
 const lineLimits = Object.freeze({
-  "src/local/runtime.mjs": 900,
+  "src/local/runtime.mjs": 800,
+  "src/local/runtime-reporting.mjs": 150,
+  "src/local/runtime-diagnostics.mjs": 120,
+  "src/local/runtime-capabilities.mjs": 100,
   "src/local/cli.mjs": 1100,
-  "src/worker/index.ts": 1050,
+  "src/worker/index.ts": 760,
+  "src/worker/oauth-controller.ts": 360,
   "src/worker/oauth-tokens.ts": 260,
   "src/local/process-execution.mjs": 300,
   "src/local/git-service.mjs": 220,
   "src/local/workspace-file-service.mjs": 550,
   "src/local/tool-executor.mjs": 180,
-  "src/local/call-registry.mjs": 180,
+  "src/local/call-registry.mjs": 190,
   "src/local/lifecycle.mjs": 130,
   "src/local/cli-local-admin.mjs": 400,
-  "src/local/agent-context.mjs": 920,
+  "src/local/agent-context.mjs": 800,
+  "src/local/agent-contract.mjs": 230,
   "src/local/default-instructions.mjs": 280,
   "src/local/project-package.mjs": 240,
   "src/local/capability-ranking.mjs": 150,
   "src/local/managed-jobs.mjs": 900,
   "src/local/managed-job-plan.mjs": 300,
-  "src/local/numbers.mjs": 20,
+  "src/local/numbers.mjs": 30,
   "src/local/project-metadata.mjs": 80,
-  "src/local/records.mjs": 10,
+  "src/local/records.mjs": 20,
   "src/local/state-inventory.mjs": 170,
   "src/local/worker-health.mjs": 280,
   "src/local/worker-deployment.mjs": 220,
-  "src/local/browser-bridge.mjs": 850,
-  "src/local/browser-extension-protocol.mjs": 120,
+  "src/local/browser-bridge.mjs": 620,
+  "src/local/browser-operation-service.mjs": 360,
+  "src/local/browser-extension-protocol.mjs": 130,
   "src/local/browser-pairing-store.mjs": 120,
   "src/local/worker-secret-file.mjs": 180,
   "src/local/service-environment.mjs": 140,
@@ -144,7 +155,10 @@ if (!workspaceFileSource.includes("patch transaction failed and recovery was inc
   throw new Error("patch transaction failures or committed-artifact cleanup errors can be silently swallowed");
 }
 const runtimeBoundarySource = readFileSync(join(localRoot, "runtime.mjs"), "utf8");
-for (const forbidden of ["spawn(", "parsePatchEnvelope", "applyUpdateHunks", "workspaceShellCommand("]) {
+for (const forbidden of [
+  "spawn(", "parsePatchEnvelope", "applyUpdateHunks", "workspaceShellCommand(",
+  "function applicationMatchScore", "request_reached_local_runtime", "policy_contract:",
+]) {
   if (runtimeBoundarySource.includes(forbidden)) throw new Error(`LocalRuntime regained low-level responsibility: ${forbidden}`);
 }
 const localPolicySource = readFileSync(join(localRoot, "policy.mjs"), "utf8");
@@ -153,17 +167,31 @@ if (!localPolicySource.includes('policy-contract.json') || !workerPolicySource.i
   throw new Error("local and Worker policy enforcement do not share the generated policy contract");
 }
 const workerIndexBoundary = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
-for (const duplicate of ["function validateAuthorizationRequest", "function readBoundedText", "class HttpError", "new Map<string, PendingCall>"]) {
+const workerOAuthControllerBoundary = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
+for (const duplicate of [
+  "function validateAuthorizationRequest", "function readBoundedText", "class HttpError",
+  "new Map<string, PendingCall>", "private async oauthStore", "private async withOAuthLock",
+  "AUTHORIZATION_FIELDS",
+]) {
   if (workerIndexBoundary.includes(duplicate)) throw new Error(`Worker index regained extracted responsibility: ${duplicate}`);
 }
-for (const module of ["pending-calls", "policy", "errors", "http", "oauth-state", "observability", "mcp-session", "tool-timeout"]) {
+for (const module of [
+  "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
+  "observability", "mcp-session", "tool-timeout",
+]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
+}
+for (const required of ["private async oauthStore", "private async withOAuthLock", "AUTHORIZATION_FIELDS", "verifyAccessToken"]) {
+  if (!workerOAuthControllerBoundary.includes(required)) throw new Error(`OAuth controller lost state-machine responsibility: ${required}`);
 }
 
 const docs = [
   join(root, "README.md"),
   join(root, "SECURITY.md"),
   join(root, "CONTRIBUTING.md"),
+  join(root, "CODE_OF_CONDUCT.md"),
+  join(root, "SUPPORT.md"),
+  join(root, "GOVERNANCE.md"),
   ...readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => join(root, "docs", name)),
 ];
 for (const file of docs) validateRelativeLinks(file);
@@ -205,6 +233,7 @@ for (const name of repositoryFiles) {
 const localAutomationFiles = [
   join(root, "src", "local", "app-automation.mjs"),
   join(root, "src", "local", "browser-bridge.mjs"),
+  join(root, "src", "local", "browser-operation-service.mjs"),
   join(root, "browser-extension", "service-worker.js"),
   join(root, "browser-extension", "browser-operations.js"),
   join(root, "browser-extension", "devtools-input.js"),
@@ -231,6 +260,7 @@ const appAutomationSource = readFileSync(join(root, "src", "local", "app-automat
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+const workerOAuthControllerSource = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
 const workerHttpSource = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
 const oauthBrowserNavigationSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
@@ -258,7 +288,8 @@ if (!workerHttpSource.includes('url.hostname === "consent.azure-apim.net"')
   || !workerHttpSource.includes('sources.push("https://*.consent.azure-apim.net", "https://copilotstudio.microsoft.com")')) {
   throw new Error("authorization HTML no longer permits only validated Microsoft consent callbacks to use the complete Power Platform callback chain");
 }
-if (!workerSource.includes("new URL(authorization.redirectUri).origin") || !workerSource.includes("status, redirectOrigin")) {
+if (!workerOAuthControllerSource.includes("new URL(authorization.redirectUri).origin")
+    || !workerOAuthControllerSource.includes("status, redirectOrigin")) {
   throw new Error("authorization pages no longer bind CSP form navigation to the validated redirect origin");
 }
 if (!oauthBrowserNavigationSource.includes("negative control reached the first callback")
@@ -332,6 +363,8 @@ if (packageJson.scripts?.["records:test"] !== "node tests/records-test.mjs") thr
 if (packageJson.scripts?.["state-inventory:test"] !== "node tests/state-inventory-test.mjs") throw new Error("state inventory regression test is missing");
 if (!existsSync(join(root, "scripts", "generate-worker-types.mjs"))) throw new Error("cross-platform Worker type generator is missing");
 if (packageJson.scripts?.["worker:types"] !== "node scripts/generate-worker-types.mjs") throw new Error("generated Worker types are not isolated behind the cross-platform generator");
+if (packageJson.scripts?.["typecheck:local"] !== "tsc -p tsconfig.local.json --noEmit") throw new Error("local JavaScript contract typecheck is missing");
+if (!String(packageJson.scripts?.typecheck || "").includes("npm run typecheck:local")) throw new Error("complete typecheck omits local JavaScript contracts");
 if (packageJson.scripts?.["tool-docs:check"] !== "node scripts/generate-tool-reference.mjs --check") throw new Error("generated MCP tool documentation gate is missing");
 if (packageJson.scripts?.["commit-message:test"] !== "node tests/commit-message-test.mjs") throw new Error("commit-message policy regression test is missing");
 if (packageJson.scripts?.["logging-structure:test"] !== "node tests/logging-structure-test.mjs") throw new Error("structured logging regression test is missing");
@@ -339,6 +372,8 @@ if (packageJson.scripts?.["sarif-security:test"] !== "node tests/sarif-security-
 if (packageJson.scripts?.["security-properties:test"] !== "node tests/security-properties-test.js") throw new Error("security property test suite is missing");
 if (packageJson.scripts?.["shell:test"] !== "node tests/shell-test.mjs") throw new Error("Wrangler executable boundary regression test is missing");
 if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
+if (packageJson.scripts?.["runtime-boundaries:test"] !== "node tests/runtime-boundaries-test.mjs") throw new Error("extracted runtime boundary test is missing");
+if (packageJson.scripts?.["worker-oauth-controller:test"] !== "node tests/worker-oauth-controller-test.mjs") throw new Error("Worker OAuth controller state-machine test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
 const stateSource = readFileSync(join(root, "src", "local", "state.mjs"), "utf8");
 if (!cliSource.includes('promptOnFirstRun ? defaultFirstRunWorkspace() : process.cwd()')
@@ -357,7 +392,9 @@ if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local script
 if (packageJson.scripts?.["lint:test"] !== "node tests/lint-gate-test.mjs") {
   throw new Error("semantic lint configuration regression test is missing");
 }
-if (!String(packageJson.scripts?.check || "").includes("npm run shell:test") || !String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run deadline:test") || !String(packageJson.scripts?.check || "").includes("npm run install:test") || !String(packageJson.scripts?.check || "").includes("npm run oauth-browser:test")) {
+if (!String(packageJson.scripts?.check || "").includes("npm run runtime-boundaries:test")
+    || !String(packageJson.scripts?.check || "").includes("npm run worker-oauth-controller:test")
+    || !String(packageJson.scripts?.check || "").includes("npm run shell:test") || !String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run deadline:test") || !String(packageJson.scripts?.check || "").includes("npm run install:test") || !String(packageJson.scripts?.check || "").includes("npm run oauth-browser:test")) {
   throw new Error("complete check no longer includes static undefined-identifier and installed-default-startup gates");
 }
 if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
@@ -429,7 +466,19 @@ for (const [name, command] of Object.entries(packageJson.scripts || {})) {
   if (match && !existsSync(join(root, match[1]))) throw new Error(`package script ${name} references missing ${match[1]}`);
 }
 const packaged = new Set(packageJson.files || []);
-if (!packaged.has("scripts") || !packaged.has("src/local")) throw new Error("package files omit executable script or local runtime directories");
+if (!packaged.has("scripts") || !packaged.has("src/local") || !packaged.has("tsconfig.local.json")
+    || !packaged.has("CODE_OF_CONDUCT.md") || !packaged.has("SUPPORT.md") || !packaged.has("GOVERNANCE.md")) {
+  throw new Error("package files omit executable scripts, local runtime, type contract, or governance documents");
+}
+const localTypeConfig = JSON.parse(readFileSync(join(root, "tsconfig.local.json"), "utf8"));
+for (const required of [
+  "src/local/policy.mjs", "src/local/call-registry.mjs", "src/local/agent-contract.mjs",
+  "src/local/browser-extension-protocol.mjs", "src/local/monotonic-deadline.mjs",
+]) {
+  if (!localTypeConfig.include?.includes(required)) throw new Error(`local type contract omits ${required}`);
+  if (!readFileSync(join(root, required), "utf8").startsWith("// @ts-check")) throw new Error(`${required} is not opt-in strict checked JavaScript`);
+}
+
 
 const installCommand = "npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
 const pinnedInstallCommand = "npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";

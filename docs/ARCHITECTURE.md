@@ -25,27 +25,22 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 
 ### Local runtime
 
-`LocalRuntime` is the transport-independent local tool engine. It owns:
+`LocalRuntime` is the transport-independent local tool orchestrator. It owns the shared authorization/execution pipeline, manager construction, mutation serialization, cancellation, and the narrow delegation surface used by stdio and relay transports. Domain behavior remains in focused services:
 
-- canonical path resolution and display-path privacy;
-- file, text search, image, patch, and Git operations;
-- direct and shell process execution;
-- process-session buffers and stdin lifecycle;
-- layered fixed runtime diagnostics;
-- local resource aliases and detached managed-job coordination;
-- session/bootstrap instruction discovery, live capability ranking, and registered-command execution coordination;
-- structured local application and existing-profile browser automation coordination;
-- mutation serialization;
-- child-process tracking and cancellation;
-- output, traversal, concurrency, and time limits.
+- `workspace-file-service.mjs` and `git-service.mjs` own canonical filesystem/Git operations;
+- `process-execution.mjs`, `process-sessions.mjs`, and `process-tracker.mjs` own child-process authority and lifecycle;
+- `runtime-reporting.mjs` builds privacy-aware runtime and project snapshots;
+- `runtime-diagnostics.mjs` owns fixed local probes and their stable interpretation;
+- `runtime-capabilities.mjs` composes agent, application, and browser capability results;
+- managed jobs, local resources, application automation, and browser automation remain separate managers.
 
-`RelayConnection` owns remote WebSocket transport, authenticated `hello_ack` readiness, heartbeat liveness, reconnect backoff, and outage logging. Stdio mode invokes `LocalRuntime` directly without that adapter.
+Architecture tests cap the orchestration module and each extracted service independently and reject a return of low-level process, patch, diagnostic, or capability-scoring logic to `LocalRuntime`. `RelayConnection` owns remote WebSocket transport, authenticated `hello_ack` readiness, heartbeat liveness, reconnect backoff, and outage logging. Stdio mode invokes `LocalRuntime` directly without that adapter.
 
 `daemon-process.mjs` owns workspace-daemon inspection and takeover. It distinguishes platform service state from the lock-owning Node process, validates PID and process-start identity, canonicalizes workspace/state paths before comparison, parses bounded process command lines without executing them, and sends `SIGTERM` only to a verified same-workspace `--daemon-only` process. POSIX daemons may ignore that signal and reach the bounded non-escalating timeout; Node's Windows signal mapping terminates the verified process directly. CLI orchestration never treats a missing launchd/systemd job as proof that the process exited.
 
 ### Agent context and capability resolver
 
-`AgentContextManager` discovers the nearest Git/workspace scope, applies the user configuration and hierarchical `.machine-bridge/agent.json` files, selects built-in/user/root-to-target instructions, discovers bounded filesystem skills, and resolves registered commands. `project-package.mjs` owns no-follow package metadata parsing, package-manager selection (including fail-closed conflicting-lockfile handling), script-name normalization, bounded workflow-intent aliases, and automatic `package.*` command construction so instruction rendering and command execution do not duplicate package parsing. `default-instructions.mjs` supplies a versioned in-package working-agreement block and derives a small virtual project-context block from root filenames and bounded metadata. It reads package script names but not bodies, does not inspect dependency values or source contents, executes nothing, and writes no user/repository files. A global `model_instructions_file` is a separate user-designated session source and cannot be overridden by a project.
+`AgentContextManager` discovers the nearest Git/workspace scope, applies the user configuration and hierarchical `.machine-bridge/agent.json` files, selects built-in/user/root-to-target instructions, discovers bounded filesystem skills, and resolves registered commands. `agent-contract.mjs` is the strict checked-JavaScript boundary for configuration shape, registered-command normalization, encoded-size limits, and configured-path containment; the manager does not maintain a second parser. `project-package.mjs` owns no-follow package metadata parsing, package-manager selection (including fail-closed conflicting-lockfile handling), script-name normalization, bounded workflow-intent aliases, and automatic `package.*` command construction so instruction rendering and command execution do not duplicate package parsing. `default-instructions.mjs` supplies a versioned in-package working-agreement block and derives a small virtual project-context block from root filenames and bounded metadata. It reads package script names but not bodies, does not inspect dependency values or source contents, executes nothing, and writes no user/repository files. A global `model_instructions_file` is a separate user-designated session source and cannot be overridden by a project.
 
 `session_bootstrap` is requested during both stdio and remote MCP initialization. The Worker delegates this read to the connected daemon with a short bounded timeout; failure falls back to static server instructions rather than blocking initialization indefinitely. `resolve_task_capabilities` performs a fresh deterministic scan, rebuilds automatic project facts, and ranks skill/command metadata for the current task. Application and browser capability metadata is added by `LocalRuntime`; installed application inventory uses a short bounded cache. `CapabilityObserver` records only counts, timestamps, source flags, selected metadata, match counts, recommended tool names, and a runtime-keyed task fingerprint so operators can verify routing without creating a task-content log.
 
@@ -59,7 +54,7 @@ See [Session instructions, skills, commands, and capability discovery](AGENT_CON
 
 ### Browser extension and machine broker
 
-`BrowserBridgeManager` owns connection orchestration for a loopback HTTP/WebSocket broker. Extension version/capability parsing lives in `browser-extension-protocol.mjs`; pairing files and local HTML/Host/Origin helpers live in `browser-pairing-store.mjs`. The first runtime for the machine-level state root becomes broker owner; additional workspaces and stdio runtimes authenticate to `/runtime` and proxy through the same extension socket. This preserves one extension pairing while allowing multiple local MCP runtimes.
+`BrowserBridgeManager` owns only connection orchestration for the loopback HTTP/WebSocket broker, owner/client failover, routed requests, cancellation, and extension replacement. `browser-operation-service.mjs` owns MCP-facing browser argument normalization, resource-backed values/uploads, form semantics, screenshot conversion, and status presentation. Extension version/capability parsing lives in the strict checked `browser-extension-protocol.mjs`; pairing files and local HTML/Host/Origin helpers live in `browser-pairing-store.mjs`. The first runtime for the machine-level state root becomes broker owner; additional workspaces and stdio runtimes authenticate to `/runtime` and proxy through the same extension socket. This preserves one extension pairing while allowing multiple local MCP runtimes.
 
 The packaged Manifest V3 extension runs in the user's existing Chromium profile. Its service worker is limited to pairing, transport, acknowledged protocol readiness, cancellation, and response routing. Fixed `browser-operations.js` owns tab lifecycle, aggregate frame/source budgets, waits, screenshots, and input-backend selection; fixed `page-automation.js` is injected into selected frames for snapshot-version-2 semantics, stable refs, bounded DOM/text traversal, actionability checks, open-Shadow-DOM traversal, structured DOM operations, multi-field forms, and resource-backed file inputs. Fixed `devtools-input.js` exposes only bounded mouse, keyboard, and text sequences through the Chromium debugger API; callers cannot select CDP methods. Trusted sessions attach for one action and detach in `finally`; DOM fallback is allowed only before any DevTools Input dispatch, preventing duplicate side effects after an ambiguous command failure. Protocol 3 requires bidirectional `hello`/`hello_ack` plus exact packaged-version and capability equality; pairing state and replacement are committed only after validation, so an invalid candidate cannot displace or overwrite the working configuration. The broker validates loopback hostnames, canonical extension IDs, matching pairing/broker ports, bearer subprotocols, message sizes, concurrency, and deadlines. Pairing material is owner-only and omitted from MCP/log output.
 
@@ -107,6 +102,8 @@ All requests for a deployed Worker route to one named Durable Object. It owns:
 - one active authenticated daemon WebSocket plus bounded candidate sockets;
 - policy/tool metadata attached to the active socket;
 - a bounded in-memory map of pending daemon calls.
+
+`BridgeRoom` owns Durable Object routing, MCP dispatch, daemon WebSocket lifecycle, and pending relay calls. `OAuthController` owns OAuth-store pruning, registration throttling, authorization pages/submission, account-admin routing, token exchange, access-token verification, and the serialization queue for OAuth mutations. Worker-internal TypeScript imports use explicit `.ts` specifiers and JSON import attributes, so the same modules are directly executable under the pinned Node runtime for focused state-machine tests as well as bundled by Wrangler.
 
 The Worker verifies OAuth, validates MCP envelopes and optional protocol headers, converts `tools/call` into WebSocket messages, correlates cancellation by access-token hash and JSON-RPC ID, and formats text/structured/image results. It has no local filesystem or process API.
 

@@ -2,8 +2,8 @@ import {
   emptyOAuthRefreshStore, isCurrentOAuthRefreshStore, normalizeOAuthScope, pkceS256,
   pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken, safeEqual, sha256Hex,
   type OAuthCode, type OAuthRefreshStore, type OAuthRefreshToken, type OAuthStore,
-} from "./oauth-state";
-import { HttpError, json, parseRequestBody } from "./http";
+} from "./oauth-state.ts";
+import { HttpError, json, parseRequestBody } from "./http.ts";
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 const REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 90;

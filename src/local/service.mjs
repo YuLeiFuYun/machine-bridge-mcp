@@ -48,7 +48,7 @@ export async function uninstallAutostart({ stateRoot, logger = console } = {}) {
   return uninstallSystemd(logger);
 }
 
-export async function autostartStatus({ logger = console } = {}) {
+export async function autostartStatus() {
   if (process.platform === "darwin") return statusLaunchd();
   if (process.platform === "win32") return statusWindowsTask({ run: serviceRun });
   return statusSystemd();

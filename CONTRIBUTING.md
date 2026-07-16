@@ -4,7 +4,7 @@ This repository treats every Git-tracked or nonignored repository file as releas
 
 ## Development workflow
 
-Read [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md) and the relevant domain documentation before changing behavior. This repository uses GitHub Flow: branch from current `main`, keep the change coherent, open a pull request, satisfy required checks, squash-merge, and delete the branch. Permanent `develop` or generic release integration branches are not used unless an independently maintained release line creates a concrete need. Repository automation performs GitHub operations only through local `git`, `gh`, and `gh api` commands executed by Machine Bridge; hosted GitHub connectors and ChatGPT GitHub plugins are prohibited for this repository.
+Read [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), [GOVERNANCE.md](GOVERNANCE.md), and the relevant domain documentation before changing behavior. This repository uses GitHub Flow: branch from current `main`, keep the change coherent, open a pull request, satisfy required checks, squash-merge, and delete the branch. Permanent `develop` or generic release integration branches are not used unless an independently maintained release line creates a concrete need. Repository automation performs GitHub operations only through local `git`, `gh`, and `gh api` commands executed by Machine Bridge; hosted GitHub connectors and ChatGPT GitHub plugins are prohibited for this repository.
 
 Branch names use a category and purpose such as `feat/browser-downloads`, `fix/relay-timeout`, or `chore/dependency-policy`.
 
@@ -27,6 +27,8 @@ Before the reviewed code is pushed to `main`:
 5. commit and push the reviewed change to GitHub.
 
 After all required pull-request checks pass, repository automation completes the source release under [AGENTS.md](AGENTS.md): squash-merge through local `gh`, verify the exact `main` push CI, CodeQL, Governance, and Scorecard runs, create the annotated version tag, and create or update the matching final GitHub Release. The release operator separately publishes the same version to npm and performs any live machine update. Automation must not publish, deprecate, or unpublish npm packages; install the CLI globally; deploy the Worker; rotate credentials; mutate live deployment state; or start/stop/install/remove the daemon or autostart service without explicit user authorization.
+
+Supported upgrade and rollback behavior is defined in [docs/UPGRADING.md](docs/UPGRADING.md). Support requests must follow [SUPPORT.md](SUPPORT.md), and repository participation follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 After npm publication, the standard machine update is:
 

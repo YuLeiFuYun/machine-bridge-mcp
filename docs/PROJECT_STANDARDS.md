@@ -94,6 +94,7 @@ Tests follow risk rather than a repository-wide aggregate percentage:
 - Protocol changes include producer-consumer contract tests and malformed-input tests.
 - Supported operating systems run the required suite in CI.
 - Critical modules have explicit function and branch baselines. Thresholds may rise after better tests or extraction; lowering one requires an audit note explaining why the old measurement was misleading.
+- High-risk JavaScript contract modules opt into strict TypeScript checking through `tsconfig.local.json`; implicit `any`, `@ts-ignore`, and untyped duplicate protocol/configuration shapes are not acceptable substitutes for a defined boundary.
 
 An 80% aggregate coverage target is not a repository requirement: it can hide untested critical branches behind trivial files. New or materially changed pure business modules should normally achieve at least 80% function coverage and meaningful branch coverage, but risk-specific tests remain the acceptance criterion.
 
@@ -124,7 +125,7 @@ Flaky tests are defects. A retry may diagnose environmental instability but may 
 ## 8. Documentation and comments
 
 - README covers supported setup, operation, major capabilities, limitations, and risk.
-- Architecture, security, testing, operations, logging, policy, and release documents each own their designated concern; avoid repeating whole procedures across files.
+- Architecture, security, testing, operations, logging, policy, upgrade, support, governance, and release documents each own their designated concern; avoid repeating whole procedures across files.
 - Documentation claims a guarantee only when code, configuration, or a test enforces it.
 - Public behavior changes update the changelog and relevant user documentation in the same pull request.
 - Comments explain non-obvious **why**, invariants, external constraints, and safety ordering. They do not narrate self-explanatory syntax.
@@ -136,7 +137,7 @@ Flaky tests are defects. A retry may diagnose environmental instability but may 
 
 Review examines correctness, causal completeness, security/privacy boundaries, compatibility, failure paths, observability, test evidence, and maintainability. Style preferences do not override a simpler correct design without a documented project rule.
 
-This repository currently has one human maintainer. Requiring one independent approval would deadlock maintenance and therefore is not enabled. The first governance priority when another active maintainer is added is to require one non-author approval for security-sensitive, release, policy, Worker, browser, and execution changes.
+This repository currently has one human maintainer. Requiring one independent approval would deadlock maintenance and therefore is not enabled. [GOVERNANCE.md](../GOVERNANCE.md) defines admission, succession, release authority, and the first mandatory control after another active maintainer is added: one non-author approval plus last-push approval for security-sensitive, release, policy, Worker, browser, state, and execution changes.
 
 ## 10. Exceptions and evolution
 

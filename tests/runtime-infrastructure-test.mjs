@@ -122,7 +122,7 @@ async function testToolExecutorConcurrency() {
   assert(registry.snapshot().active === 1, "blocked tool was not registered as active");
   const second = await Promise.race([
     executor.execute("fast", {}, { callId: "concurrent-second", origin: "relay", authorization: { role: "owner" } }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("independent tool call was serialized behind another call")), 250)),
+    new Promise((_, reject) => { setTimeout(() => reject(new Error("independent tool call was serialized behind another call")), 250); }),
   ]);
   assert(second === "fast-complete", "concurrent tool returned the wrong result");
   assert(registry.snapshot().active === 1, "completing one concurrent call corrupted the other lifecycle");
@@ -205,7 +205,7 @@ async function testProcessCancellationSettlesBeforeClose() {
   const running = service.run("never", [], 60_000, false, 1024, { callId: "stuck", signal: controller.signal });
   assert(spawnInvocation?.options?.shell === false, "direct process execution did not explicitly disable shell interpretation");
   controller.abort(new BridgeError("cancelled", "relay disconnected"));
-  await expectReject(() => Promise.race([running, new Promise((_, reject) => setTimeout(() => reject(new Error("cancellation did not settle")), 100))]), "cancelled", "relay disconnected");
+  await expectReject(() => Promise.race([running, new Promise((_, reject) => { setTimeout(() => reject(new Error("cancellation did not settle")), 100); })]), "cancelled", "relay disconnected");
   assert(terminated === 1, "cancelled process was not terminated");
   assert(tracker.snapshot().active_processes === 1, "process tracker released a child before close");
   child.emit("close", null);

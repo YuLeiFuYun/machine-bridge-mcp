@@ -1,35 +1,96 @@
+// @ts-check
+
 import catalog from "../shared/tool-catalog.json" with { type: "json" };
 import contract from "../shared/policy-contract.json" with { type: "json" };
 import { BridgeError } from "./errors.mjs";
 
+/** @typedef {"off" | "direct" | "shell"} ExecMode */
+/**
+ * @typedef {{
+ *   profile: string,
+ *   allowWrite: boolean,
+ *   execMode: ExecMode,
+ *   unrestrictedPaths: boolean,
+ *   minimalEnv: boolean,
+ *   exposeAbsolutePaths: boolean,
+ * }} PolicyCapabilities
+ */
+/**
+ * @typedef {PolicyCapabilities & {
+ *   origin: string,
+ *   revision: number,
+ *   allowExec: boolean,
+ * }} NormalizedPolicy
+ */
+/**
+ * @typedef {{
+ *   profile?: string,
+ *   allowWrite?: boolean,
+ *   execModes?: ExecMode[],
+ *   unrestrictedPaths?: boolean,
+ *   minimalEnv?: boolean,
+ *   exposeAbsolutePaths?: boolean,
+ * }} AvailabilityRequirements
+ */
+/** @typedef {{name: string, availability: string} & Record<string, unknown>} ToolDefinition */
+/**
+ * @typedef {{
+ *   profile?: unknown,
+ *   origin?: unknown,
+ *   revision?: unknown,
+ *   allowWrite?: unknown,
+ *   allowExec?: unknown,
+ *   execMode?: unknown,
+ *   unrestrictedPaths?: unknown,
+ *   minimalEnv?: unknown,
+ *   exposeAbsolutePaths?: unknown,
+ * }} PolicyInput
+ */
+
 export const DEFAULT_POLICY_PROFILE = String(contract.defaultProfile);
 export const DEFAULT_POLICY_REVISION = Number(contract.revision);
+/** @type {Readonly<Record<string, Readonly<PolicyCapabilities>>>} */
 export const POLICY_PROFILES = Object.freeze(Object.fromEntries(
-  Object.entries(contract.profiles).map(([name, value]) => [name, Object.freeze({ ...value })]),
+  Object.entries(contract.profiles).map(([name, value]) => [name, Object.freeze(/** @type {PolicyCapabilities} */ ({ ...value }))]),
 ));
 export const POLICY_ORIGINS = Object.freeze(new Set(contract.origins.map(String)));
+/** @type {Readonly<Record<string, Readonly<AvailabilityRequirements>>>} */
 export const POLICY_AVAILABILITY = Object.freeze(Object.fromEntries(
-  Object.entries(contract.availability).map(([name, value]) => [name, Object.freeze({ ...value })]),
+  Object.entries(contract.availability).map(([name, value]) => [
+    name,
+    Object.freeze(/** @type {AvailabilityRequirements} */ ({ ...value })),
+  ]),
 ));
 
-const TOOLS = Object.freeze(catalog.map((tool) => Object.freeze({ ...tool })));
+/** @type {ReadonlyArray<Readonly<ToolDefinition>>} */
+const TOOLS = Object.freeze(catalog.map((tool) => Object.freeze(/** @type {ToolDefinition} */ ({ ...tool }))));
 const TOOL_BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));
 
+/** @param {unknown} name @param {unknown} [origin] */
 export function policyProfile(name, origin = "explicit") {
   const profile = String(name || "").trim().toLowerCase();
-  if (!POLICY_PROFILES[profile]) throw new BridgeError("invalid_request", `unknown policy profile: ${profile}`);
-  return normalizePolicy({ ...POLICY_PROFILES[profile], origin, revision: DEFAULT_POLICY_REVISION });
+  const canonical = POLICY_PROFILES[profile];
+  if (!canonical) throw new BridgeError("invalid_request", `unknown policy profile: ${profile}`);
+  return normalizePolicy({ ...canonical, origin, revision: DEFAULT_POLICY_REVISION });
 }
 
+/** @param {PolicyInput} [policy] @returns {Readonly<NormalizedPolicy>} */
 export function normalizePolicy(policy = {}) {
-  const execMode = ["off", "direct", "shell"].includes(policy.execMode)
-    ? policy.execMode
+  const requestedExecMode = policy.execMode;
+  /** @type {ExecMode} */
+  const execMode = requestedExecMode === "off" || requestedExecMode === "direct" || requestedExecMode === "shell"
+    ? requestedExecMode
     : policy.allowExec === true
       ? "shell"
       : "off";
-  const origin = POLICY_ORIGINS.has(policy.origin) ? policy.origin : "custom";
-  const revision = Number.isInteger(policy.revision) && policy.revision > 0 ? policy.revision : DEFAULT_POLICY_REVISION;
+  const requestedOrigin = typeof policy.origin === "string" ? policy.origin : "";
+  const origin = POLICY_ORIGINS.has(requestedOrigin) ? requestedOrigin : "custom";
+  const requestedRevision = typeof policy.revision === "number" ? policy.revision : Number.NaN;
+  const revision = Number.isInteger(requestedRevision) && requestedRevision > 0
+    ? requestedRevision
+    : DEFAULT_POLICY_REVISION;
   const requestedProfile = typeof policy.profile === "string" && policy.profile ? policy.profile : "custom";
+  /** @type {NormalizedPolicy} */
   const normalized = {
     profile: requestedProfile,
     origin,
@@ -46,6 +107,7 @@ export function normalizePolicy(policy = {}) {
   return Object.freeze(normalized);
 }
 
+/** @param {PolicyCapabilities} left @param {PolicyCapabilities} right */
 export function policyCapabilitiesEqual(left, right) {
   return left.allowWrite === right.allowWrite
     && left.execMode === right.execMode
@@ -54,10 +116,12 @@ export function policyCapabilitiesEqual(left, right) {
     && left.exposeAbsolutePaths === right.exposeAbsolutePaths;
 }
 
+/** @param {PolicyInput} [policy] */
 export function isCanonicalFullPolicy(policy = {}) {
   return policyCapabilitiesEqual(normalizePolicy(policy), POLICY_PROFILES.full);
 }
 
+/** @param {PolicyInput} [policy] */
 export function assertCanonicalFullPolicy(policy = {}) {
   const normalized = normalizePolicy(policy);
   if (normalized.profile !== "full" || !isCanonicalFullPolicy(normalized)) {
@@ -69,9 +133,10 @@ export function assertCanonicalFullPolicy(policy = {}) {
   return normalized;
 }
 
+/** @param {PolicyInput} policy @param {unknown} availability */
 export function policyAllowsAvailability(policy, availability) {
   const normalized = normalizePolicy(policy);
-  const requirements = POLICY_AVAILABILITY[availability];
+  const requirements = POLICY_AVAILABILITY[String(availability || "")];
   if (!requirements) return false;
   if (requirements.profile && normalized.profile !== requirements.profile) return false;
   if (requirements.allowWrite === true && normalized.allowWrite !== true) return false;
@@ -82,15 +147,18 @@ export function policyAllowsAvailability(policy, availability) {
   return true;
 }
 
+/** @param {unknown} name */
 export function toolDefinition(name) {
   return TOOL_BY_NAME.get(String(name || "")) || null;
 }
 
+/** @param {PolicyInput} policy @param {unknown} name */
 export function policyAllowsTool(policy, name) {
   const tool = toolDefinition(name);
   return Boolean(tool && policyAllowsAvailability(policy, tool.availability));
 }
 
+/** @param {PolicyInput} policy @param {unknown} name */
 export function assertToolAllowed(policy, name) {
   const tool = toolDefinition(name);
   if (!tool) throw new BridgeError("not_found", `unknown tool: ${String(name || "")}`);
@@ -102,12 +170,14 @@ export function assertToolAllowed(policy, name) {
   return tool;
 }
 
+/** @param {PolicyInput} [policy] */
 export function toolsForPolicy(policy = {}) {
   const normalized = normalizePolicy(policy);
   return TOOLS.filter((tool) => policyAllowsAvailability(normalized, tool.availability))
     .map(({ availability, ...tool }) => structuredClone(tool));
 }
 
+/** @param {PolicyInput} [policy] */
 export function toolNamesForPolicy(policy = {}) {
   const normalized = normalizePolicy(policy);
   return TOOLS.filter((tool) => policyAllowsAvailability(normalized, tool.availability)).map((tool) => tool.name);
@@ -117,23 +187,29 @@ export function allToolNames() {
   return TOOLS.map((tool) => tool.name);
 }
 
-
+/**
+ * @param {PolicyInput} policy
+ * @param {((tool: string) => unknown) | null | undefined} provided
+ */
 export function createToolAuthorizer(policy, provided) {
   if (typeof provided === "function") return provided;
   const gate = new PolicyGate(policy);
-  return (tool) => gate.assert(tool);
+  return (/** @type {string} */ tool) => gate.assert(tool);
 }
 
 export class PolicyGate {
+  /** @param {PolicyInput} policy */
   constructor(policy) {
     this.policy = normalizePolicy(policy);
     this.allowedNames = new Set(toolNamesForPolicy(this.policy));
   }
 
+  /** @param {unknown} name */
   allows(name) {
     return this.allowedNames.has(String(name || ""));
   }
 
+  /** @param {unknown} name */
   assert(name) {
     return assertToolAllowed(this.policy, name);
   }

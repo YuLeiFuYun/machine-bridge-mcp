@@ -71,7 +71,7 @@ async function releaseRecoveryClaim() {
   const deadline = createMonotonicDeadline(5000);
   while (!deadline.expired()) {
     if (removeOwnedJsonFileSync(file, { pid: process.pid, token: recoveryLockToken })) return;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
   }
   throw new Error("recovery runner could not verify ownership of the recovery lock");
 }
@@ -257,7 +257,10 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
 
 function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget }) {
   return new Promise((resolvePromise, rejectPromise) => {
-    if (cancellationAware && isCancellationRequested()) return rejectPromise(new JobCancelledError());
+    if (cancellationAware && isCancellationRequested()) {
+      rejectPromise(new JobCancelledError());
+      return;
+    }
     const child = spawn(argv[0], argv.slice(1), {
       cwd,
       env,
@@ -300,7 +303,10 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
     });
     child.on("error", (error) => finish(() => rejectPromise(error)));
     child.on("close", (code, signal) => finish(() => {
-      if (cancellationAware && isCancellationRequested()) return rejectPromise(new JobCancelledError());
+      if (cancellationAware && isCancellationRequested()) {
+        rejectPromise(new JobCancelledError());
+        return;
+      }
       resolvePromise({
         code: Number.isInteger(code) ? code : 1,
         signal: signal ? String(signal) : null,

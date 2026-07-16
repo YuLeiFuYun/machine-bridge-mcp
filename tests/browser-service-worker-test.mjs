@@ -230,7 +230,7 @@ async function testBrowserWaitIgnoresWallClockRollback() {
   try {
     await Promise.race([
       api.dispatch("wait", { tabId: 7, urlContains: "/complete", timeoutMs: 30 }, { cancelled: false }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("wall-clock watchdog expired")), 1000)),
+      new Promise((_, reject) => { setTimeout(() => reject(new Error("wall-clock watchdog expired")), 1000); }),
     ]);
   } catch (caught) {
     error = caught;
@@ -363,7 +363,7 @@ function listener() {
 }
 
 function tick() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => { setTimeout(resolve, 0); });
 }
 
 async function expectReject(operation, expected) {

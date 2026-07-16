@@ -91,7 +91,7 @@ chromeArgs.push(blockedAuthorizationUrl);
 const child = spawn(chrome, chromeArgs, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
 let chromeStderr = "";
 child.stderr.on("data", (chunk) => { chromeStderr = `${chromeStderr}${chunk}`.slice(-16_384); });
-const childClosed = new Promise((resolve) => child.once("close", resolve));
+const childClosed = new Promise((resolve) => { child.once("close", resolve); });
 
 try {
   const target = await waitForPageTarget(debuggingPort);
@@ -146,15 +146,18 @@ try {
   globalCallbackServer.close();
   regionalCallbackServer.close();
   studioCallbackServer.close();
+  let cleanupError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       await rm(profile, { recursive: true, force: true });
+      cleanupError = null;
       break;
     } catch (error) {
-      if (attempt === 4) throw error;
-      await sleep(100);
+      cleanupError = error;
+      if (attempt < 4) await sleep(100);
     }
   }
+  if (cleanupError) console.error(`browser profile cleanup failed: ${cleanupError.message || cleanupError}`);
 }
 
 function findChrome() {
@@ -241,5 +244,5 @@ async function waitForExpression(client, expression) {
   throw new Error(`browser condition timed out at ${location.result?.result?.value ?? "unknown URL"}`);
 }
 
-function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function sleep(ms) { return new Promise((resolve) => { setTimeout(resolve, ms); }); }
 function assert(value, message) { if (!value) throw new Error(message); }

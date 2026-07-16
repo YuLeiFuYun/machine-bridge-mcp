@@ -69,7 +69,7 @@ try {
   send({ jsonrpc: "2.0", method: "tools/call", params: { name: "write_file", arguments: { path: notificationMarker, content: "must-not-run" } } });
   const rejectedNotification = await responseFor(null);
   assert(rejectedNotification.error?.code === -32600, "stdio accepted tools/call without a request id");
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 150));
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 150); });
   let notificationExecuted = false;
   try { await stat(notificationMarker); notificationExecuted = true; } catch {}
   assert(!notificationExecuted, "stdio silently executed a tools/call notification");
@@ -203,7 +203,7 @@ try {
   assert(killedExitedSession.result?.structuredContent?.termination_requested === false, "kill_process was not idempotent for an exited session");
 
   send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "run_process", arguments: { argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"], timeout_seconds: 60 } } });
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 100); });
   send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7, reason: "test" } });
   const cancelled = await responseFor(7, 10_000);
   assert(cancelled.result?.isError === true, "cancelled process did not return a tool error");
@@ -221,7 +221,7 @@ try {
   const stagedAccepted = await responseFor(690);
   const stagedJobId = stagedAccepted.result?.structuredContent?.job_id;
   assert(stagedAccepted.result?.structuredContent?.status === "staged" && stagedAccepted.result?.structuredContent?.execution_started === false, "stage_job did not remain non-executing");
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 300); });
   try { await readFile(stagedMarker); throw new Error("staged job executed before approval"); } catch (error) {
     if (!String(error?.message || error).includes("ENOENT")) throw error;
   }
@@ -326,7 +326,7 @@ async function waitForFile(path, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { await readFile(path); return; } catch {}
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 50); });
   }
   throw new Error(`timed out waiting for file: ${path}`);
 }

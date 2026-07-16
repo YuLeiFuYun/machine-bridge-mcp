@@ -1,22 +1,28 @@
+// @ts-check
+
 import { constants as fsConstants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 
 const SKIPPABLE_METADATA_CODES = new Set(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "EBUSY"]);
 
+/** @param {unknown} value @param {number} maxLength */
 export function safeSingleLine(value, maxLength) {
   if (typeof value !== "string") return "";
   return value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
+/** @param {unknown} error */
 export function skippableMetadataError(error) {
-  return SKIPPABLE_METADATA_CODES.has(error?.code);
+  return SKIPPABLE_METADATA_CODES.has(/** @type {NodeJS.ErrnoException} */ (error)?.code || "");
 }
 
+/** @param {string} filePath */
 export async function isRegularNonSymlink(filePath) {
   const info = await lstat(filePath).catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
   return Boolean(info && !info.isSymbolicLink() && info.isFile());
 }
 
+/** @param {string} filePath @param {number} maxBytes */
 export async function readOptionalRegularUtf8(filePath, maxBytes) {
   const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0))
     .catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
