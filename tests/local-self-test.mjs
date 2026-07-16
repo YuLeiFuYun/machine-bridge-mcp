@@ -203,6 +203,8 @@ async function stateSelfTest() {
     }
 
     await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({ token: "synthetic-browser-token-1234567890123456", port: 39393 })}\n`, { mode: 0o600 });
+    await writeFile(join(stateRoot, "service-environment.json"), `${JSON.stringify({ schemaVersion: 1, environment: {} })}\n`, { mode: 0o600 });
+    await writeFile(join(stateRoot, "service-launcher.cmd"), "@echo off\r\nexit /b 0\r\n", { mode: 0o600 });
     const safeRemoval = validateStateRootForRemoval(stateRoot);
     if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed after corrupt config recovery");
 

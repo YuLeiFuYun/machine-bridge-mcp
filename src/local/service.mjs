@@ -6,9 +6,17 @@ import { ensureOwnerOnlyDir, expandHome } from "./state.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { waitForInactiveStatus } from "./service-convergence.mjs";
+import { writeServiceEnvironment } from "./service-environment.mjs";
+import {
+  installWindowsTask,
+  startWindowsTask,
+  statusWindowsTask,
+  stopWindowsTask,
+  uninstallWindowsTask,
+} from "./windows-service.mjs";
+export { windowsCommandLineArgument } from "./windows-service.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
-const WINDOWS_TASK = "MachineBridgeMCP";
 const SERVICE_COMMAND_OUTPUT_BYTES = 64 * 1024;
 const AUTOSTART_LOG_SCHEMA_VERSION = 3;
 
@@ -26,40 +34,37 @@ export function runServiceCommand(command, args, execute = runExecutable) {
 
 export async function installAutostart({ workspace, stateRoot, entryScript, logger = console }) {
   const spec = serviceSpec({ workspace, stateRoot, entryScript });
-  if (process.platform === "darwin") return installLaunchd(spec, logger);
-  if (process.platform === "win32") return installWindowsTask(spec, logger);
-  return installSystemd(spec, logger);
+  const serviceEnvironment = writeServiceEnvironment(spec.stateRoot);
+  let result;
+  if (process.platform === "darwin") result = await installLaunchd(spec, logger);
+  else if (process.platform === "win32") result = await installWindowsTask(spec, logger, { run: serviceRun });
+  else result = await installSystemd(spec, logger);
+  return { ...result, service_environment: serviceEnvironment };
 }
 
 export async function uninstallAutostart({ stateRoot, logger = console } = {}) {
   if (process.platform === "darwin") return uninstallLaunchd(logger);
-  if (process.platform === "win32") return uninstallWindowsTask(logger);
+  if (process.platform === "win32") return uninstallWindowsTask(logger, { run: serviceRun, stateRoot });
   return uninstallSystemd(logger);
 }
 
 export async function autostartStatus({ logger = console } = {}) {
   if (process.platform === "darwin") return statusLaunchd();
-  if (process.platform === "win32") return statusWindowsTask();
+  if (process.platform === "win32") return statusWindowsTask({ run: serviceRun });
   return statusSystemd();
 }
 
 export async function startAutostart({ logger = console } = {}) {
   if (process.platform === "darwin") return startLaunchd(logger);
-  if (process.platform === "win32") {
-    return normalizeServiceCommandResult("schtasks", await serviceRun("schtasks", ["/Run", "/TN", WINDOWS_TASK]));
-  }
+  if (process.platform === "win32") return startWindowsTask(logger, { run: serviceRun });
   return normalizeServiceCommandResult("systemd", await serviceRun("systemctl", ["--user", "start", "machine-bridge-mcp.service"]));
 }
 
 export async function stopAutostart({ logger = console } = {}) {
   if (process.platform === "darwin") return stopLaunchd(logger);
-  if (process.platform === "win32") {
-    return normalizeServiceCommandResult("schtasks", await serviceRun("schtasks", ["/End", "/TN", WINDOWS_TASK]), { allowAlreadyStopped: true });
-  }
+  if (process.platform === "win32") return stopWindowsTask(logger, { run: serviceRun });
   return normalizeServiceCommandResult("systemd", await serviceRun("systemctl", ["--user", "stop", "machine-bridge-mcp.service"]), { allowAlreadyStopped: true });
 }
-
-
 
 export function normalizeServiceCommandResult(provider, result, { allowAlreadyStopped = false } = {}) {
   const detail = `${result?.stdout || ""}
@@ -136,7 +141,7 @@ function serviceSpec({ workspace, stateRoot, entryScript }) {
   ensureOwnerOnlyDir(root);
   ensureOwnerOnlyDir(logs);
   for (const file of [path.join(logs, "daemon.out.log"), path.join(logs, "daemon.err.log")]) ensurePrivateLogFile(file);
-  return {
+  const spec = {
     workspace,
     stateRoot: root,
     entryScript: resolvedEntryScript,
@@ -145,6 +150,7 @@ function serviceSpec({ workspace, stateRoot, entryScript }) {
     stdout: path.join(logs, "daemon.out.log"),
     stderr: path.join(logs, "daemon.err.log"),
   };
+  return { ...spec, daemonArgs: daemonArgs(spec) };
 }
 
 export function stableNodeExecutable(options = {}) {
@@ -411,43 +417,6 @@ StandardError=append:${spec.stderr}
 [Install]
 WantedBy=default.target
 `;
-}
-
-async function installWindowsTask(spec, logger) {
-  const command = windowsCommand(spec);
-  const result = await serviceRun("schtasks", ["/Create", "/TN", WINDOWS_TASK, "/SC", "ONLOGON", "/TR", command, "/F"]);
-  const ok = result.code === 0;
-  if (ok) logger.info?.("Windows Scheduled Task installed for logon");
-  else logger.warn?.("Windows Scheduled Task installation failed");
-  return { ok, provider: "schtasks", task: WINDOWS_TASK, result };
-}
-
-async function uninstallWindowsTask(logger) {
-  const end = await serviceRun("schtasks", ["/End", "/TN", WINDOWS_TASK]);
-  const result = await serviceRun("schtasks", ["/Delete", "/TN", WINDOWS_TASK, "/F"]);
-  const missing = /cannot find|not exist|not found/i.test(`${result.stdout}
-${result.stderr}`);
-  const ok = result.code === 0 || missing;
-  if (ok) logger.info?.("Windows Scheduled Task removed");
-  else logger.warn?.("Windows Scheduled Task removal failed");
-  return { ok, provider: "schtasks", task: WINDOWS_TASK, end, result };
-}
-
-async function statusWindowsTask() {
-  const result = await serviceRun("schtasks", ["/Query", "/TN", WINDOWS_TASK, "/FO", "LIST"]);
-  return { ok: result.code === 0, provider: "schtasks", installed: result.code === 0, task: WINDOWS_TASK, active: result.code === 0, detail: result.stdout || result.stderr };
-}
-
-function windowsCommand(spec) {
-  return [spec.node, ...daemonArgs(spec)].map(windowsCommandLineArgument).join(" ");
-}
-
-export function windowsCommandLineArgument(value) {
-  const text = String(value);
-  if (text.includes("\0")) throw new Error("Windows command-line argument contains a NUL byte");
-  const escapedQuotes = text.replace(/(\\*)"/g, (_match, slashes) => `${slashes}${slashes}\\"`);
-  const escapedTrailingSlashes = escapedQuotes.replace(/(\\+)$/, (slashes) => `${slashes}${slashes}`);
-  return `"${escapedTrailingSlashes}"`;
 }
 
 export function systemdQuote(value) {

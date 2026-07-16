@@ -69,7 +69,7 @@ Repository and user instruction files remain untrusted content from the model's 
 
 Automatic `package.*` commands expose only validated script names and fixed package-manager argv; they do not expose script bodies. Executing one still runs repository-controlled package-script code with local-user authority and is not a sandbox or trust upgrade.
 
-Relay proxy selection honors `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`. Only HTTP(S) proxy URLs are accepted. Proxy endpoints, credentials, and authorization headers are not returned through MCP or written to operational logs; status exposes only coarse route state.
+Relay proxy selection honors `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`. Only HTTP(S) proxy URLs are accepted. Autostart installation persists an allowlist of proxy and custom-CA environment values in `service-environment.json` so a background daemon can reproduce the foreground network route; a proxy URL may itself contain credentials, so this file is sensitive local state and must remain protected with the rest of the state root. Proxy endpoints, credentials, certificate paths, and authorization headers are not returned through MCP or written to operational logs; service status exposes only configured environment key names and relay status exposes only coarse route state.
 
 Skill loading is non-executing. `load_local_skill` returns an entrypoint and bounded file inventory; scripts remain inert until a separate process or command tool is called. Symlinked skill directories are followed only after canonical path-policy validation, while symbolic-link `SKILL.md` entrypoints are rejected. Traversal, cycles, content, summaries, and inventory are bounded.
 

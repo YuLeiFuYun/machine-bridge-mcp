@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.5 - 2026-07-16
+
+### Windows autostart and persisted network environment
+
+- Replace the oversized Windows Scheduled Task `/TR` invocation with a short private launcher. The launcher contains the full quoted Node/CLI/workspace argv, routes output to the normal service logs, exits on success, and restarts nonzero daemon exits after five seconds. Register it for current-user logon at `LIMITED` run level, and reject a custom state path when even the short action exceeds Task Scheduler's 262-character boundary.
+- Query Windows task state and last result through fixed PowerShell object properties instead of localized `schtasks` text. Creation, start, stop, and removal are verified against observed state; an installed `Ready` task is no longer reported as active, and localized nonzero stop/delete output cannot create a false failure after the requested state is reached. Default reboot recovery occurs after that Windows user signs in, not before login or as `SYSTEM`.
+- Persist an owner-only allowlist of proxy and custom-CA environment variables for autostart daemons. Session-only PowerShell proxy settings now survive logon/reboot, environment-free later starts do not erase them, explicit case-insensitive replacements remove stale variants, and status/logging expose only configured key names. Unrelated environment secrets, oversized values, and control characters are rejected.
+- Extend Worker idempotency coverage through a real disk-state reload to prove that a successful Wrangler upload followed by health timeout is not repeated by a new process. Clarify that a different canonical `--workspace` intentionally selects a different profile and Worker, and add terminal guidance to rotate any one-time account password exposed in shared output.
+- Refresh the exact `ws` and Wrangler pins. The `ws` patch tightens fragment buffering limits, while Wrangler advances its bundled `workerd`; update the reviewed install-script allowlist to the exact new `workerd` version and retain zero high-severity or production audit findings.
+
 ## 1.1.4 - 2026-07-15
 
 ### File integrity and contract corrections

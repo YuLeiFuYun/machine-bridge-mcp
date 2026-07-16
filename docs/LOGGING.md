@@ -39,6 +39,8 @@ Wrangler upload and `/healthz` verification are logged as separate state transit
 
 Health routing records only `direct` or `proxy` at debug level. Proxy URLs, credentials, request headers, Worker secrets, and raw response bodies are never fields. Repeated per-attempt health failures remain debug-only; the terminal startup error contains one user-readable classification and corrective commands.
 
+Autostart installation and daemon startup may report the names of allowlisted proxy/custom-CA environment variables that were saved or loaded. Their values, source environment, proxy endpoints, embedded credentials, and certificate paths are prohibited log fields. Windows task failures use stable reasons such as `task_create_failed` or `task_status_unavailable`; localized command output is retained only in an explicitly requested service-command result, not repeated in default startup warnings.
+
 ## Relay connection event policy
 
 A TCP/WebSocket `open` event is only transport availability. The daemon is reported as connected only after the Worker returns `hello_ack` for the authenticated `hello` message.
