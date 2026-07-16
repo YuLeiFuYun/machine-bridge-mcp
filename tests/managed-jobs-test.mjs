@@ -25,6 +25,20 @@ try {
   const resource = inspectResourceFile(secretFile);
   const sourcePathAlias = `${secretFile}.registration-alias`;
   resource.pathAliases = [...new Set([...(resource.pathAliases || []), sourcePathAlias])];
+  const prototypeResourceManager = new ManagedJobManager({
+    jobRoot: join(root, "prototype-resource-jobs"),
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true, unrestrictedPaths: true },
+    resources: { constructor: resource },
+  });
+  const prototypeResources = prototypeResourceManager.listResources();
+  assert(prototypeResources.count === 1 && prototypeResources.resources[0].name === "constructor", "prototype-shaped resource name was not treated as ordinary data");
+  const prototypeResourceJob = prototypeResourceManager.stage({
+    name: "prototype resource",
+    steps: [{ argv: [process.execPath, "-e", ""], env_resources: { MBM_PROTOTYPE_RESOURCE: "constructor" } }],
+  });
+  assert(prototypeResourceManager.inspectLocal({ job_id: prototypeResourceJob.job_id }).review_plan.resources.constructor?.kind === "file", "prototype-shaped resource lookup used inherited state");
+  prototypeResourceManager.cancel({ job_id: prototypeResourceJob.job_id });
   const manager = new ManagedJobManager({
     jobRoot,
     workspace,

@@ -37,7 +37,7 @@ function policyState(policy) {
 function selectPolicyBase(args, stored, hasStored) {
   if (args.profile !== undefined) {
     const profile = String(args.profile).trim().toLowerCase();
-    if (!POLICY_PROFILES[profile]) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
+    if (!Object.hasOwn(POLICY_PROFILES, profile)) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
     return policyProfile(profile, "explicit");
   }
   if (!hasStored) return policyProfile(DEFAULT_POLICY_PROFILE, "default");

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.1 - 2026-07-16
+
+### Fail-closed input contracts and bounded CLI adapters
+
+- Eliminate prototype-chain lookup from externally controlled command, action, account-role, policy-profile, form-field, keyboard, and local-resource keys. Dispatch and enumerations now use `Map`, `Set`, `Object.hasOwn`, or null-prototype records; names such as `constructor` and `__proto__` can no longer become inherited handlers or unauthorized enum members. A malformed current-schema OAuth account role is repaired in place to a disabled reviewer account, its version is advanced, and every existing authorization code and token is revoked so an affected installation remains administrable without granting authority.
+- Make Worker deployment output parsing and health verification share one canonical `workers.dev` origin validator. Wrangler output containing unrelated `/mcp`, `/healthz`, path-bearing, or wrong-name URLs is no longer accepted as deployment evidence and cannot poison the persisted URL or deployment fingerprint.
+- Preserve the exact browser `maxBytes` contract for non-ASCII page source. The DOM serializer now backs off to a complete UTF-8 prefix instead of decoding a split code point into a replacement character whose encoded size exceeds the reported budget; regressions cover emoji and Chinese text at every partial-byte boundary.
+- Replace ordinary browser and service CLI branch trees with named, map-driven adapters. The service adapter is independently injectable and reaches 100% function and over 90% branch coverage; architecture checks are split into module boundaries, repository hygiene, browser/security structure, and release/documentation contracts so source-shape guards remain supplemental to executable behavior tests.
+- Keep local state schema 6, policy revision 5, browser pairing, resources, jobs, and Worker identity unchanged for an in-place upgrade from 1.2.0. Normal startup still converges the versioned Worker and the unpacked extension must be reloaded; no live deployment, credential rotation, daemon replacement, global installation, or npm publication is performed by this source change.
+
 ## 1.2.0 - 2026-07-16
 
 ### Typed evolution boundaries and project governance

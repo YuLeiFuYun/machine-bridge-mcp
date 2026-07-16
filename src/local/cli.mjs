@@ -3,13 +3,14 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalRuntime } from "./runtime.mjs";
-import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "./daemon-process.mjs";
+import { acquireDaemonLockWithTakeover, stopWorkspaceServiceDaemon } from "./daemon-process.mjs";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { runStdioServer } from "./stdio.mjs";
 import { assertCanonicalFullPolicy, POLICY_PROFILES, toolsForPolicy } from "./tools.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
 import { effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
 import { createLocalAdminCommands } from "./cli-local-admin.mjs";
+import { createServiceCommand } from "./cli-service.mjs";
 import { generateAccountPassword } from "./account-admin.mjs";
 import { accountAdminClient, createAccountCommand } from "./cli-account-admin.mjs";
 export { resolvePolicy } from "./cli-policy.mjs";
@@ -18,7 +19,7 @@ import { classifyOperationalError, createLogger, sanitizeLogText } from "./log.m
 import { runExecutable, runWrangler } from "./shell.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
-import { loadServiceEnvironment, serviceEnvironmentSummary } from "./service-environment.mjs";
+import { loadServiceEnvironment } from "./service-environment.mjs";
 import { ensureWorkerDeployment } from "./worker-deployment.mjs";
 import { workerHealth } from "./worker-health.mjs";
 export { workerHealthUserReason } from "./worker-health.mjs";
@@ -48,24 +49,25 @@ import {
 
 const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm });
 const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
+const serviceCommand = createServiceCommand({ chooseWorkspace, stateRootFromArgs, structuredLogger });
 
-const COMMAND_HANDLERS = Object.freeze({
-  start: startCommand,
-  stdio: stdioCommand,
-  "client-config": clientConfigCommand,
-  status: statusCommand,
-  doctor: doctorCommand,
-  "full-test": fullTestCommand,
-  workspace: workspaceCommand,
-  service: serviceCommand,
-  autostart: serviceCommand,
-  "rotate-secrets": rotateSecretsCommand,
-  resource: localAdminCommands.resourceCommand,
-  account: accountCommand,
-  browser: localAdminCommands.browserCommand,
-  job: localAdminCommands.jobCommand,
-  uninstall: uninstallCommand,
-});
+const COMMAND_HANDLERS = new Map([
+  ["start", startCommand],
+  ["stdio", stdioCommand],
+  ["client-config", clientConfigCommand],
+  ["status", statusCommand],
+  ["doctor", doctorCommand],
+  ["full-test", fullTestCommand],
+  ["workspace", workspaceCommand],
+  ["service", serviceCommand],
+  ["autostart", serviceCommand],
+  ["rotate-secrets", rotateSecretsCommand],
+  ["resource", localAdminCommands.resourceCommand],
+  ["account", accountCommand],
+  ["browser", localAdminCommands.browserCommand],
+  ["job", localAdminCommands.jobCommand],
+  ["uninstall", uninstallCommand],
+]);
 
 export async function main(argv = process.argv.slice(2)) {
   const [command, rest] = normalizeCommand(argv);
@@ -75,7 +77,7 @@ export async function main(argv = process.argv.slice(2)) {
   validateCommandOptions(command, args);
   validatePositionals(command, args);
   validateLoggingOptions(args);
-  const handler = COMMAND_HANDLERS[command];
+  const handler = COMMAND_HANDLERS.get(command);
   if (handler) return handler(args);
   console.error(`Unknown command: ${command}`);
   usage();
@@ -352,7 +354,7 @@ async function clientConfigCommand(args) {
   const workspace = await chooseWorkspace(workspaceArgs, { promptOnFirstRun: false, save: false, allowPositional: false });
   const requested = String(args.client || args._[0] || "all").trim().toLowerCase();
   const profile = String(args.profile || "full").trim().toLowerCase();
-  if (!POLICY_PROFILES[profile]) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
+  if (!Object.hasOwn(POLICY_PROFILES, profile)) throw new Error(`--profile must be one of: ${Object.keys(POLICY_PROFILES).join(", ")}`);
   if (!["all", "claude", "cursor", "codex", "generic"].includes(requested)) throw new Error("client must be all, claude, cursor, codex, or generic");
   const command = process.execPath;
   const argsList = [resolve(process.argv[1]), "stdio", "--workspace", workspace, "--profile", profile];
@@ -535,90 +537,6 @@ async function rotateSecretsCommand(args) {
   } finally {
     startupLock.release();
   }
-}
-
-async function serviceCommand(args) {
-  const action = String(args._[0] || "status");
-  const stateRoot = stateRootFromArgs(args);
-  const { installAutostart, uninstallAutostart, autostartStatus, startAutostart, stopAutostart } = await import("./service.mjs");
-  if (action === "status") {
-    const status = await autostartStatus();
-    const state = optionalServiceState(args, stateRoot);
-    const workspaceDaemon = state ? inspectWorkspaceDaemon(state) : null;
-    console.log(JSON.stringify({
-      ...status,
-      workspace: state?.workspace?.path || null,
-      workspace_daemon: workspaceDaemon,
-      service_environment: serviceEnvironmentSummary(stateRoot),
-      effective_active: Boolean(status.active || workspaceDaemon?.alive),
-      orphaned_workspace_daemon: Boolean(status.active === false && workspaceDaemon?.alive && workspaceDaemon?.verified_service_daemon),
-    }, null, 2));
-    return;
-  }
-  if (action === "install") {
-    const workspaceArgs = { ...args, _: args._.slice(1) };
-    const workspace = await chooseWorkspace(workspaceArgs, { promptOnFirstRun: true, save: true, allowPositional: true });
-    const state = loadState(workspace, { stateDir: stateRoot });
-    if (!state.worker?.url) {
-      throw new Error("No deployed Worker is recorded for this workspace. Run `machine-mcp` once before `machine-mcp service install`.");
-    }
-    const result = await installAutostart({ workspace, stateRoot, entryScript: process.argv[1], logger: structuredLogger(Boolean(args.quiet)) });
-    console.log(JSON.stringify(result, null, 2));
-    if (result?.ok === false) process.exitCode = 1;
-    return;
-  }
-  if (action === "start") {
-    const result = await startAutostart({ logger: structuredLogger(Boolean(args.quiet)) });
-    console.log(JSON.stringify(result, null, 2));
-    if (result?.ok === false) process.exitCode = 1;
-    return;
-  }
-  if (action === "stop") {
-    const logger = structuredLogger(Boolean(args.quiet));
-    const provider = await stopAutostart({ logger });
-    const state = optionalServiceState(args, stateRoot);
-    const workspaceDaemon = state
-      ? await stopWorkspaceServiceDaemon(state, { logger, reason: "service stop" })
-      : { ok: true, found: false, stopped: false, verified_service_daemon: false, reason: "workspace_not_selected" };
-    const result = {
-      ...provider,
-      ok: provider?.ok !== false && workspaceDaemon.ok,
-      workspace: state?.workspace?.path || null,
-      workspace_daemon: workspaceDaemon,
-    };
-    console.log(JSON.stringify(result, null, 2));
-    if (!result.ok) process.exitCode = 1;
-    return;
-  }
-  if (action === "uninstall" || action === "remove") {
-    const logger = structuredLogger(Boolean(args.quiet));
-    const state = optionalServiceState(args, stateRoot);
-    const lifecycle = await stopAndRemoveAutostart({
-      states: state ? [state] : [],
-      stateRoot,
-      logger,
-      reason: "service uninstall",
-      stopAutostart,
-      uninstallAutostart,
-      stopWorkspaceServiceDaemon,
-    });
-    const output = {
-      ...lifecycle,
-      workspace: state?.workspace?.path || null,
-      workspace_daemon: lifecycle.workspace_daemons[0] || null,
-      autostart_removed: lifecycle.removed,
-    };
-    console.log(JSON.stringify(output, null, 2));
-    if (!output.ok) process.exitCode = 1;
-    return;
-  }
-  throw new Error(`Unknown service action: ${action}`);
-}
-
-function optionalServiceState(args, stateRoot) {
-  const requested = args.workspace || args._[1] || selectedWorkspace(stateRoot);
-  if (!requested || requested === true) return null;
-  return loadState(resolveWorkspace(String(requested)), { stateDir: stateRoot });
 }
 
 async function installAutostartBestEffort({ workspace, stateRoot, entryScript, logger }) {

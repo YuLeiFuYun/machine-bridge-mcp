@@ -25,17 +25,17 @@ export function createLocalAdminCommands(dependencies) {
   });
 }
 
-const RESOURCE_ACTION_HANDLERS = Object.freeze({
-  list: resourceListAction,
-  add: resourceAddAction,
-  "generate-ssh-key": resourceGenerateSshKeyAction,
-  remove: resourceRemoveAction,
-  check: resourceCheckAction,
-});
+const RESOURCE_ACTION_HANDLERS = new Map([
+  ["list", resourceListAction],
+  ["add", resourceAddAction],
+  ["generate-ssh-key", resourceGenerateSshKeyAction],
+  ["remove", resourceRemoveAction],
+  ["check", resourceCheckAction],
+]);
 
 async function resourceCommand(args, { chooseWorkspace }) {
   const action = String(args._[0] || "list").toLowerCase();
-  const handler = RESOURCE_ACTION_HANDLERS[action];
+  const handler = RESOURCE_ACTION_HANDLERS.get(action);
   if (!handler) throw new Error(`Unknown resource action: ${action}`);
   const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
   const state = loadState(workspace, { stateDir: args.stateDir });
@@ -155,7 +155,7 @@ async function resourceRemoveAction({ args, workspace, state }) {
 
 function resourceCheckAction({ args, state }) {
   const name = validateResourceName(args._[1]);
-  const resource = state.resources[name];
+  const resource = Object.hasOwn(state.resources, name) ? state.resources[name] : null;
   if (!resource) throw new Error(`local resource is not registered: ${name}`);
   const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
   const result = publicResourceInspection(name, inspected, { includePath: args.showPaths === true });
@@ -181,15 +181,47 @@ function publicResourceInspection(name, inspected, { includePath = false, ...ext
   };
 }
 
-async function browserCommand(args, { chooseWorkspace }) {
+const BROWSER_ACTION_HANDLERS = new Map([
+  ["path", browserPathAction],
+  ["status", browserStatusAction],
+  ["setup", browserPairAction],
+  ["pair", browserPairAction],
+]);
+
+async function browserCommand(args, dependencies) {
   const action = String(args._[0] || "status").toLowerCase();
+  const handler = BROWSER_ACTION_HANDLERS.get(action);
+  if (!handler) throw new Error(`Unknown browser action: ${action}`);
+  return handler(args, dependencies);
+}
+
+function browserPathAction(args) {
   const extensionPath = resolve(packageRoot, "browser-extension");
-  if (action === "path") {
-    if (args.json) console.log(JSON.stringify({ extension_path: extensionPath }, null, 2));
-    else console.log(extensionPath);
+  if (args.json) console.log(JSON.stringify({ extension_path: extensionPath }, null, 2));
+  else console.log(extensionPath);
+}
+
+async function browserStatusAction(args, { chooseWorkspace }) {
+  const context = await browserCommandContext(args, chooseWorkspace);
+  renderBrowserStatus(context.result, args.json === true);
+}
+
+async function browserPairAction(args, { chooseWorkspace }) {
+  const context = await browserCommandContext(args, chooseWorkspace);
+  if (!context.result.running) throw new Error("browser bridge is not reachable; keep machine-mcp running and retry");
+  await openExternal(context.pairingUrl);
+  if (args.json) {
+    console.log(JSON.stringify({ ...context.result, pairing_page_opened: true }, null, 2));
     return;
   }
-  if (!["status", "setup", "pair"].includes(action)) throw new Error(`Unknown browser action: ${action}`);
+  console.log(`Extension path: ${context.extensionPath}`);
+  console.log("Load this directory in the Chromium profile you use every day; Machine Bridge does not install it into Playwright or a separate automation profile.");
+  console.log("Enable Developer mode, choose Load unpacked, and reload the extension after each Machine Bridge upgrade.");
+  console.log(`Pairing page opened: ${context.pairingUrl}`);
+}
+
+async function browserCommandContext(args, chooseWorkspace) {
+  const extensionPath = resolve(packageRoot, "browser-extension");
   const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
   const state = loadState(workspace, { stateDir: args.stateDir });
   const pairingFile = join(state.paths.stateRoot, "browser-bridge.json");
@@ -197,6 +229,13 @@ async function browserCommand(args, { chooseWorkspace }) {
     throw new Error("browser bridge is not initialized; start machine-mcp once, then run this command again");
   }
   ownerOnlyFile(pairingFile);
+  const pairing = readBrowserPairingState(pairingFile);
+  const pairingUrl = `http://127.0.0.1:${pairing.port}/pair`;
+  const health = await readBrowserHealth(`http://127.0.0.1:${pairing.port}/healthz`);
+  return { extensionPath, pairingUrl, result: browserStatusResult(health, extensionPath, pairingUrl) };
+}
+
+function readBrowserPairingState(pairingFile) {
   let pairing;
   try {
     pairing = JSON.parse(readBoundedRegularFileSync(pairingFile, 64 * 1024).toString("utf8"));
@@ -206,12 +245,17 @@ async function browserCommand(args, { chooseWorkspace }) {
   const port = Number(pairing.port);
   if (!/^[A-Za-z0-9_-]{32,100}$/.test(String(pairing.token || ""))) throw new Error("browser bridge state contains an invalid token");
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("browser bridge state contains an invalid port");
-  const pairingUrl = `http://127.0.0.1:${port}/pair`;
-  const healthUrl = `http://127.0.0.1:${port}/healthz`;
-  const health = await fetch(healthUrl, { signal: AbortSignal.timeout(2000), cache: "no-store" })
+  return { port };
+}
+
+function readBrowserHealth(healthUrl) {
+  return fetch(healthUrl, { signal: AbortSignal.timeout(2000), cache: "no-store" })
     .then(async (response) => response.ok ? await response.json() : null)
     .catch(() => null);
-  const result = {
+}
+
+function browserStatusResult(health, extensionPath, pairingUrl) {
+  return {
     running: health?.ok === true && health?.broker === "machine-bridge-browser",
     connected: health?.broker === "machine-bridge-browser" && health?.connected === true,
     extension_path: extensionPath,
@@ -227,28 +271,20 @@ async function browserCommand(args, { chooseWorkspace }) {
     profile_identity_verifiable: health?.profile_identity_verifiable === true,
     token_exposed: false,
   };
-  if (action === "status") {
-    if (args.json) console.log(JSON.stringify(result, null, 2));
-    else {
-      console.log(`Browser bridge: ${result.running ? "running" : "not reachable"}`);
-      console.log(`Extension: ${result.connected ? "connected" : result.extension_reload_required ? "reload required" : "not connected"}`);
-      if (result.expected_extension_version) console.log(`Expected extension build: ${result.expected_extension_version}`);
-      if (result.extension_version || result.extension_protocol) console.log(`Connected extension build: ${result.extension_version || "unknown"} (protocol ${result.extension_protocol ?? "unknown"})`);
-      console.log(`Browser profile: ${result.controls_extension_profile ? "the Chromium profile where this extension is installed" : "unknown"}`);
-      if (result.controls_extension_profile) console.log(`Profile provenance: Machine Bridge did not launch the browser; daily-vs-isolated profile identity is not machine-verifiable.`);
-      console.log(`Extension path: ${extensionPath}`);
-    }
+}
+
+function renderBrowserStatus(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
-  if (!result.running) throw new Error("browser bridge is not reachable; keep machine-mcp running and retry");
-  await openExternal(pairingUrl);
-  if (args.json) console.log(JSON.stringify({ ...result, pairing_page_opened: true }, null, 2));
-  else {
-    console.log(`Extension path: ${extensionPath}`);
-    console.log("Load this directory in the Chromium profile you use every day; Machine Bridge does not install it into Playwright or a separate automation profile.");
-    console.log("Enable Developer mode, choose Load unpacked, and reload the extension after each Machine Bridge upgrade.");
-    console.log(`Pairing page opened: ${pairingUrl}`);
-  }
+  console.log(`Browser bridge: ${result.running ? "running" : "not reachable"}`);
+  console.log(`Extension: ${result.connected ? "connected" : result.extension_reload_required ? "reload required" : "not connected"}`);
+  if (result.expected_extension_version) console.log(`Expected extension build: ${result.expected_extension_version}`);
+  if (result.extension_version || result.extension_protocol) console.log(`Connected extension build: ${result.extension_version || "unknown"} (protocol ${result.extension_protocol ?? "unknown"})`);
+  console.log(`Browser profile: ${result.controls_extension_profile ? "the Chromium profile where this extension is installed" : "unknown"}`);
+  if (result.controls_extension_profile) console.log("Profile provenance: Machine Bridge did not launch the browser; daily-vs-isolated profile identity is not machine-verifiable.");
+  console.log(`Extension path: ${result.extension_path}`);
 }
 
 function openExternal(target) {

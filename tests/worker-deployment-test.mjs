@@ -16,6 +16,7 @@ import {
   retryWorkerHealth,
   workerHealth,
   workerHealthError,
+  normalizeWorkerOrigin,
   workerHealthRequiresRedeploy,
   workerHealthUrl,
   workerHealthUserReason,
@@ -74,6 +75,7 @@ await listen(proxy);
 try {
   const workerUrl = "https://worker-health.account-example.workers.dev";
   const expectedWorkerName = "worker-health";
+  assert.equal(normalizeWorkerOrigin(workerUrl, expectedWorkerName), workerUrl);
   assert.equal(workerHealthUrl(workerUrl, expectedWorkerName), `${workerUrl}/healthz`);
   for (const invalid of [
     "http://worker-health.account-example.workers.dev",
@@ -369,6 +371,31 @@ async function verifyDeploymentUrlBoundaries() {
   );
   assert.equal(missingSaves, 0);
 
+  for (const unrelated of [
+    "See https://example.test/mcp for documentation",
+    "Health details: https://example.test/healthz",
+    "Deployed https://other-worker.account-example.workers.dev",
+    "Deployed https://mbm-missing-url-test.account-example.workers.dev/mcp",
+  ]) {
+    const poisoned = workerState("mbm-missing-url-test");
+    let poisonedSaves = 0;
+    await assert.rejects(
+      ensureWorkerDeployment(poisoned, {}, {
+        packageRoot: root, expectedVersion: version,
+        runWrangler: async (args) => args[0] === "whoami"
+          ? { code: 0, stdout: "authenticated", stderr: "" }
+          : { code: 0, stdout: unrelated, stderr: "" },
+        withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
+        saveState: () => { poisonedSaves += 1; },
+        retryHealth: async () => { throw new Error("health must not run for an invalid extracted URL"); },
+        logger: quietLogger(),
+      }),
+      /deployment fingerprint was not saved/,
+    );
+    assert.equal(poisonedSaves, 0, `unrelated URL poisoned persisted deployment state: ${unrelated}`);
+    assert.equal(poisoned.worker.url, undefined);
+  }
+
   const recorded = workerState("mbm-recorded-url-test");
   recorded.worker.url = "https://mbm-recorded-url-test.account-example.workers.dev";
   recorded.worker.mcpServerUrl = `${recorded.worker.url}/mcp`;
@@ -409,10 +436,18 @@ function verifyWorkerNameSafety() {
 
 function verifyWorkerUrlParsing() {
   assert.equal(
-    extractWorkerUrl("Uploaded\nDeployed https://mbm-url-test.account-example.workers.dev\n"),
+    extractWorkerUrl("Docs https://example.test/mcp\nDeployed https://mbm-url-test.account-example.workers.dev\n", "mbm-url-test"),
     "https://mbm-url-test.account-example.workers.dev",
   );
+  for (const invalid of [
+    "See https://example.test/mcp for details",
+    "Health https://example.test/healthz",
+    "Deployed https://mbm-url-test.account-example.workers.dev/mcp",
+    "Deployed https://mbm-other-test.account-example.workers.dev",
+  ]) assert.equal(extractWorkerUrl(invalid, "mbm-url-test"), "");
   assert.equal(workerUrlMatchesName("https://mbm-url-test.account-example.workers.dev", "mbm-url-test"), true);
+  assert.equal(workerUrlMatchesName("https://MBM-URL-TEST.ACCOUNT-EXAMPLE.WORKERS.DEV/", "mbm-url-test"), true);
+  assert.equal(workerUrlMatchesName("https://mbm-url-test.account-example.workers.dev/mcp", "mbm-url-test"), false);
   assert.equal(workerUrlMatchesName("https://mbm-other-test.account-example.workers.dev", "mbm-url-test"), false);
   assert.equal(workerUrlMatchesName("https://example.com", "mbm-url-test"), false);
 }

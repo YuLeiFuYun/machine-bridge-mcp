@@ -55,6 +55,7 @@ Rules:
 - Every protocol control message emitted by one side must be explicitly accepted, rejected, or version-gated by the other side, with an end-to-end contract test covering the message name and semantics.
 - State transitions are explicit; readiness is not inferred from a lower-level event. For example, an open WebSocket is not an authenticated relay until `hello_ack` is received.
 - Every externally controlled input is bounded before expensive allocation, traversal, parsing, storage, or execution.
+- Externally controlled string keys must not use prototype-chain membership or truthiness on ordinary objects. Use `Map`, `Set`, `Object.hasOwn`, or null-prototype records for command dispatch, enums, ACLs, form fields, registries, and other key-addressed contracts.
 - Repository text must not contain invisible ASCII controls other than tab, CR, and LF; architecture tests enforce this even when JavaScript syntax remains valid.
 - Persistent mutations use owner-only files, bounded no-follow reads, flushed atomic replacement, and integrity checks appropriate to the data.
 - Exclusive locks use the shared complete-before-visible hard-link claim. Reclamation requires process identity plus a matching file snapshot/token; do not unlink a path merely because an earlier read looked stale.
@@ -121,6 +122,8 @@ A higher branch count is acceptable only when the function is an explicit state 
 ## Testing rules
 
 Every defect fix includes a regression test that fails for the original reason. Prefer two layers when applicable:
+
+Prototype-shaped strings such as `constructor`, `__proto__`, `hasOwnProperty`, `toString`, and `valueOf` are mandatory negative or ordinary-data cases for any new externally indexed object boundary. Byte-bounded text tests must include non-ASCII input and assert the encoded result size, not only JavaScript string length.
 
 1. a deterministic test of the extracted policy or lifecycle;
 2. an integration test proving the adapter uses it correctly.

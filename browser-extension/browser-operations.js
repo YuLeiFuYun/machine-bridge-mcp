@@ -181,7 +181,7 @@
   function boundedDocumentSource(limit) {
     const maxBytes = Math.max(1, Number(limit) || 1);
     const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
     const chunks = [];
     const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
     const MAX_NODES = 100000;
@@ -207,8 +207,14 @@
         returnedBytes += bytes.byteLength;
         return true;
       }
-      chunks.push(decoder.decode(bytes.slice(0, remaining)));
-      returnedBytes = maxBytes;
+      let end = remaining;
+      let prefix = "";
+      while (end > 0) {
+        try { prefix = decoder.decode(bytes.slice(0, end)); break; }
+        catch { end -= 1; }
+      }
+      if (prefix) chunks.push(prefix);
+      returnedBytes += end;
       budgetExhausted = true;
       return false;
     };

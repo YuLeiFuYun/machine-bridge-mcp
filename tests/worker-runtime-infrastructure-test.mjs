@@ -3,6 +3,7 @@ import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-sess
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
 import { WorkerObservability } from "../src/worker/observability.ts";
+import { searchParamsObject } from "../src/worker/http.ts";
 
 await testMcpSessions();
 await testRequestKeyReuse();
@@ -12,6 +13,7 @@ await testTimeoutCallbackFailure();
 testWorkerPolicyParity();
 testWorkerErrors();
 testWorkerObservability();
+testPrototypeSafeFormFields();
 console.log("worker runtime infrastructure test ok");
 
 
@@ -125,6 +127,13 @@ function testWorkerPolicyParity() {
   const reviewTools = new Set(sanitizeDaemonTools(["read_file", "write_file", "list_jobs", "start_job"], review));
   assert(reviewTools.has("read_file") && reviewTools.has("list_jobs"), "Worker removed read-only tools from review");
   assert(!reviewTools.has("write_file") && !reviewTools.has("start_job"), "Worker accepted denied tools from daemon hello");
+}
+
+function testPrototypeSafeFormFields() {
+  const value = searchParamsObject(new URLSearchParams("constructor=first&constructor=second&__proto__=plain"));
+  assert(Object.getPrototypeOf(value) === null, "form field aggregation retained Object.prototype");
+  assert(Array.isArray(value.constructor) && value.constructor.join(",") === "first,second", "constructor form field was not treated as ordinary data");
+  assert(value.__proto__ === "plain", "__proto__ form field was not treated as ordinary data");
 }
 
 function testWorkerErrors() {

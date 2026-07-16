@@ -103,8 +103,8 @@ export async function buildProjectOverview({
 }
 
 function policyMatchesNamedProfile(policy) {
+  if (!Object.hasOwn(POLICY_PROFILES, policy.profile)) return false;
   const named = POLICY_PROFILES[policy.profile];
-  if (!named) return false;
   return policy.allowWrite === named.allowWrite
     && policy.execMode === named.execMode
     && policy.unrestrictedPaths === named.unrestrictedPaths

@@ -100,10 +100,10 @@
     let modifiers = 0;
     for (const raw of parts) {
       const name = raw === "Ctrl" ? "Control" : raw === "Cmd" || raw === "Command" ? "Meta" : raw;
-      if (!(name in MODIFIERS)) throw new Error(`unsupported key modifier: ${raw}`);
+      if (!Object.hasOwn(MODIFIERS, name)) throw new Error(`unsupported key modifier: ${raw}`);
       modifiers |= MODIFIERS[name];
     }
-    const known = KEY_DATA[keyName];
+    const known = Object.hasOwn(KEY_DATA, keyName) ? KEY_DATA[keyName] : null;
     if (known) return {
       key: known.key || keyName,
       code: known.code,

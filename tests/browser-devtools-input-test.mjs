@@ -31,6 +31,8 @@ commands.length = 0;
 await api.perform(7, "type_text", { text: "bounded text" });
 assert(commands.length === 1 && commands[0].method === "Input.insertText" && commands[0].params.text === "bounded text", "trusted text input did not use Input.insertText");
 await expectReject(() => api.perform(7, "arbitrary", {}), "does not support");
+await expectReject(() => api.perform(7, "press", { key: "constructor+A" }), "unsupported key modifier");
+await expectReject(() => api.perform(7, "press", { key: "constructor" }), "unsupported key");
 
 const failingContext = vm.createContext({
   chrome: { debugger: { async attach() { throw new Error("already attached\nprivate detail"); }, async sendCommand() {}, async detach() {} } },

@@ -53,8 +53,8 @@ export async function retryWorkerHealth(workerUrl, expectedVersion, attempts, op
   return last;
 }
 
-export function workerHealthUrl(workerUrl, expectedWorkerName = "") {
-  const base = new URL(`${String(workerUrl).replace(/\/+$/, "")}/`);
+export function normalizeWorkerOrigin(workerUrl, expectedWorkerName = "") {
+  const base = new URL(String(workerUrl));
   const hostname = base.hostname.toLowerCase();
   const expectedName = String(expectedWorkerName || "").toLowerCase();
   if (base.protocol !== "https:" || base.port || base.username || base.password || base.search || base.hash || base.pathname !== "/") {
@@ -64,7 +64,11 @@ export function workerHealthUrl(workerUrl, expectedWorkerName = "") {
   if (expectedName && (!WORKER_NAME.test(expectedName) || hostname.split(".")[0] !== expectedName)) {
     throw new Error("Worker URL hostname does not match the recorded Worker name");
   }
-  return `https://${hostname}/healthz`;
+  return `https://${hostname}`;
+}
+
+export function workerHealthUrl(workerUrl, expectedWorkerName = "") {
+  return `${normalizeWorkerOrigin(workerUrl, expectedWorkerName)}/healthz`;
 }
 
 export function isRetryableWorkerHealthError(value) {

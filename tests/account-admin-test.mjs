@@ -5,6 +5,9 @@ const roles = accountRoleNames();
 assert(JSON.stringify(roles) === JSON.stringify(["reviewer", "editor", "operator", "owner"]), "account roles differ from the shared contract");
 assert(normalizeAccountRole(" OWNER ") === "owner", "account role normalization failed");
 expectThrow(() => normalizeAccountRole("administrator"), "unknown account role");
+for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) {
+  expectThrow(() => normalizeAccountRole(inherited), "unknown account role");
+}
 
 const gate = new AccountAccessGate();
 const reviewerTools = new Set(accountRoleToolNames("reviewer"));

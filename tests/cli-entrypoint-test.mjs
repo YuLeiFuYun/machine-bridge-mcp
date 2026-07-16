@@ -56,6 +56,16 @@ try {
 
   const unknown = run(["not-a-command"]);
   assert(unknown.status === 2 && unknown.stderr.includes("Unknown command"), "unknown command did not return the documented usage error");
+  for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) {
+    const topLevel = run([inherited]);
+    assert(topLevel.status === 2 && topLevel.stderr.includes("Unknown command"), `prototype-shaped command ${inherited} bypassed command validation`);
+    const resourceAction = run(["resource", inherited]);
+    assert(resourceAction.status !== 0 && resourceAction.stderr.includes("Unknown resource action"), `prototype-shaped resource action ${inherited} bypassed action validation`);
+    const browserAction = run(["browser", inherited]);
+    assert(browserAction.status !== 0 && browserAction.stderr.includes("Unknown browser action"), `prototype-shaped browser action ${inherited} bypassed action validation`);
+    const serviceAction = run(["service", inherited]);
+    assert(serviceAction.status !== 0 && serviceAction.stderr.includes("Unknown service action"), `prototype-shaped service action ${inherited} bypassed action validation`);
+  }
 } finally {
   rmSync(stateRoot, { recursive: true, force: true });
   rmSync(workspaceRoot, { recursive: true, force: true });
