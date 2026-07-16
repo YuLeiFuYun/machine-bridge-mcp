@@ -28,7 +28,7 @@ const visiting = new Set();
 const visited = new Set();
 for (const file of graph.keys()) visitModule(file, []);
 
-const adapterModules = new Set(["cli.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs", "relay-connection.mjs", "worker-deployment.mjs"]);
+const adapterModules = new Set(["cli.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs", "windows-service.mjs", "relay-connection.mjs", "worker-deployment.mjs"]);
 const boundaryModules = new Set([
   "agent-context.mjs",
   "app-automation.mjs",
@@ -61,6 +61,7 @@ const boundaryModules = new Set([
   "browser-extension-protocol.mjs",
   "browser-pairing-store.mjs",
   "worker-secret-file.mjs",
+  "service-environment.mjs",
   "monotonic-deadline.mjs",
 ]);
 for (const name of boundaryModules) {
@@ -100,6 +101,8 @@ const lineLimits = Object.freeze({
   "src/local/browser-extension-protocol.mjs": 120,
   "src/local/browser-pairing-store.mjs": 120,
   "src/local/worker-secret-file.mjs": 180,
+  "src/local/service-environment.mjs": 140,
+  "src/local/windows-service.mjs": 250,
   "src/local/monotonic-deadline.mjs": 60,
   "src/worker/mcp-session.ts": 120,
   "src/worker/tool-timeout.ts": 80,

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import net from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ensureWorkerDeployment,
@@ -19,7 +21,7 @@ import {
   workerHealthUserReason,
 } from "../src/local/worker-health.mjs";
 import { proxyAgentForHttp, proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
-import { ensureWorkerSecrets } from "../src/local/state.mjs";
+import { ensureWorkerSecrets, loadState, saveState } from "../src/local/state.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const version = "9.8.7";
@@ -216,6 +218,7 @@ try {
   assert.equal(configurationProbes, 1);
 
   await verifyDeploymentIdempotency();
+  await verifyPersistedDeploymentIdempotency();
   await verifyDefinitiveStalenessRedeploys();
   await verifyDeploymentUrlBoundaries();
   verifyWorkerNameSafety();
@@ -265,6 +268,54 @@ async function verifyDeploymentIdempotency() {
   );
   assert.equal(deploys, 1, "a transient health failure repeated the successful deployment");
   assert.equal(saves, 1, "verification-only retry mutated deployment state");
+}
+
+async function verifyPersistedDeploymentIdempotency() {
+  const stateRoot = mkdtempSync(join(os.tmpdir(), "mbm-worker-persisted-state-"));
+  const workspace = mkdtempSync(join(os.tmpdir(), "mbm-worker-persisted-workspace-"));
+  try {
+    const state = loadState(workspace, { stateDir: stateRoot });
+    ensureWorkerSecrets(state, { workerName: "mbm-persisted-test" });
+    saveState(state);
+    let deploys = 0;
+    const options = {
+      packageRoot: root,
+      runWrangler: async (args) => {
+        if (args[0] === "whoami") return { code: 0, stdout: "authenticated", stderr: "" };
+        if (args[0] === "deploy") {
+          deploys += 1;
+          return { code: 0, stdout: "Deployed https://mbm-persisted-test.account-example.workers.dev", stderr: "" };
+        }
+        throw new Error(`unexpected Wrangler command: ${args.join(" ")}`);
+      },
+      withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
+      saveState,
+      retryHealth: async () => ({ ok: false, error: "timeout" }),
+      existingHealthAttempts: 1,
+      deploymentHealthAttempts: 1,
+      logger: quietLogger(),
+      expectedVersion: version,
+    };
+
+    await assert.rejects(
+      ensureWorkerDeployment(state, {}, options),
+      error => error.code === "worker_health_unverified" && error.deploymentSucceeded === true,
+    );
+    assert.equal(deploys, 1);
+
+    const reloaded = loadState(workspace, { stateDir: stateRoot });
+    assert.equal(reloaded.worker.name, "mbm-persisted-test");
+    assert.equal(reloaded.worker.url, "https://mbm-persisted-test.account-example.workers.dev");
+    assert.equal(reloaded.worker.deployHash, workerDeploymentFingerprint(reloaded, { packageRoot: root }));
+    await assert.rejects(
+      ensureWorkerDeployment(reloaded, {}, options),
+      error => error.code === "worker_health_unverified" && error.deploymentSucceeded === false,
+    );
+    assert.equal(deploys, 1, "a process restart repeated a deployment whose success fingerprint was persisted");
+  } finally {
+    rmSync(stateRoot, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
 }
 
 async function verifyDefinitiveStalenessRedeploys() {

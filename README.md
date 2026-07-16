@@ -466,7 +466,7 @@ machine-mcp job submit|inspect|approve|list|read|cancel
 machine-mcp uninstall [--keep-worker] [--yes]
 ```
 
-Each canonical workspace has an independent profile, Worker name, credential set, state file, startup lock, and daemon lock.
+Each canonical workspace has an independent profile, Worker name, credential set, state file, startup lock, and daemon lock. Supplying a genuinely different `--workspace` therefore selects or creates a different Worker; junctions and symbolic links are canonicalized before the workspace identity is hashed. Use `machine-mcp workspace show` and `machine-mcp status` before treating two Worker names as duplicates.
 
 ## Autostart
 
@@ -476,7 +476,9 @@ Remote mode supports:
 - Linux `systemd --user`, with best-effort lingering;
 - Windows Scheduled Task at logon.
 
-The service definition contains neither credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. launchd/systemd definitions persist a sanitized absolute-only PATH captured during installation, including the stable Node/CLI directories, so background `full` mode does not lose Homebrew or other developer command locations. Background services run at log level `warn` with JSON output: relay, protocol, and service problems are retained as bounded structured events, while all per-tool success/failure/cancellation/timing events remain debug-only. Logs are owner-only where supported and bounded by tail trimming.
+The service definition contains neither Worker/account credentials nor a duplicate policy. It loads the selected policy from owner-only local state and uses the documented `full` default if policy state is absent. launchd/systemd definitions persist a sanitized absolute-only PATH captured during installation, including the stable Node/CLI directories, so background `full` mode does not lose Homebrew or other developer command locations. A private, allowlisted service-environment snapshot preserves proxy and custom-CA variables needed by a background daemon; status reports only configured key names, never values. Re-run `machine-mcp service install` after changing those variables. Custom Windows state paths used for autostart must also remain within the Task Scheduler path limit and must not contain a literal `%`.
+
+Windows uses a short private launcher instead of putting the full Node command in Task Scheduler's bounded `/TR` field. The launcher routes output to the normal service logs and restarts a nonzero daemon exit after a delay. The task runs with least privilege when that Windows user signs in. Thus a reboot followed by normal user sign-in needs no command, but the default installation deliberately does not claim pre-login availability and does not store a Windows password or run as `SYSTEM`. Background services run at log level `warn` with JSON output: relay, protocol, and service problems are retained as bounded structured events, while all per-tool success/failure/cancellation/timing events remain debug-only. Logs are owner-only where supported and bounded by tail trimming.
 
 ## Secret rotation
 

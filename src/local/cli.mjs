@@ -18,6 +18,7 @@ import { classifyOperationalError, createLogger, sanitizeLogText } from "./log.m
 import { runExecutable, runWrangler } from "./shell.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
+import { loadServiceEnvironment, serviceEnvironmentSummary } from "./service-environment.mjs";
 import { ensureWorkerDeployment } from "./worker-deployment.mjs";
 import { workerHealth } from "./worker-health.mjs";
 export { workerHealthUserReason } from "./worker-health.mjs";
@@ -168,6 +169,10 @@ async function startCommand(args) {
   const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "cli" });
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
+  if (args.daemonOnly) {
+    const serviceEnvironment = loadServiceEnvironment(state.paths.stateRoot);
+    logger.debug?.("Loaded persisted service network environment", { keys: serviceEnvironment.keys });
+  }
   const startupLock = await acquireStartupLockWithWait(state, { operation: "start", logger });
 
   try {
@@ -395,7 +400,7 @@ function printMcpConnection(state, { quiet = false, verbose = false, initialOwne
   logger.success("Remote MCP bridge is ready");
   logger.plain(`  MCP Server URL: ${state.worker.mcpServerUrl}`);
   if (initialOwner) {
-    logger.warn("Initial owner account created; save the password now because it is not stored locally or shown again.");
+    logger.warn("Initial owner account created; save the password now because it is not stored locally or shown again. Do not share this terminal output; rotate the password immediately if it has been exposed.");
     logger.plain(`  Account: ${initialOwner.name}`);
     logger.plain(`  Password: ${initialOwner.password}`);
   } else {
@@ -544,8 +549,9 @@ async function serviceCommand(args) {
       ...status,
       workspace: state?.workspace?.path || null,
       workspace_daemon: workspaceDaemon,
+      service_environment: serviceEnvironmentSummary(stateRoot),
       effective_active: Boolean(status.active || workspaceDaemon?.alive),
-      orphaned_workspace_daemon: Boolean(!status.active && workspaceDaemon?.alive && workspaceDaemon?.verified_service_daemon),
+      orphaned_workspace_daemon: Boolean(status.active === false && workspaceDaemon?.alive && workspaceDaemon?.verified_service_daemon),
     }, null, 2));
     return;
   }
@@ -620,7 +626,10 @@ async function installAutostartBestEffort({ workspace, stateRoot, entryScript, l
     const { installAutostart } = await import("./service.mjs");
     const result = await installAutostart({ workspace, stateRoot, entryScript, logger: structuredLogger(true) });
     if (result?.ok) logger.info("Autostart installed for future logins", { provider: result.provider });
-    else logger.warn("Autostart installation reported a problem; run `machine-mcp service status` for details");
+    else logger.warn("Autostart installation reported a problem; run `machine-mcp service status` for details", {
+      provider: result?.provider || "unknown",
+      reason: result?.reason || "installation_failed",
+    });
   } catch (error) {
     logger.warn("Autostart installation skipped", { error_class: classifyOperationalError(error) });
   }
