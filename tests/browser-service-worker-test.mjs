@@ -309,6 +309,13 @@ async function testAggregateFrameAndSourceBudgets() {
   const shadowSerialized = api.boundedDocumentSource(20000);
   assert(shadowSerialized.source.includes("light-content") && shadowSerialized.source.includes("data-machine-bridge-shadow-root=\"open\"") && shadowSerialized.source.includes("shadow-content"), "bounded DOM serializer omitted open Shadow DOM content");
   assert(shadowSerialized.open_shadow_roots === 1, "bounded DOM serializer lost its open Shadow DOM count");
+  context.document = { childNodes: [{ nodeType: 3, data: "😀中文", parentElement: { tagName: "DIV" } }] };
+  for (const limit of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+    const unicode = api.boundedDocumentSource(limit);
+    const actualBytes = new TextEncoder().encode(unicode.source).byteLength;
+    assert(actualBytes === unicode.returned_bytes, `UTF-8 serializer misreported ${actualBytes} bytes as ${unicode.returned_bytes} at limit ${limit}`);
+    assert(actualBytes <= limit && !unicode.source.includes("�"), `UTF-8 serializer split a code point at limit ${limit}`);
+  }
 }
 
 function loadServiceWorker(context, names) {

@@ -1,4 +1,4 @@
-import { type AccountRole } from "./access.ts";
+import { DEFAULT_ACCOUNT_ROLE, normalizeAccountRole, type AccountRole } from "./access.ts";
 import { accountAdminAuthorized, handleAccountAdminOperation } from "./account-admin.ts";
 import { exchangeOAuthToken } from "./oauth-tokens.ts";
 import {
@@ -50,11 +50,20 @@ export class OAuthController {
   private async oauthStore(): Promise<OAuthStore> {
     const raw = await this.ctx.storage.get<unknown>("oauth");
     if (raw !== undefined && !isCurrentOAuthStore(raw)) {
-      throw new HttpError(503, "oauth_state_schema_mismatch", "OAuth state requires the one-time multi-account upgrade");
+      throw new HttpError(503, "oauth_state_schema_mismatch", "OAuth state does not match the current schema");
     }
     const store = isCurrentOAuthStore(raw) ? raw : emptyOAuthStore();
     let changed = false;
     const now = Math.floor(Date.now() / 1000);
+
+    for (const account of Object.values(store.accounts)) {
+      if (normalizeAccountRole(account.role)) continue;
+      account.role = DEFAULT_ACCOUNT_ROLE;
+      account.active = false;
+      account.version = Number.isInteger(account.version) && account.version > 0 ? account.version + 1 : 1;
+      account.updated_at = now;
+      changed = true;
+    }
 
     for (const [code, value] of Object.entries(store.codes)) {
       const account = store.accounts[value.account_id];

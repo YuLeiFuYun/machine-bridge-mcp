@@ -11,16 +11,17 @@ const toolAvailability = new Map((toolCatalog as Array<{ name: string; availabil
 
 export const ACCOUNT_ACCESS_REVISION = Number(accessContract.revision);
 export const ACCOUNT_ROLES = Object.freeze(Object.keys(roles));
+export const DEFAULT_ACCOUNT_ROLE = String(accessContract.defaultRole) as AccountRole;
 export const OWNER_ACCOUNT_ROLE = String(accessContract.ownerRole) as AccountRole;
 
 export function normalizeAccountRole(value: unknown): AccountRole | null {
   const role = String(value ?? "").trim().toLowerCase();
-  return role in roles ? role as AccountRole : null;
+  return Object.hasOwn(roles, role) ? role as AccountRole : null;
 }
 
 export function accountRolePolicy(role: AccountRole): DaemonPolicy {
-  const profileName = roles[role]?.profile;
-  const profile = profiles[profileName];
+  const profileName = Object.hasOwn(roles, role) ? roles[role].profile : undefined;
+  const profile = profileName && Object.hasOwn(profiles, profileName) ? profiles[profileName] : undefined;
   if (!profile) throw new Error(`account role references an unknown policy profile: ${role}`);
   return {
     profile: String(profile.profile),

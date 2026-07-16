@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentContextManager, parseSkillMetadata } from "../src/local/agent-context.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
-import { packageScriptCommand } from "../src/local/project-package.mjs";
+import { automaticPackageCommands, packageScriptCommand } from "../src/local/project-package.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-agent-context-"));
 const workspace = join(root, "workspace");
@@ -13,6 +13,12 @@ const nested = join(workspace, "packages", "example");
 const windowsPackageCommand = packageScriptCommand("npm", "test", "win32", "cmd.exe");
 if (JSON.stringify(windowsPackageCommand) !== JSON.stringify(["cmd.exe", "/d", "/s", "/c", "npm run test"])) {
   throw new Error("Windows package command did not use the fixed command-shell wrapper");
+}
+const prototypePackageCommands = automaticPackageCommands({
+  packageState: "valid", managerName: "npm", scripts: ["constructor"], packagePath: "/synthetic/package.json",
+}, "/synthetic");
+if (prototypePackageCommands.get("package.constructor")?.searchTerms !== "") {
+  throw new Error("prototype-shaped package script inherited intent metadata");
 }
 
 try {
@@ -35,6 +41,7 @@ try {
       check: "node scripts/private-check-body.mjs",
       test: "node --test",
       probe: "node -e \"process.stdout.write('package-probe')\"",
+      constructor: "node -e \"process.stdout.write('prototype-script')\"",
     },
   }, null, 2), "utf8");
   await writeFile(join(workspace, ".github", "workflows", "ci.yml"), "name: ci\n", "utf8");
@@ -127,7 +134,7 @@ Follow the sample workflow.
     assert(context.skills.some((skill) => skill.name === "sample-skill"), "agent context did not summarize configured skills");
     assert(context.skill_warnings.length === 1 && context.skill_warnings[0].message.includes("requires non-empty name and description"), "invalid skill metadata was not reported and skipped");
     const contextCommandNames = new Set(context.commands.map((command) => command.name));
-    assert(contextCommandNames.has("echo-args") && contextCommandNames.has("package.check") && contextCommandNames.has("package.test") && contextCommandNames.has("package.probe"), "automatic and explicit command discovery is incomplete");
+    assert(contextCommandNames.has("echo-args") && contextCommandNames.has("package.check") && contextCommandNames.has("package.test") && contextCommandNames.has("package.probe") && contextCommandNames.has("package.constructor"), "automatic and explicit command discovery is incomplete");
     assert(!contextCommandNames.has("fixed"), "nearest manifest command deletion failed");
     assert(context.commands.find((command) => command.name === "echo-args")?.cwd === "packages/example", "registered command cwd was not resolved relative to its config scope");
     assert(context.commands.find((command) => command.name === "package.check")?.source_type === "automatic-package-script", "automatic package command provenance is missing");

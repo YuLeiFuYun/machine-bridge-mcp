@@ -138,7 +138,7 @@ export function safeVersionValue(value) {
 function packageScriptSearchTerms(script) {
   const normalized = String(script).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const root = normalized.split("-")[0];
-  return PACKAGE_SCRIPT_INTENTS[root] || "";
+  return Object.hasOwn(PACKAGE_SCRIPT_INTENTS, root) ? PACKAGE_SCRIPT_INTENTS[root] : "";
 }
 
 function invalidPackageMetadata(packagePath, lockfiles, packageState) {

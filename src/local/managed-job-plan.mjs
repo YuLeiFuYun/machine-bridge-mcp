@@ -156,10 +156,10 @@ function referencedResources(steps, registry) {
     }
   }
   if (names.size > MAX_RESOURCES) throw new Error(`job references more than ${MAX_RESOURCES} local resources`);
-  const out = {};
+  const out = Object.create(null);
   let totalBytes = 0;
   for (const name of names) {
-    const resource = registry[name];
+    const resource = Object.hasOwn(registry, name) ? registry[name] : null;
     if (!resource) throw new Error(`unknown local resource: ${name}`);
     const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true, includeHash: true });
     totalBytes += inspected.size;
@@ -174,7 +174,7 @@ function referencedResources(steps, registry) {
 }
 
 export function normalizeResourceRegistry(resources) {
-  const out = {};
+  const out = Object.create(null);
   if (!resources || typeof resources !== "object" || Array.isArray(resources)) return out;
   for (const [rawName, rawValue] of Object.entries(resources).slice(0, MAX_RESOURCES)) {
     const name = validateResourceName(rawName);

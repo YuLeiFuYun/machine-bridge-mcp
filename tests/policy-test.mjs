@@ -12,6 +12,16 @@ import {
 import { BridgeError } from "../src/local/errors.mjs";
 
 assert(DEFAULT_POLICY_REVISION === contract.revision, "policy revision drifted from shared contract");
+for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) {
+  expectBridgeError(() => policyProfile(inherited), "invalid_request");
+  expectThrow(() => resolvePolicy({ profile: inherited }, {}), "--profile must be one of");
+}
+const repairedUnknown = normalizePolicy({
+  profile: "constructor", origin: "custom", revision: contract.revision,
+  allowWrite: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false,
+});
+assert(repairedUnknown.profile === "custom" && repairedUnknown.allowWrite && repairedUnknown.execMode === "direct", "unknown persisted profile was not repaired to an explicit custom policy");
+
 for (const name of Object.keys(contract.profiles)) {
   const policy = policyProfile(name);
   assert(policy.profile === name, `${name} profile identity drifted`);
@@ -59,5 +69,12 @@ function expectBridgeError(operation, code) {
     return;
   }
   throw new Error(`expected BridgeError ${code}`);
+}
+function expectThrow(operation, message) {
+  try { operation(); } catch (error) {
+    assert(String(error?.message || error).includes(message), `expected ${message}, received ${error?.message || error}`);
+    return;
+  }
+  throw new Error(`expected error containing ${message}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }

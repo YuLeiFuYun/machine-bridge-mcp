@@ -1,3 +1,4 @@
+import { normalizeAccountRole } from "../src/worker/access.ts";
 import { OAuthController } from "../src/worker/oauth-controller.ts";
 import { createAccount, sha256Hex } from "../src/worker/oauth-state.ts";
 
@@ -104,6 +105,32 @@ async function testAuthorizationAndTokens() {
   assert(!(tokenKey in (await storage.get("oauth")).tokens), "expired access token was not pruned from persistent state");
 }
 
+async function testMalformedRoleRepair() {
+  for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) {
+    assert(normalizeAccountRole(inherited) === null, `Worker accepted inherited account role ${inherited}`);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const account = await createAccount({ name: "repair.target", role: "reviewer", password: PASSWORD, now });
+  const tokenKey = "sha256:malformed-role-token";
+  const codeKey = "malformed-role-code";
+  account.role = "constructor";
+  const storage = new MemoryStorage({ oauth: {
+    schema_version: 1,
+    accounts: { [account.account_id]: account },
+    clients: {},
+    codes: { [codeKey]: { client_id: "client", account_id: account.account_id, account_version: account.version, role: "constructor", redirect_uri: REDIRECT, code_challenge: "C".repeat(43), scope: SERVER_NAME, resource: `${BASE}/mcp`, expires_at: now + 300 } },
+    tokens: { [tokenKey]: { client_id: "client", account_id: account.account_id, account_version: account.version, role: "constructor", scope: SERVER_NAME, resource: `${BASE}/mcp`, version: "token-version", expires_at: now + 300 } },
+    auth_failures: {},
+  } });
+  const repaired = await createController(storage).oauthStore();
+  const repairedAccount = repaired.accounts[account.account_id];
+  assert(repairedAccount.role === "reviewer" && repairedAccount.active === false, "malformed account role was not repaired fail-closed");
+  assert(repairedAccount.version === account.version + 1, "malformed account repair did not invalidate existing credentials");
+  assert(Object.keys(repaired.codes).length === 0 && Object.keys(repaired.tokens).length === 0, "malformed account repair retained credentials");
+  const persisted = await storage.get("oauth");
+  assert(persisted.accounts[account.account_id].active === false, "malformed account repair was not persisted");
+}
+
 async function testInvalidStateFailsClosed() {
   const storage = new MemoryStorage({ oauth: { schema_version: 0 } });
   const controller = createController(storage);
@@ -186,5 +213,6 @@ function assert(condition, message) {
 
 await testStoreAndRegistration();
 await testAuthorizationAndTokens();
+await testMalformedRoleRepair();
 await testInvalidStateFailsClosed();
 console.log("worker OAuth controller test ok");

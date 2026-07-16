@@ -513,7 +513,7 @@ export class LocalRuntime {
 
   readLocalResourceBinary(name) {
     const registry = this.managedJobManager.currentResources();
-    const resource = registry[name];
+    const resource = Object.hasOwn(registry, name) ? registry[name] : null;
     if (!resource) throw new Error(`unknown local resource: ${name}`);
     const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
     if (inspected.size > 1024 * 1024) throw new Error("local resource exceeds 1 MiB browser injection limit");

@@ -53,6 +53,7 @@ export const DEFAULT_POLICY_REVISION = Number(contract.revision);
 export const POLICY_PROFILES = Object.freeze(Object.fromEntries(
   Object.entries(contract.profiles).map(([name, value]) => [name, Object.freeze(/** @type {PolicyCapabilities} */ ({ ...value }))]),
 ));
+const POLICY_PROFILE_NAMES = Object.freeze(new Set(Object.keys(POLICY_PROFILES)));
 export const POLICY_ORIGINS = Object.freeze(new Set(contract.origins.map(String)));
 /** @type {Readonly<Record<string, Readonly<AvailabilityRequirements>>>} */
 export const POLICY_AVAILABILITY = Object.freeze(Object.fromEntries(
@@ -69,8 +70,8 @@ const TOOL_BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));
 /** @param {unknown} name @param {unknown} [origin] */
 export function policyProfile(name, origin = "explicit") {
   const profile = String(name || "").trim().toLowerCase();
+  if (!POLICY_PROFILE_NAMES.has(profile)) throw new BridgeError("invalid_request", `unknown policy profile: ${profile}`);
   const canonical = POLICY_PROFILES[profile];
-  if (!canonical) throw new BridgeError("invalid_request", `unknown policy profile: ${profile}`);
   return normalizePolicy({ ...canonical, origin, revision: DEFAULT_POLICY_REVISION });
 }
 
@@ -89,7 +90,8 @@ export function normalizePolicy(policy = {}) {
   const revision = Number.isInteger(requestedRevision) && requestedRevision > 0
     ? requestedRevision
     : DEFAULT_POLICY_REVISION;
-  const requestedProfile = typeof policy.profile === "string" && policy.profile ? policy.profile : "custom";
+  const rawProfile = typeof policy.profile === "string" && policy.profile ? policy.profile : "custom";
+  const requestedProfile = POLICY_PROFILE_NAMES.has(rawProfile) ? rawProfile : "custom";
   /** @type {NormalizedPolicy} */
   const normalized = {
     profile: requestedProfile,
@@ -102,8 +104,10 @@ export function normalizePolicy(policy = {}) {
     minimalEnv: policy.minimalEnv !== false,
     exposeAbsolutePaths: policy.exposeAbsolutePaths === true,
   };
-  const canonical = POLICY_PROFILES[requestedProfile];
-  if (canonical) Object.assign(normalized, canonical, { allowExec: canonical.execMode !== "off" });
+  if (POLICY_PROFILE_NAMES.has(requestedProfile)) {
+    const canonical = POLICY_PROFILES[requestedProfile];
+    Object.assign(normalized, canonical, { allowExec: canonical.execMode !== "off" });
+  }
   return Object.freeze(normalized);
 }
 
@@ -136,8 +140,9 @@ export function assertCanonicalFullPolicy(policy = {}) {
 /** @param {PolicyInput} policy @param {unknown} availability */
 export function policyAllowsAvailability(policy, availability) {
   const normalized = normalizePolicy(policy);
-  const requirements = POLICY_AVAILABILITY[String(availability || "")];
-  if (!requirements) return false;
+  const availabilityName = String(availability || "");
+  if (!Object.hasOwn(POLICY_AVAILABILITY, availabilityName)) return false;
+  const requirements = POLICY_AVAILABILITY[availabilityName];
   if (requirements.profile && normalized.profile !== requirements.profile) return false;
   if (requirements.allowWrite === true && normalized.allowWrite !== true) return false;
   if (Array.isArray(requirements.execModes) && !requirements.execModes.includes(normalized.execMode)) return false;

@@ -5,6 +5,7 @@ import { runWrangler } from "./shell.mjs";
 import { packageRoot, saveState } from "./state.mjs";
 import { withWorkerSecretsFile } from "./worker-secret-file.mjs";
 import {
+  normalizeWorkerOrigin,
   retryWorkerHealth,
   workerHealthRequiresRedeploy,
   workerHealthUserReason,
@@ -52,7 +53,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
     "--secrets-file", secretFile,
   ], { capture: true }));
 
-  const detectedUrl = extractWorkerUrl(deploy.stdout) || extractWorkerUrl(deploy.stderr);
+  const detectedUrl = extractWorkerUrl(deploy.stdout, state.worker.name) || extractWorkerUrl(deploy.stderr, state.worker.name);
   const recordedUrl = workerUrlMatchesName(state.worker.url, state.worker.name) ? state.worker.url : "";
   const workerUrl = detectedUrl || recordedUrl;
   if (!workerUrl) {
@@ -93,20 +94,24 @@ export function workerDeploymentFingerprint(state, options = {}) {
   return fingerprint.digest("hex");
 }
 
-export function extractWorkerUrl(text = "") {
-  const matches = [...String(text).matchAll(/https:\/\/[^\s"'<>]+\.workers\.dev[^\s"'<>]*/g)];
-  if (matches.length) return matches.at(-1)[0].replace(/[),.]+$/, "");
-  const anyHttps = [...String(text).matchAll(/https:\/\/[^\s"'<>]+/g)];
-  return anyHttps.find(match => /workers\.dev|\/healthz|\/mcp/.test(match[0]))?.[0]?.replace(/[),.]+$/, "") || "";
+export function extractWorkerUrl(text = "", workerName = "") {
+  const candidates = [...String(text).matchAll(/https:\/\/[^\s"'<>]+/g)]
+    .map((match) => match[0].replace(/[),.;:!?]+$/, ""));
+  for (const candidate of candidates.reverse()) {
+    try {
+      return normalizeWorkerOrigin(candidate, workerName);
+    } catch {
+      // Wrangler output may contain unrelated links; only a canonical matching workers.dev origin is deployment evidence.
+    }
+  }
+  return "";
 }
 
 export function workerUrlMatchesName(workerUrl, workerName) {
   if (!workerUrl || !workerName) return false;
   try {
-    const url = new URL(String(workerUrl));
-    return url.protocol === "https:"
-      && url.hostname.endsWith(".workers.dev")
-      && url.hostname.startsWith(`${String(workerName)}.`);
+    normalizeWorkerOrigin(workerUrl, workerName);
+    return true;
   } catch {
     return false;
   }

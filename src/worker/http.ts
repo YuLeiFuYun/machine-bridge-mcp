@@ -218,9 +218,9 @@ export function searchParamsEntries(params: URLSearchParams): Array<[string, str
 }
 
 export function searchParamsObject(params: URLSearchParams): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  const out = Object.create(null) as Record<string, unknown>;
   params.forEach((value, key) => {
-    if (out[key] === undefined) out[key] = value;
+    if (!Object.hasOwn(out, key)) out[key] = value;
     else if (Array.isArray(out[key])) (out[key] as string[]).push(value);
     else out[key] = [out[key] as string, value];
   });

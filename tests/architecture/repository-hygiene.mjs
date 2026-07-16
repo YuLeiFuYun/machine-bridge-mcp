@@ -1,0 +1,65 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+const docs = [
+  join(root, "README.md"),
+  join(root, "SECURITY.md"),
+  join(root, "CONTRIBUTING.md"),
+  join(root, "CODE_OF_CONDUCT.md"),
+  join(root, "SUPPORT.md"),
+  join(root, "GOVERNANCE.md"),
+  ...readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => join(root, "docs", name)),
+];
+for (const file of docs) validateRelativeLinks(file);
+
+const repositoryFiles = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root })
+  .toString("utf8")
+  .split("\0")
+  .filter(Boolean);
+const workflowFiles = repositoryFiles.filter((name) => /^\.github\/workflows\/.*\.ya?ml$/i.test(name));
+for (const name of workflowFiles) {
+  const source = readFileSync(join(root, name), "utf8");
+  const jobsIndex = source.search(/^jobs:/m);
+  const permissionsIndex = source.search(/^permissions:/m);
+  if (permissionsIndex === -1 || jobsIndex === -1 || permissionsIndex > jobsIndex) {
+    throw new Error(`GitHub workflow ${name} lacks explicit top-level permissions before jobs`);
+  }
+  if (/^\s*pull_request_target:/m.test(source)) throw new Error(`privileged pull_request_target trigger is prohibited in ${name}`);
+  if (/^permissions:\s*write-all\s*$/m.test(source)) throw new Error(`write-all workflow permissions are prohibited in ${name}`);
+  for (const match of source.matchAll(/\buses:\s*([^@\s]+)@([^\s#]+)/g)) {
+    if (!/^[0-9a-f]{40}$/.test(match[2])) throw new Error(`GitHub Action ${match[1]} in ${name} is not pinned to an immutable commit SHA`);
+  }
+}
+for (const requiredWorkflow of ["ci.yml", "governance.yml", "codeql.yml", "dependency-review.yml", "scorecard.yml"]) {
+  if (!workflowFiles.includes(`.github/workflows/${requiredWorkflow}`)) throw new Error(`required workflow is missing: ${requiredWorkflow}`);
+}
+for (const name of repositoryFiles) {
+  const file = join(root, name);
+  if (!existsSync(file)) continue;
+  const bytes = readFileSync(file);
+  if (bytes.includes(0)) continue;
+  for (let index = 0; index < bytes.length; index += 1) {
+    const value = bytes[index];
+    if ((value < 32 && value !== 9 && value !== 10 && value !== 13) || value === 127) {
+      throw new Error(`forbidden ASCII control byte 0x${value.toString(16).padStart(2, "0")} in ${name} at byte ${index}`);
+    }
+  }
+}
+
+function validateRelativeLinks(file) {
+  const source = readFileSync(file, "utf8");
+  for (const match of source.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+    const raw = match[1].trim();
+    if (!raw || raw.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(raw)) continue;
+    const path = raw.split("#", 1)[0];
+    if (!path) continue;
+    const target = resolve(dirname(file), decodeURIComponent(path));
+    if (!existsSync(target)) throw new Error(`broken relative documentation link in ${relative(root, file)}: ${raw}`);
+  }
+}
+
+console.log(`architecture repository hygiene ok (${docs.length} documentation files)`);

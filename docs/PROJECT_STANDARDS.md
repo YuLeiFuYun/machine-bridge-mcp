@@ -64,6 +64,7 @@ The architectural dependency direction in [ENGINEERING.md](ENGINEERING.md) is no
 - **High cohesion and low coupling:** one source file or function owns one coherent responsibility and reason to change; collaboration occurs through narrow explicit contracts rather than cross-layer reach-through.
 - **KISS:** prefer the simplest explicit implementation that satisfies current requirements. Do not introduce factories, registries, inheritance, generic frameworks, or configuration layers without an observed variation that needs them.
 - **DRY:** extract repeated business rules, validation, security boundaries, or lifecycle logic into one authoritative implementation. Do not merge merely similar code when its semantics or failure policy differ.
+- **Exact key membership:** external string keys used for dispatch, enums, ACLs, forms, or registries use `Map`, `Set`, `Object.hasOwn`, or null-prototype records. Prototype-chain membership and truthy ordinary-object lookup are not contract validation.
 - Design patterns are used only when they remove an observed variation or coupling. A direct function or small module is preferred over speculative abstractions.
 
 Any deliberate boundary exception must document the dependency, reason, owner, test coverage, and removal condition.

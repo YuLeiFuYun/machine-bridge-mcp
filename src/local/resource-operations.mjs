@@ -14,7 +14,7 @@ export async function generateRegisteredSshKey({ workspace, stateDir, name: rawN
   let key = null;
   try {
     state.resources ||= {};
-    const existing = state.resources[name];
+    const existing = Object.hasOwn(state.resources, name) ? state.resources[name] : null;
     if (existing?.path && !samePathIdentity(existing.path, target)) {
       throw new Error(`local resource ${name} is already registered to a different file; remove it first`);
     }
