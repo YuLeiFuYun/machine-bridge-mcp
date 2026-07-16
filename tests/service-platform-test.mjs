@@ -84,7 +84,11 @@ function windowsLauncherLiveTest() {
       stdout: path.join(root, "daemon.out.log"),
       stderr: path.join(root, "daemon.err.log"),
     });
-    execFileSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `call "${launcher.path}"`], { windowsHide: true });
+    execFileSync(
+      process.env.ComSpec || "cmd.exe",
+      ["/d", "/c", `call "${launcher.path}"`],
+      { windowsHide: true, windowsVerbatimArguments: true },
+    );
     assert.equal(existsSync(marker), true, "real cmd.exe did not execute the generated launcher with quoted special-character paths");
   } finally {
     rmSync(root, { recursive: true, force: true });
