@@ -1,12 +1,11 @@
-import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { lstat, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { RelayConnection } from "./relay-connection.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
 export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
-import { allToolNames, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, POLICY_PROFILES, PolicyGate, SERVER_NAME } from "./tools.mjs";
+import { MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, PolicyGate, SERVER_NAME } from "./tools.mjs";
 import { publicError } from "./errors.mjs";
 import { ProcessTracker } from "./process-tracker.mjs";
 import { CallRegistry } from "./call-registry.mjs";
@@ -15,7 +14,7 @@ import { ToolExecutor } from "./tool-executor.mjs";
 import { boundedErrorMessage, ProcessExecutionService } from "./process-execution.mjs";
 import { GitService } from "./git-service.mjs";
 import { LifecycleController } from "./lifecycle.mjs";
-import { MAX_WRITE_BYTES, readBoundedFile, sha256, WorkspaceFileService } from "./workspace-file-service.mjs";
+import { MAX_WRITE_BYTES, sha256, WorkspaceFileService } from "./workspace-file-service.mjs";
 export { MAX_WRITE_BYTES, sha256 } from "./workspace-file-service.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { inspectResourceFile, ManagedJobManager } from "./managed-jobs.mjs";
@@ -29,6 +28,12 @@ import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { isPlainRecord } from "./records.mjs";
 import { AccountAccessGate, normalizeAccountRole } from "./account-access.mjs";
+import { buildProjectOverview, buildRuntimeInfo } from "./runtime-reporting.mjs";
+import { diagnoseRuntime as runRuntimeDiagnostics } from "./runtime-diagnostics.mjs";
+import {
+  resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
+  sessionBootstrap as buildRuntimeSessionBootstrap,
+} from "./runtime-capabilities.mjs";
 
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_CONCURRENT_TOOL_CALLS = 16;
@@ -232,53 +237,21 @@ export class LocalRuntime {
   }
 
   runtimeInfo() {
-    return {
-      name: SERVER_NAME,
-      protocol_version: MCP_PROTOCOL_VERSION,
-      supported_protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
-      workspace: this.displayPath(this.workspace),
-      workspace_name: this.policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace",
+    return buildRuntimeInfo({
+      workspace: this.workspace,
+      displayPath: (value) => this.displayPath(value),
       policy: this.policy,
-      policy_contract: {
-        named_profile_is_canonical: this.policy.profile === "custom" || policyMatchesNamedProfile(this.policy),
-        full_catalog_complete: this.policy.profile === "full" ? isCanonicalFullPolicy(this.policy) && this.tools().length + 1 === allToolNames().length : null,
-        machine_bridge_internal_denials_under_full: this.policy.profile === "full" && isCanonicalFullPolicy(this.policy) ? false : null,
-      },
-      enforcement: {
-        filesystem_scope: this.policy.unrestrictedPaths ? "local-user-accessible" : "workspace",
-        sensitive_filename_filter: false,
-        operating_system_permissions_apply: true,
-        host_policy_is_independent: true,
-      },
-      tool_delivery: {
-        full_profile_scope: "local-daemon-and-relay-advertisement",
-        daemon_advertised_tool_count: this.tools().length + 1,
-        host_exposed_tools_known_to_server: false,
-        host_may_expose_subset: true,
-      },
-      tools: ["server_info", ...this.tools()],
-      observability: {
-        relay_readiness: "authenticated-hello-acknowledged",
-        brief_relay_interruptions: "debug-only",
-        raw_transport_details: "debug-only",
-        per_tool_events: "structured-debug-events",
-        default_logs_include_tool_failures: false,
-        tool_arguments_or_results_logged: false,
-        capability_routing: this.capabilityObserver.snapshot(),
-        tool_calls: this.observability.snapshot(),
-        in_flight_calls: this.callRegistry.snapshot(),
-      },
-      runtime: {
-        environment: this.policy.minimalEnv ? "isolated-minimal" : "full-parent",
-        lifecycle: this.lifecycle.snapshot(),
-        relay: this.relay?.status?.() || null,
-        runtime_dir: this.policy.exposeAbsolutePaths ? this.runtimeDir : "<private-runtime-dir>",
-        processes: this.processTracker.snapshot(),
-        process_sessions: this.processSessionManager.status(),
-        managed_jobs: this.managedJobManager.status(),
-        local_resources: this.managedJobManager.resourceInfo(),
-      },
-    };
+      toolNames: this.tools(),
+      capabilityObserver: this.capabilityObserver,
+      observability: this.observability,
+      callRegistry: this.callRegistry,
+      lifecycle: this.lifecycle,
+      relayStatus: () => this.relay?.status?.() || null,
+      runtimeDir: this.runtimeDir,
+      processTracker: this.processTracker,
+      processSessionManager: this.processSessionManager,
+      managedJobManager: this.managedJobManager,
+    });
   }
 
   async start() {
@@ -426,18 +399,17 @@ export class LocalRuntime {
   }
 
   async projectOverview(context = {}) {
-    this.throwIfCancelled(context);
-    const top = await this.listDir(".", context).catch(error => ({ error: this.safeErrorMessage(error), entries: [] }));
-    const git = await this.runProcess("git", ["-c", "core.fsmonitor=false", "-C", this.workspace, "rev-parse", "--show-toplevel"], 10_000, true, 512 * 1024, context);
-    return {
-      workspace: this.displayPath(this.workspace),
-      workspaceName: this.policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace",
-      gitRoot: git.code === 0 ? this.displayPath(git.stdout.trim()) : "",
+    return buildProjectOverview({
+      workspace: this.workspace,
+      displayPath: (value) => this.displayPath(value),
       policy: this.policy,
-      tools: ["server_info", ...this.tools()],
-      capabilityRouting: this.capabilityObserver.snapshot(),
-      topLevel: top.entries || [],
-    };
+      toolNames: this.tools(),
+      capabilityObserver: this.capabilityObserver,
+      listTopLevel: (callContext) => this.listDir(".", callContext),
+      runProcess: (...args) => this.runProcess(...args),
+      safeErrorMessage: (error) => this.safeErrorMessage(error),
+      throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
+    }, context);
   }
 
   listRoots() { return this.workspaceFileService.listRoots(); }
@@ -475,82 +447,15 @@ export class LocalRuntime {
   }
 
   async diagnoseRuntime(context = {}) {
-    this.throwIfCancelled(context);
-    const checks = [];
-    checks.push({
-      layer: "mcp-host-to-daemon",
-      ok: true,
-      detail: "This diagnostic request reached the local Machine Bridge runtime.",
-    });
-    checks.push({
-      layer: "machine-bridge-policy",
-      ok: this.policy.execMode === "direct" || this.policy.execMode === "shell",
-      detail: `profile=${this.policy.profile}; exec_mode=${this.policy.execMode}; unrestricted_paths=${this.policy.unrestrictedPaths}`,
-    });
-
-    const probe = join(this.runtimeDir, `.diagnostic-${process.pid}-${randomBytes(6).toString("hex")}`);
-    try {
-      await writeFile(probe, "ok\n", { mode: 0o600, flag: "wx" });
-      const { buffer } = await readBoundedFile(probe, 64, "diagnostic file");
-      checks.push({ layer: "local-filesystem", ok: buffer.toString("utf8") === "ok\n", error_class: null });
-    } catch (error) {
-      checks.push({ layer: "local-filesystem", ok: false, error_class: classifyOperationalError(error) });
-    } finally {
-      await rm(probe, { force: true }).catch(() => {});
-    }
-
-    if (this.policy.execMode === "direct" || this.policy.execMode === "shell") {
-      const direct = await this.runProcess(
-        process.execPath,
-        ["-e", "process.stdout.write('ok')"],
-        5000,
-        true,
-        1024,
-        context,
-        this.workspace,
-      ).catch((error) => ({ code: 127, stdout: "", stderr: "", error_class: classifyOperationalError(error) }));
-      checks.push({
-        layer: "local-process-spawn",
-        ok: direct.code === 0 && direct.stdout === "ok",
-        error_class: direct.error_class || (direct.code === 0 ? null : classifyOperationalError(direct.stderr || direct.stdout || "execution failed")),
-      });
-    } else {
-      checks.push({ layer: "local-process-spawn", ok: false, skipped: true, error_class: "policy_denied" });
-    }
-
-    if (this.policy.execMode === "shell") {
-      const result = await this.processExecutionService.probeShell(context)
-        .catch((error) => ({ code: 127, error_class: classifyOperationalError(error) }));
-      checks.push({
-        layer: "local-shell",
-        ok: result.code === 0,
-        error_class: result.error_class || (result.code === 0 ? null : classifyOperationalError(result.stderr || result.stdout || "execution failed")),
-      });
-    } else {
-      checks.push({ layer: "local-shell", ok: false, skipped: true, error_class: "policy_denied" });
-    }
-
-    const storage = this.managedJobManager.diagnoseStorage();
-    checks.push({ layer: "managed-job-storage", ...storage });
-    const resources = this.managedJobManager.listResources();
-    checks.push({
-      layer: "local-resource-registry",
-      ok: resources.resources.every((resource) => resource.available),
-      registered: resources.count,
-      unavailable: resources.resources.filter((resource) => !resource.available).map((resource) => ({ name: resource.name, error_class: resource.error_class })),
-    });
-
-    return {
-      request_reached_local_runtime: true,
-      interpretation: {
-        tool_call_blocked_before_response: "host/platform or connector gateway",
-        diagnostic_reached_daemon_but_spawn_failed: "local OS, endpoint security, shell configuration, or Machine Bridge policy",
-        managed_job_accepted_then_later_tools_blocked: "job continues independently; inspect with local CLI or a later read_job call",
-      },
+    return runRuntimeDiagnostics({
       policy: this.policy,
-      checks,
-      ok: checks.filter((check) => !check.skipped).every((check) => check.ok),
-    };
+      runtimeDir: this.runtimeDir,
+      workspace: this.workspace,
+      runProcess: (...args) => this.runProcess(...args),
+      probeShell: (callContext) => this.processExecutionService.probeShell(callContext),
+      managedJobManager: this.managedJobManager,
+      throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
+    }, context);
   }
 
   async generateSshKeyResource(args = {}, context = {}) {
@@ -588,43 +493,22 @@ export class LocalRuntime {
     };
   }
 
-
   async sessionBootstrap(args = {}, context = {}) {
-    const bootstrap = await this.agentContextManager.sessionBootstrap(args, context);
-    bootstrap.local_automation = {
-      applications: this.appAutomationManager.capabilities(),
-      browser: this.policy.profile === "full" ? {
-        existing_profile: true,
-        extension_bridge: true,
-        status_tool: "browser_status",
-      } : null,
-    };
-    this.capabilityObserver.recordBootstrap(bootstrap);
-    return bootstrap;
+    return buildRuntimeSessionBootstrap({
+      agentContextManager: this.agentContextManager,
+      appAutomationManager: this.appAutomationManager,
+      capabilityObserver: this.capabilityObserver,
+      policy: this.policy,
+    }, args, context);
   }
 
   async resolveTaskCapabilities(args = {}, context = {}) {
-    const result = await this.agentContextManager.resolveTaskCapabilities(args, context);
-    const task = String(args.task || "");
-    if (this.policy.profile === "full") {
-      const applications = await this.appAutomationManager.listApplications({ query: "", max_results: 500 }, context).catch(() => ({ applications: [] }));
-      const lower = task.toLowerCase();
-      result.application_matches = applications.applications
-        .map((application) => ({ application, score: applicationMatchScore(lower, application) }))
-        .filter((item) => item.score > 0)
-        .sort((left, right) => right.score - left.score || left.application.name.localeCompare(right.application.name))
-        .slice(0, 20)
-        .map(({ application, score }) => ({ ...application, score }));
-    } else {
-      result.application_matches = [];
-    }
-    if (result.application_matches.length) {
-      result.recommended_tools = [...new Set([...result.recommended_tools, "list_local_applications", "open_local_application", "inspect_local_application", "operate_local_application"])];
-    }
-    result.browser_backend = this.policy.profile === "full" ? { tool: "browser_status", existing_profile: true, extension_bridge: true } : null;
-    result.routing_observability = "Call server_info or project_overview to verify that bootstrap and task capability resolution reached the local runtime.";
-    this.capabilityObserver.recordResolution(task, result);
-    return result;
+    return resolveRuntimeTaskCapabilities({
+      agentContextManager: this.agentContextManager,
+      appAutomationManager: this.appAutomationManager,
+      capabilityObserver: this.capabilityObserver,
+      policy: this.policy,
+    }, args, context);
   }
 
   readLocalResourceBinary(name) {
@@ -749,25 +633,6 @@ export class LocalRuntime {
   }
 }
 
-function applicationMatchScore(task, application) {
-  const name = String(application.name || "").toLowerCase();
-  const id = String(application.id || "").toLowerCase();
-  if (!name) return 0;
-  if (task.includes(name)) return 10 + Math.min(name.length, 20);
-  const words = name.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2);
-  return words.reduce((score, word) => score + (task.includes(word) ? 2 : 0), id && task.includes(id) ? 5 : 0);
-}
-
-function policyMatchesNamedProfile(policy) {
-  const named = POLICY_PROFILES[policy.profile];
-  if (!named) return false;
-  return policy.allowWrite === named.allowWrite
-    && policy.execMode === named.execMode
-    && policy.unrestrictedPaths === named.unrestrictedPaths
-    && policy.minimalEnv === named.minimalEnv
-    && policy.exposeAbsolutePaths === named.exposeAbsolutePaths;
-}
-
 function stateRootFromProfileStatePath(statePath) {
   const absolute = resolve(statePath);
   if (basename(absolute) !== "state.json") throw new Error("local resource state path is invalid");
@@ -853,8 +718,6 @@ function normalizeRelayAuthorization(value) {
   if (!accountId || !Number.isInteger(accountVersion) || accountVersion < 1) return null;
   return Object.freeze({ account_id: accountId, account_version: accountVersion, role });
 }
-
-
 
 function collectToolPathCandidates(error, toolArgs, workspace) {
   const candidates = new Set();

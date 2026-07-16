@@ -2,11 +2,15 @@ import { createHash } from "node:crypto";
 import { commandMatchText, recommendTools, relevanceScore } from "./capability-ranking.mjs";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from "./default-instructions.mjs";
 import { automaticPackageCommands, readProjectPackageMetadata } from "./project-package.mjs";
 import { clampInteger } from "./numbers.mjs";
-import { isPlainRecord } from "./records.mjs";
+import {
+  MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMANDS, MAX_SKILL_ROOTS,
+  assertAllowedPath, assertContainedPath, isContainedPath, normalizeAgentConfig, requiredString,
+  resolveConfiguredPath, resolveInstructionPath, validateStringArray,
+} from "./agent-contract.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".machine-bridge", "agent.json");
 const GLOBAL_CONFIG_RELATIVE_PATH = join(".config", "machine-bridge-mcp", "agent.json");
@@ -15,20 +19,12 @@ const DEFAULT_INSTRUCTION_MAX_BYTES = 32 * 1024;
 const MAX_CONTEXT_SKILL_SUMMARY_CHARS = 8_000;
 const MAX_CONFIG_BYTES = 256 * 1024;
 const MAX_INSTRUCTION_FILE_BYTES = 512 * 1024;
-const MAX_TOTAL_INSTRUCTION_BYTES = 2 * 1024 * 1024;
 const MAX_INSTRUCTION_FILES = 64;
 const MAX_SKILL_ENTRY_BYTES = 512 * 1024;
-const MAX_SKILL_ROOTS = 32;
 const MAX_SKILL_RESULTS = 500;
 const MAX_SKILL_SCAN_ENTRIES = 20_000;
 const MAX_SKILL_SCAN_DEPTH = 8;
 const MAX_SKILL_FILES = 500;
-const MAX_COMMANDS = 128;
-const MAX_COMMAND_ARGV = 128;
-const MAX_COMMAND_ARGUMENT_BYTES = 256 * 1024;
-const COMMAND_NAME_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
-const CONFIG_KEYS = new Set(["version", "builtin_instructions", "automatic_project_context", "model_instructions_file", "instruction_files", "instruction_max_bytes", "skill_roots", "commands"]);
-const COMMAND_KEYS = new Set(["description", "argv", "cwd", "timeout_seconds", "allow_extra_args"]);
 
 export class AgentContextManager {
   constructor({ workspace, policy, displayPath, resolveExistingPath, throwIfCancelled = () => {}, home = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "" }) {
@@ -83,7 +79,6 @@ export class AgentContextManager {
     if (includeContent) result.effective_instructions = renderEffectiveInstructions(effectiveInstructionItems(state), this.displayPath);
     return result;
   }
-
 
   async sessionBootstrap(args = {}, context = {}) {
     const state = await this.discoverState(args.path || ".", context);
@@ -522,109 +517,7 @@ async function readOptionalConfig(configPath, allowedRoot, rejectPathAliases) {
   } catch {
     throw new Error(`agent config is not valid JSON: ${configPath}`);
   }
-  return normalizeConfig(parsed, configPath);
-}
-
-function normalizeConfig(value, configPath) {
-  if (!isPlainRecord(value)) throw new Error(`agent config must be a JSON object: ${configPath}`);
-  for (const key of Object.keys(value)) if (!CONFIG_KEYS.has(key)) throw new Error(`unknown agent config field '${key}': ${configPath}`);
-  if (value.version !== 1) throw new Error(`agent config version must be 1: ${configPath}`);
-  const result = {
-    builtinInstructions: null,
-    automaticProjectContext: null,
-    modelInstructionsFile: null,
-    instructionFiles: null,
-    instructionMaxBytes: null,
-    skillRoots: null,
-    commands: new Map(),
-  };
-  if (value.builtin_instructions !== undefined) {
-    if (typeof value.builtin_instructions !== "boolean") throw new Error(`builtin_instructions must be boolean: ${configPath}`);
-    result.builtinInstructions = value.builtin_instructions;
-  }
-  if (value.automatic_project_context !== undefined) {
-    if (typeof value.automatic_project_context !== "boolean") throw new Error(`automatic_project_context must be boolean: ${configPath}`);
-    result.automaticProjectContext = value.automatic_project_context;
-  }
-  if (value.model_instructions_file !== undefined) {
-    result.modelInstructionsFile = requiredString(value.model_instructions_file, "model_instructions_file");
-  }
-  if (value.instruction_files !== undefined) {
-    result.instructionFiles = validateInstructionFiles(value.instruction_files, configPath);
-  }
-  if (value.instruction_max_bytes !== undefined) {
-    if (!Number.isInteger(value.instruction_max_bytes) || value.instruction_max_bytes < 1024 || value.instruction_max_bytes > MAX_TOTAL_INSTRUCTION_BYTES) {
-      throw new Error(`instruction_max_bytes must be an integer from 1024 to ${MAX_TOTAL_INSTRUCTION_BYTES}: ${configPath}`);
-    }
-    result.instructionMaxBytes = value.instruction_max_bytes;
-  }
-  if (value.skill_roots !== undefined) {
-    result.skillRoots = validateStringArray(value.skill_roots, "skill_roots", MAX_SKILL_ROOTS, MAX_COMMAND_ARGUMENT_BYTES);
-  }
-  if (value.commands !== undefined) {
-    if (!isPlainRecord(value.commands)) throw new Error(`agent config commands must be an object: ${configPath}`);
-    for (const [name, definition] of Object.entries(value.commands)) {
-      if (!COMMAND_NAME_PATTERN.test(name)) throw new Error(`invalid registered command name '${name}': ${configPath}`);
-      if (definition === null) {
-        result.commands.set(name, null);
-        continue;
-      }
-      result.commands.set(name, normalizeCommand(definition, name, configPath));
-    }
-  }
-  return result;
-}
-
-function normalizeCommand(value, name, configPath) {
-  if (!isPlainRecord(value)) throw new Error(`registered command '${name}' must be an object: ${configPath}`);
-  for (const key of Object.keys(value)) if (!COMMAND_KEYS.has(key)) throw new Error(`unknown field '${key}' for registered command '${name}': ${configPath}`);
-  const argv = validateStringArray(value.argv, `commands.${name}.argv`, MAX_COMMAND_ARGV, MAX_COMMAND_ARGUMENT_BYTES);
-  if (!argv.length) throw new Error(`registered command '${name}' requires a non-empty argv: ${configPath}`);
-  const description = typeof value.description === "string" ? value.description.trim() : "";
-  if (!description || description.length > 1000) throw new Error(`registered command '${name}' requires a description of at most 1000 characters: ${configPath}`);
-  const cwd = value.cwd === undefined ? "." : requiredString(value.cwd, `commands.${name}.cwd`);
-  const timeoutSeconds = clampInteger(value.timeout_seconds, 120, 1, 600);
-  if (value.timeout_seconds !== undefined && timeoutSeconds !== value.timeout_seconds) {
-    throw new Error(`registered command '${name}' timeout_seconds must be an integer from 1 to 600: ${configPath}`);
-  }
-  if (value.allow_extra_args !== undefined && typeof value.allow_extra_args !== "boolean") {
-    throw new Error(`registered command '${name}' allow_extra_args must be boolean: ${configPath}`);
-  }
-  return {
-    description,
-    argv,
-    cwd,
-    timeoutSeconds,
-    allowExtraArgs: value.allow_extra_args === true,
-  };
-}
-
-function validateInstructionFiles(value, configPath) {
-  const files = validateStringArray(value, "instruction_files", 32, 64 * 1024);
-  if (!files.length) throw new Error(`instruction_files must not be empty: ${configPath}`);
-  for (const name of files) resolveInstructionPath("/", name);
-  return files;
-}
-
-function resolveInstructionPath(directory, configuredName) {
-  const raw = requiredString(configuredName, "instruction file name");
-  if (raw.includes("\0") || isAbsolute(raw)) throw new Error(`instruction file path must be relative: ${raw}`);
-  const candidate = resolve(directory, raw);
-  assertContainedPath(resolve(directory), candidate, "instruction file path");
-  return candidate;
-}
-
-function resolveConfiguredPath(configuredPath, baseDir, home, workspace, unrestricted) {
-  const raw = requiredString(configuredPath, "configured path");
-  if (raw.includes("\0")) throw new Error("configured path contains a NUL byte");
-  let expanded = raw;
-  if (raw === "~" || raw.startsWith(`~${sep}`) || raw.startsWith("~/") || raw.startsWith("~\\")) {
-    if (!home) throw new Error("HOME or USERPROFILE is required to expand '~'");
-    expanded = raw === "~" ? home : join(home, raw.slice(2));
-  }
-  const candidate = isAbsolute(expanded) ? resolve(expanded) : resolve(baseDir, expanded);
-  assertAllowedPath(candidate, workspace, unrestricted, "configured path");
-  return candidate;
+  return normalizeAgentConfig(parsed, configPath);
 }
 
 async function findSkillEntrypoint(directory) {
@@ -679,7 +572,6 @@ export function parseSkillMetadata(content) {
   }
   return metadata;
 }
-
 
 async function listSkillFiles(root, maxFiles, context, throwIfCancelled) {
   const files = [];
@@ -853,40 +745,8 @@ async function readRegularUtf8(filePath, maxBytes, label) {
   }
 }
 
-function validateStringArray(value, label, maxItems, maxBytes) {
-  if (!Array.isArray(value)) throw new Error(`${label} must be an array of strings`);
-  if (value.length > maxItems) throw new Error(`${label} contains more than ${maxItems} items`);
-  let bytes = 0;
-  return value.map((item, index) => {
-    if (typeof item !== "string" || !item.length || item.includes("\0")) throw new Error(`${label}[${index}] must be a non-empty string without NUL bytes`);
-    bytes += Buffer.byteLength(item);
-    if (bytes > maxBytes) throw new Error(`${label} exceeds maximum encoded size (${maxBytes} bytes)`);
-    return item;
-  });
-}
-
-function assertAllowedPath(candidate, workspace, unrestricted, label) {
-  if (!unrestricted) assertContainedPath(workspace, candidate, label);
-}
-
-function assertContainedPath(root, target, label) {
-  if (isContainedPath(root, target)) return;
-  throw new Error(`${label} is outside the configured workspace`);
-}
-
-function isContainedPath(root, target) {
-  const rel = relative(resolve(root), resolve(target));
-  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
-}
-
-
 function boundedMessage(error) {
   return String(error?.message || error || "invalid local skill").replace(/[\r\n]+/g, " ").slice(0, 1000);
-}
-
-function requiredString(value, label) {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} is required`);
-  return value.trim();
 }
 
 function unquoteScalar(value) {
@@ -895,7 +755,6 @@ function unquoteScalar(value) {
   }
   return value;
 }
-
 
 function sha256(value) {
   return createHash("sha256").update(String(value)).digest("hex");

@@ -1,3 +1,5 @@
+// @ts-check
+
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { packageRoot } from "./state.mjs";
@@ -9,6 +11,10 @@ const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
 ]);
 export const MAX_BROWSER_MESSAGE_BYTES = 8 * 1024 * 1024;
 
+/** @typedef {{protocol: number, version: string, capabilities: string[]}} ExtensionInfo */
+/** @typedef {{readyState: number, close: (code?: number, reason?: string) => unknown, send: (value: string) => unknown}} ProtocolSocket */
+
+/** @param {unknown} value @returns {ExtensionInfo | null} */
 export function normalizeCompatibleExtensionInfo(value) {
   const info = normalizeExtensionInfo(value);
   if (!info || info.protocol !== BROWSER_EXTENSION_PROTOCOL || info.version !== EXPECTED_EXTENSION_VERSION) return null;
@@ -16,6 +22,7 @@ export function normalizeCompatibleExtensionInfo(value) {
   return info;
 }
 
+/** @param {Record<string, unknown>} message @returns {ExtensionInfo} */
 export function parseExtensionHello(message) {
   if (message.role !== "extension" || message.protocol !== BROWSER_EXTENSION_PROTOCOL) {
     throw new Error(`extension protocol mismatch; expected ${BROWSER_EXTENSION_PROTOCOL}; reload the extension`);
@@ -30,6 +37,10 @@ export function parseExtensionHello(message) {
   return info;
 }
 
+/**
+ * @param {string | Buffer | Uint8Array} data
+ * @returns {{ok: true, message: Record<string, unknown>} | {ok: false, code: number, reason: string}}
+ */
 export function parseBrowserSocketMessage(data) {
   if (Buffer.byteLength(data) > MAX_BROWSER_MESSAGE_BYTES) return { ok: false, code: 1009, reason: "message too large" };
   let text;
@@ -44,10 +55,12 @@ export function parseBrowserSocketMessage(data) {
   return { ok: true, message };
 }
 
+/** @param {ProtocolSocket} socket @param {number} code @param {string} reason */
 export function closeProtocolSocket(socket, code, reason) {
   try { socket.close(code, reason); } catch {}
 }
 
+/** @param {ProtocolSocket | null | undefined} socket @param {unknown} value */
 export function safeSocketSend(socket, value) {
   if (!socket || socket.readyState !== 1) return false;
   try {
@@ -58,12 +71,14 @@ export function safeSocketSend(socket, value) {
   }
 }
 
+/** @param {unknown} value @returns {ExtensionInfo | null} */
 function normalizeExtensionInfo(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const protocol = Number(value.protocol);
-  const version = typeof value.version === "string" && value.version.length <= 100 ? value.version : "";
-  const capabilities = Array.isArray(value.capabilities)
-    ? [...new Set(value.capabilities.filter((entry) => typeof entry === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(entry)))].slice(0, 32)
+  const record = /** @type {Record<string, unknown>} */ (value);
+  const protocol = Number(record.protocol);
+  const version = typeof record.version === "string" && record.version.length <= 100 ? record.version : "";
+  const capabilities = Array.isArray(record.capabilities)
+    ? [...new Set(record.capabilities.filter((entry) => typeof entry === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(entry)))].slice(0, 32)
     : [];
   if (!Number.isInteger(protocol) || protocol < 1 || !version) return null;
   return { protocol, version, capabilities };

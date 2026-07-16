@@ -1,4 +1,4 @@
-import { normalizeAccountRole, type AccountRole } from "./access";
+import { normalizeAccountRole, type AccountRole } from "./access.ts";
 
 const OAUTH_STORE_SCHEMA_VERSION = 1;
 const OAUTH_REFRESH_STORE_SCHEMA_VERSION = 1;

@@ -6,6 +6,19 @@ const correctnessRules = {
   "no-dupe-keys": "error",
   "no-unreachable": "error",
   "no-constant-condition": ["error", { checkLoops: false }],
+  "no-async-promise-executor": "error",
+  "no-promise-executor-return": "error",
+  "no-unsafe-finally": "error",
+  "no-self-assign": "error",
+  "no-useless-catch": "error",
+  "use-isnan": "error",
+  "valid-typeof": "error",
+  "no-unused-vars": ["error", {
+    argsIgnorePattern: "^_",
+    varsIgnorePattern: "^_",
+    caughtErrorsIgnorePattern: "^_",
+    ignoreRestSiblings: true,
+  }],
 };
 
 export default [

@@ -279,7 +279,7 @@ export async function acquireStartupLockWithWait(state, options = {}) {
   logger.info?.(`waiting for ${ownerPid} to finish the current startup/state operation`);
   const deadline = createMonotonicDeadline(timeoutMs);
   while (!deadline.expired()) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline.remainingMs()))));
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline.remainingMs()))); });
     lock = acquireStartupLock(state, metadata);
     if (lock.acquired) {
       logger.info?.("the previous startup/state operation finished; continuing");

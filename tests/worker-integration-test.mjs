@@ -38,7 +38,7 @@ const child = spawn(process.execPath, [wrangler, ...args], {
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true,
 });
-const closed = new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+const closed = new Promise((resolve) => { child.once("close", (code, signal) => resolve({ code, signal })); });
 child.stdout.on("data", (chunk) => { logs = appendBounded(logs, chunk); });
 child.stderr.on("data", (chunk) => { logs = appendBounded(logs, chunk); });
 child.once("error", (error) => { logs = appendBounded(logs, error.stack || error.message); });
@@ -1167,5 +1167,5 @@ function assert(condition, message) {
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
 }

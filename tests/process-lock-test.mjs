@@ -34,12 +34,12 @@ async function atomicExclusiveCreateTest() {
   const barrier = join(directory, "go");
   const helper = join(directory, "contender.mjs");
   const moduleUrl = pathToFileURL(join(root, "src", "local", "exclusive-file.mjs")).href;
-  await writeFile(helper, `import { existsSync } from "node:fs";\nimport { createExclusiveFileSync } from ${JSON.stringify(moduleUrl)};\nconst [target, barrier, id] = process.argv.slice(2);\nwhile (!existsSync(barrier)) await new Promise((r) => setTimeout(r, 2));\ntry { createExclusiveFileSync(target, JSON.stringify({ id, payload: "x".repeat(8192) }) + "\\n"); process.exit(0); }\ncatch (error) { if (error?.code === "EEXIST") process.exit(3); throw error; }\n`, "utf8");
+  await writeFile(helper, `import { existsSync } from "node:fs";\nimport { createExclusiveFileSync } from ${JSON.stringify(moduleUrl)};\nconst [target, barrier, id] = process.argv.slice(2);\nwhile (!existsSync(barrier)) await new Promise((r) => { setTimeout(r, 2); });\ntry { createExclusiveFileSync(target, JSON.stringify({ id, payload: "x".repeat(8192) }) + "\\n"); process.exit(0); }\ncatch (error) { if (error?.code === "EEXIST") process.exit(3); throw error; }\n`, "utf8");
   const children = Array.from({ length: 12 }, (_, index) => spawn(process.execPath, [helper, target, barrier, String(index)], {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   }));
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 30));
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 30); });
   await writeFile(barrier, "go\n", "utf8");
   const results = await Promise.all(children.map(waitForChild));
   const winners = results.filter((result) => result.code === 0);
@@ -71,7 +71,7 @@ async function atomicReplacementTest() {
   while (child.exitCode === null) {
     const parsed = JSON.parse(await readFile(target, "utf8"));
     assert(Number.isInteger(parsed.revision) && parsed.payload.length === 8192, "atomic replacement exposed partial content");
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1));
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 1); });
   }
   const result = await childResult;
   assert(result.code === 0, `atomic replacement fixture failed: ${result.stderr}`);

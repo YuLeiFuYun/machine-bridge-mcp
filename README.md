@@ -2,6 +2,32 @@
 
 `machine-bridge-mcp` exposes a selected local workspace to MCP clients through one shared, policy-controlled runtime.
 
+> [!WARNING]
+> The default `full` profile can read and modify local-user-accessible files, run shell commands, control the existing browser profile, and inherit the parent environment. It is not an operating-system sandbox. Use `review`, `edit`, or `agent`, or an isolated OS account/VM, when any client or repository is not fully trusted.
+
+## Start here
+
+Machine Bridge requires **Node.js 26+ and npm 12+**. Older runtimes and obsolete MCP protocol versions are not supported.
+
+1. Follow [Installation and first use](docs/GETTING_STARTED.md).
+2. Run `machine-mcp doctor`.
+3. Start `machine-mcp` in the workspace you intend to expose.
+4. Connect the printed remote MCP URL, or configure [local stdio](#optional-local-stdio-mcp).
+5. For browser control, load and pair the packaged extension, then reload it after every package upgrade.
+
+Choose the documentation path that matches the task:
+
+| Role | Start with |
+|---|---|
+| New user | [Getting started](docs/GETTING_STARTED.md) |
+| Upgrading an installation | [Upgrading](docs/UPGRADING.md) |
+| MCP client integrator | [Clients](docs/CLIENTS.md) |
+| Operator or incident responder | [Operations](docs/OPERATIONS.md) |
+| Security reviewer | [Security policy](SECURITY.md) and [Architecture](docs/ARCHITECTURE.md) |
+| Contributor or maintainer | [Contributing](CONTRIBUTING.md), [Engineering](docs/ENGINEERING.md), and [Governance](GOVERNANCE.md) |
+
+Support boundaries and safe diagnostic requirements are in [SUPPORT.md](SUPPORT.md). Project participation follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
 It supports two transports:
 
 ```text

@@ -220,7 +220,7 @@ function windowsServiceFailureReason(command, status) {
 async function waitForWindowsStatus(predicate, options) {
   const attempts = boundedPositiveInteger(options.statusAttempts, 10);
   const delayMs = boundedPositiveInteger(options.statusDelayMs, 100);
-  const sleep = typeof options.sleep === "function" ? options.sleep : milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+  const sleep = typeof options.sleep === "function" ? options.sleep : milliseconds => new Promise(resolve => { setTimeout(resolve, milliseconds); });
   let status = await statusWindowsTask(options);
   for (let index = 1; index < attempts && !predicate(status); index += 1) {
     await sleep(delayMs);

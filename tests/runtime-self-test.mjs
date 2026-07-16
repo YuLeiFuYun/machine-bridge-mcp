@@ -257,7 +257,7 @@ export async function runtimeSelfTest() {
     if (process.platform !== "win32") {
       await expectReject(() => restricted.execCommand("sleep 5", 1), "command timed out");
       const interrupted = restricted.runProcess("sleep", ["30"], 60_000);
-      await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+      await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });
       restricted.terminateActiveProcesses("SIGTERM");
       await expectReject(() => interrupted, "exited");
       if (restricted.processTracker.snapshot().active_processes !== 0) throw new Error("terminated process remained tracked");
@@ -265,7 +265,7 @@ export async function runtimeSelfTest() {
       const descendantPidFile = join(workspace, "timeout-descendant.pid");
       const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
       await expectReject(() => restricted.execCommand(descendantCommand, 1), "command timed out");
-      await new Promise(resolvePromise => setTimeout(resolvePromise, 2500));
+      await new Promise(resolvePromise => { setTimeout(resolvePromise, 2500); });
       const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
       if (isProcessAlive(descendantPid)) {
         try { process.kill(descendantPid, "SIGKILL"); } catch {}
@@ -278,7 +278,7 @@ export async function runtimeSelfTest() {
       const detachedDescendantPid = Number((await readFile(detachedDescendantPidFile, "utf8")).trim());
       const detachedDeadline = Date.now() + 5000;
       while (isProcessAlive(detachedDescendantPid) && Date.now() < detachedDeadline) {
-        await new Promise(resolvePromise => setTimeout(resolvePromise, 50));
+        await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });
       }
       if (isProcessAlive(detachedDescendantPid)) {
         try { process.kill(detachedDescendantPid, "SIGKILL"); } catch {}

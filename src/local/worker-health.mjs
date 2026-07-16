@@ -242,5 +242,5 @@ function boundedTimeout(value) {
 }
 
 function sleep(ms) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+  return new Promise((resolvePromise) => { setTimeout(resolvePromise, ms); });
 }

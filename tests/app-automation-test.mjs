@@ -167,7 +167,7 @@ async function liveMacosCalculatorSmoke(root) {
   try {
     const opened = await runtime.executeTool("open_local_application", { application: "Calculator", timeout_seconds: 30 });
     assert(opened.code === 0, "live Calculator open failed");
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 1000); });
     const activated = await runtime.executeTool("operate_local_application", { application: "Calculator", action: "activate", timeout_seconds: 30 });
     assert(activated.ok === true, "live Calculator activation did not return structured success");
     const inspected = await runtime.executeTool("inspect_local_application", { application: "Calculator", max_depth: 6, max_elements: 300, include_values: true, timeout_seconds: 60 });

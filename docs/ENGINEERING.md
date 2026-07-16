@@ -130,8 +130,8 @@ The required matrix includes:
 - Linux, macOS, and Windows on the pinned Node/npm baseline;
 - current-tree and reachable-history privacy gates, release-impact enforcement, and exact-commit CI/CodeQL/Governance/Scorecard release gating;
 - package-manifest and sensitive-artifact inspection;
-- generated type checks and recursively discovered JavaScript/shell syntax checks;
-- static undefined-identifier/redeclaration checks over all production JavaScript, tests, scripts, and browser-extension code;
+- generated Worker type checks plus strict opt-in checked-JavaScript contracts for high-risk local policy, lifecycle, configuration, path, protocol, and timing boundaries;
+- recursively discovered JavaScript/shell syntax checks and static correctness lint over all production JavaScript, tests, scripts, and browser-extension code;
 - a real packed-tarball isolated global installation whose zero-argument CLI startup initializes state and reaches a controlled external Worker-deployment boundary; `--version` or import-only smoke tests are insufficient release evidence;
 - concurrent exclusive-lock/atomic-replacement tests, PID-reuse/age tests, and fail-closed service-lifecycle tests;
 - real process-tree timeout/cancellation tests with descendants that ignore graceful termination;
@@ -151,6 +151,9 @@ Cross-platform tests must not depend on shell syntax, case-sensitive Windows pat
 - LOGGING defines operator-facing event semantics.
 - OPERATIONS contains diagnosis and recovery procedures.
 - TESTING records executable coverage and regression expectations.
+- UPGRADING defines the only supported state/protocol transition and rollback unit.
+- SUPPORT defines supported runtimes, diagnostic requirements, and public/private reporting boundaries.
+- GOVERNANCE defines accountable ownership, succession, review, and release authority.
 - CHANGELOG records externally relevant changes, including documentation and workflow changes.
 - PROJECT_STANDARDS defines collaboration, contract, testing, supply-chain, review, and exception policy.
 - TOOL_REFERENCE is generated from the shared MCP tool catalog and must never be maintained by hand.

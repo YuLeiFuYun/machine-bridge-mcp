@@ -1,7 +1,7 @@
-import accessContract from "../shared/access-contract.json";
-import policyContract from "../shared/policy-contract.json";
-import toolCatalog from "../shared/tool-catalog.json";
-import { policyAllowsAvailability, type DaemonPolicy } from "./policy";
+import accessContract from "../shared/access-contract.json" with { type: "json" };
+import policyContract from "../shared/policy-contract.json" with { type: "json" };
+import toolCatalog from "../shared/tool-catalog.json" with { type: "json" };
+import { policyAllowsAvailability, type DaemonPolicy } from "./policy.ts";
 
 export type AccountRole = keyof typeof accessContract.roles;
 

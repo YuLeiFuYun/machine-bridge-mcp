@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": true,
+    "types": [
+      "node"
+    ],
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "src/local/numbers.mjs",
+    "src/local/records.mjs",
+    "src/local/monotonic-deadline.mjs",
+    "src/local/project-metadata.mjs",
+    "src/local/capability-ranking.mjs",
+    "src/local/agent-contract.mjs",
+    "src/local/browser-extension-protocol.mjs",
+    "src/local/call-registry.mjs",
+    "src/local/policy.mjs"
+  ]
+}

@@ -458,7 +458,7 @@ async function exists(path) {
 }
 
 function delay(ms) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+  return new Promise((resolvePromise) => { setTimeout(resolvePromise, ms); });
 }
 
 function expectThrow(callback, pattern) {

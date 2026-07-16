@@ -1,3 +1,11 @@
+// @ts-check
+
+/**
+ * @param {unknown} value
+ * @param {number} fallback
+ * @param {number} minimum
+ * @param {number} maximum
+ */
 export function clampInteger(value, fallback, minimum, maximum) {
   const parsed = typeof value === "number"
     ? value

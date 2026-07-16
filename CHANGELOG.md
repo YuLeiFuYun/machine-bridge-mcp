@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0 - 2026-07-16
+
+### Typed evolution boundaries and project governance
+
+- Split the highest-change orchestration modules along real lifecycle boundaries. Worker OAuth storage, registration, authorization, account administration, token verification, and mutation serialization now live in `OAuthController`; local runtime reporting, fixed diagnostics, and capability composition have dedicated services; Agent configuration/path validation and browser MCP operation semantics no longer share files with discovery or loopback broker transport. Persisted state schema 6, policy revision 5, token records, browser pairing, resources, and managed-job data remain unchanged for an in-place upgrade from 1.1.5.
+- Make Worker TypeScript imports explicit and directly executable under Node 26, including `.ts` specifiers and JSON import attributes. Add a focused OAuth-controller state-machine suite covering registration throttling, authorization failure/success, resource-bound access tokens, expiry pruning, schema mismatch, and missing identity keys while retaining the real workerd OAuth/MCP integration.
+- Add a strict checked-JavaScript contract gate for local policy, call lifecycle, Agent configuration and path containment, browser handshake parsing, capability ranking, monotonic deadlines, record/number normalization, and bounded metadata reads. Expand correctness linting to reject async Promise executors, returned Promise-executor values, unsafe `finally`, useless catches, invalid `typeof`, self-assignment, and invalid NaN comparisons, and unused imports/variables; fix every newly detected occurrence rather than waiving the rules.
+- Raise risk-directed coverage gates and include Agent, browser, runtime-boundary, and OAuth-controller fixtures. Worker pending-call and policy modules now have branch floors; the extracted runtime reporting, diagnostics, capability, browser operation, browser protocol, Agent contract, and capability-ranking modules have independent function and branch minima. Lower architecture line caps prevent the orchestration modules from regaining the extracted responsibilities.
+- Add a five-minute README path, explicit Node 26/npm 12 support boundaries, a current-only upgrade and rollback contract, support/reporting guidance, project governance and succession rules, and a code of conduct. The first control required after a second active maintainer joins is non-author and last-push approval for security-sensitive code and release surfaces.
+- Preserve release and supply-chain behavior: no live npm publication, Worker deployment, secret rotation, or daemon/service replacement is performed by this source release. Trusted npm publishing with GitHub OIDC still requires the external package-owner trust relationship and remains the next publication-control improvement.
+
 ## 1.1.5 - 2026-07-16
 
 ### Windows autostart and persisted network environment
