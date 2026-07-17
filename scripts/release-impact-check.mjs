@@ -25,20 +25,36 @@ const changed = new Set([
   ...lines(git(["ls-files", "--others", "--exclude-standard"])),
 ]);
 const relevant = [...changed].sort();
+const packageRelevant = relevant.filter((path) => isPackageRelevant(path, pkg.files));
 
 if (!relevant.length) {
-  process.stderr.write(`release impact check ok: no release-relevant changes since ${latestTag}\n`);
+  process.stderr.write(`release impact check ok: no repository changes since ${latestTag}\n`);
+  process.exit(0);
+}
+if (!packageRelevant.length) {
+  process.stderr.write(`release impact check ok: ${relevant.length} repository-only file(s) changed since ${latestTag}; npm package content is unchanged\n`);
   process.exit(0);
 }
 if (compareVersions(current, latest) <= 0) {
-  fail(`release-relevant changes exist since ${latestTag}, but package.json is still ${pkg.version}; bump the npm version and add a CHANGELOG section before merging`);
+  fail(`npm-package changes exist since ${latestTag}, but package.json is still ${pkg.version}; bump the npm version and add a CHANGELOG section before merging`);
 }
 
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const heading = new RegExp(`^## ${escapeRegExp(pkg.version)}(?:\\s+-[^\\n]*)?$`, "m");
 if (!heading.test(changelog)) fail(`CHANGELOG.md has no section for ${pkg.version}`);
 
-process.stderr.write(`release impact check ok: ${relevant.length} release-relevant file(s) since ${latestTag}; next npm version ${pkg.version}\n`);
+process.stderr.write(`release impact check ok: ${packageRelevant.length} npm-package file(s) changed since ${latestTag}; next npm version ${pkg.version}\n`);
+
+export function isPackageRelevant(path, packageFiles = []) {
+  const normalized = String(path || "").replaceAll("\\", "/").replace(/^\.\//, "");
+  if (!normalized) return false;
+  if (["package.json", "package-lock.json", "npm-shrinkwrap.json"].includes(normalized)) return true;
+  for (const entry of packageFiles || []) {
+    const candidate = String(entry || "").replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+    if (candidate && (normalized === candidate || normalized.startsWith(`${candidate}/`))) return true;
+  }
+  return false;
+}
 
 function git(args) {
   try {

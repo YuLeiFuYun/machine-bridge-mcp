@@ -68,11 +68,18 @@ if (!String(packageJson.scripts?.check || "").includes("npm run runtime-boundari
     || !String(packageJson.scripts?.check || "").includes("npm run shell:test") || !String(packageJson.scripts?.check || "").includes("npm run lint:test") || !String(packageJson.scripts?.check || "").includes("npm run lint") || !String(packageJson.scripts?.check || "").includes("npm run deadline:test") || !String(packageJson.scripts?.check || "").includes("npm run install:test") || !String(packageJson.scripts?.check || "").includes("npm run oauth-browser:test")) {
   throw new Error("complete check no longer includes static undefined-identifier and installed-default-startup gates");
 }
+if (packageJson.scripts?.["release:acceptance:test"] !== "node tests/release-acceptance-test.mjs") throw new Error("local release acceptance regression test is missing");
+if (packageJson.scripts?.["release:candidate"] !== "npm run check && node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses the complete suite");
+if (packageJson.scripts?.["release:accept"] !== "node scripts/local-release-acceptance.mjs --record") throw new Error("owner acceptance command is missing");
+if (packageJson.scripts?.["release:acceptance:verify"] !== "node scripts/local-release-acceptance.mjs --verify") throw new Error("release acceptance verification command is missing");
+if (packageJson.scripts?.["github:push"] !== "node scripts/github-push.mjs") throw new Error("guarded GitHub push command is missing");
+if (!String(packageJson.scripts?.check || "").includes("npm run release:acceptance:test")) throw new Error("complete check omits local release acceptance regression coverage");
 if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
   throw new Error("package privacy history check is missing or drifted");
 }
 const ciSource = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
 if (!ciSource.includes("npm run privacy:history")) throw new Error("CI package audit no longer scans reachable Git history");
+if ((ciSource.match(/npm run release:acceptance:verify/g) || []).length !== 2) throw new Error("CI no longer verifies repository-owner package acceptance in both package paths");
 if ((ciSource.match(/node scripts\/prepare-pinned-npm\.mjs/g) || []).length !== 2 || ciSource.includes("npm install --global npm@")) {
   throw new Error("CI no longer bootstraps the npm baseline from an integrity-verified immutable tarball");
 }
@@ -82,6 +89,10 @@ if (!npmBootstrapSource.includes("npm-12.0.1.tgz") || !npmBootstrapSource.includ
 }
 const sourceWrapper = readFileSync(join(root, "mbm"), "utf8");
 if (!sourceWrapper.includes("npm ci") || /npm install(?:\s|$)/.test(sourceWrapper)) throw new Error("source wrapper no longer installs from the committed lockfile");
+const dependabotSource = readFileSync(join(root, ".github", "dependabot.yml"), "utf8");
+if (!dependabotSource.includes("groups:") || !dependabotSource.includes("github-actions:") || !dependabotSource.includes('- "*"')) {
+  throw new Error("Dependabot no longer groups coupled GitHub Action updates atomically");
+}
 const codeqlWorkflowSource = readFileSync(join(root, ".github", "workflows", "codeql.yml"), "utf8");
 if (!codeqlWorkflowSource.includes("scripts/sarif-security-gate.mjs") || !codeqlWorkflowSource.includes("steps.analyze.outputs.sarif-output")) {
   throw new Error("CodeQL workflow no longer fails on unaccepted SARIF findings");
@@ -97,6 +108,10 @@ if (!scorecardWorkflowSource.includes("name: Scorecard gate")
 }
 if (scorecardAnalysisBlock.includes("\n        run:") || scorecardAnalysisBlock.includes("\n      - run:")) {
   throw new Error("Scorecard signed analysis job contains a run step rejected by the Scorecard verifier");
+}
+const codeqlActionRefs = [...`${codeqlWorkflowSource}\n${scorecardWorkflowSource}`.matchAll(/github\/codeql-action\/(?:init|analyze|upload-sarif)@([0-9a-f]{40})/g)].map((match) => match[1]);
+if (codeqlActionRefs.length !== 3 || new Set(codeqlActionRefs).size !== 1) {
+  throw new Error("CodeQL init, analyze, and upload-sarif must use one atomic immutable action commit");
 }
 const scorecardAccepted = JSON.parse(readFileSync(join(root, ".github", "scorecard-accepted-findings.json"), "utf8"));
 const acceptedScorecardRules = new Set((scorecardAccepted.accepted || []).map((item) => item.ruleId));
@@ -126,11 +141,18 @@ if (packageJson.devDependencies?.["fast-check"] !== "4.9.0" || !readFileSync(joi
 }
 const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
 if (!releaseSource.includes('import { requireSuccessfulWorkflowRun } from "./release-ci.mjs";')
+    || !releaseSource.includes('import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";')
     || (releaseSource.match(/assertSuccessfulCi\(head\);/g) || []).length !== 2
     || !releaseSource.includes(".github/workflows/codeql.yml")
     || !releaseSource.includes(".github/workflows/scorecard.yml")
-    || !releaseSource.includes(".github/workflows/governance.yml")) {
-  throw new Error("GitHub release orchestration no longer requires all exact-commit security and governance workflows");
+    || !releaseSource.includes(".github/workflows/governance.yml")
+    || releaseSource.includes('["push", "origin", "HEAD:main"]')
+    || !releaseSource.includes("HEAD does not match origin/main; local acceptance must be committed")) {
+  throw new Error("GitHub release orchestration lost owner acceptance, exact-commit gates, or the no-main-push boundary");
+}
+const githubPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
+for (const required of ["verifyCurrentReleaseAcceptance", "working tree is not clean", "direct pushes to main are prohibited", "--set-upstream", "release-acceptance/v"]) {
+  if (!githubPushSource.includes(required)) throw new Error(`guarded GitHub push lost required boundary: ${required}`);
 }
 for (const [name, command] of Object.entries(packageJson.scripts || {})) {
   const match = /^node\s+([^\s]+\.mjs)(?:\s|$)/.exec(String(command));
@@ -205,7 +227,7 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Completion ownership", "annotated `v<version>` tag", "repeated per-task authorization is not required", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Completion ownership and local acceptance", "annotated `v<version>` tag", "npm run release:candidate", "npm run github:push", "Automation must not create that assertion", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
@@ -214,7 +236,7 @@ if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || 
   throw new Error("generated MCP tool reference is missing or malformed");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
-for (const required of ["GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "standing authorization for repository source completion", "squash-merge its pull request", "run `npm run release:publish`", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
+for (const required of ["GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "standing authorization for repository implementation and local validation", "npm run release:candidate", "npm run release:accept", "npm run github:push", "must stop before the first GitHub push", "run `npm run release:publish`", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
 }
 if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {

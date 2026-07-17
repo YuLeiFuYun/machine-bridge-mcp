@@ -2,57 +2,91 @@
 
 The release invariant is:
 
-- `main` points to the release commit, and the exact commit has a completed successful push-triggered `.github/workflows/ci.yml` run.
-- `v<package version>` points to that same commit locally and on GitHub.
-- A final GitHub Release exists for the tag.
-- The GitHub Release contains the npm tarball generated from that commit.
-- `package.json`, `package-lock.json`, the Worker-reported version, and `browser-extension/manifest.json` (`version`/`version_name`) agree.
-- Every release-relevant change since the prior version tag has a higher package version and matching CHANGELOG section.
-- The same reviewed change is present on GitHub and in a new npm version.
+- the repository owner tested the exact npm tarball represented by `release-acceptance/v<version>.json` on the maintainer machine and explicitly recorded a passing result;
+- the current package produces the same SHA-1 and SHA-512 integrity values as that accepted tarball;
+- `main` points to the release commit, and that exact commit has completed successful push-triggered CI, CodeQL, Governance, and OpenSSF Scorecard runs;
+- `v<package version>` points to that same commit locally and on GitHub;
+- a final GitHub Release exists for the tag and contains the accepted npm tarball;
+- `package.json`, `package-lock.json`, the Worker-reported version, and `browser-extension/manifest.json` (`version`/`version_name`) agree;
+- every npm-package change since the prior version tag has a higher package version and matching CHANGELOG section;
+- the same accepted package content is present on GitHub and in a new npm version.
 
-`npm publish` runs `release:check` through `prepublishOnly`, so npm publication is blocked until all GitHub state is synchronized.
+A green automated suite is necessary but is not evidence that the maintainer's ordinary installation path works. The repository therefore separates automated validation from owner acceptance and binds both to the final package bytes.
 
-## Default automation responsibility
+## Change classification
 
-For every reviewed release-relevant change, repository automation completes the source release without requiring the owner to repeat the instruction: it merges the pull request, waits for successful push-triggered CI on the exact `main` commit, creates and pushes the annotated version tag, creates or updates the final GitHub Release, uploads the generated npm tarball, and verifies that all references identify the same commit. These GitHub operations use only local `git`, `gh`, and `gh api` through Machine Bridge.
+A change is **npm-package relevant** when it alters `package.json`, `package-lock.json`, or a path included by the package `files` manifest. Source, runtime scripts, browser extension files, shared contracts, shipped documentation, and package metadata therefore require a new version and local acceptance.
 
-This standing responsibility does not authorize npm publication, Cloudflare Worker deployment, credential changes, global package installation, or local daemon/service replacement. Those operations change a registry or live machine and require explicit authorization.
+A repository-only change under paths such as `.github/` may be merged without a synthetic npm version when the package bytes are unchanged. It still requires review and all applicable GitHub checks. `scripts/release-impact-check.mjs` implements this distinction from the package manifest rather than from a duplicated path list.
 
-## Prepare a version
+## Prepare the candidate locally
 
-1. Set the new version without creating an automatic npm tag. The npm version hook synchronizes the Worker and packaged browser-extension versions:
+1. Set the new version without creating a tag. The npm version hook synchronizes the Worker and browser-extension versions:
 
    ```sh
    npm version <version> --no-git-tag-version
    ```
 
-2. Add the matching dated `CHANGELOG.md` section.
-3. Run `npm run release-impact:check`, `npm run privacy:check`, review `npm run privacy:history`, run `npm run check`, both dependency audits, `npm audit signatures`, and generate a CycloneDX `npm sbom`.
-4. Inspect the complete diff and `npm pack --dry-run`, including packaged file modes and every helper referenced by package scripts, then commit and push all release changes to `main`. Wait for the push-triggered Linux/macOS/Windows and package-audit checks to complete successfully.
+2. Add the matching dated `CHANGELOG.md` section and update affected documentation and audit notes.
+3. Run the required dependency, privacy, Worker, and package checks while iterating.
+4. Inspect the complete diff.
+5. Generate the final candidate:
 
-A privacy/security documentation correction is not “docs only” for release purposes. It requires a replacement npm version and, when appropriate, deprecation or unpublication of the affected version.
+   ```sh
+   npm run release:candidate
+   ```
 
-## Publish GitHub source and release
+`release:candidate` runs the complete repository suite and then writes the exact npm tarball plus a bounded pending manifest under ignored `.release-candidate/`. Do not modify a packaged file after generating the candidate without regenerating and retesting it.
 
-From a clean `main` worktree:
+## Repository-owner local acceptance
+
+The repository owner—not the coding agent—must test the exact `.release-candidate/*.tgz` artifact on the maintainer machine through the normal installation and startup path relevant to the change. For a general release, this includes installation from that tarball, zero-argument startup, ordinary connection/readiness, and at least one representative user operation. Changes to browser, application automation, service startup, proxying, credentials, or platform-specific behavior require the corresponding live or platform-specific test described in `docs/TESTING.md` and `docs/OPERATIONS.md`.
+
+After the owner confirms the candidate works, record the decision using the exact phrase printed by `release:candidate`, for example:
+
+```sh
+npm run release:accept -- --confirm "I TESTED machine-bridge-mcp 1.2.8 LOCALLY AND IT WORKS"
+```
+
+This creates `release-acceptance/v<version>.json` containing only package identity, hashes, timestamp, result, and a fixed owner-confirmation marker. It does not store a personal name, machine path, command output, credential, or user content. The acceptance record is intentionally excluded from the npm package, so adding it does not change the tested tarball.
+
+The command repacks the current tree and refuses to record acceptance if any packaged byte changed after candidate preparation. The assertion is a process gate backed by branch ownership and review, not a cryptographic identity signature; it must never be generated by automation merely because automated tests passed.
+
+## Push and review
+
+Commit the candidate changes and acceptance record, then push the branch only through:
+
+```sh
+npm run github:push
+```
+
+The command requires a clean non-`main` branch, verifies that the acceptance record is tracked, rebuilds the npm package, compares both hashes, and only then executes a non-force push of the current branch. Direct pushes to `main` remain prohibited. Any packaged-file change after acceptance invalidates the hash and blocks the next push until the owner retests a regenerated candidate.
+
+Open a pull request, satisfy the required checks, and squash-merge. Pull-request CI repeats the acceptance verification. A content-preserving squash changes the Git commit but not the package bytes, so the accepted hash remains valid.
+
+## Publish the GitHub source release
+
+From a clean, fast-forwarded `main` worktree whose `HEAD` exactly equals `origin/main`:
 
 ```sh
 npm run release:publish
 ```
 
-The command validates the project, including repository privacy checks, fast-forwards `origin/main` when needed, then requires the latest push-triggered CI run for that exact commit to be completed successfully before it creates or verifies the annotated version tag. It then pushes the tag, builds the npm tarball, creates or updates the GitHub Release, uploads the tarball, and verifies the resulting state. Read-only GitHub operations, Git pushes, and idempotent release updates use bounded retries only for classified transient network failures; ambiguous Release creation responses are resolved by querying server state before continuing.
+`release:publish` never pushes `main`. It verifies the owner acceptance, runs the complete project and version checks, requires successful exact-commit push runs for CI, CodeQL, Governance, and Scorecard, creates or verifies the annotated version tag, pushes only the version tag when absent, builds the npm tarball, creates or updates the final GitHub Release, uploads the tarball, and verifies the resulting state.
 
-To verify without changing anything:
+To verify an already completed source release without changing anything:
 
 ```sh
 npm run release:check
 ```
 
-To create GitHub Release records for existing remote version tags that lack releases:
+To create GitHub Release records for historical remote tags that lack releases:
 
 ```sh
 npm run release:backfill
 ```
+
+Backfill is historical metadata repair. It does not retroactively claim that releases predating the 1.2.8 acceptance policy had a recorded local acceptance.
 
 ## Publish npm
 
@@ -62,18 +96,16 @@ Only after `release:check` succeeds:
 npm publish --access public
 ```
 
-The npm lifecycle repeats the full project checks and the GitHub synchronization check before upload. Do not leave a code or documentation fix only on GitHub; the corresponding npm version must be published, and the operator should be explicitly reminded until registry publication is confirmed.
+`prepublishOnly` repeats the complete checks and GitHub synchronization check. npm publication remains a deliberate release-operator action and is not authorized by an ordinary source change.
 
-## Authentication requirements
+## Authentication and external controls
 
-- Git push access to `origin`.
-- An authenticated GitHub CLI session with repository release permission.
-- An npm account that owns the package or has maintainer permission.
+Required local access:
 
-GitHub Actions is a required publication boundary. The authenticated GitHub CLI must be able to read Actions runs, and a missing, pending, cancelled, skipped, or failed exact-commit push run blocks both `release:publish` and `release:check`. This prevents a machine-specific local pass from publishing a version that fails another supported platform.
+- Git push access to `origin` for the accepted branch and version tag;
+- an authenticated GitHub CLI session with pull-request and release permission;
+- an npm account that owns the package or has maintainer permission for the separate registry publication step.
 
-## Registry publication hardening
+GitHub Actions remains a required cross-platform boundary. Missing, pending, cancelled, skipped, failed, pull-request-only, stale, or wrong-commit runs do not satisfy release publication. Local owner acceptance and successful GitHub checks are complementary evidence; neither substitutes for the other.
 
-The preferred target is npm trusted publishing from a narrowly scoped GitHub Actions release workflow using OIDC and a protected GitHub environment. This removes the need for a long-lived npm publication token and allows npm to generate provenance automatically. Enabling it requires an explicit package-owner configuration in npm and a reviewed change to the release workflow; repository code alone cannot complete that trust relationship.
-
-Until trusted publishing is configured, publication remains a deliberate local operator step after `release:check`. Do not add an npm token to repository or environment files, workflow YAML, logs, or local project notes. Restrict any fallback token to the shortest practical lifetime and minimum package scope.
+The preferred registry target remains npm trusted publishing from a narrowly scoped GitHub Actions workflow using OIDC and a protected GitHub environment. Enabling it requires package-owner configuration in npm and a reviewed workflow change. Until then, never place an npm token in repository files, workflow YAML, logs, local acceptance records, or project notes.

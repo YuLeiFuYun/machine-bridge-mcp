@@ -7,3 +7,5 @@ npm-debug.log*
 src/worker/worker-configuration.d.ts
 .privacy-denylist
 .project-local/
+
+.release-candidate/
