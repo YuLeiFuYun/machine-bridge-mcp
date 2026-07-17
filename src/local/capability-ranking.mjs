@@ -1,5 +1,6 @@
 // @ts-check
 const TOKEN_STOP_WORDS = new Set(["the", "and", "for", "with", "from", "this", "that", "use", "using", "into", "of", "to", "a", "an", "in", "on", "is", "are", "or", "及", "和", "的", "了", "在", "用", "使用", "进行", "根据"]);
+const GENERIC_IDENTITY_TOKENS = new Set(["app", "application", "cli", "local", "tool", "web"]);
 const ENGLISH_TOKEN_CANONICAL = new Map([
   ["created", "create"], ["creating", "create"], ["creation", "create"], ["creator", "create"],
   ["improved", "improve"], ["improving", "improve"], ["improvement", "improve"],
@@ -17,7 +18,7 @@ const HAN_TOKEN_ALIASES = Object.freeze([
   [/技能/u, ["skill"]],
   [/安装/u, ["install", "installer"]],
   [/部署/u, ["deploy", "deployment"]],
-  [/查找|搜索|检索/u, ["search", "find"]],
+  [/查找|搜索|检索|调研|研究/u, ["search", "find", "research"]],
   [/最新|当前/u, ["latest", "current"]],
   [/官方/u, ["official"]],
   [/文档|资料/u, ["docs", "documentation"]],
@@ -47,7 +48,7 @@ export function relevanceScore(task, candidate, identity = "") {
   let score = 0;
   for (const token of taskTokens) {
     if (candidateTokens.has(token)) score += token.length >= 6 ? 2 : 1;
-    if (identityTokens.has(token)) score += token.length >= 6 ? 4 : 3;
+    if (identityTokens.has(token) && !GENERIC_IDENTITY_TOKENS.has(token)) score += token.length >= 6 ? 4 : 3;
   }
   const taskComparable = comparableText(task);
   const candidateComparable = comparableText(candidate);

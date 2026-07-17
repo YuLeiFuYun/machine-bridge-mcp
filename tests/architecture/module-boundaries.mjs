@@ -118,6 +118,7 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-session.ts": 120,
   "src/worker/tool-timeout.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
+  "src/worker/daemon-sockets.ts": 140,
   "src/worker/pending-calls.ts": 180,
 });
 for (const [name, maximum] of Object.entries(lineLimits)) {
@@ -178,10 +179,18 @@ for (const duplicate of [
 }
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
-  "observability", "mcp-session", "tool-timeout", "daemon-liveness",
+  "observability", "mcp-session", "tool-timeout", "daemon-liveness", "daemon-sockets",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
+const daemonSocketBoundary = readFileSync(join(root, "src", "worker", "daemon-sockets.ts"), "utf8");
+for (const required of ["class DaemonSocketRegistry", "beginProbe", "promote", "readySockets", "probingSockets"]) {
+  if (!daemonSocketBoundary.includes(required)) throw new Error(`daemon socket registry lost lifecycle responsibility: ${required}`);
+}
+for (const forbidden of ["serializeAttachment({ role: \"candidate\"", "serializeAttachment({ role: \"probing\"", "serializeAttachment({ role: \"daemon\""]) {
+  if (workerIndexBoundary.includes(forbidden)) throw new Error(`Worker index regained daemon socket state mutation: ${forbidden}`);
+}
+
 for (const required of ["private async oauthStore", "private async withOAuthLock", "AUTHORIZATION_FIELDS", "verifyAccessToken"]) {
   if (!workerOAuthControllerBoundary.includes(required)) throw new Error(`OAuth controller lost state-machine responsibility: ${required}`);
 }

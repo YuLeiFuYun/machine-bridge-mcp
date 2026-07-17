@@ -57,11 +57,11 @@ export async function runtimeSelfTest() {
       arguments: { argv: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], timeout_seconds: 10 },
       timeout_ms: 1000,
       authorization: ownerAuthorization,
-    }), { sessionId: 1 });
+    }), { sessionId: 1, authenticated: true, ready: true });
     const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
     if (deadlineResult?.ok !== false || deadlineResult.error?.code !== "timeout" || deadlineResult.error?.retryable !== true) throw new Error(`relay deadline did not return a structured retryable timeout: ${JSON.stringify(deadlineResult)}`);
     relayMessages.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1 });
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
     if (invalidEnvelope?.ok !== false || invalidEnvelope.error?.code !== "invalid_request" || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
     restricted.relay.sendForSession = originalSendForSession;
@@ -100,7 +100,7 @@ export async function runtimeSelfTest() {
     }
 
     logEvents.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" }, authorization: ownerAuthorization }), { sessionId: 1 });
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" }, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     if (logEvents.some(event => event.level === "info" && event.event === "tool.call.completed")) {
       throw new Error("remote daemon emitted routine success at info level");
     }
@@ -115,7 +115,7 @@ export async function runtimeSelfTest() {
       relayMessages.push(value);
       return { ok: true, reason: "sent" };
     };
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }), { sessionId: 1 });
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     restricted.relay.sendForSession = originalSendForSession;
     const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
     if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");

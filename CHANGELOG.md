@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.5 - 2026-07-17
+
+### End-to-end relay readiness and safe daemon handover
+
+- Separate authenticated WebSocket transport from verified service readiness. A daemon now becomes externally usable only after the Worker sends a random readiness probe and receives its result through the same local message dispatch, relay-session binding, and `tool_result` delivery path used by real calls. `hello_ack` and heartbeats alone can no longer produce `daemon.connected=true` when result delivery is broken. The local runtime also rejects pre-ready tool calls and a premature `ready_ack` that was not preceded by a successfully delivered probe result.
+- Keep the incumbent verified daemon active while a replacement is authenticated and probed. A failed, malformed, silent, or incompatible candidate is closed without displacing the working connection; only a successful `ready_ack` handover replaces the incumbent. Candidate hello, readiness, and steady-state liveness have independent bounded deadlines enforced by Durable Object alarms.
+- Extract daemon attachment/state transitions into `DaemonSocketRegistry`, expose authenticated/probing/ready counts and readiness timestamps through `server_info`, and add fault-injection coverage for missing acknowledgements, invalid probe results, replacement races, reconnect backoff, session-generation propagation, and full OAuth/MCP/WebSocket routing.
+- Correct capability ranking after the local research-skill rename: generic identity tokens such as `web`, `cli`, and `tool` no longer dominate selection, while concrete Chinese research/search intent maps to `research`, `search`, and `find`. This prevents a browser-form task from selecting a web-research skill without weakening explicit research requests.
+- Remove a duplicate Worker route guard, require awaited alarm rescheduling after inbound activity, retain zero production dependency vulnerabilities, and refresh architecture, operations, logging, testing, upgrade, and audit documentation. State schema 6 and policy revision 5 remain unchanged.
+
 ## 1.2.4 - 2026-07-17
 
 ### Relay tool_result session context regression

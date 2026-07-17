@@ -62,7 +62,7 @@ Follow the sample workflow.
   for (const fixture of [
     ["skill-creator", "Guide for creating and updating reusable local skills with clear instructions and tests.", "Use the skill creator workflow."],
     ["frontend-design", "Create production-grade frontend interfaces, pages, dashboards, and web applications.", "Use the frontend design workflow."],
-    ["smart-search-cli", "CLI-first current web search, official documentation retrieval, and fact checking.", "Use the smart search workflow."],
+    ["web-research-cli", "CLI-first current web search, official documentation retrieval, and fact checking.", "Use the web research workflow."],
     ["openai-docs", "Use official OpenAI documentation for OpenAI product and API questions.", "Use the OpenAI docs workflow."],
     ["skill-installer", "Install local skills from a curated list or repository path.", "Use the skill installer workflow."],
   ]) {
@@ -202,7 +202,7 @@ description: 审查部署流程并验证发布配置。
     const englishSkillCreation = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "Create a reusable local skill with clear instructions and tests" });
     assert(englishSkillCreation.selected_skill?.name === "skill-creator", "identity weighting did not disambiguate skill-creator from generic create-oriented skills");
     const chineseSearch = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "查找最新官方 API 文档并做事实核查" });
-    assert(chineseSearch.selected_skill?.name === "smart-search-cli", "Chinese search intent did not select smart-search-cli");
+    assert(chineseSearch.selected_skill?.name === "web-research-cli", "Chinese search intent did not select web-research-cli");
     const chineseInstall = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "安装一个适合处理 PDF 的 skill" });
     assert(chineseInstall.selected_skill?.name === "skill-installer", "Chinese skill-install intent did not select skill-installer");
 

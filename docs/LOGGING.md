@@ -45,7 +45,7 @@ Autostart installation and daemon startup may report the names of allowlisted pr
 
 ## Relay connection event policy
 
-A TCP/WebSocket `open` event is only transport availability. The daemon is reported as connected only after the Worker returns `hello_ack` for the authenticated `hello` message.
+A TCP/WebSocket `open` event is only transport availability, and `hello_ack` proves only authenticated bidirectional control traffic. The daemon is reported as ready only after a random Worker probe returns through the ordinary local dispatcher and session-bound result path and the Worker sends `ready_ack`.
 
 Brief network interruptions are expected on laptop network changes, Worker deployment, proxy rotation, and ordinary internet transport. They are handled as follows:
 
@@ -57,10 +57,10 @@ Brief network interruptions are expected on laptop network changes, Worker deplo
 - while the outage remains unresolved, reminders are scheduled independently of reconnect callbacks and use exponential backoff capped at 15 minutes;
 - a WebSocket that remains in `CONNECTING` beyond its deadline is terminated so one stalled network attempt cannot freeze the reconnect loop;
 - relay identity/version mismatch, authentication rejection, and unexpected protocol messages are non-transient: they produce an immediate actionable error and terminate that daemon instead of entering the reconnect loop;
-- a Worker `daemon_hello_timeout` error is transient and follows the normal reconnect path rather than being misclassified as authentication rejection;
+- Worker `daemon_hello_timeout` and `daemon_ready_timeout` errors are transient and follow the normal reconnect path rather than being misclassified as authentication rejection;
 - recovery after a visible outage produces one information summary with a human-readable duration and attempt count; exact seconds and error classes remain debug-only;
-- an authenticated replacement is a distinct warning and permanently stops the older daemon;
-- failure to receive `hello_ack` within the handshake deadline terminates the candidate socket and retries;
+- a verified replacement is a distinct warning and permanently stops the older daemon;
+- failure to receive `hello_ack` within the handshake deadline, or `ready_ack` within the independent end-to-end readiness deadline, terminates the candidate socket and retries;
 - lack of inbound heartbeat activity terminates a half-open socket and reconnects.
 
 A WebSocket close code such as `1006` means the transport ended without a normal close handshake. It is useful for debug diagnosis but not useful as the default user message. Default logs therefore describe the effect and recovery behavior rather than printing `{"code":1006,"reason":""}`.
@@ -68,7 +68,7 @@ A WebSocket close code such as `1006` means the transport ended without a normal
 Examples:
 
 ```text
-[info] daemon: remote relay connected
+[info] daemon: remote relay connected and end-to-end result delivery verified
 [warn] daemon: remote relay unavailable for 12 seconds; reconnecting automatically (3 reconnect attempts; connection interrupted).
 [info] daemon: remote relay connection restored after 18 seconds (4 reconnect attempts)
 ```
@@ -117,7 +117,7 @@ This is defense in depth, not content classification. Unknown, split, transforme
 
 The local execution middleware emits bounded events such as `tool.call.started`, `tool.call.completed`, `tool.call.failed`, `tool.call.slow`, and `tool.call.cancel_requested`. Stable fields include a shortened call ID, tool name, origin, duration, error code, and retryability. The Worker emits JSON events for HTTP failures and daemon socket errors. Structured values still pass through field-name and value redaction; JSON format is not permission to log arguments or results.
 
-`server_info` is the operational metrics surface. Local metrics include lifecycle state, active and maximum calls, oldest-call age, active-process ownership, per-tool duration buckets, and error-code counts. Worker metrics include HTTP status classes, pending internal/request-key indexes, per-tool outcomes, daemon candidate/authenticated/disconnected counts, and protocol-error counts. Metrics contain counts and bounded identifiers, not request arguments or result contents.
+`server_info` is the operational metrics surface. Local metrics include lifecycle state, active and maximum calls, oldest-call age, active-process ownership, per-tool duration buckets, and error-code counts. Worker metrics include HTTP status classes, pending internal/request-key indexes, per-tool outcomes, daemon candidate/authenticated/ready/disconnected event counts, current authenticated/probing/ready socket counts, and protocol-error counts. Metrics contain counts and bounded identifiers, not request arguments or result contents.
 
 ## Files
 

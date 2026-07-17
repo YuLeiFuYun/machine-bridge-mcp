@@ -4,6 +4,8 @@ assert(relevanceScore("create a skill", "Skill creator workflow", "skill-creator
 assert(relevanceScore("创建技能", "create skill creator", "skill-creator") > 0, "Chinese intent aliases do not match English metadata");
 assert(relevanceScore("verify documentation", "documentation validation", "docs-verify") > 0, "English canonicalization is broken");
 assert(relevanceScore("unrelated", "browser automation", "browser") === 0, "unrelated capabilities received a false score");
+assert(relevanceScore("在浏览器里填写新闻表单", "web research and fact checking", "web-research-cli") < 3, "generic web identity token was strong enough to select an unrelated research skill");
+assert(relevanceScore("查找最新官方 API 文档并做事实核查", "CLI-first current web search, official documentation retrieval, and fact checking", "web-research-cli") >= 3, "specific research evidence no longer selects the web research skill");
 const tokens = tokenize("安装最新浏览器工具");
 assert(tokens.has("install") && tokens.has("browser") && tokens.has("latest"), "bilingual token expansion is incomplete");
 const command = commandMatchText({ name: "package.test", description: "Run tests", argv: ["npm", "test"], searchTerms: "测试" });

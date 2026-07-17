@@ -1021,6 +1021,7 @@ async function workerSourceSelfTest() {
   const workerModules = await Promise.all([
     "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
     "oauth-controller.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts", "daemon-liveness.ts",
+    "daemon-sockets.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
   const unawaitedAsyncRoutes = [
@@ -1048,15 +1049,20 @@ async function workerSourceSelfTest() {
     "hmac-sha256:",
     "DAEMON_HELLO_TIMEOUT_MS",
     "DAEMON_LIVENESS_TIMEOUT_MS",
+    "DAEMON_READY_TIMEOUT_MS",
     "lastSeenAt",
     "daemon_liveness_timeout",
     "reclaimStaleDaemonSockets",
     "async alarm()",
     "storage.setAlarm",
     'role: "candidate"',
+    'role: "probing"',
+    'role: "daemon"',
     'role: "expired"',
+    "relay_probe_result",
     "daemon_hello_timeout",
-    "replaced by authenticated daemon",
+    "daemon_ready_timeout",
+    "replaced by verified daemon",
     "serverMetadata.protocolVersion",
     "notifications/cancelled",
     "structuredContent",

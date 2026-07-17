@@ -49,6 +49,8 @@ Local clients such as Claude Desktop, Cursor, and Codex CLI
 
 The remote Worker authenticates and relays calls. It cannot directly read local files or start local processes. File, Git, image, patch, process, diagnostic, and managed-job operations execute in the local runtime.
 
+Remote readiness is end-to-end: a daemon is advertised only after a Worker probe returns through the same local dispatch and session-bound result path used by real tools. A replacement is verified before it displaces the current healthy daemon.
+
 New users should follow the end-to-end [installation and first-use guide](docs/GETTING_STARTED.md). Before sharing a deployment or connecting several accounts, read [multi-client, multi-account, and tenancy architecture](docs/MULTI_ACCOUNT.md).
 
 ## Default behavior and policy profiles

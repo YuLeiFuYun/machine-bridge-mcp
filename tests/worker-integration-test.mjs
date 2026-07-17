@@ -515,6 +515,17 @@ try {
   assert(firstStatus.daemon?.tools?.includes("read_file"), "first daemon tools were not advertised");
   assert(!firstStatus.daemon?.tools?.includes("write_file"), "review policy did not filter write_file");
   assert(!firstStatus.daemon?.tools?.includes("exec_command"), "review policy did not filter exec_command");
+  assert(firstStatus.daemon?.readiness_verified === true, "first daemon was advertised before end-to-end readiness verification");
+  const invalidProbeCandidate = await connectDaemon(base);
+  daemonSockets.push(invalidProbeCandidate);
+  const invalidProbe = await beginDaemonHello(invalidProbeCandidate, ["list_files"]);
+  const invalidProbeNotice = waitForWsMessage(invalidProbeCandidate, "error");
+  const invalidProbeClosed = waitForWsClose(invalidProbeCandidate);
+  invalidProbeCandidate.send(JSON.stringify({ type: "relay_probe_result", id: `${invalidProbe.id}-wrong` }));
+  assert((await invalidProbeNotice).error === "invalid_relay_probe_result", "invalid readiness result returned the wrong protocol error");
+  assert((await invalidProbeClosed).code === 1002, "invalid readiness result did not close with protocol-error status");
+  const statusAfterInvalidProbe = await callServerInfo(base, ownerAccessToken, 211);
+  assert(statusAfterInvalidProbe.daemon?.connected === true && statusAfterInvalidProbe.daemon?.tools?.includes("read_file"), "failed replacement readiness probe displaced the incumbent daemon");
   assert(firstStatus.tool_delivery?.host_exposed_tools_known_to_server === false, "Worker server_info incorrectly claimed host tool visibility");
   assert(firstStatus.tool_delivery?.host_may_expose_subset === true, "Worker server_info omitted host-side filtering boundary");
 
@@ -568,11 +579,17 @@ try {
   assert(statusBeforeHello.daemon?.tools?.includes("read_file"), "candidate connection changed active tools before hello");
 
   const firstClosed = waitForWsClose(firstDaemon);
-  await sendDaemonHello(candidateDaemon, ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command"], { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  const replacementProbe = await beginDaemonHello(candidateDaemon, ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command"], { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  const statusDuringProbe = await callServerInfo(base, ownerAccessToken, 241);
+  assert(statusDuringProbe.daemon?.connected === true && statusDuringProbe.daemon?.tools?.includes("read_file"), "unverified replacement displaced the incumbent daemon");
+  assert(statusDuringProbe.worker?.daemon_probes === 1, "server_info did not expose the in-progress readiness probe");
+  assert(statusDuringProbe.worker?.sockets_live?.ready === 1 && statusDuringProbe.worker?.sockets_live?.probing === 1, "server_info conflated authenticated transport with verified readiness");
+  await completeDaemonProbe(candidateDaemon, replacementProbe);
   const closeInfo = await firstClosed;
   assert(closeInfo.code === 1012, `replaced daemon closed with unexpected code ${closeInfo.code}`);
   const statusAfterHello = await callServerInfo(base, ownerAccessToken, 25);
   assert(statusAfterHello.daemon?.count === 1, `expected one active daemon after replacement, got ${statusAfterHello.daemon?.count}`);
+  assert(statusAfterHello.daemon?.readiness_verified === true && statusAfterHello.worker?.sockets_live?.ready === 1, "verified daemon readiness was not observable");
   assert(statusAfterHello.daemon?.tools?.includes("list_dir"), "candidate daemon did not become active after hello");
   assert(statusAfterHello.daemon?.tools?.includes("view_image"), "candidate daemon image tool was not advertised");
   assert(statusAfterHello.daemon?.tools?.includes("run_process"), "agent policy did not retain direct process execution");
@@ -973,16 +990,65 @@ async function connectDaemon(origin) {
   return socket;
 }
 
-async function sendDaemonHello(socket, tools, policy = { profile: "review", allowWrite: false, allowExec: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false }) {
-  const acknowledged = waitForWsMessage(socket, "hello_ack");
+async function sendDaemonHello(socket, tools, policy = defaultDaemonPolicy()) {
+  const probe = await beginDaemonHello(socket, tools, policy);
+  await completeDaemonProbe(socket, probe);
+}
+
+async function beginDaemonHello(socket, tools, policy = defaultDaemonPolicy()) {
+  const handshake = waitForWsMessageSequence(socket, ["hello_ack", "relay_probe"]);
   socket.send(JSON.stringify({
     type: "hello",
     tools,
     policy,
     protocol_versions: ["2025-11-25"],
   }));
-  await acknowledged;
+  const [, probe] = await handshake;
+  assert(typeof probe.id === "string" && probe.id.startsWith("probe_"), "Worker readiness probe omitted a valid id");
+  return probe;
 }
+
+async function completeDaemonProbe(socket, probe) {
+  const ready = waitForWsMessage(socket, "ready_ack");
+  socket.send(JSON.stringify({ type: "relay_probe_result", id: probe.id }));
+  await ready;
+}
+
+function defaultDaemonPolicy() {
+  return { profile: "review", allowWrite: false, allowExec: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false };
+}
+
+function waitForWsMessageSequence(socket, expectedTypes, timeoutMs = 5000) {
+  return withTimeout(new Promise((resolve, reject) => {
+    const messages = [];
+    const onMessage = (data) => {
+      try {
+        const value = JSON.parse(String(data));
+        const expected = expectedTypes[messages.length];
+        if (value.type !== expected) throw new Error(`expected websocket message ${expected}, received ${value.type}`);
+        messages.push(value);
+        if (messages.length === expectedTypes.length) {
+          cleanup();
+          resolve(messages);
+        }
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    };
+    const onError = (error) => { cleanup(); reject(error); };
+    const onClose = (code) => { cleanup(); reject(new Error(`websocket closed before ${expectedTypes.join(", ")}: ${code}`)); };
+    const cleanup = () => {
+      socket.off("message", onMessage);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    socket.on("message", onMessage);
+    socket.on("error", onError);
+    socket.on("close", onClose);
+  }), timeoutMs, `websocket message sequence ${expectedTypes.join(", ")}`);
+}
+
 
 function waitForWsMessage(socket, expectedType, timeoutMs = 5000) {
   return withTimeout(new Promise((resolve, reject) => {

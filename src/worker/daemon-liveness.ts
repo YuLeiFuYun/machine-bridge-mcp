@@ -7,8 +7,9 @@
  * those sockets still look connected while tool_call never returns.
  */
 export const DAEMON_LIVENESS_TIMEOUT_MS = 90_000;
+export const DAEMON_READY_TIMEOUT_MS = 15_000;
 
-export type DaemonRole = "candidate" | "expired" | "daemon";
+export type DaemonRole = "candidate" | "probing" | "expired" | "daemon";
 
 export interface DaemonLivenessFields {
   role?: DaemonRole | string;
@@ -36,6 +37,13 @@ export function daemonLivenessDeadlineMs(attachment: DaemonLivenessFields | unde
   const lastSeen = daemonLastSeenMs(attachment);
   if (!Number.isFinite(lastSeen)) return Number.NaN;
   return lastSeen + DAEMON_LIVENESS_TIMEOUT_MS;
+}
+
+export function daemonReadyDeadlineMs(attachment: DaemonLivenessFields | undefined | null): number {
+  if (!attachment || attachment.role !== "probing") return Number.NaN;
+  const connectedAt = Date.parse(attachment.connectedAt || "");
+  if (!Number.isFinite(connectedAt)) return Number.NaN;
+  return connectedAt + DAEMON_READY_TIMEOUT_MS;
 }
 
 export function withDaemonLastSeenAt<T extends DaemonLivenessFields>(
