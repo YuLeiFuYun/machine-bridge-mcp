@@ -47,6 +47,7 @@ try {
   if (!record.files.some((item) => item.path === "src/local/browser-operation-service.mjs")) throw new Error("npm package omitted browser operation semantics");
   if (!record.files.some((item) => item.path === "src/worker/index.ts")) throw new Error("npm package omitted the worker entrypoint");
   if (!record.files.some((item) => item.path === "src/worker/pending-calls.ts")) throw new Error("npm package omitted the worker pending calls module");
+  if (!record.files.some((item) => item.path === "src/worker/daemon-liveness.ts")) throw new Error("npm package omitted the worker daemon liveness module");
   if (!record.files.some((item) => item.path === "src/worker/policy.ts")) throw new Error("npm package omitted the worker policy module");
   if (!record.files.some((item) => item.path === "src/worker/errors.ts")) throw new Error("npm package omitted the worker errors module");
   if (!record.files.some((item) => item.path === "src/worker/oauth-state.ts")) throw new Error("npm package omitted the worker oauth state module");

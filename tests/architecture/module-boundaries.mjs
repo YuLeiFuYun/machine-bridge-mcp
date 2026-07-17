@@ -78,13 +78,13 @@ for (const name of boundaryModules) {
 }
 
 const lineLimits = Object.freeze({
-  "src/local/runtime.mjs": 800,
+  "src/local/runtime.mjs": 820,
   "src/local/runtime-reporting.mjs": 150,
   "src/local/runtime-diagnostics.mjs": 120,
   "src/local/runtime-capabilities.mjs": 100,
   "src/local/cli.mjs": 950,
   "src/local/cli-service.mjs": 220,
-  "src/worker/index.ts": 760,
+  "src/worker/index.ts": 850,
   "src/worker/oauth-controller.ts": 360,
   "src/worker/oauth-tokens.ts": 260,
   "src/local/process-execution.mjs": 300,
@@ -117,6 +117,8 @@ const lineLimits = Object.freeze({
   "src/local/monotonic-deadline.mjs": 60,
   "src/worker/mcp-session.ts": 120,
   "src/worker/tool-timeout.ts": 80,
+  "src/worker/daemon-liveness.ts": 80,
+  "src/worker/daemon-sockets.ts": 140,
   "src/worker/pending-calls.ts": 180,
 });
 for (const [name, maximum] of Object.entries(lineLimits)) {
@@ -177,10 +179,18 @@ for (const duplicate of [
 }
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
-  "observability", "mcp-session", "tool-timeout",
+  "observability", "mcp-session", "tool-timeout", "daemon-liveness", "daemon-sockets",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
+const daemonSocketBoundary = readFileSync(join(root, "src", "worker", "daemon-sockets.ts"), "utf8");
+for (const required of ["class DaemonSocketRegistry", "beginProbe", "promote", "readySockets", "probingSockets"]) {
+  if (!daemonSocketBoundary.includes(required)) throw new Error(`daemon socket registry lost lifecycle responsibility: ${required}`);
+}
+for (const forbidden of ["serializeAttachment({ role: \"candidate\"", "serializeAttachment({ role: \"probing\"", "serializeAttachment({ role: \"daemon\""]) {
+  if (workerIndexBoundary.includes(forbidden)) throw new Error(`Worker index regained daemon socket state mutation: ${forbidden}`);
+}
+
 for (const required of ["private async oauthStore", "private async withOAuthLock", "AUTHORIZATION_FIELDS", "verifyAccessToken"]) {
   if (!workerOAuthControllerBoundary.includes(required)) throw new Error(`OAuth controller lost state-machine responsibility: ${required}`);
 }

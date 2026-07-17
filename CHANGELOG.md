@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.2.5 - 2026-07-17
+
+### End-to-end relay readiness and safe daemon handover
+
+- Separate authenticated WebSocket transport from verified service readiness. A daemon now becomes externally usable only after the Worker sends a random readiness probe and receives its result through the same local message dispatch, relay-session binding, and `tool_result` delivery path used by real calls. `hello_ack` and heartbeats alone can no longer produce `daemon.connected=true` when result delivery is broken. The local runtime also rejects pre-ready tool calls and a premature `ready_ack` that was not preceded by a successfully delivered probe result.
+- Keep the incumbent verified daemon active while a replacement is authenticated and probed. A failed, malformed, silent, or incompatible candidate is closed without displacing the working connection; only a successful `ready_ack` handover replaces the incumbent. Candidate hello, readiness, and steady-state liveness have independent bounded deadlines enforced by Durable Object alarms.
+- Extract daemon attachment/state transitions into `DaemonSocketRegistry`, expose authenticated/probing/ready counts and readiness timestamps through `server_info`, and add fault-injection coverage for missing acknowledgements, invalid probe results, replacement races, reconnect backoff, session-generation propagation, and full OAuth/MCP/WebSocket routing.
+- Correct capability ranking after the local research-skill rename: generic identity tokens such as `web`, `cli`, and `tool` no longer dominate selection, while concrete Chinese research/search intent maps to `research`, `search`, and `find`. This prevents a browser-form task from selecting a web-research skill without weakening explicit research requests.
+- Remove a duplicate Worker route guard, require awaited alarm rescheduling after inbound activity, retain zero production dependency vulnerabilities, and refresh architecture, operations, logging, testing, upgrade, and audit documentation. State schema 6 and policy revision 5 remain unchanged.
+
+## 1.2.4 - 2026-07-17
+
+### Relay tool_result session context regression
+
+- Pass the authenticated relay session generation into every inbound WebSocket `onMessage` callback. The 1.2.2 session-binding change discarded every `tool_result` with `session_ended` because handlers received `sessionId=0` even while heartbeats kept the socket live, so MCP tools timed out despite `daemon.connected=true`.
+- Emit an explicit error when a tool result is discarded because the inbound call context lacked a session id, and include both expected and active session ids in the structured event.
+- Add a regression that proves message dispatch attaches the current authenticated session generation.
+
+## 1.2.3 - 2026-07-17
+
+### Worker daemon false-online liveness
+
+- Treat authenticated daemon sockets as live only when inbound traffic is recent. `role=daemon` plus `readyState=OPEN` is no longer enough after Durable Object hibernation or a half-closed transport, which previously left `daemon.connected=true` while every `tool_call` timed out.
+- Persist `lastSeenAt` on daemon attachments, refresh it on `hello`, heartbeats, and `tool_result`, and reclaim silent sockets through the Durable Object alarm as well as on tool send failure or prolonged silence during a timed-out call.
+- Report `daemon.last_seen_at`, `daemon.liveness_timeout_ms`, and `worker.sockets_live` from `server_info` so control-plane counters that reset on DO wake are not mistaken for live authenticated sockets.
+- Add pure liveness helpers and regression coverage for fresh, silent, candidate, and legacy attachments without `lastSeenAt`.
+
 ## 1.2.2 - 2026-07-17
 
 ### Relay result lifecycle and human-readable diagnostics
@@ -318,7 +345,7 @@
 
 - Register bounded `package.*` commands from safe root `package.json` script names, while preserving explicit manifest override/deletion and never injecting script bodies. Windows uses a fixed `cmd.exe` wrapper for package-manager shims; Unix keeps direct executable argv. Extend default skill discovery to project `.codex/skills` and unrestricted `CODEX_HOME/skills` compatibility roots.
 - Match installed applications by their actual names for every canonical-full task instead of requiring generic “app/window” words, with a bounded discovery cache to avoid repeated filesystem scans.
-- Normalize a bounded set of common English inflections and Chinese workflow intents before skill/command ranking, and weight capability-name matches above incidental description overlap. This fixes Chinese selection of `skill-creator`, `smart-search-cli`, and `skill-installer` and prevents generic “create” wording from preferring unrelated design skills.
+- Normalize a bounded set of common English inflections and Chinese workflow intents before skill/command ranking, and weight capability-name matches above incidental description overlap. This fixes Chinese selection of `skill-creator`, `web-research-cli`, and `skill-installer` and prevents generic “create” wording from preferring unrelated design skills.
 - Record privacy-preserving bootstrap and task-resolution telemetry in `server_info` and `project_overview`: counts, timestamps, source/load flags, selected capability metadata, and a runtime-keyed task fingerprint rather than raw task text. Suppress weak skill-overlap recommendations and clarify that the MCP host still controls whether the resolver and recommended tools are invoked.
 
 ### Process and network lifecycle

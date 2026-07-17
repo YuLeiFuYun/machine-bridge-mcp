@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { acknowledgementMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, welcomeMismatch } from "../src/local/relay-connection.mjs";
+import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, welcomeMismatch } from "../src/local/relay-connection.mjs";
 import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
 
 class FakeSocket extends EventEmitter {
@@ -129,10 +129,28 @@ assert(JSON.parse(sockets[0].sent[0]).type === "hello", "relay did not send hell
 assert(connection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1" }), "valid relay welcome was rejected");
 assert(events.every((event) => event.level !== "warn"), "valid relay welcome emitted a warning");
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
+assert(connection.status().authenticated === true && connection.status().ready === false, "hello acknowledgement was incorrectly treated as end-to-end readiness");
+const authenticatedRelaySession = connection.currentSessionId();
+assert(authenticatedRelaySession > 0, "authenticated relay did not establish a session for the readiness probe");
+assert(connection.sendForSession({ type: "relay_probe_result", id: "probe_test-ready" }, authenticatedRelaySession).ok === true, "readiness probe result could not use the authenticated session before ready state");
+let startedResolved = false;
+void started.then(() => { startedResolved = true; });
+await Promise.resolve();
+assert(!startedResolved, "relay start resolved before end-to-end result delivery was acknowledged");
+connection.confirmReady({ type: "ready_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 await started;
-assert(events.some((event) => event.level === "info" && event.message === "remote relay connected"), "relay did not report initial authenticated readiness");
+assert(events.some((event) => event.level === "info" && event.message.includes("end-to-end result delivery verified")), "relay did not report verified readiness");
 const firstRelaySession = connection.currentSessionId();
 assert(firstRelaySession > 0, "authenticated relay did not receive a session generation");
+let inboundMessageContext = null;
+const previousOnMessage = connection.onMessage;
+connection.onMessage = (data, context) => {
+  inboundMessageContext = context;
+  return previousOnMessage?.(data, context);
+};
+sockets[0].emit("message", Buffer.from(JSON.stringify({ type: "tool_call", id: "session-context-probe", tool: "list_roots", arguments: {} })));
+assert(inboundMessageContext?.sessionId === firstRelaySession, "inbound relay message did not include the authenticated session generation");
+connection.onMessage = previousOnMessage;
 const firstSessionDelivery = connection.sendForSession({ type: "tool_result", id: "first-session" }, firstRelaySession);
 assert(firstSessionDelivery.ok === true, "current relay session rejected a bound result");
 
@@ -142,6 +160,7 @@ scheduler.advance(5);
 assert(sockets.length === 2, "relay did not schedule a reconnect");
 sockets[1].open();
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
+completeRelayReadiness(connection, "0.8.1");
 const secondRelaySession = connection.currentSessionId();
 assert(secondRelaySession > firstRelaySession, "reconnected relay reused the previous session generation");
 const secondSocketMessagesBeforeStaleResult = sockets[1].sent.length;
@@ -166,6 +185,7 @@ assert(outageDebug?.fields?.cause === "connection interrupted", "debug outage de
 assert(!hasRawCloseFields(outageDebug?.fields), "outage diagnostics exposed raw WebSocket close fields outside the transport-close event");
 sockets[2].open();
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
+completeRelayReadiness(connection, "0.8.1");
 const restored = events.find((event) => event.level === "info" && event.message.startsWith("remote relay connection restored after "));
 assert(restored?.message.includes("reconnect attempt"), "restored connection summary was incomplete or not user-readable");
 assert(restored.fields === undefined, "default recovery summary retained machine-oriented JSON fields");
@@ -204,9 +224,60 @@ heartbeatConnection = new RelayConnection({
 heartbeatConnection.start();
 heartbeatSockets[0].open();
 heartbeatConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(heartbeatConnection, "test");
 heartbeatScheduler.advance(10);
 assert(heartbeatSockets[0].terminated, "silent relay connection was not terminated after heartbeat timeout");
 heartbeatConnection.stop();
+
+const readinessScheduler = new ManualScheduler();
+const readinessSockets = [];
+const readinessConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      readinessSockets.push(this);
+    }
+  },
+  scheduler: readinessScheduler,
+  now: () => readinessScheduler.now,
+  reconnectDelay: () => 5,
+  handshakeTimeoutMs: 20,
+  readinessTimeoutMs: 15,
+  outageWarnAfterMs: 100,
+});
+readinessConnection.start();
+readinessSockets[0].open();
+readinessConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+assert(readinessConnection.status().authenticated && !readinessConnection.status().ready, "readiness timeout fixture did not enter probing state");
+readinessScheduler.advance(15);
+assert(readinessSockets[0].terminated, "relay with no end-to-end readiness acknowledgement was not terminated");
+readinessScheduler.advance(5);
+assert(readinessSockets.length === 2, "readiness timeout did not enter reconnect backoff");
+readinessConnection.stop();
+
+const prematureReadySockets = [];
+const prematureReadyConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      prematureReadySockets.push(this);
+    }
+  },
+  expectedServer: "machine-bridge-mcp",
+  expectedVersion: "test",
+});
+const prematureReadyStarted = prematureReadyConnection.start();
+prematureReadySockets[0].open();
+prematureReadyConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+assert(prematureReadyConnection.confirmReady({ type: "ready_ack", server: "machine-bridge-mcp", version: "test" }) === false, "relay accepted ready_ack before delivering its readiness probe result");
+const prematureReadyError = await prematureReadyStarted.then(() => null, (error) => error);
+assert(prematureReadyError?.code === "relay_protocol_mismatch" && prematureReadySockets[0].terminated, "premature ready_ack did not fail closed");
 
 const errorScheduler = new ManualScheduler();
 const errorSockets = [];
@@ -228,6 +299,7 @@ const errorConnection = new RelayConnection({
 errorConnection.start();
 errorSockets[0].open();
 errorConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(errorConnection, "test");
 errorSockets[0].fail(Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }));
 assert(errorSockets[0].terminated, "relay transport error did not force the close/reconnect path");
 errorScheduler.advance(5);
@@ -254,6 +326,7 @@ const deliveryConnection = new RelayConnection({
 deliveryConnection.start();
 deliverySockets[0].open();
 deliveryConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(deliveryConnection, "test");
 assert(deliveryConnection.interrupt("relay_transport_error"), "terminal-delivery failure could not interrupt the active relay");
 assert(deliverySockets[0].terminated, "terminal-delivery failure left the ambiguous relay socket open");
 deliveryScheduler.advance(5);
@@ -336,6 +409,7 @@ const repeatConnection = new RelayConnection({
 repeatConnection.start();
 repeatSockets[0].open();
 repeatConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(repeatConnection, "test");
 repeatSockets[0].remoteClose(1006, "");
 repeatScheduler.advance(10);
 assert(countLevel(repeatEvents, "warn") === 1, "first sustained-outage warning did not fire on its own timer");
@@ -411,6 +485,8 @@ assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version:
 assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version: "0.7.1" }, "machine-bridge-mcp", "0.8.1") === "server_version_mismatch", "relay welcome version mismatch was not classified");
 assert(acknowledgementMismatch({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" }, "machine-bridge-mcp", "0.8.1") === "", "valid relay acknowledgement was rejected");
 assert(acknowledgementMismatch({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.7.1" }, "machine-bridge-mcp", "0.8.1") === "server_version_mismatch", "relay version mismatch was not classified");
+assert(readinessMismatch({ type: "ready_ack", server: "machine-bridge-mcp", version: "0.8.1" }, "machine-bridge-mcp", "0.8.1") === "", "valid relay readiness acknowledgement was rejected");
+assert(readinessMismatch({ type: "ready_ack", server: "machine-bridge-mcp", version: "0.7.1" }, "machine-bridge-mcp", "0.8.1") === "server_version_mismatch", "relay readiness version mismatch was not classified");
 
 let fatalCallback = false;
 const fatalScheduler = new ManualScheduler();
@@ -434,6 +510,7 @@ await (async () => {
   const ready = fatalConnection.start();
   fatalSockets[0].open();
   fatalConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(fatalConnection, "test");
   await ready;
 })();
 fatalSockets[0].fail(new Error("Unexpected server response: 401"));
@@ -466,6 +543,7 @@ const policyConnection = new RelayConnection({
 const policyReady = policyConnection.start();
 policySockets[0].open();
 policyConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(policyConnection, "test");
 await policyReady;
 policySockets[0].remoteClose(1008, "policy rejected");
 await Promise.resolve();
@@ -496,6 +574,7 @@ const protocolConnection = new RelayConnection({
 const protocolReady = protocolConnection.start();
 protocolSockets[0].open();
 protocolConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(protocolConnection, "test");
 await protocolReady;
 protocolConnection.handleServerError({ type: "error", error: "unknown_message_type" });
 await Promise.resolve();
@@ -527,14 +606,16 @@ const supersededConnection = new RelayConnection({
 supersededConnection.start();
 supersededSockets[0].open();
 supersededConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
-supersededSockets[0].remoteClose(1012, "replaced by authenticated daemon");
+completeRelayReadiness(supersededConnection, "test");
+supersededSockets[0].remoteClose(1012, "replaced by verified daemon");
 await Promise.resolve();
-assert(superseded, "authenticated replacement callback was not invoked");
-assert(supersededEvents.some((event) => event.level === "warn" && event.message.includes("replaced by a newer authenticated instance")), "replacement warning was not actionable");
-assert(isSupersededClose(1012, "replaced by authenticated daemon"), "replacement close classification failed");
+assert(superseded, "verified replacement callback was not invoked");
+assert(supersededEvents.some((event) => event.level === "warn" && event.message.includes("replaced by a newer verified instance")), "replacement warning was not actionable");
+assert(isSupersededClose(1012, "replaced by verified daemon"), "replacement close classification failed");
 assert(relayCloseCategory(1006, "") === "connection_interrupted", "1006 close classification was not meaningful");
 assert(relayCloseCategory(1002, "protocol error") === "relay_protocol_error", "1002 close classification failed");
 assert(relayCloseCategory(1008, "daemon hello timeout") === "relay_handshake_timeout", "daemon hello timeout was misclassified as an authentication failure");
+assert(relayCloseCategory(1008, "daemon ready timeout") === "relay_readiness_timeout", "daemon ready timeout was misclassified");
 assert(relayCloseCategory(1011, "") === "relay_internal_error", "1011 close classification failed");
 assert(reconnectDelay(0, () => 0) === 3000 && reconnectDelay(99, () => 0) === 60_000, "reconnect backoff bounds changed");
 
@@ -576,6 +657,13 @@ assert(invalidProxyError?.code === "relay_proxy_configuration" && invalidProxyEr
 assert(invalidProxyConnection.status().network_route === "invalid-proxy-configuration", "invalid proxy route was not observable");
 
 console.log("relay connection lifecycle/logging test ok");
+
+function completeRelayReadiness(connection, version) {
+  const sessionId = connection.currentSessionId();
+  assert(sessionId > 0, "readiness completion requires an authenticated relay session");
+  assert(connection.sendForSession({ type: "relay_probe_result", id: "probe_test-ready" }, sessionId).ok === true, "readiness probe result could not be delivered");
+  assert(connection.confirmReady({ type: "ready_ack", server: "machine-bridge-mcp", version }) === true, "valid readiness acknowledgement was rejected");
+}
 
 function captureLogger(events) {
   return Object.fromEntries(["debug", "info", "warn", "error"].map((level) => [level, (message, fields) => events.push({ level, message, fields })]));

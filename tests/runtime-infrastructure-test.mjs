@@ -17,6 +17,8 @@ await testCallRegistry();
 await testToolExecutor();
 await testToolExecutorConcurrency();
 await testDuplicateRelayCallId();
+testRelayReadinessProbe();
+await testRelayReadinessStateGuards();
 testRelayCancellationSuppression();
 testTerminalDeliveryFailure();
 await testProcessExecutionNoShell();
@@ -132,6 +134,40 @@ async function testToolExecutorConcurrency() {
   releaseBlocked();
   assert(await first === "blocked-complete", "blocked concurrent tool did not resume");
   assert(registry.snapshot().active === 0, "concurrent tool calls leaked lifecycle state");
+}
+
+function testRelayReadinessProbe() {
+  const delivered = [];
+  let violation = "";
+  const runtime = {
+    deliverRelayToolResult(response, sessionId) { delivered.push({ response, sessionId }); return true; },
+    handleRelayProtocolViolation(reason) { violation = reason; },
+  };
+  LocalRuntime.prototype.handleRelayProbe.call(runtime, { type: "relay_probe", id: "probe_12345678" }, { sessionId: 17 });
+  assert(delivered.length === 1 && delivered[0].response.type === "relay_probe_result" && delivered[0].response.id === "probe_12345678", "relay readiness probe did not return through the result-delivery path");
+  assert(delivered[0].sessionId === 17, "relay readiness probe lost the inbound session generation");
+  LocalRuntime.prototype.handleRelayProbe.call(runtime, { type: "relay_probe", id: "probe_12345678" }, {});
+  assert(violation === "invalid_relay_probe", "relay readiness probe accepted missing session context");
+}
+
+async function testRelayReadinessStateGuards() {
+  let violation = "";
+  let toolCalls = 0;
+  let probes = 0;
+  const runtime = {
+    handleRelayControlMessage() { return false; },
+    handleRelayProtocolViolation(reason) { violation = reason; },
+    handleRelayProbe() { probes += 1; },
+    async handleRelayToolCall() { toolCalls += 1; },
+  };
+  await LocalRuntime.prototype.handleMessage.call(runtime, JSON.stringify({ type: "tool_call" }), { sessionId: 7, authenticated: true, ready: false });
+  assert(violation === "tool_call_before_ready" && toolCalls === 0, "relay tool call executed before end-to-end readiness");
+  violation = "";
+  await LocalRuntime.prototype.handleMessage.call(runtime, JSON.stringify({ type: "relay_probe", id: "probe_12345678" }), { sessionId: 7, authenticated: true, ready: true });
+  assert(violation === "unexpected_relay_probe" && probes === 0, "relay readiness probe was accepted after ready state");
+  violation = "";
+  await LocalRuntime.prototype.handleMessage.call(runtime, JSON.stringify({ type: "tool_call" }), { sessionId: 7, authenticated: true, ready: true });
+  assert(violation === "" && toolCalls === 1, "ready relay tool call did not reach its handler");
 }
 
 async function testDuplicateRelayCallId() {

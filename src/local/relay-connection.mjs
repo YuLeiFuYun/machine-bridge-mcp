@@ -6,6 +6,7 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 75_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+const DEFAULT_READINESS_TIMEOUT_MS = 15_000;
 const DEFAULT_OUTAGE_WARN_AFTER_MS = 10_000;
 const DEFAULT_OUTAGE_WARN_REPEAT_MS = 60_000;
 const DEFAULT_OUTAGE_WARN_MAX_REPEAT_MS = 15 * 60_000;
@@ -43,6 +44,7 @@ export class RelayConnection {
     this.heartbeatTimeoutMs = boundedPositiveInteger(options.heartbeatTimeoutMs, DEFAULT_HEARTBEAT_TIMEOUT_MS);
     this.connectTimeoutMs = boundedPositiveInteger(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
     this.handshakeTimeoutMs = boundedPositiveInteger(options.handshakeTimeoutMs, DEFAULT_HANDSHAKE_TIMEOUT_MS);
+    this.readinessTimeoutMs = boundedPositiveInteger(options.readinessTimeoutMs, DEFAULT_READINESS_TIMEOUT_MS);
     this.outageWarnAfterMs = boundedPositiveInteger(options.outageWarnAfterMs, DEFAULT_OUTAGE_WARN_AFTER_MS);
     this.outageWarnRepeatMs = boundedPositiveInteger(options.outageWarnRepeatMs, DEFAULT_OUTAGE_WARN_REPEAT_MS);
     this.outageWarnMaxRepeatMs = Math.max(
@@ -52,7 +54,9 @@ export class RelayConnection {
 
     this.closed = true;
     this.socket = null;
+    this.authenticated = false;
     this.ready = false;
+    this.readinessProbeDelivered = false;
     this.hasConnected = false;
     this.connectedAt = 0;
     this.lastInboundAt = 0;
@@ -61,6 +65,7 @@ export class RelayConnection {
     this.connectTimer = null;
     this.heartbeatTimer = null;
     this.handshakeTimer = null;
+    this.readinessTimer = null;
     this.outageWarnTimer = null;
     this.outageStartedAt = 0;
     this.outageAttempts = 0;
@@ -79,7 +84,9 @@ export class RelayConnection {
 
   status() {
     return {
+      authenticated: this.authenticated,
       ready: this.ready,
+      readiness_probe_delivered: this.readinessProbeDelivered,
       closed: this.closed,
       network_route: this.networkRoute,
       reconnect_attempt: this.reconnectAttempt,
@@ -89,7 +96,7 @@ export class RelayConnection {
   }
 
   currentSessionId() {
-    return this.ready ? this.activeSessionId : 0;
+    return this.authenticated ? this.activeSessionId : 0;
   }
 
   start() {
@@ -105,11 +112,14 @@ export class RelayConnection {
 
   stop() {
     this.closed = true;
+    this.authenticated = false;
     this.ready = false;
+    this.readinessProbeDelivered = false;
     this.activeSessionId = 0;
     this.clearTimer("heartbeatTimer", "clearInterval");
     this.clearTimer("connectTimer", "clearTimeout");
     this.clearTimer("handshakeTimer", "clearTimeout");
+    this.clearTimer("readinessTimer", "clearTimeout");
     this.clearTimer("reconnectTimer", "clearTimeout");
     this.clearTimer("outageWarnTimer", "clearTimeout");
     const socket = this.socket;
@@ -129,10 +139,11 @@ export class RelayConnection {
   sendForSession(value, expectedSessionId) {
     const sessionId = Number(expectedSessionId) || 0;
     if (!sessionId || sessionId !== this.activeSessionId) return { ok: false, reason: "session_ended" };
-    if (!this.ready || !this.isSocketOpen(this.socket)) return { ok: false, reason: "transport_unavailable" };
-    return this.sendOnSocket(this.socket, value)
-      ? { ok: true, reason: "sent" }
-      : { ok: false, reason: "send_failed" };
+    if (!this.authenticated || !this.isSocketOpen(this.socket)) return { ok: false, reason: "transport_unavailable" };
+    if (!this.ready && value?.type !== "relay_probe_result") return { ok: false, reason: "transport_unavailable" };
+    if (!this.sendOnSocket(this.socket, value)) return { ok: false, reason: "send_failed" };
+    if (value?.type === "relay_probe_result") this.readinessProbeDelivered = true;
+    return { ok: true, reason: "sent" };
   }
 
   interrupt(category = "relay_transport_error") {
@@ -144,7 +155,7 @@ export class RelayConnection {
 
   observeWelcome(message = {}) {
     const socket = this.socket;
-    if (this.closed || this.ready || !this.isSocketOpen(socket)) return false;
+    if (this.closed || this.authenticated || !this.isSocketOpen(socket)) return false;
     const mismatch = welcomeMismatch(message, this.expectedServer, this.expectedVersion);
     if (mismatch) {
       this.logger.debug?.("remote relay welcome rejected", { reason: mismatch });
@@ -157,26 +168,54 @@ export class RelayConnection {
 
   acknowledge(message = {}) {
     const socket = this.socket;
-    if (this.closed || this.ready || !this.isSocketOpen(socket)) return false;
+    if (this.closed || this.authenticated || !this.isSocketOpen(socket)) return false;
     const mismatch = acknowledgementMismatch(message, this.expectedServer, this.expectedVersion);
     if (mismatch) {
       this.logger.debug?.("remote relay acknowledgement rejected", { reason: mismatch });
       this.failPermanently("relay_protocol_mismatch");
       return false;
     }
-    this.ready = true;
+    this.authenticated = true;
+    this.readinessProbeDelivered = false;
     this.sessionGeneration += 1;
     this.activeSessionId = this.sessionGeneration;
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.connectedAt = this.now();
     this.lastInboundAt = this.connectedAt;
-    this.reconnectAttempt = 0;
     this.startHeartbeat();
+    this.clearTimer("readinessTimer", "clearTimeout");
+    this.readinessTimer = this.scheduler.setTimeout(() => {
+      if (this.socket !== socket || this.closed || this.ready) return;
+      this.logger.debug?.("remote relay end-to-end readiness probe timed out", { timeout_ms: this.readinessTimeoutMs });
+      this.pendingCloseCategory = "relay_readiness_timeout";
+      terminateSocket(socket);
+    }, this.readinessTimeoutMs);
+    this.readinessTimer?.unref?.();
+    return true;
+  }
+
+  confirmReady(message = {}) {
+    const socket = this.socket;
+    if (this.closed || !this.authenticated || this.ready || !this.isSocketOpen(socket)) return false;
+    const mismatch = readinessMismatch(message, this.expectedServer, this.expectedVersion);
+    if (!mismatch && !this.readinessProbeDelivered) {
+      this.logger.debug?.("remote relay declared readiness before the end-to-end probe result was delivered");
+      this.failPermanently("relay_protocol_mismatch");
+      return false;
+    }
+    if (mismatch) {
+      this.logger.debug?.("remote relay readiness acknowledgement rejected", { reason: mismatch });
+      this.failPermanently("relay_protocol_mismatch");
+      return false;
+    }
+    this.ready = true;
+    this.clearTimer("readinessTimer", "clearTimeout");
+    this.reconnectAttempt = 0;
 
     if (!this.hasConnected) {
-      this.logger.info?.("remote relay connected");
+      this.logger.info?.("remote relay connected and end-to-end result delivery verified");
     } else if (this.outageStartedAt > 0) {
-      const outageMs = Math.max(0, this.connectedAt - this.outageStartedAt);
+      const outageMs = Math.max(0, this.now() - this.outageStartedAt);
       if (this.outageNoticeEmitted) {
         this.logger.info?.(`remote relay connection restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`);
         this.logger.debug?.("remote relay outage recovery details", {
@@ -204,10 +243,17 @@ export class RelayConnection {
   handleServerError(message = {}) {
     const errorCode = sanitizeProtocolErrorCode(message?.error);
     this.logger.debug?.("remote relay reported a protocol error", { error_code: errorCode });
-    if (errorCode === "daemon_hello_timeout" && !this.ready) {
+    if (errorCode === "daemon_hello_timeout" && !this.authenticated) {
       const socket = this.socket;
       if (this.closed || !socket) return true;
       this.pendingCloseCategory = "relay_handshake_timeout";
+      terminateSocket(socket);
+      return true;
+    }
+    if (errorCode === "daemon_ready_timeout" && this.authenticated && !this.ready) {
+      const socket = this.socket;
+      if (this.closed || !socket) return true;
+      this.pendingCloseCategory = "relay_readiness_timeout";
       terminateSocket(socket);
       return true;
     }
@@ -272,8 +318,10 @@ export class RelayConnection {
     socket.on("message", (data) => {
       if (this.socket !== socket || this.closed) return;
       this.lastInboundAt = this.now();
+      // Bind results to the generation that received this message.
+      const relayContext = { sessionId: this.activeSessionId, authenticated: this.authenticated, ready: this.ready };
       try {
-        const outcome = this.onMessage(data);
+        const outcome = this.onMessage(data, relayContext);
         if (outcome && typeof outcome.catch === "function") {
           outcome.catch((error) => this.logger.error?.("daemon message handler failed", { error_class: classifyOperationalError(error) }));
         }
@@ -285,16 +333,20 @@ export class RelayConnection {
     socket.on("close", (code, reason) => {
       if (this.socket !== socket) return;
       const wasReady = this.ready;
+      const wasAuthenticated = this.authenticated;
       this.socket = null;
+      this.authenticated = false;
       this.ready = false;
+      this.readinessProbeDelivered = false;
       this.activeSessionId = 0;
       this.clearTimer("connectTimer", "clearTimeout");
       this.clearTimer("heartbeatTimer", "clearInterval");
       this.clearTimer("handshakeTimer", "clearTimeout");
+      this.clearTimer("readinessTimer", "clearTimeout");
       const reasonText = sanitizeCloseReason(reason);
       const category = this.pendingCloseCategory || relayCloseCategory(code, reasonText);
       this.pendingCloseCategory = "";
-      const connectedForMs = wasReady && this.connectedAt > 0 ? Math.max(0, this.now() - this.connectedAt) : 0;
+      const connectedForMs = wasAuthenticated && this.connectedAt > 0 ? Math.max(0, this.now() - this.connectedAt) : 0;
       this.logger.debug?.("remote relay transport closed", {
         close_code: Number(code) || 0,
         close_reason: reasonText || "<none>",
@@ -318,7 +370,7 @@ export class RelayConnection {
         this.closed = true;
         this.clearTimer("reconnectTimer", "clearTimeout");
         this.clearTimer("outageWarnTimer", "clearTimeout");
-        this.logger.warn?.("daemon connection was replaced by a newer authenticated instance");
+        this.logger.warn?.("daemon connection was replaced by a newer verified instance");
         queueMicrotask(() => {
           try { this.onSuperseded(); } catch (error) {
             this.logger.error?.("daemon superseded callback failed", { error_class: classifyOperationalError(error) });
@@ -348,12 +400,15 @@ export class RelayConnection {
     if (this.closed) return;
     const socket = this.socket;
     this.closed = true;
+    this.authenticated = false;
     this.ready = false;
+    this.readinessProbeDelivered = false;
     this.activeSessionId = 0;
     this.socket = null;
     this.clearTimer("connectTimer", "clearTimeout");
     this.clearTimer("heartbeatTimer", "clearInterval");
     this.clearTimer("handshakeTimer", "clearTimeout");
+    this.clearTimer("readinessTimer", "clearTimeout");
     this.clearTimer("reconnectTimer", "clearTimeout");
     this.clearTimer("outageWarnTimer", "clearTimeout");
     if (wasReady) {
@@ -413,7 +468,7 @@ export class RelayConnection {
     this.clearTimer("heartbeatTimer", "clearInterval");
     this.heartbeatTimer = this.scheduler.setInterval(() => {
       const socket = this.socket;
-      if (this.closed || !this.ready || !this.isSocketOpen(socket)) return;
+      if (this.closed || !this.authenticated || !this.isSocketOpen(socket)) return;
       const silentForMs = Math.max(0, this.now() - this.lastInboundAt);
       if (silentForMs >= this.heartbeatTimeoutMs) {
         this.logger.debug?.("remote relay heartbeat timed out", { silent_for_ms: silentForMs });
@@ -505,6 +560,7 @@ export function relayCloseCategory(code, reason = "") {
   const reasonText = String(reason || "");
   if (isSupersededClose(numeric, reasonText)) return "superseded";
   if (numeric === 1008 && reasonText === "daemon hello timeout") return "relay_handshake_timeout";
+  if (numeric === 1008 && reasonText === "daemon ready timeout") return "relay_readiness_timeout";
   if (numeric === 1008 && ["stale daemon candidate", "expired daemon candidate"].includes(reasonText)) return "relay_restarting_or_unavailable";
   if (numeric === 1008 && ["daemon hello required", "missing daemon attachment", "invalid daemon candidate timestamp"].includes(reasonText)) return "relay_protocol_error";
   if (numeric === 1000) return "normal_close";
@@ -541,6 +597,7 @@ function relayCloseUserCause(category) {
     relay_authentication_failed: "relay authentication failed",
     relay_connect_timeout: "relay connection attempt timed out",
     relay_handshake_timeout: "relay authentication acknowledgement timed out",
+    relay_readiness_timeout: "end-to-end relay readiness verification timed out",
     relay_heartbeat_timeout: "relay stopped responding",
     relay_transport_error: "relay transport error",
     relay_protocol_error: "relay protocol error",
@@ -572,8 +629,17 @@ export function acknowledgementMismatch(message, expectedServer = "", expectedVe
   return "";
 }
 
+export function readinessMismatch(message, expectedServer = "", expectedVersion = "") {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return "invalid_readiness_acknowledgement";
+  if (message.type !== "ready_ack") return "unexpected_readiness_acknowledgement_type";
+  if (expectedServer && message.server !== expectedServer) return "server_identity_mismatch";
+  if (expectedVersion && message.version !== expectedVersion) return "server_version_mismatch";
+  if (typeof message.server !== "string" || !message.server || typeof message.version !== "string" || !message.version) return "incomplete_readiness_acknowledgement";
+  return "";
+}
+
 export function isSupersededClose(code, reason) {
-  return Number(code) === 1012 && String(reason || "") === "replaced by authenticated daemon";
+  return Number(code) === 1012 && String(reason || "") === "replaced by verified daemon";
 }
 
 export function reconnectDelay(attempt, random = Math.random) {

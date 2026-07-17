@@ -6,7 +6,7 @@ export class WorkerObservability {
   private readonly startedAt = performance.now();
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
   private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
-  private readonly sockets = { candidates: 0, authenticated: 0, disconnected: 0, protocol_errors: 0 };
+  private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
   private readonly errors = new Map<string, number>();
   private readonly tools = new Map<string, { started: number; completed: number; failed: number; active: number }>();
 
@@ -43,6 +43,7 @@ export class WorkerObservability {
 
   socketCandidate(): void { this.sockets.candidates += 1; }
   socketAuthenticated(): void { this.sockets.authenticated += 1; }
+  socketReady(): void { this.sockets.ready += 1; }
   socketDisconnected(): void { this.sockets.disconnected += 1; }
   socketProtocolError(code: string): void {
     this.sockets.protocol_errors += 1;

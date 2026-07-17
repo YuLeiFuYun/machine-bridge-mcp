@@ -302,10 +302,13 @@ export class LocalRuntime {
       return;
     }
     if (this.handleRelayControlMessage(message)) return;
-    if (message.type !== "tool_call") {
-      this.handleRelayProtocolViolation("unexpected_server_message_type");
+    if (message.type === "relay_probe") {
+      if (relayContext.ready === true) return this.handleRelayProtocolViolation("unexpected_relay_probe");
+      this.handleRelayProbe(message, relayContext);
       return;
     }
+    if (message.type !== "tool_call") return this.handleRelayProtocolViolation("unexpected_server_message_type");
+    if (relayContext.ready !== true) return this.handleRelayProtocolViolation("tool_call_before_ready");
     await this.handleRelayToolCall(message, relayContext);
   }
 
@@ -316,6 +319,10 @@ export class LocalRuntime {
     }
     if (message.type === "hello_ack") {
       this.relay?.acknowledge(message);
+      return true;
+    }
+    if (message.type === "ready_ack") {
+      this.relay?.confirmReady(message);
       return true;
     }
     if (message.type === "pong") return true;
@@ -336,6 +343,13 @@ export class LocalRuntime {
       return;
     }
     this.logger.error?.("remote relay protocol error; upgrade and redeploy both components, then restart the daemon");
+  }
+
+  handleRelayProbe(message, relayContext = {}) {
+    const id = typeof message?.id === "string" && /^probe_[A-Za-z0-9_-]{8,240}$/.test(message.id) ? message.id : "";
+    const relaySessionId = Number(relayContext.sessionId) || 0;
+    if (!id || !relaySessionId) return this.handleRelayProtocolViolation("invalid_relay_probe");
+    this.deliverRelayToolResult({ type: "relay_probe_result", id }, relaySessionId);
   }
 
   async handleRelayToolCall(message, relayContext = {}) {
@@ -387,15 +401,21 @@ export class LocalRuntime {
   }
 
   deliverRelayToolResult(response, relaySessionId = 0) {
-    const outcome = this.relay?.sendForSession?.(response, relaySessionId)
-      || (this.send(response) ? { ok: true, reason: "sent" } : { ok: false, reason: "transport_unavailable" });
-    if (outcome.ok) return true;
-    const reason = String(outcome.reason || "transport_unavailable");
-    this.logger.event?.("debug", "relay.tool_result.discarded", {
-      call_id: shortCallId(response?.id), reason,
-    }, reason === "send_failed"
-      ? "Could not send a tool result because the relay transport failed"
-      : "Discarded a tool result because its relay session had ended");
+    const sessionId = Number(relaySessionId) || 0;
+    const outcome = this.relay?.sendForSession
+      ? this.relay.sendForSession(response, sessionId)
+      : (this.send(response) ? { ok: true, reason: "sent" } : { ok: false, reason: "transport_unavailable" });
+    if (outcome?.ok) return true;
+    const reason = String(outcome?.reason || "transport_unavailable");
+    const missingSession = reason === "session_ended" && sessionId <= 0;
+    this.logger.event?.(missingSession ? "error" : "debug", "relay.tool_result.discarded", {
+      call_id: shortCallId(response?.id), reason, relay_session_id: sessionId,
+      active_session_id: Number(this.relay?.currentSessionId?.() || 0),
+    }, missingSession
+      ? "Discarded a tool result because the relay session id was missing from the inbound tool_call context"
+      : reason === "send_failed"
+        ? "Could not send a tool result because the relay transport failed"
+        : "Discarded a tool result because its relay session had ended");
     if (reason === "send_failed") this.relay?.interrupt?.("relay_transport_error");
     return false;
   }

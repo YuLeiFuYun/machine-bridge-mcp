@@ -4,6 +4,13 @@ import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
 import { WorkerObservability } from "../src/worker/observability.ts";
 import { searchParamsObject } from "../src/worker/http.ts";
+import {
+  DAEMON_LIVENESS_TIMEOUT_MS,
+  daemonLivenessDeadlineMs,
+  isFreshDaemonCandidate,
+  isLiveDaemonAttachment,
+  withDaemonLastSeenAt,
+} from "../src/worker/daemon-liveness.ts";
 
 await testMcpSessions();
 await testRequestKeyReuse();
@@ -15,6 +22,7 @@ testWorkerPolicyParity();
 testWorkerErrors();
 testWorkerObservability();
 testPrototypeSafeFormFields();
+testDaemonLiveness();
 console.log("worker runtime infrastructure test ok");
 
 
@@ -235,3 +243,41 @@ async function expectReject(promise, expected) {
   throw new Error(`expected rejection containing ${expected}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
+
+function testDaemonLiveness() {
+  const now = Date.parse("2026-07-17T12:00:00.000Z");
+  assert(isLiveDaemonAttachment({
+    role: "daemon",
+    connectedAt: new Date(now - 1_000).toISOString(),
+    lastSeenAt: new Date(now - 1_000).toISOString(),
+  }, now), "fresh heartbeat should keep daemon live");
+  assert(!isLiveDaemonAttachment({
+    role: "daemon",
+    connectedAt: new Date(now - 120_000).toISOString(),
+    lastSeenAt: new Date(now - 120_000).toISOString(),
+  }, now), "silent authenticated socket must not stay live");
+  assert(!isLiveDaemonAttachment({
+    role: "candidate",
+    connectedAt: new Date(now).toISOString(),
+  }, now), "candidates are not live daemons");
+  assert(isLiveDaemonAttachment({
+    role: "daemon",
+    connectedAt: new Date(now - 30_000).toISOString(),
+  }, now), "legacy attachments without lastSeenAt fall back to connectedAt");
+  assert(!isLiveDaemonAttachment({
+    role: "daemon",
+    connectedAt: new Date(now - 120_000).toISOString(),
+  }, now), "legacy silent attachments without lastSeenAt must not stay live");
+  assert(daemonLivenessDeadlineMs({
+    role: "daemon",
+    connectedAt: new Date(now).toISOString(),
+    lastSeenAt: new Date(now).toISOString(),
+  }) === now + DAEMON_LIVENESS_TIMEOUT_MS, "liveness deadline must be lastSeen + timeout");
+  assert(isFreshDaemonCandidate(new Date(now - 1_000).toISOString(), now), "fresh candidate should be accepted");
+  assert(!isFreshDaemonCandidate(new Date(now - 20_000).toISOString(), now), "stale candidate should be rejected");
+  const touched = withDaemonLastSeenAt({
+    role: "daemon",
+    connectedAt: "2026-07-17T11:00:00.000Z",
+  }, "2026-07-17T12:00:00.000Z");
+  assert(touched.lastSeenAt === "2026-07-17T12:00:00.000Z", "lastSeenAt helper did not preserve timestamp");
+}

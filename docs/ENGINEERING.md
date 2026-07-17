@@ -53,7 +53,7 @@ Rules:
 - Pure classification and normalization functions are exported and tested directly when practical.
 - Adapters may translate data but should not duplicate policy or schemas.
 - Every protocol control message emitted by one side must be explicitly accepted, rejected, or version-gated by the other side, with an end-to-end contract test covering the message name and semantics.
-- State transitions are explicit; readiness is not inferred from a lower-level event. For example, an open WebSocket is not an authenticated relay until `hello_ack` is received.
+- State transitions are explicit; readiness is not inferred from a lower-level event. An open WebSocket is not authenticated until `hello_ack`, and authenticated transport is not service readiness until an end-to-end result probe has returned on the same relay session. Pre-ready work and premature readiness acknowledgements fail closed.
 - Every externally controlled input is bounded before expensive allocation, traversal, parsing, storage, or execution.
 - Externally controlled string keys must not use prototype-chain membership or truthiness on ordinary objects. Use `Map`, `Set`, `Object.hasOwn`, or null-prototype records for command dispatch, enums, ACLs, form fields, registries, and other key-addressed contracts.
 - Repository text must not contain invisible ASCII controls other than tab, CR, and LF; architecture tests enforce this even when JavaScript syntax remains valid.
