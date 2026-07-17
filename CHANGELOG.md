@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.3 - 2026-07-17
+
+### Worker daemon false-online liveness
+
+- Treat authenticated daemon sockets as live only when inbound traffic is recent. `role=daemon` plus `readyState=OPEN` is no longer enough after Durable Object hibernation or a half-closed transport, which previously left `daemon.connected=true` while every `tool_call` timed out.
+- Persist `lastSeenAt` on daemon attachments, refresh it on `hello`, heartbeats, and `tool_result`, and reclaim silent sockets through the Durable Object alarm as well as on tool send failure or prolonged silence during a timed-out call.
+- Report `daemon.last_seen_at`, `daemon.liveness_timeout_ms`, and `worker.sockets_live` from `server_info` so control-plane counters that reset on DO wake are not mistaken for live authenticated sockets.
+- Add pure liveness helpers and regression coverage for fresh, silent, candidate, and legacy attachments without `lastSeenAt`.
+
 ## 1.2.2 - 2026-07-17
 
 ### Relay result lifecycle and human-readable diagnostics
@@ -318,7 +327,7 @@
 
 - Register bounded `package.*` commands from safe root `package.json` script names, while preserving explicit manifest override/deletion and never injecting script bodies. Windows uses a fixed `cmd.exe` wrapper for package-manager shims; Unix keeps direct executable argv. Extend default skill discovery to project `.codex/skills` and unrestricted `CODEX_HOME/skills` compatibility roots.
 - Match installed applications by their actual names for every canonical-full task instead of requiring generic “app/window” words, with a bounded discovery cache to avoid repeated filesystem scans.
-- Normalize a bounded set of common English inflections and Chinese workflow intents before skill/command ranking, and weight capability-name matches above incidental description overlap. This fixes Chinese selection of `skill-creator`, `smart-search-cli`, and `skill-installer` and prevents generic “create” wording from preferring unrelated design skills.
+- Normalize a bounded set of common English inflections and Chinese workflow intents before skill/command ranking, and weight capability-name matches above incidental description overlap. This fixes Chinese selection of `skill-creator`, `web-research-cli`, and `skill-installer` and prevents generic “create” wording from preferring unrelated design skills.
 - Record privacy-preserving bootstrap and task-resolution telemetry in `server_info` and `project_overview`: counts, timestamps, source/load flags, selected capability metadata, and a runtime-keyed task fingerprint rather than raw task text. Suppress weak skill-overlap recommendations and clarify that the MCP host still controls whether the resolver and recommended tools are invoked.
 
 ### Process and network lifecycle

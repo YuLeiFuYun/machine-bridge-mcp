@@ -230,7 +230,7 @@ Claude and Copilot Studio call the public Worker from their cloud connectivity l
 
 ## Reconnect and replacement
 
-The daemon sends heartbeats and reconnects with bounded exponential backoff and jitter. A new socket remains a candidate until it authenticates and sends a valid `hello`; only then does it replace the previous daemon.
+The daemon sends heartbeats and reconnects with bounded exponential backoff and jitter. A new socket remains a candidate until it authenticates and sends a valid `hello`; only then does it replace the previous daemon. The Worker tracks inbound `lastSeenAt` and reclaims authenticated sockets that go silent past the liveness window, so a control-plane `daemon.connected=true` reading cannot outlive the data channel. If `server_info` shows connected sockets but `worker.sockets_live.authenticated=0` or rising `timed_out` with no completions, restart the local daemon so it re-authenticates.
 
 Pending calls are bound to the socket that received them. Results from another socket are ignored. A lost or replaced socket rejects only its own pending calls and terminates locally tracked child process trees. Process sessions are in-memory and do not survive daemon restart or replacement.
 

@@ -1020,7 +1020,7 @@ async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const workerModules = await Promise.all([
     "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
-    "oauth-controller.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts",
+    "oauth-controller.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts", "daemon-liveness.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
   const unawaitedAsyncRoutes = [
@@ -1047,6 +1047,10 @@ async function workerSourceSelfTest() {
     "A valid PKCE S256 challenge is required.",
     "hmac-sha256:",
     "DAEMON_HELLO_TIMEOUT_MS",
+    "DAEMON_LIVENESS_TIMEOUT_MS",
+    "lastSeenAt",
+    "daemon_liveness_timeout",
+    "reclaimStaleDaemonSockets",
     "async alarm()",
     "storage.setAlarm",
     'role: "candidate"',

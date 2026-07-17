@@ -84,7 +84,7 @@ const lineLimits = Object.freeze({
   "src/local/runtime-capabilities.mjs": 100,
   "src/local/cli.mjs": 950,
   "src/local/cli-service.mjs": 220,
-  "src/worker/index.ts": 760,
+  "src/worker/index.ts": 850,
   "src/worker/oauth-controller.ts": 360,
   "src/worker/oauth-tokens.ts": 260,
   "src/local/process-execution.mjs": 300,
@@ -117,6 +117,7 @@ const lineLimits = Object.freeze({
   "src/local/monotonic-deadline.mjs": 60,
   "src/worker/mcp-session.ts": 120,
   "src/worker/tool-timeout.ts": 80,
+  "src/worker/daemon-liveness.ts": 80,
   "src/worker/pending-calls.ts": 180,
 });
 for (const [name, maximum] of Object.entries(lineLimits)) {
@@ -177,7 +178,7 @@ for (const duplicate of [
 }
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
-  "observability", "mcp-session", "tool-timeout",
+  "observability", "mcp-session", "tool-timeout", "daemon-liveness",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }

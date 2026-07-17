@@ -1,6 +1,15 @@
 import { DurableObject } from "cloudflare:workers";
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 import { PendingCallRegistrationError, PendingCallRegistry } from "./pending-calls.ts";
+import {
+  DAEMON_HELLO_TIMEOUT_MS,
+  DAEMON_LIVENESS_TIMEOUT_MS,
+  daemonLastSeenMs,
+  daemonLivenessDeadlineMs,
+  isFreshDaemonCandidate,
+  isLiveDaemonAttachment,
+  withDaemonLastSeenAt,
+} from "./daemon-liveness.ts";
 import { mcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
 import { daemonToolTimeoutMs } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
@@ -17,7 +26,7 @@ import {
 } from "./http.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.2.2";
+const SERVER_VERSION = "1.2.3";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";
@@ -25,7 +34,6 @@ const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
-const DAEMON_HELLO_TIMEOUT_MS = 10_000;
 
 interface BridgeEnv extends OAuthControllerEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
@@ -48,6 +56,7 @@ interface JsonRpcRequest {
 interface DaemonAttachment {
   role: "candidate" | "expired" | "daemon";
   connectedAt: string;
+  lastSeenAt?: string;
   policy?: DaemonPolicy;
   tools?: string[];
 }
@@ -172,23 +181,25 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         rejectDaemonMessage(ws, "duplicate_hello", 1002, "duplicate daemon hello");
         return;
       }
-      const previousDaemons = this.daemonSockets().filter((socket) => socket !== ws);
+      const previousDaemons = this.allDaemonRoleSockets().filter((socket) => socket !== ws);
       if (socketAttachment.role === "candidate") {
         if (!isFreshDaemonCandidate(socketAttachment.connectedAt)) {
           closeWebSocketQuietly(ws, 1008, "stale daemon candidate");
-          await this.scheduleCandidateAlarm();
+          await this.scheduleSocketAlarms();
           return;
         }
       }
       const daemonPolicy = sanitizeDaemonPolicy(body.policy);
+      const authenticatedAt = new Date().toISOString();
       ws.serializeAttachment({
         role: "daemon",
-        connectedAt: new Date().toISOString(),
+        connectedAt: authenticatedAt,
+        lastSeenAt: authenticatedAt,
         policy: daemonPolicy,
         tools: sanitizeDaemonTools(body.tools, daemonPolicy),
       } satisfies DaemonAttachment);
       this.observability.socketAuthenticated();
-      await this.scheduleCandidateAlarm();
+      await this.scheduleSocketAlarms();
       try {
         ws.send(JSON.stringify({ type: "hello_ack", server: SERVER_NAME, version: SERVER_VERSION }));
       } catch {
@@ -211,6 +222,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
 
     if (body.type === "heartbeat" || body.type === "ping") {
+      this.touchDaemonSocket(ws);
       ws.send(JSON.stringify({ type: "pong", ts: body.ts ?? Date.now() }));
       return;
     }
@@ -220,6 +232,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return;
     }
 
+    this.touchDaemonSocket(ws);
     const matched = body.ok === false
       ? this.pending.reject(body.id, daemonToolError(body.error), ws)
       : this.pending.resolve(body.id, ws, body.result);
@@ -237,7 +250,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async cleanupDaemonSocket(ws: WebSocket, message: string): Promise<void> {
     this.observability.socketDisconnected();
-    await this.scheduleCandidateAlarm();
+    await this.scheduleSocketAlarms();
     this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
   }
 
@@ -361,6 +374,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         worker: {
           pending_calls: this.pending.snapshot(),
           daemon_candidates: this.candidateSockets().length,
+          sockets_live: {
+            authenticated: this.daemonSockets().length,
+            candidates: this.candidateSockets().length,
+          },
           observability: this.observability.snapshot(),
         },
         tools,
@@ -392,6 +409,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     requestKey?: string,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    this.reclaimStaleDaemonSockets();
     const socket = this.daemonSockets()[0];
     if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
     const id = randomToken("call");
@@ -406,6 +424,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         timeoutMs,
         onTimeout: (record) => {
           sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
+          const silentForMs = Date.now() - daemonLastSeenMs(this.daemonAttachment(record.socket));
+          if (!Number.isFinite(silentForMs) || silentForMs > 45_000) {
+            this.invalidateDaemonSocket(record.socket, "daemon became unresponsive", "daemon liveness timeout");
+          }
           return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
         },
         signal,
@@ -429,6 +451,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         }));
       } catch {
         this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
+        this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed");
       }
     }
     try {
@@ -466,7 +489,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       role: "candidate",
       connectedAt: new Date().toISOString(),
     } satisfies DaemonAttachment);
-    await this.ctx.storage.setAlarm(Date.now() + DAEMON_HELLO_TIMEOUT_MS);
+    await this.scheduleSocketAlarms();
     server.send(JSON.stringify({ type: "welcome", server: SERVER_NAME, version: SERVER_VERSION }));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -487,6 +510,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return this.daemonAdvertisedTools().has(name);
   }
   private daemonAdvertisedTools(): Set<string> {
+    this.reclaimStaleDaemonSockets();
     const socket = this.daemonSockets()[0];
     if (!socket) return new Set();
     const attachment = this.daemonAttachment(socket);
@@ -494,7 +518,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return new Set(attachment.tools);
   }
 
-  private daemonSockets(): WebSocket[] {
+  private allDaemonRoleSockets(): WebSocket[] {
     return this.ctx.getWebSockets()
       .filter((socket) => this.daemonAttachment(socket) && socket.readyState === WebSocket.OPEN)
       .sort((left, right) => {
@@ -502,6 +526,39 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         const rightTime = Date.parse(this.daemonAttachment(right)?.connectedAt ?? "") || 0;
         return rightTime - leftTime;
       });
+  }
+
+  private daemonSockets(): WebSocket[] {
+    const now = Date.now();
+    return this.allDaemonRoleSockets().filter((socket) => isLiveDaemonAttachment(this.daemonAttachment(socket), now));
+  }
+
+  private touchDaemonSocket(ws: WebSocket): void {
+    const attachment = this.daemonAttachment(ws);
+    if (!attachment) return;
+    ws.serializeAttachment(withDaemonLastSeenAt(attachment) satisfies DaemonAttachment);
+    void this.scheduleSocketAlarms();
+  }
+
+  private invalidateDaemonSocket(ws: WebSocket, message: string, closeReason: string): void {
+    const attachment = this.socketAttachment(ws);
+    if (attachment?.role === "daemon") {
+      ws.serializeAttachment({
+        role: "expired",
+        connectedAt: attachment.connectedAt,
+        lastSeenAt: attachment.lastSeenAt,
+      } satisfies DaemonAttachment);
+    }
+    this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
+    sendWebSocketQuietly(ws, { type: "error", error: "daemon_liveness_timeout" });
+    closeWebSocketQuietly(ws, 1008, closeReason);
+  }
+
+  private reclaimStaleDaemonSockets(now = Date.now()): void {
+    for (const socket of this.allDaemonRoleSockets()) {
+      if (isLiveDaemonAttachment(this.daemonAttachment(socket), now)) continue;
+      this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
+    }
   }
 
   private candidateSockets(): WebSocket[] {
@@ -524,6 +581,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return {
       role: candidate.role,
       connectedAt: sanitizeMetadataText(candidate.connectedAt, 64) ?? "",
+      lastSeenAt: sanitizeMetadataText(candidate.lastSeenAt, 64),
       policy,
       tools: sanitizeDaemonTools(candidate.tools, policy),
     };
@@ -552,11 +610,19 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       nextDeadline = Math.min(nextDeadline, deadline);
     }
+    for (const socket of this.allDaemonRoleSockets()) {
+      const deadline = daemonLivenessDeadlineMs(this.daemonAttachment(socket));
+      if (!Number.isFinite(deadline) || deadline <= now) {
+        this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
+        continue;
+      }
+      nextDeadline = Math.min(nextDeadline, deadline);
+    }
     if (Number.isFinite(nextDeadline)) await this.ctx.storage.setAlarm(nextDeadline);
     else await this.ctx.storage.deleteAlarm();
   }
 
-  private async scheduleCandidateAlarm(): Promise<void> {
+  private async scheduleSocketAlarms(): Promise<void> {
     let nextDeadline = Number.POSITIVE_INFINITY;
     for (const socket of this.candidateSockets()) {
       const attachment = this.socketAttachment(socket);
@@ -567,11 +633,20 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       nextDeadline = Math.min(nextDeadline, connectedAt + DAEMON_HELLO_TIMEOUT_MS);
     }
+    for (const socket of this.allDaemonRoleSockets()) {
+      const deadline = daemonLivenessDeadlineMs(this.daemonAttachment(socket));
+      if (!Number.isFinite(deadline)) {
+        this.invalidateDaemonSocket(socket, "daemon became unresponsive", "invalid daemon liveness timestamp");
+        continue;
+      }
+      nextDeadline = Math.min(nextDeadline, deadline);
+    }
     if (Number.isFinite(nextDeadline)) await this.ctx.storage.setAlarm(Math.max(Date.now(), nextDeadline));
     else await this.ctx.storage.deleteAlarm();
   }
 
   private daemonStatus(detail: boolean): Record<string, unknown> {
+    this.reclaimStaleDaemonSockets();
     const sockets = this.daemonSockets();
     const attachment = sockets[0] ? this.daemonAttachment(sockets[0]) : undefined;
     const tools = attachment?.tools ?? [];
@@ -580,6 +655,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       count: sockets.length,
       tool_count: tools.length,
       connected_at: attachment?.connectedAt ?? null,
+      last_seen_at: attachment?.lastSeenAt ?? attachment?.connectedAt ?? null,
+      liveness_timeout_ms: DAEMON_LIVENESS_TIMEOUT_MS,
     };
     if (!detail) return base;
     return {
@@ -711,13 +788,6 @@ function textToolResult(value: unknown, isError = false): Record<string, unknown
   };
   if (value && typeof value === "object" && !Array.isArray(value)) result.structuredContent = value;
   return result;
-}
-
-function isFreshDaemonCandidate(connectedAt: string): boolean {
-  const timestamp = Date.parse(connectedAt);
-  if (!Number.isFinite(timestamp)) return false;
-  const age = Date.now() - timestamp;
-  return age >= 0 && age <= DAEMON_HELLO_TIMEOUT_MS;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
