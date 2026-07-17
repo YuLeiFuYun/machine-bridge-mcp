@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.2 - 2026-07-17
+
+### Relay result lifecycle and human-readable diagnostics
+
+- Bind every local `tool_result` to the authenticated relay session that delivered its `tool_call`. A result from a disconnected or replaced socket is discarded instead of being sent over a newer connection, and a caller cancellation marks the eventual local result as intentionally undeliverable. Routine late-result races are debug-only rather than repeated `relay.tool_result.delivery_failed` warnings; an actual synchronous WebSocket send failure still invalidates the ambiguous transport.
+- Propagate MCP HTTP cancellation into the Worker pending-call registry. Incoming request cancellation removes both internal and session request-key indexes, sends a best-effort daemon cancellation, and records the call as cancelled. The Worker deployment now explicitly enables Cloudflare request-signal delivery and passthrough to the Durable Object.
+- Add an `unmatched_results` Worker metric for results that arrive after their pending record was removed. Human log mode uses natural-language event messages and omits the redundant machine event key, while JSON mode retains stable event names and bounded structured fields.
+- Add regression coverage for relay-session replacement, stale-result suppression, request-signal cleanup, human log rendering, compatibility flags, and unmatched-result observability. Local Wrangler integration continues to cover the complete OAuth/MCP/WebSocket flow and explicit MCP cancellation.
+
 ## 1.2.1 - 2026-07-16
 
 ### Fail-closed input contracts and bounded CLI adapters

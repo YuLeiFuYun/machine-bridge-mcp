@@ -16,6 +16,8 @@ import { LocalRuntime } from "../src/local/runtime.mjs";
 await testCallRegistry();
 await testToolExecutor();
 await testToolExecutorConcurrency();
+await testDuplicateRelayCallId();
+testRelayCancellationSuppression();
 testTerminalDeliveryFailure();
 await testProcessExecutionNoShell();
 await testProcessCancellationSettlesBeforeClose();
@@ -40,6 +42,7 @@ async function testCallRegistry() {
   });
   const first = registry.open({ callId: "one", tool: "read_file", origin: "stdio", timeoutMs: 50 });
   registry.open({ callId: "two", tool: "git_status", origin: "relay" });
+  assert(registry.idsByOrigin("relay").join(",") === "two", "origin index did not expose the active relay call");
   expectBridgeError(() => registry.open({ callId: "three" }), "limit_exceeded");
   expectBridgeError(() => registry.open({ callId: "one" }), "conflict");
   [...timers.values()][0]();
@@ -131,18 +134,68 @@ async function testToolExecutorConcurrency() {
   assert(registry.snapshot().active === 0, "concurrent tool calls leaked lifecycle state");
 }
 
+async function testDuplicateRelayCallId() {
+  let violation = "";
+  const runtime = {
+    activeRelayCalls: new Set(["duplicate-call"]),
+    handleRelayProtocolViolation(reason) { violation = reason; },
+  };
+  await LocalRuntime.prototype.handleRelayToolCall.call(runtime, {
+    type: "tool_call",
+    id: "duplicate-call",
+    tool: "read_file",
+    arguments: { path: "README.md" },
+    authorization: { account_id: "acct_testowner_12345678901234567890", account_version: 1, role: "owner" },
+  }, { sessionId: 1 });
+  assert(violation === "duplicate_tool_call_id", "duplicate relay call ID was not rejected as a protocol error");
+  assert(runtime.activeRelayCalls.has("duplicate-call"), "duplicate relay call removed the original call lifecycle");
+}
+
+function testRelayCancellationSuppression() {
+  const runtime = {
+    activeRelayCalls: new Set(["result-window"]),
+    suppressedRelayResults: new Map(),
+    callRegistry: { cancel() { return false; } },
+    cancelCall: LocalRuntime.prototype.cancelCall,
+  };
+  const cancelled = LocalRuntime.prototype.cancelRelayCall.call(runtime, "result-window", "caller_cancelled");
+  assert(cancelled === false, "post-execution cancellation unexpectedly reported an active registry entry");
+  assert(runtime.suppressedRelayResults.get("result-window") === "caller_cancelled", "post-execution cancellation did not suppress the pending relay result");
+
+  LocalRuntime.prototype.cancelRelayCall.call(runtime, "unknown-call", "caller_cancelled");
+  assert(!runtime.suppressedRelayResults.has("unknown-call"), "unknown cancellation created an unbounded suppression entry");
+}
+
 function testTerminalDeliveryFailure() {
   let interrupted = "";
   const events = [];
   const runtime = {
-    send() { return false; },
-    relay: { interrupt(category) { interrupted = category; return true; } },
-    logger: { event(level, name, fields) { events.push({ level, name, fields }); } },
+    send() { throw new Error("legacy send path should not be used"); },
+    relay: {
+      sendForSession() { return { ok: false, reason: "session_ended" }; },
+      interrupt(category) { interrupted = category; return true; },
+    },
+    logger: { event(level, name, fields, message) { events.push({ level, name, fields, message }); } },
   };
-  const delivered = LocalRuntime.prototype.deliverRelayToolResult.call(runtime, { id: "call_terminal_delivery", ok: true });
-  assert(delivered === false, "failed terminal delivery was reported as successful");
-  assert(interrupted === "relay_transport_error", "failed terminal delivery did not invalidate the relay transport");
-  assert(events.some((event) => event.name === "relay.tool_result.delivery_failed"), "failed terminal delivery was not observable");
+  const ended = LocalRuntime.prototype.deliverRelayToolResult.call(
+    runtime,
+    { id: "call_terminal_delivery", ok: true },
+    7,
+  );
+  assert(ended === false, "an ended relay session was reported as delivered");
+  assert(interrupted === "", "an ended relay session was misclassified as a transport failure");
+  assert(events.some((event) => event.level === "debug" && event.name === "relay.tool_result.discarded" && event.fields.reason === "session_ended"), "ended-session result discard was not observable at debug level");
+  assert(!events.some((event) => event.level === "warn"), "routine ended-session result discard emitted a warning");
+
+  runtime.relay.sendForSession = () => ({ ok: false, reason: "send_failed" });
+  const failed = LocalRuntime.prototype.deliverRelayToolResult.call(
+    runtime,
+    { id: "call_transport_failure", ok: true },
+    8,
+  );
+  assert(failed === false, "transport send failure was reported as delivered");
+  assert(interrupted === "relay_transport_error", "transport send failure did not invalidate the ambiguous socket");
+  assert(events.some((event) => event.fields.reason === "send_failed" && event.message.includes("transport failed")), "transport send failure lost its human-readable debug diagnosis");
 }
 
 async function testProcessExecutionNoShell() {

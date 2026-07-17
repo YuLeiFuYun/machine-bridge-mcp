@@ -5,7 +5,7 @@ const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|secret|toke
 export class WorkerObservability {
   private readonly startedAt = performance.now();
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
-  private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0 };
+  private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
   private readonly sockets = { candidates: 0, authenticated: 0, disconnected: 0, protocol_errors: 0 };
   private readonly errors = new Map<string, number>();
   private readonly tools = new Map<string, { started: number; completed: number; failed: number; active: number }>();
@@ -38,6 +38,8 @@ export class WorkerObservability {
     if (code === "timeout") this.calls.timed_out += 1;
     this.incrementError(code);
   }
+
+  unmatchedResult(): void { this.calls.unmatched_results += 1; }
 
   socketCandidate(): void { this.sockets.candidates += 1; }
   socketAuthenticated(): void { this.sockets.authenticated += 1; }

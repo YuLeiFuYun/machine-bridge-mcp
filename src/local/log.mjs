@@ -55,7 +55,7 @@ export function createLogger(options = {}) {
     const normalizedLevel = normalizeEventLevel(level);
     const eventName = sanitizeEventName(name);
     const payload = { event: eventName, ...fields };
-    const humanMessage = message || eventName;
+    const humanMessage = message || humanizeEventName(eventName);
     if (options.format === "json") {
       if (LEVEL_RANK[normalizedLevel] < LEVEL_RANK[minimumLevel]) return;
       const entry = sanitizeLogValue({
@@ -77,7 +77,7 @@ export function createLogger(options = {}) {
       error: [stderr, "[error]", COLORS.red],
     };
     const [stream, label, color] = methods[normalizedLevel];
-    write(stream, normalizedLevel, label, color, humanMessage, payload);
+    write(stream, normalizedLevel, label, color, humanMessage, fields);
   };
 
   return {
@@ -187,6 +187,14 @@ function shouldUseColor(options) {
 function normalizeEventLevel(value) {
   const level = String(value || "info").toLowerCase();
   return Object.prototype.hasOwnProperty.call(LEVEL_RANK, level) ? level : "info";
+}
+
+function humanizeEventName(value) {
+  const words = String(value || "event")
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return words ? `${words[0].toUpperCase()}${words.slice(1)}` : "Event";
 }
 
 function sanitizeEventName(value) {

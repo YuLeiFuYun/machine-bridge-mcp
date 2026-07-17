@@ -30,6 +30,19 @@ assert(completed.workspace_path === "<local-path>", "local path field was not re
 assert(!stdout.lines[0].includes("must-not-appear") && !stdout.lines[0].includes(syntheticHomePath), "structured log leaked sensitive values");
 assert(failed.event === "tool.call.failed" && failed.error_code === "permission_denied", "structured error event is incomplete");
 
+const human = captureStream();
+const humanLogger = createLogger({ level: "warn", component: "daemon", stdout: human, stderr: human, color: false });
+humanLogger.event(
+  "warn",
+  "relay.tool_result.discarded",
+  { call_id: "call-123" },
+  "A completed tool result could not be delivered because the caller disconnected",
+);
+assert(human.lines.length === 1, "human event did not emit exactly one line");
+assert(human.lines[0].includes("caller disconnected"), "human event omitted its natural-language explanation");
+assert(!human.lines[0].includes("relay.tool_result.discarded"), "human event exposed the machine event name");
+assert(!human.lines[0].includes('"event"'), "human event duplicated the structured event field");
+
 const infoOnly = captureStream();
 const quietDebug = createLogger({ level: "info", format: "json", stdout: infoOnly, stderr: infoOnly, color: false });
 quietDebug.event("debug", "tool.call.started", { tool: "read_file" });
