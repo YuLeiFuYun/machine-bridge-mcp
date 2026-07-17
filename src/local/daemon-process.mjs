@@ -168,11 +168,18 @@ function inspectWorkspaceDaemonOwner(state, owner) {
     const name = path.basename(value);
     return name === entryName || name === "machine-mcp" || name === "machine-mcp.mjs";
   });
-  const matches = argv.includes("--daemon-only")
+  const explicitIdentity = Boolean(workspaceArg && stateRootArg)
     && sameCanonicalPath(workspaceArg, state.workspace.path)
-    && sameCanonicalPath(stateRootArg, state.paths.stateRoot)
-    && entryMatches;
-  return { verified_service_daemon: matches, reason: matches ? "service_command" : "command_mismatch" };
+    && sameCanonicalPath(stateRootArg, state.paths.stateRoot);
+  const implicitIdentity = !workspaceArg && !stateRootArg;
+  const commonIdentity = argv.includes("--daemon-only") && entryMatches;
+  if (commonIdentity && explicitIdentity) {
+    return { verified_service_daemon: true, reason: "service_command" };
+  }
+  if (commonIdentity && implicitIdentity) {
+    return { verified_service_daemon: true, reason: "implicit_service_command" };
+  }
+  return { verified_service_daemon: false, reason: "command_mismatch" };
 }
 
 function commandFlagValue(argv, name) {

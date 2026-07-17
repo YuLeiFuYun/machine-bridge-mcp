@@ -137,6 +137,16 @@ let startedResolved = false;
 void started.then(() => { startedResolved = true; });
 await Promise.resolve();
 assert(!startedResolved, "relay start resolved before end-to-end result delivery was acknowledged");
+let preReadyMessageContext = null;
+const preReadyOnMessage = connection.onMessage;
+connection.onMessage = (data, context) => {
+  preReadyMessageContext = context;
+  return preReadyOnMessage?.(data, context);
+};
+sockets[0].emit("message", Buffer.from(JSON.stringify({ type: "relay_probe", id: "probe_pre_ready" })));
+assert(preReadyMessageContext?.sessionId === authenticatedRelaySession, "pre-ready inbound message lost the authenticated session generation");
+assert(preReadyMessageContext?.authenticated === true && preReadyMessageContext?.ready === false, "pre-ready inbound context must report authenticated but not ready");
+connection.onMessage = preReadyOnMessage;
 connection.confirmReady({ type: "ready_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 await started;
 assert(events.some((event) => event.level === "info" && event.message.includes("end-to-end result delivery verified")), "relay did not report verified readiness");
@@ -150,6 +160,7 @@ connection.onMessage = (data, context) => {
 };
 sockets[0].emit("message", Buffer.from(JSON.stringify({ type: "tool_call", id: "session-context-probe", tool: "list_roots", arguments: {} })));
 assert(inboundMessageContext?.sessionId === firstRelaySession, "inbound relay message did not include the authenticated session generation");
+assert(inboundMessageContext?.authenticated === true && inboundMessageContext?.ready === true, "ready inbound tool_call context must include ready:true after end-to-end readiness");
 connection.onMessage = previousOnMessage;
 const firstSessionDelivery = connection.sendForSession({ type: "tool_result", id: "first-session" }, firstRelaySession);
 assert(firstSessionDelivery.ok === true, "current relay session rejected a bound result");

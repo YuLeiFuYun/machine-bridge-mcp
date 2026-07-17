@@ -168,6 +168,24 @@ async function testRelayReadinessStateGuards() {
   violation = "";
   await LocalRuntime.prototype.handleMessage.call(runtime, JSON.stringify({ type: "tool_call" }), { sessionId: 7, authenticated: true, ready: true });
   assert(violation === "" && toolCalls === 1, "ready relay tool call did not reach its handler");
+
+  // Incomplete dispatch that only forwards sessionId must consult live relay readiness
+  // instead of killing the first real tool call after end-to-end verification.
+  violation = "";
+  toolCalls = 0;
+  runtime.relay = { status: () => ({ ready: true, authenticated: true }) };
+  await LocalRuntime.prototype.handleMessage.call(runtime, JSON.stringify({ type: "tool_call" }), { sessionId: 7 });
+  assert(violation === "" && toolCalls === 1, "sessionId-only ready dispatch blocked a verified tool call");
+  violation = "";
+  toolCalls = 0;
+  runtime.relay = { status: () => ({ ready: false, authenticated: true }) };
+  await LocalRuntime.prototype.handleMessage.call(runtime, JSON.stringify({ type: "tool_call" }), { sessionId: 7 });
+  assert(violation === "tool_call_before_ready" && toolCalls === 0, "sessionId-only dispatch allowed a tool call before readiness");
+  violation = "";
+  toolCalls = 0;
+  runtime.relay = { status: () => ({ ready: true, authenticated: true }) };
+  await LocalRuntime.prototype.handleMessage.call(runtime, JSON.stringify({ type: "tool_call" }), { sessionId: 7, ready: false });
+  assert(violation === "tool_call_before_ready" && toolCalls === 0, "explicit ready:false must remain fail-closed even when live status is ready");
 }
 
 async function testDuplicateRelayCallId() {

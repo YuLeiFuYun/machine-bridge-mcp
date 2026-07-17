@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { lstat, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { RelayConnection } from "./relay-connection.mjs";
+import { isRelayReadyContext, RelayConnection } from "./relay-connection.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
 export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
 import { MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, PolicyGate, SERVER_NAME } from "./tools.mjs";
@@ -303,12 +303,12 @@ export class LocalRuntime {
     }
     if (this.handleRelayControlMessage(message)) return;
     if (message.type === "relay_probe") {
-      if (relayContext.ready === true) return this.handleRelayProtocolViolation("unexpected_relay_probe");
+      if (isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("unexpected_relay_probe");
       this.handleRelayProbe(message, relayContext);
       return;
     }
     if (message.type !== "tool_call") return this.handleRelayProtocolViolation("unexpected_server_message_type");
-    if (relayContext.ready !== true) return this.handleRelayProtocolViolation("tool_call_before_ready");
+    if (!isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("tool_call_before_ready");
     await this.handleRelayToolCall(message, relayContext);
   }
 
@@ -741,6 +741,7 @@ function createRelayConnection(runtime, { workerUrl, secret, expectedVersion, on
     },
   });
 }
+
 
 function handleRelayData(runtime, data, relayContext = {}) {
   const raw = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
