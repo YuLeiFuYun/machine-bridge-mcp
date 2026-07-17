@@ -127,11 +127,13 @@ for (const rule of ["PinnedDependenciesID", "FuzzingID"]) {
   if (acceptedScorecardRules.has(rule)) throw new Error(`remediable Scorecard finding was incorrectly accepted: ${rule}`);
 }
 const codeqlAccepted = JSON.parse(readFileSync(join(root, ".github", "codeql-accepted-findings.json"), "utf8"));
-const acceptedCodeql = codeqlAccepted.accepted || [];
-if (acceptedCodeql.length !== 1
-    || acceptedCodeql[0].ruleId !== "js/shell-command-injection-from-environment"
-    || acceptedCodeql[0].path !== "src/local/process-execution.mjs") {
-  throw new Error("CodeQL exception inventory must contain only the reviewed non-shell process boundary");
+const acceptedCodeql = new Set((codeqlAccepted.accepted || []).map((item) => `${item.ruleId}\0${item.path}`));
+const expectedCodeql = new Set([
+  "js/shell-command-injection-from-environment\0src/local/process-execution.mjs",
+  "js/file-system-race\0scripts/release-acceptance.mjs",
+]);
+if (acceptedCodeql.size !== expectedCodeql.size || [...expectedCodeql].some((item) => !acceptedCodeql.has(item))) {
+  throw new Error("CodeQL exception inventory contains an unreviewed or missing exact finding");
 }
 const processExecutionSource = readFileSync(join(root, "src", "local", "process-execution.mjs"), "utf8");
 if (!processExecutionSource.includes('import { spawn } from "node:child_process";')

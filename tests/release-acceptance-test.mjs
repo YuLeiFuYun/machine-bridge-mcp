@@ -57,6 +57,7 @@ try {
 
   writeFileSync(join(root, "index.js"), "export const value = 2;\n");
   expectThrow(() => verifyCurrentReleaseAcceptance(root), "does not match the current npm package");
+  git(["add", "index.js"]);
   expectThrow(() => verifyPortableAcceptance(root, packFixtureMetadata()), "content digest does not match");
 
   writePackage("1.2.7");
