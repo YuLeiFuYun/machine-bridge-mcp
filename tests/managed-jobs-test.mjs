@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { activeManagedJobs, inspectResourceFile, ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { activeManagedJobs, inspectResourceFile, launchRunner, ManagedJobManager } from "../src/local/managed-jobs.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-managed-job-test-"));
 const workspace = join(root, "workspace");
@@ -22,6 +23,19 @@ if (process.platform !== "win32") await chmod(secretFile, 0o600);
 await writeFile(helperFile, "temporary", "utf8");
 
 try {
+  const failedRunnerDir = join(root, `job_${"R".repeat(24)}`);
+  await mkdir(failedRunnerDir, { recursive: true });
+  const runnerErrors = [];
+  const failedChild = new EventEmitter();
+  failedChild.pid = undefined;
+  failedChild.unref = () => { throw new Error("failed runner must not be unreferenced"); };
+  expectThrow(() => launchRunner(failedRunnerDir, false, "", {
+    spawnProcess: () => failedChild,
+    logger: { error(message, fields) { runnerErrors.push({ message, fields }); } },
+  }), "did not receive a process id");
+  failedChild.emit("error", Object.assign(new Error("resource exhausted"), { code: "EAGAIN" }));
+  assert(runnerErrors.length === 1 && runnerErrors[0].fields.error_class === "execution_failed", "asynchronous runner spawn failure was unhandled or unobservable");
+
   const resource = inspectResourceFile(secretFile);
   const sourcePathAlias = `${secretFile}.registration-alias`;
   resource.pathAliases = [...new Set([...(resource.pathAliases || []), sourcePathAlias])];

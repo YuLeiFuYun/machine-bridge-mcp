@@ -11,6 +11,7 @@ import { inspectProcessInstance, isPidAlive, processCommandLine, splitProcessCom
 
 const DEFAULT_TAKEOVER_TIMEOUT_MS = 15_000;
 const DEFAULT_TAKEOVER_POLL_MS = 100;
+const DEFAULT_FORCE_AFTER_MS = 2_000;
 
 export async function acquireDaemonLockWithTakeover(state, options = {}) {
   const ownerMetadata = options.ownerMetadata || {};
@@ -50,9 +51,10 @@ export async function acquireDaemonLockWithTakeover(state, options = {}) {
 export async function stopWorkspaceServiceDaemon(state, options = {}) {
   const timeoutMs = boundedPositiveInt(options.timeoutMs, DEFAULT_TAKEOVER_TIMEOUT_MS);
   const pollMs = boundedPositiveInt(options.pollMs, DEFAULT_TAKEOVER_POLL_MS);
+  const forceAfterMs = Math.min(timeoutMs, boundedPositiveInt(options.forceAfterMs, DEFAULT_FORCE_AFTER_MS));
   const logger = options.logger || { info() {}, warn() {} };
   const deadline = createMonotonicDeadline(timeoutMs);
-  const signalled = new Set();
+  const signalled = new Map();
   let owner = options.owner || readDaemonLockOwner(daemonLockPathForState(state));
   let verified = false;
   let lastOwner = owner;
@@ -89,12 +91,42 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
             };
           }
         }
-        signalled.add(Number(owner.pid));
+        signalled.set(Number(owner.pid), {
+          owner: { ...owner },
+          forceDeadline: createMonotonicDeadline(forceAfterMs),
+          forced: false,
+        });
       }
     }
 
-    const liveSignalled = [...signalled].filter((pid) => isPidAlive(pid));
-    const currentOwnerAlive = Boolean(owner?.pid && isPidAlive(owner.pid));
+    for (const [pid, signalState] of signalled) {
+      if (signalState.forced || !signalState.forceDeadline.expired()) continue;
+      const current = inspectProcessInstance(signalState.owner);
+      if (!current.current) continue;
+      const identity = inspectWorkspaceDaemonOwner(state, signalState.owner);
+      if (!identity.verified_service_daemon) continue;
+      logger.warn?.(`detached background daemon ignored graceful termination; forcing process ${pid} to stop`);
+      try {
+        process.kill(pid, "SIGKILL");
+        signalState.forced = true;
+      } catch (error) {
+        if (error?.code !== "ESRCH") {
+          return {
+            ok: false,
+            found: true,
+            verified_service_daemon: true,
+            reason: "force_signal_failed",
+            timeout_ms: timeoutMs,
+            ...publicDaemonOwner(signalState.owner),
+          };
+        }
+      }
+    }
+
+    const liveSignalled = [...signalled.entries()]
+      .filter(([, signalState]) => inspectProcessInstance(signalState.owner).current)
+      .map(([pid]) => pid);
+    const currentOwnerAlive = Boolean(owner?.pid && inspectProcessInstance(owner).current);
     if (!currentOwnerAlive && liveSignalled.length === 0) break;
 
     if (deadline.expired()) {
@@ -107,6 +139,7 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
         verified_service_daemon: verified,
         reason: "timeout",
         timeout_ms: timeoutMs,
+        force_after_ms: forceAfterMs,
         pid: remainingPid,
         mode: publicDaemonMode(lastOwner),
         version: typeof lastOwner?.version === "string" ? lastOwner.version : "unknown",
@@ -126,6 +159,8 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
     verified_service_daemon: verified,
     reason: verified ? "stopped" : "not_running",
     timeout_ms: timeoutMs,
+    force_after_ms: forceAfterMs,
+    forced: [...signalled.values()].some((item) => item.forced),
     ...(lastOwner ? publicDaemonOwner(lastOwner) : {}),
   };
 }

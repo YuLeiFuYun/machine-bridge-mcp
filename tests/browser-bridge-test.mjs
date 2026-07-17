@@ -6,6 +6,9 @@ import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 
+await testStopDuringStart();
+await testStartFailureCleanup();
+
 const root = await mkdtemp(join(tmpdir(), "mbm-browser-bridge-"));
 if (process.platform !== "win32") await chmod(root, 0o777);
 const policy = { profile: "full", execMode: "shell", unrestrictedPaths: true };
@@ -205,6 +208,65 @@ try {
   client.stop();
   owner.stop();
   await rm(root, { recursive: true, force: true });
+}
+
+
+async function testStopDuringStart() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-start-race-"));
+  const manager = new BrowserBridgeManager({
+    policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+    stateRoot,
+    runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+    readResourceText: async () => "",
+    readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
+  });
+  let releaseListen;
+  let markListening;
+  let serverClosed = false;
+  const listenBlocked = new Promise((resolvePromise) => { releaseListen = resolvePromise; });
+  const listening = new Promise((resolvePromise) => { markListening = resolvePromise; });
+  manager.listen = async () => {
+    markListening();
+    await listenBlocked;
+    manager.server = { close() { serverClosed = true; } };
+    manager.wss = { close() {} };
+  };
+  try {
+    const starting = manager.ensureStarted();
+    await listening;
+    manager.stop();
+    releaseListen();
+    await expectReject(starting, "start cancelled");
+    assert(serverClosed && manager.server === null && manager.wss === null, "browser bridge reopened a listener after stop raced with startup");
+  } finally {
+    manager.stop();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+}
+
+
+async function testStartFailureCleanup() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-start-failure-"));
+  const manager = new BrowserBridgeManager({
+    policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+    stateRoot,
+    runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+    readResourceText: async () => "",
+    readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
+  });
+  let serverClosed = false;
+  manager.listen = async () => {
+    manager.server = { close() { serverClosed = true; } };
+    manager.wss = { close() {} };
+    throw new Error("injected listen failure");
+  };
+  try {
+    await expectReject(manager.ensureStarted(), "injected listen failure");
+    assert(serverClosed && manager.server === null && manager.wss === null, "browser bridge retained partial transports after startup failure");
+  } finally {
+    manager.stop();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
 }
 
 function attachExtensionResponder(socket) {

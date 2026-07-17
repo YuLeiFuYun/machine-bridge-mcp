@@ -39,6 +39,9 @@ const boundaryModules = new Set([
   "network-proxy.mjs",
   "worker-health.mjs",
   "process-sessions.mjs",
+  "process-contract.mjs",
+  "process-tree.mjs",
+  "execution-limits.mjs",
   "project-package.mjs",
   "policy.mjs",
   "errors.mjs",
@@ -52,6 +55,7 @@ const boundaryModules = new Set([
   "cli-options.mjs",
   "cli-policy.mjs",
   "lifecycle.mjs",
+  "loopback-health.mjs",
   "cli-local-admin.mjs",
   "capability-ranking.mjs",
   "managed-job-plan.mjs",
@@ -88,11 +92,15 @@ const lineLimits = Object.freeze({
   "src/worker/oauth-controller.ts": 360,
   "src/worker/oauth-tokens.ts": 260,
   "src/local/process-execution.mjs": 300,
+  "src/local/process-contract.mjs": 40,
+  "src/local/process-tree.mjs": 70,
+  "src/local/execution-limits.mjs": 55,
   "src/local/git-service.mjs": 220,
   "src/local/workspace-file-service.mjs": 550,
   "src/local/tool-executor.mjs": 180,
   "src/local/call-registry.mjs": 190,
   "src/local/lifecycle.mjs": 130,
+  "src/local/loopback-health.mjs": 80,
   "src/local/cli-local-admin.mjs": 400,
   "src/local/agent-context.mjs": 800,
   "src/local/agent-contract.mjs": 230,
@@ -143,6 +151,24 @@ for (const name of ["app-automation.mjs", "browser-bridge.mjs", "managed-jobs.mj
     throw new Error(`${name} reimplements tool authorization instead of using PolicyGate`);
   }
   if (!source.includes("authorizeTool")) throw new Error(`${name} lost the shared authorization gate`);
+}
+
+for (const name of ["process-execution.mjs", "process-tracker.mjs", "job-runner.mjs", "shell.mjs"]) {
+  const source = readFileSync(join(localRoot, name), "utf8");
+  if (source.includes('from "./process-sessions.mjs"')) {
+    throw new Error(`${name} couples generic process supervision to the interactive-session adapter`);
+  }
+  if (!source.includes('from "./process-tree.mjs"')) {
+    throw new Error(`${name} bypasses the shared process-tree supervisor`);
+  }
+}
+const processSessionSource = readFileSync(join(localRoot, "process-sessions.mjs"), "utf8");
+if (!processSessionSource.includes('from "./process-contract.mjs"') || !processSessionSource.includes('from "./process-tree.mjs"')) {
+  throw new Error("process sessions regained argv validation or process-tree supervision responsibilities");
+}
+const executionLimitSource = readFileSync(join(localRoot, "execution-limits.mjs"), "utf8");
+for (const required of ['cpu_quota: \"not-enforced\"', 'memory_quota: \"not-enforced\"', 'network_isolation: \"not-enforced\"']) {
+  if (!executionLimitSource.includes(required)) throw new Error(`execution guardrails misrepresent an unenforced OS boundary: ${required}`);
 }
 
 const workspaceFileSource = readFileSync(join(localRoot, "workspace-file-service.mjs"), "utf8");

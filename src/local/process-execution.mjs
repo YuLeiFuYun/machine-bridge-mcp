@@ -2,12 +2,13 @@ import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { BoundedOutput } from "./bounded-output.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
-import { MAX_COMMAND_BYTES, terminateProcessTreeWithEscalation, validateArgv } from "./process-sessions.mjs";
+import { MAX_COMMAND_BYTES, validateArgv } from "./process-contract.mjs";
+import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { BridgeError } from "./errors.mjs";
 import { clampInteger } from "./numbers.mjs";
-
-const MAX_STDIN_BYTES = 1024 * 1024;
-const DEFAULT_OUTPUT_BYTES = 512 * 1024;
+import {
+  DEFAULT_PROCESS_OUTPUT_BYTES, MAX_PROCESS_STDIN_BYTES, MAX_PROCESS_TIMEOUT_SECONDS, MIN_PROCESS_TIMEOUT_SECONDS,
+} from "./execution-limits.mjs";
 
 function spawnDirectProcess(command, args, options) {
   // Keep the production child_process API call structurally separate from the
@@ -41,7 +42,7 @@ export class ProcessExecutionService {
     const argv = validateArgv(args.argv);
     const cwd = await this.resolveExistingPath(args.cwd || ".");
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "cwd is not a directory");
-    return this.run(argv[0], argv.slice(1), clampInteger(args.timeout_seconds, 120, 1, 600) * 1000, false, DEFAULT_OUTPUT_BYTES, context, cwd);
+    return this.run(argv[0], argv.slice(1), clampInteger(args.timeout_seconds, 120, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS) * 1000, false, DEFAULT_PROCESS_OUTPUT_BYTES, context, cwd);
   }
 
   async runRegistered(args, context = {}) {
@@ -52,9 +53,9 @@ export class ProcessExecutionService {
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "registered command cwd is not a directory");
     const requested = args.timeout_seconds === undefined
       ? command.timeoutSeconds
-      : clampInteger(args.timeout_seconds, command.timeoutSeconds, 1, 600);
+      : clampInteger(args.timeout_seconds, command.timeoutSeconds, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS);
     const timeoutSeconds = Math.min(requested, command.timeoutSeconds);
-    const result = await this.run(argv[0], argv.slice(1), timeoutSeconds * 1000, false, DEFAULT_OUTPUT_BYTES, context, cwd);
+    const result = await this.run(argv[0], argv.slice(1), timeoutSeconds * 1000, false, DEFAULT_PROCESS_OUTPUT_BYTES, context, cwd);
     return { name: command.name, cwd: this.displayPath(cwd), timeout_seconds: timeoutSeconds, ...result };
   }
 
@@ -69,16 +70,16 @@ export class ProcessExecutionService {
     if (command.includes("\0")) throw new BridgeError("invalid_request", "command contains a NUL byte");
     if (Buffer.byteLength(command) > MAX_COMMAND_BYTES) throw new BridgeError("limit_exceeded", `command exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
     const shell = workspaceShellCommand(command);
-    return this.run(shell.cmd, shell.args, clampInteger(timeoutSeconds, 120, 1, 600) * 1000, false, DEFAULT_OUTPUT_BYTES, context);
+    return this.run(shell.cmd, shell.args, clampInteger(timeoutSeconds, 120, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS) * 1000, false, DEFAULT_PROCESS_OUTPUT_BYTES, context);
   }
 
   terminateAll(signal = "SIGTERM", escalate = false) {
     this.processTracker.terminateAll(signal, escalate);
   }
 
-  async run(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_OUTPUT_BYTES, context = {}, cwd = this.workspace, stdin = null) {
+  async run(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace, stdin = null) {
     this.throwIfCancelled(context);
-    if (stdin !== null && Buffer.byteLength(String(stdin)) > MAX_STDIN_BYTES) {
+    if (stdin !== null && Buffer.byteLength(String(stdin)) > MAX_PROCESS_STDIN_BYTES) {
       throw new BridgeError("limit_exceeded", "process stdin exceeds 1 MiB");
     }
 

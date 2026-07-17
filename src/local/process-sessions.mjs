@@ -2,16 +2,14 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { executionEnv } from "./shell.mjs";
+import { validateArgv } from "./process-contract.mjs";
+import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { clampInteger } from "./numbers.mjs";
-
-export const MAX_COMMAND_BYTES = 64 * 1024;
-const MAX_ARGV_ITEMS = 256;
-const MAX_PROCESS_SESSIONS = 8;
-const MAX_SESSION_OUTPUT_BYTES = 1024 * 1024;
-const MAX_PROCESS_STDIN_BYTES = 64 * 1024;
-const PROCESS_SESSION_RETENTION_MS = 30 * 60 * 1000;
+import {
+  MAX_PROCESS_SESSIONS, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_SESSION_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS,
+} from "./execution-limits.mjs";
 
 export class ProcessSessionManager {
   constructor({ workspace, policy, authorizeTool = null, runtimeDir, processTracker, resolveCwd, displayPath, throwIfCancelled }) {
@@ -70,6 +68,7 @@ export class ProcessSessionManager {
       signal: null,
       stdinClosed: false,
       waiters: new Set(),
+      terminationTimer: null,
     };
     this.sessions.set(session.id, session);
     this.trackChild(child, context.callId);
@@ -94,6 +93,11 @@ export class ProcessSessionManager {
       notifySessionWaiters(session);
     });
 
+    child.on("error", (error) => {
+      appendSessionStream(session.stderr, Buffer.from(`${boundedErrorMessage(error)}\n`));
+      session.lastActivity = Date.now();
+      notifySessionWaiters(session);
+    });
     try {
       await waitForSpawn(child);
     } catch (error) {
@@ -101,12 +105,6 @@ export class ProcessSessionManager {
       this.untrackChild(child);
       throw error;
     }
-
-    child.on("error", (error) => {
-      appendSessionStream(session.stderr, Buffer.from(`${boundedErrorMessage(error)}\n`));
-      session.lastActivity = Date.now();
-      notifySessionWaiters(session);
-    });
     this.throwIfCancelled(context);
     return this.summary(session);
   }
@@ -144,7 +142,7 @@ export class ProcessSessionManager {
     const session = this.get(args.session_id);
     if (session.closedAt !== null) throw new Error("process session has already exited");
     const data = String(args.data ?? "");
-    if (Buffer.byteLength(data) > MAX_PROCESS_STDIN_BYTES) throw new Error(`stdin data exceeds maximum size (${MAX_PROCESS_STDIN_BYTES} bytes)`);
+    if (Buffer.byteLength(data) > MAX_PROCESS_SESSION_STDIN_BYTES) throw new Error(`stdin data exceeds maximum size (${MAX_PROCESS_SESSION_STDIN_BYTES} bytes)`);
     if (session.stdinClosed || session.child.stdin.destroyed) throw new Error("process session stdin is closed");
     this.throwIfCancelled(context);
     if (data) {
@@ -165,9 +163,18 @@ export class ProcessSessionManager {
     const session = this.get(args.session_id);
     this.throwIfCancelled(context);
     const wasRunning = session.closedAt === null;
-    if (wasRunning) terminateProcessTree(session.child, args.force === true ? "SIGKILL" : "SIGTERM");
+    const force = args.force === true;
+    if (wasRunning && force) terminateProcessTree(session.child, "SIGKILL");
+    else if (wasRunning && !session.terminationTimer) {
+      session.terminationTimer = terminateProcessTreeWithEscalation(session.child);
+    }
     session.lastActivity = Date.now();
-    return { ...this.summary(session), termination_requested: wasRunning, force: args.force === true };
+    return {
+      ...this.summary(session),
+      termination_requested: wasRunning,
+      force,
+      force_after_ms: wasRunning && !force ? 2000 : null,
+    };
   }
 
   get(sessionId) {
@@ -220,38 +227,6 @@ export class ProcessSessionManager {
   }
 }
 
-export function validateArgv(value) {
-  if (!Array.isArray(value) || !value.length || value.length > MAX_ARGV_ITEMS) throw new Error(`argv must contain 1-${MAX_ARGV_ITEMS} strings`);
-  const argv = value.map((item) => {
-    if (typeof item !== "string" || item.includes("\0")) throw new Error("argv entries must be strings without NUL bytes");
-    return item;
-  });
-  if (!argv[0]) throw new Error("argv[0] must not be empty");
-  if (Buffer.byteLength(JSON.stringify(argv)) > MAX_COMMAND_BYTES) throw new Error(`argv exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
-  return argv;
-}
-
-export function terminateProcessTree(child, signal) {
-  if (!child?.pid) return;
-  if (process.platform === "win32") {
-    try {
-      const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-      killer.unref();
-      return;
-    } catch {}
-  }
-  try { process.kill(-child.pid, signal); } catch {
-    try { child.kill(signal); } catch {}
-  }
-}
-
-export function terminateProcessTreeWithEscalation(child, options = {}) {
-  const graceMs = Number.isFinite(Number(options.graceMs)) ? Math.max(0, Number(options.graceMs)) : 2000;
-  const schedule = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
-  terminateProcessTree(child, "SIGTERM");
-  return schedule(() => terminateProcessTree(child, "SIGKILL"), graceMs);
-}
-
 function waitForSpawn(child) {
   return new Promise((resolvePromise, rejectPromise) => {
     const onSpawn = () => { cleanup(); resolvePromise(); };
@@ -273,8 +248,8 @@ function appendSessionStream(stream, chunk) {
   const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
   stream.totalBytes += input.length;
   let combined = stream.buffer.length ? Buffer.concat([stream.buffer, input]) : Buffer.from(input);
-  if (combined.length > MAX_SESSION_OUTPUT_BYTES) {
-    const dropped = combined.length - MAX_SESSION_OUTPUT_BYTES;
+  if (combined.length > MAX_PROCESS_SESSION_OUTPUT_BYTES) {
+    const dropped = combined.length - MAX_PROCESS_SESSION_OUTPUT_BYTES;
     combined = combined.subarray(dropped);
     stream.baseOffset += dropped;
   }

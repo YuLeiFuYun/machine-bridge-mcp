@@ -27,7 +27,7 @@ import {
 } from "./http.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.2.6";
+const SERVER_VERSION = "1.2.7";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const JSONRPC_VERSION = "2.0";

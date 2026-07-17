@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { packageRoot } from "./state.mjs";
 import { BoundedOutput } from "./bounded-output.mjs";
+import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 
 export function runExecutable(command, args = [], options = {}) {
   const executable = validateExecutable(command);
@@ -28,8 +29,7 @@ export function runExecutable(command, args = [], options = {}) {
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
       timer = setTimeout(() => {
         timedOut = true;
-        terminateCommandTree(child, false);
-        killTimer = setTimeout(() => terminateCommandTree(child, true), 2000);
+        killTimer = terminateProcessTreeWithEscalation(child);
       }, timeoutMs);
       timer.unref?.();
     }
@@ -84,23 +84,6 @@ function validateExecutableArgs(value) {
   });
 }
 
-function terminateCommandTree(child, force) {
-  if (!child?.pid) return;
-  if (process.platform === "win32") {
-    try {
-      const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", ...(force ? ["/F"] : [])], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      killer.unref();
-      return;
-    } catch {}
-  }
-  const signal = force ? "SIGKILL" : "SIGTERM";
-  try { process.kill(-child.pid, signal); } catch {
-    try { child.kill(signal); } catch {}
-  }
-}
 
 function capturedResult(code, stdout, stderr, extraStderr = "") {
   const stderrText = [stderr.text(), extraStderr].filter(Boolean).join("\n");

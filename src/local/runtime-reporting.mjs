@@ -3,6 +3,7 @@ import {
   allToolNames, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS,
   POLICY_PROFILES, SERVER_NAME,
 } from "./tools.mjs";
+import { executionGuardrailsSnapshot } from "./execution-limits.mjs";
 
 export function buildRuntimeInfo({
   workspace,
@@ -47,7 +48,7 @@ export function buildRuntimeInfo({
     },
     tools: ["server_info", ...toolNames],
     observability: {
-      relay_readiness: "authenticated-hello-acknowledged",
+      relay_readiness: "end-to-end-relay-probe-verified",
       brief_relay_interruptions: "debug-only",
       raw_transport_details: "debug-only",
       per_tool_events: "structured-debug-events",
@@ -63,6 +64,7 @@ export function buildRuntimeInfo({
       relay: relayStatus(),
       runtime_dir: policy.exposeAbsolutePaths ? runtimeDir : "<private-runtime-dir>",
       processes: processTracker.snapshot(),
+      execution_guardrails: executionGuardrailsSnapshot(),
       process_sessions: processSessionManager.status(),
       managed_jobs: managedJobManager.status(),
       local_resources: managedJobManager.resourceInfo(),

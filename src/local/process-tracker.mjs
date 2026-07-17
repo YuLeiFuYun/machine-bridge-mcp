@@ -1,4 +1,4 @@
-import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-sessions.mjs";
+import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 
 export class ProcessTracker {
   constructor(options = {}) {

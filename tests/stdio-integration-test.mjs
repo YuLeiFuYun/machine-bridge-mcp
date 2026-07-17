@@ -202,6 +202,23 @@ try {
   const killedExitedSession = await responseFor(67);
   assert(killedExitedSession.result?.structuredContent?.termination_requested === false, "kill_process was not idempotent for an exited session");
 
+  const resistantScript = "process.on('SIGTERM',()=>{}); console.log('resistant-ready'); setInterval(()=>{},1000);";
+  send({ jsonrpc: "2.0", id: 68, method: "tools/call", params: { name: "start_process", arguments: { argv: [process.execPath, "-e", resistantScript] } } });
+  const resistantSession = await responseFor(68);
+  const resistantSessionId = resistantSession.result?.structuredContent?.session_id;
+  assert(typeof resistantSessionId === "string", "resistant process session did not start");
+  send({ jsonrpc: "2.0", id: 69, method: "tools/call", params: { name: "read_process", arguments: { session_id: resistantSessionId, wait_ms: 5000 } } });
+  const resistantReady = await responseFor(69, 10_000);
+  assert(resistantReady.result?.structuredContent?.stdout?.data.includes("resistant-ready"), "resistant process session was not ready before termination");
+  send({ jsonrpc: "2.0", id: 70, method: "tools/call", params: { name: "kill_process", arguments: { session_id: resistantSessionId } } });
+  const resistantKill = await responseFor(70);
+  assert(resistantKill.result?.structuredContent?.termination_requested === true
+    && resistantKill.result?.structuredContent?.force_after_ms === 2000,
+  "graceful process-session termination did not advertise forced escalation");
+  send({ jsonrpc: "2.0", id: 71, method: "tools/call", params: { name: "read_process", arguments: { session_id: resistantSessionId, wait_ms: 5000, wait_for_exit: true } } });
+  const resistantExited = await responseFor(71, 10_000);
+  assert(resistantExited.result?.structuredContent?.running === false, "resistant process session survived forced tree termination");
+
   send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "run_process", arguments: { argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"], timeout_seconds: 60 } } });
   await new Promise((resolvePromise) => { setTimeout(resolvePromise, 100); });
   send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7, reason: "test" } });

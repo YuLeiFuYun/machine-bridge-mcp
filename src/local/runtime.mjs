@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isRelayReadyContext, RelayConnection } from "./relay-connection.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
-export { MAX_COMMAND_BYTES } from "./process-sessions.mjs";
+import { MAX_CONCURRENT_TOOL_CALLS } from "./execution-limits.mjs";
+export { MAX_COMMAND_BYTES } from "./process-contract.mjs";
 import { MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, PolicyGate, SERVER_NAME } from "./tools.mjs";
 import { publicError } from "./errors.mjs";
 import { ProcessTracker } from "./process-tracker.mjs";
@@ -36,7 +37,6 @@ import {
 } from "./runtime-capabilities.mjs";
 
 const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
-const MAX_CONCURRENT_TOOL_CALLS = 16;
 const SLOW_TOOL_CALL_MS = 30_000;
 
 const RUNTIME_TOOL_HANDLERS = Object.freeze({
@@ -212,6 +212,7 @@ export class LocalRuntime {
       readResourceText,
       readResourceBinary,
       throwIfCancelled: (context) => this.throwIfCancelled(context),
+      logger: this.logger,
     });
     this.toolExecutor = new ToolExecutor({
       handlers: Object.fromEntries(Object.entries(RUNTIME_TOOL_HANDLERS).map(([name, handler]) => [
@@ -234,9 +235,7 @@ export class LocalRuntime {
     });
   }
 
-  tools() {
-    return this.policyGate.names().filter((name) => name !== "server_info");
-  }
+  tools() { return this.policyGate.names().filter((name) => name !== "server_info"); }
 
   runtimeInfo() {
     return buildRuntimeInfo({

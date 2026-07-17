@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, ftruncateSync, lstatSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
@@ -12,6 +12,7 @@ import { BridgeError } from "./errors.mjs";
 import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./managed-job-plan.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { clampInteger } from "./numbers.mjs";
+import { classifyOperationalError } from "./log.mjs";
 
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const MAX_JOBS = 50;
@@ -124,7 +125,7 @@ export class ManagedJobManager {
       status.cleanup_guarantee = "best-effort-finally-and-recovery";
       atomicWriteJson(statusFile, status, 256 * 1024);
       try {
-        launchRunner(dir);
+        launchRunner(dir, false, "", { logger: this.logger });
       } catch (error) {
         failRunnerLaunch(dir, status, error);
         throw error;
@@ -181,7 +182,7 @@ export class ManagedJobManager {
     atomicWriteJson(join(dir, "status.json"), status, 256 * 1024);
     if (launch) {
       try {
-        launchRunner(dir);
+        launchRunner(dir, false, "", { logger: this.logger });
       } catch (error) {
         failRunnerLaunch(dir, status, error);
         throw error;
@@ -356,7 +357,7 @@ export class ManagedJobManager {
         markRecoveryExhausted(dir, file, status, recoveryAttempts);
         return;
       }
-      const runnerPid = relaunchInterruptedJob(dir, file, status, recoveryAttempts, recoveryLock.token);
+      const runnerPid = relaunchInterruptedJob(dir, file, status, recoveryAttempts, recoveryLock.token, this.logger);
       recoveryLock.handoff(runnerPid);
       handedOff = true;
     } finally {
@@ -513,7 +514,7 @@ function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
   scrubFinishedPlan(dir, status);
 }
 
-function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recoveryToken) {
+function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recoveryToken, logger) {
   status.status = "interrupted";
   status.updated_at = new Date().toISOString();
   status.finished_at = status.updated_at;
@@ -522,7 +523,7 @@ function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recov
   atomicWriteJson(statusFile, status, 256 * 1024);
   rmSync(join(dir, "runtime"), { recursive: true, force: true });
   rmSync(join(dir, "runner.pid"), { force: true });
-  return launchRunner(dir, true, recoveryToken);
+  return launchRunner(dir, true, recoveryToken, { logger });
 }
 
 function acquireRecoveryLock(dir) {
@@ -634,7 +635,7 @@ function replacePrivateTextFile(file, content) {
   ownerOnlyFile(file);
 }
 
-function launchRunner(dir, recover = false, recoveryToken = "") {
+export function launchRunner(dir, recover = false, recoveryToken = "", options = {}) {
   const args = [RUNNER_PATH, "--job-dir", dir];
   if (recover) args.push("--recover");
   const stdoutFile = join(dir, "runner.out.log");
@@ -647,10 +648,12 @@ function launchRunner(dir, recover = false, recoveryToken = "") {
   try {
     stdoutFd = openPrivateAppendFile(stdoutFile);
     stderrFd = openPrivateAppendFile(stderrFile);
-    child = spawn(process.execPath, args, {
+    const spawnProcess = typeof options.spawnProcess === "function" ? options.spawnProcess : spawn;
+    child = spawnProcess(process.execPath, args, {
       detached: true,
       stdio: ["ignore", stdoutFd, stderrFd],
       windowsHide: true,
+      shell: false,
       env: recoveryToken ? { ...process.env, MBM_RECOVERY_LOCK_TOKEN: recoveryToken } : process.env,
     });
   } finally {
@@ -659,8 +662,18 @@ function launchRunner(dir, recover = false, recoveryToken = "") {
   }
   ownerOnlyFile(stdoutFile);
   ownerOnlyFile(stderrFile);
+  const logger = options.logger || console;
+  child.once?.("error", (error) => {
+    logger.error?.("managed job runner process reported an asynchronous failure", {
+      job_id: basename(dir),
+      recovery: recover,
+      error_class: classifyOperationalError(error),
+    });
+  });
+  const pid = Number(child.pid);
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("managed job runner did not receive a process id");
   child.unref();
-  return child.pid;
+  return pid;
 }
 
 
