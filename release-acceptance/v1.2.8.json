@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "result": "passed",
+  "confirmation": "repository-owner-local-test",
+  "package_name": "machine-bridge-mcp",
+  "package_version": "1.2.8",
+  "filename": "machine-bridge-mcp-1.2.8.tgz",
+  "shasum": "b93d54f5bcf1734f4dc9ef275f50806b240714e4",
+  "integrity": "sha512-6KMf85qga06Lg80Tx5NsPm7WTo4bW+DtLgIO++0jpwfh3GUsuXQN3h81O2Ibh2AcX21QzTy/sOjZfPh7Z3h1lQ==",
+  "accepted_at": "2026-07-17T14:10:25.815Z"
+}
