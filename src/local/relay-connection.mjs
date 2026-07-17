@@ -319,7 +319,11 @@ export class RelayConnection {
       if (this.socket !== socket || this.closed) return;
       this.lastInboundAt = this.now();
       // Bind results to the generation that received this message.
-      const relayContext = { sessionId: this.activeSessionId, authenticated: this.authenticated, ready: this.ready };
+      const relayContext = {
+        sessionId: this.activeSessionId,
+        authenticated: this.authenticated === true,
+        ready: this.ready === true,
+      };
       try {
         const outcome = this.onMessage(data, relayContext);
         if (outcome && typeof outcome.catch === "function") {
@@ -636,6 +640,12 @@ export function readinessMismatch(message, expectedServer = "", expectedVersion 
   if (expectedVersion && message.version !== expectedVersion) return "server_version_mismatch";
   if (typeof message.server !== "string" || !message.server || typeof message.version !== "string" || !message.version) return "incomplete_readiness_acknowledgement";
   return "";
+}
+
+export function isRelayReadyContext(relayContext = {}, relay = null) {
+  if (relayContext?.ready === true) return true;
+  if (relayContext?.ready === false) return false;
+  return Number(relayContext?.sessionId) > 0 && relay?.status?.()?.ready === true;
 }
 
 export function isSupersededClose(code, reason) {

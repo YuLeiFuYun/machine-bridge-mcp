@@ -1,3 +1,13 @@
+# Security and privacy audit notes
+
+## 2026-07-17 version 1.2.6 relay ready-context and daemon-takeover audit
+
+Version 1.2.5 introduced fail-closed rejection of ordinary tool calls before end-to-end readiness. That boundary is correct, but an incomplete inbound dispatch object that carried only `sessionId` (the 1.2.4 session-binding shape) evaluated as not ready and converted the first real tool call into a permanent local protocol error. Version 1.2.6 keeps the explicit `ready: false` fail-closed path, requires RelayConnection to forward boolean `authenticated`/`ready`, and allows a live ready relay status to satisfy readiness only when the snapshot omitted the field.
+
+Service-daemon takeover previously required both `--workspace` and `--state-dir` on the live process command line. Recovery daemons started with only `--daemon-only` from a source tree therefore remained unverified and blocked upgrade takeover. Identity verification now accepts that implicit form when the lock owner already matches the active workspace and state root, while partial path identity remains rejected.
+
+No schema, policy revision, credential, or browser-extension protocol change is included. This source change does not deploy the Worker, replace a running daemon, rotate secrets, publish npm, or mutate live operator state.
+
 # Engineering and security audit
 
 ## 2026-07-17 version 1.2.5 end-to-end relay-readiness audit

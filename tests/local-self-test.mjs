@@ -264,8 +264,8 @@ async function daemonTakeoverSelfTest() {
   await writeFile(fixture, `import { acquireDaemonLock, loadState } from ${JSON.stringify(stateModuleUrl)};
 const args = process.argv.slice(2);
 const value = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; };
-const workspace = value("--workspace");
-const stateRoot = value("--state-dir");
+const workspace = value("--workspace") || process.env.MBM_FIXTURE_WORKSPACE;
+const stateRoot = value("--state-dir") || process.env.MBM_FIXTURE_STATE_ROOT;
 const metadata = { mode: args.includes("--foreground-lock") ? "foreground" : "service", version: "0.18.0" };
 const state = loadState(workspace, { stateDir: stateRoot });
 const lock = acquireDaemonLock(state, metadata);
@@ -316,6 +316,27 @@ setInterval(() => {}, 2 ** 31 - 1);
     }
     foregroundLock.release();
 
+    child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only"], { implicitIdentity: true });
+    const implicitService = inspectWorkspaceDaemon(state);
+    if (!implicitService.alive || !implicitService.verified_service_daemon || implicitService.identity_reason !== "implicit_service_command") {
+      throw new Error("implicit daemon-only recovery process could not be verified for safe takeover");
+    }
+    const implicitStop = await stopWorkspaceServiceDaemon(state, { timeoutMs: 5_000, pollMs: 10 });
+    if (!implicitStop.ok || implicitStop.reason !== "stopped" || !implicitStop.verified_service_daemon) {
+      throw new Error("implicit daemon-only recovery process could not be stopped safely");
+    }
+    await waitForChildExit(child);
+    child = null;
+
+    child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only", "--workspace", workspace], { implicitIdentity: true });
+    const partialIdentity = inspectWorkspaceDaemon(state);
+    if (!partialIdentity.alive || partialIdentity.verified_service_daemon || partialIdentity.identity_reason !== "command_mismatch") {
+      throw new Error("daemon with only one explicit identity argument was accepted for takeover");
+    }
+    child.kill("SIGTERM");
+    await waitForChildExit(child);
+    child = null;
+
     child = await startDaemonFixture(fixture, workspace, stateRoot, ["--foreground-lock"]);
     const foreground = inspectWorkspaceDaemon(state);
     if (!foreground.alive || foreground.verified_service_daemon || foreground.identity_reason !== "foreground_daemon") {
@@ -359,17 +380,20 @@ setInterval(() => {}, 2 ** 31 - 1);
   }
 }
 
-async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = []) {
+async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [], options = {}) {
   const fixtureEnv = { ...process.env };
   // The fixture models daemon ownership, not coverage. Inheriting V8 coverage
   // delays process teardown and makes the lock-handoff assertion platform-timing dependent.
   delete fixtureEnv.NODE_V8_COVERAGE;
+  if (options.implicitIdentity) {
+    fixtureEnv.MBM_FIXTURE_WORKSPACE = workspace;
+    fixtureEnv.MBM_FIXTURE_STATE_ROOT = stateRoot;
+  }
   const child = spawn(process.execPath, [
     fixture,
     "start",
     ...extraArgs,
-    "--workspace", workspace,
-    "--state-dir", stateRoot,
+    ...(options.implicitIdentity ? [] : ["--workspace", workspace, "--state-dir", stateRoot]),
   ], {
     cwd: workspace,
     env: fixtureEnv,

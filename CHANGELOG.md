@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.6 - 2026-07-17
+
+### Relay ready-context and implicit service-daemon takeover
+
+- Keep end-to-end readiness fail-closed, but stop treating an incomplete inbound relay context that only carries `sessionId` as permanently unready. After a verified ready connection, the runtime consults live relay status when the per-message snapshot omits `ready`; an explicit `ready: false` snapshot still rejects tool calls. `RelayConnection` now always forwards boolean `authenticated` and `ready` with the session generation.
+- Recognize managed service daemons started with only `--daemon-only` (no explicit `--workspace` / `--state-dir` on the process argv) when the lock owner already matches the active workspace state. Partial identity (one of the two path flags) remains rejected so foreign processes cannot be taken over. This allows recovery of source-tree recovery daemons that previously stayed orphaned across CLI upgrades.
+- Add regression coverage for pre-ready vs ready inbound message contexts, sessionId-only dispatch after readiness, explicit `ready: false` fail-closed behavior, and implicit daemon-only stop/takeover.
+
 ## 1.2.5 - 2026-07-17
 
 ### End-to-end relay readiness and safe daemon handover
