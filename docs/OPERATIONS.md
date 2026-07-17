@@ -50,7 +50,9 @@ A successful diagnostic result applies only to that probe. An MCP host can still
 
 Machine Bridge supports concurrent calls: the Worker admits up to 32 pending daemon calls and the local runtime admits up to 16 active tool calls. These are capacity limits, not a single global execution queue. Each successful MCP initialization receives a signed `MCP-Session-Id`; JSON-RPC ids and cancellation are scoped to that session, so separate chat windows may reuse the same numeric ids safely even when they share one OAuth account and token.
 
-`server_info.worker.pending_calls` reports `active`, `request_keys`, `maximum`, `oldest_ms`, and `by_tool`. A nonzero `active` count means work is in flight, not that the bridge is locked. Calls for simple reads and probes should continue while another independent process call runs. A value that remains after the underlying local task completed indicates a transport-delivery defect; version 1 interrupts and reconnects the ambiguous daemon socket so Worker cleanup releases those records. Refreshing a chat page is not the recovery mechanism and should not be required.
+`server_info.worker.pending_calls` reports `active`, `request_keys`, `maximum`, `oldest_ms`, and `by_tool`. A nonzero `active` count means work is in flight, not that the bridge is locked. Calls for simple reads and probes should continue while another independent process call runs. Explicit MCP cancellation, an incoming HTTP client disconnect, timeout, and daemon-socket closure remove the pending record and its session request key. Local results are bound to the authenticated relay session that originated the call, so a result that finishes after cancellation or reconnection is discarded instead of being sent over a replacement socket. Refreshing a chat page is not the recovery mechanism and should not be required.
+
+`server_info.worker.observability.calls.unmatched_results` counts results that reached the Worker after their pending record was already removed. A small increase can accompany cancellation or timeout races, especially during mixed-version upgrade convergence; sustained growth together with old pending calls indicates incompatible components or a lifecycle defect. The counter contains no tool arguments or result data.
 
 ### Relay interruption messages
 
@@ -144,7 +146,7 @@ Uninstall acquires a state-root `maintenance.lock` that blocks new profile/state
 
 ### Lifecycle and pending-call diagnosis
 
-`server_info.runtime.lifecycle` reports `ready`, `starting`, `running`, `failed`, `stopping`, or `stopped`. `runtime.observability.in_flight_calls` and `runtime.observability.processes` distinguish a blocked call from a surviving process. Worker `server_info.worker.pending_calls` reports both the internal-call index and client request-key index; they must return to zero after a terminal result, cancellation, timeout, send failure, or daemon disconnect. Nonzero request-key counts after active calls reach zero indicate a lifecycle defect rather than normal load.
+`server_info.runtime.lifecycle` reports `ready`, `starting`, `running`, `failed`, `stopping`, or `stopped`. `runtime.observability.in_flight_calls` and `runtime.observability.processes` distinguish a blocked call from a surviving process. Worker `server_info.worker.pending_calls` reports both the internal-call index and client request-key index; they must return to zero after a terminal result, explicit cancellation, client disconnect, timeout, send failure, or daemon disconnect. Nonzero request-key counts after active calls reach zero indicate a lifecycle defect rather than normal load. `worker.observability.calls.unmatched_results` is the bounded counter for late results that no longer have a receiver.
 
 Stable errors include `policy_denied`, `invalid_request`, `timeout`, `cancelled`, `network_error`, `unavailable`, `limit_exceeded`, and `integrity_error`, with retryability metadata. Diagnose by code first; free-form messages are guidance, not an API contract.
 
@@ -161,7 +163,7 @@ Logging is level-based:
 error  unrecoverable local/transport/service failures
 warn   persistent retryable relay degradation, supersession, and service problems
 info   startup/deploy/connect transitions
-debug  all per-tool starts/successes/failures/cancellations/timing, correlation and reconnect details
+debug  all per-tool starts/successes/failures/cancellations/timing, late-result disposal, correlation and reconnect details
 ```
 
 Foreground mode defaults to `info`; autostart uses `warn`. Use `--verbose` or `--log-level debug` only for diagnosis. `--quiet` is an alias for `--log-level error`.

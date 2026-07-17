@@ -131,6 +131,10 @@ assert(events.every((event) => event.level !== "warn"), "valid relay welcome emi
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 await started;
 assert(events.some((event) => event.level === "info" && event.message === "remote relay connected"), "relay did not report initial authenticated readiness");
+const firstRelaySession = connection.currentSessionId();
+assert(firstRelaySession > 0, "authenticated relay did not receive a session generation");
+const firstSessionDelivery = connection.sendForSession({ type: "tool_result", id: "first-session" }, firstRelaySession);
+assert(firstSessionDelivery.ok === true, "current relay session rejected a bound result");
 
 const warningCountBeforeBriefClose = countLevel(events, "warn");
 sockets[0].remoteClose(1006, "");
@@ -138,6 +142,13 @@ scheduler.advance(5);
 assert(sockets.length === 2, "relay did not schedule a reconnect");
 sockets[1].open();
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
+const secondRelaySession = connection.currentSessionId();
+assert(secondRelaySession > firstRelaySession, "reconnected relay reused the previous session generation");
+const secondSocketMessagesBeforeStaleResult = sockets[1].sent.length;
+const staleSessionDelivery = connection.sendForSession({ type: "tool_result", id: "stale-session" }, firstRelaySession);
+assert(staleSessionDelivery.ok === false && staleSessionDelivery.reason === "session_ended", "stale result was not rejected by relay-session binding");
+assert(sockets[1].sent.length === secondSocketMessagesBeforeStaleResult, "stale result was sent over the replacement relay connection");
+assert(connection.sendForSession({ type: "tool_result", id: "second-session" }, secondRelaySession).ok === true, "replacement relay session rejected its own result");
 assert(countLevel(events, "warn") === warningCountBeforeBriefClose, "brief interruption emitted a warning");
 assert(events.some((event) => event.level === "debug" && event.message.includes("brief interruption")), "brief recovery was not available at debug level");
 assert(!events.some((event) => event.level !== "debug" && hasRawCloseFields(event.fields)), "raw close fields escaped debug logging");

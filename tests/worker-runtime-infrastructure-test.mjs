@@ -10,6 +10,7 @@ await testRequestKeyReuse();
 await testRegistrationFailures();
 await testTerminalPaths();
 await testTimeoutCallbackFailure();
+await testAbortSignalCleanup();
 testWorkerPolicyParity();
 testWorkerErrors();
 testWorkerObservability();
@@ -116,6 +117,37 @@ async function testTimeoutCallbackFailure() {
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "throwing timeout callback leaked pending indexes");
 }
 
+async function testAbortSignalCleanup() {
+  const registry = new PendingCallRegistry(1);
+  const controller = new AbortController();
+  let cancelledId = "";
+  const cancelled = registry.register({
+    id: "request-abort", tool: "list_dir", socket: {}, clientRequestKey: "abort-key", timeoutMs: 10_000,
+    signal: controller.signal,
+    onTimeout: () => new Error("timeout"),
+    onAbort: (record) => {
+      cancelledId = record.id;
+      return new WorkerToolError("cancelled", "client stopped waiting");
+    },
+  });
+  assert(registry.snapshot().active === 1 && registry.hasRequestKey("abort-key"), "abortable call was not registered");
+  controller.abort();
+  await expectReject(cancelled, "client stopped waiting");
+  assert(cancelledId === "request-abort", "abort callback received the wrong pending call");
+  assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "request abort leaked pending indexes");
+
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  const rejectedImmediately = registry.register({
+    id: "already-aborted", tool: "list_dir", socket: {}, timeoutMs: 10_000,
+    signal: alreadyAborted.signal,
+    onTimeout: () => new Error("timeout"),
+    onAbort: () => new WorkerToolError("cancelled", "already cancelled"),
+  });
+  await expectReject(rejectedImmediately, "already cancelled");
+  assert(registry.snapshot().active === 0, "already-aborted request entered the pending registry");
+}
+
 function testWorkerPolicyParity() {
   const review = sanitizeDaemonPolicy({ profile: "review", origin: "explicit", revision: 4, allowWrite: false, execMode: "off" });
   const agent = sanitizeDaemonPolicy({ profile: "agent", origin: "explicit", revision: 4, allowWrite: true, execMode: "direct" });
@@ -158,6 +190,7 @@ function testWorkerObservability() {
   metrics.callFinished("read_file");
   metrics.callStarted("write_file");
   metrics.callFinished("write_file", "policy_denied");
+  metrics.unmatchedResult();
   metrics.socketCandidate();
   metrics.socketAuthenticated();
   metrics.socketDisconnected();
@@ -165,6 +198,7 @@ function testWorkerObservability() {
   const snapshot = metrics.snapshot();
   assert(snapshot.requests.total === 3 && snapshot.requests.client_error === 1 && snapshot.requests.server_error === 1, "Worker request metrics are incomplete");
   assert(snapshot.calls.started === 2 && snapshot.calls.completed === 1 && snapshot.calls.failed === 1, "Worker call metrics are incomplete");
+  assert(snapshot.calls.unmatched_results === 1, "Worker unmatched-result metric was not retained");
   assert(snapshot.errors.policy_denied === 1 && snapshot.errors.protocol_error === 1, "Worker error-code metrics are incomplete");
   assert(snapshot.tools.read_file.completed === 1 && snapshot.tools.write_file.failed === 1, "Worker per-tool metrics are incomplete");
   assert(snapshot.sockets.candidates === 1 && snapshot.sockets.authenticated === 1 && snapshot.sockets.disconnected === 1, "Worker socket metrics are incomplete");

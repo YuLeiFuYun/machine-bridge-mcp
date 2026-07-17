@@ -67,7 +67,7 @@ function observabilityMiddleware(observability, logger, safeMessage, slowMs) {
       call_id: shortCallId(operation.context.callId),
       tool: operation.tool,
       origin: operation.context.origin,
-    });
+    }, "Tool call started");
     try {
       const result = await next(operation);
       const durationMs = performance.now() - started;
@@ -75,7 +75,7 @@ function observabilityMiddleware(observability, logger, safeMessage, slowMs) {
       observability.finish(operation.tool, { status: "completed", durationMs, slow });
       logger.event?.("debug", slow ? "tool.call.slow" : "tool.call.completed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin, duration_ms: durationMs,
-      });
+      }, slow ? "Tool call completed slowly" : "Tool call completed");
       return result;
     } catch (error) {
       const normalized = normalizeBridgeError(error, { safeMessage: () => safeMessage(error, operation.args) });
@@ -86,7 +86,7 @@ function observabilityMiddleware(observability, logger, safeMessage, slowMs) {
       logger.event?.("debug", "tool.call.failed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin,
         duration_ms: durationMs, error_code: code, retryable: normalized.retryable,
-      });
+      }, "Tool call failed");
       throw normalized;
     }
   };

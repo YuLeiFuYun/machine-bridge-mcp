@@ -19,6 +19,8 @@ export interface PendingCallRecord {
   timeout: ReturnType<typeof setTimeout>;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  signal?: AbortSignal;
+  abortHandler?: () => void;
 }
 
 interface RegisterPendingCall {
@@ -28,6 +30,8 @@ interface RegisterPendingCall {
   tool: string;
   timeoutMs: number;
   onTimeout: (record: PendingCallRecord) => Error;
+  signal?: AbortSignal;
+  onAbort?: (record: PendingCallRecord) => Error;
 }
 
 export class PendingCallRegistry {
@@ -63,6 +67,14 @@ export class PendingCallRegistry {
         catch { error = new Error("pending daemon call timed out"); }
         reject(error instanceof Error ? error : new Error("pending daemon call timed out"));
       }, input.timeoutMs);
+      const abortHandler = () => {
+        const record = this.take(input.id);
+        if (!record) return;
+        let error: unknown;
+        try { error = input.onAbort?.(record); }
+        catch { error = new Error("pending daemon call was cancelled"); }
+        reject(error instanceof Error ? error : new Error("pending daemon call was cancelled"));
+      };
       const record: PendingCallRecord = {
         id: input.id,
         socket: input.socket,
@@ -72,9 +84,13 @@ export class PendingCallRegistry {
         timeout,
         resolve,
         reject,
+        signal: input.signal,
+        abortHandler: input.signal ? abortHandler : undefined,
       };
       this.byId.set(input.id, record);
       if (input.clientRequestKey) this.byRequestKey.set(input.clientRequestKey, input.id);
+      if (input.signal?.aborted) abortHandler();
+      else input.signal?.addEventListener("abort", abortHandler, { once: true });
     });
   }
 
@@ -131,6 +147,7 @@ export class PendingCallRegistry {
     const record = this.byId.get(id);
     if (!record) return undefined;
     clearTimeout(record.timeout);
+    if (record.signal && record.abortHandler) record.signal.removeEventListener("abort", record.abortHandler);
     this.byId.delete(id);
     if (record.clientRequestKey && this.byRequestKey.get(record.clientRequestKey) === id) {
       this.byRequestKey.delete(record.clientRequestKey);

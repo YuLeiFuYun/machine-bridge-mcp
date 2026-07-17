@@ -6,6 +6,12 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const wranglerConfigSource = readFileSync(join(root, "wrangler.jsonc"), "utf8");
+for (const requiredFlag of ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"]) {
+  if (!wranglerConfigSource.includes(`"${requiredFlag}"`)) {
+    throw new Error(`Worker compatibility contract is missing ${requiredFlag}`);
+  }
+}
 for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
   for (const [name, version] of Object.entries(packageJson[field] || {})) {
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(String(version))) {

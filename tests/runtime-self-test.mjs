@@ -44,8 +44,12 @@ export async function runtimeSelfTest() {
   try {
     const ownerAuthorization = { account_id: "acct_testowner_12345678901234567890", account_version: 1, role: "owner" };
     const relayMessages = [];
-    const originalSend = restricted.send.bind(restricted);
-    restricted.send = (value) => { relayMessages.push(value); return true; };
+    const originalSendForSession = restricted.relay.sendForSession.bind(restricted.relay);
+    restricted.relay.sendForSession = (value, sessionId) => {
+      if (sessionId !== 1) throw new Error(`unexpected relay session in self-test: ${sessionId}`);
+      relayMessages.push(value);
+      return { ok: true, reason: "sent" };
+    };
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
       id: "deadline-call",
@@ -53,14 +57,14 @@ export async function runtimeSelfTest() {
       arguments: { argv: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], timeout_seconds: 10 },
       timeout_ms: 1000,
       authorization: ownerAuthorization,
-    }));
+    }), { sessionId: 1 });
     const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
     if (deadlineResult?.ok !== false || deadlineResult.error?.code !== "timeout" || deadlineResult.error?.retryable !== true) throw new Error(`relay deadline did not return a structured retryable timeout: ${JSON.stringify(deadlineResult)}`);
     relayMessages.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }));
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1 });
     const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
     if (invalidEnvelope?.ok !== false || invalidEnvelope.error?.code !== "invalid_request" || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
-    restricted.send = originalSend;
+    restricted.relay.sendForSession = originalSendForSession;
 
     await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
     await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
@@ -96,7 +100,7 @@ export async function runtimeSelfTest() {
     }
 
     logEvents.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" }, authorization: ownerAuthorization }));
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" }, authorization: ownerAuthorization }), { sessionId: 1 });
     if (logEvents.some(event => event.level === "info" && event.event === "tool.call.completed")) {
       throw new Error("remote daemon emitted routine success at info level");
     }
@@ -106,9 +110,13 @@ export async function runtimeSelfTest() {
 
     logEvents.length = 0;
     relayMessages.length = 0;
-    restricted.send = (value) => { relayMessages.push(value); return true; };
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }));
-    restricted.send = originalSend;
+    restricted.relay.sendForSession = (value, sessionId) => {
+      if (sessionId !== 1) throw new Error(`unexpected relay session in self-test: ${sessionId}`);
+      relayMessages.push(value);
+      return { ok: true, reason: "sent" };
+    };
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }), { sessionId: 1 });
+    restricted.relay.sendForSession = originalSendForSession;
     const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
     if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");
     if (logEvents.some(event => event.level === "warn" && event.event === "tool.call.failed")) {

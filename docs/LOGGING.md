@@ -26,6 +26,8 @@ The CLI accepts:
 
 Foreground mode defaults to `info` and human-readable text. Platform autostart services use `warn` with newline-delimited JSON. Foreground operators can select JSON explicitly with `--log-format json`.
 
+Human mode treats the message as the primary interface: it uses a natural-language explanation and includes only bounded diagnostic fields that add meaning. It does not repeat the machine event key. JSON mode retains the stable `event` field for ingestion and correlation. Event identifiers such as `relay.tool_result.discarded` are implementation contracts for structured logs, not text that should be shown as the warning itself.
+
 | Level | Intended events |
 |---|---|
 | `error` | The operation or service cannot continue without intervention |
@@ -73,9 +75,11 @@ Examples:
 
 With `--verbose`, the same incident additionally includes bounded structured fields such as exact seconds, coarse error class, retry delay, and transport close diagnostics.
 
-## Tool events
+## Tool and result-delivery events
 
-All per-tool starts, successes, failures, cancellations, and timing are debug-only. The MCP response already reports the outcome to the caller; duplicating routine tool traffic at default levels creates noise and can reveal activity patterns.
+All per-tool starts, successes, failures, cancellations, timing, and expected late-result disposal are debug-only. The MCP response already reports the outcome to the caller; duplicating routine tool traffic at default levels creates noise and can reveal activity patterns.
+
+A completed local result is bound to the authenticated relay session that delivered its call. If the caller cancelled, the relay disconnected, or a replacement relay session became active, the result is discarded rather than sent to a different session. This is a normal terminal race and does not emit a warning. Debug output records only a shortened call ID and a coarse reason such as `caller_cancelled`, `relay_disconnected`, or `session_ended`. A synchronous send failure on the still-current socket is different: the socket is invalidated because delivery is ambiguous, but the per-call detail remains debug-only while the normal relay-outage state machine decides whether a user-visible warning is warranted.
 
 Debug per-tool fields may include tool name, duration, coarse outcome class, and a shortened random call identifier. The identifier is for correlating adjacent local events and is not a stable audit identifier.
 

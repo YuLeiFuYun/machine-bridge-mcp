@@ -3,7 +3,7 @@
   "name": "machine-bridge-mcp",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-07-11",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"],
   "workers_dev": true,
   "durable_objects": {
     "bindings": [

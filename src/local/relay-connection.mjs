@@ -73,6 +73,8 @@ export class RelayConnection {
     this.connectedOnce = null;
     this.connectedOnceResolve = null;
     this.connectedOnceReject = null;
+    this.sessionGeneration = 0;
+    this.activeSessionId = 0;
   }
 
   status() {
@@ -82,7 +84,12 @@ export class RelayConnection {
       network_route: this.networkRoute,
       reconnect_attempt: this.reconnectAttempt,
       outage_active: this.outageStartedAt > 0,
+      session_generation: this.sessionGeneration,
     };
+  }
+
+  currentSessionId() {
+    return this.ready ? this.activeSessionId : 0;
   }
 
   start() {
@@ -99,6 +106,7 @@ export class RelayConnection {
   stop() {
     this.closed = true;
     this.ready = false;
+    this.activeSessionId = 0;
     this.clearTimer("heartbeatTimer", "clearInterval");
     this.clearTimer("connectTimer", "clearTimeout");
     this.clearTimer("handshakeTimer", "clearTimeout");
@@ -116,6 +124,15 @@ export class RelayConnection {
   send(value) {
     if (!this.ready || !this.isSocketOpen(this.socket)) return false;
     return this.sendOnSocket(this.socket, value);
+  }
+
+  sendForSession(value, expectedSessionId) {
+    const sessionId = Number(expectedSessionId) || 0;
+    if (!sessionId || sessionId !== this.activeSessionId) return { ok: false, reason: "session_ended" };
+    if (!this.ready || !this.isSocketOpen(this.socket)) return { ok: false, reason: "transport_unavailable" };
+    return this.sendOnSocket(this.socket, value)
+      ? { ok: true, reason: "sent" }
+      : { ok: false, reason: "send_failed" };
   }
 
   interrupt(category = "relay_transport_error") {
@@ -148,6 +165,8 @@ export class RelayConnection {
       return false;
     }
     this.ready = true;
+    this.sessionGeneration += 1;
+    this.activeSessionId = this.sessionGeneration;
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.connectedAt = this.now();
     this.lastInboundAt = this.connectedAt;
@@ -268,6 +287,7 @@ export class RelayConnection {
       const wasReady = this.ready;
       this.socket = null;
       this.ready = false;
+      this.activeSessionId = 0;
       this.clearTimer("connectTimer", "clearTimeout");
       this.clearTimer("heartbeatTimer", "clearInterval");
       this.clearTimer("handshakeTimer", "clearTimeout");
@@ -329,6 +349,7 @@ export class RelayConnection {
     const socket = this.socket;
     this.closed = true;
     this.ready = false;
+    this.activeSessionId = 0;
     this.socket = null;
     this.clearTimer("connectTimer", "clearTimeout");
     this.clearTimer("heartbeatTimer", "clearInterval");

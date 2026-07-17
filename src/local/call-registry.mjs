@@ -100,12 +100,18 @@ export class CallRegistry {
     return true;
   }
 
+  /** @param {unknown} origin */
+  idsByOrigin(origin) {
+    const expected = String(origin || "");
+    return [...this.calls.values()]
+      .filter((record) => record.origin === expected)
+      .map((record) => record.id);
+  }
+
   /** @param {unknown} origin @param {unknown} [reason] */
   cancelOrigin(origin, reason = "transport disconnected") {
-    const expected = String(origin || "");
     let cancelled = 0;
-    for (const [id, record] of this.calls) {
-      if (record.origin !== expected) continue;
+    for (const id of this.idsByOrigin(origin)) {
       if (this.cancel(id, reason)) cancelled += 1;
     }
     return cancelled;
