@@ -36,7 +36,8 @@ jobs:
       - run: npm --version
       - run: npm ci
       - run: npm run check
-      - run: npm run release:acceptance:verify
+      - name: Verify repository-owner package acceptance
+        run: npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs
       - name: Test documented global installation
         run: npm run install:test
 
@@ -57,7 +58,8 @@ jobs:
       - run: npm --version
       - run: npm ci
       - run: npm run privacy:history
-      - run: npm run release:acceptance:verify
+      - name: Verify repository-owner package acceptance
+        run: npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs
       - run: npm run install:test
       - run: npm audit --audit-level=high
       - run: npm audit --omit=dev --audit-level=high

@@ -7,5 +7,6 @@
   "filename": "machine-bridge-mcp-1.2.8.tgz",
   "shasum": "b93d54f5bcf1734f4dc9ef275f50806b240714e4",
   "integrity": "sha512-6KMf85qga06Lg80Tx5NsPm7WTo4bW+DtLgIO++0jpwfh3GUsuXQN3h81O2Ibh2AcX21QzTy/sOjZfPh7Z3h1lQ==",
-  "accepted_at": "2026-07-17T14:10:25.815Z"
+  "accepted_at": "2026-07-17T14:10:25.815Z",
+  "package_content_sha256": "e15c0c88d70388de1bef7cf6f933aa1c488718970b118f32daf8233ecb131bf3"
 }

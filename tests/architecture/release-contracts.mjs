@@ -79,7 +79,12 @@ if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs
 }
 const ciSource = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
 if (!ciSource.includes("npm run privacy:history")) throw new Error("CI package audit no longer scans reachable Git history");
-if ((ciSource.match(/npm run release:acceptance:verify/g) || []).length !== 2) throw new Error("CI no longer verifies repository-owner package acceptance in both package paths");
+const portableAcceptanceCommand = "npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs";
+if ((ciSource.split(portableAcceptanceCommand).length - 1) !== 2) throw new Error("CI no longer verifies portable repository-owner package acceptance in both package paths");
+const portableAcceptanceSource = readFileSync(join(root, ".github", "scripts", "verify-release-acceptance.mjs"), "utf8");
+for (const required of ["canonicalPackageDigest", "package_content_sha256", "git", "ls-files", "--stage", "machine-bridge-mcp-package-content-v1"]) {
+  if (!portableAcceptanceSource.includes(required)) throw new Error(`portable release acceptance verifier lost required content: ${required}`);
+}
 if ((ciSource.match(/node scripts\/prepare-pinned-npm\.mjs/g) || []).length !== 2 || ciSource.includes("npm install --global npm@")) {
   throw new Error("CI no longer bootstraps the npm baseline from an integrity-verified immutable tarball");
 }

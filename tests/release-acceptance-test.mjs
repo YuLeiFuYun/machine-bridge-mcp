@@ -1,10 +1,12 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import {
   ACCEPTANCE_CONFIRMATION,
@@ -15,6 +17,10 @@ import {
   verifyAcceptanceRecord,
   verifyCurrentReleaseAcceptance,
 } from "../scripts/release-acceptance.mjs";
+import {
+  canonicalPackageDigest,
+  verifyPortableAcceptance,
+} from "../.github/scripts/verify-release-acceptance.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-release-acceptance-test-"));
 const output = join(root, "output");
@@ -22,17 +28,21 @@ try {
   mkdirSync(output, { recursive: true });
   writePackage("1.2.8");
   writeFileSync(join(root, "index.js"), "export const value = 1;\n");
+  git(["init", "-q"]);
+  git(["add", "package.json", "index.js"]);
 
   assert(!requiresLocalAcceptance("1.2.7"), "acceptance was required before the policy version");
   assert(requiresLocalAcceptance("1.2.8"), "acceptance was not required at the policy version");
   assert(requiresLocalAcceptance("2.0.0"), "acceptance was not required after the policy version");
 
   const metadata = packProject(root, output);
+  const portablePack = packFixtureMetadata();
   const record = {
     schema_version: ACCEPTANCE_SCHEMA_VERSION,
     result: "passed",
     confirmation: ACCEPTANCE_CONFIRMATION,
     ...metadata,
+    package_content_sha256: canonicalPackageDigest(root, portablePack),
     accepted_at: "2026-07-17T12:00:00.000Z",
   };
   verifyAcceptanceRecord(record, metadata);
@@ -42,9 +52,12 @@ try {
 
   const verified = verifyCurrentReleaseAcceptance(root);
   assert(verified.required && verified.metadata.shasum === metadata.shasum, "current package did not match its local acceptance record");
+  const portable = verifyPortableAcceptance(root, portablePack);
+  assert(portable.digest === record.package_content_sha256, "portable acceptance digest did not match the accepted package content");
 
   writeFileSync(join(root, "index.js"), "export const value = 2;\n");
   expectThrow(() => verifyCurrentReleaseAcceptance(root), "does not match the current npm package");
+  expectThrow(() => verifyPortableAcceptance(root, packFixtureMetadata()), "content digest does not match");
 
   writePackage("1.2.7");
   const grandfathered = verifyCurrentReleaseAcceptance(root);
@@ -62,6 +75,26 @@ function writePackage(version) {
     type: "module",
     files: ["index.js"],
   }, null, 2)}\n`);
+}
+
+function packFixtureMetadata() {
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  return [{
+    name: pkg.name,
+    version: pkg.version,
+    filename: `${pkg.name}-${pkg.version}.tgz`,
+    files: ["index.js", "package.json"].map((path) => ({
+      path,
+      size: readFileSync(join(root, path)).length,
+      mode: 0o644,
+    })),
+  }];
+}
+
+function git(args) {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
 }
 
 function expectThrow(callback, expected) {
