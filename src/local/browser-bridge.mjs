@@ -14,13 +14,14 @@ import {
 } from "./browser-pairing-store.mjs";
 import { clampInt } from "./browser-command.mjs";
 import { BrowserOperationService } from "./browser-operation-service.mjs";
+import { classifyOperationalError } from "./log.mjs";
 
 const MAX_PORT_ATTEMPTS = 10;
 const MAX_PENDING = 32;
 const EXTENSION_HANDSHAKE_MS = 3_000;
 
 export class BrowserBridgeManager {
-  constructor({ policy, authorizeTool = null, stateRoot = "", runProcess, readResourceText, readResourceBinary, throwIfCancelled = () => {} }) {
+  constructor({ policy, authorizeTool = null, stateRoot = "", runProcess, readResourceText, readResourceBinary, throwIfCancelled = () => {}, logger = null }) {
     this.policy = policy || {};
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.stateRoot = stateRoot ? resolve(stateRoot) : "";
@@ -28,6 +29,7 @@ export class BrowserBridgeManager {
     this.readResourceText = readResourceText;
     this.readResourceBinary = readResourceBinary;
     this.throwIfCancelled = throwIfCancelled;
+    this.logger = logger || { event() {} };
     this.server = null;
     this.wss = null;
     this.socket = null;
@@ -44,6 +46,7 @@ export class BrowserBridgeManager {
     this.stopping = false;
     this.pending = new Map();
     this.startPromise = null;
+    this.startGeneration = 0;
     this.port = 0;
     this.token = "";
     this.extensionPath = resolve(packageRoot, "browser-extension");
@@ -124,28 +127,57 @@ export class BrowserBridgeManager {
     if (this.stateRoot) assertStateMaintenanceAvailable(this.stateRoot);
     this.stopping = false;
     if (this.server || this.upstream?.readyState === 1) return;
-    if (!this.startPromise) this.startPromise = this.start();
-    try { await this.startPromise; } finally { this.startPromise = null; }
+    if (!this.startPromise) {
+      const generation = ++this.startGeneration;
+      this.startPromise = this.start(generation);
+    }
+    const pending = this.startPromise;
+    try { await pending; } finally {
+      if (this.startPromise === pending) this.startPromise = null;
+    }
   }
 
-  async start() {
-    const pairing = await loadOrCreatePairing(this.stateRoot);
-    this.token = pairing.token;
-    for (let offset = 0; offset < MAX_PORT_ATTEMPTS; offset += 1) {
-      const port = pairing.port + offset;
-      try {
-        await this.listen(port);
-        if (port !== pairing.port && this.stateRoot) await savePairing(this.stateRoot, { token: this.token, port });
-        return;
-      } catch (error) {
-        if (error?.code !== "EADDRINUSE") throw error;
-        if (await this.connectProxy(port)) {
-          this.port = port;
+  async start(generation = this.startGeneration) {
+    try {
+      const pairing = await loadOrCreatePairing(this.stateRoot);
+      this.assertStartCurrent(generation);
+      this.token = pairing.token;
+      for (let offset = 0; offset < MAX_PORT_ATTEMPTS; offset += 1) {
+        const port = pairing.port + offset;
+        try {
+          await this.listen(port);
+          this.assertStartCurrent(generation);
+          if (port !== pairing.port && this.stateRoot) {
+            await savePairing(this.stateRoot, { token: this.token, port });
+            this.assertStartCurrent(generation);
+          }
           return;
+        } catch (error) {
+          this.assertStartCurrent(generation);
+          if (error?.code !== "EADDRINUSE") throw error;
+          if (await this.connectProxy(port, generation)) {
+            this.assertStartCurrent(generation);
+            this.port = port;
+            return;
+          }
+          this.assertStartCurrent(generation);
+          if (offset === MAX_PORT_ATTEMPTS - 1) throw error;
         }
-        if (offset === MAX_PORT_ATTEMPTS - 1) throw error;
       }
+    } catch (error) {
+      const cancelled = !this.isStartCurrent(generation);
+      this.closeBrokerTransports(cancelled ? "browser bridge start cancelled" : "browser bridge start failed");
+      if (cancelled) throw new Error("browser bridge start cancelled");
+      throw error;
     }
+  }
+
+  isStartCurrent(generation) {
+    return !this.stopping && generation === this.startGeneration;
+  }
+
+  assertStartCurrent(generation) {
+    if (!this.isStartCurrent(generation)) throw new Error("browser bridge start cancelled");
   }
 
   async listen(port) {
@@ -192,7 +224,7 @@ export class BrowserBridgeManager {
     this.wss = wss;
   }
 
-  async connectProxy(port) {
+  async connectProxy(port, generation = this.startGeneration) {
     const url = `ws://127.0.0.1:${port}/runtime`;
     return new Promise((resolvePromise) => {
       let settled = false;
@@ -218,6 +250,11 @@ export class BrowserBridgeManager {
         if (!settled) {
           if (message.type !== "hello" || message.role !== "runtime" || message.protocol !== 1) {
             closeProtocolSocket(ws, 1002, "runtime hello required");
+            return;
+          }
+          if (!this.isStartCurrent(generation)) {
+            try { ws.close(1001, "runtime stopped"); } catch {}
+            finish(false);
             return;
           }
           this.upstream = ws;
@@ -450,7 +487,11 @@ export class BrowserBridgeManager {
     if (this.stopping || this.recoveryTimer) return;
     this.recoveryTimer = setTimeout(() => {
       this.recoveryTimer = null;
-      void this.ensureStarted().catch(() => this.scheduleBrokerRecovery());
+      void this.ensureStarted().catch((error) => {
+        this.logger.event?.("debug", "browser.broker.recovery_failed", { error_class: classifyOperationalError(error) },
+          "browser broker recovery failed; retrying");
+        this.scheduleBrokerRecovery();
+      });
     }, 250);
     this.recoveryTimer.unref?.();
   }
@@ -525,9 +566,15 @@ export class BrowserBridgeManager {
 
   stop() {
     this.stopping = true;
+    this.startGeneration += 1;
     clearTimeout(this.recoveryTimer);
     this.recoveryTimer = null;
-    this.rejectPending("browser bridge stopped");
+    this.closeBrokerTransports("browser bridge stopped");
+  }
+
+  closeBrokerTransports(message) {
+    this.rejectPending(message);
+    this.rejectProxyRoutes(message);
     try { this.upstream?.close(1001, "runtime stopped"); } catch {}
     try { this.socket?.close(1001, "runtime stopped"); } catch {}
     try { this.pendingExtensionSocket?.close(1001, "runtime stopped"); } catch {}
@@ -541,8 +588,6 @@ export class BrowserBridgeManager {
     this.proxyExtensionReloadRequired = false;
     this.extensionReloadRequiredFlag = false;
     this.runtimeClients.clear();
-    for (const route of this.proxyRoutes.values()) clearTimeout(route.timeout);
-    this.proxyRoutes.clear();
     try { this.wss?.close(); } catch {}
     try { this.server?.close(); } catch {}
     this.wss = null;

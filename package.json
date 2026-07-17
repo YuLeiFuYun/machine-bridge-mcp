@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",

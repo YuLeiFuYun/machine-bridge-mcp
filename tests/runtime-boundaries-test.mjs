@@ -34,6 +34,12 @@ async function testRuntimeReporting() {
   assert(info.workspace_name === "project", "runtime info lost the exposed workspace name");
   assert(info.runtime.runtime_dir === "/private/runtime", "full policy runtime path was unexpectedly redacted");
   assert(info.policy_contract.named_profile_is_canonical === true, "canonical policy was not recognized");
+  assert(info.observability.relay_readiness === "end-to-end-relay-probe-verified", "runtime observability describes stale hello-only readiness");
+  assert(info.runtime.execution_guardrails.one_shot_processes.process_tree_termination === "sigterm-then-sigkill", "runtime info omitted process-tree supervision");
+  assert(info.runtime.execution_guardrails.operating_system_enforcement.cpu_quota === "not-enforced"
+    && info.runtime.execution_guardrails.operating_system_enforcement.memory_quota === "not-enforced"
+    && info.runtime.execution_guardrails.operating_system_enforcement.network_isolation === "not-enforced",
+  "runtime info falsely advertised OS resource or network isolation");
 
   const review = policyProfile("review");
   const redacted = buildRuntimeInfo({

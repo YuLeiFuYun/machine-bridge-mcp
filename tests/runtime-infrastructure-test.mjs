@@ -7,6 +7,8 @@ import { BridgeError, errorCode, publicError, remoteBridgeError } from "../src/l
 import { CallRegistry } from "../src/local/call-registry.mjs";
 import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
+import { terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
+import { executionGuardrailsSnapshot } from "../src/local/execution-limits.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
@@ -24,6 +26,8 @@ testTerminalDeliveryFailure();
 await testProcessExecutionNoShell();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
+testProcessTreeSupervisor();
+testExecutionGuardrails();
 testErrors();
 testWorkspaceShellSelection();
 testBoundedOutput();
@@ -355,6 +359,58 @@ function testProcessTracker() {
   tracker.untrack(unowned);
   tracker.untrack(null);
   assert(tracker.snapshot().active_processes === 0, "process tracker did not release children");
+}
+
+
+function testProcessTreeSupervisor() {
+  const signals = [];
+  let scheduled = null;
+  let escalated = false;
+  const child = { pid: 4242, kill(signal) { signals.push(["child", signal]); return true; } };
+  const timer = terminateProcessTreeWithEscalation(child, {
+    graceMs: 25,
+    terminate(_child, signal) { signals.push(["tree", signal]); },
+    setTimeout(callback, delay) { scheduled = { callback, delay }; return "termination-timer"; },
+    onEscalated() { escalated = true; },
+  });
+  assert(timer === "termination-timer", "process-tree escalation did not return the scheduler handle");
+  assert(signals.length === 1 && signals[0][1] === "SIGTERM", "process-tree escalation did not begin gracefully");
+  assert(scheduled?.delay === 25, "process-tree escalation lost the configured grace period");
+  scheduled.callback();
+  assert(signals.length === 2 && signals[1][1] === "SIGKILL" && escalated, "process-tree escalation did not force termination after the grace period");
+
+  const taskkillCalls = [];
+  const killer = new EventEmitter();
+  killer.unrefCalled = false;
+  killer.unref = () => { killer.unrefCalled = true; };
+  const spawnProcess = (command, args, options) => {
+    taskkillCalls.push({ command, args, options });
+    return killer;
+  };
+  assert(terminateProcessTree(child, "SIGTERM", { platform: "win32", spawnProcess }), "Windows graceful tree termination was not requested");
+  assert(!taskkillCalls[0].args.includes("/F") && taskkillCalls[0].options.shell === false, "Windows graceful tree termination forced or enabled a shell");
+  assert(terminateProcessTree(child, "SIGKILL", { platform: "win32", spawnProcess }), "Windows forced tree termination was not requested");
+  assert(taskkillCalls[1].args.includes("/F") && killer.unrefCalled, "Windows forced tree termination omitted /F or retained the helper process");
+  killer.emit("error", new Error("taskkill unavailable"));
+  assert(signals.some(([kind, signal]) => kind === "child" && signal === "SIGTERM"), "asynchronous taskkill failure was unhandled or did not fall back to ChildProcess.kill");
+
+  const groupSignals = [];
+  assert(terminateProcessTree(child, "SIGTERM", {
+    platform: "linux",
+    killProcess(pid, signal) { groupSignals.push({ pid, signal }); },
+  }), "POSIX process-group termination was not requested");
+  assert(groupSignals[0].pid === -child.pid && groupSignals[0].signal === "SIGTERM", "POSIX termination did not target the child process group");
+}
+
+function testExecutionGuardrails() {
+  const guardrails = executionGuardrailsSnapshot();
+  assert(guardrails.tool_calls.maximum_concurrent === 16, "tool-call concurrency limit is not reported from the shared contract");
+  assert(guardrails.process_sessions.maximum_concurrent === 8, "process-session limit is not reported from the shared contract");
+  assert(guardrails.one_shot_processes.process_tree_termination === "sigterm-then-sigkill", "process cleanup contract is not observable");
+  assert(guardrails.operating_system_enforcement.cpu_quota === "not-enforced"
+    && guardrails.operating_system_enforcement.memory_quota === "not-enforced"
+    && guardrails.operating_system_enforcement.network_isolation === "not-enforced",
+  "portable guardrails misrepresented OS resource or network isolation as enforced");
 }
 
 function testErrors() {

@@ -7,7 +7,7 @@ import {
   parseBrowserSocketMessage,
 } from "../src/local/browser-extension-protocol.mjs";
 import { allToolNames, normalizePolicy, toolsForPolicy } from "../src/local/policy.mjs";
-import { MAX_COMMAND_BYTES, validateArgv } from "../src/local/process-sessions.mjs";
+import { MAX_COMMAND_BYTES, validateArgv } from "../src/local/process-contract.mjs";
 import { runExecutable } from "../src/local/shell.mjs";
 
 fc.assert(fc.property(

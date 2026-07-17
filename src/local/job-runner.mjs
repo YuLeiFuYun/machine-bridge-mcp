@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs
 import { basename, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { executionEnv } from "./shell.mjs";
-import { terminateProcessTree } from "./process-sessions.mjs";
+import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs } from "./process-identity.mjs";
@@ -279,8 +279,7 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
     let killTimer = null;
     const timer = setTimeout(() => {
       timedOut = true;
-      terminateProcessTree(child, "SIGTERM");
-      killTimer = setTimeout(() => terminateProcessTree(child, "SIGKILL"), 2000);
+      killTimer = terminateProcessTreeWithEscalation(child);
     }, timeoutMs);
     timer.unref?.();
     const cancellationPoll = setInterval(() => {
@@ -474,12 +473,10 @@ function requestCancellation() {
   cancelRequested = true;
   const child = activeChild;
   if (!child || !activeChildCancellationAware) return;
-  terminateProcessTree(child, "SIGTERM");
   if (cancellationEscalation) return;
-  cancellationEscalation = setTimeout(() => {
-    terminateProcessTree(child, "SIGKILL");
-    cancellationEscalation = null;
-  }, 2000);
+  cancellationEscalation = terminateProcessTreeWithEscalation(child, {
+    onEscalated: () => { cancellationEscalation = null; },
+  });
 }
 
 function isCancellationRequested() {

@@ -10,6 +10,7 @@ import {
   acquireStartupLockWithWait, expandHome, loadState, ownerOnlyFile, packageRoot, saveState,
 } from "./state.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
+import { readLoopbackJson } from "./loopback-health.mjs";
 
 export function createLocalAdminCommands(dependencies) {
   const chooseWorkspace = dependencies.chooseWorkspace;
@@ -249,9 +250,7 @@ function readBrowserPairingState(pairingFile) {
 }
 
 function readBrowserHealth(healthUrl) {
-  return fetch(healthUrl, { signal: AbortSignal.timeout(2000), cache: "no-store" })
-    .then(async (response) => response.ok ? await response.json() : null)
-    .catch(() => null);
+  return readLoopbackJson(healthUrl, { pathname: "/healthz" });
 }
 
 function browserStatusResult(health, extensionPath, pairingUrl) {

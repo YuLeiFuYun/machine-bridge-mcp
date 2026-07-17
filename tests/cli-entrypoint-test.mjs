@@ -1,12 +1,16 @@
 import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { readLoopbackJson } from "../src/local/loopback-health.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const entry = resolve(root, "bin", "machine-mcp.mjs");
 const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+
+await testDirectLoopbackHealth();
 
 const version = run(["version"]);
 assert(version.status === 0, `version command failed: ${version.stderr}`);
@@ -71,6 +75,38 @@ try {
   rmSync(workspaceRoot, { recursive: true, force: true });
 }
 console.log("CLI entrypoint test ok");
+
+
+async function testDirectLoopbackHealth() {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, broker: "machine-bridge-browser" }));
+  });
+  await new Promise((resolvePromise, rejectPromise) => {
+    server.once("error", rejectPromise);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const address = server.address();
+  const previous = {
+    HTTP_PROXY: process.env.HTTP_PROXY,
+    HTTPS_PROXY: process.env.HTTPS_PROXY,
+    NODE_USE_ENV_PROXY: process.env.NODE_USE_ENV_PROXY,
+  };
+  try {
+    process.env.HTTP_PROXY = "http://127.0.0.1:1";
+    process.env.HTTPS_PROXY = "http://127.0.0.1:1";
+    process.env.NODE_USE_ENV_PROXY = "1";
+    const health = await readLoopbackJson(`http://127.0.0.1:${address.port}/healthz`);
+    assert(health?.ok === true && health?.broker === "machine-bridge-browser", "loopback browser health was routed through environment proxy state");
+    assert(await readLoopbackJson(`http://localhost:${address.port}/healthz`) === null, "loopback health accepted a non-canonical hostname");
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await new Promise((resolvePromise) => { server.close(resolvePromise); });
+  }
+}
 
 function normalizePathText(value) {
   return String(value).split("\\").join("/").toLowerCase();

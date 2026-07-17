@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.7 - 2026-07-17
+
+### Process supervision, lifecycle, and isolation audit
+
+- Separate argv validation, execution limits, process-tree supervision, one-shot execution, and interactive process sessions into explicit modules. Shell helpers, managed jobs, call cancellation, runtime shutdown, and process sessions now share one graceful `SIGTERM` followed by forced tree-termination contract instead of importing session internals or maintaining duplicate platform branches.
+- Reclaim an unresponsive detached service daemon only after revalidating PID, process start time, entrypoint, command line, daemon mode, workspace, and state root immediately before `SIGKILL`. PID reuse, identity drift, foreground ownership, and ambiguous records remain fail closed. Process-session termination now also escalates after a bounded grace period.
+- Add a machine-readable `server_info.runtime.execution_guardrails` contract for tool-call concurrency, process timeout/stdin/output limits, process-session limits, and cleanup semantics. CPU quota, memory quota, and network isolation are reported explicitly as `not-enforced`; hard isolation still requires a dedicated account, container, or VM.
+- Make browser-broker startup generation-aware so `stop()` cannot race an asynchronous listen/proxy connection and leave a listener alive. Pending proxy routes now receive a terminal error during shutdown, broker recovery failures emit structured debug events, and the local browser-health probe uses bounded direct `127.0.0.1` HTTP instead of environment-routed `fetch`.
+- Reject detached managed-job launch when no process ID was obtained, attach an asynchronous child-error observer, make `shell: false` explicit, and remove duplicate plan-scrubbing logic. Correct stale relay-readiness and runtime-observability documentation, and add fault-path tests for resistant descendants, forced daemon reclamation, startup cancellation, proxy-bypassed loopback health, runner spawn failure, and honest OS-enforcement reporting.
+
 ## 1.2.6 - 2026-07-17
 
 ### Relay ready-context and implicit service-daemon takeover
