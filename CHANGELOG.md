@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.8 - 2026-07-17
+
+### Owner-tested release gate and dependency workflow repair
+
+- Replace the previous automation-only release assumption with an explicit repository-owner local acceptance boundary. `npm run release:candidate` runs the complete suite and creates the exact npm tarball under ignored local state; `npm run release:accept` records the owner decision only when a second pack is byte-identical. The tracked acceptance record contains package identity, SHA-1, SHA-512 integrity, timestamp, and a fixed confirmation marker, while excluding personal identity, machine paths, logs, credentials, and user content.
+- Add `npm run github:push`, which rejects dirty trees, detached HEAD, direct `main` pushes, untracked acceptance records, or package-hash drift before pushing a release-relevant branch. Pull-request CI and `release:publish` independently rebuild and verify the accepted package. `release:publish` no longer pushes `main`; it requires the accepted branch to have been reviewed and merged so local `HEAD` already equals `origin/main`.
+- Distinguish npm-package changes from GitHub-only repository infrastructure. The release-impact gate now derives package relevance from `package.json.files`, so Action-only Dependabot PRs no longer deadlock on an unrelated npm version bump while source, scripts, browser extension, package metadata, and shipped documentation remain versioned.
+- Consolidate the five pending GitHub Action updates atomically: CodeQL `init`, `analyze`, and `upload-sarif` now use the same 4.37.1 commit; `actions/setup-node` advances to 7.0.0; and `actions/upload-artifact` advances to 7.0.1. Dependabot now groups all GitHub Action updates so coupled action families cannot be split into incompatible PRs.
+- Update Wrangler from 4.111.0 to 4.112.0 and advance the exact reviewed `workerd` install-script allowlist to 1.20260714.1. Complete and production dependency audits remain at zero known vulnerabilities.
+- Rewrite the release, contribution, automation, engineering, architecture, testing, and audit contracts around the owner-tested artifact boundary. Add executable regression coverage for package-impact classification, package-hash acceptance, workflow grouping, CI verification, no automatic `main` push, and package-manifest inclusion of every new helper.
+
 ## 1.2.7 - 2026-07-17
 
 ### Process supervision, lifecycle, and isolation audit

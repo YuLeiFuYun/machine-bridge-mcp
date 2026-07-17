@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -47,7 +47,7 @@
     "worker:types": "node scripts/generate-worker-types.mjs",
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit && npm run typecheck:local",
     "syntax": "node scripts/syntax-check.mjs",
-    "check": "npm run privacy:check && npm run privacy:test && npm run release-impact:check && npm run release-impact:test && npm run release-state:test && npm run release-ci:test && npm run network-retry:test && npm run worker-deployment:test && npm run relay:test && npm run secure-file:test && npm run worker-secret-file:test && npm run sarif-security:test && npm run security-properties:test && npm run shell:test && npm run architecture:test && npm run markdown:test && npm run project-metadata:test && npm run numbers:test && npm run records:test && npm run state-inventory:test && npm run commit-message:test && npm run policy:test && npm run account:test && npm run worker-oauth-controller:test && npm run policy-docs:check && npm run tool-docs:check && npm run runtime-infrastructure:test && npm run runtime-boundaries:test && npm run runtime-handlers:test && npm run cli-entrypoint:test && npm run cli-service:test && npm run lifecycle:test && npm run logging-structure:test && npm run coverage:test && npm run worker-runtime-infrastructure:test && npm run lint:test && npm run lint && npm run typecheck && npm run syntax && npm run deadline:test && npm run process-lock:test && npm run service-lifecycle:test && npm run service-environment:test && npm run service-platform:test && npm run catalog:test && npm run agent-context:test && npm run capability-ranking:test && npm run browser-command:test && npm run browser-devtools-input:test && npm run browser-service-worker:test && npm run browser-page-automation:test && npm run browser-bridge:test && npm run app-automation:test && npm run self-test && npm run atomic-fs:test && npm run package:test && npm run install:test && npm run ssh-key:test && npm run full-access:test && npm run managed-jobs:test && npm run stdio:integration-test && npm run worker:integration-test && npm run oauth-browser:test",
+    "check": "npm run privacy:check && npm run privacy:test && npm run release-impact:check && npm run release-impact:test && npm run release:acceptance:test && npm run release-state:test && npm run release-ci:test && npm run network-retry:test && npm run worker-deployment:test && npm run relay:test && npm run secure-file:test && npm run worker-secret-file:test && npm run sarif-security:test && npm run security-properties:test && npm run shell:test && npm run architecture:test && npm run markdown:test && npm run project-metadata:test && npm run numbers:test && npm run records:test && npm run state-inventory:test && npm run commit-message:test && npm run policy:test && npm run account:test && npm run worker-oauth-controller:test && npm run policy-docs:check && npm run tool-docs:check && npm run runtime-infrastructure:test && npm run runtime-boundaries:test && npm run runtime-handlers:test && npm run cli-entrypoint:test && npm run cli-service:test && npm run lifecycle:test && npm run logging-structure:test && npm run coverage:test && npm run worker-runtime-infrastructure:test && npm run lint:test && npm run lint && npm run typecheck && npm run syntax && npm run deadline:test && npm run process-lock:test && npm run service-lifecycle:test && npm run service-environment:test && npm run service-platform:test && npm run catalog:test && npm run agent-context:test && npm run capability-ranking:test && npm run browser-command:test && npm run browser-devtools-input:test && npm run browser-service-worker:test && npm run browser-page-automation:test && npm run browser-bridge:test && npm run app-automation:test && npm run self-test && npm run atomic-fs:test && npm run package:test && npm run install:test && npm run ssh-key:test && npm run full-access:test && npm run managed-jobs:test && npm run stdio:integration-test && npm run worker:integration-test && npm run oauth-browser:test",
     "worker:dry-run": "wrangler deploy --dry-run",
     "worker:integration-test": "node tests/worker-integration-test.mjs",
     "release:check": "node scripts/github-release.mjs --check",
@@ -117,12 +117,17 @@
     "typecheck:local": "tsc -p tsconfig.local.json --noEmit",
     "runtime-boundaries:test": "node tests/runtime-boundaries-test.mjs",
     "worker-oauth-controller:test": "node tests/worker-oauth-controller-test.mjs",
-    "cli-service:test": "node tests/cli-service-test.mjs"
+    "cli-service:test": "node tests/cli-service-test.mjs",
+    "release:acceptance:test": "node tests/release-acceptance-test.mjs",
+    "release:candidate": "npm run check && node scripts/local-release-acceptance.mjs --prepare",
+    "release:accept": "node scripts/local-release-acceptance.mjs --record",
+    "release:acceptance:verify": "node scripts/local-release-acceptance.mjs --verify",
+    "github:push": "node scripts/github-push.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
     "proxy-from-env": "2.1.0",
-    "wrangler": "4.111.0",
+    "wrangler": "4.112.0",
     "ws": "8.21.1"
   },
   "devDependencies": {
@@ -161,8 +166,8 @@
   "allowScripts": {
     "esbuild@0.28.1": true,
     "sharp@0.34.5": true,
-    "workerd@1.20260710.1": true,
-    "fsevents": false
+    "fsevents": false,
+    "workerd@1.20260714.1": true
   },
   "packageManager": "npm@12.0.1",
   "devEngines": {

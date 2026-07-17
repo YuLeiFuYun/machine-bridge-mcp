@@ -255,9 +255,11 @@ Cloudflare sampling is size control rather than an audit log. The project intent
 
 ## Release integrity
 
-Repository-local checks are necessary but cannot prove behavior on every supported operating system. `scripts/github-release.mjs` therefore queries `.github/workflows/ci.yml` for the exact `origin/main` commit and requires the newest push-triggered run to be completed with `success` before it creates or verifies a version tag, GitHub Release, or package asset. Pull-request runs, older successful runs, pending runs, and successful runs for another SHA do not satisfy the gate. The selection policy is isolated in `scripts/release-ci.mjs` and tested independently.
+Repository-local automated checks are necessary but cannot prove that the maintainer's ordinary installation path works. `scripts/local-release-acceptance.mjs` builds the exact npm tarball, requires an explicit repository-owner confirmation after local testing, and records both npm hashes outside the package. `scripts/github-push.mjs`, pull-request CI, and `scripts/github-release.mjs` rebuild the package and reject any mismatch. The release helper also requires `HEAD === origin/main`; it cannot silently push `main`.
 
-Third-party workflow actions are pinned to immutable commit SHAs. Dependabot proposes reviewed SHA updates, and `architecture:test` rejects a return to movable action tags or removal of the reachable-history package-audit step.
+Cross-platform evidence remains independent. `scripts/github-release.mjs` queries CI, CodeQL, Governance, and Scorecard for the exact `origin/main` commit and requires the newest push-triggered run for each workflow to be completed with `success` before it creates or verifies a version tag, GitHub Release, or package asset. Pull-request runs, older successful runs, pending runs, and successful runs for another SHA do not satisfy the gate. The workflow selection policy is isolated in `scripts/release-ci.mjs` and tested independently.
+
+Third-party workflow actions are pinned to immutable commit SHAs. Dependabot groups GitHub Action updates into one reviewed PR so coupled action families cannot drift across versions. `architecture:test` rejects movable action tags, split update policy, loss of local acceptance verification, or removal of the reachable-history package-audit step.
 
 ## Explicit non-goals
 

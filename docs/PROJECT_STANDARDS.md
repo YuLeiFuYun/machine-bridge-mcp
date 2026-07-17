@@ -18,11 +18,15 @@ Branch names use a short category and purpose, for example `feat/browser-downloa
 
 Direct pushes to `main`, force pushes, and branch deletion are blocked by repository protection. An exception requires an incident record and an explicit owner decision.
 
-### Completion ownership
+### Completion ownership and local acceptance
 
-Repository automation owns the complete source-change lifecycle. After required checks pass, it updates the pull-request branch when necessary, squash-merges through local `gh`, verifies the resulting `main` commit, and removes the merged branch. A completed change must not remain indefinitely as an open pull request.
+Repository automation owns implementation, local validation, and pull-request completion, but it does not own the maintainer's release acceptance decision. For every npm-package change, automation must generate the exact candidate tarball with `npm run release:candidate` and stop before the first GitHub push. The repository owner must install or otherwise exercise that exact tarball on the maintainer machine through the normal user path and record a passing decision with `npm run release:accept -- --confirm "I TESTED machine-bridge-mcp <version> LOCALLY AND IT WORKS"`. Automation must not create that assertion on the owner's behalf.
 
-Every release-relevant change advances the package version and is completed by an annotated `v<version>` tag plus a final GitHub Release for the exact successful `main` commit. The coding agent performs that tag and GitHub Release work by default through local `git`, `gh`, and `gh api`; repeated per-task authorization is not required. npm publication, Worker deployment, credential mutation, global installation, and daemon/service replacement remain separate live operations requiring explicit authorization.
+The tracked `release-acceptance/v<version>.json` record binds the decision to the npm tarball SHA-1 and SHA-512 integrity value. The record is excluded from the package, so a content-preserving squash merge does not invalidate it; any source, executable script, package metadata, or packaged-documentation change produces a different package hash and requires a new local test. `npm run github:push`, pull-request CI, and `release:publish` verify the record. Raw direct pushes of release-relevant branches are prohibited.
+
+After owner acceptance, repository automation may push only through `npm run github:push`, open and complete the pull request, verify the resulting `main` commit, and remove the merged branch. Every npm-package change advances the package version and is completed by an annotated `v<version>` tag plus a final GitHub Release for the exact successful `main` commit. GitHub-only repository infrastructure changes that do not alter npm package contents do not require a synthetic package version or local runtime acceptance, but they still require review and their applicable CI/security checks.
+
+The coding agent may perform the tag and GitHub Release work only after the recorded owner acceptance and exact-commit checks succeed. npm publication, Worker deployment, credential mutation, global installation, and daemon/service replacement remain separate live operations requiring explicit authorization.
 
 ### Local GitHub control plane
 
@@ -115,10 +119,10 @@ Flaky tests are defects. A retry may diagnose environmental instability but may 
 ## 7. Security and software supply chain
 
 - GitHub workflow permissions default to read-only and are expanded per job only when required.
-- Third-party Actions are pinned to immutable commit SHAs and reviewed when Dependabot updates them.
+- Third-party Actions are pinned to immutable commit SHAs and reviewed when Dependabot updates them. GitHub Action updates are grouped into one atomic pull request so coupled suites such as CodeQL cannot be split across incompatible versions.
 - npm dependencies use exact versions and a committed lockfile. Source bootstrap uses `npm ci`; the CI npm baseline itself is downloaded from an exact URL and verified against a pinned SHA-512 SRI before use. Registry signatures and attestations are verified in CI.
 - Dependency review blocks newly introduced vulnerable dependencies. CodeQL performs JavaScript/TypeScript and workflow analysis. OpenSSF Scorecard audits supply-chain posture, and both SARIF streams are failing gates with exact, expiring exceptions rather than advisory-only uploads.
-- CI generates and validates a CycloneDX SBOM. Release artifacts must be reproducible from a reviewed commit and tied to successful exact-commit CI, CodeQL, Governance, and Scorecard evidence.
+- CI generates and validates a CycloneDX SBOM. Release artifacts must match the repository-owner-tested tarball hash, be reproducible from a reviewed commit, and be tied to successful exact-commit CI, CodeQL, Governance, and Scorecard evidence.
 - Secret scanning and push protection are enabled. Repository examples use synthetic identities and reserved domains; reachable history is scanned before release.
 - Long-lived publication tokens should be replaced by npm trusted publishing with GitHub OIDC. Until that external registry configuration is completed, release credentials remain an explicit operator responsibility and must never be stored in the repository.
 - Security reports follow [SECURITY.md](../SECURITY.md), not public issue templates.

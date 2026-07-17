@@ -1,10 +1,12 @@
 # Contributing and release discipline
 
-This repository treats every Git-tracked or nonignored repository file as release-relevant, including source code, tests, scripts, examples, documentation, CI configuration, ignore rules, and package metadata.
+Read [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), [GOVERNANCE.md](GOVERNANCE.md), and the relevant domain documentation before changing behavior.
 
 ## Development workflow
 
-Read [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), [GOVERNANCE.md](GOVERNANCE.md), and the relevant domain documentation before changing behavior. This repository uses GitHub Flow: branch from current `main`, keep the change coherent, open a pull request, satisfy required checks, squash-merge, and delete the branch. Permanent `develop` or generic release integration branches are not used unless an independently maintained release line creates a concrete need. Repository automation performs GitHub operations only through local `git`, `gh`, and `gh api` commands executed by Machine Bridge; hosted GitHub connectors and ChatGPT GitHub plugins are prohibited for this repository.
+The repository uses GitHub Flow: branch from current `main`, keep one coherent change, validate it locally, open a pull request, satisfy required checks, squash-merge, and delete the branch. Permanent `develop` or generic release integration branches are not used unless an independently maintained release line creates a concrete need.
+
+Repository automation performs GitHub operations only through local `git`, `gh`, and `gh api` commands executed by Machine Bridge. Hosted GitHub connectors and ChatGPT GitHub plugins are prohibited for this repository. Direct pushes to `main` and force pushes are prohibited.
 
 Branch names use a category and purpose such as `feat/browser-downloads`, `fix/relay-timeout`, or `chore/dependency-policy`.
 
@@ -14,21 +16,32 @@ Pull-request titles and final commit subjects use Conventional Commits:
 <type>[optional scope][optional !]: <imperative description>
 ```
 
-Accepted types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `security`, `release`, and `revert`. Explain the causal problem, why the solution is correct, compatibility/security/privacy risk, verification, and release impact in the pull request. Bug fixes require a regression test for the original failure mechanism.
+Accepted types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `security`, `release`, and `revert`. Explain the causal problem, why the solution is correct, compatibility/security/privacy risk, verification, and release impact. Bug fixes require a regression test for the original failure mechanism.
 
-## Required for every release-relevant change
+## Package impact
 
-Before the reviewed code is pushed to `main`:
+An npm version is required when a change affects `package.json`, `package-lock.json`, or any path included by the package `files` manifest. This includes runtime source, executable scripts, browser-extension files, shared contracts, and shipped documentation. `npm run release-impact:check` derives the decision from the package manifest.
+
+Repository-only infrastructure changes, such as a `.github/` workflow update, do not require a synthetic npm version when package bytes are unchanged. They still require review and all applicable CI, dependency-review, CodeQL, governance, and Scorecard checks.
+
+## Required before pushing an npm-package change
 
 1. bump `package.json` to a version newer than the latest reachable `v*` tag;
-2. add the matching dated section to `CHANGELOG.md`;
-3. run `npm run check`, `npm audit`, `npm audit --omit=dev`, and `npm run worker:dry-run`;
-4. inspect the complete diff and the npm package manifest;
-5. commit and push the reviewed change to GitHub.
+2. add the matching dated section to `CHANGELOG.md` and update audit/documentation records;
+3. run targeted tests, both dependency audits, `npm run worker:dry-run`, privacy/history review, signature verification, SBOM generation, and package inspection as applicable;
+4. inspect the complete diff;
+5. run `npm run release:candidate`, which executes the complete suite and creates the exact candidate tarball under ignored `.release-candidate/`;
+6. have the repository owner test that exact tarball on the maintainer machine through the normal installation/startup path;
+7. have the owner record the explicit decision with the exact command printed by the candidate tool, creating `release-acceptance/v<version>.json`;
+8. commit the acceptance record and push the clean non-`main` branch only with `npm run github:push`.
 
-After all required pull-request checks pass, repository automation completes the source release under [AGENTS.md](AGENTS.md): squash-merge through local `gh`, verify the exact `main` push CI, CodeQL, Governance, and Scorecard runs, create the annotated version tag, and create or update the matching final GitHub Release. The release operator separately publishes the same version to npm and performs any live machine update. Automation must not publish, deprecate, or unpublish npm packages; install the CLI globally; deploy the Worker; rotate credentials; mutate live deployment state; or start/stop/install/remove the daemon or autostart service without explicit user authorization.
+Automated checks do not authorize step 7. A coding agent must not record owner acceptance or push the release-relevant branch before the owner has tested it. Any packaged-file change after acceptance changes the npm tarball hash and requires a regenerated candidate and a new owner test.
 
-Supported upgrade and rollback behavior is defined in [docs/UPGRADING.md](docs/UPGRADING.md). Support requests must follow [SUPPORT.md](SUPPORT.md), and repository participation follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+After all required pull-request checks pass, repository automation may complete the source release: squash-merge, verify the exact `main` push CI, CodeQL, Governance, and Scorecard runs, and run `npm run release:publish`. The publication helper requires `HEAD === origin/main`; it does not push `main`. It creates or verifies the annotated version tag and final GitHub Release only after the accepted package hash and exact-commit checks match.
+
+The release operator separately authorizes npm publication and any live machine update. Automation must not publish, deprecate, or unpublish npm packages; install the CLI globally; deploy the Worker; rotate credentials; mutate live deployment state; or start, stop, install, remove, or replace the daemon or autostart service without explicit user authorization.
+
+Supported upgrade and rollback behavior is defined in [docs/UPGRADING.md](docs/UPGRADING.md). Support requests follow [SUPPORT.md](SUPPORT.md), and repository participation follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 After npm publication, the standard machine update is:
 
@@ -36,15 +49,9 @@ After npm publication, the standard machine update is:
 npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
 ```
 
-The npm command updates the global CLI. Normal `machine-mcp` startup checks the Worker deployment hash, expected version, and health, redeploys when necessary, and reconciles the daemon/autostart flow.
-
-`npm run release-impact:check` enforces the version and changelog parts. It fails when release-relevant files changed after the latest version tag but the package version was not advanced.
-
-A privacy or security correction is always release-relevant. Removing a private identifier only from the current branch is insufficient: publish a replacement npm version, update GitHub, and deprecate or unpublish the affected npm version when policy and authentication permit.
-
 ## Privacy
 
-Use only synthetic names, reserved example domains, and generic paths. Maintain private local identifiers in the ignored `.privacy-denylist` and run `npm run privacy:check` before committing.
+Use only synthetic names, reserved example domains, and generic paths. Maintain private local identifiers in the ignored `.privacy-denylist` and run `npm run privacy:check` before committing. Local acceptance records contain hashes and a fixed marker only; do not add machine paths, personal names, logs, credentials, endpoint URLs, or user content.
 
 ## Engineering standards
 
@@ -52,4 +59,4 @@ Read [docs/ENGINEERING.md](docs/ENGINEERING.md) before changing architecture, po
 
 A log change is behavior: test its level, repetition policy, privacy fields, and recovery message. A transport change must distinguish low-level connectivity from authenticated readiness and test timeout/reconnect branches deterministically. Lock, state deletion, service lifecycle, detached process, and credential changes require behavior-level concurrency or fault-injection tests. Review [docs/AUDIT.md](docs/AUDIT.md) before changing those surfaces.
 
-Reusable decisions belong in tracked documentation. Keep only machine-specific observations in the ignored `.project-local/` directory, and never store credentials there.
+Reusable decisions belong in tracked documentation. Keep only machine-specific observations in ignored `.project-local/`, and never store credentials there.

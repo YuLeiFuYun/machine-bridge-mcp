@@ -34,7 +34,7 @@ jobs:
           results_format: sarif
           publish_results: true
       - name: Upload SARIF artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scorecard-results
           path: results.sarif
@@ -60,6 +60,6 @@ jobs:
       - name: Enforce reviewed Scorecard findings
         run: node scripts/sarif-security-gate.mjs .scorecard-results/results.sarif --allowlist=.github/scorecard-accepted-findings.json
       - name: Upload to code scanning
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
         with:
           sarif_file: .scorecard-results/results.sarif

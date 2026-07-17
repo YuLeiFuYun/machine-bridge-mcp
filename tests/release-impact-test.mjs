@@ -9,7 +9,7 @@ const temp = mkdtempSync(join(tmpdir(), "mbm-release-impact-test-"));
 try {
   mkdirSync(join(temp, "scripts"), { recursive: true });
   cpSync(join(root, "scripts", "release-impact-check.mjs"), join(temp, "scripts", "release-impact-check.mjs"));
-  writeJson(join(temp, "package.json"), { name: "release-impact-fixture", version: "1.0.0" });
+  writeJson(join(temp, "package.json"), { name: "release-impact-fixture", version: "1.0.0", files: ["README.md", "scripts"] });
   writeFileSync(join(temp, "CHANGELOG.md"), "# Changelog\n\n## 1.0.0 - 2026-01-01\n\n- Initial.\n");
   writeFileSync(join(temp, "README.md"), "initial\n");
   git(["init", "-q"]);
@@ -20,13 +20,19 @@ try {
   git(["tag", "v1.0.0"]);
 
   expectStatus(0, "clean tagged repository should pass");
-  writeFileSync(join(temp, ".gitignore"), "scratch/\n");
-  expectStatus(1, "top-level repository configuration change without version bump should fail");
-  rmSync(join(temp, ".gitignore"), { force: true });
-  writeFileSync(join(temp, "README.md"), "changed\n");
-  expectStatus(1, "release-relevant change without version bump should fail");
+  mkdirSync(join(temp, ".github", "workflows"), { recursive: true });
+  writeFileSync(join(temp, ".github", "workflows", "ci.yml"), "name: CI\n");
+  expectStatus(0, "repository-only GitHub workflow change should not require an npm version bump");
+  rmSync(join(temp, ".github"), { recursive: true, force: true });
 
-  writeJson(join(temp, "package.json"), { name: "release-impact-fixture", version: "1.0.1" });
+  writeFileSync(join(temp, ".gitignore"), "scratch/\n");
+  expectStatus(0, "repository-only ignore change should not require an npm version bump");
+  rmSync(join(temp, ".gitignore"), { force: true });
+
+  writeFileSync(join(temp, "README.md"), "changed\n");
+  expectStatus(1, "packaged documentation change without version bump should fail");
+
+  writeJson(join(temp, "package.json"), { name: "release-impact-fixture", version: "1.0.1", files: ["README.md", "scripts"] });
   expectStatus(1, "version bump without changelog should fail");
 
   writeFileSync(join(temp, "CHANGELOG.md"), "# Changelog\n\n## 1.0.1 - 2026-01-02\n\n- Changed.\n\n## 1.0.0 - 2026-01-01\n\n- Initial.\n");

@@ -541,7 +541,18 @@ npm audit --omit=dev --audit-level=high
 npm pack --dry-run
 ```
 
-`npm run check` covers privacy and release-impact gates, architecture/link invariants, generated Worker types, TypeScript, recursively discovered JavaScript syntax, semantic undefined-identifier checks, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, concurrent lock/atomic-replacement/PID-reuse fixtures, fail-closed service lifecycle tests, descendant process-tree termination, local path/write/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/mode/sensitive-artifact check, an isolated installation of the actual packed tarball whose zero-argument CLI startup must reach a controlled Worker-deployment boundary, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, a live local OAuth/Worker/WebSocket/MCP flow covering discovery, Claude callback routing, rotating refresh tokens, replay rejection, and account-targeted refresh revocation, plus a real Chromium negative/positive test for CSP-governed OAuth callback navigation. GitHub Actions runs the complete suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline.
+`npm run check` covers privacy and package-impact gates, local-release-acceptance hash logic, architecture/link invariants, generated Worker types, TypeScript, recursively discovered JavaScript syntax, semantic undefined-identifier checks, catalog-to-runtime handler parity, deterministic relay lifecycle and secure-file tests, concurrent lock/atomic-replacement/PID-reuse fixtures, fail-closed service lifecycle tests, descendant process-tree termination, local path/write/state/log/service invariants, Ed25519/RSA generation and key-pair validation, real-machine `full` sandbox acceptance, a clean npm package-manifest/mode/sensitive-artifact check, an isolated installation of the actual packed tarball whose zero-argument CLI startup must reach a controlled Worker-deployment boundary, managed-job integrity/redaction/finally/cancellation/recovery, a live stdio MCP flow, a live local OAuth/Worker/WebSocket/MCP flow covering discovery, Claude callback routing, rotating refresh tokens, replay rejection, and account-targeted refresh revocation, plus a real Chromium negative/positive test for CSP-governed OAuth callback navigation. GitHub Actions runs the complete suite on Linux, macOS, and Windows with the pinned Node 26/npm 12 baseline.
+
+For an npm-package release, automated checks are followed by a separate repository-owner acceptance boundary:
+
+```sh
+npm run release:candidate
+# Test the exact .release-candidate/*.tgz artifact locally.
+npm run release:accept -- --confirm "I TESTED machine-bridge-mcp <version> LOCALLY AND IT WORKS"
+npm run github:push
+```
+
+The coding agent must stop before the first GitHub push until the owner tests the exact tarball. The acceptance record stores package hashes, not machine paths or logs, and any packaged-file change invalidates it. See [docs/RELEASING.md](docs/RELEASING.md).
 
 The cross-cutting 0.12.0 review, corrected failure modes, and residual OS-level limits are recorded in [docs/AUDIT.md](docs/AUDIT.md). See also [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md), [docs/MULTI_ACCOUNT.md](docs/MULTI_ACCOUNT.md), [docs/AGENT_CONTEXT.md](docs/AGENT_CONTEXT.md), [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md), [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md), [docs/TESTING.md](docs/TESTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), the generated [MCP tool reference](docs/TOOL_REFERENCE.md), and [SECURITY.md](SECURITY.md).
 
@@ -558,4 +569,4 @@ Use `--keep-worker` to retain deployed Workers while removing local state and au
 
 MIT
 
-See [repository privacy hygiene](docs/PRIVACY.md) and [contribution/release discipline](CONTRIBUTING.md) before committing. Every release-relevant code, test, script, configuration, or documentation change must be pushed to GitHub with a new version and followed by a matching npm release.
+See [repository privacy hygiene](docs/PRIVACY.md) and [contribution/release discipline](CONTRIBUTING.md) before committing. Every npm-package change requires a new version, an owner-tested exact tarball, a matching acceptance record, and a matching npm release. GitHub-only infrastructure changes may remain source-only when package bytes are unchanged.

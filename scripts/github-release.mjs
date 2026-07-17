@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { runNetworkCommand } from "./network-retry.mjs";
 import { requireSuccessfulWorkflowRun } from "./release-ci.mjs";
 import { tagSyncError } from "./release-state.mjs";
+import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -178,6 +179,7 @@ function releaseInfo(tag) {
 
 function assertCoreSync({ requireReleaseAsset }) {
   const pkg = packageMetadata();
+  assertLocalAcceptance();
   const tag = `v${pkg.version}`;
   const head = output("git", ["rev-parse", "HEAD"]);
   const originMain = output("git", ["rev-parse", "origin/main"]);
@@ -299,18 +301,12 @@ function publishCurrent() {
   run("npm", ["run", "check"]);
   run("npm", ["run", "version:check"]);
   ensureClean();
+  assertLocalAcceptance();
 
   const head = output("git", ["rev-parse", "HEAD"]);
   const originMain = output("git", ["rev-parse", "origin/main"]);
   if (head !== originMain) {
-    const ancestor = run("git", ["merge-base", "--is-ancestor", "origin/main", "HEAD"], {
-      capture: true,
-      allowFailure: true,
-    });
-    if (ancestor.status !== 0) {
-      fail("origin/main is not an ancestor of HEAD; refusing a non-fast-forward release");
-    }
-    runNetwork("git", ["push", "origin", "HEAD:main"]);
+    fail("HEAD does not match origin/main; local acceptance must be committed, pushed through npm run github:push, reviewed, and merged before release publication");
   }
   assertSuccessfulCi(head);
 
@@ -340,6 +336,17 @@ function publishCurrent() {
 
   fetchRemote();
   assertCoreSync({ requireReleaseAsset: true });
+}
+
+function assertLocalAcceptance() {
+  try {
+    const result = verifyCurrentReleaseAcceptance(root);
+    if (result.required) {
+      console.log(`Repository-owner local acceptance matches ${result.metadata.filename} (${result.metadata.shasum}).`);
+    }
+  } catch (error) {
+    fail(String(error?.message || error));
+  }
 }
 
 function backfillMissingReleases() {
