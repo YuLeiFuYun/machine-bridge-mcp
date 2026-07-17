@@ -272,8 +272,10 @@ export class RelayConnection {
     socket.on("message", (data) => {
       if (this.socket !== socket || this.closed) return;
       this.lastInboundAt = this.now();
+      // Bind results to the generation that received this message.
+      const relayContext = { sessionId: this.activeSessionId };
       try {
-        const outcome = this.onMessage(data);
+        const outcome = this.onMessage(data, relayContext);
         if (outcome && typeof outcome.catch === "function") {
           outcome.catch((error) => this.logger.error?.("daemon message handler failed", { error_class: classifyOperationalError(error) }));
         }

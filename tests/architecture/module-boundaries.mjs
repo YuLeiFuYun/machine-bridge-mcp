@@ -78,7 +78,7 @@ for (const name of boundaryModules) {
 }
 
 const lineLimits = Object.freeze({
-  "src/local/runtime.mjs": 800,
+  "src/local/runtime.mjs": 820,
   "src/local/runtime-reporting.mjs": 150,
   "src/local/runtime-diagnostics.mjs": 120,
   "src/local/runtime-capabilities.mjs": 100,

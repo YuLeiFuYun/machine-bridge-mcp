@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.4 - 2026-07-17
+
+### Relay tool_result session context regression
+
+- Pass the authenticated relay session generation into every inbound WebSocket `onMessage` callback. The 1.2.2 session-binding change discarded every `tool_result` with `session_ended` because handlers received `sessionId=0` even while heartbeats kept the socket live, so MCP tools timed out despite `daemon.connected=true`.
+- Emit an explicit error when a tool result is discarded because the inbound call context lacked a session id, and include both expected and active session ids in the structured event.
+- Add a regression that proves message dispatch attaches the current authenticated session generation.
+
 ## 1.2.3 - 2026-07-17
 
 ### Worker daemon false-online liveness

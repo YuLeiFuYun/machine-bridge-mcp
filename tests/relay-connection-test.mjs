@@ -133,6 +133,15 @@ await started;
 assert(events.some((event) => event.level === "info" && event.message === "remote relay connected"), "relay did not report initial authenticated readiness");
 const firstRelaySession = connection.currentSessionId();
 assert(firstRelaySession > 0, "authenticated relay did not receive a session generation");
+let inboundMessageContext = null;
+const previousOnMessage = connection.onMessage;
+connection.onMessage = (data, context) => {
+  inboundMessageContext = context;
+  return previousOnMessage?.(data, context);
+};
+sockets[0].emit("message", Buffer.from(JSON.stringify({ type: "tool_call", id: "session-context-probe", tool: "list_roots", arguments: {} })));
+assert(inboundMessageContext?.sessionId === firstRelaySession, "inbound relay message did not include the authenticated session generation");
+connection.onMessage = previousOnMessage;
 const firstSessionDelivery = connection.sendForSession({ type: "tool_result", id: "first-session" }, firstRelaySession);
 assert(firstSessionDelivery.ok === true, "current relay session rejected a bound result");
 
