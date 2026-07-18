@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ACCEPTANCE_SCHEMA_VERSION, acceptanceConfirmationForVersion } from "../../scripts/release-acceptance.mjs";
 
 const MAX_STDIN_BYTES = 8 * 1024 * 1024;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -51,25 +52,25 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
   const acceptance = JSON.parse(readFileSync(join(projectRoot, "release-acceptance", `v${pkg.version}.json`), "utf8"));
   const expectedDigest = canonicalPackageDigest(projectRoot, packValue);
 
-  if (acceptance.schema_version !== 1
+  if (acceptance.schema_version !== ACCEPTANCE_SCHEMA_VERSION
       || acceptance.result !== "passed"
-      || acceptance.confirmation !== "repository-owner-local-test") {
-    throw new Error("repository-owner local acceptance marker is invalid");
+      || acceptance.confirmation !== acceptanceConfirmationForVersion(pkg.version)) {
+    throw new Error("interactive local candidate acceptance marker is invalid");
   }
   if (acceptance.package_name !== pkg.name
       || acceptance.package_version !== pkg.version
       || acceptance.filename !== pack.filename) {
-    throw new Error("repository-owner local acceptance package identity does not match npm pack");
+    throw new Error("interactive local candidate acceptance package identity does not match npm pack");
   }
   if (!/^[0-9a-f]{40}$/.test(String(acceptance.shasum || ""))
       || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(String(acceptance.integrity || ""))) {
-    throw new Error("repository-owner local acceptance tarball hashes are malformed");
+    throw new Error("interactive local candidate acceptance tarball hashes are malformed");
   }
   if (!Number.isFinite(Date.parse(String(acceptance.accepted_at || "")))) {
-    throw new Error("repository-owner local acceptance timestamp is invalid");
+    throw new Error("interactive local candidate acceptance timestamp is invalid");
   }
   if (acceptance.package_content_sha256 !== expectedDigest) {
-    throw new Error(`repository-owner local acceptance content digest does not match the current npm package (expected ${expectedDigest})`);
+    throw new Error(`interactive local candidate acceptance content digest does not match the current npm package (expected ${expectedDigest})`);
   }
   return { acceptance, digest: expectedDigest, pack };
 }
@@ -175,7 +176,7 @@ async function main() {
     return;
   }
   const result = verifyPortableAcceptance(root, value);
-  process.stdout.write(`Portable owner acceptance matches ${result.pack.filename} (${result.digest}).\n`);
+  process.stdout.write(`Portable interactive candidate acceptance matches ${result.pack.filename} (${result.digest}).\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -5,6 +5,13 @@ import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } f
 import { WorkerObservability } from "../src/worker/observability.ts";
 import { searchParamsObject } from "../src/worker/http.ts";
 import {
+  asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
+  sessionInstructionText, textToolResult, validateProtocolVersionHeader,
+} from "../src/worker/mcp-jsonrpc.ts";
+import {
+  closeWebSocketQuietly, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly,
+} from "../src/worker/websocket-protocol.ts";
+import {
   DAEMON_LIVENESS_TIMEOUT_MS,
   daemonLivenessDeadlineMs,
   isFreshDaemonCandidate,
@@ -22,6 +29,8 @@ testWorkerPolicyParity();
 testWorkerErrors();
 testWorkerObservability();
 testPrototypeSafeFormFields();
+testMcpJsonRpcProtocol();
+testWebSocketProtocol();
 testDaemonLiveness();
 console.log("worker runtime infrastructure test ok");
 
@@ -176,6 +185,52 @@ function testPrototypeSafeFormFields() {
   assert(value.__proto__ === "plain", "__proto__ form field was not treated as ordinary data");
 }
 
+function testMcpJsonRpcProtocol() {
+  const request = { jsonrpc: "2.0", id: "request-1", method: "tools/list", params: {} };
+  assert(isJsonRpcRequest(request), "valid JSON-RPC request was rejected");
+  assert(!isJsonRpcRequest({ ...request, method: "" }), "empty JSON-RPC method was accepted");
+  assert(!isJsonRpcRequest({ ...request, id: Number.POSITIVE_INFINITY }), "non-finite JSON-RPC id was accepted");
+  assert(isJsonRpcResponse({ jsonrpc: "2.0", id: 1, result: {} }), "valid JSON-RPC response was rejected");
+  assert(!isJsonRpcResponse({ jsonrpc: "2.0", id: 1, result: {}, error: {} }), "ambiguous JSON-RPC response was accepted");
+  assert(rpcResult(undefined, {}) === null, "JSON-RPC notification unexpectedly produced a response");
+  assert(rpcResult(null, { ok: true })?.id === null, "JSON-RPC null id was not preserved");
+  assert(rpcError(undefined, -32600, "invalid").id === null, "JSON-RPC error omitted the null fallback id");
+  const structured = textToolResult({ $mcp: { content: [{ type: "text", text: "ok" }], structuredContent: { ok: true } } });
+  assert(structured.structuredContent?.ok === true, "special MCP tool result lost structured content");
+  const ordinary = textToolResult({ ok: true });
+  assert(ordinary.structuredContent?.ok === true && ordinary.content[0].type === "text", "ordinary tool result lost text or structured content");
+  assert(Object.keys(asObject(null)).length === 0, "non-object params were not normalized");
+  assert(requiredString({ name: " read_file " }, "name") === "read_file", "required string was not normalized");
+  expectThrow(() => requiredString({}, "name"), "non-empty string");
+  assert(sessionInstructionText({ instructions: "local guidance" }) === "local guidance", "session instructions were not extracted");
+  assert(sessionInstructionText({ instructions: "x".repeat(3 * 1024 * 1024 + 1) }) === "", "oversized session instructions were accepted");
+  const supported = ["2025-11-25"];
+  const initialize = new Request("https://example.test/mcp", { headers: { "MCP-Protocol-Version": "unsupported" } });
+  assert(validateProtocolVersionHeader(initialize, { ...request, method: "initialize" }, supported) === null, "initialize was rejected before protocol negotiation");
+  const accepted = new Request("https://example.test/mcp", { headers: { "MCP-Protocol-Version": supported[0] } });
+  assert(validateProtocolVersionHeader(accepted, request, supported) === null, "supported MCP protocol header was rejected");
+  const rejected = new Request("https://example.test/mcp", { headers: { "MCP-Protocol-Version": "unsupported" } });
+  assert(validateProtocolVersionHeader(rejected, request, supported)?.error?.code === -32602, "unsupported MCP protocol header did not return the expected error");
+}
+
+function testWebSocketProtocol() {
+  const sent = [];
+  const closed = [];
+  const socket = {
+    send(value) { sent.push(value); },
+    close(code, reason) { closed.push({ code, reason }); },
+  };
+  assert(isObjectRecord({ type: "hello" }) && !isObjectRecord([]) && !isObjectRecord(null), "daemon record guard accepted an invalid shape");
+  sendWebSocketQuietly(socket, { type: "pong" });
+  rejectDaemonMessage(socket, "invalid_message", 1002, "invalid daemon message");
+  closeWebSocketQuietly(socket, 1000, "done");
+  assert(JSON.parse(sent[0]).type === "pong" && JSON.parse(sent[1]).error === "invalid_message", "WebSocket protocol helper lost payloads");
+  assert(closed[0].code === 1002 && closed[1].code === 1000, "WebSocket close helper lost close metadata");
+  const throwing = { send() { throw new Error("closed"); }, close() { throw new Error("closed"); } };
+  sendWebSocketQuietly(throwing, "ignored");
+  closeWebSocketQuietly(throwing);
+}
+
 function testWorkerErrors() {
   const structured = daemonToolError({ code: "limit_exceeded", message: "busy", retryable: true });
   assert(structured.code === "limit_exceeded" && structured.retryable, "daemon structured error was not preserved");
@@ -243,6 +298,7 @@ async function expectReject(promise, expected) {
   throw new Error(`expected rejection containing ${expected}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
+function expectThrow(operation, expected) { try { operation(); } catch (error) { assert(String(error?.message || error).includes(expected), `expected ${expected}`); return; } throw new Error(`expected throw containing ${expected}`); }
 
 function testDaemonLiveness() {
   const now = Date.parse("2026-07-17T12:00:00.000Z");

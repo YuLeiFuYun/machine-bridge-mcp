@@ -11,11 +11,19 @@ import { spawnSync } from "node:child_process";
 
 export const ACCEPTANCE_SCHEMA_VERSION = 1;
 export const ACCEPTANCE_POLICY_VERSION = "1.2.8";
-export const ACCEPTANCE_CONFIRMATION = "repository-owner-local-test";
+export const AGENT_VERIFIED_ACCEPTANCE_VERSION = "1.2.9";
+export const ACCEPTANCE_CONFIRMATION = "owner-started-agent-verified-local-candidate";
+export const LEGACY_ACCEPTANCE_CONFIRMATION = "repository-owner-local-test";
 const MAX_ACCEPTANCE_BYTES = 64 * 1024;
 
 export function requiresLocalAcceptance(version) {
   return compareVersions(parseVersion(version), parseVersion(ACCEPTANCE_POLICY_VERSION)) >= 0;
+}
+
+export function acceptanceConfirmationForVersion(version) {
+  return compareVersions(parseVersion(version), parseVersion(AGENT_VERIFIED_ACCEPTANCE_VERSION)) >= 0
+    ? ACCEPTANCE_CONFIRMATION
+    : LEGACY_ACCEPTANCE_CONFIRMATION;
 }
 
 export function acceptancePath(root, version) {
@@ -92,8 +100,9 @@ export function verifyAcceptanceRecord(record, metadata) {
     throw new Error(`unsupported release acceptance schema: ${record.schema_version}`);
   }
   if (record.result !== "passed") throw new Error("local release acceptance result is not passed");
-  if (record.confirmation !== ACCEPTANCE_CONFIRMATION) {
-    throw new Error("local release acceptance confirmation is missing");
+  const expectedConfirmation = acceptanceConfirmationForVersion(metadata.package_version);
+  if (record.confirmation !== expectedConfirmation) {
+    throw new Error("local release acceptance confirmation is missing or does not match the active verification workflow");
   }
   const acceptedAt = Date.parse(String(record.accepted_at || ""));
   if (!Number.isFinite(acceptedAt)) throw new Error("local release acceptance timestamp is invalid");

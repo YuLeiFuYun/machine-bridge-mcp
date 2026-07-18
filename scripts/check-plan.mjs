@@ -1,0 +1,91 @@
+export const FAST_CHECK_TASKS = Object.freeze([
+  "privacy:check",
+  "release-impact:check",
+  "release:acceptance:test",
+  "release-state:test",
+  "release-ci:test",
+  "network-retry:test",
+  "secure-file:test",
+  "worker-secret-file:test",
+  "sarif-security:test",
+  "shell:test",
+  "architecture:test",
+  "markdown:test",
+  "project-metadata:test",
+  "numbers:test",
+  "records:test",
+  "state-inventory:test",
+  "commit-message:test",
+  "policy:test",
+  "account:test",
+  "worker-oauth-controller:test",
+  "policy-docs:check",
+  "tool-docs:check",
+  "runtime-infrastructure:test",
+  "runtime-boundaries:test",
+  "runtime-handlers:test",
+  "cli-entrypoint:test",
+  "cli-service:test",
+  "lifecycle:test",
+  "logging-structure:test",
+  "worker-runtime-infrastructure:test",
+  "lint:test",
+  "lint",
+  "typecheck",
+  "syntax",
+  "deadline:test",
+  "catalog:test",
+  "capability-ranking:test",
+  "agent-boundaries:test",
+  "browser-command:test",
+  "check-plan:test",
+]);
+
+export const PLATFORM_ONLY_CHECK_TASKS = Object.freeze([
+  "privacy:test",
+  "release-impact:test",
+  "worker-deployment:test",
+  "relay:test",
+  "security-properties:test",
+  "process-lock:test",
+  "service-lifecycle:test",
+  "service-environment:test",
+  "service-platform:test",
+  "agent-context:test",
+  "browser-devtools-input:test",
+  "browser-service-worker:test",
+  "browser-page-automation:test",
+  "app-automation:test",
+  "self-test",
+  "atomic-fs:test",
+  "ssh-key:test",
+  "full-access:test",
+  "managed-jobs:test",
+]);
+
+export const FULL_ONLY_CHECK_TASKS = Object.freeze([
+  "coverage:test",
+  "browser-bridge:test",
+  "package:test",
+  "install:test",
+  "stdio:integration-test",
+  "worker:integration-test",
+  "oauth-browser:test",
+]);
+
+export const PLATFORM_CHECK_TASKS = Object.freeze([
+  ...FAST_CHECK_TASKS,
+  ...PLATFORM_ONLY_CHECK_TASKS,
+]);
+
+export const FULL_CHECK_TASKS = Object.freeze([
+  ...PLATFORM_CHECK_TASKS,
+  ...FULL_ONLY_CHECK_TASKS,
+]);
+
+export function checkTasks(mode) {
+  if (mode === "fast") return FAST_CHECK_TASKS;
+  if (mode === "platform") return PLATFORM_CHECK_TASKS;
+  if (mode === "full") return FULL_CHECK_TASKS;
+  throw new Error(`unknown check mode: ${mode}`);
+}

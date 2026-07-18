@@ -50,10 +50,12 @@ function prepareCandidate() {
   writeFileSync(candidateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   const phrase = confirmationPhrase(pkg.name, pkg.version);
   console.log(`Release candidate created: ${join(candidateDirectory, metadata.filename)}`);
-  console.log("Test this exact tarball on the maintainer machine using the documented normal startup path.");
-  console.log("After the repository owner confirms it works, record that confirmation with:");
+  console.log("The repository owner must start this exact candidate in a local terminal with:");
+  console.log("npm run release:candidate:start -- --allow-worker-deploy");
+  console.log("Leave the candidate running while the coding agent verifies connection readiness and representative functionality through Machine Bridge.");
+  console.log("After that observed live verification succeeds, the coding agent records acceptance with:");
   console.log(`npm run release:accept -- --confirm \"${phrase}\"`);
-  console.log("Do not push this release-relevant branch before that command succeeds and its acceptance record is committed.");
+  console.log("Automated tests alone do not authorize acceptance or the first GitHub push.");
 }
 
 function recordAcceptance() {
@@ -61,7 +63,7 @@ function recordAcceptance() {
   const supplied = argumentValue("--confirm");
   const expected = confirmationPhrase(pkg.name, pkg.version);
   if (supplied !== expected) {
-    throw new Error(`owner confirmation must exactly match: ${expected}`);
+    throw new Error(`interactive candidate verification confirmation must exactly match: ${expected}`);
   }
   const pending = readJson(candidateManifestPath, "release candidate manifest");
   if (pending.result !== "pending" || pending.package_name !== pkg.name || pending.package_version !== pkg.version) {
@@ -94,7 +96,7 @@ function recordAcceptance() {
   const path = acceptancePath(root, pkg.version);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-  console.log(`Local owner acceptance recorded: ${path}`);
+  console.log(`Interactive local candidate acceptance recorded: ${path}`);
   console.log("Commit this record with the candidate. Any packaged-file change invalidates it.");
 }
 
@@ -127,7 +129,7 @@ function argumentValue(name) {
 }
 
 function confirmationPhrase(name, version) {
-  return `I TESTED ${name} ${version} LOCALLY AND IT WORKS`;
+  return `I VERIFIED ${name} ${version} CANDIDATE ON THE OWNER MACHINE AND IT WORKS`;
 }
 
 function fail(message) {

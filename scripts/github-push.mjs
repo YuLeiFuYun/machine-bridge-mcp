@@ -18,7 +18,7 @@ try {
   if (acceptance.required) {
     const path = `release-acceptance/v${acceptance.metadata.package_version}.json`;
     run("git", ["ls-files", "--error-unmatch", path], { capture: true });
-    console.log(`Verified repository-owner local acceptance for ${acceptance.metadata.filename}.`);
+    console.log(`Verified interactive local candidate acceptance for ${acceptance.metadata.filename}.`);
   }
 
   run("git", ["push", "--set-upstream", "origin", "HEAD"]);

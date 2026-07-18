@@ -283,7 +283,7 @@ export async function runtimeSelfTest() {
       const detachedDescendantPidFile = join(workspace, "detached-timeout-descendant.pid");
       const detachedParent = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`;
       await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 200), "command timed out");
-      const detachedDescendantPid = Number((await readFile(detachedDescendantPidFile, "utf8")).trim());
+      const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 2000)).trim());
       const detachedDeadline = Date.now() + 5000;
       while (isProcessAlive(detachedDescendantPid) && Date.now() < detachedDeadline) {
         await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });
@@ -332,6 +332,20 @@ export async function runtimeSelfTest() {
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+async function waitForFileText(file, timeoutMs) {
+  const deadline = performance.now() + timeoutMs;
+  let lastError = null;
+  while (performance.now() < deadline) {
+    try { return await readFile(file, "utf8"); }
+    catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      lastError = error;
+      await new Promise(resolvePromise => { setTimeout(resolvePromise, 20); });
+    }
+  }
+  throw lastError || new Error(`timed out waiting for file: ${file}`);
 }
 
 function isProcessAlive(pid) {

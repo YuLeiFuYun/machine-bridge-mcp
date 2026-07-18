@@ -1,16 +1,23 @@
-import { createHash } from "node:crypto";
 import { commandMatchText, recommendTools, relevanceScore } from "./capability-ranking.mjs";
-import { constants as fsConstants } from "node:fs";
-import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { lstat, realpath, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from "./default-instructions.mjs";
 import { automaticPackageCommands, readProjectPackageMetadata } from "./project-package.mjs";
 import { clampInteger } from "./numbers.mjs";
 import {
-  MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMANDS, MAX_SKILL_ROOTS,
-  assertAllowedPath, assertContainedPath, isContainedPath, normalizeAgentConfig, requiredString,
+  discoverLocalSkills, listSkillFiles, MAX_SKILL_ENTRY_BYTES, MAX_SKILL_FILES, MAX_SKILL_RESULTS,
+} from "./agent-skill-discovery.mjs";
+import { readOptionalRegularUtf8, readRegularUtf8 } from "./agent-text-file.mjs";
+import {
+  capabilityFingerprint, contextSkillSummaries, effectiveInstructionItems, publicCommands,
+  publicSkill, publicSkillWarnings, publicVirtualInstruction, renderEffectiveInstructions, sha256,
+} from "./agent-context-projection.mjs";
+import {
+  MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMANDS,
+  assertContainedPath, isContainedPath, normalizeAgentConfig, requiredString,
   resolveConfiguredPath, resolveInstructionPath, validateStringArray,
 } from "./agent-contract.mjs";
+export { parseSkillMetadata } from "./agent-skill-discovery.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".machine-bridge", "agent.json");
 const GLOBAL_CONFIG_RELATIVE_PATH = join(".config", "machine-bridge-mcp", "agent.json");
@@ -20,11 +27,6 @@ const MAX_CONTEXT_SKILL_SUMMARY_CHARS = 8_000;
 const MAX_CONFIG_BYTES = 256 * 1024;
 const MAX_INSTRUCTION_FILE_BYTES = 512 * 1024;
 const MAX_INSTRUCTION_FILES = 64;
-const MAX_SKILL_ENTRY_BYTES = 512 * 1024;
-const MAX_SKILL_RESULTS = 500;
-const MAX_SKILL_SCAN_ENTRIES = 20_000;
-const MAX_SKILL_SCAN_DEPTH = 8;
-const MAX_SKILL_FILES = 500;
 
 export class AgentContextManager {
   constructor({ workspace, policy, displayPath, resolveExistingPath, throwIfCancelled = () => {}, home = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "" }) {
@@ -377,87 +379,16 @@ export class AgentContextManager {
   }
 
   async discoverSkills(state, options = {}, context = {}) {
-    const query = String(options.query || "").trim().toLowerCase();
-    const maxResults = clampInteger(options.maxResults, 100, 1, MAX_SKILL_RESULTS);
-    const skills = [];
-    const warnings = [];
-    const seenEntrypoints = new Set();
-    const seenDirectories = new Set();
-    let visitedEntries = 0;
-    let truncated = false;
-
-    for (const configuredRoot of state.skillRoots.slice(0, MAX_SKILL_ROOTS)) {
-      this.throwIfCancelled(context);
-      const rootInfo = await lstat(configuredRoot).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
-      if (!rootInfo) continue;
-      const root = await realpath(configuredRoot);
-      const canonicalRootInfo = await stat(root);
-      if (!canonicalRootInfo.isDirectory()) throw new Error(`skill root is not a directory: ${this.displayPath(configuredRoot)}`);
-      assertAllowedPath(root, this.workspace, this.policy.unrestrictedPaths === true, "skill root");
-      const stack = [{ directory: root, depth: 0 }];
-      while (stack.length) {
-        this.throwIfCancelled(context);
-        const current = stack.pop();
-        if (seenDirectories.has(current.directory)) continue;
-        seenDirectories.add(current.directory);
-        visitedEntries += 1;
-        if (visitedEntries > MAX_SKILL_SCAN_ENTRIES) {
-          truncated = true;
-          break;
-        }
-        const entrypoint = await findSkillEntrypoint(current.directory);
-        if (entrypoint) {
-          const canonical = await realpath(entrypoint);
-          if (!seenEntrypoints.has(canonical)) {
-            seenEntrypoints.add(canonical);
-            try {
-              const summary = await summarizeSkill(canonical, root);
-              const haystack = `${summary.id}
-${summary.name}
-${summary.description}
-${summary.entrypoint}`.toLowerCase();
-              if (!query || haystack.includes(query)) {
-                skills.push(summary);
-                if (skills.length >= maxResults) {
-                  truncated = true;
-                  break;
-                }
-              }
-            } catch (error) {
-              if (warnings.length < 100) warnings.push({ entrypoint: canonical, message: boundedMessage(error) });
-            }
-          }
-          continue;
-        }
-        if (current.depth >= MAX_SKILL_SCAN_DEPTH) continue;
-        const handle = await opendir(current.directory);
-        for await (const entry of handle) {
-          this.throwIfCancelled(context);
-          visitedEntries += 1;
-          if (visitedEntries > MAX_SKILL_SCAN_ENTRIES) {
-            truncated = true;
-            break;
-          }
-          const child = join(current.directory, entry.name);
-          if (entry.isDirectory()) {
-            stack.push({ directory: child, depth: current.depth + 1 });
-          } else if (entry.isSymbolicLink()) {
-            const target = await realpath(child).catch(() => "");
-            if (!target) continue;
-            const targetInfo = await stat(target).catch(() => null);
-            if (!targetInfo?.isDirectory()) continue;
-            assertAllowedPath(target, this.workspace, this.policy.unrestrictedPaths === true, "skill symlink target");
-            stack.push({ directory: target, depth: current.depth + 1 });
-          }
-        }
-        if (truncated) break;
-      }
-      if (truncated && skills.length >= maxResults) break;
-      if (visitedEntries > MAX_SKILL_SCAN_ENTRIES) break;
-    }
-
-    skills.sort((left, right) => left.name.localeCompare(right.name) || left.entrypoint.localeCompare(right.entrypoint));
-    return { skills, warnings, truncated };
+    return discoverLocalSkills({
+      skillRoots: state.skillRoots,
+      query: String(options.query || ""),
+      maxResults: clampInteger(options.maxResults, 100, 1, MAX_SKILL_RESULTS),
+      workspace: this.workspace,
+      unrestricted: this.policy.unrestrictedPaths === true,
+      displayPath: this.displayPath,
+      context,
+      throwIfCancelled: this.throwIfCancelled,
+    });
   }
 }
 
@@ -518,244 +449,4 @@ async function readOptionalConfig(configPath, allowedRoot, rejectPathAliases) {
     throw new Error(`agent config is not valid JSON: ${configPath}`);
   }
   return normalizeAgentConfig(parsed, configPath);
-}
-
-async function findSkillEntrypoint(directory) {
-  for (const name of ["SKILL.md", "skill.md"]) {
-    const candidate = join(directory, name);
-    const info = await lstat(candidate).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
-    if (!info) continue;
-    if (info.isSymbolicLink()) throw new Error(`skill entrypoint must not be a symbolic link: ${candidate}`);
-    if (!info.isFile()) throw new Error(`skill entrypoint is not a regular file: ${candidate}`);
-    return candidate;
-  }
-  return "";
-}
-
-async function summarizeSkill(entrypoint, sourceRoot) {
-  const content = await readRegularUtf8(entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
-  const metadata = parseSkillMetadata(content.text);
-  if (!metadata.name || !metadata.description) throw new Error("SKILL.md front matter requires non-empty name and description fields");
-  const directory = dirname(entrypoint);
-  const name = metadata.name.slice(0, 200);
-  return {
-    id: `skill_${sha256(entrypoint).slice(0, 16)}`,
-    name,
-    description: metadata.description.slice(0, 1000),
-    entrypoint,
-    directory,
-    sourceRoot,
-    bytes: content.bytes,
-    sha256: sha256(content.text),
-  };
-}
-
-export function parseSkillMetadata(content) {
-  const text = String(content || "");
-  if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) return {};
-  const lines = text.split(/\r?\n/);
-  let end = -1;
-  for (let index = 1; index < Math.min(lines.length, 200); index += 1) {
-    if (lines[index].trim() === "---") {
-      end = index;
-      break;
-    }
-  }
-  if (end === -1) return {};
-  const metadata = {};
-  for (const line of lines.slice(1, end)) {
-    const match = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
-    if (!match) continue;
-    const key = match[1].toLowerCase();
-    if (key !== "name" && key !== "description") continue;
-    metadata[key] = unquoteScalar(match[2].trim());
-  }
-  return metadata;
-}
-
-async function listSkillFiles(root, maxFiles, context, throwIfCancelled) {
-  const files = [];
-  const stack = [{ directory: root, depth: 0 }];
-  let visited = 0;
-  let truncated = false;
-  while (stack.length) {
-    throwIfCancelled(context);
-    const current = stack.pop();
-    const handle = await opendir(current.directory);
-    for await (const entry of handle) {
-      throwIfCancelled(context);
-      visited += 1;
-      if (visited > MAX_SKILL_SCAN_ENTRIES) {
-        truncated = true;
-        break;
-      }
-      const full = join(current.directory, entry.name);
-      const rel = relative(root, full).split(sep).join("/");
-      if (entry.isDirectory()) {
-        if (current.depth < MAX_SKILL_SCAN_DEPTH) stack.push({ directory: full, depth: current.depth + 1 });
-        else truncated = true;
-      } else if (entry.isFile()) {
-        const info = await lstat(full);
-        files.push({ path: rel, bytes: info.size, type: "file" });
-      } else if (entry.isSymbolicLink()) {
-        files.push({ path: rel, bytes: 0, type: "symlink" });
-      }
-      if (files.length >= maxFiles) {
-        truncated = true;
-        break;
-      }
-    }
-    if (truncated && (files.length >= maxFiles || visited > MAX_SKILL_SCAN_ENTRIES)) break;
-  }
-  files.sort((left, right) => left.path.localeCompare(right.path));
-  return { files, truncated };
-}
-
-function capabilityFingerprint(state, skills) {
-  return sha256(JSON.stringify({
-    configs: state.configFiles,
-    instructions: [
-      state.builtinInstructions?.sha256 || "",
-      state.automaticProjectContext?.sha256 || "",
-      state.modelInstructions?.sha256 || "",
-      ...state.instructions.map((item) => item.sha256),
-    ],
-    skills: skills.map((skill) => [skill.id, skill.sha256]),
-    commands: [...state.commands.values()].map((command) => [command.name, command.argv]),
-  }));
-}
-
-function publicSkill(skill, displayPath) {
-  return {
-    id: skill.id,
-    name: skill.name,
-    description: skill.description,
-    entrypoint: displayPath(skill.entrypoint),
-    source_root: displayPath(skill.sourceRoot),
-    bytes: skill.bytes,
-    sha256: skill.sha256,
-  };
-}
-
-function contextSkillSummaries(skills, displayPath, maxSkills, budgetChars) {
-  const selected = [];
-  let used = 0;
-  for (const skill of skills) {
-    if (selected.length >= maxSkills) return { skills: selected, truncated: true };
-    const item = publicSkill(skill, displayPath);
-    const fullSize = JSON.stringify(item).length;
-    if (used + fullSize <= budgetChars) {
-      selected.push(item);
-      used += fullSize;
-      continue;
-    }
-    const withoutDescription = { ...item, description: "", description_truncated: true };
-    const baseSize = JSON.stringify(withoutDescription).length;
-    const available = budgetChars - used - baseSize;
-    if (available >= 32) {
-      selected.push({ ...withoutDescription, description: item.description.slice(0, available) });
-    }
-    return { skills: selected, truncated: true };
-  }
-  return { skills: selected, truncated: false };
-}
-
-function publicSkillWarnings(warnings, displayPath) {
-  return warnings.map((warning) => ({ entrypoint: displayPath(warning.entrypoint), message: warning.message }));
-}
-
-function publicCommands(commands, displayPath) {
-  return [...commands.values()]
-    .sort((left, right) => left.name.localeCompare(right.name))
-    .map((command) => ({
-      name: command.name,
-      description: command.description,
-      argv: [...command.argv],
-      cwd: displayPath(command.cwd),
-      timeout_seconds: command.timeoutSeconds,
-      allow_extra_args: command.allowExtraArgs,
-      source: displayPath(command.source),
-      source_type: command.sourceType || "agent-config",
-      ...(command.script ? { package_script: command.script } : {}),
-    }));
-}
-
-function effectiveInstructionItems(state) {
-  return [
-    ...(state.builtinInstructions ? [state.builtinInstructions] : []),
-    ...(state.automaticProjectContext ? [state.automaticProjectContext] : []),
-    ...(state.modelInstructions ? [state.modelInstructions] : []),
-    ...state.instructions,
-  ];
-}
-
-function publicVirtualInstruction(item, includeContent) {
-  if (!item) return null;
-  return {
-    source: item.source,
-    scope: item.scope,
-    bytes: item.bytes,
-    sha256: item.sha256,
-    precedence: item.precedence,
-    ...(includeContent ? { content: item.content } : {}),
-  };
-}
-
-function renderEffectiveInstructions(instructions, displayPath) {
-  return instructions.map((item) => {
-    const source = item.source || displayPath(item.path);
-    return [
-      `--- BEGIN ${source} (precedence ${item.precedence}) ---`,
-      item.content,
-      `--- END ${source} ---`,
-    ].join("\n");
-  }).join("\n\n");
-}
-
-async function readOptionalRegularUtf8(filePath, maxBytes, label) {
-  const info = await lstat(filePath).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
-  if (!info) return null;
-  if (info.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link: ${filePath}`);
-  if (!info.isFile()) throw new Error(`${label} is not a regular file: ${filePath}`);
-  return readRegularUtf8(filePath, maxBytes, label);
-}
-
-async function readRegularUtf8(filePath, maxBytes, label) {
-  const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0));
-  try {
-    const info = await handle.stat();
-    if (!info.isFile()) throw new Error(`${label} is not a regular file: ${filePath}`);
-    if (info.size > maxBytes) throw new Error(`${label} exceeds maximum size (${info.size} > ${maxBytes})`);
-    const buffer = Buffer.alloc(info.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (!bytesRead) break;
-      offset += bytesRead;
-    }
-    let text;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, offset));
-    } catch {
-      throw new Error(`${label} is not valid UTF-8 text: ${filePath}`);
-    }
-    return { text, bytes: offset };
-  } finally {
-    await handle.close();
-  }
-}
-
-function boundedMessage(error) {
-  return String(error?.message || error || "invalid local skill").replace(/[\r\n]+/g, " ").slice(0, 1000);
-}
-
-function unquoteScalar(value) {
-  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
-    return value.slice(1, -1);
-  }
-  return value;
-}
-
-function sha256(value) {
-  return createHash("sha256").update(String(value)).digest("hex");
 }

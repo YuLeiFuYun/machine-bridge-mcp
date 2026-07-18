@@ -2,6 +2,16 @@
 
 Read [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), [docs/ENGINEERING.md](docs/ENGINEERING.md), [GOVERNANCE.md](GOVERNANCE.md), and the relevant domain documentation before changing behavior.
 
+## First 30 minutes
+
+1. Use Node.js 26 and npm 12, then run `npm ci`.
+2. Read [System overview](docs/OVERVIEW.md), [Engineering](docs/ENGINEERING.md), and the domain document for the code being changed.
+3. Run `npm run check:fast` before editing to establish a clean local baseline.
+4. Make one responsibility-focused change and run its nearest behavior test while iterating.
+5. Run `npm run check` before declaring a package-affecting change complete.
+
+Do not begin by raising a module line cap, weakening a coverage threshold, or adding a parallel policy/protocol shape. First identify the responsibility that belongs in a focused module or the shared contract that should own the rule. Source-shape architecture assertions are supplementary; security and lifecycle changes require behavior, denial, race, or fault-injection coverage for the underlying mechanism.
+
 ## Development workflow
 
 The repository uses GitHub Flow: branch from current `main`, keep one coherent change, validate it locally, open a pull request, satisfy required checks, squash-merge, and delete the branch. Permanent `develop` or generic release integration branches are not used unless an independently maintained release line creates a concrete need.
@@ -31,13 +41,14 @@ Repository-only infrastructure changes, such as a `.github/` workflow update, do
 3. run targeted tests, both dependency audits, `npm run worker:dry-run`, privacy/history review, signature verification, SBOM generation, and package inspection as applicable;
 4. inspect the complete diff;
 5. run `npm run release:candidate`, which executes the complete suite and creates the exact candidate tarball under ignored `.release-candidate/`;
-6. have the repository owner test that exact tarball on the maintainer machine through the normal installation/startup path;
-7. have the owner record the explicit decision with the exact command printed by the candidate tool, creating `release-acceptance/v<version>.json`;
-8. commit the acceptance record and push the clean non-`main` branch only with `npm run github:push`.
+6. give the repository owner `npm run release:candidate:start -- --allow-worker-deploy`; the owner explicitly authorizes the in-place candidate Worker deployment, starts the exact candidate locally, and leaves it running;
+7. verify the live candidate through Machine Bridge, including Worker version/hash, remote health, relay readiness, exact local version, and representative functionality relevant to the change;
+8. after observed verification succeeds, have the coding agent run the exact `release:accept` command printed by the candidate tool, creating `release-acceptance/v<version>.json`;
+9. commit the acceptance record and push the clean non-`main` branch only with `npm run github:push`.
 
-Automated checks do not authorize step 7. A coding agent must not record owner acceptance or push the release-relevant branch before the owner has tested it. Any packaged-file change after acceptance changes the npm tarball hash and requires a regenerated candidate and a new owner test.
+Automated checks do not authorize step 8. The coding agent may record acceptance only after it has observed the owner-started candidate operating successfully. Any packaged-file change after acceptance changes the npm tarball hash and requires a regenerated candidate and another observed live verification.
 
-After all required pull-request checks pass, repository automation may complete the source release: squash-merge, verify the exact `main` push CI, CodeQL, Governance, and Scorecard runs, and run `npm run release:publish`. The publication helper requires `HEAD === origin/main`; it does not push `main`. It creates or verifies the annotated version tag and final GitHub Release only after the accepted package hash and exact-commit checks match.
+After all required pull-request checks pass, repository automation completes the source release: squash-merge, verify the exact `main` push CI, CodeQL, Governance, and Scorecard runs, and run `npm run release`. The helper requires `HEAD === origin/main`; it does not push `main`. It creates or verifies the annotated version tag and final GitHub Release only after the accepted package hash and exact-commit checks match. `release:publish` remains a compatibility alias.
 
 The release operator separately authorizes npm publication and any live machine update. Automation must not publish, deprecate, or unpublish npm packages; install the CLI globally; deploy the Worker; rotate credentials; mutate live deployment state; or start, stop, install, remove, or replace the daemon or autostart service without explicit user authorization.
 
