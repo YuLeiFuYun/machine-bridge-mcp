@@ -5,7 +5,8 @@
   "package_name": "machine-bridge-mcp",
   "package_version": "1.2.9",
   "filename": "machine-bridge-mcp-1.2.9.tgz",
-  "shasum": "2e0f82e811c37d43073b73685367f737843b0dfb",
-  "integrity": "sha512-RgYkiOij8NX0kFvv68q1+Z0gMLuNNMbYKrgTprG2dxCQR7PEBt9y6yUR+VknvzOJWSedB6X0xSmRUX06WheJmQ==",
-  "accepted_at": "2026-07-18T10:22:59.591Z"
+  "shasum": "d3d390c25814912682912586ad04eb2d64aeed9e",
+  "integrity": "sha512-sJ/ZDyXjc0IO+gN1DYhCf6RYwiLRXsNkH/jGNvsXPM+U66TLf9slz4uRw/4Pg1NZzDJ1ccPZjwNtKSCiTQieUw==",
+  "accepted_at": "2026-07-18T11:48:28.294Z",
+  "package_content_sha256": "7cdeaa5a932820f4cc4add90bd2787ec6ab5453a1057d92628c2719dd9c84198"
 }
