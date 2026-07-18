@@ -47,6 +47,7 @@ try {
     accepted_at: "2026-07-18T12:00:00.000Z",
   };
   verifyAcceptanceRecord(record, metadata);
+  expectThrow(() => verifyAcceptanceRecord({ ...record, package_content_sha256: "" }, metadata), "portable package-content digest");
   expectThrow(() => verifyAcceptanceRecord({ ...record, confirmation: LEGACY_ACCEPTANCE_CONFIRMATION }, metadata), "active verification workflow");
   const recordPath = acceptancePath(root, metadata.package_version);
   mkdirSync(dirname(recordPath), { recursive: true });

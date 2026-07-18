@@ -106,6 +106,9 @@ export function verifyAcceptanceRecord(record, metadata) {
   }
   const acceptedAt = Date.parse(String(record.accepted_at || ""));
   if (!Number.isFinite(acceptedAt)) throw new Error("local release acceptance timestamp is invalid");
+  if (!/^[0-9a-f]{64}$/.test(String(record.package_content_sha256 || ""))) {
+    throw new Error("local release acceptance portable package-content digest is missing or invalid");
+  }
   for (const key of ["package_name", "package_version", "filename", "shasum", "integrity"]) {
     if (record[key] !== metadata[key]) {
       throw new Error(`local release acceptance ${key} does not match the current npm package`);

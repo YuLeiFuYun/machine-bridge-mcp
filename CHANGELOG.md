@@ -2,6 +2,7 @@
 
 ## 1.2.9 - 2026-07-18
 
+- Repair cross-platform release infrastructure found by PR CI: the layered check runner now invokes the pinned npm CLI through Node instead of spawning `npm.cmd`, and `release:accept` computes and locally validates the portable Git-content digest through a temporary index so CI can verify accepted package content across merge commits without mutating the maintainer index.
 - Correct the release handoff: add `npm run release:candidate:start -- --allow-worker-deploy` for an isolated local installation plus explicitly authorized in-place candidate Worker deployment, require owner-started and agent-observed live verification before acceptance, allow the coding agent to record acceptance and complete commit/push/tag/GitHub Release work, and add `npm run release` as the canonical source-release command. npm publication and Worker deployment remain owner-operated.
 
 ### Architecture headroom, verification feedback, and threat model

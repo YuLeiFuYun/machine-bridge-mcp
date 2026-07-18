@@ -61,7 +61,7 @@ The owner does not run the acceptance command. After the coding agent has observ
 npm run release:accept -- --confirm "I VERIFIED machine-bridge-mcp 1.2.9 CANDIDATE ON THE OWNER MACHINE AND IT WORKS"
 ```
 
-This creates `release-acceptance/v<version>.json` containing only package identity, hashes, timestamp, result, and a fixed observed-verification marker. It does not store a personal name, machine path, command output, credential, or user content. The acceptance record is intentionally excluded from the npm package, so adding it does not change the tested tarball.
+This creates `release-acceptance/v<version>.json` containing package identity, npm tarball hashes, a portable Git-content digest, timestamp, result, and a fixed observed-verification marker. The portable digest is computed with a temporary Git index containing `HEAD` plus the complete working tree; the real staging area is not modified. The record does not store a personal name, machine path, command output, credential, or user content. It is intentionally excluded from the npm package, so adding it does not change the tested tarball.
 
 The command repacks the current tree and refuses to record acceptance if any packaged byte changed after candidate preparation. Automated tests alone, a prepared tarball, a process the agent did not observe, or an ambiguous owner response do not authorize acceptance. Version 1.2.8 owner-recorded acceptance remains supported as a historical marker; version 1.2.9 and later require the owner-started, agent-observed workflow.
 

@@ -83,6 +83,14 @@ for (const required of ["install:test", "oauth-browser:test", "coverage:test", "
 if (packageJson.scripts?.["release:acceptance:test"] !== "node tests/release-acceptance-test.mjs") throw new Error("local release acceptance regression test is missing");
 if (packageJson.scripts?.["release:candidate"] !== "npm run check && node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses the complete suite");
 if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-release-candidate.mjs") throw new Error("isolated candidate startup command is missing");
+const checkRunnerSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
+if (!checkRunnerSource.includes("process.execPath") || !checkRunnerSource.includes("process.env.npm_execpath") || checkRunnerSource.includes("npm.cmd")) {
+  throw new Error("cross-platform check runner no longer invokes the pinned npm CLI through Node");
+}
+const localAcceptanceSource = readFileSync(join(root, "scripts", "local-release-acceptance.mjs"), "utf8");
+for (const required of ["GIT_INDEX_FILE", 'git", ["read-tree", "HEAD"]', 'git", ["add", "--all"', "--print-digest", "package_content_sha256"]) {
+  if (!localAcceptanceSource.includes(required)) throw new Error(`local acceptance recorder lost portable digest boundary: ${required}`);
+}
 if (packageJson.scripts?.release !== "node scripts/github-release.mjs --publish") throw new Error("source release command is missing");
 if (packageJson.scripts?.["release:publish"] !== packageJson.scripts?.release) throw new Error("legacy release:publish alias drifted from npm run release");
 if (packageJson.scripts?.["release:accept"] !== "node scripts/local-release-acceptance.mjs --record") throw new Error("interactive acceptance command is missing");

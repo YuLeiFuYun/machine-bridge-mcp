@@ -2,10 +2,13 @@
 
 import {
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -91,6 +94,7 @@ function recordAcceptance() {
     shasum: current.shasum,
     integrity: current.integrity,
     accepted_at: new Date().toISOString(),
+    package_content_sha256: computePortablePackageDigest(),
   };
   verifyAcceptanceRecord(record, current);
   const path = acceptancePath(root, pkg.version);
@@ -107,6 +111,50 @@ function verifyAcceptance() {
     return;
   }
   console.log(`Local release acceptance matches ${result.metadata.filename} (${result.metadata.shasum}).`);
+}
+
+function computePortablePackageDigest() {
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli) throw new Error("portable package digest requires npm_execpath");
+  const temporary = mkdtempSync(join(tmpdir(), "mbm-release-index-"));
+  const indexPath = join(temporary, "index");
+  const env = { ...process.env, GIT_INDEX_FILE: indexPath };
+  try {
+    runChecked("git", ["read-tree", "HEAD"], { env });
+    runChecked("git", ["add", "--all", "--", "."], { env });
+    const packed = runChecked(process.execPath, [
+      npmCli,
+      "pack",
+      "--ignore-scripts",
+      "--silent",
+      "--dry-run",
+      "--json",
+    ], { env });
+    const verifier = runChecked(process.execPath, [
+      join(root, ".github", "scripts", "verify-release-acceptance.mjs"),
+      "--print-digest",
+    ], { env, input: packed.stdout });
+    const digest = verifier.stdout.trim();
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error("portable package digest output is invalid");
+    return digest;
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+function runChecked(file, args, { env = process.env, input } = {}) {
+  const result = spawnSync(file, args, {
+    cwd: root,
+    encoding: "utf8",
+    env,
+    input,
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`${file} ${args[0] || ""} failed: ${String(result.stderr || result.stdout).trim()}`);
+  }
+  return result;
 }
 
 function readPackage() {
