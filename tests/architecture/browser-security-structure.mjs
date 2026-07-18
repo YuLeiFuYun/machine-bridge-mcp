@@ -34,7 +34,9 @@ const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-
 const appAutomationSource = readFileSync(join(root, "src", "local", "app-automation.mjs"), "utf8");
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+const workerWebSocketProtocolSource = readFileSync(join(root, "src", "worker", "websocket-protocol.ts"), "utf8");
 const workerOAuthControllerSource = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
+const workerOAuthPageSource = readFileSync(join(root, "src", "worker", "oauth-authorization-page.ts"), "utf8");
 const workerHttpSource = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
 const oauthBrowserNavigationSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
@@ -62,8 +64,9 @@ if (!workerHttpSource.includes('url.hostname === "consent.azure-apim.net"')
   || !workerHttpSource.includes('sources.push("https://*.consent.azure-apim.net", "https://copilotstudio.microsoft.com")')) {
   throw new Error("authorization HTML no longer permits only validated Microsoft consent callbacks to use the complete Power Platform callback chain");
 }
-if (!workerOAuthControllerSource.includes("new URL(authorization.redirectUri).origin")
-    || !workerOAuthControllerSource.includes("status, redirectOrigin")) {
+if (!workerOAuthControllerSource.includes("./oauth-authorization-page.ts")
+    || !workerOAuthPageSource.includes("new URL(authorization.redirectUri).origin")
+    || !workerOAuthPageSource.includes("status, redirectOrigin")) {
   throw new Error("authorization pages no longer bind CSP form navigation to the validated redirect origin");
 }
 if (!oauthBrowserNavigationSource.includes("negative control reached the first callback")
@@ -95,11 +98,17 @@ if (!pageAutomationSource.includes("__machineBridgePageAutomation") || !pageAuto
 }
 if (!browserOperationsSource.includes("performPageAction") || !browserOperationsSource.includes("safeToFallback")) throw new Error("browser operations lost fixed trusted-input integration or replay protection");
 if (!serviceWorkerSource.includes('BROWSER_EXTENSION_PROTOCOL = 3') || !serviceWorkerSource.includes('hello_ack') || !serviceWorkerSource.includes('capabilities:')) throw new Error("browser extension lost its acknowledged versioned capability handshake");
-for (const [name, source] of [["src/worker/index.ts", workerSource], ["browser-extension/service-worker.js", serviceWorkerSource]]) {
+for (const [name, source] of [
+  ["src/worker/index.ts", workerSource],
+  ["src/worker/websocket-protocol.ts", workerWebSocketProtocolSource],
+  ["browser-extension/service-worker.js", serviceWorkerSource],
+]) {
   if (/catch\s*(?:\([^)]*\))?\s*\{\s*\}/.test(source)) throw new Error(`${name} contains an unexplained empty catch`);
 }
-if (!workerSource.includes("function sendWebSocketQuietly") || !workerSource.includes("function closeWebSocketQuietly")) {
-  throw new Error("Worker WebSocket best-effort cleanup is not centralized");
+if (!workerSource.includes('from "./websocket-protocol.ts"')
+    || !workerWebSocketProtocolSource.includes("function sendWebSocketQuietly")
+    || !workerWebSocketProtocolSource.includes("function closeWebSocketQuietly")) {
+  throw new Error("Worker WebSocket best-effort cleanup is not centralized behind the protocol boundary");
 }
 if (!serviceWorkerSource.includes("function closeSocketQuietly") || !serviceWorkerSource.includes("function sendSocketQuietly") || !serviceWorkerSource.includes("function ignoreBrowserApiCall")) {
   throw new Error("browser extension best-effort cleanup is not centralized");

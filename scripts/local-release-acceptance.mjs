@@ -2,10 +2,13 @@
 
 import {
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -50,10 +53,12 @@ function prepareCandidate() {
   writeFileSync(candidateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   const phrase = confirmationPhrase(pkg.name, pkg.version);
   console.log(`Release candidate created: ${join(candidateDirectory, metadata.filename)}`);
-  console.log("Test this exact tarball on the maintainer machine using the documented normal startup path.");
-  console.log("After the repository owner confirms it works, record that confirmation with:");
+  console.log("The repository owner must start this exact candidate in a local terminal with:");
+  console.log("npm run release:candidate:start -- --allow-worker-deploy");
+  console.log("Leave the candidate running while the coding agent verifies connection readiness and representative functionality through Machine Bridge.");
+  console.log("After that observed live verification succeeds, the coding agent records acceptance with:");
   console.log(`npm run release:accept -- --confirm \"${phrase}\"`);
-  console.log("Do not push this release-relevant branch before that command succeeds and its acceptance record is committed.");
+  console.log("Automated tests alone do not authorize acceptance or the first GitHub push.");
 }
 
 function recordAcceptance() {
@@ -61,7 +66,7 @@ function recordAcceptance() {
   const supplied = argumentValue("--confirm");
   const expected = confirmationPhrase(pkg.name, pkg.version);
   if (supplied !== expected) {
-    throw new Error(`owner confirmation must exactly match: ${expected}`);
+    throw new Error(`interactive candidate verification confirmation must exactly match: ${expected}`);
   }
   const pending = readJson(candidateManifestPath, "release candidate manifest");
   if (pending.result !== "pending" || pending.package_name !== pkg.name || pending.package_version !== pkg.version) {
@@ -89,12 +94,13 @@ function recordAcceptance() {
     shasum: current.shasum,
     integrity: current.integrity,
     accepted_at: new Date().toISOString(),
+    package_content_sha256: computePortablePackageDigest(),
   };
   verifyAcceptanceRecord(record, current);
   const path = acceptancePath(root, pkg.version);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-  console.log(`Local owner acceptance recorded: ${path}`);
+  console.log(`Interactive local candidate acceptance recorded: ${path}`);
   console.log("Commit this record with the candidate. Any packaged-file change invalidates it.");
 }
 
@@ -105,6 +111,50 @@ function verifyAcceptance() {
     return;
   }
   console.log(`Local release acceptance matches ${result.metadata.filename} (${result.metadata.shasum}).`);
+}
+
+function computePortablePackageDigest() {
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli) throw new Error("portable package digest requires npm_execpath");
+  const temporary = mkdtempSync(join(tmpdir(), "mbm-release-index-"));
+  const indexPath = join(temporary, "index");
+  const env = { ...process.env, GIT_INDEX_FILE: indexPath };
+  try {
+    runChecked("git", ["read-tree", "HEAD"], { env });
+    runChecked("git", ["add", "--all", "--", "."], { env });
+    const packed = runChecked(process.execPath, [
+      npmCli,
+      "pack",
+      "--ignore-scripts",
+      "--silent",
+      "--dry-run",
+      "--json",
+    ], { env });
+    const verifier = runChecked(process.execPath, [
+      join(root, ".github", "scripts", "verify-release-acceptance.mjs"),
+      "--print-digest",
+    ], { env, input: packed.stdout });
+    const digest = verifier.stdout.trim();
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error("portable package digest output is invalid");
+    return digest;
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+function runChecked(file, args, { env = process.env, input } = {}) {
+  const result = spawnSync(file, args, {
+    cwd: root,
+    encoding: "utf8",
+    env,
+    input,
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`${file} ${args[0] || ""} failed: ${String(result.stderr || result.stdout).trim()}`);
+  }
+  return result;
 }
 
 function readPackage() {
@@ -127,7 +177,7 @@ function argumentValue(name) {
 }
 
 function confirmationPhrase(name, version) {
-  return `I TESTED ${name} ${version} LOCALLY AND IT WORKS`;
+  return `I VERIFIED ${name} ${version} CANDIDATE ON THE OWNER MACHINE AND IT WORKS`;
 }
 
 function fail(message) {

@@ -978,7 +978,7 @@ async function ciBootstrapSelfTest() {
   const lines = workflow.split("\n");
   const setupNodePattern = /^\s*-\s+uses:\s+actions\/setup-node@(820762786026740c76f36085b0efc47a31fe5020)\s+#\s+v7\.0\.0\s*$/;
   const setupIndexes = lines.flatMap((line, index) => setupNodePattern.test(line) ? [index] : []);
-  if (setupIndexes.length !== 2) throw new Error("CI must contain exactly two immutable setup-node v7.0.0 bootstrap blocks");
+  if (setupIndexes.length < 2) throw new Error("CI must use immutable setup-node v7.0.0 in every npm execution job");
   for (const index of setupIndexes) {
     const setupWindow = lines.slice(index, index + 6).join("\n");
     if (!setupWindow.includes("package-manager-cache: false")) {
@@ -987,8 +987,8 @@ async function ciBootstrapSelfTest() {
   }
   const pinnedBootstrapCount = lines.filter((line) => line.includes("node scripts/prepare-pinned-npm.mjs")).length;
   const versionCheckCount = lines.filter((line) => line.trim() === "- run: npm --version").length;
-  if (pinnedBootstrapCount !== 2 || versionCheckCount !== 2 || workflow.includes("npm install --global npm@")) {
-    throw new Error("CI must prepare and verify integrity-pinned npm 12 in both jobs without a mutable global install");
+  if (pinnedBootstrapCount !== setupIndexes.length || versionCheckCount !== setupIndexes.length || workflow.includes("npm install --global npm@")) {
+    throw new Error("every CI npm execution job must prepare and verify integrity-pinned npm 12 without a mutable global install");
   }
   const bootstrap = await readFile(new URL("../scripts/prepare-pinned-npm.mjs", import.meta.url), "utf8");
   if (!bootstrap.includes("npm-12.0.1.tgz") || !bootstrap.includes("sha512-L5T9i/YAQWQWqTS/") || !bootstrap.includes('redirect: "error"') || !bootstrap.includes("readBoundedBody(response, MAX_TARBALL_BYTES)")) {
@@ -999,7 +999,7 @@ async function ciBootstrapSelfTest() {
   }
   const installSmokeCount = lines.filter((line) => line.includes("npm run install:test")).length;
   if (installSmokeCount !== 2) {
-    throw new Error("CI must exercise the documented global installation in package-audit and on macOS");
+    throw new Error("CI must exercise the documented global installation in package-audit and the cross-platform job");
   }
   const packageTest = await readFile(new URL("./package-test.mjs", import.meta.url), "utf8");
   if (!packageTest.includes("process.env.npm_execpath") || packageTest.includes('spawnSync(npm')) {
@@ -1044,10 +1044,13 @@ async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const workerModules = await Promise.all([
     "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
-    "oauth-controller.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts", "daemon-liveness.ts",
-    "daemon-sockets.ts",
+    "oauth-controller.ts", "oauth-authorization-page.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts", "daemon-liveness.ts",
+    "daemon-sockets.ts", "mcp-jsonrpc.ts", "websocket-protocol.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
+  for (const module of ["mcp-jsonrpc", "websocket-protocol"]) {
+    if (!source.includes(`./${module}.ts`)) throw new Error(`Worker index lost protocol boundary module: ${module}`);
+  }
   const unawaitedAsyncRoutes = [
     "return this.oauth.registerClient(request);",
     "return this.oauth.authorizeSubmit(request, base);",

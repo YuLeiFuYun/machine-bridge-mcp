@@ -342,7 +342,7 @@ function assertLocalAcceptance() {
   try {
     const result = verifyCurrentReleaseAcceptance(root);
     if (result.required) {
-      console.log(`Repository-owner local acceptance matches ${result.metadata.filename} (${result.metadata.shasum}).`);
+      console.log(`Interactive local candidate acceptance matches ${result.metadata.filename} (${result.metadata.shasum}).`);
     }
   } catch (error) {
     fail(String(error?.message || error));

@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import {
   ACCEPTANCE_CONFIRMATION,
   ACCEPTANCE_SCHEMA_VERSION,
+  LEGACY_ACCEPTANCE_CONFIRMATION,
   acceptancePath,
   packProject,
   requiresLocalAcceptance,
@@ -26,7 +27,7 @@ const root = mkdtempSync(join(tmpdir(), "mbm-release-acceptance-test-"));
 const output = join(root, "output");
 try {
   mkdirSync(output, { recursive: true });
-  writePackage("1.2.8");
+  writePackage("1.2.9");
   writeFileSync(join(root, "index.js"), "export const value = 1;\n");
   git(["init", "-q"]);
   git(["add", "package.json", "index.js"]);
@@ -43,9 +44,11 @@ try {
     confirmation: ACCEPTANCE_CONFIRMATION,
     ...metadata,
     package_content_sha256: canonicalPackageDigest(root, portablePack),
-    accepted_at: "2026-07-17T12:00:00.000Z",
+    accepted_at: "2026-07-18T12:00:00.000Z",
   };
   verifyAcceptanceRecord(record, metadata);
+  expectThrow(() => verifyAcceptanceRecord({ ...record, package_content_sha256: "" }, metadata), "portable package-content digest");
+  expectThrow(() => verifyAcceptanceRecord({ ...record, confirmation: LEGACY_ACCEPTANCE_CONFIRMATION }, metadata), "active verification workflow");
   const recordPath = acceptancePath(root, metadata.package_version);
   mkdirSync(dirname(recordPath), { recursive: true });
   writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
@@ -59,6 +62,24 @@ try {
   expectThrow(() => verifyCurrentReleaseAcceptance(root), "does not match the current npm package");
   git(["add", "index.js"]);
   expectThrow(() => verifyPortableAcceptance(root, packFixtureMetadata()), "content digest does not match");
+
+  writePackage("1.2.8");
+  writeFileSync(join(root, "index.js"), "export const value = 3;\n");
+  git(["add", "package.json", "index.js"]);
+  const legacyMetadata = packProject(root, output);
+  const legacyRecord = {
+    schema_version: ACCEPTANCE_SCHEMA_VERSION,
+    result: "passed",
+    confirmation: LEGACY_ACCEPTANCE_CONFIRMATION,
+    ...legacyMetadata,
+    package_content_sha256: canonicalPackageDigest(root, packFixtureMetadata()),
+    accepted_at: "2026-07-17T12:00:00.000Z",
+  };
+  const legacyPath = acceptancePath(root, legacyMetadata.package_version);
+  mkdirSync(dirname(legacyPath), { recursive: true });
+  writeFileSync(legacyPath, `${JSON.stringify(legacyRecord, null, 2)}\n`);
+  const legacyVerified = verifyCurrentReleaseAcceptance(root);
+  assert(legacyVerified.required && legacyVerified.record.confirmation === LEGACY_ACCEPTANCE_CONFIRMATION, "legacy 1.2.8 owner-recorded acceptance was not preserved");
 
   writePackage("1.2.7");
   const grandfathered = verifyCurrentReleaseAcceptance(root);

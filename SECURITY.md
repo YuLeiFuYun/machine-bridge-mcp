@@ -27,6 +27,8 @@ CodeQL and OpenSSF Scorecard are enforced as gates, not merely uploaded as advis
 
 ## Core trust model
 
+The concise security model is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), including assets, attacker classes, explicit non-goals, and residual risks.
+
 Trusted components are:
 
 1. the local OS user running the runtime;

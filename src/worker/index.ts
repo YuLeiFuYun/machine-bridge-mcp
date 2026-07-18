@@ -25,12 +25,18 @@ import {
   HttpError, applyCors, baseUrl, bearerToken, corsPreflight, json, methodNotAllowed,
   parseJsonRequest, workerErrorClass,
 } from "./http.ts";
+import {
+  asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
+  sessionInstructionText, textToolResult, validateProtocolVersionHeader, type JsonRpcRequest,
+} from "./mcp-jsonrpc.ts";
+import {
+  closeWebSocketQuietly, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly,
+} from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.2.8";
+const SERVER_VERSION = "1.2.9";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
-const JSONRPC_VERSION = "2.0";
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_CALLS = 32;
@@ -43,15 +49,6 @@ interface BridgeEnv extends OAuthControllerEnv {
   OAUTH_TOKEN_VERSION: string;
   MBM_WORKER_MAX_BODY_BYTES?: string;
   MBM_ALLOWED_ORIGINS?: string;
-}
-
-type JsonRpcId = string | number | null;
-
-interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id?: JsonRpcId;
-  method: string;
-  params?: unknown;
 }
 
 const MCP_INSTRUCTIONS = serverMetadata.instructions.map((value) => String(value)).join("\n");
@@ -295,7 +292,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const body = await parseJsonRequest(request, this.bodyLimitBytes());
     if (isJsonRpcResponse(body)) return new Response(null, { status: 202 });
     if (!isJsonRpcRequest(body)) return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
-    const protocolError = validateProtocolVersionHeader(request, body);
+    const protocolError = validateProtocolVersionHeader(request, body, MCP_SUPPORTED_PROTOCOL_VERSIONS);
     if (protocolError) return json(protocolError, 400);
 
     const session = await resolveMcpSession(request, body.method, this.oauth.identityKey(), authorized.tokenKey);
@@ -700,109 +697,3 @@ export default {
     return stub.fetch(request);
   },
 } satisfies ExportedHandler<BridgeEnv>;
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function rejectDaemonMessage(ws: WebSocket, error: string, closeCode: number, closeReason: string): void {
-  sendWebSocketQuietly(ws, { type: "error", error });
-  closeWebSocketQuietly(ws, closeCode, closeReason);
-}
-
-function sendWebSocketQuietly(ws: WebSocket, value: unknown): void {
-  try {
-    ws.send(typeof value === "string" ? value : JSON.stringify(value));
-  } catch {
-    // Best-effort protocol cleanup must not replace the primary timeout or rejection.
-  }
-}
-
-function closeWebSocketQuietly(ws: WebSocket, code?: number, reason?: string): void {
-  try {
-    ws.close(code, reason);
-  } catch {
-    // The socket may already be closed or detached; no recovery remains at this boundary.
-  }
-}
-
-function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  if (candidate.jsonrpc !== JSONRPC_VERSION || typeof candidate.method !== "string" || !candidate.method.trim() || candidate.method.length > 256) return false;
-  if ("id" in candidate && !isJsonRpcId(candidate.id)) return false;
-  return true;
-}
-
-function isJsonRpcId(value: unknown): value is JsonRpcId {
-  return value === null || typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
-}
-
-function isJsonRpcResponse(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  if (candidate.jsonrpc !== JSONRPC_VERSION || !("id" in candidate) || !isJsonRpcId(candidate.id) || typeof candidate.method === "string") return false;
-  return ("result" in candidate) !== ("error" in candidate);
-}
-
-function rpcResult(id: JsonRpcId | undefined, result: unknown): Record<string, unknown> | null {
-  if (id === undefined) return null;
-  return { jsonrpc: JSONRPC_VERSION, id, result };
-}
-
-function rpcError(id: JsonRpcId | undefined, code: number, message: string, data?: unknown): Record<string, unknown> {
-  const error: Record<string, unknown> = { code, message };
-  if (data !== undefined) error.data = data;
-  return { jsonrpc: JSONRPC_VERSION, id: id ?? null, error };
-}
-
-function textToolResult(value: unknown, isError = false): Record<string, unknown> {
-  const special = asObject(value).$mcp;
-  if (special && typeof special === "object" && !Array.isArray(special)) {
-    const specialObject = special as Record<string, unknown>;
-    if (Array.isArray(specialObject.content)) {
-      const result: Record<string, unknown> = { content: specialObject.content, isError };
-      if (specialObject.structuredContent && typeof specialObject.structuredContent === "object" && !Array.isArray(specialObject.structuredContent)) {
-        result.structuredContent = specialObject.structuredContent;
-      }
-      return result;
-    }
-  }
-  const result: Record<string, unknown> = {
-    content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
-    isError,
-  };
-  if (value && typeof value === "object" && !Array.isArray(value)) result.structuredContent = value;
-  return result;
-}
-
-function asObject(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
-}
-
-function requiredString(value: Record<string, unknown>, key: string): string {
-  const field = value[key];
-  if (typeof field !== "string" || !field.trim()) throw new Error(`${key} must be a non-empty string`);
-  return field.trim();
-}
-
-function sessionInstructionText(value: unknown): string {
-  const object = asObject(value);
-  const instructions = typeof object.instructions === "string" ? object.instructions : "";
-  if (!instructions) return "";
-  const bytes = new TextEncoder().encode(instructions);
-  if (bytes.byteLength > 3 * 1024 * 1024) return "";
-  return instructions;
-}
-
-function validateProtocolVersionHeader(request: Request, body: JsonRpcRequest): Record<string, unknown> | null {
-  if (body.method === "initialize") return null;
-  const version = request.headers.get("MCP-Protocol-Version");
-  if (!version) return null;
-  if (MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(version as typeof MCP_SUPPORTED_PROTOCOL_VERSIONS[number])) return null;
-  return rpcError(body.id, -32602, "Unsupported MCP protocol version", {
-    requested: version,
-    supported: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
-  });
-}

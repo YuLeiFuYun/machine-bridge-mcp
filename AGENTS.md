@@ -10,10 +10,10 @@ Unless the user explicitly expands the scope in the current task, a coding agent
 - run repository-local validation and inspection commands;
 - create local branches and commits;
 - generate an exact release candidate with `npm run release:candidate`;
-- after the repository owner records local acceptance for that exact tarball, push the branch only through `npm run github:push`, create or update its pull request, and complete the reviewed pull request;
-- after acceptance, merge, and successful exact-commit checks, create the annotated version tag and final GitHub Release through `npm run release:publish`.
+- after the repository owner starts the exact candidate and the coding agent verifies the live candidate through Machine Bridge, record acceptance, push the branch only through `npm run github:push`, create or update its pull request, and complete the reviewed pull request;
+- after acceptance, merge, and successful exact-commit checks, create the annotated version tag and final GitHub Release through `npm run release`.
 
-This is standing authorization for repository implementation and local validation. It is not standing authorization to assert that the repository owner's local test passed. A coding agent must stop before the first GitHub push of an npm-package change and hand the exact `.release-candidate/*.tgz` artifact to the owner for local testing. The agent must not run `release:accept`, fabricate `release-acceptance/v<version>.json`, infer acceptance from automated checks, or paraphrase an ambiguous response as approval.
+This is standing authorization for repository implementation, local validation, observed candidate verification, acceptance recording, and source-release completion. A coding agent must stop before the first GitHub push of an npm-package change and give the owner the exact `npm run release:candidate:start -- --allow-worker-deploy` command. The owner explicitly authorizes the live candidate Worker update, starts that candidate in a local terminal, and leaves it running. The coding agent then verifies the deployed Worker version/hash, remote health, relay readiness, connected local version, and representative functionality through Machine Bridge. Only after that observed live verification succeeds may the agent run `release:accept`. Automated checks, a prepared tarball, an ambiguous response, or an unobserved process are not acceptance evidence.
 
 GitHub-only repository infrastructure changes whose npm package bytes are unchanged do not require a synthetic npm version or runtime acceptance. They still require review and all applicable checks.
 
@@ -36,7 +36,7 @@ Do not mix local `gh`/`git` writes with connector writes on the same branch. One
 
 Do not perform any of the following merely because code or a version changed:
 
-- record the repository owner's local acceptance;
+- start the release candidate on the repository owner machine;
 - publish, deprecate, or unpublish an npm package;
 - install or upgrade the package globally with npm;
 - deploy a Cloudflare Worker directly, change Worker secrets, or rotate credentials;
@@ -52,7 +52,7 @@ These are owner, release-operator, or machine-operator actions, not implicit par
 - Run both dependency audits, Worker dry-run, registry signature verification, SBOM generation, and package inspection for a versioned release candidate.
 - Update tests, documentation, `docs/AUDIT.md`, and `CHANGELOG.md` whenever behavior, security, privacy, operations, release policy, or public contracts change.
 - Inspect the complete diff, Git status, generated package file list/modes, and privacy history before candidate preparation.
-- `npm run release:candidate` must produce the exact tarball the owner tests. Any packaged-file change afterward invalidates acceptance and requires a new candidate and owner test.
+- `npm run release:candidate` must produce the exact tarball started by `npm run release:candidate:start -- --allow-worker-deploy`. Any packaged-file change afterward invalidates acceptance and requires a regenerated candidate and another observed live verification.
 
 ## Standard release handoff
 
@@ -60,12 +60,13 @@ For an npm-package change:
 
 1. complete implementation, version, changelog, documentation, audit notes, and local automated validation;
 2. run `npm run release:candidate`;
-3. report the exact candidate tarball path and the relevant local test procedure to the repository owner, then stop before GitHub push;
-4. after the owner personally tests that tarball, the owner runs the exact `npm run release:accept -- --confirm "I TESTED machine-bridge-mcp <version> LOCALLY AND IT WORKS"` command printed by the candidate tool;
-5. commit the resulting `release-acceptance/v<version>.json` and push only with `npm run github:push`;
-6. create or update the pull request, satisfy all required checks, squash-merge, fetch, and fast-forward local `main`;
-7. run `npm run release:publish`; this command requires `HEAD` to equal `origin/main` and does not push `main`;
-8. verify that the accepted tarball hash, local and remote annotated tag, final GitHub Release asset, exact-commit checks, and `main` agree.
+3. give the repository owner the command `npm run release:candidate:start -- --allow-worker-deploy`; the owner runs it in a local terminal and leaves the foreground candidate running;
+4. verify through Machine Bridge that the connected runtime is the candidate version, is ready, and completes representative operations relevant to the change;
+5. after that observed live verification succeeds, run the exact `npm run release:accept -- --confirm "I VERIFIED machine-bridge-mcp <version> CANDIDATE ON THE OWNER MACHINE AND IT WORKS"` command printed by the candidate tool;
+6. commit the resulting `release-acceptance/v<version>.json` and push only with `npm run github:push`;
+7. create or update the pull request, satisfy all required checks, squash-merge, fetch, and fast-forward local `main`;
+8. run `npm run release`; this command requires `HEAD` to equal `origin/main`, creates/verifies the annotated tag and GitHub Release, and does not push `main`;
+9. verify that the accepted tarball hash, local and remote annotated tag, final GitHub Release asset, exact-commit checks, and `main` agree.
 
 The release operator separately authorizes npm publication and any live machine update:
 
@@ -74,4 +75,4 @@ npm publish --access public
 npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
 ```
 
-`release:publish` is conditional repository-source completion after explicit owner acceptance. `npm publish`, Worker deployment, credential changes, global installation, and daemon or service replacement remain explicit live-operation decisions.
+`npm run release` is conditional repository-source completion after observed interactive candidate acceptance. `release:publish` remains a compatibility alias. `npm publish`, Worker deployment, credential changes, global installation, and daemon or service replacement remain explicit live-operation decisions.

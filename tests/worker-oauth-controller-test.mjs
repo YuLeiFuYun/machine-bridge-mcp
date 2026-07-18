@@ -1,5 +1,6 @@
 import { normalizeAccountRole } from "../src/worker/access.ts";
 import { OAuthController } from "../src/worker/oauth-controller.ts";
+import { authorizationPage } from "../src/worker/oauth-authorization-page.ts";
 import { createAccount, sha256Hex } from "../src/worker/oauth-state.ts";
 
 const SERVER_NAME = "machine-bridge-mcp";
@@ -35,6 +36,52 @@ async function testStoreAndRegistration() {
     body: JSON.stringify({ redirect_uris: ["http://remote.example.test/callback"] }),
   }));
   assert(invalid.status === 400, "non-local insecure redirect URI was accepted");
+}
+
+
+async function testAuthorizationPageRendering() {
+  const rejected = authorizationPage({
+    request: new Request(`${BASE}/oauth/authorize?client_id=query-client&state=query-state&account_password=hidden`),
+    base: BASE,
+    serverName: SERVER_NAME,
+    error: "Invalid <request>",
+    submitted: {
+      client_id: "submitted-client",
+      state: "submitted-state",
+      account_name: "<owner>",
+      account_password: "must-not-render",
+      unrelated: "must-not-render",
+    },
+    status: 400,
+    allowSubmit: false,
+  });
+  const rejectedBody = await rejected.text();
+  assert(rejected.status === 400, "authorization page lost the requested error status");
+  assert(rejectedBody.includes("Invalid &lt;request&gt;"), "authorization page did not escape the error message");
+  assert(!rejectedBody.includes("must-not-render") && !rejectedBody.includes('name="account_password"') && !rejectedBody.includes("<form"), "authorization page exposed credentials, unrelated fields, or a disabled form");
+
+  const authorized = authorizationPage({
+    request: new Request(`${BASE}/oauth/authorize?state=query-state`),
+    base: BASE,
+    serverName: SERVER_NAME,
+    authorization: {
+      client: { client_name: "Client <One>" },
+      redirectUri: REDIRECT,
+      requestedResource: `${BASE}/mcp`,
+    },
+  });
+  const authorizedBody = await authorized.text();
+  const csp = authorized.headers.get("content-security-policy") || "";
+  assert(authorizedBody.includes("Client &lt;One&gt;") && authorizedBody.includes("<form"), "valid authorization page lost escaped client identity or submit form");
+  assert(csp.includes(new URL(REDIRECT).origin), "authorization page did not bind CSP to the validated redirect origin");
+
+  const queryBacked = authorizationPage({
+    request: new Request(`${BASE}/oauth/authorize?client_id=query-client&state=query-state`),
+    base: BASE,
+    serverName: SERVER_NAME,
+  });
+  const queryBody = await queryBacked.text();
+  assert(queryBody.includes('value="query-client"') && queryBody.includes('value="query-state"'), "authorization page did not preserve query-backed OAuth fields");
 }
 
 async function testAuthorizationAndTokens() {
@@ -212,6 +259,7 @@ function assert(condition, message) {
 }
 
 await testStoreAndRegistration();
+await testAuthorizationPageRendering();
 await testAuthorizationAndTokens();
 await testMalformedRoleRepair();
 await testInvalidStateFailsClosed();

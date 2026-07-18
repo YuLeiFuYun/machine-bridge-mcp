@@ -22,6 +22,7 @@ await testDuplicateRelayCallId();
 testRelayReadinessProbe();
 await testRelayReadinessStateGuards();
 testRelayCancellationSuppression();
+testRuntimeConvenienceMethods();
 testTerminalDeliveryFailure();
 await testProcessExecutionNoShell();
 await testProcessCancellationSettlesBeforeClose();
@@ -222,6 +223,19 @@ function testRelayCancellationSuppression() {
 
   LocalRuntime.prototype.cancelRelayCall.call(runtime, "unknown-call", "caller_cancelled");
   assert(!runtime.suppressedRelayResults.has("unknown-call"), "unknown cancellation created an unbounded suppression entry");
+}
+
+function testRuntimeConvenienceMethods() {
+  let finished = "";
+  const runtime = {
+    relay: null,
+    callRegistry: { finish(callId) { finished = callId; } },
+  };
+  assert(LocalRuntime.prototype.send.call(runtime, { type: "noop" }) === false, "runtime send reported success without a relay");
+  LocalRuntime.prototype.finishCall.call(runtime, "finished-call");
+  assert(finished === "finished-call", "runtime finishCall did not delegate to the call registry");
+  LocalRuntime.prototype.finishCall.call(runtime, "");
+  assert(finished === "finished-call", "runtime finishCall mutated state for an empty call id");
 }
 
 function testTerminalDeliveryFailure() {

@@ -1,12 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { realpathSync, rmSync } from "node:fs";
 import { lstat, realpath, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { isRelayReadyContext, RelayConnection } from "./relay-connection.mjs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { isRelayReadyContext } from "./relay-connection.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
 import { MAX_CONCURRENT_TOOL_CALLS } from "./execution-limits.mjs";
 export { MAX_COMMAND_BYTES } from "./process-contract.mjs";
-import { MCP_SUPPORTED_PROTOCOL_VERSIONS, normalizePolicy, PolicyGate, SERVER_NAME } from "./tools.mjs";
+import { normalizePolicy, PolicyGate } from "./tools.mjs";
 import { publicError } from "./errors.mjs";
 import { ProcessTracker } from "./process-tracker.mjs";
 import { CallRegistry } from "./call-registry.mjs";
@@ -26,75 +25,22 @@ import { AppAutomationManager } from "./app-automation.mjs";
 import { BrowserBridgeManager } from "./browser-bridge.mjs";
 import { CapabilityObserver } from "./capability-observer.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { clampInteger } from "./numbers.mjs";
 import { isPlainRecord } from "./records.mjs";
-import { AccountAccessGate, normalizeAccountRole } from "./account-access.mjs";
+import { AccountAccessGate } from "./account-access.mjs";
 import { buildProjectOverview, buildRuntimeInfo } from "./runtime-reporting.mjs";
 import { diagnoseRuntime as runRuntimeDiagnostics } from "./runtime-diagnostics.mjs";
+import { bindRuntimeToolHandlers, runtimeToolHandlerNames as registeredRuntimeToolHandlerNames } from "./runtime-tool-handlers.mjs";
+import { createRuntimeRelayConnection, normalizeRelayToolCall } from "./runtime-relay.mjs";
+import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage, stateRootFromProfileStatePath } from "./runtime-paths.mjs";
 import {
   resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
   sessionBootstrap as buildRuntimeSessionBootstrap,
 } from "./runtime-capabilities.mjs";
 
-const MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024;
 const SLOW_TOOL_CALL_MS = 30_000;
 
-const RUNTIME_TOOL_HANDLERS = Object.freeze({
-  server_info: (runtime) => runtime.runtimeInfo(),
-  project_overview: (runtime, _args, context) => runtime.projectOverview(context),
-  session_bootstrap: (runtime, args, context) => runtime.sessionBootstrap(args, context),
-  agent_context: (runtime, args, context) => runtime.agentContextManager.agentContext(args, context),
-  resolve_task_capabilities: (runtime, args, context) => runtime.resolveTaskCapabilities(args, context),
-  list_local_skills: (runtime, args, context) => runtime.agentContextManager.listLocalSkills(args, context),
-  load_local_skill: (runtime, args, context) => runtime.agentContextManager.loadLocalSkill(args, context),
-  list_local_commands: (runtime, args, context) => runtime.agentContextManager.listLocalCommands(args, context),
-  run_local_command: (runtime, args, context) => runtime.runLocalCommand(args, context),
-  list_local_applications: (runtime, args, context) => runtime.appAutomationManager.listApplications(args, context),
-  open_local_application: (runtime, args, context) => runtime.appAutomationManager.openApplication(args, context),
-  inspect_local_application: (runtime, args, context) => runtime.appAutomationManager.inspectApplication(args, context),
-  operate_local_application: (runtime, args, context) => runtime.appAutomationManager.operateApplication(args, context),
-  browser_status: (runtime, _args, context) => runtime.browserBridgeManager.status(context),
-  pair_browser_extension: (runtime, args, context) => runtime.browserBridgeManager.pair(args, context),
-  browser_list_tabs: (runtime, args, context) => runtime.browserBridgeManager.listTabs(args, context),
-  browser_manage_tabs: (runtime, args, context) => runtime.browserBridgeManager.manageTabs(args, context),
-  browser_wait: (runtime, args, context) => runtime.browserBridgeManager.wait(args, context),
-  browser_get_source: (runtime, args, context) => runtime.browserBridgeManager.getSource(args, context),
-  browser_inspect_page: (runtime, args, context) => runtime.browserBridgeManager.inspectPage(args, context),
-  browser_action: (runtime, args, context) => runtime.browserBridgeManager.act(args, context),
-  browser_fill_form: (runtime, args, context) => runtime.browserBridgeManager.fillForm(args, context),
-  browser_screenshot: (runtime, args, context) => runtime.browserBridgeManager.screenshot(args, context),
-  browser_upload_files: (runtime, args, context) => runtime.browserBridgeManager.uploadFiles(args, context),
-  list_roots: (runtime) => runtime.listRoots(),
-  list_dir: (runtime, args, context) => runtime.listDir(args.path || ".", context),
-  list_files: (runtime, args, context) => runtime.listFiles(args.path || ".", clampInteger(args.max_files, 1000, 1, 10000), context),
-  read_file: (runtime, args, context) => runtime.readFile(args, context),
-  view_image: (runtime, args, context) => runtime.viewImage(args, context),
-  write_file: (runtime, args, context) => runtime.writeFile(args, context),
-  edit_file: (runtime, args, context) => runtime.editFile(args, context),
-  apply_patch: (runtime, args, context) => runtime.applyPatch(args, context),
-  search_text: (runtime, args, context) => runtime.searchText(args, context),
-  git_status: (runtime, args, context) => runtime.gitStatus(args, context),
-  git_diff: (runtime, args, context) => runtime.gitDiff(args, context),
-  git_log: (runtime, args, context) => runtime.gitLog(args, context),
-  git_show: (runtime, args, context) => runtime.gitShow(args, context),
-  diagnose_runtime: (runtime, _args, context) => runtime.diagnoseRuntime(context),
-  list_local_resources: (runtime) => runtime.managedJobManager.listResources(),
-  generate_ssh_key_resource: (runtime, args, context) => runtime.generateSshKeyResource(args, context),
-  stage_job: (runtime, args) => runtime.managedJobManager.stage(args),
-  start_job: (runtime, args) => runtime.managedJobManager.start(args),
-  list_jobs: (runtime, args) => runtime.managedJobManager.list(args),
-  read_job: (runtime, args) => runtime.managedJobManager.read(args),
-  cancel_job: (runtime, args) => runtime.managedJobManager.cancel(args),
-  run_process: (runtime, args, context) => runtime.runDirectProcess(args, context),
-  start_process: (runtime, args, context) => runtime.processSessionManager.start(args, context),
-  read_process: (runtime, args, context) => runtime.processSessionManager.read(args, context),
-  write_process: (runtime, args, context) => runtime.processSessionManager.write(args, context),
-  kill_process: (runtime, args, context) => runtime.processSessionManager.kill(args, context),
-  exec_command: (runtime, args, context) => runtime.execCommand(args.command, clampInteger(args.timeout_seconds, 120, 1, 600), context),
-});
-
 export function runtimeToolHandlerNames() {
-  return Object.keys(RUNTIME_TOOL_HANDLERS);
+  return registeredRuntimeToolHandlerNames();
 }
 
 export class LocalRuntime {
@@ -215,10 +161,7 @@ export class LocalRuntime {
       logger: this.logger,
     });
     this.toolExecutor = new ToolExecutor({
-      handlers: Object.fromEntries(Object.entries(RUNTIME_TOOL_HANDLERS).map(([name, handler]) => [
-        name,
-        (args, context) => handler(this, args, context),
-      ])),
+      handlers: bindRuntimeToolHandlers(this),
       policyGate: this.policyGate,
       accountAccessGate: this.accountAccessGate,
       callRegistry: this.callRegistry,
@@ -227,7 +170,7 @@ export class LocalRuntime {
       safeMessage: (error, args) => this.safeErrorMessage(error, args),
       slowMs: SLOW_TOOL_CALL_MS,
     });
-    this.relay = createRelayConnection(this, {
+    this.relay = createRuntimeRelayConnection(this, {
       workerUrl: remoteWorkerUrl,
       secret: remoteSecret,
       expectedVersion: expectedRelayVersion,
@@ -662,19 +605,17 @@ export class LocalRuntime {
   }
 
   safeErrorMessage(error, toolArgs = {}) {
-    let message = boundedErrorMessage(error);
-    if (!this.policy.exposeAbsolutePaths) {
-      for (const prefix of equivalentPathPrefixes(this.workspace, this.workspaceInput)) message = replacePathPrefix(message, prefix, ".");
-      for (const prefix of equivalentPathPrefixes(this.runtimeDir)) message = replacePathPrefix(message, prefix, "<runtime>");
-      const home = process.env.HOME || process.env.USERPROFILE;
-      if (home) message = replacePathPrefix(message, resolve(home), "<home>");
-      for (const candidate of collectToolPathCandidates(error, toolArgs, this.workspaceInput)) {
-        const absolute = isAbsolute(candidate) ? resolve(candidate) : resolve(this.workspaceInput, candidate);
-        const replacement = this.displayPath(absolute);
-        for (const prefix of equivalentPathPrefixes(candidate, absolute)) message = replacePathPrefix(message, prefix, replacement);
-      }
-    }
-    return message;
+    const message = boundedErrorMessage(error);
+    if (this.policy.exposeAbsolutePaths) return message;
+    return redactRuntimeErrorMessage(message, {
+      error,
+      toolArgs,
+      workspace: this.workspace,
+      workspaceInput: this.workspaceInput,
+      runtimeDir: this.runtimeDir,
+      home: process.env.HOME || process.env.USERPROFILE || "",
+      displayPath: (value) => this.displayPath(value),
+    });
   }
 
   throwIfCancelled(context = {}) {
@@ -688,129 +629,6 @@ export class LocalRuntime {
     await previous;
     try { return await callback(); } finally { release(); }
   }
-}
-
-function stateRootFromProfileStatePath(statePath) {
-  const absolute = resolve(statePath);
-  if (basename(absolute) !== "state.json") throw new Error("local resource state path is invalid");
-  const profileDir = dirname(absolute);
-  const profilesDir = dirname(profileDir);
-  if (basename(profilesDir) !== "profiles") throw new Error("local resource state path is outside the expected profile layout");
-  return dirname(profilesDir);
-}
-
-function assertContainedPath(root, target) {
-  const rel = relative(root, target);
-  if (rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel))) return;
-  throw new Error("path is outside the configured workspace; restart with --unrestricted-paths to allow it");
-}
-
-function createRuntimeDir() {
-  const root = mkdtempSync(join(tmpdir(), "machine-bridge-mcp-"));
-  for (const name of ["home", "tmp", "cache"]) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
-  return root;
-}
-
-function createRelayConnection(runtime, { workerUrl, secret, expectedVersion, onFatal }) {
-  if (!workerUrl) return null;
-  return new RelayConnection({
-    workerUrl,
-    secret,
-    logger: runtime.logger,
-    maxPayload: MAX_WS_MESSAGE_BYTES,
-    expectedServer: SERVER_NAME,
-    expectedVersion: String(expectedVersion || ""),
-    helloMessage: () => ({
-      type: "hello",
-      tools: runtime.tools(),
-      policy: runtime.policy,
-      protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
-    }),
-    onMessage: (data, relayContext) => handleRelayData(runtime, data, relayContext),
-    onDisconnect: () => runtime.handleRelayDisconnect(),
-    onSuperseded: () => {
-      runtime.terminateActiveProcesses("SIGKILL");
-      runtime.processSessionManager.clear();
-      runtime.onSuperseded?.();
-    },
-    onFatal: (error) => {
-      runtime.terminateActiveProcesses("SIGKILL");
-      runtime.processSessionManager.clear();
-      onFatal?.(error);
-    },
-  });
-}
-
-
-function handleRelayData(runtime, data, relayContext = {}) {
-  const raw = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
-  if (Buffer.byteLength(raw) > MAX_WS_MESSAGE_BYTES) {
-    runtime.handleRelayProtocolViolation("server_message_too_large");
-    return;
-  }
-  return runtime.handleMessage(raw, relayContext);
-}
-
-function normalizeRelayToolCall(message) {
-  const id = typeof message.id === "string" && message.id.length <= 256 ? message.id : "";
-  const tool = typeof message.tool === "string" && message.tool.length <= 128 ? message.tool : "";
-  const argumentsValue = message.arguments === undefined ? {} : message.arguments;
-  const authorization = normalizeRelayAuthorization(message.authorization);
-  if (!id || !tool || !isPlainRecord(argumentsValue) || !authorization) return { ok: false, id };
-  return {
-    ok: true,
-    id,
-    tool,
-    arguments: argumentsValue,
-    authorization,
-    timeoutMs: clampInteger(message.timeout_ms, 60_000, 1000, 610_000),
-  };
-}
-
-function normalizeRelayAuthorization(value) {
-  if (!isPlainRecord(value)) return null;
-  const accountId = typeof value.account_id === "string" && /^acct_[A-Za-z0-9_-]{20,96}$/.test(value.account_id) ? value.account_id : "";
-  const accountVersion = Number(value.account_version);
-  let role;
-  try { role = normalizeAccountRole(value.role); } catch { return null; }
-  if (!accountId || !Number.isInteger(accountVersion) || accountVersion < 1) return null;
-  return Object.freeze({ account_id: accountId, account_version: accountVersion, role });
-}
-
-function collectToolPathCandidates(error, toolArgs, workspace) {
-  const candidates = new Set();
-  for (const value of [error?.path, error?.dest]) if (typeof value === "string" && value) candidates.add(value);
-  const visit = (value, key = "", depth = 0) => {
-    if (depth > 5 || value === null || value === undefined) return;
-    if (typeof value === "string") {
-      if (/(?:^|[_-])(?:path|cwd|workspace|root|directory|dir)(?:$|[_-])/i.test(key) && value && !value.includes("\0")) candidates.add(value);
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value.slice(0, 64)) visit(item, key, depth + 1);
-      return;
-    }
-    if (typeof value !== "object") return;
-    for (const [childKey, child] of Object.entries(value).slice(0, 128)) visit(child, childKey, depth + 1);
-  };
-  visit(toolArgs);
-  candidates.delete(workspace);
-  return [...candidates].sort((left, right) => right.length - left.length);
-}
-
-function equivalentPathPrefixes(...values) {
-  const prefixes = new Set(values.filter(Boolean).map((value) => String(value)));
-  for (const value of [...prefixes]) {
-    if (value.startsWith("/private/")) prefixes.add(value.slice("/private".length));
-    else if (value.startsWith("/") && ["/var/", "/tmp/", "/etc/"].some((prefix) => value.startsWith(prefix))) prefixes.add(`/private${value}`);
-  }
-  return [...prefixes].sort((left, right) => right.length - left.length);
-}
-
-function replacePathPrefix(message, pathValue, replacement) {
-  if (!pathValue) return message;
-  const normalized = String(pathValue);
-  return message.split(normalized).join(replacement);
 }
 
 function shortCallId(value) {

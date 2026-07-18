@@ -5,12 +5,13 @@ import {
   AUTH_BLOCK_SECONDS, accountByName, authorizationIdentity, emptyOAuthStore,
   isCurrentOAuthStore, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
   recordAuthorizationFailure, safeEqual, sha256Hex, validateAuthorizationRequest, verifyAccountPassword,
-  type OAuthClient, type OAuthStore, type ValidatedAuthorization,
+  type OAuthClient, type OAuthStore,
 } from "./oauth-state.ts";
 import {
-  HttpError, authorizationRedirectLocation, escapeHtml, html, json, normalizeDisplayText,
-  normalizeRedirectUri, oauthRedirect, parseRequestBody, searchParamsEntries, searchParamsObject,
+  HttpError, authorizationRedirectLocation, json, normalizeDisplayText,
+  normalizeRedirectUri, oauthRedirect, parseRequestBody, searchParamsObject,
 } from "./http.ts";
+import { authorizationPage } from "./oauth-authorization-page.ts";
 
 const OAUTH_BODY_LIMIT_BYTES = 64 * 1024;
 const OAUTH_UNUSED_CLIENT_TTL_SECONDS = 60 * 60;
@@ -20,7 +21,6 @@ const OAUTH_CLIENT_IDLE_TTL_SECONDS = 60 * 60 * 24 * 90;
 const MAX_CODES_PER_CLIENT = 10;
 const MAX_OAUTH_CODES = 200;
 const MAX_AUTH_FAILURE_IDENTITIES = 200;
-const AUTHORIZATION_FIELDS = new Set(["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "scope", "resource", "state"]);
 
 export interface OAuthControllerEnv {
   ACCOUNT_ADMIN_SECRET: string;
@@ -176,59 +176,10 @@ export class OAuthController {
       const store = await this.oauthStore();
       const validation = validateAuthorizationRequest(body, base, this.serverName, store);
       if ("error" in validation) {
-        return this.authorizePage(request, base, validation.error, body, validation.status, undefined, false);
+        return authorizationPage({ request, base, serverName: this.serverName, error: validation.error, submitted: body, status: validation.status, allowSubmit: false });
       }
-      return this.authorizePage(request, base, "", body, 200, validation.value, true);
+      return authorizationPage({ request, base, serverName: this.serverName, submitted: body, authorization: validation.value });
     });
-  }
-
-  private authorizePage(
-    request: Request,
-    base: string,
-    error = "",
-    submitted?: Record<string, unknown>,
-    status = 200,
-    authorization?: ValidatedAuthorization,
-    allowSubmit = true,
-  ): Response {
-    const url = new URL(request.url);
-    const sourceEntries = submitted ? Object.entries(submitted) : searchParamsEntries(url.searchParams);
-    const hidden = sourceEntries
-      .filter(([key]) => AUTHORIZATION_FIELDS.has(key))
-      .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(String(value))}">`)
-      .join("\n");
-    const resource = normalizeDisplayText(
-      authorization?.requestedResource ?? String(submitted?.resource ?? url.searchParams.get("resource") ?? `${base}/mcp`),
-      1024,
-      `${base}/mcp`,
-    );
-    const clientBlock = authorization
-      ? `<p><strong>Client:</strong> ${escapeHtml(authorization.client.client_name)}</p>
-    <p><strong>Redirect URI:</strong> <code>${escapeHtml(authorization.redirectUri)}</code></p>`
-      : "";
-    const errorBlock = error ? `<p role="alert" aria-live="assertive" style="color:#b91c1c; font-weight:600">${escapeHtml(error)}</p>` : "";
-    const accountName = normalizeDisplayText(String(submitted?.account_name ?? ""), 64, "");
-    const form = allowSubmit
-      ? `<form method="post" action="/oauth/authorize">
-      ${hidden}
-      <label>Account name<br><input name="account_name" value="${escapeHtml(accountName)}" autocomplete="username" autofocus required style="width: 100%; box-sizing: border-box; padding: 8px;"></label>
-      <p><label>Account password<br><input name="account_password" type="password" autocomplete="current-password" required style="width: 100%; box-sizing: border-box; padding: 8px;"></label></p>
-      <p><button type="submit">Authorize</button></p>
-    </form>`
-      : "<p>Authorization cannot continue. Return to the MCP client and start the connection again.</p>";
-    const redirectOrigin = authorization ? new URL(authorization.redirectUri).origin : "";
-    return html(`<!doctype html>
-<html>
-  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize ${this.serverName}</title></head>
-  <body style="font-family: system-ui, sans-serif; max-width: 640px; margin: 48px auto; line-height: 1.5; padding: 0 16px;">
-    <h1>Authorize ${this.serverName}</h1>
-    <p>Only continue if you initiated this MCP connection and recognize the client and redirect URI below.</p>
-    ${clientBlock}
-    <p><strong>Resource:</strong> <code>${escapeHtml(resource)}</code></p>
-    ${errorBlock}
-    ${form}
-  </body>
-</html>`, status, redirectOrigin);
   }
 
   async authorizeSubmit(request: Request, base: string): Promise<Response> {
@@ -237,14 +188,14 @@ export class OAuthController {
       const store = await this.oauthStore();
       const validation = validateAuthorizationRequest(body, base, this.serverName, store);
       if ("error" in validation) {
-        return this.authorizePage(request, base, validation.error, body, validation.status, undefined, false);
+        return authorizationPage({ request, base, serverName: this.serverName, error: validation.error, submitted: body, status: validation.status, allowSubmit: false });
       }
       const { client, clientId, redirectUri, codeChallenge, requestedResource, scope, state } = validation.value;
       const now = Math.floor(Date.now() / 1000);
       const identity = await authorizationIdentity(request, this.identityKey());
       const failure = store.auth_failures[identity];
       if (failure?.blocked_until > now) {
-        return this.authorizePage(request, base, "Too many failed attempts. Try again later.", body, 429, validation.value);
+        return authorizationPage({ request, base, serverName: this.serverName, error: "Too many failed attempts. Try again later.", submitted: body, status: 429, authorization: validation.value });
       }
 
       const account = accountByName(store, body.account_name);
@@ -254,7 +205,7 @@ export class OAuthController {
         pruneAuthFailures(store, MAX_AUTH_FAILURE_IDENTITIES);
         await this.ctx.storage.put("oauth", store);
         const status = store.auth_failures[identity]?.blocked_until > now ? 429 : 401;
-        return this.authorizePage(request, base, "Invalid account credentials.", body, status, validation.value);
+        return authorizationPage({ request, base, serverName: this.serverName, error: "Invalid account credentials.", submitted: body, status, authorization: validation.value });
       }
       delete store.auth_failures[identity];
       client.last_used_at = now;

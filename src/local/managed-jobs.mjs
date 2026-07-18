@@ -1,25 +1,25 @@
-import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, ftruncateSync, lstatSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
-import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMs } from "./process-identity.mjs";
-import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir } from "./state.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError } from "./errors.mjs";
 import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./managed-job-plan.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { clampInteger } from "./numbers.mjs";
-import { classifyOperationalError } from "./log.mjs";
+import { acquireJobTransitionLock, acquireRecoveryLock } from "./managed-job-lock.mjs";
+import { publicStatus, reviewablePlan } from "./managed-job-projection.mjs";
+import {
+  atomicWriteJson, readBoundedFile, readJson, readRequiredJson, resourceErrorClass, safeReadDir,
+} from "./managed-job-storage.mjs";
+import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
+export { launchRunner } from "./managed-job-runner.mjs";
 
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const MAX_JOBS = 50;
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PLAN_BYTES = 1024 * 1024;
 const MAX_RECOVERY_ATTEMPTS = 3;
-const RUNNER_PATH = fileURLToPath(new URL("./job-runner.mjs", import.meta.url));
 const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"]);
 const PLAN_RETAINING_STATES = new Set(["staged", ...ACTIVE_JOB_STATES]);
 
@@ -393,8 +393,8 @@ export class ManagedJobManager {
         continue;
       }
       if (!status) {
-        const runner = readRunnerOwner(dir, { startedAt: new Date(mtime).toISOString() });
-        if (!runnerProcessIsCurrent(runner, dir, { ownerOnly: true }) && Date.now() - mtime > 60_000) {
+        const fallbackOwner = { startedAt: new Date(mtime).toISOString() };
+        if (!runnerProcessIsCurrent(fallbackOwner, dir, { ownerOnly: true }) && Date.now() - mtime > 60_000) {
           rmSync(dir, { recursive: true, force: true });
           continue;
         }
@@ -526,10 +526,6 @@ function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recov
   return launchRunner(dir, true, recoveryToken, { logger });
 }
 
-function acquireRecoveryLock(dir) {
-  return acquirePidLock(join(dir, "recovery.lock"), { allowHandoff: true });
-}
-
 function planSha256(plan) {
   return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
 }
@@ -541,162 +537,6 @@ function assertPlanIntegrity(plan, status) {
     throw new Error("managed job plan integrity check failed; inspect the plan and do not approve it");
   }
   return actual;
-}
-
-function acquireJobTransitionLock(dir) {
-  return acquirePidLock(join(dir, "transition.lock"));
-}
-
-function acquirePidLock(file, { allowHandoff = false } = {}) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const owner = pidLockOwner(process.pid, currentProcessStartTimeMs());
-    try {
-      createExclusiveFileSync(file, `${JSON.stringify(owner)}
-`, { mode: 0o600 });
-      return {
-        ...(allowHandoff ? {
-          handoff(pid) {
-            if (!Number.isInteger(pid) || pid <= 0) return;
-            const nextOwner = { ...pidLockOwner(pid, processStartTimeMs(pid)), token: owner.token };
-            replacePrivateTextFile(file, `${JSON.stringify(nextOwner)}
-`);
-          },
-        } : {}),
-        token: owner.token,
-        release() { removePidLockOwnedBy(file, owner.token); },
-      };
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      const snapshot = readPidLockSnapshot(file);
-      if (!snapshot) continue;
-      const age = Date.now() - snapshot.info.mtimeMs;
-      const identity = snapshot.owner ? inspectProcessInstance(snapshot.owner, { maxAgeMs: 5 * 60_000 }) : null;
-      const definitelyStale = !snapshot.owner
-        ? age >= 60_000
-        : identity.reclaimable === true;
-      if (!definitelyStale) return null;
-      removePidLockSnapshot(file, snapshot);
-    }
-  }
-  return null;
-}
-
-function pidLockOwner(pid, startedAtMs) {
-  return {
-    pid,
-    token: randomBytes(16).toString("hex"),
-    startedAt: new Date().toISOString(),
-    processStartedAt: Number.isFinite(startedAtMs) && startedAtMs > 0 ? new Date(startedAtMs).toISOString() : null,
-  };
-}
-
-function readPidLockSnapshot(file) {
-  let info;
-  try { info = lstatSync(file); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
-  if (info.isSymbolicLink() || !info.isFile()) throw new Error("job lock must be a regular non-symbolic-link file");
-  let owner = null;
-  try {
-    const parsed = JSON.parse(readBoundedFile(file, 1024).toString("utf8").trim());
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-  }
-  return { owner, info: pidLockIdentity(info) };
-}
-
-function removePidLockOwnedBy(file, token) {
-  const snapshot = readPidLockSnapshot(file);
-  if (!snapshot || snapshot.owner?.token !== token) return false;
-  return removePidLockSnapshot(file, snapshot);
-}
-
-function removePidLockSnapshot(file, snapshot) {
-  let current;
-  try { current = lstatSync(file); } catch (error) { return error?.code === "ENOENT"; }
-  if (current.isSymbolicLink() || !current.isFile()) return false;
-  if (!samePidLockIdentity(snapshot.info, pidLockIdentity(current))) return false;
-  if (snapshot.owner?.token) {
-    const currentOwner = readPidLockSnapshot(file)?.owner;
-    if (currentOwner?.token !== snapshot.owner.token) return false;
-  }
-  try { rmSync(file); return true; } catch (error) { return error?.code === "ENOENT"; }
-}
-
-function pidLockIdentity(info) {
-  return { dev: Number(info.dev), ino: Number(info.ino), size: Number(info.size), mtimeMs: Number(info.mtimeMs) };
-}
-
-function samePidLockIdentity(left, right) {
-  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
-}
-
-function replacePrivateTextFile(file, content) {
-  replaceFileAtomicallySync(file, content, { mode: 0o600 });
-  ownerOnlyFile(file);
-}
-
-export function launchRunner(dir, recover = false, recoveryToken = "", options = {}) {
-  const args = [RUNNER_PATH, "--job-dir", dir];
-  if (recover) args.push("--recover");
-  const stdoutFile = join(dir, "runner.out.log");
-  const stderrFile = join(dir, "runner.err.log");
-  trimDiagnosticFile(stdoutFile);
-  trimDiagnosticFile(stderrFile);
-  let stdoutFd;
-  let stderrFd;
-  let child;
-  try {
-    stdoutFd = openPrivateAppendFile(stdoutFile);
-    stderrFd = openPrivateAppendFile(stderrFile);
-    const spawnProcess = typeof options.spawnProcess === "function" ? options.spawnProcess : spawn;
-    child = spawnProcess(process.execPath, args, {
-      detached: true,
-      stdio: ["ignore", stdoutFd, stderrFd],
-      windowsHide: true,
-      shell: false,
-      env: recoveryToken ? { ...process.env, MBM_RECOVERY_LOCK_TOKEN: recoveryToken } : process.env,
-    });
-  } finally {
-    if (stdoutFd !== undefined) closeSync(stdoutFd);
-    if (stderrFd !== undefined) closeSync(stderrFd);
-  }
-  ownerOnlyFile(stdoutFile);
-  ownerOnlyFile(stderrFile);
-  const logger = options.logger || console;
-  child.once?.("error", (error) => {
-    logger.error?.("managed job runner process reported an asynchronous failure", {
-      job_id: basename(dir),
-      recovery: recover,
-      error_class: classifyOperationalError(error),
-    });
-  });
-  const pid = Number(child.pid);
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error("managed job runner did not receive a process id");
-  child.unref();
-  return pid;
-}
-
-
-function readRunnerOwner(dir, fallback = {}) {
-  try {
-    const parsed = JSON.parse(readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...fallback };
-    return { ...fallback, ...parsed };
-  } catch {
-    return { ...fallback };
-  }
-}
-
-function runnerProcessIsCurrent(status, dir, { ownerOnly = false } = {}) {
-  const fallback = ownerOnly ? status : {
-    pid: Number(status?.runner_pid) || undefined,
-    processStartedAt: status?.runner_process_started_at,
-    startedAt: status?.started_at || status?.updated_at || status?.created_at,
-  };
-  const owner = readRunnerOwner(dir, fallback);
-  if (!owner.pid) return false;
-  const identity = inspectProcessInstance(owner, { maxAgeMs: Number.POSITIVE_INFINITY });
-  return identity.current || (identity.alive && !identity.reclaimable);
 }
 
 function scrubFinishedPlan(dir, status) {
@@ -712,129 +552,4 @@ function scrubFinishedPlan(dir, status) {
   safeRm(join(dir, "runner.pid"));
   safeRm(join(dir, "recovery.lock"));
   safeRm(join(dir, "transition.lock"));
-}
-
-function reviewablePlan(plan) {
-  return {
-    version: plan.version,
-    name: plan.name,
-    workspace: plan.workspace,
-    full_env: plan.full_env === true,
-    resources: Object.fromEntries(Object.entries(plan.resources || {}).map(([name, value]) => [name, {
-      kind: value.kind,
-      size: value.size ?? null,
-      mode: value.mode ?? null,
-      allow_insecure_permissions: value.allowInsecurePermissions === true,
-    }])),
-    temporary_files: plan.temporary_files || [],
-    steps: plan.steps || [],
-    finally_steps: plan.finally_steps || [],
-  };
-}
-
-function publicStatus(status) {
-  return {
-    job_id: status.job_id,
-    name: status.name,
-    status: status.status,
-    created_at: status.created_at,
-    started_at: status.started_at ?? null,
-    finished_at: status.finished_at ?? null,
-    current_phase: status.current_phase ?? null,
-    current_step: status.current_step ?? null,
-    approval: status.approval ?? null,
-    plan_sha256: status.plan_sha256 ?? null,
-    cleanup_guarantee: status.cleanup_guarantee ?? "best-effort-finally-and-recovery",
-    error_class: status.error_class ?? null,
-    recovery_attempts: Number(status.recovery_attempts || 0),
-  };
-}
-
-function atomicWriteJson(file, value, maxBytes) {
-  ensureOwnerOnlyDir(dirname(file));
-  const text = `${JSON.stringify(value, null, 2)}
-`;
-  if (Buffer.byteLength(text) > maxBytes) throw new Error(`JSON exceeds ${maxBytes} bytes`);
-  replaceFileAtomicallySync(file, text, { mode: 0o600 });
-  ownerOnlyFile(file);
-}
-
-function readJson(file, maxBytes, label = "JSON") {
-  let buffer;
-  try { buffer = readBoundedFile(file, maxBytes); } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw new Error(`${label} is unavailable (${resourceErrorClass(error)})`);
-  }
-  let text;
-  try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
-    throw new Error(`${label} is not valid UTF-8`);
-  }
-  try { return JSON.parse(text); } catch {
-    throw new Error(`${label} is not valid JSON`);
-  }
-}
-
-function readRequiredJson(file, maxBytes, label) {
-  const value = readJson(file, maxBytes, label);
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is unavailable or invalid`);
-  return value;
-}
-
-function readBoundedFile(file, maxBytes) {
-  return readBoundedRegularFileSync(file, maxBytes);
-}
-
-function openPrivateAppendFile(file) {
-  return openRegularFileSync(
-    file,
-    Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND),
-    { label: "runner diagnostic path", mode: 0o600, chmod: 0o600 },
-  ).fd;
-}
-
-function trimDiagnosticFile(file, maxBytes = 64 * 1024, keepBytes = 32 * 1024) {
-  let fd;
-  try {
-    const opened = openRegularFileSync(file, fsConstants.O_RDWR, {
-      label: "runner diagnostic path",
-      chmod: 0o600,
-    });
-    fd = opened.fd;
-    if (opened.info.size <= maxBytes) return;
-    const length = Math.min(keepBytes, opened.info.size);
-    const buffer = Buffer.alloc(length);
-    let offset = 0;
-    while (offset < length) {
-      const count = readSync(fd, buffer, offset, length - offset, opened.info.size - length + offset);
-      if (!count) break;
-      offset += count;
-    }
-    let tail = buffer.subarray(0, offset);
-    const newline = tail.indexOf(0x0a);
-    if (newline >= 0 && newline < tail.length - 1) tail = tail.subarray(newline + 1);
-    ftruncateSync(fd, 0);
-    if (tail.length) writeSync(fd, tail, 0, tail.length, 0);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  } finally {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch {
-        // Descriptor close is best effort after the trim result is already determined.
-      }
-    }
-  }
-}
-
-function resourceErrorClass(error) {
-  const message = String(error?.message || error || "");
-  if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
-  if (/not found|ENOENT/i.test(message)) return "not_found";
-  if (/symbolic link/i.test(message)) return "symbolic_link_denied";
-  if (/readable by group|permissions/i.test(message)) return "insecure_permissions";
-  if (/exceeds/i.test(message)) return "size_limit";
-  return "resource_unavailable";
-}
-
-function safeReadDir(dir) {
-  return readdirSync(dir, { withFileTypes: true });
 }

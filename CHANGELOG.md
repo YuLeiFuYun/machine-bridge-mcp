@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.9 - 2026-07-18
+
+- Repair cross-platform release infrastructure found by PR CI: the layered check runner now invokes the pinned npm CLI through Node instead of spawning `npm.cmd`, and `release:accept` computes and locally validates the portable Git-content digest through a temporary index so CI can verify accepted package content across merge commits without mutating the maintainer index.
+- Correct the release handoff: add `npm run release:candidate:start -- --allow-worker-deploy` for an isolated local installation plus explicitly authorized in-place candidate Worker deployment, require owner-started and agent-observed live verification before acceptance, allow the coding agent to record acceptance and complete commit/push/tag/GitHub Release work, and add `npm run release` as the canonical source-release command. npm publication and Worker deployment remain owner-operated.
+
+### Architecture headroom, verification feedback, and threat model
+
+- Split tool registration, relay adaptation, path redaction, Agent-context projection/rendering, bounded skill discovery and text reading, browser request lifecycle, runtime-client broker routing, authenticated loopback server setup, browser HTTP handling, Windows launcher quoting, managed-job transition locks, runner identity, private storage, public projections, Worker OAuth authorization-page rendering, JSON-RPC framing, and WebSocket protocol cleanup out of near-limit orchestration modules. Tighten architecture budgets around the new boundaries so `runtime`, Agent context, browser broker, Windows service, managed jobs, and `BridgeRoom` retain explicit headroom instead of treating their previous line caps as targets.
+- Replace the monolithic package-script chain with audited `check:fast`, `check:platform`, and `check:full` plans while keeping `npm run check` as the complete gate. Each task reports elapsed time; macOS and Windows CI run the cross-platform behavior plan plus installed-package smoke coverage, while Ubuntu runs the full coverage, browser, package, stdio, Worker/OAuth, and real-browser suites.
+- Expand critical-module coverage gates to state persistence, relay lifecycle, managed jobs, runtime path redaction, Agent-context projection, browser broker/request routing, Worker OAuth, JSON-RPC framing, and WebSocket protocol helpers. Add strict checked-JavaScript coverage for the runtime path/redaction, Agent-context projection, skill-discovery, and bounded text-file boundaries. Repair a detached-process self-test race by waiting monotonically for the child PID handoff file, and remove fixed CI-job-count and implementation-location assumptions from source-shape tests.
+- Replace the oversized README with a decision-oriented entry path, add a component overview and explicit threat model, document the Node 26/npm 12 support trade-off, and add a contributor first-30-minutes workflow. Security objectives, attacker classes, non-goals, and external governance gaps are now stated separately from incident and release audit history.
+
 ## 1.2.8 - 2026-07-17
 
 ### Owner-tested release gate and dependency workflow repair

@@ -32,10 +32,16 @@ try {
   if (!record.files.some((item) => item.path === "docs/AUDIT.md")) throw new Error("npm package omitted the engineering/security audit record");
   if (!record.files.some((item) => item.path === "src/local/relay-connection.mjs")) throw new Error("npm package omitted the relay lifecycle module");
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
-  for (const module of ["runtime-reporting.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs"]) {
+  for (const module of [
+    "runtime-reporting.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs",
+    "runtime-tool-handlers.mjs", "runtime-relay.mjs", "runtime-paths.mjs",
+  ]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted runtime boundary ${module}`);
   }
   if (!record.files.some((item) => item.path === "src/local/agent-context.mjs")) throw new Error("npm package omitted the agent-context module");
+  for (const module of ["agent-context-projection.mjs", "agent-skill-discovery.mjs", "agent-text-file.mjs"]) {
+    if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted Agent boundary ${module}`);
+  }
   if (!record.files.some((item) => item.path === "src/local/agent-contract.mjs")) throw new Error("npm package omitted the agent contract module");
   if (!record.files.some((item) => item.path === "src/local/default-instructions.mjs")) throw new Error("npm package omitted the default-instructions module");
   if (!record.files.some((item) => item.path === "src/local/daemon-process.mjs")) throw new Error("npm package omitted the daemon-process module");
@@ -44,14 +50,24 @@ try {
   if (!record.files.some((item) => item.path === "src/local/service-lifecycle.mjs")) throw new Error("npm package omitted the service-lifecycle module");
   if (!record.files.some((item) => item.path === "src/local/app-automation.mjs")) throw new Error("npm package omitted the application-automation module");
   if (!record.files.some((item) => item.path === "src/local/browser-bridge.mjs")) throw new Error("npm package omitted the browser-bridge module");
+  for (const module of [
+    "browser-request-registry.mjs", "browser-bridge-http.mjs", "browser-broker-routes.mjs", "browser-broker-server.mjs", "windows-launcher.mjs",
+    "managed-job-lock.mjs", "managed-job-projection.mjs", "managed-job-storage.mjs", "managed-job-runner.mjs",
+  ]) {
+    if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted local boundary ${module}`);
+  }
   if (!record.files.some((item) => item.path === "src/local/browser-operation-service.mjs")) throw new Error("npm package omitted browser operation semantics");
   if (!record.files.some((item) => item.path === "src/worker/index.ts")) throw new Error("npm package omitted the worker entrypoint");
+  for (const module of ["mcp-jsonrpc.ts", "websocket-protocol.ts"]) {
+    if (!record.files.some((item) => item.path === `src/worker/${module}`)) throw new Error(`npm package omitted extracted Worker protocol ${module}`);
+  }
   if (!record.files.some((item) => item.path === "src/worker/pending-calls.ts")) throw new Error("npm package omitted the worker pending calls module");
   if (!record.files.some((item) => item.path === "src/worker/daemon-liveness.ts")) throw new Error("npm package omitted the worker daemon liveness module");
   if (!record.files.some((item) => item.path === "src/worker/policy.ts")) throw new Error("npm package omitted the worker policy module");
   if (!record.files.some((item) => item.path === "src/worker/errors.ts")) throw new Error("npm package omitted the worker errors module");
   if (!record.files.some((item) => item.path === "src/worker/oauth-state.ts")) throw new Error("npm package omitted the worker oauth state module");
   if (!record.files.some((item) => item.path === "src/worker/oauth-controller.ts")) throw new Error("npm package omitted the Worker OAuth controller");
+  if (!record.files.some((item) => item.path === "src/worker/oauth-authorization-page.ts")) throw new Error("npm package omitted the Worker OAuth authorization page module");
   if (!record.files.some((item) => item.path === "src/worker/observability.ts")) throw new Error("npm package omitted the worker observability module");
   if (!record.files.some((item) => item.path === "src/worker/http.ts")) throw new Error("npm package omitted the worker http module");
   if (record.files.some((item) => item.path.endsWith("worker-configuration.d.ts"))) throw new Error("npm package contains generated Worker type declarations");
@@ -63,6 +79,7 @@ try {
   if (record.files.some((item) => item.path === "src/local/daemon.mjs")) throw new Error("npm package retained the obsolete local daemon module name");
   if (!record.files.some((item) => item.path === "scripts/privacy-check.mjs")) throw new Error("npm package omitted the privacy checker");
   if (!record.files.some((item) => item.path === "scripts/release-impact-check.mjs")) throw new Error("npm package omitted the release-impact checker");
+  if (!record.files.some((item) => item.path === "scripts/start-release-candidate.mjs")) throw new Error("npm package omitted the isolated candidate startup helper");
   if (!record.files.some((item) => item.path === "scripts/network-retry.mjs")) throw new Error("npm package omitted the network retry helper");
   if (!record.files.some((item) => item.path === "scripts/syntax-check.mjs")) throw new Error("npm package omitted the dynamic syntax checker");
   if (!record.files.some((item) => item.path === "scripts/github-release.mjs")) throw new Error("npm package omitted the release helper referenced by package scripts");

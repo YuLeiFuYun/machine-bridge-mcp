@@ -22,6 +22,11 @@
     "src/local/agent-contract.mjs",
     "src/local/browser-extension-protocol.mjs",
     "src/local/call-registry.mjs",
-    "src/local/policy.mjs"
+    "src/local/policy.mjs",
+    "src/local/runtime-paths.mjs",
+    "src/local/agent-context-projection.mjs",
+    "src/local/agent-skill-discovery.mjs",
+    "src/local/agent-text-file.mjs",
+    "src/local/managed-job-projection.mjs"
   ]
 }

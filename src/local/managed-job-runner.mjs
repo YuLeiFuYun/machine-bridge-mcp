@@ -1,0 +1,73 @@
+import { spawn } from "node:child_process";
+import { closeSync } from "node:fs";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { inspectProcessInstance } from "./process-identity.mjs";
+import { classifyOperationalError } from "./log.mjs";
+import { ownerOnlyFile } from "./state.mjs";
+import { openPrivateAppendFile, readBoundedFile, trimDiagnosticFile } from "./managed-job-storage.mjs";
+
+const RUNNER_PATH = fileURLToPath(new URL("./job-runner.mjs", import.meta.url));
+
+export function launchRunner(dir, recover = false, recoveryToken = "", options = {}) {
+  const args = [RUNNER_PATH, "--job-dir", dir];
+  if (recover) args.push("--recover");
+  const stdoutFile = join(dir, "runner.out.log");
+  const stderrFile = join(dir, "runner.err.log");
+  trimDiagnosticFile(stdoutFile);
+  trimDiagnosticFile(stderrFile);
+  let stdoutFd;
+  let stderrFd;
+  let child;
+  try {
+    stdoutFd = openPrivateAppendFile(stdoutFile);
+    stderrFd = openPrivateAppendFile(stderrFile);
+    const spawnProcess = typeof options.spawnProcess === "function" ? options.spawnProcess : spawn;
+    child = spawnProcess(process.execPath, args, {
+      detached: true,
+      stdio: ["ignore", stdoutFd, stderrFd],
+      windowsHide: true,
+      shell: false,
+      env: recoveryToken ? { ...process.env, MBM_RECOVERY_LOCK_TOKEN: recoveryToken } : process.env,
+    });
+  } finally {
+    if (stdoutFd !== undefined) closeSync(stdoutFd);
+    if (stderrFd !== undefined) closeSync(stderrFd);
+  }
+  ownerOnlyFile(stdoutFile);
+  ownerOnlyFile(stderrFile);
+  const logger = options.logger || console;
+  child.once?.("error", (error) => {
+    logger.error?.("managed job runner process reported an asynchronous failure", {
+      job_id: basename(dir),
+      recovery: recover,
+      error_class: classifyOperationalError(error),
+    });
+  });
+  const pid = Number(child.pid);
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("managed job runner did not receive a process id");
+  child.unref();
+  return pid;
+}
+
+export function runnerProcessIsCurrent(status, dir, { ownerOnly = false } = {}) {
+  const fallback = ownerOnly ? status : {
+    pid: Number(status?.runner_pid) || undefined,
+    processStartedAt: status?.runner_process_started_at,
+    startedAt: status?.started_at || status?.updated_at || status?.created_at,
+  };
+  const owner = readRunnerOwner(dir, fallback);
+  if (!owner.pid) return false;
+  const identity = inspectProcessInstance(owner, { maxAgeMs: Number.POSITIVE_INFINITY });
+  return identity.current || (identity.alive && !identity.reclaimable);
+}
+
+function readRunnerOwner(dir, fallback = {}) {
+  try {
+    const parsed = JSON.parse(readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...fallback };
+    return { ...fallback, ...parsed };
+  } catch {
+    return { ...fallback };
+  }
+}
