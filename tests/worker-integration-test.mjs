@@ -7,6 +7,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
+let daemonInstanceSequence = 0;
+
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
 const port = await openPort();
@@ -568,18 +570,29 @@ try {
   nonObjectCandidate.send("null");
   assert((await nonObjectNotice).error === "invalid_message", "non-object daemon JSON returned the wrong protocol error");
   assert((await nonObjectClosed).code === 1002, "non-object daemon JSON did not close with protocol-error status");
+  const missingInstanceCandidate = await connectDaemon(base);
+  daemonSockets.push(missingInstanceCandidate);
+  const missingInstanceNotice = waitForWsMessage(missingInstanceCandidate, "error");
+  const missingInstanceClosed = waitForWsClose(missingInstanceCandidate);
+  missingInstanceCandidate.send(JSON.stringify({ type: "hello", tools: ["list_dir"], policy: defaultDaemonPolicy() }));
+  assert((await missingInstanceNotice).error === "invalid_daemon_instance", "missing daemon instance id returned the wrong protocol error");
+  assert((await missingInstanceClosed).code === 1002, "missing daemon instance id did not close with protocol-error status");
+
   const statusAfterMalformedCandidates = await callServerInfo(base, ownerAccessToken, 231);
   assert(statusAfterMalformedCandidates.daemon?.connected === true, "malformed candidate displaced the active daemon");
   assert(statusAfterMalformedCandidates.daemon?.tools?.includes("read_file"), "malformed candidate changed active daemon tools");
 
-  const candidateDaemon = await connectDaemon(base);
+  let candidateDaemon = await connectDaemon(base);
   daemonSockets.push(candidateDaemon);
   const statusBeforeHello = await callServerInfo(base, ownerAccessToken, 24);
   assert(statusBeforeHello.daemon?.connected === true, "candidate connection displaced the active daemon before hello");
   assert(statusBeforeHello.daemon?.tools?.includes("read_file"), "candidate connection changed active tools before hello");
 
+  const candidateInstanceId = nextDaemonInstanceId();
+  const candidateTools = ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command"];
+  const candidatePolicy = { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false };
   const firstClosed = waitForWsClose(firstDaemon);
-  const replacementProbe = await beginDaemonHello(candidateDaemon, ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command"], { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false });
+  const replacementProbe = await beginDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
   const statusDuringProbe = await callServerInfo(base, ownerAccessToken, 241);
   assert(statusDuringProbe.daemon?.connected === true && statusDuringProbe.daemon?.tools?.includes("read_file"), "unverified replacement displaced the incumbent daemon");
   assert(statusDuringProbe.worker?.daemon_probes === 1, "server_info did not expose the in-progress readiness probe");
@@ -612,6 +625,50 @@ try {
   const [firstWindowResult, secondWindowResult] = await Promise.all([firstWindowCall, secondWindowCall]);
   assert(firstWindowResult.body.result?.structuredContent?.window === "first", "first MCP session received another session's result");
   assert(secondWindowResult.body.result?.structuredContent?.window === "second", "second MCP session received another session's result");
+
+  const reconnectRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const reconnectCall = toolCallRequest(base, ownerAccessToken, primarySession, 8801, "list_dir", { path: "." });
+  const reconnectRelay = await reconnectRelayPromise;
+  const disconnectedCandidate = candidateDaemon;
+  const disconnectedCandidateClosed = waitForWsClose(disconnectedCandidate);
+  disconnectedCandidate.terminate();
+  await disconnectedCandidateClosed;
+  const detachedStatus = await callServerInfo(base, ownerAccessToken, 8802);
+  assert(detachedStatus.worker?.pending_calls?.active === 1, "transient daemon disconnect lost the pending MCP request");
+  assert(detachedStatus.worker?.pending_calls?.detached === 1, "pending request was not marked detached during reconnect grace");
+
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const resumedCalls = await sendDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  assert(resumedCalls.ids.length === 1 && resumedCalls.ids[0] === reconnectRelay.id, "Worker did not authorize exactly the detached call during reconnect");
+  const reboundStatus = await callServerInfo(base, ownerAccessToken, 8803);
+  assert(reboundStatus.worker?.pending_calls?.active === 1, "same daemon instance reconnect did not retain the pending request");
+  assert(reboundStatus.worker?.pending_calls?.detached === 0, "same daemon instance reconnect did not rebind the pending request");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: reconnectRelay.id, ok: true, result: { resumed: true } }));
+  const reconnectResult = await reconnectCall;
+  assert(reconnectResult.body.result?.structuredContent?.resumed === true, "MCP request did not complete after same-instance daemon reconnect");
+
+  const cancelledReconnectRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const cancelledReconnectCall = toolCallRequest(base, ownerAccessToken, primarySession, 8804, "list_dir", { path: "." });
+  await cancelledReconnectRelayPromise;
+  const cancelledReconnectSocket = candidateDaemon;
+  const cancelledReconnectClosed = waitForWsClose(cancelledReconnectSocket);
+  cancelledReconnectSocket.terminate();
+  await cancelledReconnectClosed;
+  const cancelledWhileDetached = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: mcpHeaders(ownerAccessToken, primarySession),
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 8804, reason: "cancel during relay interruption" } }),
+  });
+  assert(cancelledWhileDetached.status === 202, "detached-call cancellation notification failed");
+  const cancelledReconnectResult = await cancelledReconnectCall;
+  assert(cancelledReconnectResult.body.result?.isError === true
+    && JSON.stringify(cancelledReconnectResult.body.result).includes("cancelled"), "detached call did not settle as cancelled");
+
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const postCancelResume = await sendDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  assert(postCancelResume.ids.length === 0, "same-instance reconnect attempted to resume a request cancelled while detached");
 
   const sessionlessFirstRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const sessionlessFirst = toolCallRequest(base, ownerAccessToken, "", 881, "list_dir", { path: "." });
@@ -990,15 +1047,16 @@ async function connectDaemon(origin) {
   return socket;
 }
 
-async function sendDaemonHello(socket, tools, policy = defaultDaemonPolicy()) {
-  const probe = await beginDaemonHello(socket, tools, policy);
-  await completeDaemonProbe(socket, probe);
+async function sendDaemonHello(socket, tools, policy = defaultDaemonPolicy(), instanceId = nextDaemonInstanceId()) {
+  const probe = await beginDaemonHello(socket, tools, policy, instanceId);
+  return completeDaemonProbe(socket, probe);
 }
 
-async function beginDaemonHello(socket, tools, policy = defaultDaemonPolicy()) {
+async function beginDaemonHello(socket, tools, policy = defaultDaemonPolicy(), instanceId = nextDaemonInstanceId()) {
   const handshake = waitForWsMessageSequence(socket, ["hello_ack", "relay_probe"]);
   socket.send(JSON.stringify({
     type: "hello",
+    instance_id: instanceId,
     tools,
     policy,
     protocol_versions: ["2025-11-25"],
@@ -1009,9 +1067,16 @@ async function beginDaemonHello(socket, tools, policy = defaultDaemonPolicy()) {
 }
 
 async function completeDaemonProbe(socket, probe) {
-  const ready = waitForWsMessage(socket, "ready_ack");
+  const ready = waitForWsMessageSequence(socket, ["resume_calls", "ready_ack"]);
   socket.send(JSON.stringify({ type: "relay_probe_result", id: probe.id }));
-  await ready;
+  const [resume] = await ready;
+  assert(Array.isArray(resume.ids), "Worker resume_calls omitted its call-id array");
+  return resume;
+}
+
+function nextDaemonInstanceId() {
+  daemonInstanceSequence += 1;
+  return `daemon_integration_${String(daemonInstanceSequence).padStart(6, "0")}`;
 }
 
 function defaultDaemonPolicy() {

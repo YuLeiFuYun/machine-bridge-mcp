@@ -31,6 +31,7 @@ export class RelayConnection {
     this.expectedVersion = String(options.expectedVersion || "");
     this.onMessage = typeof options.onMessage === "function" ? options.onMessage : () => {};
     this.onDisconnect = typeof options.onDisconnect === "function" ? options.onDisconnect : () => {};
+    this.onReady = typeof options.onReady === "function" ? options.onReady : () => {};
     this.onSuperseded = typeof options.onSuperseded === "function" ? options.onSuperseded : () => {};
     this.onFatal = typeof options.onFatal === "function" ? options.onFatal : () => {};
     this.WebSocketClass = options.WebSocketClass || WebSocket;
@@ -230,8 +231,12 @@ export class RelayConnection {
       }
     }
 
+    const reconnected = this.hasConnected;
     this.hasConnected = true;
     this.resetOutage();
+    try { this.onReady({ reconnected, sessionId: this.activeSessionId }); } catch (error) {
+      this.logger.error?.("relay ready callback failed", { error_class: classifyOperationalError(error) });
+    }
     if (this.connectedOnceResolve) {
       this.connectedOnceResolve(true);
       this.connectedOnceResolve = null;

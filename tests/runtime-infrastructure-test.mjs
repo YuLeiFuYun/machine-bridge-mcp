@@ -14,6 +14,8 @@ import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { workspaceShellCommand } from "../src/local/shell.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
+import { normalizeRelayResumeCalls } from "../src/local/runtime-relay.mjs";
+import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
 
 await testCallRegistry();
 await testToolExecutor();
@@ -22,8 +24,9 @@ await testDuplicateRelayCallId();
 testRelayReadinessProbe();
 await testRelayReadinessStateGuards();
 testRelayCancellationSuppression();
+testRelayResumeReconciliation();
 testRuntimeConvenienceMethods();
-testTerminalDeliveryFailure();
+testRelayReconnectDelivery();
 await testProcessExecutionNoShell();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
@@ -145,7 +148,9 @@ function testRelayReadinessProbe() {
   const delivered = [];
   let violation = "";
   const runtime = {
-    deliverRelayToolResult(response, sessionId) { delivered.push({ response, sessionId }); return true; },
+    relay: {
+      sendForSession(response, sessionId) { delivered.push({ response, sessionId }); return { ok: true, reason: "sent" }; },
+    },
     handleRelayProtocolViolation(reason) { violation = reason; },
   };
   LocalRuntime.prototype.handleRelayProbe.call(runtime, { type: "relay_probe", id: "probe_12345678" }, { sessionId: 17 });
@@ -214,6 +219,7 @@ function testRelayCancellationSuppression() {
   const runtime = {
     activeRelayCalls: new Set(["result-window"]),
     suppressedRelayResults: new Map(),
+    relayCallRecovery: { discard() { return false; } },
     callRegistry: { cancel() { return false; } },
     cancelCall: LocalRuntime.prototype.cancelCall,
   };
@@ -225,49 +231,146 @@ function testRelayCancellationSuppression() {
   assert(!runtime.suppressedRelayResults.has("unknown-call"), "unknown cancellation created an unbounded suppression entry");
 }
 
+function testRelayResumeReconciliation() {
+  assert(normalizeRelayResumeCalls({ ids: ["call_valid_12345678"] }).ok, "valid resumed-call set was rejected");
+  assert(!normalizeRelayResumeCalls({ ids: ["call_duplicate_12345678", "call_duplicate_12345678"] }).ok, "duplicate resumed-call ids were accepted");
+  assert(!normalizeRelayResumeCalls({ ids: ["invalid"] }).ok, "malformed resumed-call id was accepted");
+
+  const cancelled = [];
+  const events = [];
+  const runtime = {
+    activeRelayCalls: new Set(["call_keep_12345678", "call_cancel_12345678"]),
+    suppressedRelayResults: new Map(),
+    callRegistry: { cancel(id) { cancelled.push(id); return true; } },
+    cancelCall: LocalRuntime.prototype.cancelCall,
+    cancelRelayCall: LocalRuntime.prototype.cancelRelayCall,
+    logger: { event(level, name, fields) { events.push({ level, name, fields }); } },
+  };
+  runtime.relayCallRecovery = new RelayCallRecovery({
+    logger: runtime.logger, activeCallIds: () => runtime.activeRelayCalls,
+  });
+  runtime.relayCallRecovery.pendingResults.set("call_keep_12345678", { id: "call_keep_12345678" });
+  runtime.relayCallRecovery.pendingResults.set("call_discard_12345678", { id: "call_discard_12345678" });
+  LocalRuntime.prototype.reconcileRelayCalls.call(runtime, ["call_keep_12345678"]);
+  assert(cancelled.join(",") === "call_cancel_12345678", "reconnect reconciliation cancelled the wrong active call");
+  assert(runtime.suppressedRelayResults.get("call_cancel_12345678") === "caller_no_longer_waiting", "orphaned active call result was not suppressed");
+  assert(runtime.relayCallRecovery.pendingResults.has("call_keep_12345678")
+    && !runtime.relayCallRecovery.pendingResults.has("call_discard_12345678"), "reconnect reconciliation retained an orphaned queued result");
+  assert(events.some((event) => event.name === "relay.calls.reconciled"), "reconnect reconciliation was not observable");
+
+  let violation = "";
+  let confirmed = 0;
+  const controlRuntime = {
+    relayResumeSessionId: 0,
+    reconcileRelayCalls(ids) { this.resumed = ids; },
+    handleRelayProtocolViolation(reason) { violation = reason; },
+    relay: {
+      acknowledge() {},
+      confirmReady() { confirmed += 1; return true; },
+    },
+  };
+  LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "resume_calls", ids: ["call_valid_12345678"] },
+    { sessionId: 17, authenticated: true, ready: false },
+  );
+  assert(controlRuntime.relayResumeSessionId === 17 && controlRuntime.resumed[0] === "call_valid_12345678", "valid resume_calls did not establish the reconnect contract");
+  LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "ready_ack" },
+    { sessionId: 17, authenticated: true, ready: false },
+  );
+  assert(confirmed === 1 && controlRuntime.relayResumeSessionId === 0, "ready_ack was not gated by resume reconciliation");
+  LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "ready_ack" },
+    { sessionId: 18, authenticated: true, ready: false },
+  );
+  assert(violation === "resume_calls_required", "ready_ack without resume_calls was accepted");
+}
+
 function testRuntimeConvenienceMethods() {
   let finished = "";
+  const delegated = [];
   const runtime = {
     relay: null,
+    relayResumeSessionId: 9,
     callRegistry: { finish(callId) { finished = callId; } },
+    relayCallRecovery: {
+      deliver(value) { delegated.push(["deliver", value.id]); return true; },
+      reconcile(ids, cancel) { delegated.push(["reconcile", ids.join(","), typeof cancel]); },
+      disconnected() { delegated.push(["disconnected"]); },
+      ready() { delegated.push(["ready"]); },
+    },
+    cancelRelayCall() { return false; },
   };
   assert(LocalRuntime.prototype.send.call(runtime, { type: "noop" }) === false, "runtime send reported success without a relay");
   LocalRuntime.prototype.finishCall.call(runtime, "finished-call");
   assert(finished === "finished-call", "runtime finishCall did not delegate to the call registry");
   LocalRuntime.prototype.finishCall.call(runtime, "");
   assert(finished === "finished-call", "runtime finishCall mutated state for an empty call id");
+  assert(LocalRuntime.prototype.deliverRelayToolResult.call(runtime, { id: "delegated-call" }) === true, "runtime did not delegate relay result delivery");
+  LocalRuntime.prototype.reconcileRelayCalls.call(runtime, ["call_keep_12345678"]);
+  LocalRuntime.prototype.handleRelayDisconnect.call(runtime);
+  LocalRuntime.prototype.handleRelayReady.call(runtime);
+  assert(runtime.relayResumeSessionId === 0, "runtime disconnect did not reset resume-session state");
+  assert(JSON.stringify(delegated) === JSON.stringify([
+    ["deliver", "delegated-call"],
+    ["reconcile", "call_keep_12345678", "function"],
+    ["disconnected"],
+    ["ready"],
+  ]), "runtime relay-recovery delegation drifted");
 }
 
-function testTerminalDeliveryFailure() {
-  let interrupted = "";
+function testRelayReconnectDelivery() {
   const events = [];
-  const runtime = {
-    send() { throw new Error("legacy send path should not be used"); },
-    relay: {
-      sendForSession() { return { ok: false, reason: "session_ended" }; },
-      interrupt(category) { interrupted = category; return true; },
+  const activeCalls = new Set(["call_reconnect"]);
+  const suppressed = new Map();
+  let sendSucceeds = false;
+  let scheduledCallback = null;
+  let scheduled = 0;
+  let cancelled = 0;
+  let terminated = 0;
+  const recovery = new RelayCallRecovery({
+    logger: {
+      event(level, name, fields, message) { events.push({ level, name, fields, message }); },
+      warn(message) { events.push({ level: "warn", name: "warn", message }); },
     },
-    logger: { event(level, name, fields, message) { events.push({ level, name, fields, message }); } },
-  };
-  const ended = LocalRuntime.prototype.deliverRelayToolResult.call(
-    runtime,
-    { id: "call_terminal_delivery", ok: true },
-    7,
-  );
-  assert(ended === false, "an ended relay session was reported as delivered");
-  assert(interrupted === "", "an ended relay session was misclassified as a transport failure");
-  assert(events.some((event) => event.level === "debug" && event.name === "relay.tool_result.discarded" && event.fields.reason === "session_ended"), "ended-session result discard was not observable at debug level");
-  assert(!events.some((event) => event.level === "warn"), "routine ended-session result discard emitted a warning");
+    send() { return sendSucceeds; },
+    isRecoverable: () => true,
+    activeCallIds: () => activeCalls,
+    suppressCall(callId, reason) { suppressed.set(callId, reason); },
+    cancelOrigin() { cancelled += activeCalls.size; activeCalls.clear(); return cancelled; },
+    terminate() { terminated += 1; },
+    graceMs: 30_000,
+    scheduler: {
+      setTimeout(callback) { scheduled += 1; scheduledCallback = callback; return { unref() {} }; },
+      clearTimeout() { scheduledCallback = null; },
+    },
+  });
 
-  runtime.relay.sendForSession = () => ({ ok: false, reason: "send_failed" });
-  const failed = LocalRuntime.prototype.deliverRelayToolResult.call(
-    runtime,
-    { id: "call_transport_failure", ok: true },
-    8,
-  );
-  assert(failed === false, "transport send failure was reported as delivered");
-  assert(interrupted === "relay_transport_error", "transport send failure did not invalidate the ambiguous socket");
-  assert(events.some((event) => event.fields.reason === "send_failed" && event.message.includes("transport failed")), "transport send failure lost its human-readable debug diagnosis");
+  assert(recovery.deliver({ id: "call_reconnect", ok: true }) === false, "result queued during an outage was reported as delivered");
+  assert(recovery.pendingResults.has("call_reconnect"), "completed result was not retained for reconnect delivery");
+  assert(scheduled === 1 && typeof scheduledCallback === "function", "queued result did not arm reconnect expiry");
+  recovery.disconnected();
+  assert(scheduled === 1, "disconnect armed a duplicate reconnect-expiry timer");
+  assert(activeCalls.has("call_reconnect"), "brief disconnect cancelled an in-flight call immediately");
+
+  sendSucceeds = true;
+  recovery.ready();
+  assert(recovery.pendingResults.size === 0 && scheduledCallback === null, "queued result was not replayed and cleared after reconnect");
+  assert(events.some((event) => event.name === "relay.tool_results.replayed" && event.fields.delivered_results === 1), "replayed result was not observable");
+  activeCalls.delete("call_reconnect");
+
+  sendSucceeds = false;
+  activeCalls.add("call_expire");
+  recovery.deliver({ id: "call_expire", ok: true });
+  const expire = scheduledCallback;
+  assert(typeof expire === "function", "second outage did not arm expiry");
+  expire();
+  assert(cancelled === 1 && terminated === 1, "reconnect expiry did not cancel calls and terminate ordinary processes");
+  assert(suppressed.get("call_expire") === "relay_reconnect_timeout", "reconnect expiry did not suppress the eventual result");
+  assert(recovery.pendingResults.size === 0, "reconnect expiry retained queued results");
 }
 
 async function testProcessExecutionNoShell() {

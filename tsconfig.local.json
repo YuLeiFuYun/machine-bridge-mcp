@@ -24,6 +24,7 @@
     "src/local/call-registry.mjs",
     "src/local/policy.mjs",
     "src/local/runtime-paths.mjs",
+    "src/local/relay-call-recovery.mjs",
     "src/local/agent-context-projection.mjs",
     "src/local/agent-skill-discovery.mjs",
     "src/local/agent-text-file.mjs",

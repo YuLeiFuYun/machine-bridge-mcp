@@ -7,6 +7,7 @@ export interface DaemonAttachment {
   connectedAt: string;
   lastSeenAt?: string;
   probeId?: string;
+  instanceId?: string;
   policy?: DaemonPolicy;
   tools?: string[];
 }
@@ -29,6 +30,7 @@ export class DaemonSocketRegistry {
       connectedAt: sanitizeMetadataText(candidate.connectedAt, 64) ?? "",
       lastSeenAt: sanitizeMetadataText(candidate.lastSeenAt, 64),
       probeId: sanitizeProbeId(candidate.probeId),
+      instanceId: sanitizeDaemonInstanceId(candidate.instanceId),
       policy,
       tools: sanitizeDaemonTools(candidate.tools, policy),
     };
@@ -54,12 +56,13 @@ export class DaemonSocketRegistry {
     socket.serializeAttachment({ role: "candidate", connectedAt } satisfies DaemonAttachment);
   }
 
-  beginProbe(socket: WebSocket, values: { connectedAt: string; probeId: string; policy: DaemonPolicy; tools: string[] }): void {
+  beginProbe(socket: WebSocket, values: { connectedAt: string; probeId: string; instanceId: string; policy: DaemonPolicy; tools: string[] }): void {
     socket.serializeAttachment({
       role: "probing",
       connectedAt: values.connectedAt,
       lastSeenAt: values.connectedAt,
       probeId: values.probeId,
+      instanceId: values.instanceId,
       policy: values.policy,
       tools: values.tools,
     } satisfies DaemonAttachment);
@@ -89,6 +92,7 @@ export class DaemonSocketRegistry {
       role: "expired",
       connectedAt: attachment.connectedAt,
       lastSeenAt: attachment.lastSeenAt,
+      instanceId: attachment.instanceId,
     } satisfies DaemonAttachment);
   }
 
@@ -103,5 +107,10 @@ export class DaemonSocketRegistry {
 
 function sanitizeProbeId(value: unknown): string | undefined {
   if (typeof value !== "string" || !/^probe_[A-Za-z0-9_-]{8,240}$/.test(value)) return undefined;
+  return value;
+}
+
+function sanitizeDaemonInstanceId(value: unknown): string | undefined {
+  if (typeof value !== "string" || !/^daemon_[A-Za-z0-9_-]{16,96}$/.test(value)) return undefined;
   return value;
 }

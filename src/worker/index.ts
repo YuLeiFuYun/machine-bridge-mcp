@@ -34,13 +34,14 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.2.9";
+const SERVER_VERSION = "1.2.10";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
+const DAEMON_RECONNECT_GRACE_MS = 30_000;
 
 interface BridgeEnv extends OAuthControllerEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
@@ -179,11 +180,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return;
       }
       const daemonPolicy = sanitizeDaemonPolicy(body.policy);
+      const instanceId = daemonInstanceId(body.instance_id);
+      if (!instanceId) {
+        rejectDaemonMessage(ws, "invalid_daemon_instance", 1002, "daemon instance id required");
+        return;
+      }
       const authenticatedAt = new Date().toISOString();
       const probeId = randomToken("probe");
       this.daemonRegistry.beginProbe(ws, {
         connectedAt: authenticatedAt,
         probeId,
+        instanceId,
         policy: daemonPolicy,
         tools: sanitizeDaemonTools(body.tools, daemonPolicy),
       });
@@ -218,11 +225,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return;
       }
       const readyAt = new Date().toISOString();
-      if (!this.daemonRegistry.promote(ws, readyAt)) {
+      const readyAttachment = this.daemonRegistry.promote(ws, readyAt);
+      if (!readyAttachment) {
         rejectDaemonMessage(ws, "invalid_relay_readiness_state", 1002, "invalid daemon readiness state");
         return;
       }
+      const reboundCallIds = this.pending.rebindInstance(readyAttachment.instanceId ?? "", ws);
+      if (reboundCallIds.length > 0) {
+        this.observability.event("info", "daemon.calls.rebound", { rebound_calls: reboundCallIds.length });
+      }
       try {
+        ws.send(JSON.stringify({ type: "resume_calls", ids: reboundCallIds }));
         ws.send(JSON.stringify({ type: "ready_ack", server: SERVER_NAME, version: SERVER_VERSION }));
       } catch {
         this.invalidateDaemonSocket(ws, "daemon readiness acknowledgement failed", "daemon ready timeout", "daemon_ready_timeout");
@@ -263,7 +276,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async cleanupDaemonSocket(ws: WebSocket, message: string): Promise<void> {
     this.observability.socketDisconnected();
-    this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
+    this.detachDaemonSocketCalls(ws, message);
     await this.scheduleSocketAlarms();
   }
 
@@ -428,6 +441,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     this.reclaimStaleDaemonSockets();
     const socket = this.daemonRegistry.readySockets()[0];
     if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
+    const daemonAttachment = this.daemonRegistry.readyAttachment(socket);
+    const daemonInstanceId = daemonAttachment?.instanceId ?? "";
+    if (!daemonInstanceId) throw new WorkerToolError("unavailable", "local daemon connection is missing its instance identity", true);
     const id = randomToken("call");
     const timeoutMs = daemonToolTimeoutMs(name, args);
     let result: Promise<unknown>;
@@ -435,20 +451,23 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       result = this.pending.register({
         id,
         socket,
+        daemonInstanceId,
         clientRequestKey: requestKey,
         tool: name,
         timeoutMs,
         onTimeout: (record) => {
-          sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
-          const silentForMs = Date.now() - daemonLastSeenMs(this.daemonRegistry.readyAttachment(record.socket));
-          if (!Number.isFinite(silentForMs) || silentForMs > 45_000) {
+          if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
+          const silentForMs = record.socket
+            ? Date.now() - daemonLastSeenMs(this.daemonRegistry.readyAttachment(record.socket))
+            : 0;
+          if (record.socket && (!Number.isFinite(silentForMs) || silentForMs > 45_000)) {
             this.invalidateDaemonSocket(record.socket, "daemon became unresponsive", "daemon liveness timeout");
           }
           return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
         },
         signal,
         onAbort: (record) => {
-          sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
+          if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
           return new WorkerToolError("cancelled", "MCP client stopped waiting for the tool result");
         },
       });
@@ -482,7 +501,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private cancelClientRequest(requestKey?: string): void {
     if (!requestKey) return;
     this.pending.cancelRequest(requestKey, (record) => {
-      sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
+      if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
       return new WorkerToolError("cancelled", "tool call cancelled by client");
     });
   }
@@ -542,10 +561,22 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     closeReason: string,
     errorCode = "daemon_liveness_timeout",
   ): void {
+    this.detachDaemonSocketCalls(ws, message);
     this.daemonRegistry.expire(ws);
-    this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
     sendWebSocketQuietly(ws, { type: "error", error: errorCode });
     closeWebSocketQuietly(ws, 1008, closeReason);
+  }
+
+  private detachDaemonSocketCalls(ws: WebSocket, message: string): number {
+    const attachment = this.daemonRegistry.attachment(ws);
+    if (!attachment?.instanceId) {
+      return this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
+    }
+    return this.pending.detachSocket(
+      ws,
+      DAEMON_RECONNECT_GRACE_MS,
+      () => new WorkerToolError("unavailable", `${message}; reconnect grace expired`, true),
+    );
   }
 
   private reclaimStaleDaemonSockets(now = Date.now()): void {
@@ -697,3 +728,8 @@ export default {
     return stub.fetch(request);
   },
 } satisfies ExportedHandler<BridgeEnv>;
+
+function daemonInstanceId(value: unknown): string {
+  if (typeof value !== "string" || !/^daemon_[A-Za-z0-9_-]{16,96}$/.test(value)) return "";
+  return value;
+}

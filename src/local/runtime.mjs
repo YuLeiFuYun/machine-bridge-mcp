@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { realpathSync, rmSync } from "node:fs";
 import { lstat, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -30,7 +31,8 @@ import { AccountAccessGate } from "./account-access.mjs";
 import { buildProjectOverview, buildRuntimeInfo } from "./runtime-reporting.mjs";
 import { diagnoseRuntime as runRuntimeDiagnostics } from "./runtime-diagnostics.mjs";
 import { bindRuntimeToolHandlers, runtimeToolHandlerNames as registeredRuntimeToolHandlerNames } from "./runtime-tool-handlers.mjs";
-import { createRuntimeRelayConnection, normalizeRelayToolCall } from "./runtime-relay.mjs";
+import { createRuntimeRelayConnection, normalizeRelayResumeCalls, normalizeRelayToolCall } from "./runtime-relay.mjs";
+import { RelayCallRecovery } from "./relay-call-recovery.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage, stateRootFromProfileStatePath } from "./runtime-paths.mjs";
 import {
   resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
@@ -59,8 +61,10 @@ export class LocalRuntime {
     this.processTracker = new ProcessTracker();
     this.lifecycle = new LifecycleController("local runtime");
     this.observability = new RuntimeObservability();
+    this.relayInstanceId = `daemon_${randomBytes(18).toString("base64url")}`;
     this.activeRelayCalls = new Set();
     this.suppressedRelayResults = new Map();
+    this.relayResumeSessionId = 0;
     this.callRegistry = new CallRegistry({
       maximum: MAX_CONCURRENT_TOOL_CALLS,
       onCancel: (record) => {
@@ -171,10 +175,16 @@ export class LocalRuntime {
       slowMs: SLOW_TOOL_CALL_MS,
     });
     this.relay = createRuntimeRelayConnection(this, {
-      workerUrl: remoteWorkerUrl,
-      secret: remoteSecret,
-      expectedVersion: expectedRelayVersion,
-      onFatal,
+      workerUrl: remoteWorkerUrl, secret: remoteSecret, expectedVersion: expectedRelayVersion, onFatal,
+    });
+    this.relayCallRecovery = new RelayCallRecovery({
+      logger: this.logger,
+      send: (value) => this.send(value),
+      isRecoverable: () => Boolean(this.relay && !this.relay.status?.().closed),
+      activeCallIds: () => this.activeRelayCalls,
+      suppressCall: (callId, reason) => this.suppressedRelayResults.set(callId, reason),
+      cancelOrigin: (reason) => this.callRegistry.cancelOrigin("relay", reason),
+      terminate: () => this.terminateActiveProcesses("SIGTERM", true),
     });
   }
 
@@ -219,6 +229,7 @@ export class LocalRuntime {
     if (!this.lifecycle.beginStop()) return;
     try {
       this.relay?.stop();
+      this.relayCallRecovery.stop();
       this.callRegistry.cancelAll("runtime stopped");
       this.terminateActiveProcesses("SIGKILL");
       this.processSessionManager.clear();
@@ -243,7 +254,7 @@ export class LocalRuntime {
       this.handleRelayProtocolViolation("invalid_server_message");
       return;
     }
-    if (this.handleRelayControlMessage(message)) return;
+    if (this.handleRelayControlMessage(message, relayContext)) return;
     if (message.type === "relay_probe") {
       if (isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("unexpected_relay_probe");
       this.handleRelayProbe(message, relayContext);
@@ -251,20 +262,38 @@ export class LocalRuntime {
     }
     if (message.type !== "tool_call") return this.handleRelayProtocolViolation("unexpected_server_message_type");
     if (!isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("tool_call_before_ready");
-    await this.handleRelayToolCall(message, relayContext);
+    await this.handleRelayToolCall(message);
   }
 
-  handleRelayControlMessage(message) {
+  handleRelayControlMessage(message, relayContext = {}) {
     if (message.type === "welcome") {
       this.relay?.observeWelcome(message);
       return true;
     }
     if (message.type === "hello_ack") {
+      this.relayResumeSessionId = 0;
       this.relay?.acknowledge(message);
       return true;
     }
+    if (message.type === "resume_calls") {
+      const sessionId = Number(relayContext.sessionId) || 0;
+      const resume = normalizeRelayResumeCalls(message);
+      if (!resume.ok || !sessionId || relayContext.authenticated !== true || relayContext.ready === true) {
+        this.handleRelayProtocolViolation("invalid_resume_calls");
+        return true;
+      }
+      this.reconcileRelayCalls(resume.ids);
+      this.relayResumeSessionId = sessionId;
+      return true;
+    }
     if (message.type === "ready_ack") {
+      const sessionId = Number(relayContext.sessionId) || 0;
+      if (!sessionId || sessionId !== this.relayResumeSessionId) {
+        this.handleRelayProtocolViolation("resume_calls_required");
+        return true;
+      }
       this.relay?.confirmReady(message);
+      this.relayResumeSessionId = 0;
       return true;
     }
     if (message.type === "pong") return true;
@@ -291,12 +320,12 @@ export class LocalRuntime {
     const id = typeof message?.id === "string" && /^probe_[A-Za-z0-9_-]{8,240}$/.test(message.id) ? message.id : "";
     const relaySessionId = Number(relayContext.sessionId) || 0;
     if (!id || !relaySessionId) return this.handleRelayProtocolViolation("invalid_relay_probe");
-    this.deliverRelayToolResult({ type: "relay_probe_result", id }, relaySessionId);
+    const outcome = this.relay?.sendForSession?.({ type: "relay_probe_result", id }, relaySessionId);
+    if (!outcome?.ok) this.handleRelayProtocolViolation("relay_probe_delivery_failed");
   }
 
-  async handleRelayToolCall(message, relayContext = {}) {
+  async handleRelayToolCall(message) {
     const envelope = normalizeRelayToolCall(message);
-    const relaySessionId = Number(relayContext.sessionId) || 0;
     if (!envelope.ok) {
       this.logger.warn?.("Received an invalid tool request from the relay; the request was rejected.");
       this.logger.event?.("debug", "relay.tool_call.invalid", {
@@ -307,7 +336,7 @@ export class LocalRuntime {
         id: envelope.id,
         ok: false,
         error: { code: "invalid_request", message: "invalid tool_call envelope", retryable: false },
-      }, relaySessionId);
+      });
       return;
     }
     if (this.activeRelayCalls.has(envelope.id)) {
@@ -335,31 +364,15 @@ export class LocalRuntime {
         }, "Discarded a tool result because the caller was no longer waiting");
         return;
       }
-      this.deliverRelayToolResult(response, relaySessionId);
+      this.deliverRelayToolResult(response);
     } finally {
       this.activeRelayCalls.delete(envelope.id);
       this.suppressedRelayResults.delete(envelope.id);
     }
   }
 
-  deliverRelayToolResult(response, relaySessionId = 0) {
-    const sessionId = Number(relaySessionId) || 0;
-    const outcome = this.relay?.sendForSession
-      ? this.relay.sendForSession(response, sessionId)
-      : (this.send(response) ? { ok: true, reason: "sent" } : { ok: false, reason: "transport_unavailable" });
-    if (outcome?.ok) return true;
-    const reason = String(outcome?.reason || "transport_unavailable");
-    const missingSession = reason === "session_ended" && sessionId <= 0;
-    this.logger.event?.(missingSession ? "error" : "debug", "relay.tool_result.discarded", {
-      call_id: shortCallId(response?.id), reason, relay_session_id: sessionId,
-      active_session_id: Number(this.relay?.currentSessionId?.() || 0),
-    }, missingSession
-      ? "Discarded a tool result because the relay session id was missing from the inbound tool_call context"
-      : reason === "send_failed"
-        ? "Could not send a tool result because the relay transport failed"
-        : "Discarded a tool result because its relay session had ended");
-    if (reason === "send_failed") this.relay?.interrupt?.("relay_transport_error");
-    return false;
+  deliverRelayToolResult(response) {
+    return this.relayCallRecovery.deliver(response);
   }
 
   finishCall(callId) {
@@ -373,18 +386,25 @@ export class LocalRuntime {
 
   cancelRelayCall(callId, suppressionReason = "caller_cancelled") {
     const id = String(callId);
+    const discardedResult = this.relayCallRecovery.discard(id);
     if (this.activeRelayCalls.has(id)) this.suppressedRelayResults.set(id, suppressionReason);
-    return this.cancelCall(id, "remote cancellation");
+    return this.cancelCall(id, "remote cancellation") || discardedResult;
+  }
+
+  reconcileRelayCalls(resumedCallIds) {
+    this.relayCallRecovery.reconcile(
+      resumedCallIds,
+      (callId) => this.cancelRelayCall(callId, "caller_no_longer_waiting"),
+    );
   }
 
   handleRelayDisconnect() {
-    for (const callId of this.activeRelayCalls) this.suppressedRelayResults.set(callId, "relay_disconnected");
-    const cancelled = this.callRegistry.cancelOrigin("relay", "remote relay disconnected");
-    this.terminateActiveProcesses("SIGTERM", true);
-    if (cancelled > 0) {
-      this.logger.event?.("debug", "relay.calls.cancelled_on_disconnect", { cancelled_calls: cancelled },
-        "Cancelled in-flight tool calls after the relay connection ended");
-    }
+    this.relayResumeSessionId = 0;
+    this.relayCallRecovery.disconnected();
+  }
+
+  handleRelayReady() {
+    this.relayCallRecovery.ready();
   }
 
   async executeTool(tool, args, context = {}) {

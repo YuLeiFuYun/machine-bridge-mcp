@@ -93,9 +93,9 @@ The first start of a new deployment creates an `owner` account automatically and
 
 ## Concurrency and revocation
 
-Pending calls remain bound to the OAuth access token and JSON-RPC request ID. Duplicate in-flight IDs under one token are rejected. Account revocation blocks new requests immediately; calls already relayed remain subject to ordinary cancellation, deadlines, relay disconnect cleanup, and local role validation.
+Pending calls remain bound to the OAuth access token and JSON-RPC request ID. Duplicate in-flight IDs under one token are rejected. Account revocation blocks new requests immediately; calls already relayed remain subject to ordinary cancellation, deadlines, local role validation, and the bounded same-daemon reconnect state machine. A replacement process cannot inherit a detached call.
 
-Remote relay loss cancels every relay-owned local call and terminates its child process tree. Process promises settle on cancellation even when a child does not emit `close`; process ownership remains tracked until actual exit.
+A relay interruption keeps ordinary relay-owned calls alive only inside the bounded same-daemon reconnect window. Reconciliation or grace expiry cancels calls that no longer have a remote receiver and terminates their child process trees. Process promises settle on cancellation even when a child does not emit `close`; process ownership remains tracked until actual exit.
 
 ## Audit and privacy
 

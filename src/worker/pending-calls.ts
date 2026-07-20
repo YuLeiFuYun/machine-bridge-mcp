@@ -1,3 +1,5 @@
+import type { PendingCallRecord, RegisterPendingCall } from "./pending-call-contract.ts";
+
 export class PendingCallRegistrationError extends Error {
   readonly code: "conflict" | "limit_exceeded";
   readonly retryable: boolean;
@@ -8,30 +10,6 @@ export class PendingCallRegistrationError extends Error {
     this.code = code;
     this.retryable = retryable;
   }
-}
-
-export interface PendingCallRecord {
-  id: string;
-  socket: WebSocket;
-  clientRequestKey?: string;
-  tool: string;
-  startedAt: number;
-  timeout: ReturnType<typeof setTimeout>;
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  signal?: AbortSignal;
-  abortHandler?: () => void;
-}
-
-interface RegisterPendingCall {
-  id: string;
-  socket: WebSocket;
-  clientRequestKey?: string;
-  tool: string;
-  timeoutMs: number;
-  onTimeout: (record: PendingCallRecord) => Error;
-  signal?: AbortSignal;
-  onAbort?: (record: PendingCallRecord) => Error;
 }
 
 export class PendingCallRegistry {
@@ -78,6 +56,7 @@ export class PendingCallRegistry {
       const record: PendingCallRecord = {
         id: input.id,
         socket: input.socket,
+        daemonInstanceId: input.daemonInstanceId,
         clientRequestKey: input.clientRequestKey,
         tool: String(input.tool || "unknown"),
         startedAt,
@@ -126,16 +105,52 @@ export class PendingCallRegistry {
     return ids.length;
   }
 
-  snapshot(): { active: number; request_keys: number; maximum: number; oldest_ms: number; by_tool: Record<string, number> } {
+  detachSocket(
+    socket: WebSocket,
+    graceMs: number,
+    createError: (record: PendingCallRecord) => Error,
+  ): number {
+    const records = [...this.byId.values()].filter((record) => record.socket === socket);
+    const delay = Math.max(1, Math.floor(Number(graceMs) || 1));
+    for (const record of records) {
+      record.socket = undefined;
+      if (record.reconnectTimeout) clearTimeout(record.reconnectTimeout);
+      record.reconnectTimeout = setTimeout(() => {
+        const current = this.byId.get(record.id);
+        if (!current || current.socket) return;
+        const expired = this.take(record.id);
+        if (expired) expired.reject(createError(expired));
+      }, delay);
+    }
+    return records.length;
+  }
+
+  rebindInstance(daemonInstanceId: string, socket: WebSocket): string[] {
+    if (!daemonInstanceId) return [];
+    const rebound: string[] = [];
+    for (const record of this.byId.values()) {
+      if (record.socket || record.daemonInstanceId !== daemonInstanceId) continue;
+      if (record.reconnectTimeout) clearTimeout(record.reconnectTimeout);
+      record.reconnectTimeout = undefined;
+      record.socket = socket;
+      rebound.push(record.id);
+    }
+    return rebound;
+  }
+
+  snapshot(): { active: number; detached: number; request_keys: number; maximum: number; oldest_ms: number; by_tool: Record<string, number> } {
     const now = performance.now();
     const byTool: Record<string, number> = {};
+    let detached = 0;
     let oldestMs = 0;
     for (const record of this.byId.values()) {
       byTool[record.tool] = (byTool[record.tool] || 0) + 1;
+      if (!record.socket) detached += 1;
       oldestMs = Math.max(oldestMs, now - record.startedAt);
     }
     return {
       active: this.byId.size,
+      detached,
       request_keys: this.byRequestKey.size,
       maximum: this.maximum,
       oldest_ms: oldestMs,
@@ -147,6 +162,7 @@ export class PendingCallRegistry {
     const record = this.byId.get(id);
     if (!record) return undefined;
     clearTimeout(record.timeout);
+    if (record.reconnectTimeout) clearTimeout(record.reconnectTimeout);
     if (record.signal && record.abortHandler) record.signal.removeEventListener("abort", record.abortHandler);
     this.byId.delete(id);
     if (record.clientRequestKey && this.byRequestKey.get(record.clientRequestKey) === id) {
