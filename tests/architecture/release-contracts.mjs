@@ -83,8 +83,16 @@ for (const required of ["install:test", "oauth-browser:test", "coverage:test", "
 if (packageJson.scripts?.["release:acceptance:test"] !== "node tests/release-acceptance-test.mjs") throw new Error("local release acceptance regression test is missing");
 if (packageJson.scripts?.["release:candidate"] !== "npm run check && node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses the complete suite");
 if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-release-candidate.mjs") throw new Error("isolated candidate startup command is missing");
-const checkRunnerSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
-if (!checkRunnerSource.includes("process.execPath") || !checkRunnerSource.includes("process.env.npm_execpath") || checkRunnerSource.includes("npm.cmd")) {
+const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.mjs"), "utf8");
+if (!coverageRunnerSource.includes("maxRetries") || !coverageRunnerSource.includes("retryDelay")) {
+  throw new Error("coverage temporary-directory cleanup lost its concurrent-writer retry boundary");
+}
+const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
+const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
+if (!checkEntrypointSource.includes("runVerificationPlan")
+    || !checkRunnerSource.includes("process.execPath")
+    || !checkRunnerSource.includes("npmCli")
+    || checkRunnerSource.includes("npm.cmd")) {
   throw new Error("cross-platform check runner no longer invokes the pinned npm CLI through Node");
 }
 const localAcceptanceSource = readFileSync(join(root, "scripts", "local-release-acceptance.mjs"), "utf8");
@@ -96,6 +104,10 @@ if (packageJson.scripts?.["release:publish"] !== packageJson.scripts?.release) t
 if (packageJson.scripts?.["release:accept"] !== "node scripts/local-release-acceptance.mjs --record") throw new Error("interactive acceptance command is missing");
 if (packageJson.scripts?.["release:acceptance:verify"] !== "node scripts/local-release-acceptance.mjs --verify") throw new Error("release acceptance verification command is missing");
 if (packageJson.scripts?.["github:push"] !== "node scripts/github-push.mjs") throw new Error("guarded GitHub push command is missing");
+const githubBacklogPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
+if (!githubBacklogPushSource.includes("assertGitHubBacklogReady") || !githubBacklogPushSource.includes('git", ["fetch", "origin", "main", "--prune"]')) {
+  throw new Error("guarded GitHub push lost the issue/PR backlog boundary");
+}
 const candidateStartSource = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
 for (const required of ["verifyTarball", ".release-candidate", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", 'stdio: "inherit"']) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
@@ -161,7 +173,6 @@ const codeqlAccepted = JSON.parse(readFileSync(join(root, ".github", "codeql-acc
 const acceptedCodeql = new Set((codeqlAccepted.accepted || []).map((item) => `${item.ruleId}\0${item.path}`));
 const expectedCodeql = new Set([
   "js/shell-command-injection-from-environment\0src/local/process-execution.mjs",
-  "js/file-system-race\0scripts/release-acceptance.mjs",
 ]);
 if (acceptedCodeql.size !== expectedCodeql.size || [...expectedCodeql].some((item) => !acceptedCodeql.has(item))) {
   throw new Error("CodeQL exception inventory contains an unreviewed or missing exact finding");

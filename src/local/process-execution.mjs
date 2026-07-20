@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { basename } from "node:path";
 import { stat } from "node:fs/promises";
 import { BoundedOutput } from "./bounded-output.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
@@ -6,9 +7,20 @@ import { MAX_COMMAND_BYTES, validateArgv } from "./process-contract.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { BridgeError } from "./errors.mjs";
 import { clampInteger } from "./numbers.mjs";
+import { ProcessOutputStream } from "./process-output-stream.mjs";
+import { processFailureMessage, publicProcessToolResult } from "./process-result-projection.mjs";
 import {
-  DEFAULT_PROCESS_OUTPUT_BYTES, MAX_PROCESS_STDIN_BYTES, MAX_PROCESS_TIMEOUT_SECONDS, MIN_PROCESS_TIMEOUT_SECONDS,
+  DEFAULT_PROCESS_OUTPUT_BYTES,
+  MAX_PROCESS_SESSION_OUTPUT_BYTES,
+  MAX_PROCESS_STDIN_BYTES,
+  MAX_PROCESS_TIMEOUT_SECONDS,
+  MIN_PROCESS_TIMEOUT_SECONDS,
+  PROCESS_SESSION_RETENTION_MS,
+  PUBLIC_PROCESS_INLINE_OUTPUT_BYTES,
 } from "./execution-limits.mjs";
+
+const PROCESS_OUTPUT_CAPTURE = Symbol("process-output-capture");
+const CONTINUATION_READ_BYTES = 64 * 1024;
 
 function spawnDirectProcess(command, args, options) {
   // Keep the production child_process API call structurally separate from the
@@ -23,7 +35,7 @@ function spawnDirectProcess(command, args, options) {
 }
 
 export class ProcessExecutionService {
-  constructor({ workspace, policy, policyGate, runtimeDir, processTracker, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, spawnProcess = spawnDirectProcess, terminateProcess = terminateProcessTreeWithEscalation }) {
+  constructor({ workspace, policy, policyGate, runtimeDir, processTracker, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, retainCompletedOutput = null, spawnProcess = spawnDirectProcess, terminateProcess = terminateProcessTreeWithEscalation }) {
     this.workspace = workspace;
     this.policy = policy;
     this.policyGate = policyGate;
@@ -33,6 +45,7 @@ export class ProcessExecutionService {
     this.resolveLocalCommand = resolveLocalCommand;
     this.displayPath = displayPath;
     this.throwIfCancelled = throwIfCancelled;
+    this.retainCompletedOutput = typeof retainCompletedOutput === "function" ? retainCompletedOutput : null;
     this.spawnProcess = spawnProcess;
     this.terminateProcess = terminateProcess;
   }
@@ -42,7 +55,12 @@ export class ProcessExecutionService {
     const argv = validateArgv(args.argv);
     const cwd = await this.resolveExistingPath(args.cwd || ".");
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "cwd is not a directory");
-    return this.run(argv[0], argv.slice(1), clampInteger(args.timeout_seconds, 120, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS) * 1000, false, DEFAULT_PROCESS_OUTPUT_BYTES, context, cwd);
+    const result = await this.runPublic(
+      argv[0], argv.slice(1),
+      clampInteger(args.timeout_seconds, 120, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS) * 1000,
+      context, cwd,
+    );
+    return publicProcessToolResult(result);
   }
 
   async runRegistered(args, context = {}) {
@@ -55,8 +73,8 @@ export class ProcessExecutionService {
       ? command.timeoutSeconds
       : clampInteger(args.timeout_seconds, command.timeoutSeconds, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS);
     const timeoutSeconds = Math.min(requested, command.timeoutSeconds);
-    const result = await this.run(argv[0], argv.slice(1), timeoutSeconds * 1000, false, DEFAULT_PROCESS_OUTPUT_BYTES, context, cwd);
-    return { name: command.name, cwd: this.displayPath(cwd), timeout_seconds: timeoutSeconds, ...result };
+    const result = await this.runPublic(argv[0], argv.slice(1), timeoutSeconds * 1000, context, cwd);
+    return publicProcessToolResult({ name: command.name, cwd: this.displayPath(cwd), timeout_seconds: timeoutSeconds, ...result });
   }
 
   async probeShell(context = {}) {
@@ -70,14 +88,61 @@ export class ProcessExecutionService {
     if (command.includes("\0")) throw new BridgeError("invalid_request", "command contains a NUL byte");
     if (Buffer.byteLength(command) > MAX_COMMAND_BYTES) throw new BridgeError("limit_exceeded", `command exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
     const shell = workspaceShellCommand(command);
-    return this.run(shell.cmd, shell.args, clampInteger(timeoutSeconds, 120, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS) * 1000, false, DEFAULT_PROCESS_OUTPUT_BYTES, context);
+    const result = await this.runPublic(
+      shell.cmd, shell.args,
+      clampInteger(timeoutSeconds, 120, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS) * 1000,
+      context, this.workspace,
+    );
+    return publicProcessToolResult(result);
   }
 
   terminateAll(signal = "SIGTERM", escalate = false) {
     this.processTracker.terminateAll(signal, escalate);
   }
 
-  async run(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace, stdin = null) {
+  async runPublic(cmd, args, timeoutMs, context, cwd) {
+    const startedAt = Date.now();
+    const result = await this.run(
+      cmd, args, timeoutMs, true, PUBLIC_PROCESS_INLINE_OUTPUT_BYTES,
+      context, cwd, null, { retainOutput: true },
+    );
+    const capture = result[PROCESS_OUTPUT_CAPTURE];
+    const needsContinuation = result.stdout_truncated_bytes > 0 || result.stderr_truncated_bytes > 0;
+    let continuation = {};
+    if (needsContinuation && capture && this.retainCompletedOutput) {
+      const session = this.retainCompletedOutput({
+        command: basename(cmd), cwd,
+        stdout: capture.stdout, stderr: capture.stderr,
+        exitCode: result.code, startedAt, closedAt: Date.now(),
+      });
+      if (session) {
+        continuation = {
+          output_session_id: session.session_id,
+          output_continuation: {
+            tool: "read_process",
+            session_id: session.session_id,
+            stdout_offset: 0,
+            stderr_offset: 0,
+            max_bytes: CONTINUATION_READ_BYTES,
+            retained_bytes_per_stream: MAX_PROCESS_SESSION_OUTPUT_BYTES,
+            expires_after_ms: PROCESS_SESSION_RETENTION_MS,
+            retention: "best-effort-until-session-expiry-or-capacity-eviction",
+          },
+        };
+      } else {
+        continuation = { output_continuation_unavailable: "process session capacity reached" };
+      }
+    }
+    const publicResult = { ...result, ...continuation };
+    if (result.code !== 0) {
+      throw new BridgeError("execution_failed", processFailureMessage(publicResult), {
+        details: { process: publicResult },
+      });
+    }
+    return publicResult;
+  }
+
+  async run(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace, stdin = null, options = {}) {
     this.throwIfCancelled(context);
     if (stdin !== null && Buffer.byteLength(String(stdin)) > MAX_PROCESS_STDIN_BYTES) {
       throw new BridgeError("limit_exceeded", "process stdin exceeds 1 MiB");
@@ -86,6 +151,8 @@ export class ProcessExecutionService {
     return new Promise((resolvePromise, rejectPromise) => {
       const stdout = new BoundedOutput(maxOutputBytes);
       const stderr = new BoundedOutput(maxOutputBytes);
+      const retainedStdout = options.retainOutput ? new ProcessOutputStream(MAX_PROCESS_SESSION_OUTPUT_BYTES) : null;
+      const retainedStderr = options.retainOutput ? new ProcessOutputStream(MAX_PROCESS_SESSION_OUTPUT_BYTES) : null;
       let child;
       try {
         child = this.spawnProcess(cmd, args, {
@@ -147,13 +214,19 @@ export class ProcessExecutionService {
       }, timeoutMs);
       timeoutTimer.unref?.();
 
-      child.stdout?.on?.("data", (chunk) => stdout.append(chunk));
-      child.stderr?.on?.("data", (chunk) => stderr.append(chunk));
+      child.stdout?.on?.("data", (chunk) => {
+        stdout.append(chunk);
+        retainedStdout?.append(chunk);
+      });
+      child.stderr?.on?.("data", (chunk) => {
+        stderr.append(chunk);
+        retainedStderr?.append(chunk);
+      });
 
       child.on("error", (error) => {
         cleanupAfterClose();
         settle(() => {
-          if (allowFailure) resolvePromise(processResult(127, stdout, error.message || stderr.text()));
+          if (allowFailure) resolvePromise(processResult(127, stdout, error.message || stderr.text(), retainedStdout, retainedStderr));
           else rejectPromise(error);
         });
       });
@@ -165,9 +238,9 @@ export class ProcessExecutionService {
           settle(() => rejectPromise(error));
           return;
         }
-        const result = processResult(code, stdout, stderr);
+        const result = processResult(code, stdout, stderr, retainedStdout, retainedStderr);
         if (code === 0 || allowFailure) settle(() => resolvePromise(result));
-        else settle(() => rejectPromise(new BridgeError("execution_failed", result.stderr.trim() || result.stdout.trim() || `${cmd} exited ${code}`)));
+        else settle(() => rejectPromise(new BridgeError("execution_failed", processFailureMessage(result), { details: { process: result } })));
       });
 
       if (signal?.aborted) rejectCancelled();
@@ -175,15 +248,22 @@ export class ProcessExecutionService {
   }
 }
 
-function processResult(code, stdout, stderr) {
+function processResult(code, stdout, stderr, retainedStdout = null, retainedStderr = null) {
   const stderrBuffer = stderr instanceof BoundedOutput ? stderr : null;
-  return {
+  const result = {
     code,
     stdout: stdout instanceof BoundedOutput ? stdout.text() : String(stdout || ""),
     stderr: stderrBuffer ? stderrBuffer.text() : boundedErrorMessage(stderr),
     stdout_truncated_bytes: stdout instanceof BoundedOutput ? stdout.truncatedBytes : 0,
     stderr_truncated_bytes: stderrBuffer ? stderrBuffer.truncatedBytes : 0,
   };
+  if (retainedStdout && retainedStderr) {
+    Object.defineProperty(result, PROCESS_OUTPUT_CAPTURE, {
+      value: { stdout: retainedStdout, stderr: retainedStderr },
+      enumerable: false,
+    });
+  }
+  return result;
 }
 
 export function boundedErrorMessage(error) {

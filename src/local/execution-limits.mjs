@@ -3,6 +3,7 @@ export const MAX_PROCESS_SESSIONS = 8;
 export const MIN_PROCESS_TIMEOUT_SECONDS = 1;
 export const MAX_PROCESS_TIMEOUT_SECONDS = 600;
 export const DEFAULT_PROCESS_OUTPUT_BYTES = 512 * 1024;
+export const PUBLIC_PROCESS_INLINE_OUTPUT_BYTES = 32 * 1024;
 export const MAX_PROCESS_STDIN_BYTES = 1024 * 1024;
 export const MAX_PROCESS_SESSION_OUTPUT_BYTES = 1024 * 1024;
 export const MAX_PROCESS_SESSION_STDIN_BYTES = 64 * 1024;
@@ -16,7 +17,11 @@ export function executionGuardrailsSnapshot() {
     one_shot_processes: {
       timeout_seconds: { minimum: MIN_PROCESS_TIMEOUT_SECONDS, maximum: MAX_PROCESS_TIMEOUT_SECONDS },
       stdin_max_bytes: MAX_PROCESS_STDIN_BYTES,
-      output_max_bytes_per_stream: DEFAULT_PROCESS_OUTPUT_BYTES,
+      output_max_bytes_per_stream: PUBLIC_PROCESS_INLINE_OUTPUT_BYTES,
+      inline_output_max_bytes_per_stream: PUBLIC_PROCESS_INLINE_OUTPUT_BYTES,
+      retained_output_max_bytes_per_stream: MAX_PROCESS_SESSION_OUTPUT_BYTES,
+      continuation_tool: "read_process",
+      continuation_retention: "best-effort-until-session-expiry-or-capacity-eviction",
       process_tree_termination: "sigterm-then-sigkill",
     },
     process_sessions: {

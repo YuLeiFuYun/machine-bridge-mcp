@@ -44,7 +44,7 @@ Repository-only infrastructure changes, such as a `.github/` workflow update, do
 6. give the repository owner `npm run release:candidate:start -- --allow-worker-deploy`; the owner explicitly authorizes the in-place candidate Worker deployment, starts the exact candidate locally, and leaves it running;
 7. verify the live candidate through Machine Bridge, including Worker version/hash, remote health, relay readiness, exact local version, and representative functionality relevant to the change;
 8. after observed verification succeeds, have the coding agent run the exact `release:accept` command printed by the candidate tool, creating `release-acceptance/v<version>.json`;
-9. commit the acceptance record and push the clean non-`main` branch only with `npm run github:push`.
+9. resolve every open issue and pull request before pushing. The current branch may cover an issue only with a standard closing keyword such as `Closes #47`; unrelated open PRs block the push. Commit the acceptance record and push the clean non-`main` branch only with `npm run github:push`, which paginates and enforces that backlog contract.
 
 Automated checks do not authorize step 8. The coding agent may record acceptance only after it has observed the owner-started candidate operating successfully. Any packaged-file change after acceptance changes the npm tarball hash and requires a regenerated candidate and another observed live verification.
 

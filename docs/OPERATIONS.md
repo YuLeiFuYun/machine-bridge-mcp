@@ -248,8 +248,9 @@ Defense-in-depth limits include:
 - text writes and patch envelopes: 5 MiB;
 - images: 4 MiB before base64 encoding;
 - shell/argv envelope: 64 KiB;
-- captured one-shot output: 512 KiB per stream by default;
-- process-session retained output: 1 MiB per stream, with lossless base64 fallback for non-UTF-8 slices;
+- public one-shot output preview: 32 KiB per stream; larger output returns an `output_session_id` and remains readable through `read_process`;
+- internal bounded subprocess capture: 512 KiB per stream by default;
+- running or completed process-session retained output: 1 MiB per stream for up to 30 minutes, best effort subject to the eight-session capacity, with monotonic offsets and lossless base64 fallback for non-UTF-8 slices;
 - process sessions: 8 retained per runtime;
 - process stdin write: 64 KiB per call;
 - local simultaneous tool calls: 16;

@@ -39,12 +39,29 @@ export class BoundedOutput {
   }
 
   get truncatedBytes() {
-    return Math.max(0, this.totalBytes - this.maximum);
+    if (this.full) return 0;
+    const head = decodeUtf8Boundary(this.head, "head");
+    const tail = decodeUtf8Boundary(this.tail, "tail");
+    return Math.max(0, this.totalBytes - head.bytes - tail.bytes);
   }
 
   text() {
     if (this.full) return this.full.toString("utf8");
-    const marker = `\n\n[truncated ${this.truncatedBytes} bytes; preserved beginning and end]\n\n`;
-    return `${this.head.toString("utf8")}${marker}${this.tail.toString("utf8")}`;
+    const head = decodeUtf8Boundary(this.head, "head");
+    const tail = decodeUtf8Boundary(this.tail, "tail");
+    const omitted = Math.max(0, this.totalBytes - head.bytes - tail.bytes);
+    const marker = `\n\n[truncated ${omitted} bytes; preserved beginning and end]\n\n`;
+    return `${head.text}${marker}${tail.text}`;
   }
+}
+
+function decodeUtf8Boundary(buffer, side) {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  for (let trim = 0; trim <= Math.min(3, buffer.length); trim += 1) {
+    const slice = side === "head"
+      ? buffer.subarray(0, buffer.length - trim)
+      : buffer.subarray(trim);
+    try { return { text: decoder.decode(slice), bytes: slice.length }; } catch { /* try the next code-point boundary */ }
+  }
+  return { text: new TextDecoder("utf-8").decode(buffer), bytes: buffer.length };
 }

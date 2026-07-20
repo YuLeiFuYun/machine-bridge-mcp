@@ -6,12 +6,6 @@
       "path": "src/local/process-execution.mjs",
       "reason": "The authorized direct-process boundary accepts a caller-selected executable and separately validated argv, copies only four spawn options, forces shell false at the final child_process call, and has a behavior test proving shell metacharacters are not evaluated; CodeQL 2.26.0 still classifies the environment-derived executable path as a shell-command sink.",
       "expires": "2026-10-14"
-    },
-    {
-      "ruleId": "js/file-system-race",
-      "path": "scripts/release-acceptance.mjs",
-      "reason": "The two findings cover lstat-then-read checks of a maintainer-controlled acceptance JSON file and candidate tarball in a clean, same-user repository. A process able to replace either file can already edit the tracked source, package candidate, and acceptance record directly; the reads disclose no content and grant no additional authority. Replace them with descriptor-based no-follow reads in the next separately owner-tested package release.",
-      "expires": "2026-08-17"
     }
   ]
 }

@@ -217,7 +217,7 @@ Major groups include:
 
 ```sh
 npm ci
-npm run check:fast       # local feedback: static, unit, architecture, policy, lifecycle
+npm run check:fast       # quiet-success local feedback; set MBM_CHECK_VERBOSE=1 only for live child logs
 npm run check            # complete suite, equivalent to check:full
 npm run worker:dry-run
 npm audit --audit-level=high

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.11 - 2026-07-20
+
+### Bounded output continuation and repository backlog gate
+
+- Stop large one-shot process responses from overwhelming MCP hosts. `run_process`, `run_local_command`, and `exec_command` now inline only a bounded stdout/stderr preview, retain up to 1 MiB per stream in a temporary completed process session, and return an `output_session_id` for paged `read_process` continuation. Nonzero exits keep their human error message bounded while preserving structured continuation details.
+- Avoid protocol-level payload duplication by replacing the text mirror of large object results with a compact field summary while retaining the authoritative object in `structuredContent`. The fast/platform/full check runner suppresses successful child noise, preserves bounded head/tail diagnostics on failure, and supports explicit `MBM_CHECK_VERBOSE=1` streaming. Coverage cleanup now retries concurrent late V8 coverage-file writes instead of failing after the thresholds already passed.
+- Resolve the release-acceptance file race by opening no-follow descriptors first, checking descriptor/path identity, and reading acceptance records and tarballs through bounded descriptors. Remove the temporary CodeQL exception and add deterministic path-replacement and symbolic-link regressions.
+- Add a guarded GitHub backlog pre-push check. `npm run github:push` now blocks unrelated open pull requests and open issues not covered by a standard closing keyword in the current branch commits; the current branch PR remains updateable. Add unit and integration coverage for output paging, compact MCP projection, bounded check diagnostics, and backlog enforcement.
+
 ## 1.2.10 - 2026-07-20
 
 ### Relay interruption recovery

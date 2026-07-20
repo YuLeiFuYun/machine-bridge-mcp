@@ -16,6 +16,11 @@ export function openRegularFileSync(file, flags, options = {}) {
   try {
     const info = fstatSync(fd);
     if (!info.isFile()) throw new Error(`${label} is not a regular file`);
+    if (options.verifyPathIdentity === true) {
+      const pathInfo = lstatSync(file);
+      if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) throw new Error(`${label} must be a regular file and not a symbolic link`);
+      if (!sameFileIdentity(info, pathInfo)) throw new Error(`${label} identity changed while opening`);
+    }
     if (Number.isInteger(options.chmod)) setDescriptorMode(fd, options.chmod);
     return { fd, info };
   } catch (error) {
@@ -37,15 +42,19 @@ export function chmodRegularFileSync(file, mode, label = "path") {
   return withRegularFileSync(file, fsConstants.O_RDONLY, { label, chmod: mode }, () => undefined);
 }
 
-export function readBoundedRegularFileSync(file, maxBytes, label = "path") {
-  return readBoundedRegularFileWithInfoSync(file, maxBytes, label).buffer;
+export function readBoundedRegularFileSync(file, maxBytes, label = "path", options = {}) {
+  return readBoundedRegularFileWithInfoSync(file, maxBytes, label, options).buffer;
 }
 
-export function readBoundedRegularFileWithInfoSync(file, maxBytes, label = "path") {
+export function readBoundedRegularFileWithInfoSync(file, maxBytes, label = "path", options = {}) {
   const limit = Number(maxBytes);
   if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("maximum file size must be a non-negative safe integer");
-  return withRegularFileSync(file, fsConstants.O_RDONLY, { label }, (fd, info) => {
+  return withRegularFileSync(file, fsConstants.O_RDONLY, {
+    label,
+    verifyPathIdentity: options.verifyPathIdentity === true,
+  }, (fd, info) => {
     if (info.size > limit) throw new Error(`file exceeds ${limit} bytes`);
+    options.afterOpen?.({ fd, info });
     const buffer = Buffer.alloc(info.size);
     let offset = 0;
     while (offset < buffer.length) {
@@ -103,4 +112,15 @@ function setDescriptorMode(fd, mode) {
   try { fchmodSync(fd, mode); } catch (error) {
     if (process.platform !== "win32") throw error;
   }
+}
+
+function sameFileIdentity(left, right) {
+  const leftDevice = Number(left.dev);
+  const rightDevice = Number(right.dev);
+  const leftInode = Number(left.ino);
+  const rightInode = Number(right.ino);
+  if ([leftDevice, rightDevice, leftInode, rightInode].every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    return leftDevice === rightDevice && leftInode === rightInode;
+  }
+  return true;
 }

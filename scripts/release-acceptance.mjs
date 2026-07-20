@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  lstatSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -8,6 +7,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 
 export const ACCEPTANCE_SCHEMA_VERSION = 1;
 export const ACCEPTANCE_POLICY_VERSION = "1.2.8";
@@ -15,6 +15,7 @@ export const AGENT_VERIFIED_ACCEPTANCE_VERSION = "1.2.9";
 export const ACCEPTANCE_CONFIRMATION = "owner-started-agent-verified-local-candidate";
 export const LEGACY_ACCEPTANCE_CONFIRMATION = "repository-owner-local-test";
 const MAX_ACCEPTANCE_BYTES = 64 * 1024;
+const MAX_RELEASE_TARBALL_BYTES = 64 * 1024 * 1024;
 
 export function requiresLocalAcceptance(version) {
   return compareVersions(parseVersion(version), parseVersion(ACCEPTANCE_POLICY_VERSION)) >= 0;
@@ -76,20 +77,25 @@ export function packProject(root, destination) {
 
 export function readAcceptance(root, version) {
   const path = acceptancePath(root, version);
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw new Error(`release acceptance record must be a regular file: ${path}`);
-  }
-  if (stat.size > MAX_ACCEPTANCE_BYTES) {
-    throw new Error(`release acceptance record exceeds ${MAX_ACCEPTANCE_BYTES} bytes`);
-  }
-  let value;
+  let bytes;
   try {
-    value = JSON.parse(readFileSync(path, "utf8"));
+    bytes = readBoundedRegularFileSync(
+      path, MAX_ACCEPTANCE_BYTES, "release acceptance record",
+      { verifyPathIdentity: true },
+    );
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.includes("exceeds")) throw new Error(`release acceptance record exceeds ${MAX_ACCEPTANCE_BYTES} bytes`);
+    if (message.includes("regular file") || message.includes("symbolic link") || message.includes("identity changed")) {
+      throw new Error(`release acceptance record must be a regular file: ${path}`);
+    }
+    throw error;
+  }
+  try {
+    return JSON.parse(bytes.toString("utf8"));
   } catch (error) {
     throw new Error(`release acceptance record is not valid JSON: ${error.message}`);
   }
-  return value;
 }
 
 export function verifyAcceptanceRecord(record, metadata) {
@@ -134,9 +140,19 @@ export function verifyCurrentReleaseAcceptance(root) {
 }
 
 export function verifyTarball(path, metadata) {
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("release candidate tarball is not a regular file");
-  const bytes = readFileSync(path);
+  let bytes;
+  try {
+    bytes = readBoundedRegularFileSync(
+      path, MAX_RELEASE_TARBALL_BYTES, "release candidate tarball",
+      { verifyPathIdentity: true },
+    );
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.includes("regular file") || message.includes("symbolic link") || message.includes("identity changed")) {
+      throw new Error("release candidate tarball is not a regular file");
+    }
+    throw error;
+  }
   const shasum = createHash("sha1").update(bytes).digest("hex");
   const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
   if (shasum !== metadata.shasum || integrity !== metadata.integrity) {

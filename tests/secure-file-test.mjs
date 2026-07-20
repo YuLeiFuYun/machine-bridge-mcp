@@ -1,3 +1,4 @@
+import { renameSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,19 @@ try {
   const detailed = readBoundedRegularFileWithInfoSync(file, 64);
   if (!detailed.info.isFile() || detailed.buffer.toString("utf8") !== "bounded-value") throw new Error("bounded detailed read omitted file metadata or content");
   expectThrow(() => readBoundedRegularFileSync(file, 4), "file exceeds 4 bytes");
+
+  if (process.platform !== "win32") {
+    const moved = join(root, "opened-value.txt");
+    const stable = readBoundedRegularFileSync(file, 64, "replacement test", {
+      afterOpen() {
+        renameSync(file, moved);
+        writeFileSync(file, "replacement-value", { mode: 0o600 });
+      },
+    });
+    if (stable.toString("utf8") !== "bounded-value") throw new Error("descriptor read followed a replacement path instead of the opened file");
+    await rm(file, { force: true });
+    renameSync(moved, file);
+  }
 
   const directory = join(root, "directory");
   await mkdir(directory);

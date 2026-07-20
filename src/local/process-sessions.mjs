@@ -7,6 +7,7 @@ import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./proc
 import { createToolAuthorizer } from "./policy.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { clampInteger } from "./numbers.mjs";
+import { ProcessOutputStream } from "./process-output-stream.mjs";
 import {
   MAX_PROCESS_SESSIONS, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_SESSION_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS,
 } from "./execution-limits.mjs";
@@ -40,11 +41,37 @@ export class ProcessSessionManager {
     for (const session of this.sessions.values()) notifySessionWaiters(session);
   }
 
+  retainCompletedOutput({ command, cwd, stdout, stderr, exitCode, startedAt, closedAt = Date.now() }) {
+    this.prune();
+    this.evictExitedForCapacity();
+    if (this.sessions.size >= MAX_PROCESS_SESSIONS) return null;
+    const completedAt = Number.isFinite(Number(closedAt)) ? Number(closedAt) : Date.now();
+    const session = {
+      id: `proc_${randomBytes(24).toString("base64url")}`,
+      child: null,
+      argv0: basename(String(command || "process")),
+      cwd,
+      stdout,
+      stderr,
+      startedAt: Number.isFinite(Number(startedAt)) ? Number(startedAt) : completedAt,
+      lastActivity: completedAt,
+      closedAt: completedAt,
+      exitCode: Number.isInteger(exitCode) ? exitCode : null,
+      signal: null,
+      stdinClosed: true,
+      waiters: new Set(),
+      terminationTimer: null,
+    };
+    this.sessions.set(session.id, session);
+    return this.summary(session);
+  }
+
   async start(args, context = {}) {
     this.authorizeTool("start_process");
     const argv = validateArgv(args.argv);
     const cwd = await this.resolveCwd(args.cwd || ".");
     this.prune();
+    this.evictExitedForCapacity();
     if (this.sessions.size >= MAX_PROCESS_SESSIONS) throw new Error(`process session limit reached (${MAX_PROCESS_SESSIONS})`);
     this.throwIfCancelled(context);
 
@@ -59,8 +86,8 @@ export class ProcessSessionManager {
       child,
       argv0: basename(argv[0]),
       cwd,
-      stdout: createSessionStream(),
-      stderr: createSessionStream(),
+      stdout: new ProcessOutputStream(MAX_PROCESS_SESSION_OUTPUT_BYTES),
+      stderr: new ProcessOutputStream(MAX_PROCESS_SESSION_OUTPUT_BYTES),
       startedAt: Date.now(),
       lastActivity: Date.now(),
       closedAt: null,
@@ -74,12 +101,12 @@ export class ProcessSessionManager {
     this.trackChild(child, context.callId);
 
     child.stdout.on("data", (chunk) => {
-      appendSessionStream(session.stdout, chunk);
+      session.stdout.append(chunk);
       session.lastActivity = Date.now();
       notifySessionWaiters(session);
     });
     child.stderr.on("data", (chunk) => {
-      appendSessionStream(session.stderr, chunk);
+      session.stderr.append(chunk);
       session.lastActivity = Date.now();
       notifySessionWaiters(session);
     });
@@ -94,7 +121,7 @@ export class ProcessSessionManager {
     });
 
     child.on("error", (error) => {
-      appendSessionStream(session.stderr, Buffer.from(`${boundedErrorMessage(error)}\n`));
+      session.stderr.append(Buffer.from(`${boundedErrorMessage(error)}\n`));
       session.lastActivity = Date.now();
       notifySessionWaiters(session);
     });
@@ -132,8 +159,8 @@ export class ProcessSessionManager {
     session.lastActivity = Date.now();
     return {
       ...this.summary(session),
-      stdout: readSessionStream(session.stdout, stdoutOffset, maxBytes),
-      stderr: readSessionStream(session.stderr, stderrOffset, maxBytes),
+      stdout: session.stdout.read(stdoutOffset, maxBytes),
+      stderr: session.stderr.read(stderrOffset, maxBytes),
     };
   }
 
@@ -207,6 +234,9 @@ export class ProcessSessionManager {
     for (const [id, session] of this.sessions) {
       if (session.closedAt !== null && session.lastActivity < cutoff) this.sessions.delete(id);
     }
+  }
+
+  evictExitedForCapacity() {
     if (this.sessions.size < MAX_PROCESS_SESSIONS) return;
     const exited = [...this.sessions.values()]
       .filter((session) => session.closedAt !== null)
@@ -238,50 +268,6 @@ function waitForSpawn(child) {
     child.once("spawn", onSpawn);
     child.once("error", onError);
   });
-}
-
-function createSessionStream() {
-  return { buffer: Buffer.alloc(0), baseOffset: 0, totalBytes: 0 };
-}
-
-function appendSessionStream(stream, chunk) {
-  const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
-  stream.totalBytes += input.length;
-  let combined = stream.buffer.length ? Buffer.concat([stream.buffer, input]) : Buffer.from(input);
-  if (combined.length > MAX_PROCESS_SESSION_OUTPUT_BYTES) {
-    const dropped = combined.length - MAX_PROCESS_SESSION_OUTPUT_BYTES;
-    combined = combined.subarray(dropped);
-    stream.baseOffset += dropped;
-  }
-  stream.buffer = combined;
-}
-
-function readSessionStream(stream, requestedOffset, maxBytes) {
-  const clampedOffset = Math.min(requestedOffset, stream.totalBytes);
-  const effectiveOffset = Math.max(clampedOffset, stream.baseOffset);
-  const start = effectiveOffset - stream.baseOffset;
-  const slice = stream.buffer.subarray(start, Math.min(stream.buffer.length, start + maxBytes));
-  let data;
-  let dataBase64;
-  let encoding = "utf8";
-  try {
-    data = new TextDecoder("utf-8", { fatal: true }).decode(slice);
-  } catch {
-    data = new TextDecoder("utf-8").decode(slice);
-    dataBase64 = slice.toString("base64");
-    encoding = "base64";
-  }
-  return {
-    data,
-    ...(dataBase64 ? { data_base64: dataBase64 } : {}),
-    encoding,
-    requested_offset: requestedOffset,
-    start_offset: effectiveOffset,
-    next_offset: effectiveOffset + slice.length,
-    total_offset: stream.totalBytes,
-    truncated_before: requestedOffset < stream.baseOffset,
-    truncated_after: effectiveOffset + slice.length < stream.totalBytes,
-  };
 }
 
 function sessionHasOutputAfter(session, stdoutOffset, stderrOffset) {

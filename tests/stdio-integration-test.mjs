@@ -130,6 +130,24 @@ try {
   const processResult = await responseFor(6);
   assert(processResult.result?.structuredContent?.stdout === "direct-ok", "run_process failed");
 
+  send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "run_process", arguments: { argv: [process.execPath, "-e", "process.stdout.write('L'.repeat(100000) + 'STDIO-LARGE-END')"], timeout_seconds: 5 } } });
+  const largeProcess = await responseFor(7);
+  const largeProcessId = largeProcess.result?.structuredContent?.output_session_id;
+  assert(typeof largeProcessId === "string" && largeProcess.result.structuredContent.stdout_truncated_bytes > 0, "stdio large process did not return a continuation session");
+  assert(Buffer.byteLength(largeProcess.result?.content?.[0]?.text || "") < 512, "stdio large process duplicated output into MCP text");
+  send({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "read_process", arguments: { session_id: largeProcessId, stdout_offset: 0, stderr_offset: 0, max_bytes: 262144 } } });
+  const largePage = await responseFor(8);
+  assert(largePage.result?.structuredContent?.stdout?.data.endsWith("STDIO-LARGE-END"), "stdio process continuation lost the retained output tail");
+
+  send({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "run_process", arguments: { argv: [process.execPath, "-e", "process.stderr.write('F'.repeat(100000) + 'STDIO-FAIL-END'); process.exitCode = 7"], timeout_seconds: 5 } } });
+  const failedProcess = await responseFor(9);
+  const failedDetails = failedProcess.result?.structuredContent?.error?.details?.process;
+  assert(failedProcess.result?.isError === true && typeof failedDetails?.output_session_id === "string", "stdio process failure lost typed continuation details");
+  assert(Buffer.byteLength(failedProcess.result.structuredContent.error.message) < 2300, "stdio process failure returned unbounded stderr in its message");
+  send({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "read_process", arguments: { session_id: failedDetails.output_session_id, stdout_offset: 0, stderr_offset: 0, max_bytes: 262144 } } });
+  const failedPage = await responseFor(10);
+  assert(failedPage.result?.structuredContent?.stderr?.data.endsWith("STDIO-FAIL-END"), "stdio failure continuation lost the retained stderr tail");
+
   send({ jsonrpc: "2.0", id: 600, method: "tools/call", params: { name: "run_process", arguments: { argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_STDIO_FULL_ENV_TEST || 'missing')"], timeout_seconds: 5 } } });
   const fullEnvResult = await responseFor(600);
   assert(fullEnvResult.result?.structuredContent?.stdout === "visible-through-full-env", "default full profile did not inherit the parent environment");
