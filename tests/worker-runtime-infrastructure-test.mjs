@@ -23,6 +23,7 @@ await testMcpSessions();
 await testRequestKeyReuse();
 await testRegistrationFailures();
 await testTerminalPaths();
+await testReconnectRebinding();
 await testTimeoutCallbackFailure();
 await testAbortSignalCleanup();
 testWorkerPolicyParity();
@@ -122,6 +123,32 @@ async function testTerminalPaths() {
   registry.reject("other", new Error("done"), socketB);
   await expectReject(other, "done");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "rejection leaked pending indexes");
+}
+
+async function testReconnectRebinding() {
+  const socketA = {};
+  const socketB = {};
+  const registry = new PendingCallRegistry(2);
+  const resumed = registry.register({
+    id: "reconnect", tool: "exec_command", socket: socketA, daemonInstanceId: "daemon_same_instance_1234",
+    clientRequestKey: "reconnect-key", timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+  });
+  assert(registry.detachSocket(socketA, 1000, () => new WorkerToolError("unavailable", "reconnect grace expired", true)) === 1, "disconnect did not detach the active call");
+  assert(registry.snapshot().detached === 1, "detached call was not visible in the pending snapshot");
+  assert(registry.rebindInstance("daemon_other_instance_1234", socketB).length === 0, "different daemon instance stole a detached call");
+  const reboundIds = registry.rebindInstance("daemon_same_instance_1234", socketB);
+  assert(reboundIds.length === 1 && reboundIds[0] === "reconnect", "same daemon instance did not reclaim its detached call precisely");
+  assert(registry.snapshot().detached === 0, "rebound call remained marked detached");
+  assert(registry.resolve("reconnect", socketB, { resumed: true }), "rebound call rejected the replacement socket result");
+  assert((await resumed).resumed === true, "rebound call lost its result");
+
+  const expiring = registry.register({
+    id: "expire", tool: "read_file", socket: socketA, daemonInstanceId: "daemon_expiring_instance_1",
+    timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+  });
+  registry.detachSocket(socketA, 1, () => new WorkerToolError("unavailable", "reconnect grace expired", true));
+  await expectReject(expiring, "reconnect grace expired");
+  assert(registry.snapshot().active === 0, "expired detached call leaked from the pending registry");
 }
 
 async function testTimeoutCallbackFailure() {

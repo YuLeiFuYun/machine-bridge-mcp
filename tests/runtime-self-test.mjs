@@ -44,11 +44,10 @@ export async function runtimeSelfTest() {
   try {
     const ownerAuthorization = { account_id: "acct_testowner_12345678901234567890", account_version: 1, role: "owner" };
     const relayMessages = [];
-    const originalSendForSession = restricted.relay.sendForSession.bind(restricted.relay);
-    restricted.relay.sendForSession = (value, sessionId) => {
-      if (sessionId !== 1) throw new Error(`unexpected relay session in self-test: ${sessionId}`);
+    const originalSend = restricted.relay.send.bind(restricted.relay);
+    restricted.relay.send = (value) => {
       relayMessages.push(value);
-      return { ok: true, reason: "sent" };
+      return true;
     };
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
@@ -64,7 +63,7 @@ export async function runtimeSelfTest() {
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
     if (invalidEnvelope?.ok !== false || invalidEnvelope.error?.code !== "invalid_request" || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
-    restricted.relay.sendForSession = originalSendForSession;
+    restricted.relay.send = originalSend;
 
     await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
     await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
@@ -110,13 +109,12 @@ export async function runtimeSelfTest() {
 
     logEvents.length = 0;
     relayMessages.length = 0;
-    restricted.relay.sendForSession = (value, sessionId) => {
-      if (sessionId !== 1) throw new Error(`unexpected relay session in self-test: ${sessionId}`);
+    restricted.relay.send = (value) => {
       relayMessages.push(value);
-      return { ok: true, reason: "sent" };
+      return true;
     };
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
-    restricted.relay.sendForSession = originalSendForSession;
+    restricted.relay.send = originalSend;
     const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
     if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");
     if (logEvents.some(event => event.level === "warn" && event.event === "tool.call.failed")) {

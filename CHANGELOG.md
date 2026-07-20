@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.10 - 2026-07-20
+
+### Relay interruption recovery
+
+- Preserve an in-flight MCP tool call across a brief daemon WebSocket interruption instead of converting every transient proxy or network reset into an immediate cancellation. The Worker now detaches pending calls for a bounded 30-second grace period and rebinds them only when the same local daemon process instance completes the full authenticated readiness probe on its replacement socket.
+- Keep the local operation running during that grace period and queue a completed result until the relay is ready again. Before `ready_ack`, the Worker sends an authoritative `resume_calls` set so the runtime cancels work whose client disappeared during the outage; results are replayed only for same-instance calls that still have a receiver. A different daemon instance cannot claim them, and an unrecovered outage cancels ordinary calls and process trees when the grace period expires.
+- Add deterministic registry/runtime regressions and a real Worker/OAuth/MCP fault-injection test that starts a tool call, forcibly drops the daemon WebSocket, reconnects the same daemon instance, and proves the original HTTP request completes. Expose the bounded `pending_calls.detached` count for diagnosis, require a validated ephemeral daemon instance identifier in the current-version hello contract, and update architecture, logging, operations, audit, and multi-account documentation.
+
 ## 1.2.9 - 2026-07-18
 
 - Repair cross-platform release infrastructure found by PR CI: the layered check runner now invokes the pinned npm CLI through Node instead of spawning `npm.cmd`, and `release:accept` computes and locally validates the portable Git-content digest through a temporary index so CI can verify accepted package content across merge commits without mutating the maintainer index.

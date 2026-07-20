@@ -18,12 +18,14 @@ export function createRuntimeRelayConnection(runtime, { workerUrl, secret, expec
     expectedVersion: String(expectedVersion || ""),
     helloMessage: () => ({
       type: "hello",
+      instance_id: runtime.relayInstanceId,
       tools: runtime.tools(),
       policy: runtime.policy,
       protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
     }),
     onMessage: (data, relayContext) => handleRelayData(runtime, data, relayContext),
     onDisconnect: () => runtime.handleRelayDisconnect(),
+    onReady: () => runtime.handleRelayReady(),
     onSuperseded: () => {
       runtime.terminateActiveProcesses("SIGKILL");
       runtime.processSessionManager.clear();
@@ -35,6 +37,20 @@ export function createRuntimeRelayConnection(runtime, { workerUrl, secret, expec
       onFatal?.(error);
     },
   });
+}
+
+export function normalizeRelayResumeCalls(message) {
+  if (!Array.isArray(message?.ids) || message.ids.length > 32) return { ok: false, ids: [] };
+  const ids = [];
+  const seen = new Set();
+  for (const value of message.ids) {
+    if (typeof value !== "string" || !/^call_[A-Za-z0-9_-]{8,240}$/.test(value) || seen.has(value)) {
+      return { ok: false, ids: [] };
+    }
+    seen.add(value);
+    ids.push(value);
+  }
+  return { ok: true, ids };
 }
 
 export function normalizeRelayToolCall(message) {
