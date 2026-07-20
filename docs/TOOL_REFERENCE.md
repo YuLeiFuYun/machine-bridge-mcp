@@ -1455,7 +1455,7 @@ List effective direct-argv commands from project manifests and safe automatic pa
 
 **Run registered local command**
 
-Run an effective manifest or automatic package-script command through its fixed argv, cwd, timeout ceiling, and extra-argument policy.
+Run an effective manifest or automatic package-script command through its fixed argv, cwd, timeout ceiling, and extra-argument policy. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.
 
 | Contract field | Value |
 |---|---|
@@ -1988,7 +1988,7 @@ Return bounded metadata and patch output for one revision without running reposi
 
 **Run process directly**
 
-Execute an argv array without a command shell. This avoids shell parsing but does not sandbox the executable or code it launches.
+Execute an argv array without a command shell. This avoids shell parsing but does not sandbox the executable or code it launches. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.
 
 | Contract field | Value |
 |---|---|
@@ -2074,7 +2074,7 @@ Start a direct argv process without a shell and retain bounded stdout, stderr, a
 
 **Read process session**
 
-Read bounded stdout and stderr deltas from a server-managed process session, optionally waiting briefly for new output.
+Read bounded stdout and stderr deltas from a running process session or a recently completed one-shot command continuation, optionally waiting briefly for new output.
 
 | Contract field | Value |
 |---|---|
@@ -2796,7 +2796,7 @@ Request cancellation of a detached managed job. The runner terminates the active
 
 **Execute shell command**
 
-Execute a shell command with workspace cwd. This is not a sandbox and has the operating-system authority of the local user.
+Execute a shell command with workspace cwd. This is not a sandbox and has the operating-system authority of the local user. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.
 
 | Contract field | Value |
 |---|---|

@@ -1,4 +1,5 @@
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
+import { projectMcpResult } from "../shared/result-projection.mjs";
 export {
   DEFAULT_POLICY_PROFILE,
   DEFAULT_POLICY_REVISION,
@@ -28,10 +29,9 @@ export const MCP_INSTRUCTIONS = Object.freeze(serverMetadata.instructions.map((v
 export function toolResult(value, isError = false) {
   const special = specialMcpResult(value);
   if (special) return { ...special, isError };
-  const structuredContent = toStructuredContent(value);
-  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  const result = { content: [{ type: "text", text }], isError };
-  if (structuredContent) result.structuredContent = structuredContent;
+  const projection = projectMcpResult(value);
+  const result = { content: [{ type: "text", text: projection.text }], isError };
+  if (projection.structuredContent) result.structuredContent = projection.structuredContent;
   return result;
 }
 
@@ -54,9 +54,4 @@ function specialMcpResult(value) {
     result.structuredContent = structuredClone(special.structuredContent);
   }
   return result;
-}
-
-function toStructuredContent(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value;
 }

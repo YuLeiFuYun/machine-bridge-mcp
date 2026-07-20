@@ -71,6 +71,23 @@ export async function runtimeSelfTest() {
     await writeFile(join(outside, "passwords.txt"), "password-file-visible", "utf8");
     await writeFile(join(outside, ".env"), "OUTSIDE_SECRET=visible", "utf8");
 
+    const largeProcess = await restricted.executeTool("run_process", {
+      argv: [process.execPath, "-e", "process.stdout.write('R'.repeat(100000) + 'RUNTIME-TAIL')"],
+      timeout_seconds: 5,
+    });
+    if (typeof largeProcess.output_session_id !== "string" || largeProcess.stdout_truncated_bytes <= 0) {
+      throw new Error("runtime one-shot process did not retain truncated output for continuation");
+    }
+    const largeProcessPage = await restricted.executeTool("read_process", {
+      session_id: largeProcess.output_session_id,
+      stdout_offset: 0,
+      stderr_offset: 0,
+      max_bytes: 256 * 1024,
+    });
+    if (!largeProcessPage.stdout.data.endsWith("RUNTIME-TAIL")) {
+      throw new Error("runtime process continuation lost the retained output tail");
+    }
+
     const envFile = await restricted.readFile(".env", 1024);
     if (!envFile.content.includes("SECRET=visible")) throw new Error("workspace .env should remain readable");
 

@@ -259,10 +259,14 @@ function testWebSocketProtocol() {
 }
 
 function testWorkerErrors() {
-  const structured = daemonToolError({ code: "limit_exceeded", message: "busy", retryable: true });
+  const structured = daemonToolError({
+    code: "limit_exceeded", message: "busy", retryable: true,
+    details: { process: { output_session_id: "proc_worker_detail_123456789012" } },
+  });
   assert(structured.code === "limit_exceeded" && structured.retryable, "daemon structured error was not preserved");
   const publicValue = publicWorkerToolError(structured);
   assert(publicValue.code === "limit_exceeded" && publicValue.message === "busy", "Worker public error lost stable fields");
+  assert(publicValue.details?.process?.output_session_id === "proc_worker_detail_123456789012", "Worker error adapter lost safe process continuation details");
   const unknown = daemonToolError({ code: "caller_defined_code", message: "unsupported" });
   assert(unknown.code === "execution_failed", "Worker accepted an unregistered daemon error code");
   const directUnknown = new WorkerToolError("future_custom_code", "unsupported");

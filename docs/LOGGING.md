@@ -77,7 +77,9 @@ With `--verbose`, the same incident additionally includes bounded structured fie
 
 ## Tool and result-delivery events
 
-All per-tool starts, successes, failures, cancellations, timing, and expected late-result disposal are debug-only. The MCP response already reports the outcome to the caller; duplicating routine tool traffic at default levels creates noise and can reveal activity patterns.
+All per-tool starts, successes, failures, cancellations, timing, and expected late-result disposal are debug-only. The MCP response already reports the outcome to the caller; duplicating routine tool traffic at default levels creates noise and can reveal activity patterns. Completed one-shot output continuations are not written to daemon logs or disk; their bounded stdout/stderr remains only in the daemon process-session memory and expires with normal session retention.
+
+The layered repository check runner follows the same noise rule. Green child-task output is discarded after the child exits; only task name and elapsed time are printed. Failed tasks expose bounded head/tail stdout and stderr diagnostics. `MBM_CHECK_VERBOSE=1` is an explicit operator choice to stream raw child output and is not used by default or CI.
 
 A completed local result is normally sent on the ready relay connection. If that socket disappears, the runtime queues the bounded result envelope during the thirty-second same-daemon reconnect window rather than logging a terminal delivery failure. Debug output records only a shortened call ID and queue/reconnect counts. After the same daemon process completes readiness, replay emits one recovery event; a different process cannot inherit the result. Explicit caller cancellation suppresses eventual delivery. If the relay does not recover before the grace deadline, ordinary calls are cancelled, queued results are discarded, and the existing outage state machine determines whether the persistent failure warrants a warning. Tool arguments, commands, and result content are never logged.
 

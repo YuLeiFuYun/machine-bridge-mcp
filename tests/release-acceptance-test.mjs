@@ -2,7 +2,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +20,7 @@ import {
   requiresLocalAcceptance,
   verifyAcceptanceRecord,
   verifyCurrentReleaseAcceptance,
+  verifyTarball,
 } from "../scripts/release-acceptance.mjs";
 import {
   canonicalPackageDigest,
@@ -55,6 +59,20 @@ try {
 
   const verified = verifyCurrentReleaseAcceptance(root);
   assert(verified.required && verified.metadata.shasum === metadata.shasum, "current package did not match its local acceptance record");
+  if (process.platform !== "win32") {
+    const realRecordPath = `${recordPath}.real`;
+    renameSync(recordPath, realRecordPath);
+    symlinkSync(realRecordPath, recordPath);
+    expectThrow(() => verifyCurrentReleaseAcceptance(root), "must be a regular file");
+    unlinkSync(recordPath);
+    renameSync(realRecordPath, recordPath);
+
+    const tarballPath = join(output, metadata.filename);
+    const tarballLink = join(output, "candidate-link.tgz");
+    symlinkSync(tarballPath, tarballLink);
+    expectThrow(() => verifyTarball(tarballLink, metadata), "tarball is not a regular file");
+    unlinkSync(tarballLink);
+  }
   const portable = verifyPortableAcceptance(root, portablePack);
   assert(portable.digest === record.package_content_sha256, "portable acceptance digest did not match the accepted package content");
 

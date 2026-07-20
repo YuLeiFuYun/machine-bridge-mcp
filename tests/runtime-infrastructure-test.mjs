@@ -535,8 +535,10 @@ function testErrors() {
   assert(errorCode(new Error("something timed out")) === "execution_failed", "untyped messages must not be reclassified heuristically");
   const publicValue = publicError(new BridgeError("network_error", "network unavailable"));
   assert(publicValue.code === "network_error" && publicValue.retryable === true, "public error lost retryability");
-  const remote = remoteBridgeError({ code: "limit_exceeded", message: "busy", retryable: true });
-  assert(remote.code === "limit_exceeded" && remote.retryable === true, "remote structured error was not preserved");
+  const remote = remoteBridgeError({ code: "limit_exceeded", message: "busy", retryable: true, details: { retained: true } });
+  assert(remote.code === "limit_exceeded" && remote.retryable === true && remote.details?.retained === true, "remote structured error was not preserved");
+  const hidden = publicError(new BridgeError("internal_error", "private", { expose: false, details: { secret: "must-not-leak" } }));
+  assert(!hidden.details && hidden.message === "internal error", "non-exposed error leaked structured details");
 }
 
 function testWorkspaceShellSelection() {
@@ -561,6 +563,13 @@ function testBoundedOutput() {
   assert(text.endsWith("le--END"), "bounded output lost the diagnostic tail");
   assert(text.includes("preserved beginning and end"), "bounded output omitted truncation semantics");
   assert(output.truncatedBytes > 0, "bounded output did not count omitted bytes");
+
+  const unicode = new BoundedOutput(10, { headBytes: 5 });
+  unicode.append("甲乙丙丁戊");
+  const unicodeText = unicode.text();
+  assert(!unicodeText.includes("�"), "bounded output split a UTF-8 code point at a head/tail boundary");
+  assert(unicodeText.startsWith("甲") && unicodeText.endsWith("戊"), "bounded output lost valid UTF-8 boundary text");
+  assert(unicode.truncatedBytes === 9, "bounded output did not count UTF-8 boundary bytes omitted from text");
 }
 
 async function expectReject(operation, code, message) {

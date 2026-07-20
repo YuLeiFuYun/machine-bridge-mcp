@@ -73,7 +73,7 @@ Commit the candidate changes and acceptance record, then push the branch only th
 npm run github:push
 ```
 
-The command requires a clean non-`main` branch, verifies that the acceptance record is tracked, rebuilds the npm package, compares both hashes, and only then executes a non-force push of the current branch. Direct pushes to `main` remain prohibited. Any packaged-file change after acceptance invalidates the hash and blocks the next push until the owner retests a regenerated candidate.
+The command requires a clean non-`main` branch, fetches `origin/main`, paginates all open GitHub issues and pull requests, and refuses to push while an unrelated PR remains open or an issue is not covered by a standard closing keyword in `origin/main..HEAD`. An already-open PR for the current branch is allowed so it can be updated. The command then verifies that the acceptance record is tracked, rebuilds the npm package, compares both hashes, and only then executes a non-force push of the current branch. Direct pushes to `main` remain prohibited. Any packaged-file change after acceptance invalidates the hash and blocks the next push until the owner retests a regenerated candidate.
 
 Open a pull request, satisfy the required checks, and squash-merge. Pull-request CI repeats the acceptance verification. A content-preserving squash changes the Git commit but not the package bytes, so the accepted hash remains valid.
 

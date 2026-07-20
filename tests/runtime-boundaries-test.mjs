@@ -35,7 +35,12 @@ async function testRuntimeReporting() {
   assert(info.runtime.runtime_dir === "/private/runtime", "full policy runtime path was unexpectedly redacted");
   assert(info.policy_contract.named_profile_is_canonical === true, "canonical policy was not recognized");
   assert(info.observability.relay_readiness === "end-to-end-relay-probe-verified", "runtime observability describes stale hello-only readiness");
-  assert(info.runtime.execution_guardrails.one_shot_processes.process_tree_termination === "sigterm-then-sigkill", "runtime info omitted process-tree supervision");
+  const oneShot = info.runtime.execution_guardrails.one_shot_processes;
+  assert(oneShot.output_max_bytes_per_stream === oneShot.inline_output_max_bytes_per_stream
+    && oneShot.continuation_tool === "read_process"
+    && oneShot.continuation_retention.includes("best-effort"),
+  "runtime info lost the compatible one-shot output limit or continuation semantics");
+  assert(oneShot.process_tree_termination === "sigterm-then-sigkill", "runtime info omitted process-tree supervision");
   assert(info.runtime.execution_guardrails.operating_system_enforcement.cpu_quota === "not-enforced"
     && info.runtime.execution_guardrails.operating_system_enforcement.memory_quota === "not-enforced"
     && info.runtime.execution_guardrails.operating_system_enforcement.network_isolation === "not-enforced",

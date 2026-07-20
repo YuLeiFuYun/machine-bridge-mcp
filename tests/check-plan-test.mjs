@@ -32,7 +32,7 @@ for (const task of ["coverage:test", "browser-bridge:test", "package:test", "ins
 for (const task of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
   assert(PLATFORM_ONLY_CHECK_TASKS.includes(task), `cross-platform behavior task is not platform-only: ${task}`);
 }
-for (const task of ["architecture:test", "lint", "typecheck", "syntax", "policy:test", "runtime-infrastructure:test"]) {
+for (const task of ["architecture:test", "lint", "typecheck", "syntax", "policy:test", "runtime-infrastructure:test", "check-runner:test"]) {
   assert(FAST_CHECK_TASKS.includes(task), `fast plan omits required development gate: ${task}`);
 }
 assert.equal(scripts.check, "npm run check:full");

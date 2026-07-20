@@ -135,6 +135,7 @@ export class LocalRuntime {
       resolveLocalCommand: (args, context) => this.agentContextManager.resolveLocalCommand(args, context),
       displayPath: (value) => this.displayPath(value),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
+      retainCompletedOutput: (value) => this.processSessionManager.retainCompletedOutput(value),
     });
     this.gitService = new GitService({
       resolveExistingPath: (value) => this.resolveExistingPath(value),

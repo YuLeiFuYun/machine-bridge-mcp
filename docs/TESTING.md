@@ -12,12 +12,16 @@ npm run check           # complete suite; equivalent to check:full
 
 The explicit task lists live in `scripts/check-plan.mjs`. The fast plan retains static analysis, policy, architecture, contracts, and focused unit behavior. The platform plan adds process, service, browser/application, state, managed-job, cryptographic, and real-machine behavior tests needed on macOS and Windows. The full-only plan adds coverage, browser-broker integration, package/install, stdio, Worker/OAuth, and real-browser navigation suites. `npm run check` remains the authoritative complete gate.
 
+Successful child-task stdout/stderr is intentionally suppressed so a long green plan does not overwhelm an MCP response or hide the final status behind host truncation. Progress and timing remain visible. A failed task returns bounded head/tail diagnostics for both streams. Set `MBM_CHECK_VERBOSE=1` only when an operator explicitly needs live child output; verbose mode can be large and should be run through a process session when used remotely.
+
 The repository requires Node.js 26 and npm 12. `.node-version`, `.nvmrc`, `packageManager`, `devEngines`, and strict engine checks keep local and CI execution on the same baseline.
 
 The suite includes:
 
 - package-impact classification derived from the npm package manifest, allowing repository-only GitHub workflow maintenance without weakening version requirements for shipped content;
-- interactive candidate acceptance hashing, including owner-authorized in-place Worker deployment plus owner-started candidate verification, exact tarball SHA-1/SHA-512 matching, acceptance-record exclusion from the package, legacy 1.2.8 marker compatibility, and invalidation after any packaged-byte change;
+- interactive candidate acceptance hashing, including owner-authorized in-place Worker deployment plus owner-started candidate verification, exact tarball SHA-1/SHA-512 matching, descriptor-first no-follow reads, path-identity/symlink regressions, acceptance-record exclusion from the package, legacy 1.2.8 marker compatibility, and invalidation after any packaged-byte change;
+- one-shot process output preview/continuation, completed-session paging, bounded nonzero-exit details, UTF-8-safe head/tail diagnostics, compact local/Worker MCP text mirrors, and quiet-success/bounded-failure verification-runner behavior;
+- GitHub backlog enforcement that paginates all open issues and pull requests, permits only the current branch PR, and requires standard closing keywords for every open issue before a guarded push;
 - release-impact enforcement requiring a new package version and CHANGELOG section for release-relevant changes;
 - release-state diagnostics distinguishing missing local/remote version tags from tags that point to the wrong commit, plus a release-CI gate that rejects missing, pending, failed, pull-request-only, stale, or wrong-commit runs;
 - generated Cloudflare Worker types under ignored `.wrangler/` state and strict TypeScript checking, including unused-local and unused-parameter rejection; packaging rejects generated declarations;

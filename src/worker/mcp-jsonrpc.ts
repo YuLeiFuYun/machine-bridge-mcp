@@ -1,3 +1,4 @@
+import { projectMcpResult } from "../shared/result-projection.mjs";
 const JSONRPC_VERSION = "2.0";
 const MAX_SESSION_INSTRUCTION_BYTES = 3 * 1024 * 1024;
 
@@ -48,11 +49,12 @@ export function textToolResult(value: unknown, isError = false): Record<string, 
       return result;
     }
   }
+  const projection = projectMcpResult(value);
   const result: Record<string, unknown> = {
-    content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
+    content: [{ type: "text", text: projection.text }],
     isError,
   };
-  if (value && typeof value === "object" && !Array.isArray(value)) result.structuredContent = value;
+  if (projection.structuredContent) result.structuredContent = projection.structuredContent;
   return result;
 }
 

@@ -1230,7 +1230,7 @@
   {
     "name": "run_local_command",
     "title": "Run registered local command",
-    "description": "Run an effective manifest or automatic package-script command through its fixed argv, cwd, timeout ceiling, and extra-argument policy.",
+    "description": "Run an effective manifest or automatic package-script command through its fixed argv, cwd, timeout ceiling, and extra-argument policy. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -1665,7 +1665,7 @@
   {
     "name": "run_process",
     "title": "Run process directly",
-    "description": "Execute an argv array without a command shell. This avoids shell parsing but does not sandbox the executable or code it launches.",
+    "description": "Execute an argv array without a command shell. This avoids shell parsing but does not sandbox the executable or code it launches. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -1737,7 +1737,7 @@
   {
     "name": "read_process",
     "title": "Read process session",
-    "description": "Read bounded stdout and stderr deltas from a server-managed process session, optionally waiting briefly for new output.",
+    "description": "Read bounded stdout and stderr deltas from a running process session or a recently completed one-shot command continuation, optionally waiting briefly for new output.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": true,
@@ -2382,7 +2382,7 @@
   {
     "name": "exec_command",
     "title": "Execute shell command",
-    "description": "Execute a shell command with workspace cwd. This is not a sandbox and has the operating-system authority of the local user.",
+    "description": "Execute a shell command with workspace cwd. This is not a sandbox and has the operating-system authority of the local user. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.",
     "availability": "shell-exec",
     "annotations": {
       "readOnlyHint": false,

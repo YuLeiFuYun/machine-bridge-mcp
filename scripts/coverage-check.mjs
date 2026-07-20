@@ -115,7 +115,7 @@ try {
   if (failures.length) throw new Error(`coverage thresholds failed:\n- ${failures.join("\n- ")}`);
   console.log("critical-module coverage thresholds passed");
 } finally {
-  rmSync(coverageDir, { recursive: true, force: true });
+  rmSync(coverageDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
 }
 
 function collectCoverage(directory) {

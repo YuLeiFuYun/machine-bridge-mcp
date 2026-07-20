@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
+import { assertGitHubBacklogReady } from "./github-backlog.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -13,6 +14,9 @@ try {
   const branch = output("git", ["branch", "--show-current"]);
   if (!branch) throw new Error("cannot push from a detached HEAD");
   if (branch === "main") throw new Error("direct pushes to main are prohibited; push a reviewed branch and merge through a pull request");
+  run("git", ["fetch", "origin", "main", "--prune"]);
+  const backlog = assertGitHubBacklogReady({ cwd: root, branch });
+  console.log(backlog.message);
 
   const acceptance = verifyCurrentReleaseAcceptance(root);
   if (acceptance.required) {
