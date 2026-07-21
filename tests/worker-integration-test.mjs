@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
+import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
 
 let daemonInstanceSequence = 0;
 
@@ -18,6 +20,7 @@ const wrangler = path.join(packageRoot, "node_modules", "wrangler", "bin", "wran
 const OWNER_PASSWORD = `integration_owner_${"A".repeat(43)}`;
 const REVIEWER_PASSWORD = `integration_reviewer_${"B".repeat(43)}`;
 const EDITOR_PASSWORD = `integration_editor_${"E".repeat(43)}`;
+const DAEMON_DEVICE_IDENTITY = createDeviceIdentity();
 const args = [
   "dev",
   "--local",
@@ -26,7 +29,7 @@ const args = [
   "--persist-to", persistDir,
   "--show-interactive-dev-session=false",
   "--var", "ACCOUNT_ADMIN_SECRET:integration-admin-secret",
-  "--var", "DAEMON_SHARED_SECRET:integration-daemon-secret",
+  "--var", `DAEMON_DEVICE_PUBLIC_KEY:${publicDeviceJwkJson(DAEMON_DEVICE_IDENTITY)}`,
   "--var", "OAUTH_TOKEN_VERSION:integration-token-version",
   "--var", "MBM_ALLOWED_ORIGINS:http://localhost:3001",
 ];
@@ -136,38 +139,36 @@ try {
 
   const unauthenticatedAdmin = await stableFetch(`${base}/admin/accounts`);
   assert(unauthenticatedAdmin.status === 401, "account administration accepted an unauthenticated request");
-  const shortNameAccount = await fetchJson(`${base}/admin/accounts`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
-    body: JSON.stringify({ name: "a", role: "owner", password: OWNER_PASSWORD }),
+  const legacyBearerAdmin = await stableFetch(`${base}/admin/accounts`, {
+    headers: { authorization: "Bearer integration-admin-secret" },
   });
+  assert(legacyBearerAdmin.status === 401, "account administration still accepted the long-lived bearer protocol");
+  const replayOptions = adminRequest("GET", "/admin/accounts");
+  const firstSignedAdmin = await stableFetch(`${base}/admin/accounts`, replayOptions);
+  const replayedSignedAdmin = await stableFetch(`${base}/admin/accounts`, replayOptions);
+  assert(firstSignedAdmin.status === 200 && replayedSignedAdmin.status === 401, "account administration nonce replay was not rejected");
+  const shortNameAccount = await fetchJson(`${base}/admin/accounts`, adminRequest("POST", "/admin/accounts", {
+    name: "a", role: "owner", password: OWNER_PASSWORD,
+  }));
   assert(shortNameAccount.response.status === 400, "account administration accepted a one-character account name despite the 3-64 character contract");
-  const weakPasswordAccount = await fetchJson(`${base}/admin/accounts`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
-    body: JSON.stringify({ name: "weak", role: "owner", password: "human-chosen-password" }),
-  });
+  const weakPasswordAccount = await fetchJson(`${base}/admin/accounts`, adminRequest("POST", "/admin/accounts", {
+    name: "weak", role: "owner", password: "human-chosen-password",
+  }));
   assert(weakPasswordAccount.response.status === 400, "account administration accepted a human-chosen password");
   assert(weakPasswordAccount.body.message === "account name, display name, role, or password is invalid", "account validation exposed an internal error message");
 
-  const ownerAccount = await fetchJson(`${base}/admin/accounts`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
-    body: JSON.stringify({ name: "owner", display_name: "Integration Owner", role: "owner", password: OWNER_PASSWORD }),
-  });
+  const ownerAccount = await fetchJson(`${base}/admin/accounts`, adminRequest("POST", "/admin/accounts", {
+    name: "owner", display_name: "Integration Owner", role: "owner", password: OWNER_PASSWORD,
+  }));
   assert(ownerAccount.response.status === 201, `owner account creation failed: ${ownerAccount.response.status}`);
   assert(ownerAccount.body.account?.role === "owner", "first account was not created as owner");
-  const reviewerAccount = await fetchJson(`${base}/admin/accounts`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
-    body: JSON.stringify({ name: "reviewer", role: "reviewer", password: REVIEWER_PASSWORD }),
-  });
+  const reviewerAccount = await fetchJson(`${base}/admin/accounts`, adminRequest("POST", "/admin/accounts", {
+    name: "reviewer", role: "reviewer", password: REVIEWER_PASSWORD,
+  }));
   assert(reviewerAccount.response.status === 201, `reviewer account creation failed: ${reviewerAccount.response.status}`);
-  const editorAccount = await fetchJson(`${base}/admin/accounts`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
-    body: JSON.stringify({ name: "editor", role: "editor", password: EDITOR_PASSWORD }),
-  });
+  const editorAccount = await fetchJson(`${base}/admin/accounts`, adminRequest("POST", "/admin/accounts", {
+    name: "editor", role: "editor", password: EDITOR_PASSWORD,
+  }));
   assert(editorAccount.response.status === 201, `editor account creation failed: ${editorAccount.response.status}`);
 
   const invalidRegistration = await stableFetch(`${base}/oauth/register`, {
@@ -386,7 +387,8 @@ try {
   assert(refreshed.response.status === 200, `refresh-token exchange failed: ${refreshed.response.status}`);
   assert(typeof refreshed.body.access_token === "string" && refreshed.body.access_token !== token.body.access_token, "refresh did not rotate the access token");
   assert(typeof refreshed.body.refresh_token === "string" && refreshed.body.refresh_token !== token.body.refresh_token, "refresh did not rotate the refresh token");
-  const ownerAccessToken = refreshed.body.access_token;
+  assert(refreshed.body.expires_in === 900, "access-token lifetime was not reduced to 15 minutes");
+  let ownerAccessToken = refreshed.body.access_token;
   const refreshReplay = await fetchJson(`${base}/oauth/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -398,6 +400,35 @@ try {
     }),
   });
   assert(refreshReplay.response.status === 400 && refreshReplay.body.error === "invalid_grant", "rotated refresh token replay was accepted");
+  const familyRefreshAfterReplay = await fetchJson(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshed.body.refresh_token,
+      client_id: registration.body.client_id,
+      resource: `${base}/mcp`,
+    }),
+  });
+  assert(familyRefreshAfterReplay.response.status === 400 && familyRefreshAfterReplay.body.error === "invalid_grant", "refresh-token replay did not revoke the complete token family");
+  const revokedFamilyAccess = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${ownerAccessToken}`,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "revoked-family", version: "1" } } }),
+  });
+  assert(revokedFamilyAccess.status === 401, "refresh-token replay did not revoke the family's access token");
+  const replacementOwnerCredentials = await issueAccountToken({
+    base,
+    clientId: registration.body.client_id,
+    redirectUri,
+    accountName: "owner",
+    password: OWNER_PASSWORD,
+    state: "owner-replacement-state",
+  });
+  ownerAccessToken = replacementOwnerCredentials.accessToken;
 
   const reviewerCredentials = await issueAccountToken({
     base,
@@ -508,6 +539,17 @@ try {
 
   const toolsWithoutDaemon = await callToolsList(base, ownerAccessToken, 3);
   assert(toolsWithoutDaemon.length === 1 && toolsWithoutDaemon[0].name === "server_info", "disconnected Worker advertised unavailable local tools");
+
+  const oneTimePreflightHeaders = createDaemonPreflightHeaders(
+    DAEMON_DEVICE_IDENTITY,
+    base,
+    "machine-bridge-mcp",
+    pkg.version,
+  );
+  const preflightProbeSocket = await connectDaemon(base, oneTimePreflightHeaders);
+  daemonSockets.push(preflightProbeSocket);
+  const replayStatus = await rejectedDaemonUpgradeStatus(base, oneTimePreflightHeaders);
+  assert(replayStatus === 401, `replayed daemon preflight returned unexpected status ${replayStatus}`);
 
   const firstDaemon = await connectDaemon(base);
   daemonSockets.push(firstDaemon);
@@ -855,18 +897,14 @@ try {
   assert(cancelledResult.body.result?.isError === true, "cancelled tools/call was not marked as an error");
   assert(JSON.stringify(cancelledResult.body.result).includes("cancelled"), "cancelled tools/call returned the wrong error");
 
-  const demoteLastOwner = await stableFetch(`${base}/admin/accounts`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
-    body: JSON.stringify({ account_id: ownerAccount.body.account.account_id, role: "reviewer" }),
-  });
+  const demoteLastOwner = await stableFetch(`${base}/admin/accounts`, adminRequest("PATCH", "/admin/accounts", {
+    account_id: ownerAccount.body.account.account_id, role: "reviewer",
+  }));
   assert(demoteLastOwner.status === 409, "last active owner could be demoted");
 
-  const reviewerRoleChange = await fetchJson(`${base}/admin/accounts`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", authorization: "Bearer integration-admin-secret" },
-    body: JSON.stringify({ account_id: reviewerAccount.body.account.account_id, role: "editor" }),
-  });
+  const reviewerRoleChange = await fetchJson(`${base}/admin/accounts`, adminRequest("PATCH", "/admin/accounts", {
+    account_id: reviewerAccount.body.account.account_id, role: "editor",
+  }));
   assert(reviewerRoleChange.response.status === 200, "reviewer role change failed");
   const revokedReviewer = await stableFetch(`${base}/mcp`, {
     method: "POST",
@@ -1035,16 +1073,42 @@ async function issueAccountToken({ base, clientId, redirectUri, accountName, pas
   return { accessToken: token.body.access_token, refreshToken: token.body.refresh_token };
 }
 
-async function connectDaemon(origin) {
+async function connectDaemon(origin, headers = createDaemonPreflightHeaders(
+  DAEMON_DEVICE_IDENTITY,
+  origin,
+  "machine-bridge-mcp",
+  pkg.version,
+)) {
   const wsUrl = `${origin.replace(/^http/, "ws")}/daemon/ws`;
-  const socket = new WebSocket(wsUrl, { headers: { "X-Bridge-Token": "integration-daemon-secret" } });
+  const socket = new WebSocket(wsUrl, { headers });
   const welcome = waitForWsMessage(socket, "welcome");
   await withTimeout(new Promise((resolve, reject) => {
     socket.once("open", resolve);
     socket.once("error", reject);
   }), 5000, "daemon websocket open");
-  await welcome;
+  socket.mbmWelcome = await welcome;
   return socket;
+}
+
+
+async function rejectedDaemonUpgradeStatus(origin, headers) {
+  const wsUrl = `${origin.replace(/^http/, "ws")}/daemon/ws`;
+  return withTimeout(new Promise((resolve, reject) => {
+    const socket = new WebSocket(wsUrl, { headers });
+    let settled = false;
+    socket.once("unexpected-response", (_request, response) => {
+      settled = true;
+      response.resume();
+      resolve(response.statusCode);
+    });
+    socket.once("open", () => {
+      socket.close();
+      if (!settled) reject(new Error("replayed daemon preflight unexpectedly upgraded"));
+    });
+    socket.once("error", (error) => {
+      if (!settled) reject(error);
+    });
+  }), 5000, "replayed daemon preflight rejection");
 }
 
 async function sendDaemonHello(socket, tools, policy = defaultDaemonPolicy(), instanceId = nextDaemonInstanceId()) {
@@ -1054,12 +1118,14 @@ async function sendDaemonHello(socket, tools, policy = defaultDaemonPolicy(), in
 
 async function beginDaemonHello(socket, tools, policy = defaultDaemonPolicy(), instanceId = nextDaemonInstanceId()) {
   const handshake = waitForWsMessageSequence(socket, ["hello_ack", "relay_probe"]);
+  const authentication = await createDaemonAuthentication(DAEMON_DEVICE_IDENTITY, socket.mbmWelcome, instanceId);
   socket.send(JSON.stringify({
     type: "hello",
     instance_id: instanceId,
     tools,
     policy,
     protocol_versions: ["2025-11-25"],
+    authentication,
   }));
   const [, probe] = await handshake;
   assert(typeof probe.id === "string" && probe.id.startsWith("probe_"), "Worker readiness probe omitted a valid id");
@@ -1228,6 +1294,25 @@ async function waitForWorker(origin, processHandle, closedPromise) {
     await sleep(150);
   }
   throw new Error("wrangler dev did not become stably ready");
+}
+
+
+function adminRequest(method, pathname, body) {
+  const serializedBody = body === undefined ? "" : JSON.stringify(body);
+  return {
+    method,
+    headers: {
+      ...accountAdminRequestHeaders({
+        secret: "integration-admin-secret",
+        origin: new URL(base).origin,
+        method,
+        pathname,
+        body: serializedBody,
+      }),
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    body: body === undefined ? undefined : serializedBody,
+  };
 }
 
 async function stableFetch(url, options = {}, attempts = 3) {

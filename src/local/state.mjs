@@ -7,6 +7,7 @@ import serverMetadata from "../shared/server-metadata.json" with { type: "json" 
 import { replaceFileSync } from "./atomic-fs.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
+import { createDeviceIdentity, validateDeviceIdentity } from "./device-identity.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 
@@ -591,9 +592,14 @@ function pruneBackups(filePath, keep) {
 
 export function ensureWorkerSecrets(state, options = {}) {
   state.worker ||= {};
+  const enrollingDeviceIdentity = !state.worker.deviceIdentity;
   if (!state.worker.accountAdminSecret || options.rotateSecrets) state.worker.accountAdminSecret = randomToken("account_admin");
-  if (!state.worker.daemonSecret || options.rotateSecrets) state.worker.daemonSecret = randomToken("daemon_secret");
-  if (!state.worker.oauthTokenVersion || options.rotateSecrets) state.worker.oauthTokenVersion = randomToken("token_version");
+  if (enrollingDeviceIdentity || options.rotateSecrets) state.worker.deviceIdentity = createDeviceIdentity();
+  else validateDeviceIdentity(state.worker.deviceIdentity);
+  delete state.worker.daemonSecret;
+  if (!state.worker.oauthTokenVersion || enrollingDeviceIdentity || options.rotateSecrets) {
+    state.worker.oauthTokenVersion = randomToken("token_version");
+  }
 
   const requestedName = options.workerName || "";
   if (!state.worker.name) {
@@ -635,7 +641,7 @@ export function ownerOnlyFile(filePath) {
 export function redactState(state) {
   const clone = redactHomeInValue(JSON.parse(JSON.stringify(state)));
   if (clone.worker?.accountAdminSecret) clone.worker.accountAdminSecret = "<redacted>";
-  if (clone.worker?.daemonSecret) clone.worker.daemonSecret = "<redacted>";
+  if (clone.worker?.deviceIdentity?.privateJwk?.d) clone.worker.deviceIdentity.privateJwk.d = "<redacted>";
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = "<redacted>";
   if (clone.resources && typeof clone.resources === "object") {
     for (const value of Object.values(clone.resources)) {

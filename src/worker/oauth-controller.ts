@@ -1,5 +1,5 @@
 import { DEFAULT_ACCOUNT_ROLE, normalizeAccountRole, type AccountRole } from "./access.ts";
-import { accountAdminAuthorized, handleAccountAdminOperation } from "./account-admin.ts";
+import { accountAdminAuthorized, consumeAccountAdminNonce, handleAccountAdminOperation } from "./account-admin.ts";
 import { exchangeOAuthToken } from "./oauth-tokens.ts";
 import {
   AUTH_BLOCK_SECONDS, accountByName, authorizationIdentity, emptyOAuthStore,
@@ -24,7 +24,7 @@ const MAX_AUTH_FAILURE_IDENTITIES = 200;
 
 export interface OAuthControllerEnv {
   ACCOUNT_ADMIN_SECRET: string;
-  DAEMON_SHARED_SECRET: string;
+  DAEMON_DEVICE_PUBLIC_KEY: string;
   OAUTH_TOKEN_VERSION: string;
 }
 
@@ -32,6 +32,7 @@ export interface AuthorizedToken {
   tokenKey: string;
   accountId: string;
   accountVersion: number;
+  clientId: string;
   role: AccountRole;
 }
 
@@ -105,11 +106,15 @@ export class OAuthController {
   }
 
   async handleAccountAdmin(request: Request, operation: "accounts" | "rotate-password"): Promise<Response> {
-    if (!(await accountAdminAuthorized(request, this.env.ACCOUNT_ADMIN_SECRET ?? ""))) return json({ error: "unauthorized" }, 401);
     return this.withOAuthLock(async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const authorization = await accountAdminAuthorized(request, this.env.ACCOUNT_ADMIN_SECRET ?? "", now);
+      if (!authorization || !(await consumeAccountAdminNonce(this.ctx.storage, authorization, now))) {
+        return json({ error: "unauthorized" }, 401);
+      }
       const store = await this.oauthStore();
       return handleAccountAdminOperation({
-        request, operation, store, now: Math.floor(Date.now() / 1000),
+        request, operation, store, now,
         save: () => this.ctx.storage.put("oauth", store),
       });
     });
@@ -265,7 +270,7 @@ export class OAuthController {
       }
       return {
         tokenKey: key, accountId: account.account_id,
-        accountVersion: account.version, role: account.role,
+        accountVersion: account.version, clientId: record.client_id, role: account.role,
       };
     });
   }
@@ -283,7 +288,7 @@ export class OAuthController {
   }
 
   identityKey(): string {
-    const key = this.env.OAUTH_TOKEN_VERSION || this.env.DAEMON_SHARED_SECRET || this.env.ACCOUNT_ADMIN_SECRET;
+    const key = this.env.OAUTH_TOKEN_VERSION || this.env.ACCOUNT_ADMIN_SECRET;
     if (!key) throw new HttpError(503, "server_not_configured", "OAuth identity key is not configured");
     return key;
   }

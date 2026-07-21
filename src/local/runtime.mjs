@@ -31,6 +31,7 @@ import { AccountAccessGate } from "./account-access.mjs";
 import { buildProjectOverview, buildRuntimeInfo } from "./runtime-reporting.mjs";
 import { diagnoseRuntime as runRuntimeDiagnostics } from "./runtime-diagnostics.mjs";
 import { bindRuntimeToolHandlers, runtimeToolHandlerNames as registeredRuntimeToolHandlerNames } from "./runtime-tool-handlers.mjs";
+import { OperationAuthorizer } from "./operation-authorization.mjs";
 import { createRuntimeRelayConnection, normalizeRelayResumeCalls, normalizeRelayToolCall } from "./runtime-relay.mjs";
 import { RelayCallRecovery } from "./relay-call-recovery.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage, stateRootFromProfileStatePath } from "./runtime-paths.mjs";
@@ -46,9 +47,8 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", secret = "", expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {} }) {
+  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", approvalRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {} }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
-    const remoteSecret = secret || "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
     this.workspaceCanonicalPromise = null;
@@ -155,6 +155,12 @@ export class LocalRuntime {
       readResourceText,
       throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
+    this.operationAuthorizer = new OperationAuthorizer({
+      workspace: this.workspace,
+      root: approvalRoot,
+      resolveExistingPath: (value) => this.resolveExistingPath(value),
+      resolveWritePath: (value) => this.resolveWritePath(value),
+    });
     this.browserBridgeManager = new BrowserBridgeManager({
       policy: this.policy,
       authorizeTool: (tool) => this.policyGate.assert(tool),
@@ -169,6 +175,7 @@ export class LocalRuntime {
       handlers: bindRuntimeToolHandlers(this),
       policyGate: this.policyGate,
       accountAccessGate: this.accountAccessGate,
+      operationAuthorizer: this.operationAuthorizer,
       callRegistry: this.callRegistry,
       observability: this.observability,
       logger: this.logger,
@@ -176,7 +183,7 @@ export class LocalRuntime {
       slowMs: SLOW_TOOL_CALL_MS,
     });
     this.relay = createRuntimeRelayConnection(this, {
-      workerUrl: remoteWorkerUrl, secret: remoteSecret, expectedVersion: expectedRelayVersion, onFatal,
+      workerUrl: remoteWorkerUrl, deviceIdentity, expectedVersion: expectedRelayVersion, onFatal,
     });
     this.relayCallRecovery = new RelayCallRecovery({
       logger: this.logger,
@@ -210,7 +217,7 @@ export class LocalRuntime {
   }
 
   async start() {
-    if (!this.relay) throw new Error("remote daemon start requires a Worker URL and daemon secret");
+    if (!this.relay) throw new Error("remote daemon start requires a Worker URL and device identity");
     if (!this.lifecycle.beginStart()) return;
     if (this.policy.profile === "full") {
       void this.browserBridgeManager.ensureStarted().catch((error) => {
@@ -601,8 +608,8 @@ export class LocalRuntime {
 
   async resolveWritePath(inputPath = ".") {
     const candidate = this.resolvePath(inputPath);
-    if (this.policy.unrestrictedPaths) return candidate;
     const candidateInfo = await lstat(candidate).catch(() => null);
+    if (candidateInfo?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
     let ancestor = candidate;
     while (!(await lstat(ancestor).catch(() => null))) {
       const parent = dirname(ancestor);
@@ -610,8 +617,7 @@ export class LocalRuntime {
       ancestor = parent;
     }
     const [workspace, canonicalAncestor] = await Promise.all([this.canonicalWorkspace(), realpath(ancestor)]);
-    assertContainedPath(workspace, canonicalAncestor);
-    if (candidateInfo?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
+    if (!this.policy.unrestrictedPaths) assertContainedPath(workspace, canonicalAncestor);
     const suffix = relative(ancestor, candidate);
     return suffix ? resolve(canonicalAncestor, suffix) : canonicalAncestor;
   }

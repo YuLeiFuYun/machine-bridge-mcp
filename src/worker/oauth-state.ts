@@ -1,7 +1,7 @@
 import { normalizeAccountRole, type AccountRole } from "./access.ts";
 
 const OAUTH_STORE_SCHEMA_VERSION = 1;
-const OAUTH_REFRESH_STORE_SCHEMA_VERSION = 1;
+const OAUTH_REFRESH_STORE_SCHEMA_VERSION = 2;
 export const OFFLINE_ACCESS_SCOPE = "offline_access";
 const PASSWORD_TOKEN_PATTERN = /^[a-z][a-z0-9_]{2,31}_[A-Za-z0-9_-]{43}$/;
 const ACCOUNT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/;
@@ -51,13 +51,31 @@ export interface OAuthToken {
   resource: string;
   version: string;
   expires_at: number;
+  family_id?: string;
 }
 
-export type OAuthRefreshToken = OAuthToken;
+export interface OAuthRefreshToken extends OAuthToken {
+  family_id: string;
+  family_expires_at: number;
+  issued_at: number;
+}
+
+export interface ConsumedOAuthRefreshToken {
+  family_id: string;
+  consumed_at: number;
+  expires_at: number;
+}
+
+export interface RevokedOAuthRefreshFamily {
+  expires_at: number;
+  reason: "replay";
+}
 
 export interface OAuthRefreshStore {
   schema_version: number;
   tokens: Record<string, OAuthRefreshToken>;
+  consumed: Record<string, ConsumedOAuthRefreshToken>;
+  revoked_families: Record<string, RevokedOAuthRefreshFamily>;
 }
 
 export interface OAuthFailure {
@@ -105,6 +123,8 @@ export function emptyOAuthRefreshStore(): OAuthRefreshStore {
   return {
     schema_version: OAUTH_REFRESH_STORE_SCHEMA_VERSION,
     tokens: {},
+    consumed: {},
+    revoked_families: {},
   };
 }
 
@@ -122,7 +142,32 @@ export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
 export function isCurrentOAuthRefreshStore(value: unknown): value is OAuthRefreshStore {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const store = value as Partial<OAuthRefreshStore>;
-  return store.schema_version === OAUTH_REFRESH_STORE_SCHEMA_VERSION && isRecord(store.tokens);
+  return store.schema_version === OAUTH_REFRESH_STORE_SCHEMA_VERSION
+    && isRecord(store.tokens)
+    && isRecord(store.consumed)
+    && isRecord(store.revoked_families);
+}
+
+export function upgradeOAuthRefreshStore(value: unknown): OAuthRefreshStore | null {
+  if (isCurrentOAuthRefreshStore(value)) return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const legacy = value as { schema_version?: unknown; tokens?: unknown };
+  if (legacy.schema_version !== 1 || !isRecord(legacy.tokens)) return null;
+  const upgraded = emptyOAuthRefreshStore();
+  const now = Math.floor(Date.now() / 1000);
+  for (const [key, raw] of Object.entries(legacy.tokens)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const token = raw as OAuthToken;
+    if (!Number.isSafeInteger(token.expires_at) || token.expires_at <= now) continue;
+    const familyId = randomToken("mcp_family");
+    upgraded.tokens[key] = {
+      ...token,
+      family_id: familyId,
+      family_expires_at: token.expires_at,
+      issued_at: now,
+    };
+  }
+  return upgraded;
 }
 
 export function normalizeOAuthScope(value: unknown, serverName: string): string | null {

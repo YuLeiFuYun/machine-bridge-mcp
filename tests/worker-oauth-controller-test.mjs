@@ -1,7 +1,9 @@
 import { normalizeAccountRole } from "../src/worker/access.ts";
+import { consumeAccountAdminNonce } from "../src/worker/account-admin.ts";
 import { OAuthController } from "../src/worker/oauth-controller.ts";
 import { authorizationPage } from "../src/worker/oauth-authorization-page.ts";
-import { createAccount, sha256Hex } from "../src/worker/oauth-state.ts";
+import { createAccount, emptyOAuthRefreshStore, emptyOAuthStore, sha256Hex } from "../src/worker/oauth-state.ts";
+import { loadOAuthRefreshStore, recordConsumedRefreshToken } from "../src/worker/oauth-refresh-families.ts";
 
 const SERVER_NAME = "machine-bridge-mcp";
 const BASE = "https://bridge.example.test";
@@ -178,13 +180,48 @@ async function testMalformedRoleRepair() {
   assert(persisted.accounts[account.account_id].active === false, "malformed account repair was not persisted");
 }
 
+async function testRefreshReplayStateBoundsAndValidation() {
+  const refreshStore = emptyOAuthRefreshStore();
+  const consumedAt = 1_800_000_000;
+  for (let index = 0; index < 4_100; index += 1) {
+    const hash = `sha256:${index.toString(16).padStart(64, "0")}`;
+    recordConsumedRefreshToken(
+      refreshStore,
+      hash,
+      `mcp_family_${"f".repeat(43)}`,
+      consumedAt + 10_000,
+      consumedAt + index,
+    );
+  }
+  assert(Object.keys(refreshStore.consumed).length === 4_096, "consumed refresh-token replay state exceeded its hard bound");
+  assert(!(`sha256:${"0".repeat(64)}` in refreshStore.consumed), "oldest consumed refresh-token marker was not pruned first");
+
+  const malformed = emptyOAuthRefreshStore();
+  malformed.consumed[`sha256:${"a".repeat(64)}`] = {
+    family_id: `mcp_family_${"f".repeat(43)}`,
+    consumed_at: 0,
+    expires_at: consumedAt + 1,
+  };
+  const storage = new MemoryStorage({ "oauth-refresh": malformed });
+  await expectReject(() => loadOAuthRefreshStore(emptyOAuthStore(), storage), "oauth_refresh_state_schema_mismatch");
+}
+
+async function testAdminNonceStateFailsClosed() {
+  const authorization = { nonce: "n".repeat(32), expiresAt: 1_800_000_060 };
+  const malformed = new MemoryStorage({ "account-admin-nonces": { invalid: "not-a-timestamp" } });
+  assert(await consumeAccountAdminNonce(malformed, authorization, 1_800_000_000) === false, "malformed admin nonce state was silently reset");
+  const storage = new MemoryStorage();
+  assert(await consumeAccountAdminNonce(storage, authorization, 1_800_000_000) === true, "fresh admin nonce was rejected");
+  assert(await consumeAccountAdminNonce(storage, authorization, 1_800_000_001) === false, "admin nonce replay was accepted");
+}
+
 async function testInvalidStateFailsClosed() {
   const storage = new MemoryStorage({ oauth: { schema_version: 0 } });
   const controller = createController(storage);
   await expectReject(() => controller.oauthStore(), "oauth_state_schema_mismatch");
   const unconfigured = new OAuthController({ storage }, {
     ACCOUNT_ADMIN_SECRET: "",
-    DAEMON_SHARED_SECRET: "",
+    DAEMON_DEVICE_PUBLIC_KEY: "",
     OAUTH_TOKEN_VERSION: "",
   }, SERVER_NAME);
   expectThrow(() => unconfigured.identityKey(), "server_not_configured");
@@ -193,7 +230,7 @@ async function testInvalidStateFailsClosed() {
 function createController(storage) {
   return new OAuthController({ storage }, {
     ACCOUNT_ADMIN_SECRET: "admin-secret",
-    DAEMON_SHARED_SECRET: "daemon-secret",
+    DAEMON_DEVICE_PUBLIC_KEY: "daemon-secret",
     OAUTH_TOKEN_VERSION: "token-version",
   }, SERVER_NAME);
 }
@@ -262,5 +299,7 @@ await testStoreAndRegistration();
 await testAuthorizationPageRendering();
 await testAuthorizationAndTokens();
 await testMalformedRoleRepair();
+await testRefreshReplayStateBoundsAndValidation();
+await testAdminNonceStateFailsClosed();
 await testInvalidStateFailsClosed();
 console.log("worker OAuth controller test ok");

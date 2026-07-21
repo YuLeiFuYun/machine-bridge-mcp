@@ -1,6 +1,7 @@
 import { isLiveDaemonAttachment, withDaemonLastSeenAt, type DaemonRole } from "./daemon-liveness.ts";
 import { sanitizeMetadataText } from "./http.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools, type DaemonPolicy } from "./policy.ts";
+import { sanitizeDaemonChallengeAttachment, type DaemonChallenge } from "./daemon-auth.ts";
 
 export interface DaemonAttachment {
   role: DaemonRole;
@@ -10,6 +11,10 @@ export interface DaemonAttachment {
   instanceId?: string;
   policy?: DaemonPolicy;
   tools?: string[];
+  authChallenge?: string;
+  authIssuedAt?: number;
+  authExpiresAt?: number;
+  workerOrigin?: string;
 }
 
 interface WebSocketContext {
@@ -33,6 +38,7 @@ export class DaemonSocketRegistry {
       instanceId: sanitizeDaemonInstanceId(candidate.instanceId),
       policy,
       tools: sanitizeDaemonTools(candidate.tools, policy),
+      ...sanitizeDaemonChallengeAttachment(candidate as Record<string, unknown>),
     };
   }
 
@@ -52,8 +58,15 @@ export class DaemonSocketRegistry {
     return this.context.getWebSockets().filter((socket) => this.attachment(socket)?.role !== "daemon" && socket.readyState === WebSocket.OPEN);
   }
 
-  beginCandidate(socket: WebSocket, connectedAt = new Date().toISOString()): void {
-    socket.serializeAttachment({ role: "candidate", connectedAt } satisfies DaemonAttachment);
+  beginCandidate(socket: WebSocket, challenge: DaemonChallenge, connectedAt = new Date().toISOString()): void {
+    socket.serializeAttachment({
+      role: "candidate",
+      connectedAt,
+      authChallenge: challenge.challenge,
+      authIssuedAt: challenge.issuedAt,
+      authExpiresAt: challenge.expiresAt,
+      workerOrigin: challenge.workerOrigin,
+    } satisfies DaemonAttachment);
   }
 
   beginProbe(socket: WebSocket, values: { connectedAt: string; probeId: string; instanceId: string; policy: DaemonPolicy; tools: string[] }): void {

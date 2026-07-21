@@ -12,7 +12,7 @@ Logs should answer:
 4. Is an infrastructure, protocol, deployment, or local service problem requiring action?
 5. When debug logging is explicitly enabled, which bounded implementation event should be correlated?
 
-Logs are not a command history, content audit trail, or substitute for MCP client approvals.
+Logs are not a command history or content audit trail. Local capability-lease state provides authorization evidence without recording command text or content, but it is not a tamper-proof forensic ledger and is not a substitute for OS isolation.
 
 ## Levels
 
@@ -83,7 +83,7 @@ The layered repository check runner follows the same noise rule. Green child-tas
 
 A completed local result is normally sent on the ready relay connection. If that socket disappears, the runtime queues the bounded result envelope during the thirty-second same-daemon reconnect window rather than logging a terminal delivery failure. Debug output records only a shortened call ID and queue/reconnect counts. After the same daemon process completes readiness, replay emits one recovery event; a different process cannot inherit the result. Explicit caller cancellation suppresses eventual delivery. If the relay does not recover before the grace deadline, ordinary calls are cancelled, queued results are discarded, and the existing outage state machine determines whether the persistent failure warrants a warning. Tool arguments, commands, and result content are never logged.
 
-Debug per-tool fields may include tool name, duration, coarse outcome class, and a shortened random call identifier. The identifier is for correlating adjacent local events and is not a stable audit identifier.
+Debug per-tool fields may include tool name, duration, coarse outcome class, and a shortened random call identifier. The identifier is for correlating adjacent local events and is not a stable audit identifier. Authorization failures expose a random approval ID, scope, and expiry to the caller; daemon logs still omit normalized targets and request arguments.
 
 ## Data that is never logged
 
@@ -93,7 +93,7 @@ The implementation omits:
 - stdin, stdout, and stderr;
 - file, patch, image, and temporary-file content;
 - OAuth request bodies;
-- account passwords, account-administration secrets, daemon secrets, authorization codes, access tokens, and refresh tokens;
+- account passwords, account-administration HMAC keys/signatures, daemon device private keys/signatures, authorization codes, access tokens, refresh tokens, and capability-lease target material;
 - registered resource values and source paths;
 - browser pairing tokens, page URLs/source, DOM metadata, form values, uploaded file bytes, and screenshots;
 - application names, Accessibility trees, selectors, and entered values;
@@ -138,7 +138,7 @@ Each managed job has owner-only runner diagnostic logs. Child-step output is ret
 
 ## MCP host boundary
 
-Machine Bridge does not classify filenames as sensitive and does not block credential-looking names under canonical `full`. An MCP host, connector, model provider, desktop application, operating system, or endpoint-security layer may independently reject a request before it reaches Machine Bridge.
+Canonical `full` does not remove tools based on filenames. For remote execution, the transaction classifier treats credential-sensitive path segments and basenames as a lease boundary while preserving the underlying capability. An MCP host, connector, model provider, desktop application, operating system, or endpoint-security layer may independently reject a request before it reaches Machine Bridge.
 
 Use `server_info`, `project_overview`, `machine-mcp status`, `machine-mcp doctor`, and `diagnose_runtime` to distinguish local policy from host-side enforcement. Capability-routing status is returned on demand rather than written as task logs; it stores a runtime-keyed task fingerprint, not raw task text. Changing the Machine Bridge profile cannot override another layer.
 

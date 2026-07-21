@@ -4,6 +4,7 @@ import path, { resolve } from "node:path";
 import { runWrangler } from "./shell.mjs";
 import { packageRoot, saveState } from "./state.mjs";
 import { withWorkerSecretsFile } from "./worker-secret-file.mjs";
+import { publicDeviceJwkJson } from "./device-identity.mjs";
 import {
   normalizeWorkerOrigin,
   retryWorkerHealth,
@@ -81,11 +82,11 @@ export function workerDeploymentFingerprint(state, options = {}) {
   const root = resolve(options.packageRoot || packageRoot);
   const keyMaterial = [
     String(state.worker.accountAdminSecret || ""),
-    String(state.worker.daemonSecret || ""),
+    publicDeviceJwkJson(state.worker.deviceIdentity),
     String(state.worker.oauthTokenVersion || ""),
   ].join("\0");
   const fingerprint = createHmac("sha256", keyMaterial);
-  fingerprint.update("mbm-worker-deploy-v3");
+  fingerprint.update("mbm-worker-deploy-v4");
   fingerprint.update(String(state.worker.name || ""));
   for (const file of workerDeployHashFiles(root)) {
     fingerprint.update(path.relative(root, file));
@@ -118,7 +119,7 @@ export function workerUrlMatchesName(workerUrl, workerName) {
 }
 
 function hasCompleteWorkerState(worker = {}) {
-  return Boolean(worker.url && worker.mcpServerUrl && worker.accountAdminSecret && worker.daemonSecret && worker.oauthTokenVersion && worker.name);
+  return Boolean(worker.url && worker.mcpServerUrl && worker.accountAdminSecret && worker.deviceIdentity && worker.oauthTokenVersion && worker.name);
 }
 
 function workerDeployHashFiles(root) {

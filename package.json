@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "1.2.11",
+  "version": "2.0.0",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -133,7 +133,9 @@
     "check-runner:test": "node tests/check-runner-test.mjs",
     "process-output:test": "node tests/process-output-continuation-test.mjs",
     "github-backlog:test": "node tests/github-backlog-test.mjs",
-    "github:backlog": "node scripts/github-backlog.mjs"
+    "github:backlog": "node scripts/github-backlog.mjs",
+    "operation-authorization:test": "node tests/operation-authorization-test.mjs",
+    "device-auth:test": "node tests/device-auth-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",

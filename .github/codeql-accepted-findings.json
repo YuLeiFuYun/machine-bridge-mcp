@@ -6,6 +6,12 @@
       "path": "src/local/process-execution.mjs",
       "reason": "The authorized direct-process boundary accepts a caller-selected executable and separately validated argv, copies only four spawn options, forces shell false at the final child_process call, and has a behavior test proving shell metacharacters are not evaluated; CodeQL 2.26.0 still classifies the environment-derived executable path as a shell-command sink.",
       "expires": "2026-10-14"
+    },
+    {
+      "ruleId": "js/insufficient-password-hash",
+      "path": "src/local/account-admin.mjs",
+      "reason": "Account credentials are not human passwords: generateAccountPassword creates a mandatory 256-bit random token, the Worker rejects caller-chosen formats, and each account stores only a verifier derived with an independent 128-bit salt and HMAC-SHA-256. The rule models low-entropy password guessing, which does not apply to this machine-generated credential contract; reassess or migrate to a portable slow KDF before expiry.",
+      "expires": "2026-10-21"
     }
   ]
 }

@@ -15,6 +15,7 @@ import {
   ACCEPTANCE_CONFIRMATION,
   ACCEPTANCE_SCHEMA_VERSION,
   LEGACY_ACCEPTANCE_CONFIRMATION,
+  OWNER_STARTED_ACCEPTANCE_CONFIRMATION,
   acceptancePath,
   packProject,
   requiresLocalAcceptance,
@@ -31,7 +32,7 @@ const root = mkdtempSync(join(tmpdir(), "mbm-release-acceptance-test-"));
 const output = join(root, "output");
 try {
   mkdirSync(output, { recursive: true });
-  writePackage("1.2.9");
+  writePackage("2.0.0");
   writeFileSync(join(root, "index.js"), "export const value = 1;\n");
   git(["init", "-q"]);
   git(["add", "package.json", "index.js"]);
@@ -52,6 +53,7 @@ try {
   };
   verifyAcceptanceRecord(record, metadata);
   expectThrow(() => verifyAcceptanceRecord({ ...record, package_content_sha256: "" }, metadata), "portable package-content digest");
+  expectThrow(() => verifyAcceptanceRecord({ ...record, confirmation: OWNER_STARTED_ACCEPTANCE_CONFIRMATION }, metadata), "active verification workflow");
   expectThrow(() => verifyAcceptanceRecord({ ...record, confirmation: LEGACY_ACCEPTANCE_CONFIRMATION }, metadata), "active verification workflow");
   const recordPath = acceptancePath(root, metadata.package_version);
   mkdirSync(dirname(recordPath), { recursive: true });
@@ -81,8 +83,22 @@ try {
   git(["add", "index.js"]);
   expectThrow(() => verifyPortableAcceptance(root, packFixtureMetadata()), "content digest does not match");
 
-  writePackage("1.2.8");
+  writePackage("1.2.9");
   writeFileSync(join(root, "index.js"), "export const value = 3;\n");
+  git(["add", "package.json", "index.js"]);
+  const ownerStartedMetadata = packProject(root, output);
+  const ownerStartedRecord = {
+    schema_version: ACCEPTANCE_SCHEMA_VERSION,
+    result: "passed",
+    confirmation: OWNER_STARTED_ACCEPTANCE_CONFIRMATION,
+    ...ownerStartedMetadata,
+    package_content_sha256: canonicalPackageDigest(root, packFixtureMetadata()),
+    accepted_at: "2026-07-17T18:00:00.000Z",
+  };
+  verifyAcceptanceRecord(ownerStartedRecord, ownerStartedMetadata);
+
+  writePackage("1.2.8");
+  writeFileSync(join(root, "index.js"), "export const value = 4;\n");
   git(["add", "package.json", "index.js"]);
   const legacyMetadata = packProject(root, output);
   const legacyRecord = {

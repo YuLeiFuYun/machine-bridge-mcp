@@ -16,7 +16,7 @@ Remote and stdio modes use the same local runtime and policy model. The remote W
 
 ## 2. Understand the authority you are granting
 
-A new workspace uses the `full` profile unless another profile is selected explicitly. `full` exposes the complete tool catalog, shell execution, paths outside the selected workspace, absolute paths, and the complete parent process environment. It is intended for a trusted owner using a trusted MCP host.
+A new workspace uses the `full` profile unless another profile is selected explicitly. `full` preserves the complete tool catalog, shell execution, paths outside the selected workspace, absolute paths, browser/application automation, and the complete parent process environment. It is intended for a trusted owner using a trusted MCP host. An authenticated owner account may use the `full` ceiling directly without terminal approval. Delegated non-owner accounts require local time-bounded capability leases for high-impact effects; their normal workspace reads/edits and project inspection remain automatic. See [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
 
 For a first connection to an unfamiliar host, start with a narrower profile:
 

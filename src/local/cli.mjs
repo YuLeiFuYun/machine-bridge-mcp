@@ -10,6 +10,7 @@ import { assertCanonicalFullPolicy, POLICY_PROFILES, toolsForPolicy } from "./to
 import { resolvePolicy } from "./cli-policy.mjs";
 import { effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
 import { createLocalAdminCommands } from "./cli-local-admin.mjs";
+import { createApprovalCommand } from "./cli-approval.mjs";
 import { createServiceCommand } from "./cli-service.mjs";
 import { generateAccountPassword } from "./account-admin.mjs";
 import { accountAdminClient, createAccountCommand } from "./cli-account-admin.mjs";
@@ -49,6 +50,7 @@ import {
 
 const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm });
 const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
+const approvalCommand = createApprovalCommand({ chooseWorkspace, confirm });
 const serviceCommand = createServiceCommand({ chooseWorkspace, stateRootFromArgs, structuredLogger });
 
 const COMMAND_HANDLERS = new Map([
@@ -64,6 +66,7 @@ const COMMAND_HANDLERS = new Map([
   ["rotate-secrets", rotateSecretsCommand],
   ["resource", localAdminCommands.resourceCommand],
   ["account", accountCommand],
+  ["approval", approvalCommand],
   ["browser", localAdminCommands.browserCommand],
   ["job", localAdminCommands.jobCommand],
   ["uninstall", uninstallCommand],
@@ -300,12 +303,13 @@ async function ensureInitialOwnerAccount(state) {
 function createRemoteRuntime({ args, workspace, state, daemonLock }) {
   return new LocalRuntime({
     workerUrl: state.worker.url,
-    secret: state.worker.daemonSecret,
+    deviceIdentity: state.worker.deviceIdentity,
     expectedRelayVersion: currentPackageVersion(),
     workspace,
     policy: state.policy,
     logger: createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "daemon" }),
     jobRoot: join(state.paths.profileDir, "jobs"),
+    approvalRoot: state.paths.profileDir,
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
     browserStateRoot: state.paths.stateRoot,
@@ -745,9 +749,16 @@ Commands:
   status            Print redacted local profile state and Worker health
   doctor            Check Node, Wrangler, Cloudflare login, Worker health
   full-test         Run real local full-profile capability tests in a temporary sandbox
-  rotate-secrets    Rotate account-admin, daemon, and global token-version secrets
+  rotate-secrets    Rotate account-admin, device identity, and global token-version secrets
   account list|add|role|enable|disable|rotate-password|remove
                     Manage isolated remote accounts and targeted revocation
+  approval list     Show pending high-impact operations and active capability leases
+  approval approve APPROVAL_ID [--duration 1h] [--full]
+                    Approve its scope, or open an explicit full window (maximum 8h)
+  approval grant SCOPE --account ACCOUNT_ID --client CLIENT_ID [--duration 1h]
+                    Pre-authorize a bounded scope; use * values only intentionally
+  approval revoke LEASE_ID | approval clear
+                    Revoke one or all local capability leases
   resource generate-ssh-key NAME [PATH]
                     Generate/reuse an Ed25519 key locally and register its private file by alias
   browser status    Show browser-extension bridge and connection status

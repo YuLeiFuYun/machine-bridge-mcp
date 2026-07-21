@@ -15,7 +15,7 @@ Use separate OS accounts, containers, VMs, state roots, Workers, and workspaces 
 | `reviewer` | `review` | Read-only workspace, Git, image, resource, and job inspection |
 | `editor` | `edit` | Reviewer access plus deterministic file mutation |
 | `operator` | `agent` | Editor access plus workspace-confined direct process execution and sessions |
-| `owner` | `full` | Complete bridge authority, including shell, unrestricted paths, browser, applications, resources, jobs, and account administration |
+| `owner` | `full` | Complete capability ceiling; high-impact remote transactions additionally consume a local account/client-bound lease |
 
 The effective tool set is the intersection of:
 
@@ -23,7 +23,7 @@ The effective tool set is the intersection of:
 2. the policy advertised by the connected local daemon;
 3. the tools actually available from that daemon.
 
-The Worker filters `tools/list` and rejects unauthorized calls before relay. Every accepted relay call also carries `account_id`, `account_version`, and `role`; the local runtime validates the role again before dispatch. The shared policy contract remains the single source of capability semantics.
+For execution, a fourth local layer distinguishes trusted owner automation from delegated access. An authenticated owner may use the daemon policy ceiling directly. A high-impact call from a reviewer, editor, or operator must also match an active capability lease bound to its `account_id` and OAuth `client_id`. This transaction layer does not remove tools from canonical `full`; it preserves least privilege for delegated credentials without interrupting the owner workflow. The Worker filters `tools/list` and rejects unauthorized calls before relay. Every accepted relay call carries `account_id`, `account_version`, `client_id`, and `role`; the local runtime validates them again before dispatch. See [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
 
 Authenticated `server_info` deliberately reports both layers. `authorization.effective_policy` and `authorization.effective_tools` are authoritative for the current account. The nested `daemon.policy` and `daemon.tools` fields are only the local capability ceiling before account-role filtering; a `full` daemon does not make an `editor` account full. Remote `project_overview` uses the effective values at top-level `policy` and `tools` and preserves the daemon values as `daemonPolicy` and `daemonTools`.
 
@@ -79,15 +79,15 @@ An authorization code records:
 - scope and protected resource;
 - expiration.
 
-An access-token record contains the same account binding plus the deployment-wide token version. Token values are stored only as SHA-256 lookup keys. Account passwords are CLI-generated 256-bit tokens. The Worker stores independent salted HMAC-SHA-256 verifiers and rejects arbitrary human-chosen passwords; the token entropy, rather than a CPU-intensive dictionary-hardening loop, provides offline-guessing resistance within the Worker CPU budget.
+An access-token record contains the same account binding plus the deployment-wide token version and refresh-family identity. Token values are stored only as SHA-256 lookup keys. Access tokens last fifteen minutes. Refresh tokens rotate on every use, have a fourteen-day idle limit and thirty-day family limit, and leave a bounded consumed-token marker; replay of a consumed token revokes every remaining refresh and access token in that family. Account passwords are CLI-generated 256-bit tokens. The Worker stores independent salted HMAC-SHA-256 verifiers and rejects arbitrary human-chosen passwords; the token entropy, rather than a CPU-intensive dictionary-hardening loop, provides offline-guessing resistance within the Worker CPU budget.
 
 At each authenticated request, the Worker verifies that the account still exists, is active, and has the same version and role recorded in the token. A password rotation, role change, suspension, or removal increments or removes that account state and invalidates only its codes and tokens.
 
-`machine-mcp rotate-secrets` is intentionally broader. It rotates the account-administration secret, daemon secret, and deployment-wide token version, invalidating every account token and requiring all clients to authorize again.
+`machine-mcp rotate-secrets` is intentionally broader. It rotates the account-administration HMAC key, daemon device identity, and deployment-wide token version, invalidating every account token, requiring all clients to authorize again, and requiring the matching Worker/daemon deployment to converge.
 
 ## Administrative boundary
 
-Account administration is not exposed as an MCP tool. It uses an owner-only local secret to call private Worker administration endpoints from the CLI. The administration secret is stored only in owner-protected local state and Cloudflare Worker secrets; it is never printed by `status`, sent through MCP, or used as an account password.
+Account administration is not exposed as an MCP tool. It uses an owner-only local HMAC key to sign each CLI request over method, path, body SHA-256, timestamp, and random nonce. The key is stored only in owner-protected local state and Cloudflare Worker secrets and is never transmitted as a network bearer. The Worker consumes each nonce once through bounded Durable Object transaction state and rejects replay or malformed state. The key is never printed by `status`, sent through MCP, or used as an account password.
 
 The first start of a new deployment creates an `owner` account automatically and prints its generated password once. Subsequent starts do not display account passwords.
 

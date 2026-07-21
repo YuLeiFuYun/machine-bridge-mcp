@@ -67,6 +67,29 @@ async function stateSelfTest() {
   } finally {
     await rm(containingStateRoot, { recursive: true, force: true });
   }
+  const legacyWorkerState = {
+    worker: {
+      name: "mbm-legacy-test",
+      accountAdminSecret: "account_admin_legacy_test_value_123456789",
+      daemonSecret: "daemon_secret_legacy_test_value_123456789",
+      oauthTokenVersion: "token_version_legacy_test_value_123456789",
+    },
+  };
+  const legacyTokenVersion = legacyWorkerState.worker.oauthTokenVersion;
+  ensureWorkerSecrets(legacyWorkerState);
+  if (!legacyWorkerState.worker.deviceIdentity || legacyWorkerState.worker.daemonSecret !== undefined) {
+    throw new Error("legacy daemon bearer state was not migrated to a device identity");
+  }
+  if (legacyWorkerState.worker.oauthTokenVersion === legacyTokenVersion) {
+    throw new Error("device enrollment did not revoke pre-2.0 OAuth credentials");
+  }
+  const enrolledIdentityId = legacyWorkerState.worker.deviceIdentity.keyId;
+  const enrolledTokenVersion = legacyWorkerState.worker.oauthTokenVersion;
+  ensureWorkerSecrets(legacyWorkerState);
+  if (legacyWorkerState.worker.deviceIdentity.keyId !== enrolledIdentityId || legacyWorkerState.worker.oauthTokenVersion !== enrolledTokenVersion) {
+    throw new Error("stable device identity was rotated during an ordinary state load");
+  }
+
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-state-test-"));
   const workspace = await mkdtemp(join(tmpdir(), "mbm-state-workspace-"));
   try {
@@ -103,7 +126,7 @@ async function stateSelfTest() {
 
     const redacted = redactState(state);
     if (redacted.worker.accountAdminSecret !== "<redacted>") throw new Error("accountAdminSecret was not fully redacted");
-    if (redacted.worker.daemonSecret !== "<redacted>") throw new Error("daemonSecret was not fully redacted");
+    if (redacted.worker.deviceIdentity?.privateJwk?.d !== "<redacted>") throw new Error("device private key was not fully redacted");
     if (redacted.worker.oauthTokenVersion !== "<redacted>") throw new Error("oauthTokenVersion was not fully redacted");
     if (previewSecret(state.worker.accountAdminSecret) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
     state.resources = { "private-key": { kind: "file", path: join(workspace, "private-key"), size: 10, mode: "0600" } };

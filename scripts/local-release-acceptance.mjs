@@ -53,9 +53,9 @@ function prepareCandidate() {
   writeFileSync(candidateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   const phrase = confirmationPhrase(pkg.name, pkg.version);
   console.log(`Release candidate created: ${join(candidateDirectory, metadata.filename)}`);
-  console.log("The repository owner must start this exact candidate in a local terminal with:");
+  console.log("After the repository owner explicitly authorizes this exact candidate in the active conversation, the coding agent starts it through Machine Bridge with:");
   console.log("npm run release:candidate:start -- --allow-worker-deploy");
-  console.log("Leave the candidate running while the coding agent verifies connection readiness and representative functionality through Machine Bridge.");
+  console.log("The owner does not need to run a terminal authorization command. The coding agent keeps the candidate running while verifying connection readiness and representative functionality through Machine Bridge.");
   console.log("After that observed live verification succeeds, the coding agent records acceptance with:");
   console.log(`npm run release:accept -- --confirm \"${phrase}\"`);
   console.log("Automated tests alone do not authorize acceptance or the first GitHub push.");

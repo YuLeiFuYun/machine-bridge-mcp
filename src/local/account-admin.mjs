@@ -1,4 +1,5 @@
-import { randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { ADMIN_AUTH_SCHEME, adminAuthTranscript } from "../shared/admin-auth.mjs";
 import { ACCOUNT_ROLES, normalizeAccountRole } from "./account-access.mjs";
 import { BridgeError } from "./errors.mjs";
 
@@ -58,13 +59,21 @@ export class AccountAdminClient {
   }
 
   async request(method, pathname, body) {
+    const serializedBody = body === undefined ? "" : JSON.stringify(body);
+    const headers = accountAdminRequestHeaders({
+      secret: this.adminSecret,
+      origin: this.workerUrl,
+      method,
+      pathname,
+      body: serializedBody,
+    });
     const response = await this.fetchImpl(`${this.workerUrl}${pathname}`, {
       method,
       headers: {
-        authorization: `Bearer ${this.adminSecret}`,
+        ...headers,
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : serializedBody,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       cache: "no-store",
     }).catch((error) => {
@@ -78,6 +87,22 @@ export class AccountAdminClient {
     }
     return payload;
   }
+}
+
+
+export function accountAdminRequestHeaders({ secret, origin, method, pathname, body = "", now = Date.now(), nonce = randomBytes(24).toString("base64url") }) {
+  if (typeof secret !== "string" || secret.length < 24) throw new BridgeError("invalid_request", "account administration secret is missing");
+  const issuedAt = Math.floor(Number(now) / 1000);
+  const bodyHash = createHash("sha256").update(String(body)).digest("hex");
+  const transcript = adminAuthTranscript({ origin, method: String(method).toUpperCase(), pathname, bodyHash, issuedAt, nonce });
+  const signature = createHmac("sha256", secret).update(transcript).digest("base64url");
+  return {
+    "X-Bridge-Admin-Scheme": ADMIN_AUTH_SCHEME,
+    "X-Bridge-Admin-Time": String(issuedAt),
+    "X-Bridge-Admin-Nonce": nonce,
+    "X-Bridge-Admin-Body-SHA256": bodyHash,
+    "X-Bridge-Admin-Signature": signature,
+  };
 }
 
 export function accountRoleNames() {

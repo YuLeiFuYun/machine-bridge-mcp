@@ -136,7 +136,7 @@ Several OAuth clients and named accounts can coexist. Accounts have independent 
 
 ## Profile guidance
 
-- `full` is the default and prioritizes immediate usability. It is a canonical contract exposing every catalog tool, shell execution, unrestricted direct filesystem paths, absolute path output, and the full parent environment. Any individual narrowing is represented as `custom`.
+- `full` is the default capability ceiling and prioritizes immediate usability. It is a canonical contract exposing every catalog tool, shell execution, unrestricted direct filesystem paths, absolute path output, and the full parent environment. Any individual narrowing is represented as `custom`. Remote high-impact transaction leases are a separate final authorization layer and do not change the profile identity.
 - `agent` retains file mutation and direct process execution but removes shell parsing, confines direct filesystem tools to the workspace, and isolates the process environment.
 - `edit` permits deterministic file mutation without process execution.
 - `review` is read-only and workspace-confined.
@@ -155,7 +155,7 @@ For SSH automation, prefer `generate_ssh_key_resource` under canonical full, or 
 
 ## Host-side safety rules
 
-The local `full` profile controls Machine Bridge's own tool catalog, path resolver, path display, process environment, and shell availability. It does not control the MCP host's model policy, approval UI, connector gateway, or platform execution filters.
+The local `full` profile controls Machine Bridge's own tool catalog, path resolver, path display, process environment, and shell availability. For remote transport, the local transaction gate additionally controls when high-impact effects may run. It does not control the MCP host's model policy, approval UI, connector gateway, or platform execution filters. See [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
 
 Machine Bridge itself does not block files because their names look sensitive. In remote mode, first inspect `server_info.authorization.effective_policy` and `effective_tools`; `daemon.policy` is only the local ceiling. If the effective profile is `full` and the effective tool is present but a direct call is still rejected before a structured result, the host/connector may have blocked delivery. If `diagnose_runtime` responds but its fixed process or shell probe fails, the likely source is local OS policy, endpoint-security software, permissions, or shell configuration. Changing `--profile`, `--unrestricted-paths`, or `--absolute-paths` cannot override either layer.
 

@@ -1,7 +1,8 @@
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/runtime.mjs";
+import { grantOperationLease } from "../src/local/operation-authorization.mjs";
 
 export async function runtimeSelfTest() {
   const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
@@ -22,6 +23,7 @@ export async function runtimeSelfTest() {
     policy: { allowWrite: true, allowExec: true },
     logger,
     jobRoot: join(jobState, "restricted"),
+    approvalRoot: join(jobState, "approvals"),
   });
   const unrestricted = new LocalRuntime({
     workerUrl: "https://example.invalid",
@@ -42,7 +44,13 @@ export async function runtimeSelfTest() {
   const previousSecret = process.env.MBM_DAEMON_SELFTEST_SECRET;
   process.env.MBM_DAEMON_SELFTEST_SECRET = "should-not-leak";
   try {
-    const ownerAuthorization = { account_id: "acct_testowner_12345678901234567890", account_version: 1, role: "owner" };
+    const ownerAuthorization = { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, role: "owner" };
+    await grantOperationLease(join(jobState, "approvals"), {
+      accountId: ownerAuthorization.account_id,
+      clientId: ownerAuthorization.client_id,
+      scope: "shell",
+      duration: "5m",
+    });
     const relayMessages = [];
     const originalSend = restricted.relay.send.bind(restricted.relay);
     restricted.relay.send = (value) => {
@@ -156,7 +164,12 @@ export async function runtimeSelfTest() {
     try {
       await symlink(outside, linkPath, "dir");
       await expectReject(() => restricted.readFile(join(linkPath, "outside.txt"), 1024), "outside the configured workspace");
-      await expectReject(() => restricted.writeFile({ path: linkPath, content: "replace" }), "outside the configured workspace");
+      await expectReject(() => restricted.writeFile({ path: linkPath, content: "replace" }), "symbolic link");
+      const canonicalUnrestrictedTarget = await unrestricted.resolveWritePath(join(linkPath, "new-through-link.txt"));
+      if (canonicalUnrestrictedTarget !== join(await realpath(outside), "new-through-link.txt")) {
+        throw new Error(`unrestricted write path did not canonicalize a symbolic-link ancestor: ${canonicalUnrestrictedTarget}`);
+      }
+      await expectReject(() => unrestricted.resolveWritePath(linkPath), "symbolic link");
     } catch (error) {
       if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
     }
@@ -297,8 +310,11 @@ export async function runtimeSelfTest() {
 
       const detachedDescendantPidFile = join(workspace, "detached-timeout-descendant.pid");
       const detachedParent = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`;
-      await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 200), "command timed out");
-      const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 2000)).trim());
+      // Coverage instrumentation can delay a fresh Node process enough that a 200 ms
+      // deadline expires before the fixture writes its descendant PID. Keep the
+      // deadline bounded, but long enough to exercise post-start tree cleanup.
+      await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 2000), "command timed out");
+      const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 5000)).trim());
       const detachedDeadline = Date.now() + 5000;
       while (isProcessAlive(detachedDescendantPid) && Date.now() < detachedDeadline) {
         await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });
