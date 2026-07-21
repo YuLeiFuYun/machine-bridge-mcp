@@ -14,7 +14,7 @@ The main protected assets are:
 
 - workspace and local-user-accessible files;
 - process execution authority and inherited environment values;
-- daemon secret, account administration secret, account password verifiers, OAuth authorization codes, access tokens, and refresh tokens;
+- daemon device private key, account-administration HMAC key, account password verifiers, OAuth authorization codes, access tokens, refresh tokens, and local capability leases;
 - Worker and Durable Object routing state;
 - owner-only profile, lock, resource, service, and managed-job state;
 - registered local resource contents and paths;
@@ -30,7 +30,7 @@ The hosted client and its prompts, tools, extensions, and retrieved content are 
 
 ### Worker to local daemon
 
-The Worker is a relay and authorization layer, not a source of local authority. The daemon accepts only an authenticated, version-compatible relay session. End-to-end readiness requires a local probe result through the active session. Every remote tool call carries bounded account authority that is rechecked locally.
+The Worker is a relay and authorization layer, not a source of local authority. The daemon accepts only a version-compatible relay that proves possession of the enrolled P-256 device key in both a signed upgrade preflight and a Worker challenge. End-to-end readiness requires a local probe result through the active session. Every remote tool call carries bounded account and OAuth-client identity that is rechecked locally, followed by effect-level local transaction authorization.
 
 ### MCP host to local stdio process
 
@@ -71,7 +71,8 @@ The implementation aims to preserve these invariants:
 
 - deny unknown, malformed, stale, duplicated, unauthorized, or over-limit requests;
 - intersect remote account authority with the daemon capability ceiling in both Worker and local runtime;
-- keep transport authentication separate from tool authorization and OS authority;
+- bind high-impact remote effects to local account/client-scoped, time-bounded capability leases without narrowing normal workspace work;
+- keep transport authentication, account/tool authorization, transaction authorization, and OS authority separate;
 - use direct argv execution without shell interpretation unless the explicit shell tool is authorized;
 - canonicalize confined paths and reject symlink-based write escape;
 - bound request bodies, messages, files, output, logs, state, retained results, and concurrency;
@@ -102,7 +103,7 @@ Machine Bridge does **not** claim to provide:
 
 ### Canonical `full` profile
 
-`full` intentionally exposes the complete catalog, unrestricted local-user paths, shell execution, parent environment, and absolute path output. A malicious authorized client can use that authority destructively. The mitigation is a narrower profile or a separate low-privilege OS boundary, not additional warning text.
+`full` intentionally preserves the complete catalog, unrestricted local-user paths, shell execution, parent environment, browser/application authority, and absolute path output. Version 2.0 separates this capability ceiling from current remote transaction authority: common workspace work remains automatic, while higher-impact effects require a bounded local lease. A malicious client holding both valid OAuth credentials and an active matching lease can still act destructively within that lease. A temporary `full` lease is therefore an explicit automation window, not a sandbox or an endorsement of untrusted instructions. Use a narrower profile or a separate low-privilege OS boundary for mutually untrusted workloads.
 
 ### Application and browser automation
 
@@ -128,7 +129,7 @@ Code cannot create a second independent reviewer, npm OIDC trust relationship, p
 
 The main regression suites cover:
 
-- OAuth, account, policy, MCP session, daemon readiness, and relay replacement;
+- OAuth, refresh-family replay revocation, signed administration requests, account, policy, device-authenticated daemon readiness, relay replacement, and local capability leases;
 - path confinement, atomic writes, state locks, service lifecycle, managed-job recovery, and destructive cleanup;
 - direct process boundaries, shell separation, process-tree termination, timeout, cancellation, and disconnect;
 - browser pairing, version/capability handshake, owner/client broker routing, sensitive-field handling, trusted input, and CSP navigation;

@@ -1,5 +1,5 @@
 import { AccountAccessGate, accountRoleToolNames, normalizeAccountRole } from "../src/local/account-access.mjs";
-import { AccountAdminClient, accountRoleNames, generateAccountPassword } from "../src/local/account-admin.mjs";
+import { AccountAdminClient, accountAdminRequestHeaders, accountRoleNames, generateAccountPassword } from "../src/local/account-admin.mjs";
 
 const roles = accountRoleNames();
 assert(JSON.stringify(roles) === JSON.stringify(["reviewer", "editor", "operator", "owner"]), "account roles differ from the shared contract");
@@ -31,13 +31,42 @@ const accounts = [
 ];
 const fetchImpl = async (url, options = {}) => {
   requests.push({ url, options });
-  assert(options.headers.authorization === "Bearer account_admin_test_secret_123456789", "account admin bearer secret was omitted");
+  assert(options.headers.authorization === undefined, "account admin secret was still sent as a bearer token");
+  for (const name of ["X-Bridge-Admin-Scheme", "X-Bridge-Admin-Time", "X-Bridge-Admin-Nonce", "X-Bridge-Admin-Body-SHA256", "X-Bridge-Admin-Signature"]) {
+    assert(typeof options.headers[name] === "string" && options.headers[name], `account admin signed header was omitted: ${name}`);
+  }
   if (options.method === "GET") return jsonResponse({ accounts, maximum: 64 });
   if (url.endsWith("/rotate-password")) return jsonResponse({ account: accounts[1] });
   if (options.method === "DELETE") return new Response(null, { status: 204 });
   const body = JSON.parse(options.body);
   return jsonResponse({ account: { ...accounts[1], ...body } }, options.method === "POST" ? 201 : 200);
 };
+assertThrows(() => accountAdminRequestHeaders({
+  secret: "short",
+  origin: "https://bridge.example.com",
+  method: "GET",
+  pathname: "/admin/accounts",
+}), "short account admin HMAC key was accepted");
+assertThrows(() => accountAdminRequestHeaders({
+  secret: "account_admin_test_secret_123456789",
+  origin: "https://bridge.example.com/path",
+  method: "GET",
+  pathname: "/admin/accounts",
+}), "non-origin account admin target was accepted");
+
+const deterministicHeaders = accountAdminRequestHeaders({
+  secret: "account_admin_test_secret_123456789",
+  origin: "https://bridge.example.com",
+  method: "POST",
+  pathname: "/admin/accounts",
+  body: "{}",
+  now: 1_800_000_000_000,
+  nonce: "n".repeat(32),
+});
+assert(deterministicHeaders["X-Bridge-Admin-Scheme"] === "hmac-sha256-v1", "account admin request used the wrong signature scheme");
+assert(deterministicHeaders["X-Bridge-Admin-Time"] === "1800000000", "account admin signature timestamp was not canonical");
+assert(/^[A-Za-z0-9_-]{43}$/.test(deterministicHeaders["X-Bridge-Admin-Signature"]), "account admin signature has the wrong encoding");
+
 const client = new AccountAdminClient({
   workerUrl: "https://bridge.example.test",
   adminSecret: "account_admin_test_secret_123456789",
@@ -70,6 +99,11 @@ function expectThrow(fn, message) {
     return;
   }
   throw new Error(`expected error containing: ${message}`);
+}
+
+function assertThrows(callback, message) {
+  try { callback(); } catch { return; }
+  throw new Error(message);
 }
 
 function assert(condition, message) {

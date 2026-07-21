@@ -11,6 +11,7 @@ import {
   isFreshDaemonCandidate,
 } from "./daemon-liveness.ts";
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
 import { mcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
 import { daemonToolTimeoutMs } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
@@ -20,7 +21,7 @@ import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from ".
 import { OAuthController, type AuthorizedToken, type OAuthControllerEnv } from "./oauth-controller.ts";
 import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority.ts";
 import { serverInfoTool, workspaceTools } from "./tool-catalog.ts";
-import { OFFLINE_ACCESS_SCOPE, randomToken, safeEqual } from "./oauth-state.ts";
+import { OFFLINE_ACCESS_SCOPE, randomToken } from "./oauth-state.ts";
 import {
   HttpError, applyCors, baseUrl, bearerToken, corsPreflight, json, methodNotAllowed,
   parseJsonRequest, workerErrorClass,
@@ -34,7 +35,7 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "1.2.11";
+const SERVER_VERSION = "2.0.0";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -46,7 +47,7 @@ const DAEMON_RECONNECT_GRACE_MS = 30_000;
 interface BridgeEnv extends OAuthControllerEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
   ACCOUNT_ADMIN_SECRET: string;
-  DAEMON_SHARED_SECRET: string;
+  DAEMON_DEVICE_PUBLIC_KEY: string;
   OAUTH_TOKEN_VERSION: string;
   MBM_WORKER_MAX_BODY_BYTES?: string;
   MBM_ALLOWED_ORIGINS?: string;
@@ -179,12 +180,34 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         await this.scheduleSocketAlarms();
         return;
       }
-      const daemonPolicy = sanitizeDaemonPolicy(body.policy);
       const instanceId = daemonInstanceId(body.instance_id);
       if (!instanceId) {
         rejectDaemonMessage(ws, "invalid_daemon_instance", 1002, "daemon instance id required");
         return;
       }
+      if (!socketAttachment.authChallenge || !socketAttachment.authIssuedAt || !socketAttachment.authExpiresAt || !socketAttachment.workerOrigin) {
+        rejectDaemonMessage(ws, "missing_daemon_challenge", 1008, "daemon challenge missing");
+        return;
+      }
+      const authenticated = await verifyDaemonAuthentication({
+        publicKeyJson: this.env.DAEMON_DEVICE_PUBLIC_KEY ?? "",
+        authentication: body.authentication,
+        challenge: {
+          scheme: "device-signature-v1",
+          challenge: socketAttachment.authChallenge,
+          issuedAt: socketAttachment.authIssuedAt,
+          expiresAt: socketAttachment.authExpiresAt,
+          workerOrigin: socketAttachment.workerOrigin,
+        },
+        server: SERVER_NAME,
+        version: SERVER_VERSION,
+        instanceId,
+      });
+      if (!authenticated) {
+        rejectDaemonMessage(ws, "daemon_authentication_failed", 1008, "daemon authentication failed");
+        return;
+      }
+      const daemonPolicy = sanitizeDaemonPolicy(body.policy);
       const authenticatedAt = new Date().toISOString();
       const probeId = randomToken("probe");
       this.daemonRegistry.beginProbe(ws, {
@@ -482,7 +505,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       try {
         socket.send(JSON.stringify({
           type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutMs,
-          authorization: { account_id: authorized.accountId, account_version: authorized.accountVersion, role: authorized.role },
+          authorization: {
+            account_id: authorized.accountId,
+            account_version: authorized.accountVersion,
+            client_id: authorized.clientId,
+            role: authorized.role,
+          },
         }));
       } catch {
         this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
@@ -508,9 +536,19 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async acceptDaemonWebSocket(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected Upgrade: websocket", { status: 426 });
-    const expected = this.env.DAEMON_SHARED_SECRET ?? "";
-    const supplied = request.headers.get("X-Bridge-Token") ?? "";
-    if (!expected || !(await safeEqual(supplied, expected))) return new Response("Unauthorized daemon", { status: 401 });
+    if (!this.env.DAEMON_DEVICE_PUBLIC_KEY) return new Response("Daemon device identity is not configured", { status: 503 });
+    const workerOrigin = new URL(request.url).origin;
+    const preflight = await verifyDaemonPreflight({
+      publicKeyJson: this.env.DAEMON_DEVICE_PUBLIC_KEY,
+      headers: request.headers,
+      workerOrigin,
+      server: SERVER_NAME,
+      version: SERVER_VERSION,
+    });
+    if (!preflight || !(await consumeDaemonPreflightNonce(this.ctx.storage, preflight))) {
+      return new Response("Unauthorized daemon device", { status: 401 });
+    }
+    const challenge = createDaemonChallenge(workerOrigin);
 
     for (const socket of this.daemonRegistry.nonReadySockets()) {
       closeWebSocketQuietly(socket, 1012, "replaced by newer daemon candidate");
@@ -520,9 +558,20 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
     this.observability.socketCandidate();
-    this.daemonRegistry.beginCandidate(server);
+    this.daemonRegistry.beginCandidate(server, challenge);
     await this.scheduleSocketAlarms();
-    server.send(JSON.stringify({ type: "welcome", server: SERVER_NAME, version: SERVER_VERSION }));
+    server.send(JSON.stringify({
+      type: "welcome",
+      server: SERVER_NAME,
+      version: SERVER_VERSION,
+      worker_origin: workerOrigin,
+      authentication: {
+        scheme: challenge.scheme,
+        challenge: challenge.challenge,
+        issued_at: challenge.issuedAt,
+        expires_at: challenge.expiresAt,
+      },
+    }));
     return new Response(null, { status: 101, webSocket: client });
   }
 

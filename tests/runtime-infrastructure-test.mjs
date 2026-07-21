@@ -80,9 +80,24 @@ async function testToolExecutor() {
     handlers: {
       ok: async (args, context) => ({ value: args.value, call_id: context.callId }),
       fail: async () => { throw new Error("raw implementation failure"); },
+      approval: async () => ({ unexpected: true }),
     },
     policyGate: gate,
     accountAccessGate,
+    operationAuthorizer: {
+      async authorize(operation) {
+        if (operation.tool !== "approval") return;
+        throw new BridgeError("authorization_denied", "local approval required", {
+          retryable: true,
+          details: {
+            reason: "local_approval_required",
+            approval_id: `approval_${"a".repeat(24)}`,
+            approve_command: "machine-mcp approval approve approval_test --duration 1h",
+            full_command: "machine-mcp approval approve approval_test --full",
+          },
+        });
+      },
+    },
     callRegistry: registry,
     observability: metrics,
     logger: { event(level, name, fields) { events.push({ level, name, fields }); } },
@@ -92,10 +107,20 @@ async function testToolExecutor() {
   assert(result.value === 7 && result.call_id === "ok-call", "tool executor lost arguments or lifecycle context");
   await expectReject(() => executor.execute("fail", {}, { callId: "fail-call", origin: "relay", authorization: { role: "owner" } }), "execution_failed", "safe failure");
   await expectReject(() => executor.execute("denied", {}, { callId: "deny-call" }), "policy_denied", "denied");
+  const approvalError = await expectReject(
+    () => executor.execute("approval", {}, { callId: "approval-call", origin: "relay", authorization: { role: "owner" } }),
+    "authorization_denied",
+    "local approval required",
+  );
+  assert(approvalError.retryable === true, "local approval denial lost its retryable contract");
+  assert(approvalError.details?.reason === "local_approval_required", "local approval denial lost its stable reason");
+  assert(approvalError.details?.approval_id?.startsWith("approval_"), "local approval denial lost its pending id");
+  assert(approvalError.details?.approve_command?.includes("--duration 1h"), "local approval denial lost its scoped command");
+  assert(approvalError.details?.full_command?.endsWith("--full"), "local approval denial lost its full-window command");
   const snapshot = metrics.snapshot();
-  assert(snapshot.calls.started === 3, "authorization attempts are missing from execution metrics");
-  assert(snapshot.calls.completed === 1 && snapshot.calls.failed === 2, "tool metrics lost terminal outcomes");
-  assert(snapshot.errors.execution_failed === 1 && snapshot.errors.policy_denied === 1, "tool metrics lost stable error codes");
+  assert(snapshot.calls.started === 4, "authorization attempts are missing from execution metrics");
+  assert(snapshot.calls.completed === 1 && snapshot.calls.failed === 3, "tool metrics lost terminal outcomes");
+  assert(snapshot.errors.execution_failed === 1 && snapshot.errors.policy_denied === 1 && snapshot.errors.authorization_denied === 1, "tool metrics lost stable error codes");
   assert(events.some((event) => event.name === "tool.call.started") && events.some((event) => event.name === "tool.call.failed"), "structured lifecycle events were not emitted");
   assert(registry.snapshot().active === 0, "tool executor leaked call lifecycle state");
 
@@ -209,7 +234,7 @@ async function testDuplicateRelayCallId() {
     id: "duplicate-call",
     tool: "read_file",
     arguments: { path: "README.md" },
-    authorization: { account_id: "acct_testowner_12345678901234567890", account_version: 1, role: "owner" },
+    authorization: { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, role: "owner" },
   }, { sessionId: 1 });
   assert(violation === "duplicate_tool_call_id", "duplicate relay call ID was not rejected as a protocol error");
   assert(runtime.activeRelayCalls.has("duplicate-call"), "duplicate relay call removed the original call lifecycle");
@@ -577,7 +602,7 @@ async function expectReject(operation, code, message) {
     assert(error instanceof BridgeError, "tool executor leaked an untyped error");
     assert(error.code === code, `expected ${code}, received ${error.code}`);
     assert(error.message.includes(message), `expected message containing ${message}`);
-    return;
+    return error;
   }
   throw new Error(`expected rejection ${code}`);
 }

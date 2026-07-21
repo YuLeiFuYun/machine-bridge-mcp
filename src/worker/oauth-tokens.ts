@@ -1,18 +1,19 @@
 import {
-  emptyOAuthRefreshStore, isCurrentOAuthRefreshStore, normalizeOAuthScope, pkceS256,
-  pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken, safeEqual, sha256Hex,
+  normalizeOAuthScope, pkceS256, pruneClientRecordByExpiry, pruneRecordByExpiry,
+  randomToken, safeEqual, sha256Hex,
   type OAuthCode, type OAuthRefreshStore, type OAuthRefreshToken, type OAuthStore,
 } from "./oauth-state.ts";
 import { HttpError, json, parseRequestBody } from "./http.ts";
+import { loadOAuthRefreshStore, OAUTH_REFRESH_STORE_KEY, recordConsumedRefreshToken, revokeOAuthRefreshFamily } from "./oauth-refresh-families.ts";
 
-const ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
-const REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 90;
+const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+const REFRESH_TOKEN_IDLE_TTL_SECONDS = 60 * 60 * 24 * 14;
+const REFRESH_TOKEN_FAMILY_TTL_SECONDS = 60 * 60 * 24 * 30;
 const OAUTH_BODY_LIMIT_BYTES = 64 * 1024;
 const MAX_ACCESS_TOKENS = 500;
 const MAX_ACCESS_TOKENS_PER_CLIENT = 20;
 const MAX_REFRESH_TOKENS = 500;
 const MAX_REFRESH_TOKENS_PER_CLIENT = 20;
-const OAUTH_REFRESH_STORE_KEY = "oauth-refresh";
 
 type OAuthLock = <T>(callback: () => Promise<T>) => Promise<T>;
 
@@ -53,7 +54,7 @@ async function exchangeAuthorizationCode(
   }
   return options.withLock(async () => {
     const oauthStore = await options.loadOAuthStore();
-    const refreshStore = await loadRefreshStore(oauthStore, options);
+    const refreshStore = await loadOAuthRefreshStore(oauthStore, options.storage);
     const record = oauthStore.codes[code];
     if (!record) return json({ error: "invalid_grant" }, 400);
     if (String(body.client_id ?? "") !== record.client_id || String(body.redirect_uri ?? "") !== record.redirect_uri) {
@@ -85,10 +86,22 @@ async function exchangeRefreshToken(
   if (!/^mcp_rt_[A-Za-z0-9_-]{43}$/.test(refreshToken)) return json({ error: "invalid_grant" }, 400);
   return options.withLock(async () => {
     const oauthStore = await options.loadOAuthStore();
-    const refreshStore = await loadRefreshStore(oauthStore, options);
+    const refreshStore = await loadOAuthRefreshStore(oauthStore, options.storage);
     const refreshKey = `sha256:${await sha256Hex(refreshToken)}`;
     const record = refreshStore.tokens[refreshKey];
-    if (!record) return json({ error: "invalid_grant" }, 400);
+    if (!record) {
+      const consumed = refreshStore.consumed[refreshKey];
+      if (consumed && consumed.expires_at > Math.floor(Date.now() / 1000)) {
+        revokeOAuthRefreshFamily(oauthStore, refreshStore, consumed.family_id, consumed.expires_at);
+        await saveOAuthStores(oauthStore, refreshStore, options.storage);
+      }
+      return json({ error: "invalid_grant" }, 400);
+    }
+    if (refreshStore.revoked_families[record.family_id]) {
+      delete refreshStore.tokens[refreshKey];
+      await options.storage.put(OAUTH_REFRESH_STORE_KEY, refreshStore);
+      return json({ error: "invalid_grant" }, 400);
+    }
     if (String(body.client_id ?? "") !== record.client_id) {
       return json({ error: "invalid_grant", error_description: "client mismatch" }, 400);
     }
@@ -117,42 +130,29 @@ async function exchangeRefreshToken(
       return json({ error: "invalid_grant" }, 400);
     }
 
-    const issued = await issueTokenPair(oauthStore, refreshStore, record, options.tokenVersion);
+    let issued: IssuedTokenPair;
+    try {
+      issued = await issueTokenPair(oauthStore, refreshStore, record, options.tokenVersion);
+    } catch (error) {
+      if (error instanceof HttpError && error.code === "invalid_grant") {
+        delete refreshStore.tokens[refreshKey];
+        await options.storage.put(OAUTH_REFRESH_STORE_KEY, refreshStore);
+        return json({ error: "invalid_grant" }, 400);
+      }
+      throw error;
+    }
     delete refreshStore.tokens[refreshKey];
+    recordConsumedRefreshToken(
+      refreshStore,
+      refreshKey,
+      record.family_id,
+      record.family_expires_at,
+      Math.floor(Date.now() / 1000),
+    );
     client.last_used_at = Math.floor(Date.now() / 1000);
     await saveOAuthStores(oauthStore, refreshStore, options.storage);
     return tokenResponse(issued, record.scope);
   });
-}
-
-async function loadRefreshStore(
-  oauthStore: OAuthStore,
-  options: OAuthTokenExchangeOptions,
-): Promise<OAuthRefreshStore> {
-  const raw = await options.storage.get<unknown>(OAUTH_REFRESH_STORE_KEY);
-  if (raw !== undefined && !isCurrentOAuthRefreshStore(raw)) {
-    throw new HttpError(503, "oauth_refresh_state_schema_mismatch", "OAuth refresh-token state requires operator repair");
-  }
-  const store = isCurrentOAuthRefreshStore(raw) ? raw : emptyOAuthRefreshStore();
-  let changed = false;
-  const now = Math.floor(Date.now() / 1000);
-  for (const [token, value] of Object.entries(store.tokens)) {
-    const account = oauthStore.accounts[value.account_id];
-    const client = oauthStore.clients[value.client_id];
-    if (
-      value.expires_at <= now
-      || !account
-      || !account.active
-      || account.version !== value.account_version
-      || account.role !== value.role
-      || !client
-    ) {
-      delete store.tokens[token];
-      changed = true;
-    }
-  }
-  if (changed) await options.storage.put(OAUTH_REFRESH_STORE_KEY, store);
-  return store;
 }
 
 async function issueTokenPair(
@@ -163,6 +163,11 @@ async function issueTokenPair(
 ): Promise<IssuedTokenPair> {
   if (!tokenVersion) throw new HttpError(503, "server_error", "OAuth token version is not configured");
   const now = Math.floor(Date.now() / 1000);
+  const familyId = "family_id" in source && source.family_id ? source.family_id : randomToken("mcp_family");
+  const familyExpiresAt = "family_expires_at" in source && source.family_expires_at
+    ? source.family_expires_at
+    : now + REFRESH_TOKEN_FAMILY_TTL_SECONDS;
+  if (familyExpiresAt <= now) throw new HttpError(400, "invalid_grant", "refresh-token family expired");
   const accessToken = randomToken("mcp_at");
   const refreshToken = randomToken("mcp_rt");
   const common = {
@@ -173,6 +178,7 @@ async function issueTokenPair(
     scope: source.scope,
     resource: source.resource,
     version: tokenVersion,
+    family_id: familyId,
   };
   oauthStore.tokens[`sha256:${await sha256Hex(accessToken)}`] = {
     ...common,
@@ -180,7 +186,10 @@ async function issueTokenPair(
   };
   refreshStore.tokens[`sha256:${await sha256Hex(refreshToken)}`] = {
     ...common,
-    expires_at: now + REFRESH_TOKEN_TTL_SECONDS,
+    family_id: familyId,
+    family_expires_at: familyExpiresAt,
+    issued_at: now,
+    expires_at: Math.min(now + REFRESH_TOKEN_IDLE_TTL_SECONDS, familyExpiresAt),
   };
   pruneClientRecordByExpiry(oauthStore.tokens, source.client_id, MAX_ACCESS_TOKENS_PER_CLIENT);
   pruneRecordByExpiry(oauthStore.tokens, MAX_ACCESS_TOKENS);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import net from "node:net";
@@ -469,7 +470,7 @@ function workerState(name) {
     worker: {
       name,
       accountAdminSecret: "account_admin_test_secret_abcdefghijklmnopqrstuvwxyz",
-      daemonSecret: "daemon_secret_test_secret_abcdefghijklmnopqrstuvwxyz",
+      deviceIdentity: createDeviceIdentity(),
       oauthTokenVersion: "token_version_test_secret_abcdefghijklmnopqrstuvwxyz",
     },
   };

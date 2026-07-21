@@ -23,10 +23,9 @@ const DEFAULT_SCHEDULER = Object.freeze({
 export class RelayConnection {
   constructor(options = {}) {
     this.workerUrl = normalizeWorkerUrl(options.workerUrl);
-    if (typeof options.secret !== "string" || options.secret.length < 16) throw new Error("daemon secret is missing or too short");
-    this.secret = options.secret;
     this.logger = options.logger || console;
     this.helloMessage = typeof options.helloMessage === "function" ? options.helloMessage : () => ({ type: "hello" });
+    this.connectionHeaders = typeof options.connectionHeaders === "function" ? options.connectionHeaders : () => ({});
     this.expectedServer = String(options.expectedServer || "");
     this.expectedVersion = String(options.expectedVersion || "");
     this.onMessage = typeof options.onMessage === "function" ? options.onMessage : () => {};
@@ -164,6 +163,13 @@ export class RelayConnection {
       return false;
     }
     this.logger.debug?.("remote relay welcome received");
+    Promise.resolve(this.helloMessage(message)).then((hello) => {
+      if (this.socket !== socket || this.closed || this.authenticated) return;
+      if (!this.sendOnSocket(socket, hello)) this.failPermanently("relay_authentication_failed");
+    }).catch((error) => {
+      this.logger.debug?.("could not create daemon authentication proof", { error_class: classifyOperationalError(error) });
+      this.failPermanently("relay_authentication_failed");
+    });
     return true;
   }
 
@@ -273,9 +279,11 @@ export class RelayConnection {
     let socket;
     try {
       const proxy = this.proxyAgentForUrl(wsUrl);
+      const headers = this.connectionHeaders();
+      if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw new Error("relay connection headers are invalid");
       this.networkRoute = proxy?.agent ? "proxy" : "direct";
       socket = new this.WebSocketClass(wsUrl, {
-        headers: { "X-Bridge-Token": this.secret },
+        headers,
         maxPayload: this.maxPayload,
         ...(proxy?.agent ? { agent: proxy.agent } : {}),
       });
@@ -308,8 +316,7 @@ export class RelayConnection {
         return;
       }
       this.lastInboundAt = this.now();
-      this.logger.debug?.("remote relay transport opened; awaiting authentication acknowledgement");
-      if (!this.sendOnSocket(socket, this.helloMessage())) return;
+      this.logger.debug?.("remote relay transport opened; awaiting device challenge");
       this.clearTimer("handshakeTimer", "clearTimeout");
       this.handshakeTimer = this.scheduler.setTimeout(() => {
         if (this.socket !== socket || this.closed || this.ready) return;

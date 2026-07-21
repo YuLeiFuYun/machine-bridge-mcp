@@ -3,7 +3,7 @@
 `machine-bridge-mcp` exposes one local workspace to MCP clients through a shared, policy-controlled runtime. Hosted clients connect through an OAuth-protected Cloudflare Worker relay; local clients may launch the same runtime over stdio.
 
 > [!WARNING]
-> The default `full` profile can read and modify any file available to the local OS user, run shell commands, inherit the parent environment, and control the Chromium profile containing the packaged extension. It is **not** an operating-system sandbox. Use a narrower profile or an isolated OS account, VM, or container for untrusted clients, repositories, or instructions.
+> The default `full` profile retains every local-user capability: unrestricted files, shell commands, the parent environment, browser automation, applications, resources, and jobs. It is **not** an operating-system sandbox. Remote high-impact operations additionally require a bounded local capability lease; this limits unattended bearer use but does not make an approved `full` window safe for untrusted clients, repositories, or instructions. Use a narrower profile or an isolated OS account, VM, or container for mutually untrusted workloads.
 
 ## Choose a path
 
@@ -24,6 +24,7 @@ Support boundaries are defined in [SUPPORT.md](SUPPORT.md). Repository participa
 - policy profiles with shared local/Worker enforcement contracts;
 - bounded file, patch, Git, process, diagnostic, application, browser, and managed-job tools;
 - account roles whose authority is intersected with the connected daemon policy;
+- device-signed daemon transport and local account/client-bound capability leases for high-impact remote transactions;
 - structured, privacy-conscious lifecycle events and stable error codes;
 - fail-closed state, lock, release, package, and supply-chain checks.
 
@@ -33,7 +34,8 @@ The remote Worker authenticates and relays requests. It cannot directly read loc
 Hosted MCP client
   -> HTTPS + OAuth 2.1 / PKCE
   -> Cloudflare Worker + Durable Object
-  -> authenticated outbound WebSocket
+  -> P-256 device-authenticated outbound WebSocket
+  -> local transaction authorization
   -> local runtime
 
 Local MCP client
@@ -153,6 +155,8 @@ The shared source of truth is `src/shared/policy-contract.json`. The generated m
 
 For remote calls, `server_info.authorization.effective_policy` and `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
 
+`full` is a capability ceiling, not a permanent remote execution grant. Workspace-contained reads and edits, project inspection, Git, diagnostics, browser broker status, and installed-application discovery remain automatic. Remote process execution, reads or writes outside the workspace, credential-sensitive reads, access to the existing browser profile, browser uploads, persistent jobs, and application inspection/control require one local lease and then run uninterrupted for its account, OAuth client, scope, and duration. Use `machine-mcp approval list`, approve the pending scope for ordinary work, or explicitly open an at-most-eight-hour `--full` automation window. See [local transaction authorization](docs/LOCAL_AUTHORIZATION.md).
+
 ## Browser and application automation
 
 Under canonical `full`, Machine Bridge can discover and operate supported local applications and can control the Chromium profile into which the packaged extension is loaded.
@@ -191,6 +195,7 @@ machine-mcp doctor
 machine-mcp workspace show|set|reset
 machine-mcp service status|install|start|stop|uninstall
 machine-mcp account list|add|role|enable|disable|rotate-password|remove
+machine-mcp approval list|approve|grant|revoke|clear
 machine-mcp browser status|setup|pair|path
 machine-mcp resource add|list|check|remove
 machine-mcp job submit|inspect|approve|list|read|cancel

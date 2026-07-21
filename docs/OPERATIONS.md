@@ -293,15 +293,40 @@ machine-mcp --workspace /path/to/project --profile agent
 
 A remote policy change is saved locally, propagated in the daemon handshake, and loaded by autostart from owner-only state.
 
+### Remote capability leases
+
+The saved profile defines the capability ceiling. It does not permanently authorize every consequential remote effect. Inspect pending requests and active leases with:
+
+```sh
+machine-mcp --workspace /path/to/project approval list
+```
+
+Approve the requested scope for ordinary work, or explicitly open a temporary full automation window:
+
+```sh
+machine-mcp --workspace /path/to/project approval approve APPROVAL_ID --duration 1h
+machine-mcp --workspace /path/to/project approval approve APPROVAL_ID --full
+```
+
+Revoke one lease or all leases:
+
+```sh
+machine-mcp --workspace /path/to/project approval revoke LEASE_ID
+machine-mcp --workspace /path/to/project approval clear
+```
+
+The pending and lease files are owner-only and contain identity bindings, scope, timestamps, and target digests rather than command or content text. Full details are in [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
+
 ## Incident response
 
 After suspected credential or client compromise:
 
 1. stop foreground and autostart daemons;
-2. run `machine-mcp rotate-secrets`;
-3. restart without broad flags and redeploy;
-4. inspect Cloudflare account access, Worker configuration, local state/resource permissions, process-lock owners, managed-job results, and service logs;
-5. cancel active managed jobs and remove compromised resource aliases;
-6. remove the Worker and local state if continued remote access is unnecessary.
+2. run `machine-mcp approval clear` for every affected workspace;
+3. disable or rotate the affected account, or run `machine-mcp rotate-secrets` for deployment-wide revocation;
+4. restart without broad flags and redeploy;
+5. inspect Cloudflare account access, Worker configuration, local state/resource permissions, process-lock owners, managed-job results, and service logs;
+6. cancel active managed jobs and remove compromised resource aliases;
+7. remove the Worker and local state if continued remote access is unnecessary.
 
 The detailed 0.12.0 audit record and residual operational limits are in [AUDIT.md](AUDIT.md).

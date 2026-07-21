@@ -1,4 +1,6 @@
+import { ADMIN_AUTH_SCHEME, ADMIN_AUTH_TTL_SECONDS, adminAuthTranscript } from "../shared/admin-auth.mjs";
 import { json, methodNotAllowed, parseRequestBody } from "./http.ts";
+import { consumeBoundedNonce } from "./nonce-store.ts";
 import {
   accountByName, createAccount, publicAccount, replaceAccountPassword, revokeAccountCredentials,
   safeEqual, updateAccount, type AccountRecord, type OAuthStore,
@@ -7,10 +9,67 @@ import {
 const BODY_LIMIT_BYTES = 64 * 1024;
 const MAX_ACCOUNTS = 64;
 
-export async function accountAdminAuthorized(request: Request, expected: string): Promise<boolean> {
-  const header = request.headers.get("authorization") ?? "";
-  const supplied = /^Bearer\s+(.+)$/i.exec(header)?.[1] ?? "";
-  return Boolean(expected && await safeEqual(supplied, expected));
+export interface AccountAdminAuthorization {
+  nonce: string;
+  expiresAt: number;
+}
+
+export async function accountAdminAuthorized(
+  request: Request,
+  expected: string,
+  now = Math.floor(Date.now() / 1000),
+): Promise<AccountAdminAuthorization | null> {
+  if (!expected) return null;
+  const scheme = request.headers.get("X-Bridge-Admin-Scheme") || "";
+  const issuedAt = Number(request.headers.get("X-Bridge-Admin-Time"));
+  const nonce = request.headers.get("X-Bridge-Admin-Nonce") || "";
+  const bodyHash = request.headers.get("X-Bridge-Admin-Body-SHA256") || "";
+  const suppliedSignature = request.headers.get("X-Bridge-Admin-Signature") || "";
+  if (scheme !== ADMIN_AUTH_SCHEME) return null;
+  if (!Number.isSafeInteger(issuedAt) || Math.abs(now - issuedAt) > ADMIN_AUTH_TTL_SECONDS) return null;
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(bodyHash) || !/^[A-Za-z0-9_-]{43}$/.test(suppliedSignature)) return null;
+  let transcript: string;
+  try {
+    transcript = adminAuthTranscript({
+      origin: new URL(request.url).origin,
+      method: request.method.toUpperCase(),
+      pathname: new URL(request.url).pathname,
+      bodyHash,
+      issuedAt,
+      nonce,
+    });
+  } catch {
+    return null;
+  }
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(expected),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const expectedSignature = base64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(transcript))));
+  if (!(await safeEqual(suppliedSignature, expectedSignature))) return null;
+  const body = new Uint8Array(await request.clone().arrayBuffer());
+  if (body.byteLength > BODY_LIMIT_BYTES) return null;
+  const actualBodyHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", body)));
+  if (!(await safeEqual(bodyHash, actualBodyHash))) return null;
+  return { nonce, expiresAt: Math.max(now, issuedAt) + ADMIN_AUTH_TTL_SECONDS };
+}
+
+export async function consumeAccountAdminNonce(
+  storage: DurableObjectStorage,
+  authorization: AccountAdminAuthorization,
+  now = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
+  return consumeBoundedNonce(storage, {
+    key: "account-admin-nonces",
+    nonce: authorization.nonce,
+    expiresAt: authorization.expiresAt,
+    now,
+    noncePattern: /^[A-Za-z0-9_-]{32,128}$/,
+    maximum: 256,
+  });
 }
 
 export async function handleAccountAdminOperation(options: {
@@ -100,4 +159,14 @@ async function rotatePassword(request: Request, store: OAuthStore, save: () => P
 
 function activeOwnerCount(store: OAuthStore): number {
   return Object.values(store.accounts).filter((account) => account.active && account.role === "owner").length;
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function hex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

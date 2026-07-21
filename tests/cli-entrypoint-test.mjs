@@ -53,6 +53,22 @@ try {
   const clientConfig = run(["client-config", "codex", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
   assert(clientConfig.status === 0 && clientConfig.stdout.includes("[mcp_servers.machine_bridge]"), `client-config failed: ${clientConfig.stderr}`);
 
+  const emptyApprovals = run(["approval", "list", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
+  assert(emptyApprovals.status === 0 && emptyApprovals.stdout.includes("No pending approvals"), `approval list failed: ${emptyApprovals.stderr}`);
+  const granted = run([
+    "approval", "grant", "shell", "--account", "*", "--client", "*", "--duration", "15m",
+    "--workspace", workspaceRoot, "--state-dir", stateRoot, "--json",
+  ]);
+  assert(granted.status === 0, `approval grant failed: ${granted.stderr}`);
+  const grantedLease = JSON.parse(granted.stdout);
+  assert(JSON.stringify(grantedLease.scopes) === JSON.stringify(["shell"]) && grantedLease.account_id === "*" && grantedLease.client_id === "*", "approval grant lost explicit wildcard bindings or scope shape");
+  const approvalList = run(["approval", "list", "--workspace", workspaceRoot, "--state-dir", stateRoot, "--json"]);
+  assert(approvalList.status === 0 && JSON.parse(approvalList.stdout).leases.some((lease) => lease.id === grantedLease.id), "approval list omitted the active lease");
+  const revoked = run(["approval", "revoke", grantedLease.id, "--workspace", workspaceRoot, "--state-dir", stateRoot, "--json"]);
+  assert(revoked.status === 0 && JSON.parse(revoked.stdout).revoked === true, "approval revoke did not remove the active lease");
+  const unknownApproval = run(["approval", "approve", "approval_unknown", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
+  assert(unknownApproval.status !== 0 && unknownApproval.stderr.includes("not found or has expired"), "approval approve accepted an unknown pending id");
+
   const reset = run(["workspace", "reset", "--state-dir", stateRoot]);
   assert(reset.status === 0 && reset.stdout.includes("selection reset"), `workspace reset failed: ${reset.stderr}`);
   const afterReset = run(["workspace", "show", "--state-dir", stateRoot]);

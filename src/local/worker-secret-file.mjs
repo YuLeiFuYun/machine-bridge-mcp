@@ -3,6 +3,7 @@ import { lstatSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { createExclusiveFileSync } from "./exclusive-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
+import { publicDeviceJwkJson } from "./device-identity.mjs";
 import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync } from "./secure-file.mjs";
 
 const SECRET_FILE_PATTERN = /^worker-secrets-(\d+)-(\d+)(?:-p(\d+))?(?:-([a-f0-9]+))?\.json$/;
@@ -17,7 +18,7 @@ export async function withWorkerSecretsFile(state, callback, options = {}) {
   const tempPath = resolve(dir, `worker-secrets-${process.pid}-${createdAt}-p${processStartedAt}-${random}.json`);
   const payload = {
     ACCOUNT_ADMIN_SECRET: state.worker.accountAdminSecret,
-    DAEMON_SHARED_SECRET: state.worker.daemonSecret,
+    DAEMON_DEVICE_PUBLIC_KEY: publicDeviceJwkJson(state.worker.deviceIdentity),
     OAUTH_TOKEN_VERSION: state.worker.oauthTokenVersion,
   };
 
