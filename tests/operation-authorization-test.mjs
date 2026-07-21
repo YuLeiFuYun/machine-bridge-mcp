@@ -65,7 +65,7 @@ try {
   assert(shellDenied.details?.reason === "local_approval_required", "approval denial omitted its stable reason");
   const pending = listOperationApprovals(approvalRoot, now);
   assert(pending.pending.length === 1 && pending.pending[0].scopes.join(",") === "shell", "shell approval request was not persisted");
-  assert(statSync(path.join(approvalRoot, "operation-pending.json")).mode.toString(8).endsWith("600"), "pending approval state is not owner-only");
+  if (process.platform !== "win32") assert(statSync(path.join(approvalRoot, "operation-pending.json")).mode.toString(8).endsWith("600"), "pending approval state is not owner-only");
 
   await assertRejects(
     () => approvePendingOperation(approvalRoot, pending.pending[0].id, "2h", now, "external-write"),
@@ -74,7 +74,7 @@ try {
   const lease = await approvePendingOperation(approvalRoot, pending.pending[0].id, "2h", now);
   assert(lease.account_id === accountId && lease.client_id === clientId, "approved lease lost authenticated identity binding");
   assert(listOperationApprovals(approvalRoot, now).pending.length === 0, "approved request remained pending");
-  assert(statSync(path.join(approvalRoot, "operation-leases.json")).mode.toString(8).endsWith("600"), "capability lease state is not owner-only");
+  if (process.platform !== "win32") assert(statSync(path.join(approvalRoot, "operation-leases.json")).mode.toString(8).endsWith("600"), "capability lease state is not owner-only");
   const shellAllowed = await authorizer.authorize(operation("exec_command", { command: "printf second" }, clientId));
   assert(shellAllowed.source === "lease" && shellAllowed.leaseId === lease.id, "active shell lease did not authorize subsequent commands");
 
@@ -195,7 +195,7 @@ try {
   });
   await lockEntered;
   const operationLockPath = path.join(approvalRoot, "operation-authorization.lock");
-  assert(statSync(operationLockPath).mode.toString(8).endsWith("600"), "operation-state lock is not owner-only");
+  if (process.platform !== "win32") assert(statSync(operationLockPath).mode.toString(8).endsWith("600"), "operation-state lock is not owner-only");
   let concurrentGrantSettled = false;
   const concurrentGrant = grantOperationLease(approvalRoot, {
     accountId,
