@@ -50,7 +50,7 @@ State paths, locks, plans, resources, and service definitions are security-sensi
 
 ### Maintainer to release infrastructure
 
-Repository checks reduce accidental or malicious package drift, but source hosting, npm ownership, protected environments, maintainer accounts, and human review remain external trust dependencies. Repository automation cannot manufacture independent review or claim live candidate success without observing the owner-started candidate. It may record acceptance after that observed verification.
+Repository checks reduce accidental or malicious package drift, but source hosting, npm ownership, protected environments, maintainer accounts, and human review remain external trust dependencies. Repository automation cannot manufacture independent review or claim live candidate success without observing the explicitly owner-authorized candidate. It may record acceptance after that observed verification.
 
 ## Attacker models
 
@@ -71,7 +71,7 @@ The implementation aims to preserve these invariants:
 
 - deny unknown, malformed, stale, duplicated, unauthorized, or over-limit requests;
 - intersect remote account authority with the daemon capability ceiling in both Worker and local runtime;
-- bind high-impact remote effects to local account/client-scoped, time-bounded capability leases without narrowing normal workspace work;
+- permit authenticated owner automation directly within the daemon ceiling while binding delegated high-impact effects to local account/client-scoped, time-bounded capability leases;
 - keep transport authentication, account/tool authorization, transaction authorization, and OS authority separate;
 - use direct argv execution without shell interpretation unless the explicit shell tool is authorized;
 - canonicalize confined paths and reject symlink-based write escape;
@@ -103,7 +103,7 @@ Machine Bridge does **not** claim to provide:
 
 ### Canonical `full` profile
 
-`full` intentionally preserves the complete catalog, unrestricted local-user paths, shell execution, parent environment, browser/application authority, and absolute path output. Version 2.0 separates this capability ceiling from current remote transaction authority: common workspace work remains automatic, while higher-impact effects require a bounded local lease. A malicious client holding both valid OAuth credentials and an active matching lease can still act destructively within that lease. A temporary `full` lease is therefore an explicit automation window, not a sandbox or an endorsement of untrusted instructions. Use a narrower profile or a separate low-privilege OS boundary for mutually untrusted workloads.
+`full` intentionally preserves the complete catalog, unrestricted local-user paths, shell execution, parent environment, browser/application authority, and absolute path output. Version 2.0 treats the authenticated owner role as authorization to use that ceiling without a second terminal prompt. This prioritizes uninterrupted owner automation: compromise of an active owner OAuth client can exercise the complete daemon ceiling. Delegated accounts remain lease-bound for higher-impact effects. A malicious delegated client holding both valid OAuth credentials and an active matching lease can still act destructively within that lease. A temporary `full` lease is therefore an explicit automation window, not a sandbox or an endorsement of untrusted instructions. Use a narrower profile or a separate low-privilege OS boundary for mutually untrusted workloads.
 
 ### Application and browser automation
 

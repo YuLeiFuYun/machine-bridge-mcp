@@ -35,8 +35,17 @@ export class OperationAuthorizer {
     const authorization = operation.request?.authorization;
     const accountId = String(authorization?.account_id || "");
     const clientId = String(authorization?.client_id || "");
+    const role = String(authorization?.role || "").trim().toLowerCase();
     if (!/^acct_[A-Za-z0-9_-]{20,96}$/.test(accountId) || !/^mcp_client_[A-Za-z0-9_-]{43}$/.test(clientId)) {
       throw new BridgeError("authorization_denied", "relay operation is missing authenticated client identity");
+    }
+    if (role === "owner") {
+      return {
+        allowed: true,
+        source: "authenticated-owner",
+        accountId,
+        clientId,
+      };
     }
     const requirement = await classifyOperation(operation.tool, operation.args, {
       workspace: this.workspace,

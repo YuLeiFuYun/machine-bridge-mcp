@@ -12,7 +12,9 @@ import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 export const ACCEPTANCE_SCHEMA_VERSION = 1;
 export const ACCEPTANCE_POLICY_VERSION = "1.2.8";
 export const AGENT_VERIFIED_ACCEPTANCE_VERSION = "1.2.9";
-export const ACCEPTANCE_CONFIRMATION = "owner-started-agent-verified-local-candidate";
+export const AGENT_OPERATED_ACCEPTANCE_VERSION = "2.0.0";
+export const ACCEPTANCE_CONFIRMATION = "owner-authorized-agent-operated-local-candidate";
+export const OWNER_STARTED_ACCEPTANCE_CONFIRMATION = "owner-started-agent-verified-local-candidate";
 export const LEGACY_ACCEPTANCE_CONFIRMATION = "repository-owner-local-test";
 const MAX_ACCEPTANCE_BYTES = 64 * 1024;
 const MAX_RELEASE_TARBALL_BYTES = 64 * 1024 * 1024;
@@ -22,9 +24,10 @@ export function requiresLocalAcceptance(version) {
 }
 
 export function acceptanceConfirmationForVersion(version) {
-  return compareVersions(parseVersion(version), parseVersion(AGENT_VERIFIED_ACCEPTANCE_VERSION)) >= 0
-    ? ACCEPTANCE_CONFIRMATION
-    : LEGACY_ACCEPTANCE_CONFIRMATION;
+  const parsed = parseVersion(version);
+  if (compareVersions(parsed, parseVersion(AGENT_OPERATED_ACCEPTANCE_VERSION)) >= 0) return ACCEPTANCE_CONFIRMATION;
+  if (compareVersions(parsed, parseVersion(AGENT_VERIFIED_ACCEPTANCE_VERSION)) >= 0) return OWNER_STARTED_ACCEPTANCE_CONFIRMATION;
+  return LEGACY_ACCEPTANCE_CONFIRMATION;
 }
 
 export function acceptancePath(root, version) {

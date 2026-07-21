@@ -3,7 +3,7 @@
 `machine-bridge-mcp` exposes one local workspace to MCP clients through a shared, policy-controlled runtime. Hosted clients connect through an OAuth-protected Cloudflare Worker relay; local clients may launch the same runtime over stdio.
 
 > [!WARNING]
-> The default `full` profile retains every local-user capability: unrestricted files, shell commands, the parent environment, browser automation, applications, resources, and jobs. It is **not** an operating-system sandbox. Remote high-impact operations additionally require a bounded local capability lease; this limits unattended bearer use but does not make an approved `full` window safe for untrusted clients, repositories, or instructions. Use a narrower profile or an isolated OS account, VM, or container for mutually untrusted workloads.
+> The default `full` profile retains every local-user capability: unrestricted files, shell commands, the parent environment, browser automation, applications, resources, and jobs. It is **not** an operating-system sandbox. An authenticated owner may use that ceiling directly without terminal approval. Delegated non-owner accounts require bounded local capability leases for high-impact operations. Use a narrower profile or an isolated OS account, VM, or container for mutually untrusted workloads.
 
 ## Choose a path
 
@@ -24,7 +24,7 @@ Support boundaries are defined in [SUPPORT.md](SUPPORT.md). Repository participa
 - policy profiles with shared local/Worker enforcement contracts;
 - bounded file, patch, Git, process, diagnostic, application, browser, and managed-job tools;
 - account roles whose authority is intersected with the connected daemon policy;
-- device-signed daemon transport and local account/client-bound capability leases for high-impact remote transactions;
+- device-signed daemon transport, interruption-free authenticated owner authority, and account/client-bound capability leases for delegated high-impact transactions;
 - structured, privacy-conscious lifecycle events and stable error codes;
 - fail-closed state, lock, release, package, and supply-chain checks.
 
@@ -155,7 +155,7 @@ The shared source of truth is `src/shared/policy-contract.json`. The generated m
 
 For remote calls, `server_info.authorization.effective_policy` and `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
 
-`full` is a capability ceiling, not a permanent remote execution grant. Workspace-contained reads and edits, project inspection, Git, diagnostics, browser broker status, and installed-application discovery remain automatic. Remote process execution, reads or writes outside the workspace, credential-sensitive reads, access to the existing browser profile, browser uploads, persistent jobs, and application inspection/control require one local lease and then run uninterrupted for its account, OAuth client, scope, and duration. Use `machine-mcp approval list`, approve the pending scope for ordinary work, or explicitly open an at-most-eight-hour `--full` automation window. See [local transaction authorization](docs/LOCAL_AUTHORIZATION.md).
+`full` is the daemon capability ceiling. An authenticated owner account may exercise it directly without approval IDs or terminal commands. Delegated reviewer, editor, and operator accounts remain constrained by their role profile, and their high-impact operations require account/client-bound, time-bounded local leases. Use `machine-mcp approval` only when administering those delegated-account leases. See [local transaction authorization](docs/LOCAL_AUTHORIZATION.md).
 
 ## Browser and application automation
 
@@ -240,13 +240,13 @@ A package change requires a version bump, matching changelog section, complete v
 
 ```sh
 npm run release:candidate
-# The repository owner runs this and leaves the candidate in the foreground:
+# After explicit owner authorization in the conversation, the coding agent starts and verifies:
 npm run release:candidate:start -- --allow-worker-deploy
-# The coding agent verifies the live candidate, records acceptance, pushes, merges, then runs:
+# The coding agent records acceptance, pushes, merges, then runs:
 npm run release
 ```
 
-The owner action is to explicitly authorize and start the exact candidate, including an in-place update of the configured same-name Worker when required. The coding agent must observe the deployed Worker version/hash, remote health, relay readiness, connected candidate version, and representative functionality before recording acceptance; automated checks alone are insufficient. npm publication and Worker deployment remain separate owner-operated live actions. See [docs/RELEASING.md](docs/RELEASING.md).
+The owner action is to explicitly authorize the exact candidate and any in-place update of the configured same-name Worker in the active conversation; the coding agent performs the startup and verification through Machine Bridge. The coding agent must observe the deployed Worker version/hash, remote health, relay readiness, connected candidate version, and representative functionality before recording acceptance; automated checks alone are insufficient. npm publication and Worker deployment remain separate owner-operated live actions. See [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Documentation
 

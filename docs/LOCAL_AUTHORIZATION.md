@@ -4,7 +4,9 @@ Machine Bridge separates **available capability** from **current remote authorit
 
 The canonical `full` profile still exposes the complete tool catalog, unrestricted local-user paths, shell execution, browser and application automation, managed jobs, absolute paths, and the complete parent environment. It remains the default for a trusted owner. Version 2.0 does not redefine or narrow that profile.
 
-A remote OAuth access token no longer activates every high-impact `full` capability by itself. The local daemon applies a final transaction gate after the Worker and local runtime have already checked the account role and daemon policy. Ordinary project work remains automatic; an operation that crosses a consequential boundary requires a short-lived local capability lease.
+An authenticated `owner` account activates the capabilities permitted by the daemon policy ceiling without a second terminal approval step. This preserves uninterrupted owner automation while retaining OAuth identity binding, account-version revocation, device authentication, and the daemon policy as hard boundaries.
+
+For delegated `reviewer`, `editor`, and `operator` accounts, the local daemon applies a final transaction gate after the Worker and local runtime have checked the account role and daemon policy. Ordinary project work remains automatic; an operation that crosses a consequential boundary requires a short-lived local capability lease.
 
 Local stdio calls are not affected by this remote transaction gate. They remain governed by the selected local policy and the MCP host's own approval model.
 
@@ -21,7 +23,7 @@ Remote calls do not require a lease for:
 - installed-application discovery without inspecting an application UI;
 - registered-resource metadata inspection.
 
-This is the normal coding and review path. A trusted owner should not be interrupted for every ordinary file edit or build result. Browser work requires one reusable profile-session lease, not one prompt per page read, field, or click.
+This is the normal delegated-account coding and review path. A trusted owner is not interrupted by local approval prompts. For non-owner browser work, one reusable profile-session lease covers the session rather than prompting per page read, field, or click.
 
 ## What requires a lease
 
@@ -47,9 +49,9 @@ Write targets are canonicalized through their nearest existing ancestor even und
 
 The browser boundary is intentionally session-granular. The packaged extension controls whichever Chromium profile the user loaded it into; Machine Bridge cannot prove that the profile is isolated. Requiring one `browser-session` lease protects tab metadata and authenticated page content without degrading into per-click prompts. Once granted, ordinary browser reads, navigation, filling, and clicks proceed continuously until expiry. Exporting registered local data remains separately gated.
 
-## Approval flow
+## Optional delegated-account approval flow
 
-When a lease is missing, the tool call fails with `local_approval_required` and a command containing a random pending approval ID. List pending requests and active leases locally:
+Owner requests never create pending approval IDs. When a lease is missing for a non-owner account, the tool call fails with `local_approval_required` and a command containing a random pending approval ID. List pending requests and active leases locally:
 
 ```sh
 machine-mcp --workspace /path/to/project approval list

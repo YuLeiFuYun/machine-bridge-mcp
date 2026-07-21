@@ -40,13 +40,13 @@ A repository-only change under paths such as `.github/` may be merged without a 
 
 ## Interactive local candidate acceptance
 
-The repository owner starts the exact `.release-candidate/*.tgz` artifact on the maintainer machine with:
+The repository owner explicitly authorizes the exact `.release-candidate/*.tgz` artifact and any configured same-name Worker update in the active conversation. The coding agent then runs the candidate startup helper through Machine Bridge:
 
 ```sh
 npm run release:candidate:start -- --allow-worker-deploy
 ```
 
-This command verifies the pending tarball hashes, installs it into the ignored `.release-candidate/runtime/` prefix without replacing the normal global installation, explicitly authorizes startup to update the configured same-name Worker when its version or deployment hash differs, and starts the installed candidate in the foreground. This is an in-place live candidate deployment, not an isolated staging Worker. The owner leaves that process running. The coding agent then connects through Machine Bridge and verifies at minimum:
+The helper verifies the pending tarball hashes, installs it into the ignored `.release-candidate/runtime/` prefix without replacing the normal global installation, updates the configured same-name Worker when its version or deployment hash differs, and starts the installed candidate in the foreground. This is an in-place live candidate deployment, not an isolated staging Worker. The owner does not need to execute a terminal authorization command. The coding agent then verifies at minimum:
 
 - the remote Worker reports the candidate version and the persisted deployment hash matches the candidate Worker bundle;
 - the remote health route succeeds without redirect;
@@ -63,7 +63,7 @@ npm run release:accept -- --confirm "I VERIFIED machine-bridge-mcp 1.2.9 CANDIDA
 
 This creates `release-acceptance/v<version>.json` containing package identity, npm tarball hashes, a portable Git-content digest, timestamp, result, and a fixed observed-verification marker. The portable digest is computed with a temporary Git index containing `HEAD` plus the complete working tree; the real staging area is not modified. The record does not store a personal name, machine path, command output, credential, or user content. It is intentionally excluded from the npm package, so adding it does not change the tested tarball.
 
-The command repacks the current tree and refuses to record acceptance if any packaged byte changed after candidate preparation. Automated tests alone, a prepared tarball, a process the agent did not observe, or an ambiguous owner response do not authorize acceptance. Version 1.2.8 owner-recorded acceptance remains supported as a historical marker; version 1.2.9 and later require the owner-started, agent-observed workflow.
+The command repacks the current tree and refuses to record acceptance if any packaged byte changed after candidate preparation. Automated tests alone, a prepared tarball, a process the agent did not observe, or an ambiguous owner response do not authorize acceptance. Version 1.2.8 owner-recorded acceptance and the 1.2.9 owner-started marker remain supported as historical formats; version 2.0.0 and later require explicit owner authorization plus agent-operated, agent-observed verification.
 
 ## Push and review
 

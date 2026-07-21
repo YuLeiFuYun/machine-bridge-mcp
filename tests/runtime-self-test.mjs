@@ -310,8 +310,11 @@ export async function runtimeSelfTest() {
 
       const detachedDescendantPidFile = join(workspace, "detached-timeout-descendant.pid");
       const detachedParent = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`;
-      await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 200), "command timed out");
-      const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 2000)).trim());
+      // Coverage instrumentation can delay a fresh Node process enough that a 200 ms
+      // deadline expires before the fixture writes its descendant PID. Keep the
+      // deadline bounded, but long enough to exercise post-start tree cleanup.
+      await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 2000), "command timed out");
+      const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 5000)).trim());
       const detachedDeadline = Date.now() + 5000;
       while (isProcessAlive(detachedDescendantPid) && Date.now() < detachedDeadline) {
         await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });

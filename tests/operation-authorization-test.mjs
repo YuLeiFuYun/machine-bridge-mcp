@@ -44,6 +44,10 @@ try {
     resolveWritePath: async (value) => path.resolve(workspace, String(value)),
   });
 
+  const ownerShell = await authorizer.authorize(operation("exec_command", { command: "printf owner" }, clientId, "owner"));
+  assert(ownerShell.source === "authenticated-owner", "authenticated owner was forced through a local approval lease");
+  assert(listOperationApprovals(approvalRoot, now).pending.length === 0, "owner bypass created a pending approval");
+
   const automatic = await authorizer.authorize(operation("write_file", { path: "safe.txt", content: "safe" }, clientId));
   assert(automatic.source === "automatic", "workspace write did not remain interruption-free");
   const browserReadDenied = await rejected(() => authorizer.authorize(operation("browser_list_tabs", {}, clientId)));
@@ -224,7 +228,7 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-function operation(tool, args, activeClientId) {
+function operation(tool, args, activeClientId, role = "operator") {
   return {
     tool,
     args,
@@ -234,7 +238,7 @@ function operation(tool, args, activeClientId) {
         account_id: accountId,
         account_version: 1,
         client_id: activeClientId,
-        role: "owner",
+        role,
       },
     },
   };

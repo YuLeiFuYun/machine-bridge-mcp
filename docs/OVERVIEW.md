@@ -4,7 +4,7 @@ Machine Bridge is one local authority surface with two MCP transports. The archi
 
 1. **Who may request an operation?** Remote OAuth account/client identity and role, or the local process identity that launched stdio.
 2. **Which tools are exposed?** The shared tool catalog, policy profile, and account-role intersection.
-3. **Is this remote effect currently authorized?** Automatic workspace-safe behavior or an account/client-bound local capability lease.
+3. **Is this remote effect currently authorized?** Direct authenticated-owner authority within the daemon ceiling, automatic delegated workspace-safe behavior, or an account/client-bound delegated capability lease.
 4. **What can an authorized tool actually do?** The local runtime, workspace/path rules, operating-system user authority, and platform security controls.
 
 Transport authentication does not create an operating-system sandbox. The local daemon executes with the authority of its OS user.
@@ -44,7 +44,7 @@ flowchart LR
 2. The Worker filters advertised tools by account role and the daemon-reported capability ceiling.
 3. The Durable Object relays a bounded tool envelope carrying account and OAuth client identity over the device-authenticated daemon socket.
 4. The local runtime revalidates account authorization, policy, call lifecycle, timeout, and cancellation.
-5. The local transaction gate automatically permits normal workspace work or requires a matching bounded capability lease for a high-impact effect.
+5. The local transaction gate directly permits authenticated owner work within the daemon ceiling; delegated accounts receive automatic workspace-safe behavior or require a matching bounded capability lease for a high-impact effect.
 6. The selected local service executes with the daemon OS user's authority.
 
 The Worker never receives ambient filesystem or process authority. It receives only explicit request/result messages.
@@ -68,7 +68,7 @@ Local and Worker code consume these contracts. Generated references and drift te
 `LocalRuntime` is an orchestrator, not a low-level implementation module. It composes:
 
 - policy and account authorization;
-- effect classification and local capability leases;
+- authenticated-owner direct authority plus delegated effect classification and local capability leases;
 - call registration, timeout, cancellation, and observability;
 - workspace and path services;
 - direct and shell process execution;

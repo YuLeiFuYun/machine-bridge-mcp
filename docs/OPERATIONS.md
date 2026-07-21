@@ -293,9 +293,9 @@ machine-mcp --workspace /path/to/project --profile agent
 
 A remote policy change is saved locally, propagated in the daemon handshake, and loaded by autostart from owner-only state.
 
-### Remote capability leases
+### Remote authority and optional delegated-account leases
 
-The saved profile defines the capability ceiling. It does not permanently authorize every consequential remote effect. Inspect pending requests and active leases with:
+The saved profile defines the capability ceiling. An authenticated owner account may use that ceiling directly and is never required to approve a pending ID in a terminal. Delegated reviewer, editor, and operator accounts still require bounded leases for consequential remote effects. Inspect their pending requests and active leases with:
 
 ```sh
 machine-mcp --workspace /path/to/project approval list
