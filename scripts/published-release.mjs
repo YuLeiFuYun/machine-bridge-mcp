@@ -20,18 +20,25 @@ export function readPublishedNpmPrerelease(name, version, distTag, options = {})
 }
 
 export function normalizePublishedNpmPrerelease(value) {
-  const version = String(value.actualVersion || "");
+  const actualVersion = unwrapNpmJsonValue(value.actualVersion);
+  const tags = unwrapNpmJsonValue(value.tags);
+  const times = unwrapNpmJsonValue(value.times);
+  const version = String(actualVersion || "");
   const requestedVersion = String(value.requestedVersion || "");
   const distTag = String(value.requestedTag || "");
-  const integrity = String(value.integrity || "");
-  const shasum = String(value.shasum || "");
-  const publishedAt = String(value.times?.[requestedVersion] || "");
+  const integrity = String(unwrapNpmJsonValue(value.integrity) || "");
+  const shasum = String(unwrapNpmJsonValue(value.shasum) || "");
+  const publishedAt = String(times?.[requestedVersion] || "");
   if (version !== requestedVersion) throw new Error("npm registry returned another prerelease version");
-  if (value.tags?.[distTag] !== requestedVersion) throw new Error(`npm dist-tag ${distTag} does not point to ${requestedVersion}`);
+  if (tags?.[distTag] !== requestedVersion) throw new Error(`npm dist-tag ${distTag} does not point to ${requestedVersion}`);
   if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(integrity)) throw new Error("npm prerelease integrity is invalid");
   if (!/^[0-9a-f]{40}$/.test(shasum)) throw new Error("npm prerelease SHA-1 is invalid");
   if (!Number.isFinite(Date.parse(publishedAt))) throw new Error("npm prerelease publication timestamp is invalid");
   return Object.freeze({ version, integrity, shasum, distTag, publishedAt: new Date(Date.parse(publishedAt)).toISOString() });
+}
+
+function unwrapNpmJsonValue(value) {
+  return Array.isArray(value) && value.length === 1 ? value[0] : value;
 }
 
 export function readGithubPrerelease(version, options = {}) {
