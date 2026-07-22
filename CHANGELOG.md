@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0-beta.10 - 2026-07-22
+
+### Published prerelease activation repair
+
+- normalize npm 12 single-result JSON arrays for version, integrity, SHA-1, dist-tags, and publication timestamps;
+- unblock exact registry-backed prerelease installation and soak activation without weakening integrity or dist-tag verification;
+- add a regression fixture matching the real npm 12 response shape that blocked beta.9 activation.
+
 ## 3.0.0-beta.9 - 2026-07-22
 
 ### Cross-platform release-gate repair
