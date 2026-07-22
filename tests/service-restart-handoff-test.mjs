@@ -22,6 +22,7 @@ async function testDetachedScheduler() {
   let unrefCount = 0;
   child.unref = () => { unrefCount += 1; };
   const scheduled = scheduleServiceRestart({
+    platform: "linux",
     node: "/synthetic/node",
     helper: "/synthetic/service-restart-handoff.mjs",
     delayMs: 425,
@@ -54,7 +55,7 @@ async function testDetachedScheduler() {
   assert.throws(() => scheduleServiceRestart({ platform: "win32" }), /not behavior-verified/);
 
   const failedChild = new EventEmitter();
-  const failure = scheduleServiceRestart({ spawnProcess() { queueMicrotask(() => failedChild.emit("error", new Error("spawn failed"))); return failedChild; } });
+  const failure = scheduleServiceRestart({ platform: "linux", spawnProcess() { queueMicrotask(() => failedChild.emit("error", new Error("spawn failed"))); return failedChild; } });
   await assert.rejects(failure, /spawn failed/);
 
   assert.deepEqual(serviceControlEnvironment({ PATH: "/bin", LANG: "C", TOKEN: "secret" }), { PATH: "/bin", LANG: "C" });
