@@ -579,6 +579,8 @@ function testProcessTreeSupervisor() {
   const child = { pid: 4242, kill(signal) { signals.push(["child", signal]); return true; } };
   const timer = terminateProcessTreeWithEscalation(child, {
     graceMs: 25,
+    captureOwnership: () => ({ synthetic: true }),
+    isTerminationTargetOwned: () => true,
     terminate(_child, signal) { signals.push(["tree", signal]); },
     setTimeout(callback, delay) { scheduled = { callback, delay }; return "termination-timer"; },
     onEscalated() { escalated = true; },
@@ -593,6 +595,8 @@ function testProcessTreeSupervisor() {
   let exitedSignals = 0;
   const exitedChild = { pid: 4343, exitCode: null, signalCode: null };
   terminateProcessTreeWithEscalation(exitedChild, {
+    captureOwnership: () => ({ synthetic: true }),
+    isTerminationTargetOwned: (_ownership, currentChild) => currentChild.exitCode === null,
     terminate(_child, signal) { if (signal === "SIGKILL") exitedSignals += 1; },
     setTimeout(callback) { exitedCallback = callback; return "exited-timer"; },
   });
