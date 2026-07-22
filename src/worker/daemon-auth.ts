@@ -1,6 +1,15 @@
 import { DAEMON_AUTH_CHALLENGE_TTL_SECONDS, DAEMON_AUTH_SCHEME, DAEMON_PREFLIGHT_SCHEME, DAEMON_PREFLIGHT_TTL_SECONDS, daemonAuthTranscript, daemonPreflightTranscript } from "../shared/daemon-auth.mjs";
 import { safeEqual } from "./oauth-state.ts";
 import { consumeBoundedNonce } from "./nonce-store.ts";
+import {
+  decodeBase64Url,
+  parsePublicJwk,
+  publicKeyId,
+  verifyDeviceSessionCertificate,
+  verifyP256Signature,
+} from "./device-session-verifier.ts";
+
+const SESSION_CERTIFICATE_HEADER = "X-Bridge-Device-Certificate";
 
 export interface DaemonChallenge {
   scheme: typeof DAEMON_AUTH_SCHEME;
@@ -22,26 +31,37 @@ export function createDaemonChallenge(workerOrigin: string, now = Math.floor(Dat
   };
 }
 
-
 export function sanitizeDaemonChallengeAttachment(value: Record<string, unknown>): Partial<{
   authChallenge: string;
   authIssuedAt: number;
   authExpiresAt: number;
   workerOrigin: string;
+  authSessionPublicKeyJson: string;
+  authSessionKeyId: string;
+  authCertificateExpiresAt: number;
 }> {
   const authChallenge = typeof value.authChallenge === "string" && /^daemon_challenge_[A-Za-z0-9_-]{40,96}$/.test(value.authChallenge)
     ? value.authChallenge
     : undefined;
   const authIssuedAt = positiveSafeInteger(value.authIssuedAt);
   const authExpiresAt = positiveSafeInteger(value.authExpiresAt);
+  const authCertificateExpiresAt = positiveSafeInteger(value.authCertificateExpiresAt);
+  const authSessionKeyId = typeof value.authSessionKeyId === "string" && /^device_[A-Za-z0-9_-]{32}$/.test(value.authSessionKeyId)
+    ? value.authSessionKeyId
+    : undefined;
   let workerOrigin: string | undefined;
   try { workerOrigin = normalizeWorkerOrigin(String(value.workerOrigin || "")); } catch {}
-  return { authChallenge, authIssuedAt, authExpiresAt, workerOrigin };
+  let authSessionPublicKeyJson: string | undefined;
+  try { authSessionPublicKeyJson = JSON.stringify(parsePublicJwk(String(value.authSessionPublicKeyJson || ""))); } catch {}
+  return { authChallenge, authIssuedAt, authExpiresAt, workerOrigin, authSessionPublicKeyJson, authSessionKeyId, authCertificateExpiresAt };
 }
 
 export interface DaemonPreflightAuthorization {
   nonce: string;
   expiresAt: number;
+  sessionPublicKeyJson: string;
+  sessionKeyId: string;
+  certificateExpiresAt: number;
 }
 
 export async function verifyDaemonPreflight(input: {
@@ -53,6 +73,15 @@ export async function verifyDaemonPreflight(input: {
   now?: number;
 }): Promise<DaemonPreflightAuthorization | null> {
   const now = Number.isSafeInteger(input.now) ? Number(input.now) : Math.floor(Date.now() / 1000);
+  const certificate = await verifyDeviceSessionCertificate({
+    encodedCertificate: input.headers.get(SESSION_CERTIFICATE_HEADER) || "",
+    rootPublicKeyJson: input.publicKeyJson,
+    workerOrigin: input.workerOrigin,
+    server: input.server,
+    version: input.version,
+    now,
+  });
+  if (!certificate) return null;
   const scheme = input.headers.get("X-Bridge-Device-Scheme") || "";
   const keyId = input.headers.get("X-Bridge-Device-Key") || "";
   const nonce = input.headers.get("X-Bridge-Device-Nonce") || "";
@@ -61,35 +90,22 @@ export async function verifyDaemonPreflight(input: {
   if (scheme !== DAEMON_PREFLIGHT_SCHEME || !signature) return null;
   if (!Number.isSafeInteger(issuedAt) || Math.abs(now - issuedAt) > DAEMON_PREFLIGHT_TTL_SECONDS) return null;
   if (!/^[A-Za-z0-9_-]{24,128}$/.test(nonce)) return null;
-  let publicJwk: JsonWebKey;
-  try { publicJwk = parsePublicJwk(input.publicKeyJson); } catch { return null; }
-  if (!(await safeEqual(keyId, await publicKeyId(publicJwk)))) return null;
+  if (!(await safeEqual(keyId, certificate.sessionKeyId))) return null;
   let transcript: string;
   try {
-    transcript = daemonPreflightTranscript({
-      workerOrigin: input.workerOrigin,
-      server: input.server,
-      version: input.version,
-      nonce,
-      issuedAt,
-    });
+    transcript = daemonPreflightTranscript({ workerOrigin: input.workerOrigin, server: input.server, version: input.version, nonce, issuedAt });
   } catch {
     return null;
   }
-  try {
-    const key = await crypto.subtle.importKey("jwk", publicJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-    const valid = await crypto.subtle.verify(
-      { name: "ECDSA", hash: "SHA-256" },
-      key,
-      signature,
-      new TextEncoder().encode(transcript),
-    );
-    return valid ? { nonce, expiresAt: issuedAt + DAEMON_PREFLIGHT_TTL_SECONDS } : null;
-  } catch {
-    return null;
-  }
+  if (!(await verifyP256Signature(certificate.sessionPublicJwk, transcript, signature))) return null;
+  return {
+    nonce,
+    expiresAt: issuedAt + DAEMON_PREFLIGHT_TTL_SECONDS,
+    sessionPublicKeyJson: certificate.sessionPublicKeyJson,
+    sessionKeyId: certificate.sessionKeyId,
+    certificateExpiresAt: certificate.expiresAt,
+  };
 }
-
 
 export async function consumeDaemonPreflightNonce(
   storage: DurableObjectStorage,
@@ -113,10 +129,12 @@ export async function verifyDaemonAuthentication(input: {
   server: string;
   version: string;
   instanceId: string;
+  certificateExpiresAt?: number;
   now?: number;
 }): Promise<boolean> {
   const now = Number.isSafeInteger(input.now) ? Number(input.now) : Math.floor(Date.now() / 1000);
   if (now < input.challenge.issuedAt - 5 || now > input.challenge.expiresAt) return false;
+  if (input.certificateExpiresAt !== undefined && (!Number.isSafeInteger(input.certificateExpiresAt) || now > input.certificateExpiresAt)) return false;
   if (!input.authentication || typeof input.authentication !== "object" || Array.isArray(input.authentication)) return false;
   const auth = input.authentication as Record<string, unknown>;
   if (auth.scheme !== DAEMON_AUTH_SCHEME) return false;
@@ -126,8 +144,7 @@ export async function verifyDaemonAuthentication(input: {
   if (!signature) return false;
   let publicJwk: JsonWebKey;
   try { publicJwk = parsePublicJwk(input.publicKeyJson); } catch { return false; }
-  const expectedKeyId = await publicKeyId(publicJwk);
-  if (!(await safeEqual(String(auth.key_id || ""), expectedKeyId))) return false;
+  if (!(await safeEqual(String(auth.key_id || ""), await publicKeyId(publicJwk)))) return false;
   let transcript: string;
   try {
     transcript = daemonAuthTranscript({
@@ -141,45 +158,7 @@ export async function verifyDaemonAuthentication(input: {
   } catch {
     return false;
   }
-  try {
-    const key = await crypto.subtle.importKey("jwk", publicJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-    return crypto.subtle.verify(
-      { name: "ECDSA", hash: "SHA-256" },
-      key,
-      signature,
-      new TextEncoder().encode(transcript),
-    );
-  } catch {
-    return false;
-  }
-}
-
-function parsePublicJwk(value: string): JsonWebKey {
-  const parsed = JSON.parse(value) as JsonWebKey;
-  if (!parsed || parsed.kty !== "EC" || parsed.crv !== "P-256") throw new Error("invalid device public key");
-  if (typeof parsed.x !== "string" || typeof parsed.y !== "string" || parsed.d !== undefined) throw new Error("invalid device public key");
-  return { kty: "EC", crv: "P-256", x: parsed.x, y: parsed.y, ext: true, key_ops: ["verify"] };
-}
-
-async function publicKeyId(jwk: JsonWebKey): Promise<string> {
-  const canonical = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y });
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
-  return `device_${base64Url(new Uint8Array(digest)).slice(0, 32)}`;
-}
-
-function decodeBase64Url(value: string, expectedBytes: number): Uint8Array<ArrayBuffer> | null {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padding = "=".repeat((4 - (normalized.length % 4)) % 4);
-  try {
-    const binary = atob(normalized + padding);
-    if (binary.length !== expectedBytes) return null;
-    const bytes = new Uint8Array(expectedBytes);
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    return bytes;
-  } catch {
-    return null;
-  }
+  return verifyP256Signature(publicJwk, transcript, signature);
 }
 
 function base64Url(bytes: Uint8Array): string {
@@ -187,7 +166,6 @@ function base64Url(bytes: Uint8Array): string {
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
-
 
 function positiveSafeInteger(value: unknown): number | undefined {
   const number = Number(value);

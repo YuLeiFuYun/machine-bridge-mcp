@@ -9,7 +9,7 @@ import {
   sessionInstructionText, textToolResult, validateProtocolVersionHeader,
 } from "../src/worker/mcp-jsonrpc.ts";
 import {
-  closeWebSocketQuietly, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly,
+  closeWebSocketQuietly, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket,
 } from "../src/worker/websocket-protocol.ts";
 import {
   DAEMON_LIVENESS_TIMEOUT_MS,
@@ -241,6 +241,10 @@ function testMcpJsonRpcProtocol() {
 }
 
 function testWebSocketProtocol() {
+  const trySent = [];
+  assert(trySendWebSocket({ send(value) { trySent.push(value); } }, { type: "pong" }) === true, "successful WebSocket send was reported as failed");
+  assert(JSON.parse(trySent[0]).type === "pong", "WebSocket send helper serialized the wrong payload");
+  assert(trySendWebSocket({ send() { throw new Error("closed"); } }, { type: "pong" }) === false, "failed WebSocket send was reported as successful");
   const sent = [];
   const closed = [];
   const socket = {

@@ -22,11 +22,22 @@ for (const file of localAutomationFiles) {
   }
 }
 const extensionManifest = JSON.parse(readFileSync(join(root, "browser-extension", "manifest.json"), "utf8"));
+const extensionIdentitySource = readFileSync(join(root, "src", "local", "browser-extension-identity.mjs"), "utf8");
+const brokerServerSource = readFileSync(join(root, "src", "local", "browser-broker-server.mjs"), "utf8");
 if (extensionManifest.manifest_version !== 3 || !extensionManifest.permissions?.includes("scripting") || !extensionManifest.permissions?.includes("alarms") || !extensionManifest.permissions?.includes("debugger")) {
   throw new Error("packaged browser extension is missing required Manifest V3 capabilities");
 }
 if (!extensionManifest.host_permissions?.includes("<all_urls>")) {
   throw new Error("browser extension no longer declares the generic page access documented by the security model");
+}
+if (typeof extensionManifest.key !== "string" || extensionManifest.key.length < 128) {
+  throw new Error("browser extension no longer pins a stable manifest public key");
+}
+if (!extensionIdentitySource.includes("extensionIdFromPublicKey") || !extensionIdentitySource.includes("createHash(\"sha256\")")) {
+  throw new Error("browser extension identity is no longer derived from the pinned public key");
+}
+if (!brokerServerSource.includes("isAllowedExtensionOrigin(origin, EXPECTED_EXTENSION_ID)")) {
+  throw new Error("browser broker no longer pins WebSocket Origin to the packaged extension identity");
 }
 const serviceWorkerSource = readFileSync(join(root, "browser-extension", "service-worker.js"), "utf8");
 const browserOperationsSource = readFileSync(join(root, "browser-extension", "browser-operations.js"), "utf8");
@@ -98,6 +109,7 @@ if (!pageAutomationSource.includes("__machineBridgePageAutomation") || !pageAuto
 }
 if (!browserOperationsSource.includes("performPageAction") || !browserOperationsSource.includes("safeToFallback")) throw new Error("browser operations lost fixed trusted-input integration or replay protection");
 if (!serviceWorkerSource.includes('BROWSER_EXTENSION_PROTOCOL = 3') || !serviceWorkerSource.includes('hello_ack') || !serviceWorkerSource.includes('capabilities:')) throw new Error("browser extension lost its acknowledged versioned capability handshake");
+if (!serviceWorkerSource.includes("extension_id: chrome.runtime.id")) throw new Error("browser extension hello no longer binds its runtime identity");
 for (const [name, source] of [
   ["src/worker/index.ts", workerSource],
   ["src/worker/websocket-protocol.ts", workerWebSocketProtocolSource],

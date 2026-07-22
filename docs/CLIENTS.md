@@ -136,7 +136,7 @@ Several OAuth clients and named accounts can coexist. Accounts have independent 
 
 ## Profile guidance
 
-- `full` is the default capability ceiling and prioritizes immediate usability. It is a canonical contract exposing every catalog tool, shell execution, unrestricted direct filesystem paths, absolute path output, and the full parent environment. Any individual narrowing is represented as `custom`. Remote high-impact transaction leases are a separate final authorization layer and do not change the profile identity.
+- `full` is the default capability ceiling and prioritizes immediate usability. It is a canonical contract exposing every catalog tool, shell execution, unrestricted direct filesystem paths, absolute path output, and the full parent environment. Any individual narrowing is represented as `custom`. Remote accounts remain further constrained by immutable role, trusted-client, token-family, operation-invariant, and object-ownership checks.
 - `agent` retains file mutation and direct process execution but removes shell parsing, confines direct filesystem tools to the workspace, and isolates the process environment.
 - `edit` permits deterministic file mutation without process execution.
 - `review` is read-only and workspace-confined.
@@ -162,7 +162,7 @@ Machine Bridge itself does not block files because their names look sensitive. I
 Do not attempt to evade a host refusal by renaming, encoding, or switching to another arbitrary execution tool. Instead:
 
 1. register credentials locally as resource aliases so their values never enter MCP arguments;
-2. submit a complete `start_job` plan before the workflow depends on later cleanup calls, or use `stage_job` plus local `job approve` when execution-class tools are unavailable;
+2. submit a complete owner-authorized `start_job` plan before the workflow depends on later cleanup calls; `stage_job` is only a non-running draft, while an explicit local operator may use `machine-mcp job submit PLAN.json`;
 3. use job-scoped temporary files or remote stdin scripts;
 4. put idempotent cleanup in `finally_steps`;
 5. inspect/cancel through `machine-mcp job ...` if the host later denies tools.

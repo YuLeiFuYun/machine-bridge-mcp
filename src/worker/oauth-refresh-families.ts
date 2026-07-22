@@ -54,13 +54,14 @@ export async function loadOAuthRefreshStore(
       changed = true;
     }
   }
-  if (pruneOAuthRefreshReplayState(store)) changed = true;
+  if (pruneOAuthRefreshReplayState(store, oauthStore)) changed = true;
   if (changed || migrated) await storage.put(OAUTH_REFRESH_STORE_KEY, store);
   return store;
 }
 
 
 export function recordConsumedRefreshToken(
+  oauthStore: OAuthStore,
   store: OAuthRefreshStore,
   tokenHash: string,
   familyId: string,
@@ -74,16 +75,17 @@ export function recordConsumedRefreshToken(
     throw new Error("consumed refresh-token lifetime is invalid");
   }
   store.consumed[tokenHash] = { family_id: familyId, consumed_at: consumedAt, expires_at: expiresAt };
-  pruneOAuthRefreshReplayState(store);
+  pruneOAuthRefreshReplayState(store, oauthStore);
 }
 
-export function pruneOAuthRefreshReplayState(store: OAuthRefreshStore): boolean {
+export function pruneOAuthRefreshReplayState(store: OAuthRefreshStore, oauthStore?: OAuthStore): boolean {
   let changed = false;
   const consumed = Object.entries(store.consumed).sort((left, right) => (
     left[1].consumed_at - right[1].consumed_at || left[0].localeCompare(right[0])
   ));
   while (consumed.length > MAX_CONSUMED_REFRESH_TOKENS) {
-    const [tokenHash] = consumed.shift()!;
+    const [tokenHash, marker] = consumed.shift()!;
+    revokeRefreshFamilyRecords(oauthStore, store, marker.family_id, marker.expires_at);
     delete store.consumed[tokenHash];
     changed = true;
   }
@@ -115,6 +117,7 @@ function validRefreshStoreRecords(store: OAuthRefreshStore): boolean {
     && token.version.length > 0
     && token.version.length <= 256
     && FAMILY_ID_PATTERN.test(token.family_id)
+    && (token.dpop_jkt === undefined || /^[A-Za-z0-9_-]{43}$/.test(token.dpop_jkt))
     && validTimestamp(token.issued_at)
     && validTimestamp(token.expires_at)
     && validTimestamp(token.family_expires_at)
@@ -161,12 +164,23 @@ export function revokeOAuthRefreshFamily(
   familyId: string,
   expiresAt: number,
 ): void {
+  revokeRefreshFamilyRecords(oauthStore, refreshStore, familyId, expiresAt);
+  pruneOAuthRefreshReplayState(refreshStore, oauthStore);
+}
+
+function revokeRefreshFamilyRecords(
+  oauthStore: OAuthStore | undefined,
+  refreshStore: OAuthRefreshStore,
+  familyId: string,
+  expiresAt: number,
+): void {
   for (const [key, token] of Object.entries(refreshStore.tokens)) {
     if (token.family_id === familyId) delete refreshStore.tokens[key];
   }
-  for (const [key, token] of Object.entries(oauthStore.tokens)) {
-    if (token.family_id === familyId) delete oauthStore.tokens[key];
+  if (oauthStore) {
+    for (const [key, token] of Object.entries(oauthStore.tokens)) {
+      if (token.family_id === familyId) delete oauthStore.tokens[key];
+    }
   }
   refreshStore.revoked_families[familyId] = { expires_at: expiresAt, reason: "replay" };
-  pruneOAuthRefreshReplayState(refreshStore);
 }

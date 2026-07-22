@@ -469,7 +469,6 @@ function workerState(name) {
   return {
     worker: {
       name,
-      accountAdminSecret: "account_admin_test_secret_abcdefghijklmnopqrstuvwxyz",
       deviceIdentity: createDeviceIdentity(),
       oauthTokenVersion: "token_version_test_secret_abcdefghijklmnopqrstuvwxyz",
     },

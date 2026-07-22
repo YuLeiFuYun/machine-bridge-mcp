@@ -29,9 +29,10 @@ const MAX_INSTRUCTION_FILE_BYTES = 512 * 1024;
 const MAX_INSTRUCTION_FILES = 64;
 
 export class AgentContextManager {
-  constructor({ workspace, policy, displayPath, resolveExistingPath, throwIfCancelled = () => {}, home = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "" }) {
+  constructor({ workspace, policy, policyForContext = null, displayPath, resolveExistingPath, throwIfCancelled = () => {}, home = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "" }) {
     this.workspace = resolve(workspace);
     this.policy = policy || {};
+    this.policyForContext = typeof policyForContext === "function" ? policyForContext : () => this.policy;
     this.displayPath = displayPath;
     this.resolveExistingPath = resolveExistingPath;
     this.throwIfCancelled = throwIfCancelled;
@@ -44,23 +45,23 @@ export class AgentContextManager {
     const includeContent = args.include_instruction_content !== false;
     const skillLimit = clampInteger(args.max_skills, 100, 1, MAX_SKILL_RESULTS);
     const discoveredSkills = await this.discoverSkills(state, { maxResults: MAX_SKILL_RESULTS }, context);
-    const contextSkills = contextSkillSummaries(discoveredSkills.skills, this.displayPath, skillLimit, MAX_CONTEXT_SKILL_SUMMARY_CHARS);
+    const contextSkills = contextSkillSummaries(discoveredSkills.skills, (value) => this.displayPath(value, context), skillLimit, MAX_CONTEXT_SKILL_SUMMARY_CHARS);
     const result = {
-      target: this.displayPath(state.target),
-      scope_root: this.displayPath(state.scopeRoot),
+      target: this.displayPath(state.target, context),
+      scope_root: this.displayPath(state.scopeRoot, context),
       precedence: "built-in defaults, automatic project facts, user-global guidance, then scope root to target directory; explicit files loaded later have higher precedence",
-      config_files: state.configFiles.map((file) => this.displayPath(file)),
+      config_files: state.configFiles.map((file) => this.displayPath(file, context)),
       builtin_instructions: publicVirtualInstruction(state.builtinInstructions, includeContent),
       automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, includeContent),
       model_instructions_file: state.modelInstructions ? {
-        path: this.displayPath(state.modelInstructions.path),
+        path: this.displayPath(state.modelInstructions.path, context),
         bytes: state.modelInstructions.bytes,
         sha256: state.modelInstructions.sha256,
         ...(includeContent ? { content: state.modelInstructions.content } : {}),
       } : null,
       instruction_files: state.instructions.map((item) => ({
         scope: item.scope,
-        path: this.displayPath(item.path),
+        path: this.displayPath(item.path, context),
         bytes: item.bytes,
         sha256: item.sha256,
         precedence: item.precedence,
@@ -68,9 +69,9 @@ export class AgentContextManager {
       })),
       skills: contextSkills.skills,
       skills_truncated: discoveredSkills.truncated || contextSkills.truncated,
-      skill_warnings: publicSkillWarnings(discoveredSkills.warnings, this.displayPath),
+      skill_warnings: publicSkillWarnings(discoveredSkills.warnings, (value) => this.displayPath(value, context)),
       instructions_truncated: state.instructionsTruncated,
-      commands: publicCommands(state.commands, this.displayPath),
+      commands: publicCommands(state.commands, (value) => this.displayPath(value, context)),
       guidance: [
         "Apply built-in instructions and automatic project context as lower-precedence defaults; explicit global/project instruction files loaded later take precedence.",
         "Treat instruction_files as authoritative workspace guidance in the returned precedence order.",
@@ -78,7 +79,7 @@ export class AgentContextManager {
         "Prefer run_local_command for registered repeatable commands. Use run_process or exec_command only when no registered command fits and policy permits it.",
       ],
     };
-    if (includeContent) result.effective_instructions = renderEffectiveInstructions(effectiveInstructionItems(state), this.displayPath);
+    if (includeContent) result.effective_instructions = renderEffectiveInstructions(effectiveInstructionItems(state), (value) => this.displayPath(value, context));
     return result;
   }
 
@@ -86,11 +87,11 @@ export class AgentContextManager {
     const state = await this.discoverState(args.path || ".", context);
     const fingerprint = capabilityFingerprint(state, []);
     return {
-      target: this.displayPath(state.target),
-      instructions: renderEffectiveInstructions(effectiveInstructionItems(state), this.displayPath),
+      target: this.displayPath(state.target, context),
+      instructions: renderEffectiveInstructions(effectiveInstructionItems(state), (value) => this.displayPath(value, context)),
       builtin_instructions: publicVirtualInstruction(state.builtinInstructions, false),
       automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, false),
-      model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path) : null,
+      model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path, context) : null,
       capability_refresh: {
         strategy: "resolve_task_capabilities-rescans-on-every-call",
         instruction_and_command_fingerprint: fingerprint,
@@ -125,7 +126,7 @@ export class AgentContextManager {
     let selectedSkill = null;
     if (selected && args.include_selected_skill !== false) {
       const content = await readRegularUtf8(selected.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
-      selectedSkill = { ...publicSkill(selected, this.displayPath), instructions: content.text };
+      selectedSkill = { ...publicSkill(selected, (value) => this.displayPath(value, context)), instructions: content.text };
     }
     const recommendedTools = recommendTools(task, {
       commandsAvailable: state.commands.size > 0,
@@ -135,20 +136,20 @@ export class AgentContextManager {
     const refresh = capabilityFingerprint(state, discovered.skills);
     return {
       task,
-      target: this.displayPath(state.target),
-      effective_instructions: renderEffectiveInstructions(effectiveInstructionItems(state), this.displayPath),
+      target: this.displayPath(state.target, context),
+      effective_instructions: renderEffectiveInstructions(effectiveInstructionItems(state), (value) => this.displayPath(value, context)),
       builtin_instructions: publicVirtualInstruction(state.builtinInstructions, false),
       automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, false),
-      model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path) : null,
-      instruction_files: state.instructions.map((item) => ({ path: this.displayPath(item.path), scope: item.scope, bytes: item.bytes, sha256: item.sha256, precedence: item.precedence })),
+      model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path, context) : null,
+      instruction_files: state.instructions.map((item) => ({ path: this.displayPath(item.path, context), scope: item.scope, bytes: item.bytes, sha256: item.sha256, precedence: item.precedence })),
       instructions_truncated: state.instructionsTruncated,
       refresh: { strategy: "rescan-on-every-call", fingerprint: refresh, generated_at: new Date().toISOString() },
       selected_skill: selectedSkill,
-      skill_matches: skillMatches.map(({ skill, score }) => ({ ...publicSkill(skill, this.displayPath), score })),
-      command_matches: commandMatches.map(({ command, score }) => ({ ...publicCommands(new Map([[command.name, command]]), this.displayPath)[0], score })),
+      skill_matches: skillMatches.map(({ skill, score }) => ({ ...publicSkill(skill, (value) => this.displayPath(value, context)), score })),
+      command_matches: commandMatches.map(({ command, score }) => ({ ...publicCommands(new Map([[command.name, command]]), (value) => this.displayPath(value, context))[0], score })),
       recommended_tools: recommendedTools,
       host_semantics: "Machine Bridge can discover, rank, and load capabilities automatically. The MCP host remains responsible for deciding whether to call the recommended tools.",
-      warnings: publicSkillWarnings(discovered.warnings, this.displayPath),
+      warnings: publicSkillWarnings(discovered.warnings, (value) => this.displayPath(value, context)),
       truncated: discovered.truncated,
     };
   }
@@ -171,11 +172,11 @@ export class AgentContextManager {
       maxResults: clampInteger(args.max_results, 100, 1, MAX_SKILL_RESULTS),
     }, context);
     return {
-      target: this.displayPath(state.target),
-      scope_root: this.displayPath(state.scopeRoot),
-      skill_roots: state.skillRoots.map((root) => this.displayPath(root)),
-      skills: result.skills.map((skill) => publicSkill(skill, this.displayPath)),
-      warnings: publicSkillWarnings(result.warnings, this.displayPath),
+      target: this.displayPath(state.target, context),
+      scope_root: this.displayPath(state.scopeRoot, context),
+      skill_roots: state.skillRoots.map((root) => this.displayPath(root, context)),
+      skills: result.skills.map((skill) => publicSkill(skill, (value) => this.displayPath(value, context))),
+      warnings: publicSkillWarnings(result.warnings, (value) => this.displayPath(value, context)),
       truncated: result.truncated,
     };
   }
@@ -184,14 +185,14 @@ export class AgentContextManager {
     const requested = requiredString(args.skill, "skill");
     const state = await this.discoverState(args.path || ".", context);
     const result = await this.discoverSkills(state, { maxResults: MAX_SKILL_RESULTS }, context);
-    const matches = result.skills.filter((skill) => skill.id === requested || skill.name === requested || this.displayPath(skill.entrypoint) === requested);
+    const matches = result.skills.filter((skill) => skill.id === requested || skill.name === requested || this.displayPath(skill.entrypoint, context) === requested);
     if (!matches.length) throw new Error(`local skill not found: ${requested}`);
     if (matches.length > 1) throw new Error(`local skill name is ambiguous; use its id: ${requested}`);
     const skill = matches[0];
     const content = await readRegularUtf8(skill.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
     const inventory = await listSkillFiles(skill.directory, clampInteger(args.max_files, 200, 1, MAX_SKILL_FILES), context, this.throwIfCancelled);
     return {
-      skill: publicSkill(skill, this.displayPath),
+      skill: publicSkill(skill, (value) => this.displayPath(value, context)),
       instructions: content.text,
       files: inventory.files,
       files_truncated: inventory.truncated,
@@ -202,9 +203,9 @@ export class AgentContextManager {
   async listLocalCommands(args = {}, context = {}) {
     const state = await this.discoverState(args.path || ".", context);
     return {
-      target: this.displayPath(state.target),
-      scope_root: this.displayPath(state.scopeRoot),
-      commands: publicCommands(state.commands, this.displayPath),
+      target: this.displayPath(state.target, context),
+      scope_root: this.displayPath(state.scopeRoot, context),
+      commands: publicCommands(state.commands, (value) => this.displayPath(value, context)),
     };
   }
 
@@ -227,14 +228,15 @@ export class AgentContextManager {
 
   async discoverState(inputPath, context = {}) {
     this.throwIfCancelled(context);
+    const effectivePolicy = this.policyForContext(context);
     this.workspace = await realpath(this.workspace);
-    const target = await realpath(await this.resolveExistingPath(inputPath));
+    const target = await realpath(await this.resolveExistingPath(inputPath, context));
     const targetInfo = await stat(target);
     const targetDir = targetInfo.isDirectory() ? target : dirname(target);
     const scopeRoot = await findScopeRoot({
       targetDir,
       workspace: this.workspace,
-      unrestricted: this.policy.unrestrictedPaths === true,
+      unrestricted: effectivePolicy.unrestrictedPaths === true,
     });
     const directories = directoriesBetween(scopeRoot, targetDir);
     const state = {
@@ -243,7 +245,7 @@ export class AgentContextManager {
       scopeRoot,
       instructionFiles: [...DEFAULT_INSTRUCTION_FILES],
       instructionMaxBytes: DEFAULT_INSTRUCTION_MAX_BYTES,
-      skillRoots: defaultSkillRoots(directories, this.home, this.codexHome, this.policy.unrestrictedPaths === true),
+      skillRoots: defaultSkillRoots(directories, this.home, this.codexHome, effectivePolicy.unrestrictedPaths === true),
       commands: new Map(),
       builtinInstructionsEnabled: true,
       automaticProjectContextEnabled: true,
@@ -264,7 +266,7 @@ export class AgentContextManager {
       const globalConfig = join(this.home, GLOBAL_CONFIG_RELATIVE_PATH);
       const config = await readOptionalConfig(globalConfig, this.home, false);
       if (config) {
-        if (this.policy.unrestrictedPaths === true) this.applyConfig(state, config, globalConfig, this.home, { global: true });
+        if (effectivePolicy.unrestrictedPaths === true) this.applyConfig(state, config, globalConfig, this.home, { global: true, unrestricted: true });
         else {
           state.configFiles.push(globalConfig);
           if (config.builtinInstructions !== null) state.builtinInstructionsEnabled = config.builtinInstructions;
@@ -284,20 +286,20 @@ export class AgentContextManager {
 
     if (this.home) {
       if (state.modelInstructionsFile) await this.collectModelInstructions(state, context);
-      if (this.policy.unrestrictedPaths === true && this.codexHome) await this.collectDirectoryInstruction(state, this.codexHome, context, "global");
+      if (effectivePolicy.unrestrictedPaths === true && this.codexHome) await this.collectDirectoryInstruction(state, this.codexHome, context, "global");
     }
 
     for (const directory of directories) {
       this.throwIfCancelled(context);
       const configPath = join(directory, CONFIG_RELATIVE_PATH);
       const config = await readOptionalConfig(configPath, directory, true);
-      if (config) this.applyConfig(state, config, configPath, directory, { global: false });
+      if (config) this.applyConfig(state, config, configPath, directory, { global: false, unrestricted: effectivePolicy.unrestrictedPaths === true });
       await this.collectDirectoryInstruction(state, directory, context, "project");
     }
     return state;
   }
 
-  applyConfig(state, config, configPath, baseDir, { global = false } = {}) {
+  applyConfig(state, config, configPath, baseDir, { global = false, unrestricted = false } = {}) {
     state.configFiles.push(configPath);
     if (config.builtinInstructions !== null) {
       if (!global) throw new Error(`builtin_instructions is only allowed in the global agent config: ${configPath}`);
@@ -317,14 +319,14 @@ export class AgentContextManager {
       if (state.instructionBytes >= state.instructionMaxBytes) state.instructionsTruncated = true;
     }
     if (config.skillRoots) {
-      state.skillRoots = config.skillRoots.map((value) => resolveConfiguredPath(value, baseDir, this.home, this.workspace, this.policy.unrestrictedPaths === true));
+      state.skillRoots = config.skillRoots.map((value) => resolveConfiguredPath(value, baseDir, this.home, this.workspace, unrestricted));
     }
     for (const [name, definition] of config.commands) {
       if (definition === null) {
         state.commands.delete(name);
         continue;
       }
-      const cwd = resolveConfiguredPath(definition.cwd, baseDir, this.home, this.workspace, this.policy.unrestrictedPaths === true);
+      const cwd = resolveConfiguredPath(definition.cwd, baseDir, this.home, this.workspace, unrestricted);
       state.commands.set(name, {
         name,
         description: definition.description,
@@ -379,13 +381,14 @@ export class AgentContextManager {
   }
 
   async discoverSkills(state, options = {}, context = {}) {
+    const effectivePolicy = this.policyForContext(context);
     return discoverLocalSkills({
       skillRoots: state.skillRoots,
       query: String(options.query || ""),
       maxResults: clampInteger(options.maxResults, 100, 1, MAX_SKILL_RESULTS),
       workspace: this.workspace,
-      unrestricted: this.policy.unrestrictedPaths === true,
-      displayPath: this.displayPath,
+      unrestricted: effectivePolicy.unrestrictedPaths === true,
+      displayPath: (value) => this.displayPath(value, context),
       context,
       throwIfCancelled: this.throwIfCancelled,
     });

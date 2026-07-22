@@ -1,5 +1,6 @@
 import accessContract from "../shared/access-contract.json" with { type: "json" };
 import { BridgeError } from "./errors.mjs";
+import { buildAuthorityContext } from "./authority-context.mjs";
 import { policyProfile, toolNamesForPolicy, assertToolAllowed } from "./policy.mjs";
 
 export const ACCOUNT_ACCESS_REVISION = Number(accessContract.revision);
@@ -30,6 +31,11 @@ export class AccountAccessGate {
     const normalized = normalizeAccountRole(role);
     assertToolAllowed(accountRolePolicy(normalized), tool);
     return normalized;
+  }
+
+  authority(authorization, daemonPolicy, origin = "relay") {
+    const role = origin === "relay" ? normalizeAccountRole(authorization?.role) : "owner";
+    return buildAuthorityContext({ authorization: { ...authorization, role }, daemonPolicy, origin });
   }
 
   names(role) {

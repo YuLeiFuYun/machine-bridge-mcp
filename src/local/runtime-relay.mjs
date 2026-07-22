@@ -1,15 +1,15 @@
 import { Buffer } from "node:buffer";
 import { RelayConnection } from "./relay-connection.mjs";
-import { createDaemonAuthentication, createDaemonPreflightHeaders } from "./device-identity.mjs";
+import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
 import { MCP_SUPPORTED_PROTOCOL_VERSIONS, SERVER_NAME } from "./tools.mjs";
 import { normalizeAccountRole } from "./account-access.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { isPlainRecord } from "./records.mjs";
-
 export const MAX_RELAY_MESSAGE_BYTES = 8 * 1024 * 1024;
-
 export function createRuntimeRelayConnection(runtime, { workerUrl, deviceIdentity, expectedVersion, onFatal }) {
-  if (!workerUrl) return null;
+  if (!workerUrl || !deviceIdentity) return null;
+  const sessionIdentity = deviceIdentity?.certificate ? validateDeviceSessionIdentity(deviceIdentity)
+    : createDeviceSessionIdentity(deviceIdentity, workerUrl, SERVER_NAME, String(expectedVersion || ""));
   return new RelayConnection({
     workerUrl,
     logger: runtime.logger,
@@ -17,7 +17,7 @@ export function createRuntimeRelayConnection(runtime, { workerUrl, deviceIdentit
     expectedServer: SERVER_NAME,
     expectedVersion: String(expectedVersion || ""),
     connectionHeaders: () => createDaemonPreflightHeaders(
-      deviceIdentity,
+      sessionIdentity,
       workerUrl,
       SERVER_NAME,
       String(expectedVersion || ""),
@@ -28,7 +28,7 @@ export function createRuntimeRelayConnection(runtime, { workerUrl, deviceIdentit
       tools: runtime.tools(),
       policy: runtime.policy,
       protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
-      authentication: await createDaemonAuthentication(deviceIdentity, welcome, runtime.relayInstanceId),
+      authentication: await createDaemonAuthentication(sessionIdentity, welcome, runtime.relayInstanceId),
     }),
     onMessage: (data, relayContext) => handleRelayData(runtime, data, relayContext),
     onDisconnect: () => runtime.handleRelayDisconnect(),
@@ -90,8 +90,9 @@ function normalizeRelayAuthorization(value) {
   const accountId = typeof value.account_id === "string" && /^acct_[A-Za-z0-9_-]{20,96}$/.test(value.account_id) ? value.account_id : "";
   const accountVersion = Number(value.account_version);
   const clientId = typeof value.client_id === "string" && /^mcp_client_[A-Za-z0-9_-]{43}$/.test(value.client_id) ? value.client_id : "";
+  const familyId = typeof value.family_id === "string" && /^mcp_family_[A-Za-z0-9_-]{43}$/.test(value.family_id) ? value.family_id : "";
   let role;
   try { role = normalizeAccountRole(value.role); } catch { return null; }
-  if (!accountId || !clientId || !Number.isInteger(accountVersion) || accountVersion < 1) return null;
-  return Object.freeze({ account_id: accountId, account_version: accountVersion, client_id: clientId, role });
+  if (!accountId || !clientId || !familyId || !Number.isInteger(accountVersion) || accountVersion < 1) return null;
+  return Object.freeze({ account_id: accountId, account_version: accountVersion, client_id: clientId, family_id: familyId, role });
 }

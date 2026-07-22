@@ -8,6 +8,8 @@ const browserOperationsSource = await readFile(new URL("../browser-extension/bro
 
 await testHandshakeReadiness();
 await testFailedReplacementPreservesPairing();
+await testSocketReplacementCleanup();
+await testResponseDeliveryFailureClosesSocket();
 await testTrustedFallbackBoundary();
 await testScreenshotRestoresActiveTab();
 await testNavigationWaitStopsWhenTabCloses();
@@ -110,6 +112,73 @@ async function testFailedReplacementPreservesPairing() {
   assert(persisted.length === 0, "failed replacement overwrote stored pairing material");
   assert(instances[1]?.endpoint === oldEndpoint, "failed replacement did not reconnect the previous pairing");
   instances[1].close();
+}
+
+async function testSocketReplacementCleanup() {
+  const instances = [];
+  const clearedIntervals = [];
+  let nextInterval = 1;
+  class MockWebSocket {
+    static OPEN = 1;
+    static CONNECTING = 0;
+    constructor(endpoint) { this.endpoint = endpoint; this.readyState = MockWebSocket.CONNECTING; instances.push(this); }
+    send() {}
+    close(code = 1000, reason = "") { this.readyState = 3; this.closeInfo = { code, reason }; this.onclose?.({ code, reason }); }
+    open() { this.readyState = MockWebSocket.OPEN; this.onopen?.(); }
+    receive(value) { return this.onmessage?.({ data: JSON.stringify(value) }); }
+  }
+  const context = createContext({
+    WebSocket: MockWebSocket,
+    setInterval() { return nextInterval++; },
+    clearInterval(value) { if (value) clearedIntervals.push(value); },
+    chrome: baseChrome(),
+  });
+  context.__machineBridgeBrowserOperations = {
+    boundedRequestTimeout: () => 30_000,
+    dispatch: () => new Promise(() => {}),
+  };
+  const api = loadServiceWorker(context, ["connect", "handleMessage", "activeRequests"]);
+  const firstReady = api.connect("ws://127.0.0.1:39393/extension", "a".repeat(32));
+  const first = instances.at(-1);
+  first.open();
+  first.receive({ type: "hello", role: "extension", protocol: 3 });
+  await tick();
+  first.receive({ type: "hello_ack", role: "extension", protocol: 3 });
+  await firstReady;
+  const firstKeepalive = first.keepaliveTimer;
+  void api.handleMessage(first, JSON.stringify({ type: "request", id: "request-1", method: "wait", timeout_ms: 30000 }));
+  await tick();
+  assert(api.activeRequests.get("request-1")?.cancelled === false, "browser request did not enter the active registry");
+
+  const replacement = api.connect("ws://127.0.0.1:39394/extension", "b".repeat(32), { reconnect: false });
+  const second = instances.at(-1);
+  assert(api.activeRequests.get("request-1")?.cancelled === true, "socket replacement did not cancel the old socket requests");
+  assert(clearedIntervals.includes(firstKeepalive), "socket replacement did not clear the old keepalive timer");
+  second.open();
+  second.receive({ type: "hello", role: "extension", protocol: 3 });
+  await tick();
+  second.receive({ type: "hello_ack", role: "extension", protocol: 3 });
+  await replacement;
+  void api.handleMessage(second, JSON.stringify({ type: "request", id: "request-1", method: "duplicate", timeout_ms: 30000 }));
+  await tick();
+  assert(second.closeInfo?.code === 1002, "duplicate browser request id did not close the protocol connection");
+}
+
+async function testResponseDeliveryFailureClosesSocket() {
+  const context = createContext({ chrome: baseChrome() });
+  context.__machineBridgeBrowserOperations = {
+    boundedRequestTimeout: () => 30_000,
+    async dispatch() { return { ok: true }; },
+  };
+  const api = loadServiceWorker(context, ["handleMessage"]);
+  const socket = {
+    bridgeReady: true, readyState: context.WebSocket.OPEN, closeInfo: null,
+    send() { throw new Error("closed transport"); },
+    close(code, reason) { this.closeInfo = { code, reason }; this.readyState = 3; },
+  };
+  await api.handleMessage(socket, JSON.stringify({ type: "request", id: "delivery-failure", method: "status", timeout_ms: 30000 }));
+  assert(socket.closeInfo?.code === 1011 && socket.closeInfo.reason.includes("delivery failed"),
+    "browser response send failure did not close the half-dead socket");
 }
 
 async function testTrustedFallbackBoundary() {

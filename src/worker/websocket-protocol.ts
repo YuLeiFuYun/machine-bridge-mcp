@@ -7,12 +7,18 @@ export function rejectDaemonMessage(ws: WebSocket, error: string, closeCode: num
   closeWebSocketQuietly(ws, closeCode, closeReason);
 }
 
-export function sendWebSocketQuietly(ws: WebSocket, value: unknown): void {
+export function trySendWebSocket(ws: WebSocket, value: unknown): boolean {
   try {
     ws.send(typeof value === "string" ? value : JSON.stringify(value));
+    return true;
   } catch {
-    // Best-effort protocol cleanup must not replace the primary timeout or rejection.
+    return false;
   }
+}
+
+export function sendWebSocketQuietly(ws: WebSocket, value: unknown): void {
+  // Best-effort protocol cleanup must not replace the primary timeout or rejection.
+  trySendWebSocket(ws, value);
 }
 
 export function closeWebSocketQuietly(ws: WebSocket, code?: number, reason?: string): void {

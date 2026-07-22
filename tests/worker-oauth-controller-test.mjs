@@ -181,20 +181,27 @@ async function testMalformedRoleRepair() {
 }
 
 async function testRefreshReplayStateBoundsAndValidation() {
+  const oauthStore = emptyOAuthStore();
   const refreshStore = emptyOAuthRefreshStore();
+  const familyId = `mcp_family_${"f".repeat(43)}`;
+  oauthStore.tokens[`sha256:${"a".repeat(64)}`] = { family_id: familyId };
+  refreshStore.tokens[`sha256:${"b".repeat(64)}`] = { family_id: familyId };
   const consumedAt = 1_800_000_000;
   for (let index = 0; index < 4_100; index += 1) {
     const hash = `sha256:${index.toString(16).padStart(64, "0")}`;
     recordConsumedRefreshToken(
+      oauthStore,
       refreshStore,
       hash,
-      `mcp_family_${"f".repeat(43)}`,
+      familyId,
       consumedAt + 10_000,
       consumedAt + index,
     );
   }
   assert(Object.keys(refreshStore.consumed).length === 4_096, "consumed refresh-token replay state exceeded its hard bound");
   assert(!(`sha256:${"0".repeat(64)}` in refreshStore.consumed), "oldest consumed refresh-token marker was not pruned first");
+  assert(refreshStore.revoked_families[familyId]?.reason === "replay", "tombstone eviction did not revoke its refresh family");
+  assert(Object.keys(oauthStore.tokens).length === 0 && Object.keys(refreshStore.tokens).length === 0, "tombstone eviction retained active family credentials");
 
   const malformed = emptyOAuthRefreshStore();
   malformed.consumed[`sha256:${"a".repeat(64)}`] = {
@@ -220,19 +227,17 @@ async function testInvalidStateFailsClosed() {
   const controller = createController(storage);
   await expectReject(() => controller.oauthStore(), "oauth_state_schema_mismatch");
   const unconfigured = new OAuthController({ storage }, {
-    ACCOUNT_ADMIN_SECRET: "",
     DAEMON_DEVICE_PUBLIC_KEY: "",
     OAUTH_TOKEN_VERSION: "",
-  }, SERVER_NAME);
+  }, SERVER_NAME, "3.0.0");
   expectThrow(() => unconfigured.identityKey(), "server_not_configured");
 }
 
 function createController(storage) {
   return new OAuthController({ storage }, {
-    ACCOUNT_ADMIN_SECRET: "admin-secret",
     DAEMON_DEVICE_PUBLIC_KEY: "daemon-secret",
     OAUTH_TOKEN_VERSION: "token-version",
-  }, SERVER_NAME);
+  }, SERVER_NAME, "3.0.0");
 }
 
 function registrationRequest(source) {

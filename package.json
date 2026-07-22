@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "2.0.0",
+  "version": "3.0.0-beta.8",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -22,6 +22,7 @@
     "src/shared",
     "src/worker",
     "scripts",
+    "native",
     "wrangler.jsonc",
     "tsconfig.json",
     "tsconfig.local.json",
@@ -43,7 +44,7 @@
     "version:check": "node scripts/sync-worker-version.mjs --check",
     "version": "node scripts/sync-worker-version.mjs && git add package.json package-lock.json src/worker/index.ts browser-extension/manifest.json",
     "prepack": "npm run version:check && npm run privacy:check && npm run release-impact:check",
-    "prepublishOnly": "npm run check && npm run version:check && npm run release:check",
+    "prepublishOnly": "npm run publication:check && npm run check && npm run version:check && npm run release:check",
     "worker:types": "node scripts/generate-worker-types.mjs",
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit && npm run typecheck:local",
     "syntax": "node scripts/syntax-check.mjs",
@@ -135,7 +136,34 @@
     "github-backlog:test": "node tests/github-backlog-test.mjs",
     "github:backlog": "node scripts/github-backlog.mjs",
     "operation-authorization:test": "node tests/operation-authorization-test.mjs",
-    "device-auth:test": "node tests/device-auth-test.mjs"
+    "device-auth:test": "node tests/device-auth-test.mjs",
+    "device-root-provider:test": "node tests/device-root-provider-test.mjs",
+    "security-audit:test": "node tests/security-audit-log-test.mjs",
+    "delegated-sandbox:test": "node tests/delegated-process-sandbox-test.mjs",
+    "dpop:test": "node tests/dpop-test.mjs",
+    "macos-trust:test": "node tests/macos-trust-broker-test.mjs",
+    "worker-security:test": "node tests/worker-security-boundaries-test.mjs",
+    "publication:check": "node scripts/npm-publication-policy.mjs",
+    "prerelease:release": "node scripts/github-release.mjs --publish-prerelease",
+    "release:candidate:activate": "node scripts/start-release-candidate.mjs --activate-service",
+    "prerelease:install": "node scripts/install-published-prerelease.mjs",
+    "prerelease:soak:accept": "node scripts/release-soak.mjs --record",
+    "release:soak:verify": "node scripts/release-soak.mjs --verify",
+    "release-channel:test": "node tests/release-channel-test.mjs",
+    "promotion-digest:test": "node tests/promotion-digest-test.mjs",
+    "prerelease-activation:test": "node tests/prerelease-activation-test.mjs",
+    "release-soak:test": "node tests/release-soak-test.mjs",
+    "published-release:test": "node tests/published-release-test.mjs",
+    "npm-publication-policy:test": "node tests/npm-publication-policy-test.mjs",
+    "runtime-activation:test": "node tests/runtime-activation-test.mjs",
+    "prerelease:publish": "node scripts/publish-npm.mjs prerelease",
+    "stable:publish": "node scripts/publish-npm.mjs stable",
+    "publish-npm:test": "node tests/publish-npm-test.mjs",
+    "release-candidate-manifest:test": "node tests/release-candidate-manifest-test.mjs",
+    "device-key-id-compatibility:test": "node tests/device-key-id-compatibility-test.mjs",
+    "candidate-runtime-store:test": "node tests/candidate-runtime-store-test.mjs",
+    "service-restart:test": "node tests/service-restart-handoff-test.mjs",
+    "browser-identity:test": "node tests/browser-extension-identity-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
@@ -178,9 +206,9 @@
   "homepage": "https://github.com/YuLeiFuYun/machine-bridge-mcp#readme",
   "allowScripts": {
     "esbuild@0.28.1": true,
-    "sharp@0.34.5": true,
     "fsevents": false,
-    "workerd@1.20260714.1": true
+    "workerd@1.20260714.1": true,
+    "sharp@0.35.3": true
   },
   "packageManager": "npm@12.0.1",
   "devEngines": {
@@ -194,5 +222,8 @@
       "version": ">=12.0.0",
       "onFail": "error"
     }
+  },
+  "overrides": {
+    "sharp": "0.35.3"
   }
 }

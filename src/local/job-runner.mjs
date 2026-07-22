@@ -9,6 +9,7 @@ import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomically
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { persistManagedJobTerminal } from "./managed-job-terminal.mjs";
 
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
 const TEMP_TOKEN = /\{\{temp:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -55,14 +56,15 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
 
 const initial = readJson(statusFile, MAX_STATUS_BYTES);
 assertLaunchState(initial);
-createExclusiveFileSync(runnerPidFile, `${JSON.stringify({ pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT })}\n`, { mode: 0o600 });
 try {
+  createExclusiveFileSync(runnerPidFile, `${JSON.stringify({ pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT })}\n`, { mode: 0o600 });
   if (recover) await releaseRecoveryClaim();
   const plan = readJson(planFile, 1024 * 1024);
   assertPlanIntegrity(plan, initial);
   await main(plan, initial);
 } catch (error) {
   recordFatalRunnerError(error);
+  process.exitCode = 1;
 }
 
 async function releaseRecoveryClaim() {
@@ -125,7 +127,6 @@ async function main(plan, initial) {
     } catch (error) {
       cleanupError ||= error;
     }
-    rmSync(runtimeDir, { recursive: true, force: true });
   }
 
   const cancelled = mainError instanceof JobCancelledError || existsSync(cancelFile);
@@ -148,17 +149,16 @@ async function main(plan, initial) {
     capture_remaining_bytes: captureBudget.remaining,
     finished_at: new Date().toISOString(),
   };
-  writeJson(resultFile, result, MAX_RESULT_BYTES);
-  updateStatus(status, {
-    status: finalStatus,
-    current_phase: null,
-    current_step: null,
-    finished_at: result.finished_at,
-    error_class: result.error_class || result.cleanup_error_class,
+  const terminal = persistManagedJobTerminal({
+    statusFile, resultFile,
+    artifacts: [runtimeDir, planFile, runnerPidFile, cancelFile],
+    status: { ...status, runner_pid: process.pid, runner_process_started_at: RUNNER_PROCESS_STARTED_AT },
+    result, writeJson,
+    removeFile: (file) => rmSync(file, { recursive: true, force: true }),
+    maxStatusBytes: MAX_STATUS_BYTES, maxResultBytes: MAX_RESULT_BYTES,
   });
-  try { rmSync(planFile, { force: true }); } catch {}
-  try { rmSync(runnerPidFile, { force: true }); } catch {}
-  try { rmSync(cancelFile, { force: true }); } catch {}
+  Object.assign(status, terminal.status);
+  reportTerminalPersistenceFailure(terminal);
 }
 
 function assertLaunchState(status) {
@@ -176,7 +176,6 @@ function assertPlanIntegrity(plan, status) {
 }
 
 function recordFatalRunnerError(error) {
-  rmSync(runtimeDir, { recursive: true, force: true });
   const now = new Date().toISOString();
   let status = {};
   try { status = readJson(statusFile, MAX_STATUS_BYTES); } catch {}
@@ -192,24 +191,33 @@ function recordFatalRunnerError(error) {
     cleanup_error_class: recover ? classifyError(error) : null,
     finished_at: now,
   };
-  try { writeJson(resultFile, result, MAX_RESULT_BYTES); } catch {}
-  try {
-    writeJson(statusFile, {
+  const terminal = persistManagedJobTerminal({
+    statusFile, resultFile,
+    artifacts: [runtimeDir, planFile, runnerPidFile, cancelFile],
+    status: {
       ...status,
-      status: finalStatus,
-      current_phase: null,
-      current_step: null,
       runner_pid: process.pid,
       runner_process_started_at: RUNNER_PROCESS_STARTED_AT,
-      updated_at: now,
-      finished_at: now,
-      error_class: result.error_class,
       cleanup_guarantee: "best-effort-finally-and-recovery",
-    }, MAX_STATUS_BYTES);
-  } catch {}
-  try { rmSync(planFile, { force: true }); } catch {}
-  try { rmSync(runnerPidFile, { force: true }); } catch {}
-  try { rmSync(cancelFile, { force: true }); } catch {}
+    },
+    result, writeJson,
+    removeFile: (file) => rmSync(file, { recursive: true, force: true }),
+    maxStatusBytes: MAX_STATUS_BYTES, maxResultBytes: MAX_RESULT_BYTES,
+  });
+  reportTerminalPersistenceFailure(terminal);
+}
+
+function reportTerminalPersistenceFailure(terminal) {
+  if (terminal.statusPersisted && terminal.artifactsScrubbed && !terminal.statusErrorClass) return;
+  const fields = [
+    `status_persisted=${terminal.statusPersisted}`,
+    `result_persisted=${terminal.resultPersisted}`,
+    `artifacts_scrubbed=${terminal.artifactsScrubbed}`,
+    `status_error=${terminal.statusErrorClass || "none"}`,
+    `result_error=${terminal.resultErrorClass || "none"}`,
+    `cleanup_error=${terminal.cleanupErrorClass || "none"}`,
+  ];
+  process.stderr.write(`managed job terminal persistence incomplete: ${fields.join(" ")}\n`);
 }
 
 async function runStep(step, index, phase, plan, resourceContext, cancellationAware, captureBudget) {

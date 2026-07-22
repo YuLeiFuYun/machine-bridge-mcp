@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { resolveTrustedGitExecutable } from "../../src/local/trusted-git-executable.mjs";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +17,7 @@ const docs = [
 ];
 for (const file of docs) validateRelativeLinks(file);
 
-const repositoryFiles = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root })
+const repositoryFiles = execFileSync(resolveTrustedGitExecutable({ workspace: root }), ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root })
   .toString("utf8")
   .split("\0")
   .filter(Boolean);

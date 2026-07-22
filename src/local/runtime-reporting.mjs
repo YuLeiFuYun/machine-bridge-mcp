@@ -77,16 +77,19 @@ export async function buildProjectOverview({
   displayPath,
   policy,
   toolNames,
+  daemonPolicy = policy,
+  daemonToolNames = toolNames,
   capabilityObserver,
   listTopLevel,
-  runProcess,
+  runInternalProcess,
+  gitExecutable,
   safeErrorMessage,
   throwIfCancelled,
 }, context = {}) {
   throwIfCancelled(context);
   const top = await listTopLevel(context).catch((error) => ({ error: safeErrorMessage(error), entries: [] }));
-  const git = await runProcess(
-    "git",
+  const git = await runInternalProcess(
+    gitExecutable(),
     ["-c", "core.fsmonitor=false", "-C", workspace, "rev-parse", "--show-toplevel"],
     10_000,
     true,
@@ -99,6 +102,8 @@ export async function buildProjectOverview({
     gitRoot: git.code === 0 ? displayPath(git.stdout.trim()) : "",
     policy,
     tools: ["server_info", ...toolNames],
+    daemonPolicy,
+    daemonTools: ["server_info", ...daemonToolNames],
     capabilityRouting: capabilityObserver.snapshot(),
     topLevel: top.entries || [],
   };

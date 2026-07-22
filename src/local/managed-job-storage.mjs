@@ -41,7 +41,7 @@ export function openPrivateAppendFile(file) {
   return openRegularFileSync(
     file,
     Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND),
-    { label: "runner diagnostic path", mode: 0o600, chmod: 0o600 },
+    { label: "runner diagnostic path", mode: 0o600, chmod: 0o600, rejectMultipleLinks: true },
   ).fd;
 }
 
@@ -51,6 +51,7 @@ export function trimDiagnosticFile(file, maxBytes = 64 * 1024, keepBytes = 32 * 
     const opened = openRegularFileSync(file, fsConstants.O_RDWR, {
       label: "runner diagnostic path",
       chmod: 0o600,
+      rejectMultipleLinks: true,
     });
     fd = opened.fd;
     if (opened.info.size <= maxBytes) return;

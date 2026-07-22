@@ -86,8 +86,15 @@ export function accountAuthoritySnapshot(input: AccountIdentity & {
 
 export function decorateProjectOverview(value: unknown, account: AccountIdentity): unknown {
   if (!isRecord(value)) return value;
-  const daemonPolicy = isDaemonPolicy(value.policy) ? value.policy : null;
-  const daemonTools = Array.isArray(value.tools) ? value.tools.filter((item): item is string => typeof item === "string") : [];
+  const daemonPolicy = isDaemonPolicy(value.daemonPolicy)
+    ? value.daemonPolicy
+    : isDaemonPolicy(value.policy)
+      ? value.policy
+      : null;
+  const daemonToolSource = Array.isArray(value.daemonTools) ? value.daemonTools : value.tools;
+  const daemonTools = Array.isArray(daemonToolSource)
+    ? daemonToolSource.filter((item): item is string => typeof item === "string")
+    : [];
   const effectiveTools = ["server_info", ...accountRoleToolNames(account.role, daemonTools)];
   const authority = accountAuthoritySnapshot({ ...account, daemonPolicy, effectiveTools });
   return {

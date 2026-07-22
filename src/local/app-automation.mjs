@@ -102,9 +102,9 @@ export class AppAutomationManager {
       if (target) argv.push(target);
       command = { cmd: "open", argv };
     } else if (this.platform === "win32") {
-      const escaped = resolvedApplication.replace(/'/g, "''");
-      const targetFragment = target ? ` -ArgumentList '${target.replace(/'/g, "''")}'` : "";
-      command = { cmd: "powershell.exe", argv: ["-NoProfile", "-NonInteractive", "-Command", `Start-Process -FilePath '${escaped}'${targetFragment}`] };
+      const fileLiteral = powershellSingleQuotedLiteral(resolvedApplication);
+      const targetFragment = target ? ` -ArgumentList ${powershellSingleQuotedLiteral(target)}` : "";
+      command = { cmd: "powershell.exe", argv: ["-NoProfile", "-NonInteractive", "-Command", `Start-Process -FilePath ${fileLiteral}${targetFragment}`] };
     } else if (resolvedApplication.toLowerCase().endsWith(".desktop")) {
       command = { cmd: "gio", argv: ["launch", resolvedApplication, ...(target ? [target] : [])] };
     } else {
@@ -113,7 +113,8 @@ export class AppAutomationManager {
         : { cmd: resolvedApplication, argv: [] };
     }
     const result = await this.runProcess(command.cmd, command.argv, clampInt(args.timeout_seconds, 30, 1, 120) * 1000, false, 256 * 1024, context, undefined, null);
-    return { application, resolved_application: resolvedApplication, target, platform: this.platform, ...result };
+    const publicResolvedApplication = /[\\/]/.test(resolvedApplication) ? this.displayPath(resolvedApplication) : resolvedApplication;
+    return { application, resolved_application: publicResolvedApplication, target, platform: this.platform, ...result };
   }
 
   async inspectApplication(args = {}, context = {}) {
@@ -417,3 +418,7 @@ function main() {
 }
 (() => { try { return JSON.stringify(main()); } catch (error) { return JSON.stringify({ error: String(error.message || error) }); } })()
 `;
+
+export function powershellSingleQuotedLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}

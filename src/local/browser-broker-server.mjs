@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
-import { isAllowedExtensionOrigin, isAllowedLoopbackHost } from "./browser-pairing-store.mjs";
+import { isAllowedExtensionOrigin, isAllowedLoopbackHost } from "./browser-pairing-http.mjs";
+import { EXPECTED_EXTENSION_ID } from "./browser-extension-identity.mjs";
 
-export async function startBrowserBrokerServer({ port, token, maxPayload, onHttp, onSocket }) {
+export async function startBrowserBrokerServer({ port, extensionToken, runtimeToken, maxPayload, onHttp, onSocket }) {
   const server = createServer(onHttp);
   const wss = new WebSocketServer({ noServer: true, maxPayload });
   server.on("upgrade", (request, socket, head) => {
@@ -16,8 +17,8 @@ export async function startBrowserBrokerServer({ port, token, maxPayload, onHttp
       const protocol = String(request.headers["sec-websocket-protocol"] || "");
       const origin = String(request.headers.origin || "");
       let role = "";
-      if (url.pathname === "/extension" && protocol === `mbm.${token}` && isAllowedExtensionOrigin(origin)) role = "extension";
-      if (url.pathname === "/runtime" && protocol === `mbm-runtime.${token}` && !origin) role = "runtime";
+      if (url.pathname === "/extension" && protocol === `mbm.${extensionToken}` && isAllowedExtensionOrigin(origin, EXPECTED_EXTENSION_ID)) role = "extension";
+      if (url.pathname === "/runtime" && protocol === `mbm-runtime.${runtimeToken}` && !origin) role = "runtime";
       if (!role) {
         rejectUpgrade(socket, "401 Unauthorized");
         return;

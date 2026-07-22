@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { assertGitHubBacklogReady } from "./github-backlog.mjs";
+import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
+import { verifyCurrentStableSoak } from "./release-soak.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -23,6 +26,14 @@ try {
     const path = `release-acceptance/v${acceptance.metadata.package_version}.json`;
     run("git", ["ls-files", "--error-unmatch", path], { capture: true });
     console.log(`Verified interactive local candidate acceptance for ${acceptance.metadata.filename}.`);
+  }
+
+  const releaseVersion = parseReleaseVersion(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version);
+  if (!releaseVersion.prerelease && requiresSoakForStable(releaseVersion.raw)) {
+    const soak = verifyCurrentStableSoak(root);
+    const path = `release-soak/v${releaseVersion.raw}.json`;
+    run("git", ["ls-files", "--error-unmatch", path], { capture: true });
+    console.log(`Verified stable promotion from soaked ${soak.record.prerelease_version}.`);
   }
 
   run("git", ["push", "--set-upstream", "origin", "HEAD"]);

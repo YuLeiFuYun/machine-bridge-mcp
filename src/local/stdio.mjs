@@ -15,6 +15,7 @@ import {
 } from "./tools.mjs";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
+const MAX_PENDING_TOOL_CALLS = 32;
 const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version);
 
 export async function runStdioServer({ workspace, policy, logLevel = "info", jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "" }) {
@@ -108,6 +109,10 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
       return;
     }
     const args = asObject(params.arguments);
+    if (pending.size >= MAX_PENDING_TOOL_CALLS) {
+      send(rpcError(message.id, -32000, "Too many concurrent tool calls"));
+      return;
+    }
     const callId = `stdio_${randomBytes(16).toString("hex")}`;
     const key = jsonRpcIdKey(message.id);
     if (key && pending.has(key)) {

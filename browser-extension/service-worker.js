@@ -3,7 +3,6 @@ importScripts("devtools-input.js", "browser-operations.js");
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
-let keepaliveTimer = null;
 const MAX_RESULT_BYTES = 7 * 1024 * 1024;
 const BROWSER_EXTENSION_PROTOCOL = 3;
 const HANDSHAKE_TIMEOUT_MS = 3000;
@@ -91,8 +90,10 @@ function closeSocketQuietly(ws, code, reason) {
 function sendSocketQuietly(ws, payload) {
   try {
     ws.send(payload);
+    return true;
   } catch {
     // A response cannot be recovered after the broker socket closes.
+    return false;
   }
 }
 
@@ -185,6 +186,10 @@ function connect(endpoint, token, { reconnect = true } = {}) {
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
   if (socket) {
+    socket.reconnectEnabled = false;
+    clearInterval(socket.keepaliveTimer);
+    socket.keepaliveTimer = null;
+    cancelRequestsForSocket(socket);
     closeSocketQuietly(socket);
   }
   const ws = new WebSocket(endpoint, [`mbm.${token}`]);
@@ -194,6 +199,7 @@ function connect(endpoint, token, { reconnect = true } = {}) {
   ws.machineBridgeEndpoint = endpoint;
   ws.machineBridgeToken = token;
   ws.reconnectEnabled = reconnect;
+  ws.keepaliveTimer = null;
   setConnectionState("connecting");
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
@@ -216,11 +222,11 @@ function connect(endpoint, token, { reconnect = true } = {}) {
     ws.onerror = () => {};
     ws.onclose = () => {
       clearTimeout(ws.handshakeTimer);
+      clearInterval(ws.keepaliveTimer);
+      ws.keepaliveTimer = null;
+      cancelRequestsForSocket(ws);
       if (!ws.bridgeReady) settle(new Error("browser broker handshake failed"));
       if (socket !== ws) return;
-      clearInterval(keepaliveTimer);
-      keepaliveTimer = null;
-      cancelRequestsForSocket(ws);
       socket = null;
       setConnectionState("disconnected");
       if (ws.reconnectEnabled) scheduleReconnect(endpoint, token);
@@ -247,15 +253,17 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     }
     ws.serverHelloSeen = true;
     const manifest = chrome.runtime.getManifest();
-    ws.send(JSON.stringify({
+    const helloSent = sendSocketQuietly(ws, JSON.stringify({
       type: "hello",
       role: "extension",
       protocol: BROWSER_EXTENSION_PROTOCOL,
       version: manifest.version_name || manifest.version,
+      extension_id: chrome.runtime.id,
       capabilities: [
         "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
       ],
     }));
+    if (!helloSent) closeSocketQuietly(ws, 1011, "browser extension hello failed");
     return;
   }
   if (message?.type === "hello_ack") {
@@ -267,9 +275,12 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     ws.bridgeReady = true;
     reconnectAttempt = 0;
     setConnectionState("connected");
-    clearInterval(keepaliveTimer);
-    keepaliveTimer = setInterval(() => {
-      if (socket === ws && ws.bridgeReady && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+    clearInterval(ws.keepaliveTimer);
+    ws.keepaliveTimer = setInterval(() => {
+      if (socket === ws && ws.bridgeReady && ws.readyState === WebSocket.OPEN
+          && !sendSocketQuietly(ws, JSON.stringify({ type: "ping" }))) {
+        closeSocketQuietly(ws, 1011, "browser extension keepalive failed");
+      }
     }, 20000);
     onReady();
     return;
@@ -284,15 +295,23 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     return;
   }
   if (message?.type !== "request" || typeof message.id !== "string" || typeof message.method !== "string") return;
+  if (activeRequests.has(message.id)) {
+    closeSocketQuietly(ws, 1002, "duplicate browser request id");
+    return;
+  }
   const state = { cancelled: false, timeoutMs: browserOperations().boundedRequestTimeout(message.timeout_ms), socket: ws };
   activeRequests.set(message.id, state);
   try {
     throwIfCancelled(state);
     const result = await dispatch(message.method, message.params || {}, state);
     throwIfCancelled(state);
-    sendResponse(ws, message.id, true, result);
+    if (!sendResponse(ws, message.id, true, result)) {
+      closeSocketQuietly(ws, 1011, "browser response delivery failed");
+    }
   } catch (error) {
-    if (!state.cancelled) sendResponse(ws, message.id, false, null, String(error?.message || error).slice(0, 2000));
+    if (!state.cancelled && !sendResponse(ws, message.id, false, null, String(error?.message || error).slice(0, 2000))) {
+      closeSocketQuietly(ws, 1011, "browser error delivery failed");
+    }
   } finally {
     activeRequests.delete(message.id);
   }
@@ -309,12 +328,12 @@ function throwIfCancelled(state) {
 }
 
 function sendResponse(ws, id, ok, result, error = "") {
-  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.readyState !== WebSocket.OPEN) return false;
   let payload = JSON.stringify({ type: "response", id, ok, ...(ok ? { result } : { error }) });
   if (new TextEncoder().encode(payload).byteLength > MAX_RESULT_BYTES) {
     payload = JSON.stringify({ type: "response", id, ok: false, error: "browser result exceeds maximum size" });
   }
-  sendSocketQuietly(ws, payload);
+  return sendSocketQuietly(ws, payload);
 }
 
 

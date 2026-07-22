@@ -46,7 +46,10 @@ function runTask({ task, npmCli, cwd, env, verbose, spawnProcess }) {
     try {
       child = spawnProcess(process.execPath, [npmCli, "run", "--silent", task], {
         cwd,
-        env: { ...env, NO_COLOR: env.NO_COLOR || "1" },
+        env: {
+          ...env,
+          NO_COLOR: env.NO_COLOR || "1",
+        },
         stdio: verbose ? "inherit" : ["ignore", "pipe", "pipe"],
         windowsHide: true,
         shell: false,

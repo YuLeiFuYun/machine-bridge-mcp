@@ -18,6 +18,7 @@ export class BrowserOperationService {
     bridgeStatus,
     extensionPath,
     expectedExtensionVersion,
+    expectedExtensionId,
     runProcess,
     readResourceText,
     readResourceBinary,
@@ -28,6 +29,7 @@ export class BrowserOperationService {
     this.bridgeStatus = bridgeStatus;
     this.extensionPath = extensionPath;
     this.expectedExtensionVersion = expectedExtensionVersion;
+    this.expectedExtensionId = expectedExtensionId;
     this.runProcess = runProcess;
     this.readResourceText = readResourceText;
     this.readResourceBinary = readResourceBinary;
@@ -42,10 +44,14 @@ export class BrowserOperationService {
       available: true,
       connected: bridge.extensionConnected,
       broker_role: bridge.brokerRole,
+      runtime_clients: Number(bridge.runtime_clients) || 0,
+      routed_requests: Number(bridge.routed_requests) || 0,
       endpoint: `ws://127.0.0.1:${bridge.port}/extension`,
       pairing_url: `http://127.0.0.1:${bridge.port}/pair`,
       extension_path: this.extensionPath,
       expected_extension_version: this.expectedExtensionVersion,
+      expected_extension_id: this.expectedExtensionId,
+      extension_id: extension?.extension_id || "",
       extension_protocol: extension?.protocol || null,
       extension_version: extension?.version || "",
       extension_capabilities: extension?.capabilities || [],
@@ -70,6 +76,7 @@ export class BrowserOperationService {
       security: {
         loopback_only: true,
         bearer_pairing_token: true,
+        pinned_extension_identity: true,
         arbitrary_extension_code_from_mcp: false,
         resource_values_returned_to_model: false,
       },

@@ -57,11 +57,13 @@ Machine Bridge supports concurrent calls: the Worker admits up to 32 pending dae
 
 ### Relay interruption messages
 
+A reconnect warning is evidence of a transport outage, not proof that the daemon process exited. Compare daemon PID/process start, `connected_at`, `last_seen_at`, `runtime.relay.last_disconnected_at`, close category/code, and outage count. A system VPN/TUN may remain shown as connected while its internal route is unavailable; Machine Bridge reports that route only as `system-network-stack` with application-proxy scope. The reconnect schedule now tops out at fifteen seconds.
+
 A brief relay interruption is retried automatically and is visible only with `--verbose`. Default logs do not print raw WebSocket values such as `code=1006` with an empty reason. If a transient outage persists for 10 seconds, the daemon emits a readable duration/cause/reconnect summary; later reminders use autonomous exponential backoff capped at 15 minutes, and recovery produces one readable summary. Each transport connection attempt also has a deadline, so a socket stuck in `CONNECTING` cannot freeze retries. Identity/version mismatch, authentication rejection, and unexpected protocol messages are not retried as ordinary network faults: the daemon emits an immediate actionable error and exits, requiring upgrade/redeployment or credential repair. Worker-side hello and end-to-end readiness timeouts remain retryable. Authentication is not reported as usable service readiness until a session-bound probe result returns.
 
 Use `--verbose` only when close codes, close reasons, heartbeat timeouts, and retry delays are needed for diagnosis. A close code of 1006 means the transport ended without a normal close handshake; it does not by itself identify the cause.
 
-The daemon honors `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` through standard environment-proxy resolution for remote Worker health and relay traffic. `wss:` targets use HTTPS proxy selection and `ws:` targets use HTTP proxy selection. Only HTTP and HTTPS proxy URLs are accepted. Invalid URLs or unsupported protocols fail startup with corrective guidance instead of entering the reconnect loop. `server_info.runtime.relay.network_route` reports only `direct`, `proxy`, or `invalid-proxy-configuration`; proxy endpoints and credentials are never returned or logged. The browser-broker CLI health probe is a separate loopback-only path: it accepts only canonical `127.0.0.1`, uses direct Node HTTP with no proxy agent, and does not depend on `NO_PROXY`.
+The daemon honors `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` through standard environment-proxy resolution for remote Worker health and relay traffic. `wss:` targets use HTTPS proxy selection and `ws:` targets use HTTP proxy selection. Only HTTP and HTTPS proxy URLs are accepted. Invalid URLs or unsupported protocols fail startup with corrective guidance instead of entering the reconnect loop. `server_info.runtime.relay.network_route` reports `system-network-stack`, `application-http-proxy`, or `invalid-application-proxy-configuration`. This field describes only Machine Bridge application-level proxy selection: an operating-system VPN/TUN may still intercept `system-network-stack` traffic. `network_route_scope`, outage timestamps/durations, close category/code, transport error class, and next retry timing make that distinction explicit; proxy endpoints and credentials are never returned or logged. The browser-broker CLI health probe is a separate loopback-only path: it accepts only canonical `127.0.0.1`, uses direct Node HTTP with no proxy agent, and does not depend on `NO_PROXY`.
 
 ## Browser extension setup and diagnosis
 
@@ -123,9 +125,15 @@ machine-mcp --verbose
 
 After global installation, Windows users may open any `cmd.exe` window and run `machine-mcp`; they do not need to navigate to a project or package directory. On the first interactive start, the CLI asks for a workspace folder and displays `%USERPROFILE%\MachineBridge` as the default. Pressing Enter creates and remembers that folder. This avoids inheriting an arbitrary Command Prompt current directory such as `C:\Windows\System32`. Typing another folder in the prompt creates that folder when necessary. Explicit `--workspace PATH` remains a strict automation interface and requires an existing path.
 
-## Version 1 upgrade convergence
+### Start, restart, and cross-workspace ownership
 
-Version 1 advertises only MCP protocol `2025-11-25`. Upgrade the MCP client/host if it cannot negotiate that version; Machine Bridge does not retain an obsolete protocol dispatcher. The current local state schema is unchanged from the final 0.18.x release, so do not delete the state root merely to upgrade.
+`service start` is an idempotent ensure-running operation. It does not stop a verified already-running daemon, so calling it through that daemon cannot destroy the control connection. `service restart` is separate: macOS and systemd-user use a detached service-manager handoff so the command can return before the old daemon exits. Windows restart is fail closed from inside the running task because Task Scheduler `/End` may terminate the helper with the daemon; use an independent terminal stop/start sequence until a behaviorally verified Windows handoff exists.
+
+A workspace/state selector does not grant authority over the machine-global service label. Stop, restart, foreground takeover, secret rotation, and uninstall require the exact live verified `service` daemon ownership record. Service status returns only provider, installed/loaded/active state, PID, bounded run count, and classified termination state; provider environment dumps are never returned.
+
+## Current upgrade convergence
+
+The current release advertises only MCP protocol `2025-11-25`. Upgrade the MCP client or host if it cannot negotiate that version; Machine Bridge does not retain an obsolete protocol dispatcher. Version 3 also requires matching Worker, daemon, CLI, and browser-extension components and may perform a two-phase device-root migration. Preserve the state root and follow [UPGRADING.md](UPGRADING.md); do not delete state to force apparent convergence.
 
 Use this sequence:
 
@@ -154,7 +162,7 @@ Stable errors include `policy_denied`, `invalid_request`, `timeout`, `cancelled`
 
 Windows Task Scheduler limits the `/TR` action text, so the platform adapter writes a short private `service-launcher.cmd` under the state root rather than embedding the full Node, package, workspace, state, and logging argv in the task action. The launcher uses CRT-compatible argument quoting, sends stdout/stderr to the normal service logs, exits on a successful daemon exit, and restarts a nonzero exit after five seconds. Task creation is accepted only after a separate state query observes the task. Start, stop, and removal likewise query the Task Scheduler state through fixed PowerShell object properties instead of parsing localized `schtasks` messages; an installed `Ready` task is not mislabeled as currently running.
 
-The Windows trigger is current-user `ONLOGON` with `LIMITED` run level. After a reboot, signing in to that user is sufficient; no terminal command is required. Pre-login operation is intentionally not provided by the default design because it would require a different service-account/credential boundary. Remote autostart definitions prefer a stable PATH alias that resolves to the currently running Node executable and persist a sanitized absolute-only service `PATH` containing the Node/CLI directories, the installer's absolute PATH entries, and platform defaults. A private allowlisted `service-environment.json` preserves `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, matching lowercase forms, optional `ALL_PROXY`, Node proxy selection, and custom-CA path variables. Existing saved values survive an environment-free reinstall, while explicitly supplied values replace case-insensitive prior variants. Values may include proxy credentials, so the file stays in owner-only state and is never returned or logged; status exposes key names only. Re-run `machine-mcp service install` after changing Node installation families, PATH layout, proxy, or CA configuration. Custom Windows state paths used for autostart must also remain within the Task Scheduler path limit and must not contain a literal `%`.
+The Windows trigger is current-user `ONLOGON` with `LIMITED` run level. After a reboot, signing in to that user is sufficient; no terminal command is required. Pre-login operation is intentionally not provided by the default design because it would require a different service-account/credential boundary. Remote autostart definitions prefer a stable PATH alias that resolves to the currently running Node executable and persist a sanitized absolute-only service `PATH` containing the current Node/package directories, the operator's inherited absolute PATH entries, and platform defaults. When installation runs through npm, all nested run-script prefixes through the final npm private `node-gyp-bin` marker are discarded; paths belonging to inactive candidate runtimes are also removed. This prevents prerelease activation from persisting source-repository shims or the prior runtime that activation subsequently prunes, while an ordinary user-supplied `node_modules/.bin` remains valid. A private allowlisted `service-environment.json` preserves `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, matching lowercase forms, optional `ALL_PROXY`, Node proxy selection, and custom-CA path variables. Existing saved values survive an environment-free reinstall, while explicitly supplied values replace case-insensitive prior variants. Values may include proxy credentials, so the file stays in owner-only state and is never returned or logged; status exposes key names only. Re-run `machine-mcp service install` after changing Node installation families, PATH layout, proxy, or CA configuration. Custom Windows state paths used for autostart must also remain within the Task Scheduler path limit and must not contain a literal `%`.
 
 A service-style `--daemon-only` start that finds the same workspace daemon already running is an idempotent no-op: it exits successfully without repeating warnings or readiness output; explicit policy/secret/change requests still report that changes were not applied. Autostart logs are stored under the state root in `logs/daemon.out.log` and `logs/daemon.err.log`. Installed services pass `--log-level warn --log-format json`, so each active line is a bounded JSON event suitable for ingestion. Files are owner-only where supported and tail-trimmed before daemon startup. If the log schema marker does not match the current format, the active files are cleared before startup and the current marker is written. Runtime code reads and maintains only the active filenames.
 
@@ -208,14 +216,13 @@ Inspect detached jobs even when the MCP host no longer permits execution tools:
 ```sh
 machine-mcp job list
 machine-mcp job inspect JOB_ID
-machine-mcp job approve JOB_ID [--yes]
 machine-mcp job cancel JOB_ID
 machine-mcp job submit plan.json
 ```
 
 Registry changes apply to newly submitted jobs without restarting the daemon. Active jobs use the resource snapshot accepted with their plan.
 
-Policy changes affect new direct submissions. Cancel accepted running jobs explicitly when revoking execution authority. A staged plan launches only after local `job approve`, which is an independent operator authorization. A managed job transitions through `queued`, `running`, `cleaning`, and a terminal status such as `succeeded`, `failed`, or `cancelled`. Cleanup-specific terminal variants report a failed finally phase. If a runner PID dies, the next daemon/job-CLI start marks the job interrupted, removes stale private runtime copies, and runs the finally phase in recovery mode. Automatic recovery is capped at three attempts; persistent failure becomes `recovery_exhausted`.
+Policy changes affect new submissions. Cancel accepted running jobs explicitly when revoking execution authority. A staged plan is a non-running draft and has no terminal promotion path. A trusted owner uses `start_job`; an explicit local operator may submit a reviewed JSON plan with `job submit`. A managed job transitions through `queued`, `running`, `cleaning`, and a terminal status such as `succeeded`, `failed`, or `cancelled`. Cleanup-specific terminal variants report a failed finally phase. If a runner PID dies, the next daemon/job-CLI start marks the job interrupted, removes stale private runtime copies, and runs the finally phase in recovery mode. Automatic recovery is capped at three attempts; persistent failure becomes `recovery_exhausted`.
 
 Use job-scoped `temporary_files` for local helpers. For remote maintenance, prefer `ssh ... sh -s` with the remote script in step `stdin`; this avoids remote temporary scripts. Explicit remote cleanup belongs in idempotent `finally_steps`.
 
@@ -293,40 +300,44 @@ machine-mcp --workspace /path/to/project --profile agent
 
 A remote policy change is saved locally, propagated in the daemon handshake, and loaded by autostart from owner-only state.
 
-### Remote authority and optional delegated-account leases
+### Remote authority and client trust
 
-The saved profile defines the capability ceiling. An authenticated owner account may use that ceiling directly and is never required to approve a pending ID in a terminal. Delegated reviewer, editor, and operator accounts still require bounded leases for consequential remote effects. Inspect their pending requests and active leases with:
+The saved profile defines the daemon capability ceiling. Remote authority additionally requires the authenticated account role, trusted OAuth client binding, current account version and refresh family, and ownership of any long-lived object.
+
+Inspect accounts and trusted clients with:
+
+```sh
+machine-mcp --workspace /path/to/project account list
+machine-mcp --workspace /path/to/project account clients
+```
+
+Revoke a compromised or stale client independently:
+
+```sh
+machine-mcp --workspace /path/to/project account revoke-client CLIENT_ID --yes
+```
+
+Delegated roles cannot be elevated by an approval ID or lease. Legacy version 2 leases may be inspected or removed only for migration cleanup:
 
 ```sh
 machine-mcp --workspace /path/to/project approval list
-```
-
-Approve the requested scope for ordinary work, or explicitly open a temporary full automation window:
-
-```sh
-machine-mcp --workspace /path/to/project approval approve APPROVAL_ID --duration 1h
-machine-mcp --workspace /path/to/project approval approve APPROVAL_ID --full
-```
-
-Revoke one lease or all leases:
-
-```sh
 machine-mcp --workspace /path/to/project approval revoke LEASE_ID
-machine-mcp --workspace /path/to/project approval clear
+machine-mcp --workspace /path/to/project approval clear --yes
 ```
 
-The pending and lease files are owner-only and contain identity bindings, scope, timestamps, and target digests rather than command or content text. Full details are in [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
+The current runtime never consumes legacy leases. Full details are in [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
 
 ## Incident response
 
-After suspected credential or client compromise:
+After suspected credential, client, or device compromise:
 
 1. stop foreground and autostart daemons;
-2. run `machine-mcp approval clear` for every affected workspace;
-3. disable or rotate the affected account, or run `machine-mcp rotate-secrets` for deployment-wide revocation;
-4. restart without broad flags and redeploy;
-5. inspect Cloudflare account access, Worker configuration, local state/resource permissions, process-lock owners, managed-job results, and service logs;
-6. cancel active managed jobs and remove compromised resource aliases;
-7. remove the Worker and local state if continued remote access is unnecessary.
+2. revoke the affected OAuth client, or disable/rotate the affected account;
+3. clear any legacy version 2 leases as migration hygiene;
+4. run `machine-mcp rotate-secrets` when device-root or deployment-wide token compromise is possible;
+5. restart with the intended profile, deploy the matching Worker, and reconnect only trusted clients;
+6. inspect Cloudflare access, Worker configuration, device-root provider, audit-chain health, local state/resource permissions, process-lock owners, managed-job results, and service logs;
+7. cancel active managed jobs and remove compromised resource aliases;
+8. remove the Worker and local state if continued remote access is unnecessary.
 
 The detailed 0.12.0 audit record and residual operational limits are in [AUDIT.md](AUDIT.md).

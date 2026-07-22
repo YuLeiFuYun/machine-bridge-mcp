@@ -50,6 +50,20 @@ export async function startWindowsTask(logger = console, options = {}) {
   const before = await statusWindowsTask({ ...options, run });
   if (before.installed === null) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "task_status_unavailable", status: before };
   if (before.installed === false) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "not_installed", status: before };
+  if (before.active === true) {
+    logger.info?.("Windows Scheduled Task is already running");
+    return {
+      ok: true,
+      provider: "schtasks",
+      task: WINDOWS_TASK,
+      installed: true,
+      active_before: true,
+      active: true,
+      already_running: true,
+      reason: "already_running",
+      status: before,
+    };
+  }
   const command = await run("schtasks", ["/Run", "/TN", WINDOWS_TASK]);
   const after = await waitForWindowsStatus(
     status => status.active === true || completedSince(before, status),
@@ -67,6 +81,12 @@ export async function startWindowsTask(logger = console, options = {}) {
     status: after,
     reason: after.active === true ? "started" : completed ? "completed" : "start_not_observed",
   };
+}
+export async function restartWindowsTask(logger = console, options = {}) {
+  const stopped = await stopWindowsTask(logger, options);
+  if (!stopped.ok) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "stop_failed", stop: stopped };
+  const started = await startWindowsTask(logger, options);
+  return { ...started, restarted: started.ok === true, stop: stopped };
 }
 
 export async function stopWindowsTask(logger = console, options = {}) {

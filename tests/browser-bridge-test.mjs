@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
+import { EXPECTED_EXTENSION_ID } from "../src/local/browser-extension-identity.mjs";
 
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -25,6 +26,7 @@ let extension;
 let replacementExtension;
 let invalidOrigin;
 let invalidExtension;
+let malformedExtension;
 let staleExtension;
 let staleReplacement;
 let invalidRuntime;
@@ -37,6 +39,7 @@ try {
     throw new Error("browser pairing state root was not restricted to 0700");
   }
   assert(initial.broker_role === "owner", "first browser bridge did not become owner");
+  assert(initial.runtime_clients === 0 && initial.routed_requests === 0, "browser status omitted read-only broker load diagnostics");
   assert(initial.connected === false, "browser bridge unexpectedly reported an extension");
   assert(initial.semantic_snapshot_refs === true && initial.actionability_waits === true && initial.trusted_input === true, "browser status omitted production interaction capabilities");
   assert(initial.tab_management === true && initial.explicit_waits === true, "browser status omitted tab or wait capabilities");
@@ -46,29 +49,40 @@ try {
   assert(initial.pairing_url.endsWith("/pair") && !initial.pairing_url.includes("#"), "pairing token leaked through the URL fragment");
 
   const pairing = JSON.parse(await readFile(join(root, "browser-bridge.json"), "utf8"));
-  assert(!JSON.stringify(initial).includes(pairing.token), "browser status exposed the pairing token");
+  assert(pairing.schemaVersion === 2 && pairing.extensionToken !== pairing.runtimeToken, "browser pairing state did not separate extension and runtime credentials");
+  assert(!JSON.stringify(initial).includes(pairing.extensionToken) && !JSON.stringify(initial).includes(pairing.runtimeToken), "browser status exposed a pairing credential");
   const response = await fetch(initial.pairing_url, { signal: AbortSignal.timeout(5000) });
   const html = await response.text();
-  assert(response.status === 200 && html.includes(pairing.token), "local pairing page did not contain the local-only token");
+  assert(response.status === 200 && html.includes(pairing.extensionToken), "local pairing page did not contain the local-only token");
   assert(html.includes("Expected extension build") && html.includes(PACKAGE_VERSION), "local pairing page omitted extension reload diagnostics");
+  assert(html.includes("Expected extension ID") && html.includes(EXPECTED_EXTENSION_ID), "local pairing page omitted the pinned extension identity");
   assert(response.headers.get("cache-control") === "no-store", "pairing page is cacheable");
+  assert(!html.includes(pairing.runtimeToken), "local pairing page exposed the owner-only runtime credential");
 
-  const rejected = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "https://example.test" });
+  const tokenRoleRuntimeUrl = new URL(initial.endpoint);
+  tokenRoleRuntimeUrl.pathname = "/runtime";
+  await expectSocketRejected(new WebSocket(tokenRoleRuntimeUrl, [`mbm-runtime.${pairing.extensionToken}`]));
+  await expectSocketRejected(new WebSocket(initial.endpoint, [`mbm.${pairing.runtimeToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` }));
+
+  const rejected = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: "https://example.test" });
   await expectSocketRejected(rejected);
-  invalidOrigin = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: `chrome-extension://${"z".repeat(32)}` });
+  invalidOrigin = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${"z".repeat(32)}` });
   await expectSocketRejected(invalidOrigin);
 
-  invalidExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
-  await onceOpen(invalidExtension);
-  const invalidExtensionClosed = onceClose(invalidExtension);
-  invalidExtension.send("{");
-  assert((await invalidExtensionClosed).code === 1007, "invalid extension JSON did not close with 1007");
+  invalidExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+  await expectSocketRejected(invalidExtension);
 
-  staleExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" });
+  malformedExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
+  await onceOpen(malformedExtension);
+  const malformedExtensionClosed = onceClose(malformedExtension);
+  malformedExtension.send("{");
+  assert((await malformedExtensionClosed).code === 1007, "invalid extension JSON did not close with 1007");
+
+  staleExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   await onceOpen(staleExtension);
   const staleClosed = onceClose(staleExtension);
   staleExtension.send(JSON.stringify({
-    type: "hello", role: "extension", protocol: 3, version: "0.14.0",
+    type: "hello", role: "extension", protocol: 3, version: "0.14.0", extension_id: EXPECTED_EXTENSION_ID,
     capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits"],
   }));
   const staleResult = await staleClosed;
@@ -77,19 +91,22 @@ try {
   assert(staleStatus.connected === false && staleStatus.extension_reload_required === true, "stale extension rejection did not persist reload guidance");
   await waitFor(async () => (await client.status()).extension_reload_required === true);
 
-  extension = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "chrome-extension://cccccccccccccccccccccccccccccccc" });
+  extension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   const extensionReady = attachExtensionResponder(extension);
   await onceOpen(extension);
   await extensionReady;
   await waitFor(() => owner.extensionConnected());
   const connectedStatus = await owner.status();
   assert(connectedStatus.expected_extension_version === PACKAGE_VERSION && connectedStatus.extension_protocol === 3 && connectedStatus.extension_version === PACKAGE_VERSION, "extension handshake metadata was not exposed");
+  assert(connectedStatus.expected_extension_id === EXPECTED_EXTENSION_ID && connectedStatus.extension_id === EXPECTED_EXTENSION_ID, "browser status omitted the pinned extension identity");
+  assert(connectedStatus.security.pinned_extension_identity === true, "browser status did not advertise extension identity pinning");
   assert(connectedStatus.extension_reload_required === false, "compatible extension did not clear stale-build reload guidance");
   const healthUrl = new URL(initial.endpoint);
   healthUrl.protocol = "http:";
   healthUrl.pathname = "/healthz";
   const health = await (await fetch(healthUrl, { signal: AbortSignal.timeout(5000) })).json();
   assert(health.connected === true && health.expected_extension_version === PACKAGE_VERSION && health.extension_protocol === 3 && health.extension_version === PACKAGE_VERSION, "browser health endpoint omitted authenticated extension metadata");
+  assert(health.expected_extension_id === EXPECTED_EXTENSION_ID && health.extension_id === EXPECTED_EXTENSION_ID, "browser health endpoint omitted the pinned extension identity");
   assert(health.controls_extension_profile === true && health.machine_bridge_launches_browser === false, "browser health endpoint omitted the extension-profile execution model");
   assert(health.profile_identity_verifiable === false, "browser health endpoint falsely claimed it can identify the daily browser profile");
   extension.send(JSON.stringify({ type: "ping" }));
@@ -98,10 +115,10 @@ try {
   assert(tabs.tabs[0].id === 7, "owner browser request was not routed to the extension");
 
   const compatibleSocket = owner.socket;
-  staleReplacement = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "chrome-extension://dddddddddddddddddddddddddddddddd" });
+  staleReplacement = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   await onceOpen(staleReplacement);
   const staleReplacementClosed = onceClose(staleReplacement);
-  staleReplacement.send(JSON.stringify({ type: "hello", role: "extension", protocol: 1, version: "0.13.0", capabilities: [] }));
+  staleReplacement.send(JSON.stringify({ type: "hello", role: "extension", protocol: 1, version: "0.13.0", extension_id: EXPECTED_EXTENSION_ID, capabilities: [] }));
   assert((await staleReplacementClosed).code === 1002, "incompatible replacement extension was not rejected");
   assert((await owner.status()).extension_reload_required === true, "stale replacement did not retain reload guidance while the compatible extension stayed active");
   assert(owner.socket === compatibleSocket && owner.extensionConnected(), "incompatible extension candidate displaced the compatible connection");
@@ -140,9 +157,9 @@ try {
   holdListTabs = true;
   const interruptedOwner = owner.listTabs({ timeout_seconds: 10 }).catch((error) => error);
   const interruptedClient = client.listTabs({ timeout_seconds: 10 }).catch((error) => error);
-  await waitFor(() => owner.pending.size === 1 && owner.proxyRoutes.size === 1);
+  await waitFor(() => owner.pending.size === 1 && owner.brokerDiagnostics().routed_requests === 1);
   const previousServerSocket = owner.socket;
-  replacementExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.token}`], { origin: "chrome-extension://eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" });
+  replacementExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   const replacementReady = attachExtensionResponder(replacementExtension);
   await onceOpen(replacementExtension);
   await replacementReady;
@@ -152,7 +169,7 @@ try {
   const clientReplacementError = await interruptedClient;
   assert(String(ownerReplacementError?.message || ownerReplacementError).includes("replaced; retry"), "owner request was not rejected cleanly during extension replacement");
   assert(String(clientReplacementError?.message || clientReplacementError).includes("replaced; retry"), "proxied request was not rejected cleanly during extension replacement");
-  assert(owner.pending.size === 0 && owner.proxyRoutes.size === 0, "extension replacement left stale routed requests");
+  assert(owner.pending.size === 0 && owner.brokerDiagnostics().routed_requests === 0, "extension replacement left stale routed requests");
   holdListTabs = false;
   heldRequestId = "";
   const replacementTabs = await owner.listTabs({});
@@ -160,13 +177,14 @@ try {
 
   const runtimeUrl = new URL(initial.endpoint);
   runtimeUrl.pathname = "/runtime";
-  invalidRuntime = new WebSocket(runtimeUrl, [`mbm-runtime.${pairing.token}`]);
+  invalidRuntime = new WebSocket(runtimeUrl, [`mbm-runtime.${pairing.runtimeToken}`]);
   const invalidRuntimeOpened = onceOpen(invalidRuntime);
   const invalidRuntimeHello = onceMessage(invalidRuntime);
   await invalidRuntimeOpened;
   const runtimeHello = JSON.parse(Buffer.from(await invalidRuntimeHello).toString("utf8"));
   assert(runtimeHello.type === "hello" && runtimeHello.role === "runtime", "runtime broker did not send its handshake");
   assert(runtimeHello.extension_connected === true && runtimeHello.extension_info?.protocol === 3, "runtime handshake omitted compatible extension metadata");
+  assert(runtimeHello.extension_info?.extension_id === EXPECTED_EXTENSION_ID, "runtime handshake omitted the pinned extension identity");
   const invalidRuntimeClosed = onceClose(invalidRuntime);
   invalidRuntime.send(JSON.stringify({ type: "unknown" }));
   assert((await invalidRuntimeClosed).code === 1002, "unknown runtime protocol message did not close with 1002");
@@ -180,7 +198,7 @@ try {
   holdListTabs = true;
   heldRequestId = "";
   await expectReject(client.listTabs({ timeout_seconds: 1 }), "timed out");
-  await waitFor(() => owner.proxyRoutes.size === 0);
+  await waitFor(() => owner.brokerDiagnostics().routed_requests === 0);
   holdListTabs = false;
   heldRequestId = "";
 
@@ -189,7 +207,7 @@ try {
   assert(!JSON.stringify(upload).includes("file-data"), "file upload returned local file contents");
 
   const pair = await owner.pair({ open: false });
-  assert(pair.opened_pairing_page === false && !JSON.stringify(pair).includes(pairing.token), "pair tool exposed the pairing token");
+  assert(pair.opened_pairing_page === false && !JSON.stringify(pair).includes(pairing.extensionToken) && !JSON.stringify(pair).includes(pairing.runtimeToken), "pair tool exposed a broker credential");
 
   owner.stop();
   await waitFor(() => client.server !== null, 5000);
@@ -202,6 +220,7 @@ try {
   try { replacementExtension?.close(); } catch {}
   try { invalidOrigin?.close(); } catch {}
   try { invalidExtension?.close(); } catch {}
+  try { malformedExtension?.close(); } catch {}
   try { staleExtension?.close(); } catch {}
   try { staleReplacement?.close(); } catch {}
   try { invalidRuntime?.close(); } catch {}
@@ -288,7 +307,7 @@ function attachExtensionResponder(socket) {
       assert(message.type === "hello" && message.role === "extension" && message.protocol === 3, "broker extension hello was invalid");
       handshakeStage = "broker-ack";
       socket.send(JSON.stringify({
-        type: "hello", role: "extension", protocol: 3, version: PACKAGE_VERSION,
+        type: "hello", role: "extension", protocol: 3, version: PACKAGE_VERSION, extension_id: EXPECTED_EXTENSION_ID,
         capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits"],
       }));
       return;

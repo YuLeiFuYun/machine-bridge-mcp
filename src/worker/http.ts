@@ -101,10 +101,17 @@ export function baseUrl(request: Request): string {
   return new URL(request.url).origin;
 }
 
-export function bearerToken(request: Request): string {
-  const match = (request.headers.get("Authorization") ?? "").match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() ?? "";
+export function oauthAccessToken(request: Request): { scheme: "bearer" | "dpop" | ""; token: string } {
+  const match = (request.headers.get("Authorization") ?? "").match(/^(Bearer|DPoP)\s+(.+)$/i);
+  if (!match) return { scheme: "", token: "" };
+  return { scheme: match[1].toLowerCase() as "bearer" | "dpop", token: match[2].trim() };
 }
+
+export function bearerToken(request: Request): string {
+  const access = oauthAccessToken(request);
+  return access.scheme === "bearer" ? access.token : "";
+}
+
 
 export async function parseJsonRequest(request: Request, limit: number): Promise<unknown> {
   const text = await readBoundedText(request, limit);
@@ -133,31 +140,50 @@ export async function parseRequestBody(request: Request, limit: number): Promise
   return searchParamsObject(new URLSearchParams(text));
 }
 
-export async function readBoundedText(request: Request, limit: number): Promise<string> {
-  const length = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(length) && length > limit) {
-    throw new HttpError(413, "request_body_too_large", `request body exceeds ${limit} bytes`);
-  }
-  if (!request.body) return "";
+export async function discardRequestBody(request: Pick<Request, "body" | "headers">, limit: number): Promise<{ bytes_read: number; exceeded: boolean }> {
+  const boundedLimit = normalizeBodyLimit(limit);
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  let exceeded = Number.isFinite(declaredLength) && declaredLength > boundedLimit;
+  let observed = 0;
+  if (!request.body) return { bytes_read: 0, exceeded };
   const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
-      total += value.byteLength;
-      if (total > limit) {
-        await reader.cancel();
-        throw new HttpError(413, "request_body_too_large", `request body exceeds ${limit} bytes`);
-      }
-      chunks.push(value);
+      observed = Math.min(boundedLimit + 1, observed + value.byteLength);
+      if (observed > boundedLimit) exceeded = true;
     }
   } finally {
     reader.releaseLock();
   }
-  const combined = new Uint8Array(total);
+  return { bytes_read: observed, exceeded };
+}
+
+export async function readBoundedText(request: Request, limit: number): Promise<string> {
+  const boundedLimit = normalizeBodyLimit(limit);
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  let exceeded = Number.isFinite(declaredLength) && declaredLength > boundedLimit;
+  const reader = request.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let observed = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const nextObserved = Math.min(boundedLimit + 1, observed + value.byteLength);
+      if (!exceeded && observed + value.byteLength <= boundedLimit) chunks.push(value);
+      else exceeded = true;
+      observed = nextObserved;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (exceeded) throw new HttpError(413, "request_body_too_large", `request body exceeds ${boundedLimit} bytes`);
+  const combined = new Uint8Array(observed);
   let offset = 0;
   for (const chunk of chunks) {
     combined.set(chunk, offset);
@@ -168,6 +194,11 @@ export async function readBoundedText(request: Request, limit: number): Promise<
   } catch {
     throw new HttpError(400, "invalid_encoding", "Request body must be valid UTF-8");
   }
+}
+
+function normalizeBodyLimit(value: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
 }
 
 export function normalizeRedirectUri(value: string): string | null {

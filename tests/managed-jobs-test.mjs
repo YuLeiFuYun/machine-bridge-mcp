@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activeManagedJobs, inspectResourceFile, launchRunner, ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { managedRunnerEnvironment } from "../src/local/managed-job-runner.mjs";
+import { persistManagedJobTerminal } from "../src/local/managed-job-terminal.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-managed-job-test-"));
 const workspace = join(root, "workspace");
@@ -23,6 +25,19 @@ if (process.platform !== "win32") await chmod(secretFile, 0o600);
 await writeFile(helperFile, "temporary", "utf8");
 
 try {
+  testTerminalPersistenceBoundary();
+  const minimalRunnerEnv = managedRunnerEnvironment({
+    source: { PATH: "/safe/bin", HOME: "/safe/home", LANG: "C", HTTPS_PROXY: "http://secret", API_TOKEN: "secret" },
+  });
+  assert(minimalRunnerEnv.PATH === "/safe/bin" && minimalRunnerEnv.HOME === "/safe/home" && minimalRunnerEnv.LANG === "C", "minimal runner environment lost control variables");
+  assert(minimalRunnerEnv.HTTPS_PROXY === undefined && minimalRunnerEnv.API_TOKEN === undefined, "minimal runner environment retained daemon credentials");
+  const recoveryRunnerEnv = managedRunnerEnvironment({ source: { PATH: "/bin", MBM_RECOVERY_LOCK_TOKEN: "stale" }, recoveryToken: "fresh" });
+  assert(recoveryRunnerEnv.MBM_RECOVERY_LOCK_TOKEN === "fresh", "recovery runner environment lost the ownership token");
+  const ordinaryRunnerEnv = managedRunnerEnvironment({ source: { PATH: "/bin", MBM_RECOVERY_LOCK_TOKEN: "stale" } });
+  assert(ordinaryRunnerEnv.MBM_RECOVERY_LOCK_TOKEN === undefined, "ordinary runner inherited a stale recovery token");
+  const fullRunnerEnv = managedRunnerEnvironment({ fullEnv: true, source: { PATH: "/bin", API_TOKEN: "explicit" } });
+  assert(fullRunnerEnv.API_TOKEN === "explicit", "explicit full-env runner did not preserve the requested parent environment");
+
   const failedRunnerDir = join(root, `job_${"R".repeat(24)}`);
   await mkdir(failedRunnerDir, { recursive: true });
   const runnerErrors = [];
@@ -60,6 +75,26 @@ try {
     resources: { "test-secret": resource },
   });
 
+  const reconstructedId = `job_${"T".repeat(24)}`;
+  const reconstructedDir = join(jobRoot, reconstructedId);
+  await mkdir(reconstructedDir, { recursive: true, mode: 0o700 });
+  const reconstructedFinishedAt = new Date(Date.now() - 5000).toISOString();
+  await writeFile(join(reconstructedDir, "status.json"), `${JSON.stringify({
+    job_id: reconstructedId, name: "terminal result recovery", status: "running", approval: "mcp",
+    created_at: new Date(Date.now() - 60_000).toISOString(), updated_at: new Date(Date.now() - 30_000).toISOString(),
+    current_phase: "finally_steps", current_step: 0, cleanup_guarantee: "best-effort-finally-and-recovery",
+  }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(join(reconstructedDir, "result.json"), `${JSON.stringify({
+    job_id: reconstructedId, name: "terminal result recovery", status: "failed", recovered: false,
+    steps: [], finally_steps: [], error_class: "execution_failed", cleanup_error_class: null,
+    finished_at: reconstructedFinishedAt,
+  }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(join(reconstructedDir, "plan.json"), "sensitive-plan-must-be-scrubbed\n", { mode: 0o600 });
+  const reconstructed = manager.read({ job_id: reconstructedId });
+  assert(reconstructed.status === "failed" && reconstructed.finished_at === reconstructedFinishedAt, "terminal result did not reconstruct an interrupted status");
+  assert(reconstructed.result_persisted === true && reconstructed.artifact_cleanup_pending === false, "reconstructed terminal status lost persistence metadata");
+  assert(!(await exists(join(reconstructedDir, "plan.json"))), "terminal result recovery retained the sensitive execution plan");
+
   const restrictedManager = new ManagedJobManager({
     jobRoot: join(root, "restricted-jobs"),
     workspace,
@@ -89,6 +124,23 @@ try {
   const unreadableList = unreadableManager.list({ limit: 10 });
   assert(unreadableList.jobs.some((job) => job.job_id === unreadableId && job.status === "unreadable"), "managed-job list hid unreadable state");
   assert(activeManagedJobs(unreadableRoot).some((job) => job.job_id === unreadableId && job.status === "unreadable"), "unreadable managed job did not block removal");
+
+  const expiredStaged = manager.stage({
+    name: "expired staged sensitive plan",
+    steps: [{ argv: [process.execPath, "-e", ""], env: { PRIVATE_VALUE: "must-be-scrubbed" }, stdin: "sensitive-stdin" }],
+  });
+  assert(expiredStaged.plan_expires_after_hours === 24, "staged job did not report the 24-hour sensitive-plan TTL");
+  const expiredDir = join(jobRoot, expiredStaged.job_id);
+  const expiredStatusFile = join(expiredDir, "status.json");
+  const expiredStatus = JSON.parse(await readFile(expiredStatusFile, "utf8"));
+  expiredStatus.created_at = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+  await writeFile(expiredStatusFile, JSON.stringify(expiredStatus, null, 2) + "\n", { mode: 0o600 });
+  manager.list({ limit: 50 });
+  const expiredResult = manager.read({ job_id: expiredStaged.job_id });
+  assert(expiredResult.status === "expired_before_start" && expiredResult.error_class === "expired", "staged sensitive plan did not expire fail-closed");
+  assert(!(await exists(join(expiredDir, "plan.json"))), "expired staged plan retained env/stdin/script content");
+  const expiredDiskText = (await Promise.all(["status.json", "result.json"].map((name) => readFile(join(expiredDir, name), "utf8")))).join("\n");
+  assert(!expiredDiskText.includes("must-be-scrubbed") && !expiredDiskText.includes("sensitive-stdin"), "expired staged audit records retained sensitive plan content");
 
   const stagedMarker = join(workspace, "staged-approved.txt");
   const staged = manager.stage({
@@ -440,6 +492,61 @@ try {
   console.log("managed jobs/resources integration test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
+}
+
+function testTerminalPersistenceBoundary() {
+  const status = { job_id: `job_${"P".repeat(24)}`, name: "persistence boundary", status: "running" };
+  const result = {
+    job_id: status.job_id, name: status.name, status: "failed", steps: [], finally_steps: [],
+    error_class: "execution_failed", cleanup_error_class: null, finished_at: new Date().toISOString(),
+  };
+
+  const resultFailureWrites = [];
+  const resultFailureRemoved = [];
+  const resultFailure = persistManagedJobTerminal({
+    statusFile: "status", resultFile: "result", artifacts: ["plan", "pid"], status, result,
+    writeJson(file, value) {
+      if (file === "result") throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      resultFailureWrites.push(structuredClone(value));
+    },
+    removeFile(file) { resultFailureRemoved.push(file); },
+    maxStatusBytes: 1024, maxResultBytes: 1024,
+  });
+  assert(resultFailure.statusPersisted && !resultFailure.resultPersisted && resultFailure.artifactsScrubbed, "result persistence failure did not preserve a terminal status");
+  assert(resultFailure.status.result_persisted === false && resultFailure.status.terminal_record_error_class === "storage_limit", "result persistence failure metadata is incomplete");
+  assert(resultFailureWrites.length === 2 && resultFailureRemoved.join(",") === "plan,pid", "terminal status was not confirmed around artifact cleanup");
+
+  const statusFailureRemoved = [];
+  const statusFailure = persistManagedJobTerminal({
+    statusFile: "status", resultFile: "result", artifacts: ["plan"], status, result,
+    writeJson(file) { if (file === "status") throw Object.assign(new Error("read only"), { code: "EROFS" }); },
+    removeFile(file) { statusFailureRemoved.push(file); },
+    maxStatusBytes: 1024, maxResultBytes: 1024,
+  });
+  assert(statusFailure.resultPersisted && !statusFailure.statusPersisted && statusFailureRemoved.length === 0, "status persistence failure deleted recovery artifacts");
+  assert(statusFailure.statusErrorClass === "permission_denied", "status persistence failure was not classified");
+
+  const cleanupWrites = [];
+  const cleanupFailure = persistManagedJobTerminal({
+    statusFile: "status", resultFile: "result", artifacts: ["plan", "pid"], status, result,
+    writeJson(file, value) { if (file === "status") cleanupWrites.push(structuredClone(value)); },
+    removeFile(file) { if (file === "plan") throw Object.assign(new Error("denied"), { code: "EACCES" }); },
+    maxStatusBytes: 1024, maxResultBytes: 1024,
+  });
+  assert(cleanupFailure.statusPersisted && !cleanupFailure.artifactsScrubbed, "artifact cleanup failure was reported as successful");
+  assert(cleanupFailure.status.artifact_cleanup_pending === true && cleanupFailure.cleanupErrorClass === "permission_denied", "artifact cleanup failure metadata is incomplete");
+  assert(cleanupWrites.at(-1).artifact_cleanup_pending === true, "cleanup-pending status was not persisted");
+
+  let statusWrites = 0;
+  const confirmationFailure = persistManagedJobTerminal({
+    statusFile: "status", resultFile: "result", artifacts: ["plan"], status, result,
+    writeJson(file) {
+      if (file === "status" && ++statusWrites === 2) throw new Error("confirmation failed");
+    },
+    removeFile() {}, maxStatusBytes: 1024, maxResultBytes: 1024,
+  });
+  assert(confirmationFailure.statusPersisted && confirmationFailure.artifactsScrubbed && confirmationFailure.statusErrorClass === "persistence_failed", "post-cleanup status confirmation failure was hidden");
+  assert(confirmationFailure.status.artifact_cleanup_pending === true, "failed cleanup confirmation did not retain conservative pending state");
 }
 
 async function waitForRunning(manager, jobId, timeoutMs = 10_000) {

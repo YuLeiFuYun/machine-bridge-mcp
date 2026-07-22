@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -7,12 +7,14 @@ import { BridgeError, errorCode, publicError, remoteBridgeError } from "../src/l
 import { CallRegistry } from "../src/local/call-registry.mjs";
 import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
-import { terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
+import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
 import { executionGuardrailsSnapshot } from "../src/local/execution-limits.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
+import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { workspaceShellCommand } from "../src/local/shell.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
 import { normalizeRelayResumeCalls } from "../src/local/runtime-relay.mjs";
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
@@ -20,6 +22,7 @@ import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
 await testCallRegistry();
 await testToolExecutor();
 await testToolExecutorConcurrency();
+testToolResultBoundary();
 await testDuplicateRelayCallId();
 testRelayReadinessProbe();
 await testRelayReadinessStateGuards();
@@ -28,6 +31,8 @@ testRelayResumeReconciliation();
 testRuntimeConvenienceMethods();
 testRelayReconnectDelivery();
 await testProcessExecutionNoShell();
+await testFixedInternalProcessBoundary();
+testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
 testProcessTreeSupervisor();
@@ -74,28 +79,24 @@ async function testToolExecutor() {
   const events = [];
   const metrics = new RuntimeObservability({ now: () => 1000 });
   const registry = new CallRegistry({ maximum: 4 });
-  const gate = { assert(name) { if (name === "denied") throw new BridgeError("policy_denied", "denied"); } };
-  const accountAccessGate = { assert(role, name) { if (role !== "owner" || name === "account-denied") throw new BridgeError("policy_denied", "account denied"); } };
+  const fullPolicy = { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true };
+  const gate = { policy: fullPolicy, assert(name) { if (name === "denied") throw new BridgeError("policy_denied", "denied"); } };
+  const accountAccessGate = {
+    assert(role, name) { if (role !== "owner" || name === "account-denied") throw new BridgeError("policy_denied", "account denied"); },
+    authority() { return { principal: { kind: "account", role: "owner" }, effectivePolicy: fullPolicy, owner: true }; },
+  };
   const executor = new ToolExecutor({
     handlers: {
       ok: async (args, context) => ({ value: args.value, call_id: context.callId }),
       fail: async () => { throw new Error("raw implementation failure"); },
-      approval: async () => ({ unexpected: true }),
+      authority_denied: async () => ({ unexpected: true }),
     },
     policyGate: gate,
     accountAccessGate,
     operationAuthorizer: {
       async authorize(operation) {
-        if (operation.tool !== "approval") return;
-        throw new BridgeError("authorization_denied", "local approval required", {
-          retryable: true,
-          details: {
-            reason: "local_approval_required",
-            approval_id: `approval_${"a".repeat(24)}`,
-            approve_command: "machine-mcp approval approve approval_test --duration 1h",
-            full_command: "machine-mcp approval approve approval_test --full",
-          },
-        });
+        if (operation.tool === "authority_denied") throw new BridgeError("authorization_denied", "request exceeds the account role ceiling");
+        return { allowed: true, source: "trusted-owner", category: "ordinary operation", scopes: [] };
       },
     },
     callRegistry: registry,
@@ -107,16 +108,12 @@ async function testToolExecutor() {
   assert(result.value === 7 && result.call_id === "ok-call", "tool executor lost arguments or lifecycle context");
   await expectReject(() => executor.execute("fail", {}, { callId: "fail-call", origin: "relay", authorization: { role: "owner" } }), "execution_failed", "safe failure");
   await expectReject(() => executor.execute("denied", {}, { callId: "deny-call" }), "policy_denied", "denied");
-  const approvalError = await expectReject(
-    () => executor.execute("approval", {}, { callId: "approval-call", origin: "relay", authorization: { role: "owner" } }),
+  const authorityError = await expectReject(
+    () => executor.execute("authority_denied", {}, { callId: "authority-call", origin: "relay", authorization: { role: "owner" } }),
     "authorization_denied",
-    "local approval required",
+    "request exceeds the account role ceiling",
   );
-  assert(approvalError.retryable === true, "local approval denial lost its retryable contract");
-  assert(approvalError.details?.reason === "local_approval_required", "local approval denial lost its stable reason");
-  assert(approvalError.details?.approval_id?.startsWith("approval_"), "local approval denial lost its pending id");
-  assert(approvalError.details?.approve_command?.includes("--duration 1h"), "local approval denial lost its scoped command");
-  assert(approvalError.details?.full_command?.endsWith("--full"), "local approval denial lost its full-window command");
+  assert(authorityError.retryable === false, "role-ceiling denial was incorrectly made retryable");
   const snapshot = metrics.snapshot();
   assert(snapshot.calls.started === 4, "authorization attempts are missing from execution metrics");
   assert(snapshot.calls.completed === 1 && snapshot.calls.failed === 3, "tool metrics lost terminal outcomes");
@@ -148,8 +145,8 @@ async function testToolExecutorConcurrency() {
       },
       fast: async () => "fast-complete",
     },
-    policyGate: { assert() {} },
-    accountAccessGate: { assert() {} },
+    policyGate: { policy: { profile: 'full', origin: 'explicit', revision: 5, allowWrite: true, allowExec: true, execMode: 'shell', unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }, assert() {} },
+    accountAccessGate: { assert() {}, authority(_authorization, policy) { return { principal: { kind: 'account', role: 'owner' }, effectivePolicy: policy, owner: true }; } },
     callRegistry: registry,
     observability: new RuntimeObservability(),
     logger: { event() {} },
@@ -234,7 +231,7 @@ async function testDuplicateRelayCallId() {
     id: "duplicate-call",
     tool: "read_file",
     arguments: { path: "README.md" },
-    authorization: { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, role: "owner" },
+    authorization: { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, family_id: `mcp_family_${"c".repeat(43)}`, role: "owner" },
   }, { sessionId: 1 });
   assert(violation === "duplicate_tool_call_id", "duplicate relay call ID was not rejected as a protocol error");
   assert(runtime.activeRelayCalls.has("duplicate-call"), "duplicate relay call removed the original call lifecycle");
@@ -424,6 +421,55 @@ async function testProcessExecutionNoShell() {
   }
 }
 
+async function testFixedInternalProcessBoundary() {
+  class ClosingChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4343;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.stdin = new PassThrough();
+    }
+  }
+  const temp = mkdtempSync(join(tmpdir(), "mbm-internal-process-"));
+  const child = new ClosingChild();
+  let spawnInvocation = null;
+  const service = new ProcessExecutionService({
+    workspace: temp,
+    policy: { minimalEnv: false },
+    policyGate: { assert() {} },
+    policyForContext: () => ({ minimalEnv: false }),
+    runtimeDir: temp,
+    processTracker: new ProcessTracker(),
+    resolveExistingPath: async (value) => value,
+    resolveLocalCommand: async () => ({}),
+    displayPath: (value) => value,
+    throwIfCancelled() {},
+    spawnProcess: (cmd, args, options) => {
+      spawnInvocation = { cmd, args, options };
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    },
+  });
+  try {
+    const result = await service.runFixedInternal(
+      "git",
+      ["status", "--short"],
+      5000,
+      true,
+      1024,
+      { callId: "fixed-internal", authority: { principal: { kind: "account", role: "reviewer" } } },
+      temp,
+    );
+    assert(result.code === 0, "fixed internal process did not complete");
+    assert(spawnInvocation?.cmd === "git" && spawnInvocation?.args?.[0] === "status", "fixed internal process was wrapped as delegated arbitrary execution");
+    assert(spawnInvocation?.options?.shell === false, "fixed internal process enabled shell interpretation");
+    assert(spawnInvocation?.options?.env?.HOME === join(temp, "home"), "fixed internal process did not use an isolated minimal environment");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+}
+
 async function testProcessCancellationSettlesBeforeClose() {
   class NeverClosingChild extends EventEmitter {
     constructor() {
@@ -501,6 +547,28 @@ function testProcessTracker() {
   tracker.untrack(unowned);
   tracker.untrack(null);
   assert(tracker.snapshot().active_processes === 0, "process tracker did not release children");
+
+  const clearedTimers = [];
+  let scheduledCount = 0;
+  let terminationSettled = null;
+  const timerTracker = new ProcessTracker({
+    terminate() {},
+    terminateWithEscalation(_child, options) { scheduledCount += 1; terminationSettled = options.onTerminationSettled; return "timer-" + scheduledCount; },
+    clearScheduledTermination(timer) { clearedTimers.push(timer); },
+  });
+  const timedChild = { pid: 201 };
+  timerTracker.track(timedChild, "timed");
+  timerTracker.terminateCall("timed");
+  timerTracker.terminateCall("timed");
+  assert(scheduledCount === 1, "process tracker scheduled duplicate escalation timers");
+  timerTracker.untrack(timedChild);
+  assert(clearedTimers.length === 0, "process tracker cancelled descendant escalation when the parent closed");
+  terminationSettled();
+  timerTracker.track(timedChild, "timed-again");
+  timerTracker.terminateCall("timed-again");
+  assert(scheduledCount === 2, "settled process escalation was not released from the tracker");
+  timerTracker.terminateCall("timed-again", { force: true });
+  assert(clearedTimers.join(",") === "timer-2", "forced process termination did not clear the pending escalation timer");
 }
 
 
@@ -521,6 +589,17 @@ function testProcessTreeSupervisor() {
   scheduled.callback();
   assert(signals.length === 2 && signals[1][1] === "SIGKILL" && escalated, "process-tree escalation did not force termination after the grace period");
 
+  let exitedCallback = null;
+  let exitedSignals = 0;
+  const exitedChild = { pid: 4343, exitCode: null, signalCode: null };
+  terminateProcessTreeWithEscalation(exitedChild, {
+    terminate(_child, signal) { if (signal === "SIGKILL") exitedSignals += 1; },
+    setTimeout(callback) { exitedCallback = callback; return "exited-timer"; },
+  });
+  exitedChild.exitCode = 0;
+  exitedCallback();
+  assert(exitedSignals === 0, "process-tree escalation signalled a child after it had exited");
+
   const taskkillCalls = [];
   const killer = new EventEmitter();
   killer.unrefCalled = false;
@@ -535,6 +614,16 @@ function testProcessTreeSupervisor() {
   assert(taskkillCalls[1].args.includes("/F") && killer.unrefCalled, "Windows forced tree termination omitted /F or retained the helper process");
   killer.emit("error", new Error("taskkill unavailable"));
   assert(signals.some(([kind, signal]) => kind === "child" && signal === "SIGTERM"), "asynchronous taskkill failure was unhandled or did not fall back to ChildProcess.kill");
+
+  const snapshotRows = [
+    { pid: 4242, pgid: 4242, startedAt: Date.parse("2026-07-22T00:00:00Z") },
+    { pid: 4243, pgid: 4242, startedAt: Date.parse("2026-07-22T00:00:01Z") },
+  ];
+  const ownership = captureProcessTreeOwnership(child, { platform: "linux", listProcessGroups: () => snapshotRows });
+  assert(ownership.members.length === 2, "process group snapshot omitted a descendant");
+  assert(processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [snapshotRows[1]] }), "surviving original descendant did not preserve process-group ownership");
+  assert(!processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [{ pid: 4243, pgid: 4242, startedAt: Date.parse("2026-07-22T00:01:00Z") }] }), "PID-reused process group was accepted for escalation");
+  assert(!processTreeOwnershipStillCurrent({ platform: "linux", pid: 4242, members: [] }, { ...child, exitCode: 0 }, { listProcessGroups: () => [] }), "empty ownership snapshot ignored parent exit");
 
   const groupSignals = [];
   assert(terminateProcessTree(child, "SIGTERM", {
@@ -564,6 +653,15 @@ function testErrors() {
   assert(remote.code === "limit_exceeded" && remote.retryable === true && remote.details?.retained === true, "remote structured error was not preserved");
   const hidden = publicError(new BridgeError("internal_error", "private", { expose: false, details: { secret: "must-not-leak" } }));
   assert(!hidden.details && hidden.message === "internal error", "non-exposed error leaked structured details");
+  const rawUnknown = publicError(new Error("private path /Users/private-user and token secret"));
+  assert(rawUnknown.message === "operation failed" && !rawUnknown.message.includes("private-user"), "unknown exception text was exposed remotely");
+  const explicitlySafe = publicError(new Error("safe\nmessage"), { expose: true, safeMessage: "safe\nmessage" });
+  assert(explicitlySafe.message === "safe message", "public error message retained unsafe controls");
+  const cyclicDetails = {}; cyclicDetails.self = cyclicDetails;
+  const cyclicPublic = publicError(new BridgeError("execution_failed", "bounded", { details: cyclicDetails }));
+  assert(!cyclicPublic.details && cyclicPublic.message === "bounded", "cyclic public error details were not omitted");
+  const hugePublic = publicError(new BridgeError("execution_failed", "bounded", { details: { data: "x".repeat(600 * 1024) } }));
+  assert(!hugePublic.details, "oversized public error details were not omitted");
 }
 
 function testWorkspaceShellSelection() {
@@ -611,3 +709,58 @@ function expectBridgeError(operation, code) {
   throw new Error(`expected BridgeError ${code}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
+
+function testToolResultBoundary() {
+  const source = { ok: true, nested: { value: 7 } };
+  const normalized = normalizeToolResult(source);
+  source.nested.value = 9;
+  assert(normalized.value.nested.value === 7, "tool result boundary retained a mutable handler object");
+  assert(normalized.bytes === Buffer.byteLength(JSON.stringify({ ok: true, nested: { value: 7 } })), "tool result boundary reported the wrong byte size");
+
+  const cyclic = {};
+  cyclic.self = cyclic;
+  expectBridgeError(() => normalizeToolResult(cyclic), "internal_error");
+  expectBridgeError(() => normalizeToolResult({ value: 1n }), "internal_error");
+  expectBridgeError(() => normalizeToolResult({ value: undefined }), "internal_error");
+  expectBridgeError(() => normalizeToolResult({ value() {} }), "internal_error");
+  expectBridgeError(() => normalizeToolResult({ value: Symbol("x") }), "internal_error");
+  expectBridgeError(() => normalizeToolResult({ value: Number.NaN }), "internal_error");
+  expectBridgeError(() => normalizeToolResult(undefined), "internal_error");
+  let oversized;
+  try { normalizeToolResult({ data: "x".repeat(MAX_TOOL_RESULT_BYTES) }); }
+  catch (error) { oversized = error; }
+  assert(oversized?.code === "limit_exceeded", "oversized tool result used the wrong error code");
+  assert(oversized.details.maximum_bytes === MAX_TOOL_RESULT_BYTES, "oversized tool result omitted its safe limit metadata");
+}
+
+
+function testTrustedGitExecutable() {
+  const root = mkdtempSync(join(tmpdir(), "mbm-trusted-git-"));
+  const workspace = join(root, "workspace");
+  const stateRoot = join(root, "state");
+  const runtimeDir = join(root, "runtime");
+  const home = join(root, "home");
+  const trustedDir = join(root, "trusted-system");
+  for (const directory of [workspace, stateRoot, runtimeDir, home, trustedDir]) mkdirSync(directory);
+  const workspaceGit = join(workspace, "git");
+  const homeGit = join(home, "git");
+  const writableGit = join(trustedDir, "git-writable");
+  const trustedGit = join(trustedDir, "git");
+  for (const file of [workspaceGit, homeGit, writableGit, trustedGit]) writeFileSync(file, "#!/bin/sh\nexit 0\n");
+  chmodSync(workspaceGit, 0o755);
+  chmodSync(homeGit, 0o755);
+  chmodSync(writableGit, 0o775);
+  chmodSync(trustedGit, 0o755);
+  try {
+    const resolved = resolveTrustedGitExecutable({
+      platform: "linux",
+      workspace,
+      stateRoot,
+      runtimeDir,
+      home,
+      candidates: ["git", workspaceGit, homeGit, writableGit, trustedGit],
+    });
+    assert(resolved === realpathSync(trustedGit), "trusted Git resolver accepted a relative, workspace, home, or group-writable executable");
+    expectBridgeError(() => resolveTrustedGitExecutable({ platform: "linux", workspace, stateRoot, runtimeDir, home, candidates: [workspaceGit, homeGit, writableGit] }), "unavailable");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}

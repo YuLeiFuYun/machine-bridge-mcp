@@ -6,8 +6,12 @@ export class ProcessTracker {
     this.terminateWithEscalation = typeof options.terminateWithEscalation === "function"
       ? options.terminateWithEscalation
       : terminateProcessTreeWithEscalation;
+    this.clearScheduledTermination = typeof options.clearScheduledTermination === "function"
+      ? options.clearScheduledTermination
+      : clearTimeout;
     this.active = new Set();
     this.byCall = new Map();
+    this.terminationTimers = new Map();
   }
 
   track(child, callId = "") {
@@ -35,21 +39,41 @@ export class ProcessTracker {
 
   terminateCall(callId, { force = false } = {}) {
     const children = [...(this.byCall.get(String(callId || "")) || [])];
-    for (const child of children) {
-      if (force) this.terminate(child, "SIGKILL");
-      else this.terminateWithEscalation(child);
-    }
+    for (const child of children) this.requestTermination(child, force);
     return children.length;
   }
 
   terminateAll(signal = "SIGTERM", escalate = false) {
     for (const child of [...this.active]) {
-      if (escalate && signal !== "SIGKILL") this.terminateWithEscalation(child);
-      else this.terminate(child, signal);
+      if (escalate && signal !== "SIGKILL") this.requestTermination(child, false);
+      else {
+        this.clearTermination(child);
+        this.terminate(child, signal);
+      }
     }
   }
 
   snapshot() {
     return { active_processes: this.active.size, calls_with_processes: this.byCall.size };
+  }
+
+  requestTermination(child, force) {
+    if (force) {
+      this.clearTermination(child);
+      this.terminate(child, "SIGKILL");
+      return;
+    }
+    if (this.terminationTimers.has(child)) return;
+    const timer = this.terminateWithEscalation(child, {
+      onTerminationSettled: () => { this.terminationTimers.delete(child); },
+    });
+    if (timer) this.terminationTimers.set(child, timer);
+  }
+
+  clearTermination(child) {
+    const timer = this.terminationTimers.get(child);
+    if (!timer) return;
+    this.clearScheduledTermination(timer);
+    this.terminationTimers.delete(child);
   }
 }

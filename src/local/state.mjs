@@ -7,9 +7,11 @@ import serverMetadata from "../shared/server-metadata.json" with { type: "json" 
 import { replaceFileSync } from "./atomic-fs.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
-import { createDeviceIdentity, validateDeviceIdentity } from "./device-identity.mjs";
+import { createDeviceIdentity } from "./device-identity.mjs";
+import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { isPlainRecord } from "./records.mjs";
 
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const appName = String(serverMetadata.name);
@@ -17,6 +19,7 @@ const STATE_MARKER = ".machine-bridge-mcp-state";
 const STATE_MARKER_SCHEMA = 2;
 export const STATE_SCHEMA_VERSION = 6;
 const GLOBAL_CONFIG_SCHEMA = 1;
+const RECOVERY_MARKER_SCHEMA = 1;
 const CORRUPT_RECOVERY = Symbol("corrupt-recovery");
 const MAX_STATE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_LOCK_BYTES = 64 * 1024;
@@ -66,7 +69,7 @@ export function loadGlobalConfig(stateRoot = defaultStateRoot()) {
   const file = configPath(root);
   if (!existsSync(file)) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
   ownerOnlyFile(file);
-  const config = readJsonObjectOrBackup(file);
+  const config = readJsonObjectOrBackup(file, { allowEmptyRecovery: true });
   if (config[CORRUPT_RECOVERY]) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
   if (config.schemaVersion !== GLOBAL_CONFIG_SCHEMA) {
     throw new Error("global configuration schema is obsolete; remove the state root and initialize the current version");
@@ -149,6 +152,16 @@ function assertStateRootSeparatedFromWorkspace(stateRoot, workspace) {
   }
 }
 
+function samePotentialPathIdentity(left, right) {
+  try {
+    const a = canonicalizePotentialPath(String(left));
+    const b = canonicalizePotentialPath(String(right));
+    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    return false;
+  }
+}
+
 function sameWorkspaceIdentity(left, right) {
   try {
     const a = resolveWorkspace(left);
@@ -169,13 +182,20 @@ export function loadState(workspace, options = {}) {
   const profileDir = profileDirForWorkspace(canonicalWorkspace, stateRoot);
   const statePath = path.join(profileDir, "state.json");
   ensureOwnerOnlyDir(profileDir);
+  const recoveryPath = recoveryMarkerPath(statePath);
+  const recoveryPending = existsSync(recoveryPath);
+  const recoveryMarker = recoveryPending ? readRecoveryMarker(recoveryPath, statePath) : null;
   let state = {};
   if (existsSync(statePath)) {
     ownerOnlyFile(statePath);
-    state = readJsonObjectOrBackup(statePath);
-    if (!state[CORRUPT_RECOVERY] && state.schemaVersion !== STATE_SCHEMA_VERSION) {
+    state = readJsonObjectOrBackup(statePath, { recoveryPath });
+    if (state.schemaVersion !== STATE_SCHEMA_VERSION) {
       throw new Error("workspace state schema is obsolete; remove the state root and initialize the current version");
     }
+    assertWorkspaceStateEnvelope(state, { canonicalWorkspace, stateRoot, profileDir, statePath });
+    if (recoveryPending) unlinkSync(recoveryPath);
+  } else if (recoveryPending) {
+    throw recoveryRequiredError(recoveryMarker);
   }
   state.schemaVersion = STATE_SCHEMA_VERSION;
   state.workspace = {
@@ -185,17 +205,57 @@ export function loadState(workspace, options = {}) {
   };
   state.paths = { stateRoot, profileDir, statePath };
   state.worker ||= {};
+  delete state.worker.accountAdminSecret;
   state.policy ||= {};
   state.resources ||= {};
   return state;
 }
 
 export function saveState(state) {
-  assertNoForeignMaintenance(state?.paths?.stateRoot);
-  const statePath = state?.paths?.statePath;
-  if (!statePath) throw new Error("state path is missing");
-  ensureOwnerOnlyDir(path.dirname(statePath));
-  atomicWriteJson(statePath, { ...state });
+  const envelope = assertWorkspaceStateEnvelope(state);
+  assertNoForeignMaintenance(envelope.stateRoot);
+  assertValidStateMarker(path.join(envelope.stateRoot, STATE_MARKER));
+  ensureOwnerOnlyDir(envelope.profileDir);
+  atomicWriteJson(envelope.statePath, { ...state });
+  const recoveryPath = recoveryMarkerPath(envelope.statePath);
+  if (existsSync(recoveryPath)) unlinkSync(recoveryPath);
+}
+
+function assertWorkspaceStateEnvelope(state, expected = {}) {
+  if (!isPlainRecord(state) || state.schemaVersion !== STATE_SCHEMA_VERSION) {
+    throw new Error("workspace state envelope is incomplete or uses the wrong schema");
+  }
+  if (!isPlainRecord(state.workspace) || typeof state.workspace.path !== "string" || typeof state.workspace.hash !== "string") {
+    throw new Error("workspace state envelope is missing workspace identity");
+  }
+  if (!isPlainRecord(state.paths) || !isPlainRecord(state.worker) || !isPlainRecord(state.policy) || !isPlainRecord(state.resources)) {
+    throw new Error("workspace state envelope is missing required object fields");
+  }
+  const canonicalWorkspace = resolveWorkspace(expected.canonicalWorkspace || state.workspace.path);
+  const expectedHash = workspaceHash(canonicalWorkspace);
+  if (!sameWorkspaceIdentity(state.workspace.path, canonicalWorkspace) || state.workspace.hash !== expectedHash) {
+    throw new Error("workspace state envelope does not match the selected workspace");
+  }
+  if (typeof state.paths.stateRoot !== "string" || !state.paths.stateRoot
+      || typeof state.paths.profileDir !== "string" || !state.paths.profileDir
+      || typeof state.paths.statePath !== "string" || !state.paths.statePath) {
+    throw new Error("workspace state envelope is missing canonical state paths");
+  }
+  const stateRoot = canonicalizePotentialPath(expected.stateRoot || state.paths.stateRoot);
+  const profileDir = canonicalizePotentialPath(expected.profileDir || state.paths.profileDir);
+  const statePath = canonicalizePotentialPath(expected.statePath || state.paths.statePath);
+  const expectedProfileDir = canonicalizePotentialPath(profileDirForWorkspace(canonicalWorkspace, stateRoot));
+  const expectedStatePath = canonicalizePotentialPath(path.join(expectedProfileDir, "state.json"));
+  if (!samePotentialPathIdentity(profileDir, expectedProfileDir) || !samePotentialPathIdentity(statePath, expectedStatePath)) {
+    throw new Error("workspace state envelope contains inconsistent state paths");
+  }
+  if (!samePotentialPathIdentity(state.paths.stateRoot, stateRoot)
+      || !samePotentialPathIdentity(state.paths.profileDir, profileDir)
+      || !samePotentialPathIdentity(state.paths.statePath, statePath)) {
+    throw new Error("workspace state envelope does not match the active state location");
+  }
+  assertStateRootSeparatedFromWorkspace(stateRoot, canonicalWorkspace);
+  return { canonicalWorkspace, stateRoot, profileDir, statePath };
 }
 
 export function daemonLockPathForState(state) {
@@ -422,7 +482,7 @@ function readBoundedUtf8(filePath, maxBytes, label) {
   }
 }
 
-function readJsonObjectOrBackup(filePath) {
+function readJsonObjectOrBackup(filePath, options = {}) {
   const text = readBoundedUtf8(filePath, MAX_STATE_JSON_BYTES, "state JSON");
   let parsed;
   try {
@@ -434,10 +494,39 @@ function readJsonObjectOrBackup(filePath) {
     replaceFileSync(filePath, backupPath);
     ownerOnlyFile(backupPath);
     pruneBackups(filePath, 3);
-    const recovered = {};
-    Object.defineProperty(recovered, CORRUPT_RECOVERY, { value: true });
-    return recovered;
+    if (options.allowEmptyRecovery === true) {
+      const recovered = {};
+      Object.defineProperty(recovered, CORRUPT_RECOVERY, { value: true });
+      return recovered;
+    }
+    const recoveryPath = options.recoveryPath || recoveryMarkerPath(filePath);
+    const marker = { schemaVersion: RECOVERY_MARKER_SCHEMA, backup: path.basename(backupPath), detectedAt: new Date().toISOString() };
+    replaceFileAtomicallySync(recoveryPath, `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 });
+    ownerOnlyFile(recoveryPath);
+    throw recoveryRequiredError(marker);
   }
+}
+
+function recoveryMarkerPath(statePath) { return `${statePath}.recovery-required`; }
+
+function readRecoveryMarker(markerPath, statePath) {
+  ownerOnlyFile(markerPath);
+  let marker;
+  try { marker = JSON.parse(readBoundedUtf8(markerPath, MAX_MARKER_BYTES, "state recovery marker")); }
+  catch { throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing"); }
+  if (marker?.schemaVersion !== RECOVERY_MARKER_SCHEMA || typeof marker.backup !== "string"
+      || !marker.backup.startsWith(`${path.basename(statePath)}.corrupt-`) || path.basename(marker.backup) !== marker.backup
+      || !Number.isFinite(Date.parse(String(marker.detectedAt || "")))) {
+    throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing");
+  }
+  return Object.freeze({ schemaVersion: marker.schemaVersion, backup: marker.backup, detectedAt: marker.detectedAt });
+}
+
+function recoveryRequiredError(marker) {
+  const backup = marker?.backup || "the bounded corrupt backup";
+  const error = new Error(`workspace state recovery is required; invalid JSON was preserved as ${backup}. Restore a valid current-schema state.json or intentionally remove this profile before restarting`);
+  error.code = "state_recovery_required";
+  return error;
 }
 
 function ensureStateRoot(inputRoot) {
@@ -592,10 +681,11 @@ function pruneBackups(filePath, keep) {
 
 export function ensureWorkerSecrets(state, options = {}) {
   state.worker ||= {};
+  delete state.worker.accountAdminSecret;
   const enrollingDeviceIdentity = !state.worker.deviceIdentity;
-  if (!state.worker.accountAdminSecret || options.rotateSecrets) state.worker.accountAdminSecret = randomToken("account_admin");
-  if (enrollingDeviceIdentity || options.rotateSecrets) state.worker.deviceIdentity = createDeviceIdentity();
-  else validateDeviceIdentity(state.worker.deviceIdentity);
+  if (enrollingDeviceIdentity || (options.rotateSecrets && !options.deferDeviceRotation)) state.worker.deviceIdentity = createDeviceIdentity();
+  else validateDeviceRootIdentity(state.worker.deviceIdentity);
+  if (state.worker.pendingDeviceIdentity) validateDeviceRootIdentity(state.worker.pendingDeviceIdentity);
   delete state.worker.daemonSecret;
   if (!state.worker.oauthTokenVersion || enrollingDeviceIdentity || options.rotateSecrets) {
     state.worker.oauthTokenVersion = randomToken("token_version");
@@ -622,6 +712,42 @@ export function ensureWorkerSecrets(state, options = {}) {
   delete state.worker.updatedAt;
 }
 
+export function deploymentDeviceIdentity(state) {
+  const identity = state?.worker?.pendingDeviceIdentity || state?.worker?.deviceIdentity;
+  return validateDeviceRootIdentity(identity);
+}
+
+export function promotePendingDeviceIdentity(state) {
+  const pending = state?.worker?.pendingDeviceIdentity;
+  if (!pending) return false;
+  validateDeviceRootIdentity(pending);
+  const current = state.worker.deviceIdentity;
+  if (current) {
+    const previous = Array.isArray(state.worker.previousDeviceIdentities) ? state.worker.previousDeviceIdentities : [];
+    state.worker.previousDeviceIdentities = [...previous, publicDeviceRootRecord(current)].slice(-2);
+  }
+  state.worker.deviceIdentity = pending;
+  delete state.worker.pendingDeviceIdentity;
+  return true;
+}
+
+function publicDeviceRootRecord(identity) {
+  validateDeviceRootIdentity(identity);
+  return {
+    scheme: identity.scheme,
+    provider: identity.provider || "portable-jwk-v1",
+    brokerProtocol: identity.brokerProtocol || undefined,
+    brokerPath: identity.brokerPath || undefined,
+    brokerIdentifier: identity.brokerIdentifier || undefined,
+    brokerTeamIdentifier: identity.brokerTeamIdentifier || undefined,
+    keyTag: identity.keyTag || undefined,
+    publicJwk: identity.publicJwk,
+    keyId: identity.keyId,
+    createdAt: identity.createdAt,
+    retiredAt: new Date().toISOString(),
+  };
+}
+
 function defaultWorkerName(hash) {
   return `mbm-${String(hash || "default").slice(0, 12)}`;
 }
@@ -640,8 +766,8 @@ export function ownerOnlyFile(filePath) {
 
 export function redactState(state) {
   const clone = redactHomeInValue(JSON.parse(JSON.stringify(state)));
-  if (clone.worker?.accountAdminSecret) clone.worker.accountAdminSecret = "<redacted>";
   if (clone.worker?.deviceIdentity?.privateJwk?.d) clone.worker.deviceIdentity.privateJwk.d = "<redacted>";
+  redactBrokerPaths(clone.worker);
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = "<redacted>";
   if (clone.resources && typeof clone.resources === "object") {
     for (const value of Object.values(clone.resources)) {
@@ -651,6 +777,18 @@ export function redactState(state) {
     }
   }
   return clone;
+}
+
+
+function redactBrokerPaths(worker) {
+  if (!worker || typeof worker !== "object") return;
+  for (const identity of [
+    worker.deviceIdentity,
+    worker.pendingDeviceIdentity,
+    ...(Array.isArray(worker.previousDeviceIdentities) ? worker.previousDeviceIdentities : []),
+  ]) {
+    if (identity?.brokerPath) identity.brokerPath = "<local-broker-path>";
+  }
 }
 
 function redactHomeInValue(value) {

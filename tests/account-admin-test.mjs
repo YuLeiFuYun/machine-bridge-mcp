@@ -1,13 +1,12 @@
 import { AccountAccessGate, accountRoleToolNames, normalizeAccountRole } from "../src/local/account-access.mjs";
 import { AccountAdminClient, accountAdminRequestHeaders, accountRoleNames, generateAccountPassword } from "../src/local/account-admin.mjs";
+import { createDeviceIdentity, createDeviceSessionIdentity } from "../src/local/device-identity.mjs";
 
 const roles = accountRoleNames();
 assert(JSON.stringify(roles) === JSON.stringify(["reviewer", "editor", "operator", "owner"]), "account roles differ from the shared contract");
 assert(normalizeAccountRole(" OWNER ") === "owner", "account role normalization failed");
 expectThrow(() => normalizeAccountRole("administrator"), "unknown account role");
-for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) {
-  expectThrow(() => normalizeAccountRole(inherited), "unknown account role");
-}
+for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) expectThrow(() => normalizeAccountRole(inherited), "unknown account role");
 
 const gate = new AccountAccessGate();
 const reviewerTools = new Set(accountRoleToolNames("reviewer"));
@@ -23,6 +22,9 @@ expectThrow(() => gate.assert("reviewer", "write_file"), "disabled by the active
 
 const generated = generateAccountPassword();
 assert(/^account_password_[A-Za-z0-9_-]{43}$/.test(generated), "generated account password has the wrong shape or entropy");
+const origin = "https://bridge.example.test";
+const now = 1_800_000_000_000;
+const sessionIdentity = createDeviceSessionIdentity(createDeviceIdentity(), origin, "machine-bridge-mcp", "3.0.0", now);
 
 const requests = [];
 const accounts = [
@@ -31,9 +33,9 @@ const accounts = [
 ];
 const fetchImpl = async (url, options = {}) => {
   requests.push({ url, options });
-  assert(options.headers.authorization === undefined, "account admin secret was still sent as a bearer token");
-  for (const name of ["X-Bridge-Admin-Scheme", "X-Bridge-Admin-Time", "X-Bridge-Admin-Nonce", "X-Bridge-Admin-Body-SHA256", "X-Bridge-Admin-Signature"]) {
-    assert(typeof options.headers[name] === "string" && options.headers[name], `account admin signed header was omitted: ${name}`);
+  assert(options.headers.authorization === undefined, "account administration used a bearer token");
+  for (const name of ["X-Bridge-Admin-Scheme", "X-Bridge-Admin-Time", "X-Bridge-Admin-Nonce", "X-Bridge-Admin-Body-SHA256", "X-Bridge-Admin-Key", "X-Bridge-Admin-Signature", "X-Bridge-Device-Certificate"]) {
+    assert(typeof options.headers[name] === "string" && options.headers[name], `account admin device-signature header was omitted: ${name}`);
   }
   if (options.method === "GET") return jsonResponse({ accounts, maximum: 64 });
   if (url.endsWith("/rotate-password")) return jsonResponse({ account: accounts[1] });
@@ -41,37 +43,30 @@ const fetchImpl = async (url, options = {}) => {
   const body = JSON.parse(options.body);
   return jsonResponse({ account: { ...accounts[1], ...body } }, options.method === "POST" ? 201 : 200);
 };
+
 assertThrows(() => accountAdminRequestHeaders({
-  secret: "short",
-  origin: "https://bridge.example.com",
-  method: "GET",
-  pathname: "/admin/accounts",
-}), "short account admin HMAC key was accepted");
-assertThrows(() => accountAdminRequestHeaders({
-  secret: "account_admin_test_secret_123456789",
+  sessionIdentity,
   origin: "https://bridge.example.com/path",
   method: "GET",
   pathname: "/admin/accounts",
+  now,
 }), "non-origin account admin target was accepted");
-
 const deterministicHeaders = accountAdminRequestHeaders({
-  secret: "account_admin_test_secret_123456789",
-  origin: "https://bridge.example.com",
+  sessionIdentity,
+  origin,
   method: "POST",
   pathname: "/admin/accounts",
   body: "{}",
-  now: 1_800_000_000_000,
+  now,
   nonce: "n".repeat(32),
 });
-assert(deterministicHeaders["X-Bridge-Admin-Scheme"] === "hmac-sha256-v1", "account admin request used the wrong signature scheme");
+assert(deterministicHeaders["X-Bridge-Admin-Scheme"] === "device-admin-signature-v1", "account admin request used the wrong signature scheme");
 assert(deterministicHeaders["X-Bridge-Admin-Time"] === "1800000000", "account admin signature timestamp was not canonical");
-assert(/^[A-Za-z0-9_-]{43}$/.test(deterministicHeaders["X-Bridge-Admin-Signature"]), "account admin signature has the wrong encoding");
+assert(deterministicHeaders["X-Bridge-Admin-Key"] === sessionIdentity.keyId, "account admin request lost its ephemeral key binding");
+assert(/^[A-Za-z0-9_-]{86}$/.test(deterministicHeaders["X-Bridge-Admin-Signature"]), "account admin P-256 signature has the wrong encoding");
+assert(!deterministicHeaders["X-Bridge-Device-Certificate"].includes('"d"'), "account admin header exposed private key material");
 
-const client = new AccountAdminClient({
-  workerUrl: "https://bridge.example.test",
-  adminSecret: "account_admin_test_secret_123456789",
-  fetchImpl,
-});
+const client = new AccountAdminClient({ workerUrl: origin, sessionIdentity, fetchImpl });
 assert((await client.list()).accounts.length === 2, "account list response was not returned");
 assert((await client.find("reviewer")).account_id === accounts[1].account_id, "account lookup by name failed");
 assert((await client.find(accounts[0].account_id)).name === "owner", "account lookup by id failed");
@@ -80,32 +75,22 @@ await client.update({ accountId: accounts[1].account_id, role: "editor", active:
 await client.rotatePassword({ accountId: accounts[1].account_id, password: generated });
 assert((await client.remove({ accountId: accounts[1].account_id })).removed === true, "account removal response was not normalized");
 assert(requests.some((request) => request.url.endsWith("/admin/accounts/rotate-password")), "password rotation used the wrong endpoint");
-expectThrow(() => new AccountAdminClient({ workerUrl: "http://bridge.example.test", adminSecret: "account_admin_test_secret_123456789" }), "HTTPS origin");
-expectThrow(() => new AccountAdminClient({ workerUrl: "https://bridge.example.test/path", adminSecret: "account_admin_test_secret_123456789" }), "HTTPS origin");
+expectThrow(() => new AccountAdminClient({ workerUrl: "http://bridge.example.test", sessionIdentity }), "HTTPS origin");
+expectThrow(() => new AccountAdminClient({ workerUrl: "https://bridge.example.test/path", sessionIdentity }), "HTTPS origin");
 expectThrow(() => client.create({ name: "INVALID NAME", role: "reviewer", password: generated }), "account name");
 expectThrow(() => client.create({ name: "a", role: "reviewer", password: generated }), "3-64");
 
-console.log("account authorization/admin client test ok");
+console.log("account authorization/device-signed admin client test ok");
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 }
-
 function expectThrow(fn, message) {
-  try {
-    fn();
-  } catch (error) {
+  try { fn(); } catch (error) {
     assert(String(error?.message || error).includes(message), `unexpected error: ${error?.message || error}`);
     return;
   }
   throw new Error(`expected error containing: ${message}`);
 }
-
-function assertThrows(callback, message) {
-  try { callback(); } catch { return; }
-  throw new Error(message);
-}
-
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
+function assertThrows(callback, message) { try { callback(); } catch { return; } throw new Error(message); }
+function assert(condition, message) { if (!condition) throw new Error(message); }

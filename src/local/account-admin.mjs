@@ -1,6 +1,7 @@
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ADMIN_AUTH_SCHEME, adminAuthTranscript } from "../shared/admin-auth.mjs";
 import { ACCOUNT_ROLES, normalizeAccountRole } from "./account-access.mjs";
+import { encodeDeviceSessionCertificate, signWithDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
 import { BridgeError } from "./errors.mjs";
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -10,15 +11,18 @@ export function generateAccountPassword() {
 }
 
 export class AccountAdminClient {
-  constructor({ workerUrl, adminSecret, fetchImpl = fetch }) {
+  constructor({ workerUrl, sessionIdentity, fetchImpl = fetch }) {
     this.workerUrl = normalizeWorkerUrl(workerUrl);
-    if (typeof adminSecret !== "string" || adminSecret.length < 24) throw new BridgeError("invalid_request", "account administration secret is missing");
-    this.adminSecret = adminSecret;
+    this.sessionIdentity = validateDeviceSessionIdentity(sessionIdentity);
     this.fetchImpl = fetchImpl;
   }
 
-  list() {
-    return this.request("GET", "/admin/accounts");
+  list() { return this.request("GET", "/admin/accounts"); }
+  listClients() { return this.request("GET", "/admin/clients"); }
+
+  removeClient({ clientId }) {
+    if (!/^mcp_client_[A-Za-z0-9_-]{43}$/.test(String(clientId || ""))) throw new BridgeError("invalid_request", "OAuth client id is invalid");
+    return this.request("DELETE", "/admin/clients", { client_id: clientId });
   }
 
   create({ name, role, password, displayName = "" }) {
@@ -61,7 +65,7 @@ export class AccountAdminClient {
   async request(method, pathname, body) {
     const serializedBody = body === undefined ? "" : JSON.stringify(body);
     const headers = accountAdminRequestHeaders({
-      secret: this.adminSecret,
+      sessionIdentity: this.sessionIdentity,
       origin: this.workerUrl,
       method,
       pathname,
@@ -89,25 +93,39 @@ export class AccountAdminClient {
   }
 }
 
-
-export function accountAdminRequestHeaders({ secret, origin, method, pathname, body = "", now = Date.now(), nonce = randomBytes(24).toString("base64url") }) {
-  if (typeof secret !== "string" || secret.length < 24) throw new BridgeError("invalid_request", "account administration secret is missing");
+export function accountAdminRequestHeaders({
+  sessionIdentity,
+  origin,
+  method,
+  pathname,
+  body = "",
+  now = Date.now(),
+  nonce = randomBytes(24).toString("base64url"),
+}) {
+  validateDeviceSessionIdentity(sessionIdentity, now);
   const issuedAt = Math.floor(Number(now) / 1000);
   const bodyHash = createHash("sha256").update(String(body)).digest("hex");
-  const transcript = adminAuthTranscript({ origin, method: String(method).toUpperCase(), pathname, bodyHash, issuedAt, nonce });
-  const signature = createHmac("sha256", secret).update(transcript).digest("base64url");
+  const transcript = adminAuthTranscript({
+    origin,
+    method: String(method).toUpperCase(),
+    pathname,
+    bodyHash,
+    keyId: sessionIdentity.keyId,
+    issuedAt,
+    nonce,
+  });
   return {
     "X-Bridge-Admin-Scheme": ADMIN_AUTH_SCHEME,
     "X-Bridge-Admin-Time": String(issuedAt),
     "X-Bridge-Admin-Nonce": nonce,
     "X-Bridge-Admin-Body-SHA256": bodyHash,
-    "X-Bridge-Admin-Signature": signature,
+    "X-Bridge-Admin-Key": sessionIdentity.keyId,
+    "X-Bridge-Admin-Signature": signWithDeviceSessionIdentity(sessionIdentity, transcript),
+    "X-Bridge-Device-Certificate": encodeDeviceSessionCertificate(sessionIdentity),
   };
 }
 
-export function accountRoleNames() {
-  return Object.keys(ACCOUNT_ROLES);
-}
+export function accountRoleNames() { return Object.keys(ACCOUNT_ROLES); }
 
 function normalizeWorkerUrl(value) {
   const url = new URL(String(value || ""));

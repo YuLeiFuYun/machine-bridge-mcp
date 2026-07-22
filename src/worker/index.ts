@@ -19,11 +19,12 @@ import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./error
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access.ts";
 import { OAuthController, type AuthorizedToken, type OAuthControllerEnv } from "./oauth-controller.ts";
+import { consumeDpopProof, verifyDpopProof } from "./dpop.ts";
 import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority.ts";
 import { serverInfoTool, workspaceTools } from "./tool-catalog.ts";
 import { OFFLINE_ACCESS_SCOPE, randomToken } from "./oauth-state.ts";
 import {
-  HttpError, applyCors, baseUrl, bearerToken, corsPreflight, json, methodNotAllowed,
+  HttpError, applyCors, baseUrl, corsPreflight, discardRequestBody, json, methodNotAllowed, oauthAccessToken,
   parseJsonRequest, workerErrorClass,
 } from "./http.ts";
 import {
@@ -31,11 +32,11 @@ import {
   sessionInstructionText, textToolResult, validateProtocolVersionHeader, type JsonRpcRequest,
 } from "./mcp-jsonrpc.ts";
 import {
-  closeWebSocketQuietly, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly,
+  closeWebSocketQuietly, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "2.0.0";
+const SERVER_VERSION = "3.0.0-beta.8";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -46,7 +47,6 @@ const DAEMON_RECONNECT_GRACE_MS = 30_000;
 
 interface BridgeEnv extends OAuthControllerEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
-  ACCOUNT_ADMIN_SECRET: string;
   DAEMON_DEVICE_PUBLIC_KEY: string;
   OAUTH_TOKEN_VERSION: string;
   MBM_WORKER_MAX_BODY_BYTES?: string;
@@ -63,7 +63,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env);
-    this.oauth = new OAuthController(ctx, env, SERVER_NAME);
+    this.oauth = new OAuthController(ctx, env, SERVER_NAME, SERVER_VERSION);
     this.daemonRegistry = new DaemonSocketRegistry(ctx);
   }
 
@@ -107,6 +107,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       if (url.pathname === "/admin/accounts") return await this.oauth.handleAccountAdmin(request, "accounts");
       if (url.pathname === "/admin/accounts/rotate-password") return await this.oauth.handleAccountAdmin(request, "rotate-password");
+      if (url.pathname === "/admin/clients") return await this.oauth.handleClientAdmin(request);
       if (url.pathname === "/oauth/register") {
         if (request.method !== "POST") return methodNotAllowed("POST");
         return await this.oauth.registerClient(request);
@@ -185,12 +186,20 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         rejectDaemonMessage(ws, "invalid_daemon_instance", 1002, "daemon instance id required");
         return;
       }
-      if (!socketAttachment.authChallenge || !socketAttachment.authIssuedAt || !socketAttachment.authExpiresAt || !socketAttachment.workerOrigin) {
+      if (
+        !socketAttachment.authChallenge
+        || !socketAttachment.authIssuedAt
+        || !socketAttachment.authExpiresAt
+        || !socketAttachment.workerOrigin
+        || !socketAttachment.authSessionPublicKeyJson
+        || !socketAttachment.authSessionKeyId
+        || !socketAttachment.authCertificateExpiresAt
+      ) {
         rejectDaemonMessage(ws, "missing_daemon_challenge", 1008, "daemon challenge missing");
         return;
       }
       const authenticated = await verifyDaemonAuthentication({
-        publicKeyJson: this.env.DAEMON_DEVICE_PUBLIC_KEY ?? "",
+        publicKeyJson: socketAttachment.authSessionPublicKeyJson,
         authentication: body.authentication,
         challenge: {
           scheme: "device-signature-v1",
@@ -202,6 +211,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         server: SERVER_NAME,
         version: SERVER_VERSION,
         instanceId,
+        certificateExpiresAt: socketAttachment.authCertificateExpiresAt,
       });
       if (!authenticated) {
         rejectDaemonMessage(ws, "daemon_authentication_failed", 1008, "daemon authentication failed");
@@ -238,7 +248,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
     if (body.type === "heartbeat" || body.type === "ping") {
       await this.touchDaemonSocket(ws);
-      ws.send(JSON.stringify({ type: "pong", ts: body.ts ?? Date.now() }));
+      if (!trySendWebSocket(ws, { type: "pong", ts: body.ts ?? Date.now() })) {
+        this.invalidateDaemonSocket(ws, "failed to acknowledge daemon heartbeat", "daemon pong failed", "daemon_transport_error");
+      }
       return;
     }
 
@@ -311,13 +323,31 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       });
     }
 
-    const authorized = await this.oauth.verifyAccessToken(bearerToken(request), base);
-    if (!authorized) {
-      try { await request.arrayBuffer(); } catch { /* The rejected body may already be unavailable; the 401 remains authoritative. */ }
-      return new Response("OAuth bearer token required", {
+    const access = oauthAccessToken(request);
+    const authorized = await this.oauth.verifyAccessToken(access.token, base);
+    let dpopValid = true;
+    if (authorized?.dpopJkt) {
+      const proof = access.scheme === "dpop" ? await verifyDpopProof({
+        request,
+        expectedMethod: "POST",
+        expectedUrl: request.url,
+        accessToken: access.token,
+        expectedJkt: authorized.dpopJkt,
+      }) : null;
+      dpopValid = Boolean(proof && await consumeDpopProof(this.ctx.storage, proof));
+    } else if (authorized && access.scheme !== "bearer") {
+      dpopValid = false;
+    }
+    if (!authorized || !dpopValid) {
+      // Durable Object fetch forwarding transfers a live request stream. Consume it
+      // before returning, but retain no bytes, so the 401 cannot race a pending read
+      // and unauthenticated input never enters an in-memory request buffer.
+      await discardRequestBody(request, this.bodyLimitBytes());
+      const scheme = authorized?.dpopJkt ? "DPoP" : "Bearer";
+      return new Response(authorized?.dpopJkt ? "Valid DPoP proof required" : "OAuth bearer token required", {
         status: 401,
         headers: {
-          "WWW-Authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
+          "WWW-Authenticate": `${scheme} resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
           "cache-control": "no-store",
           "content-type": "text/plain; charset=utf-8",
           "x-content-type-options": "nosniff",
@@ -509,6 +539,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
             account_id: authorized.accountId,
             account_version: authorized.accountVersion,
             client_id: authorized.clientId,
+            family_id: authorized.familyId,
             role: authorized.role,
           },
         }));
@@ -558,9 +589,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
     this.observability.socketCandidate();
-    this.daemonRegistry.beginCandidate(server, challenge);
+    this.daemonRegistry.beginCandidate(server, challenge, preflight);
     await this.scheduleSocketAlarms();
-    server.send(JSON.stringify({
+    const welcomed = trySendWebSocket(server, {
       type: "welcome",
       server: SERVER_NAME,
       version: SERVER_VERSION,
@@ -571,7 +602,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         issued_at: challenge.issuedAt,
         expires_at: challenge.expiresAt,
       },
-    }));
+    });
+    if (!welcomed) {
+      this.daemonRegistry.expire(server);
+      closeWebSocketQuietly(server, 1011, "daemon welcome failed");
+      await this.scheduleSocketAlarms();
+    }
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -749,6 +785,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       token_endpoint_auth_methods_supported: ["none"],
+      dpop_signing_alg_values_supported: ["ES256"],
       code_challenge_methods_supported: ["S256"],
       scopes_supported: [SERVER_NAME, OFFLINE_ACCESS_SCOPE],
     };

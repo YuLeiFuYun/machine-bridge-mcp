@@ -10,6 +10,7 @@ export {
   allToolNames,
   assertCanonicalFullPolicy,
   assertToolAllowed,
+  intersectPolicies,
   isCanonicalFullPolicy,
   normalizePolicy,
   policyAllowsAvailability,

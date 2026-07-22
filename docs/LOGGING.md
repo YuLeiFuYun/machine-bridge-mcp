@@ -12,7 +12,7 @@ Logs should answer:
 4. Is an infrastructure, protocol, deployment, or local service problem requiring action?
 5. When debug logging is explicitly enabled, which bounded implementation event should be correlated?
 
-Logs are not a command history or content audit trail. Local capability-lease state provides authorization evidence without recording command text or content, but it is not a tamper-proof forensic ledger and is not a substitute for OS isolation.
+Logs are not a command history or content transcript. The local security audit provides a bounded SHA-256 hash chain over coarse operation metadata without recording command text, paths, contents, form values, or output. It detects local alteration but is not a remote immutable ledger and is not a substitute for OS isolation.
 
 ## Levels
 
@@ -25,6 +25,7 @@ The CLI accepts:
 ```
 
 Foreground mode defaults to `info` and human-readable text. Platform autostart services use `warn` with newline-delimited JSON. Foreground operators can select JSON explicitly with `--log-format json`.
+In JSON mode, every logger entry point—including direct level methods and the persistent daemon-ready transition—emits exactly one timestamped JSON object per line. No operational method may silently fall back to the human formatter.
 
 Human mode treats the message as the primary interface: it uses a natural-language explanation and includes only bounded diagnostic fields that add meaning. It does not repeat the machine event key. JSON mode retains the stable `event` field for ingestion and correlation. Event identifiers such as `relay.tool_result.discarded` are implementation contracts for structured logs, not text that should be shown as the warning itself.
 
@@ -93,7 +94,7 @@ The implementation omits:
 - stdin, stdout, and stderr;
 - file, patch, image, and temporary-file content;
 - OAuth request bodies;
-- account passwords, account-administration HMAC keys/signatures, daemon device private keys/signatures, authorization codes, access tokens, refresh tokens, and capability-lease target material;
+- account passwords, root/session signatures, device private keys, authorization codes, access tokens, refresh tokens, DPoP proofs, and legacy-lease target material;
 - registered resource values and source paths;
 - browser pairing tokens, page URLs/source, DOM metadata, form values, uploaded file bytes, and screenshots;
 - application names, Accessibility trees, selectors, and entered values;
@@ -136,9 +137,17 @@ The log format has an explicit schema marker. If the marker differs from the cur
 
 Each managed job has owner-only runner diagnostic logs. Child-step output is retained only in bounded, redacted job results according to `capture_output`; it is not copied into daemon or runner operational logs.
 
+## Relay outage records
+
+`network_route` describes only Machine Bridge's application-level proxy decision. `system-network-stack` does **not** mean a direct physical path: an operating-system VPN, TUN, packet tunnel, DNS interceptor, or endpoint-security product may still carry the connection. `network_route_scope` therefore remains `application-proxy-selection-only`.
+
+During an outage, `server_info.runtime.relay` and `diagnose_runtime` expose bounded operational fields: outage count/start/duration, last close category/code, coarse transport error class, last disconnect/ready time, prior ready duration, and next retry timing. `relay.outage.active` and `relay.outage.recovered` carry the same safe fields. Raw WebSocket close reasons, IP addresses, proxy endpoints/credentials, DNS answers, tool arguments, and results are not promoted to default logs.
+
+Schema 4 is strict NDJSON. Before daemon startup, both active log files are opened as owner-only regular single-link files. A schema change clears both only after validation and commits the marker only after the transition succeeds. A symlink, multiple-hard-link inode, permission error, or marker-write failure blocks startup rather than mixing formats or repeatedly erasing evidence.
+
 ## MCP host boundary
 
-Canonical `full` does not remove tools based on filenames. For remote execution, the transaction classifier treats credential-sensitive path segments and basenames as a lease boundary while preserving the underlying capability. An MCP host, connector, model provider, desktop application, operating system, or endpoint-security layer may independently reject a request before it reaches Machine Bridge.
+Canonical `full` does not remove tools based on filenames. For remote execution, the operation classifier treats credential-sensitive paths and persistence targets as hard authorization boundaries: delegated roles are denied, while owner requests remain risk-classified and audited. An MCP host, connector, model provider, desktop application, operating system, or endpoint-security layer may independently reject a request before it reaches Machine Bridge.
 
 Use `server_info`, `project_overview`, `machine-mcp status`, `machine-mcp doctor`, and `diagnose_runtime` to distinguish local policy from host-side enforcement. Capability-routing status is returned on demand rather than written as task logs; it stores a runtime-keyed task fingerprint, not raw task text. Changing the Machine Bridge profile cannot override another layer.
 

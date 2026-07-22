@@ -47,6 +47,19 @@ const infoOnly = captureStream();
 const quietDebug = createLogger({ level: "info", format: "json", stdout: infoOnly, stderr: infoOnly, color: false });
 quietDebug.event("debug", "tool.call.started", { tool: "read_file" });
 assert(infoOnly.lines.length === 0, "JSON logger ignored the configured level");
+const directStdout = captureStream();
+const directStderr = captureStream();
+const directLogger = createLogger({ level: "debug", format: "json", component: "daemon", stdout: directStdout, stderr: directStderr, color: false });
+directLogger.info("daemon started", { workspace_path: syntheticHomePath, attempts: 1 });
+directLogger.warn("relay unavailable", { attempts: 3, token: "must-not-appear" });
+assert(directStdout.lines.length === 1 && directStderr.lines.length === 1, "direct JSON log methods used the wrong streams");
+const directInfo = JSON.parse(directStdout.lines[0]);
+const directWarning = JSON.parse(directStderr.lines[0]);
+assert(Number.isFinite(Date.parse(directInfo.timestamp)) && directInfo.level === "info" && directInfo.component === "daemon", "direct info log omitted structured identity");
+assert(directInfo.workspace_path === "<local-path>" && directInfo.attempts === 1, "direct info log omitted safe fields or leaked a path");
+assert(directWarning.level === "warn" && directWarning.attempts === 3 && directWarning.token === "<redacted>", "direct warning log omitted fields or failed redaction");
+assert(!directStderr.lines[0].includes("must-not-appear"), "direct JSON warning leaked a sensitive field");
+
 console.log("structured logging test ok");
 
 function captureStream() {

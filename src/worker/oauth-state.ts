@@ -28,7 +28,12 @@ export interface OAuthClient {
   last_used_at: number;
   has_been_authorized?: boolean;
   registration_identity?: string;
+  trusted_account_id?: string;
+  trusted_account_version?: number;
+  trusted_role?: AccountRole;
+  trusted_at?: number;
 }
+
 
 export interface OAuthCode {
   client_id: string;
@@ -52,6 +57,7 @@ export interface OAuthToken {
   version: string;
   expires_at: number;
   family_id?: string;
+  dpop_jkt?: string;
 }
 
 export interface OAuthRefreshToken extends OAuthToken {

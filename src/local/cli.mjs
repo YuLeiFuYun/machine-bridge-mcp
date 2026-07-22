@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { LocalRuntime } from "./runtime.mjs";
-import { acquireDaemonLockWithTakeover, stopWorkspaceServiceDaemon } from "./daemon-process.mjs";
+import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "./daemon-process.mjs";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { runStdioServer } from "./stdio.mjs";
 import { assertCanonicalFullPolicy, POLICY_PROFILES, toolsForPolicy } from "./tools.mjs";
@@ -12,6 +12,7 @@ import { effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, val
 import { createLocalAdminCommands } from "./cli-local-admin.mjs";
 import { createApprovalCommand } from "./cli-approval.mjs";
 import { createServiceCommand } from "./cli-service.mjs";
+import { createActivateCommand } from "./cli-activate.mjs";
 import { generateAccountPassword } from "./account-admin.mjs";
 import { accountAdminClient, createAccountCommand } from "./cli-account-admin.mjs";
 export { resolvePolicy } from "./cli-policy.mjs";
@@ -20,8 +21,10 @@ import { classifyOperationalError, createLogger, sanitizeLogText } from "./log.m
 import { runExecutable, runWrangler } from "./shell.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
+import { stopOwnedPlatformService } from "./service-ownership.mjs";
 import { loadServiceEnvironment } from "./service-environment.mjs";
-import { ensureWorkerDeployment } from "./worker-deployment.mjs";
+import { createDeviceSessionForRoot, deviceRootProviderStatus, ensurePreferredDeviceRoot } from "./device-root-provider.mjs";
+import { convergeRemoteConfiguration } from "./remote-configuration.mjs";
 import { workerHealth } from "./worker-health.mjs";
 export { workerHealthUserReason } from "./worker-health.mjs";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
@@ -52,9 +55,18 @@ const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm }
 const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
 const approvalCommand = createApprovalCommand({ chooseWorkspace, confirm });
 const serviceCommand = createServiceCommand({ chooseWorkspace, stateRootFromArgs, structuredLogger });
+const activateCommand = createActivateCommand({
+  chooseWorkspace,
+  prepareRemoteState,
+  createRemoteRuntime,
+  currentPackageVersion,
+  assertNodeVersion,
+  structuredLogger,
+});
 
 const COMMAND_HANDLERS = new Map([
   ["start", startCommand],
+  ["activate", activateCommand],
   ["stdio", stdioCommand],
   ["client-config", clientConfigCommand],
   ["status", statusCommand],
@@ -206,11 +218,28 @@ async function prepareStartMode(args, state, logger) {
     trimAutostartLogs(state.paths.stateRoot);
     return { takeOverServiceOwner: false };
   }
-  // A normal foreground start first asks the platform service manager to
-  // unload the job, then independently reclaims a verified daemon-only
-  // process. The second step handles orphaned service daemons that launchd or
-  // another service manager no longer tracks.
-  return stopAutostartBestEffort(logger);
+  // The platform service name is machine-global, while state/workspace locks
+  // are scoped. Stop the platform service only when the daemon lock proves
+  // that the loaded service belongs to this exact state/workspace. An
+  // unrelated foreground start (including install smoke tests with isolated
+  // HOME/state) must never unload another Machine Bridge deployment.
+  const ownership = await stopOwnedPlatformService({
+    state,
+    inspectWorkspaceDaemon,
+    ownsPlatformAutostart: workspaceDaemonOwnsPlatformAutostart,
+    stopPlatformService: () => stopAutostartBestEffort(logger),
+  });
+  if (!ownership.owned) {
+    logger.debug?.("foreground startup left unrelated machine autostart untouched", {
+      workspace_daemon_present: ownership.daemon.present === true,
+      workspace_daemon_alive: ownership.daemon.alive === true,
+      identity_reason: ownership.daemon.identity_reason || "not_running",
+    });
+    return { takeOverServiceOwner: true, provider: null };
+  }
+  // Once ownership is proven, unload the provider first so KeepAlive cannot
+  // respawn the service while the verified process lock is reclaimed.
+  return ownership.provider;
 }
 
 function reportExistingDaemon(args, state, owner, logger) {
@@ -255,9 +284,9 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }
   let runtime = null;
   try {
     const readiness = await prepareRemoteState({ args, workspace, state, logger });
-    runtime = createRemoteRuntime({ args, workspace, state, daemonLock });
+    runtime = createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity: readiness.deviceSessionIdentity });
     await runtime.start();
-    reportRemoteReady(args, state, readiness);
+    reportRemoteReady(args, state, readiness, logger);
     keepProcessAlive({ daemon: runtime, lock: daemonLock, logger });
   } catch (error) {
     try { runtime?.stop?.(); } catch {}
@@ -267,32 +296,32 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }
 }
 
 async function prepareRemoteState({ args, workspace, state, logger }) {
-  const workerName = validateWorkerName(args.workerName);
-  ensureWorkerSecrets(state, {
-    rotateSecrets: Boolean(args.rotateSecrets),
-    workerName,
-    allowWorkerRename: Boolean(args.forceWorker),
-  });
-  state.policy = resolvePolicy(args, state.policy);
-  state.policy.updatedAt = new Date().toISOString();
-  saveState(state);
-
-  let initialOwner = null;
   if (!args.daemonOnly) {
-    await ensureWorker(state, args);
-    initialOwner = await ensureInitialOwnerAccount(state);
+    await convergeRemoteConfiguration({ args, state });
   } else if (!state.worker.url) {
     throw new Error("--daemon-only requires an existing Worker URL; run start once without --daemon-only");
+  } else if (state.worker.pendingDeviceIdentity) {
+    throw new Error("--daemon-only cannot activate a pending device root; run a normal start once to deploy and promote it");
   }
 
+  const deviceSessionIdentity = await createDeviceSessionForRoot(
+    state.worker.deviceIdentity,
+    state.worker.url,
+    "machine-bridge-mcp",
+    currentPackageVersion(),
+    { profileDir: state.paths.profileDir, reason: "Authorize Machine Bridge startup" },
+  );
+  const initialOwner = args.daemonOnly ? null : await ensureInitialOwnerAccount(state, deviceSessionIdentity);
   if (!args.daemonOnly && !args.noAutostart) {
     await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
   }
-  return { initialOwner };
+  return { initialOwner, deviceSessionIdentity };
 }
 
-async function ensureInitialOwnerAccount(state) {
-  const client = accountAdminClient(state);
+
+
+async function ensureInitialOwnerAccount(state, deviceSessionIdentity) {
+  const client = await accountAdminClient(state, deviceSessionIdentity);
   const existing = await client.list();
   if (existing.accounts.length > 0) return null;
   const password = generateAccountPassword();
@@ -300,10 +329,11 @@ async function ensureInitialOwnerAccount(state) {
   return { ...created.account, password };
 }
 
-function createRemoteRuntime({ args, workspace, state, daemonLock }) {
-  return new LocalRuntime({
+function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity, exitOnTerminal = true }) {
+  const terminalState = { error: null };
+  const runtime = new LocalRuntime({
     workerUrl: state.worker.url,
-    deviceIdentity: state.worker.deviceIdentity,
+    deviceIdentity: deviceSessionIdentity,
     expectedRelayVersion: currentPackageVersion(),
     workspace,
     policy: state.policy,
@@ -313,18 +343,29 @@ function createRemoteRuntime({ args, workspace, state, daemonLock }) {
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
     browserStateRoot: state.paths.stateRoot,
+    deviceRootStatus: deviceRootProviderStatus(state.worker.deviceIdentity),
     onSuperseded: () => {
+      if (!exitOnTerminal) {
+        terminalState.error ??= new Error("candidate daemon was superseded before service handoff");
+        return;
+      }
       daemonLock.release();
       process.exit(0);
     },
-    onFatal: () => {
+    onFatal: (error) => {
+      if (!exitOnTerminal) {
+        terminalState.error ??= error instanceof Error ? error : new Error("candidate relay failed before service handoff");
+        return;
+      }
       daemonLock.release();
       process.exit(1);
     },
   });
+  if (!exitOnTerminal) runtime.terminalError = () => terminalState.error;
+  return runtime;
 }
 
-function reportRemoteReady(args, state, readiness) {
+function reportRemoteReady(args, state, readiness, logger) {
   if (args.json) {
     printStartJson(state, { initialOwner: readiness.initialOwner });
     return;
@@ -333,6 +374,7 @@ function reportRemoteReady(args, state, readiness) {
     quiet: Boolean(args.quiet),
     verbose: Boolean(args.verbose),
     initialOwner: readiness.initialOwner,
+    logger,
   });
 }
 
@@ -350,6 +392,7 @@ async function stdioCommand(args) {
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
     browserStateRoot: state.paths.stateRoot,
+    deviceRootStatus: state.worker?.deviceIdentity ? deviceRootProviderStatus(state.worker.deviceIdentity) : null,
   });
 }
 
@@ -379,10 +422,6 @@ async function clientConfigCommand(args) {
   }
 }
 
-async function ensureWorker(state, args) {
-  const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "worker" });
-  return ensureWorkerDeployment(state, args, { logger });
-}
 
 
 function printStartJson(state, { requestedChangesApplied = true, notice = "", initialOwner = null } = {}) {
@@ -401,8 +440,21 @@ function printStartJson(state, { requestedChangesApplied = true, notice = "", in
   });
 }
 
-function printMcpConnection(state, { quiet = false, verbose = false, initialOwner = null } = {}) {
-  const logger = createLogger({ component: "ready", quiet, level: quiet ? "error" : verbose ? "debug" : "info" });
+function printMcpConnection(state, { quiet = false, verbose = false, initialOwner = null, logger: readyLogger = null } = {}) {
+  const output = readyLogger || createLogger({ component: "ready", quiet, level: quiet ? "error" : verbose ? "debug" : "info" });
+  if (output.format === "json" && !initialOwner) {
+    output.event("success", "daemon.ready", {
+      mcp_server_url: state.worker.mcpServerUrl,
+      worker_name: state.worker.name,
+      workspace_path: state.workspace.path,
+      policy_profile: state.policy.profile,
+      policy_origin: state.policy.origin,
+      write_enabled: state.policy.allowWrite,
+      exec_mode: state.policy.execMode,
+    }, "Remote MCP bridge is ready");
+    return;
+  }
+  const logger = output;
   logger.success("Remote MCP bridge is ready");
   logger.plain(`  MCP Server URL: ${state.worker.mcpServerUrl}`);
   if (initialOwner) {
@@ -522,7 +574,12 @@ async function rotateSecretsCommand(args) {
   const operationLogger = createLogger({ level: args.quiet ? "error" : "warn", component: "service" });
   const startupLock = await acquireStartupLockWithWait(state, { operation: "rotate-secrets", logger: operationLogger });
   try {
-    await stopAutostartBestEffort(operationLogger);
+    await stopOwnedPlatformService({
+      state,
+      inspectWorkspaceDaemon,
+      ownsPlatformAutostart: workspaceDaemonOwnsPlatformAutostart,
+      stopPlatformService: () => stopAutostartBestEffort(operationLogger),
+    });
     const stopped = await stopWorkspaceServiceDaemon(state, { logger: operationLogger, reason: "secret rotation" });
     if (stopped.found && !stopped.ok) {
       const pid = stopped.pid ? `pid ${stopped.pid}` : "unknown pid";
@@ -534,10 +591,17 @@ async function rotateSecretsCommand(args) {
     if (daemonIdentity?.current) {
       throw new Error(`refusing to rotate secrets while the daemon is active (pid ${daemonOwner.pid}); stop the foreground daemon and retry`);
     }
-    ensureWorkerSecrets(state, { rotateSecrets: true });
+    if (state.worker.pendingDeviceIdentity) throw new Error("a device-root rotation is already pending; run machine-mcp to deploy it before rotating again");
+    ensureWorkerSecrets(state, { rotateSecrets: true, deferDeviceRotation: true });
+    state.worker.pendingDeviceIdentity = await ensurePreferredDeviceRoot({
+      profileDir: state.paths.profileDir,
+      workspaceHash: state.workspace.hash,
+      existing: null,
+      rotate: true,
+    });
     saveState(state);
-    console.log("Rotated account administration, daemon, and global token-version secrets.");
-    console.log("All account access tokens are invalid. Run machine-mcp to redeploy, then reconnect clients.");
+    console.log("Prepared a two-phase rotation for account administration, device root, and token-version secrets.");
+    console.log("All account access tokens are invalid. Run machine-mcp to deploy, verify, and atomically promote the pending device root.");
   } finally {
     startupLock.release();
   }
@@ -694,14 +758,7 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function validateWorkerName(value) {
-  if (value === undefined || value === null || value === false) return undefined;
-  const name = String(value).trim();
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
-    throw new Error("--worker-name must be 1-63 lowercase letters, digits, or hyphens, and cannot start or end with a hyphen");
-  }
-  return name;
-}
+
 
 export function isSupportedNodeVersion(version = process.versions.node) {
   const major = Number(String(version || "").replace(/^v/, "").split(".")[0]);
@@ -737,28 +794,25 @@ Usage:
 
 Commands:
   start             Deploy/update Worker, take over autostart, run foreground daemon
+  activate          Deploy/update Worker, replace autostart, start and verify background daemon
   stdio             Run a local MCP stdio server for Claude, Cursor, Codex, and compatible clients
   client-config     Print stdio client configuration snippets
   workspace show    Show remembered workspace
   workspace set     Re-select workspace; prompts with current/default path
   service status    Show autostart status
   service install   Install login autostart for remembered/current workspace
-  service start     Start the installed autostart service now
+  service start     Ensure the installed autostart service is running (idempotent)
+  service restart   Schedule an explicit service-manager restart and return before handoff
   service stop      Stop the installed autostart service
   service uninstall Remove only the autostart entry
   status            Print redacted local profile state and Worker health
   doctor            Check Node, Wrangler, Cloudflare login, Worker health
   full-test         Run real local full-profile capability tests in a temporary sandbox
   rotate-secrets    Rotate account-admin, device identity, and global token-version secrets
-  account list|add|role|enable|disable|rotate-password|remove
-                    Manage isolated remote accounts and targeted revocation
-  approval list     Show pending high-impact operations and active capability leases
-  approval approve APPROVAL_ID [--duration 1h] [--full]
-                    Approve its scope, or open an explicit full window (maximum 8h)
-  approval grant SCOPE --account ACCOUNT_ID --client CLIENT_ID [--duration 1h]
-                    Pre-authorize a bounded scope; use * values only intentionally
-  approval revoke LEASE_ID | approval clear
-                    Revoke one or all local capability leases
+  account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove
+                    Manage remote accounts, trusted clients, and targeted revocation
+  approval list|revoke|clear
+                    Inspect or remove legacy leases; runtime calls are automatic within role ceilings
   resource generate-ssh-key NAME [PATH]
                     Generate/reuse an Ed25519 key locally and register its private file by alias
   browser status    Show browser-extension bridge and connection status

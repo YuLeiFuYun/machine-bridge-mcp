@@ -83,10 +83,11 @@ try {
   if (!record.files.some((item) => item.path === "scripts/network-retry.mjs")) throw new Error("npm package omitted the network retry helper");
   if (!record.files.some((item) => item.path === "scripts/syntax-check.mjs")) throw new Error("npm package omitted the dynamic syntax checker");
   if (!record.files.some((item) => item.path === "scripts/github-release.mjs")) throw new Error("npm package omitted the release helper referenced by package scripts");
-  for (const helper of ["release-acceptance.mjs", "local-release-acceptance.mjs", "github-push.mjs"]) {
+  for (const helper of ["release-acceptance.mjs", "local-release-acceptance.mjs", "github-push.mjs", "release-channel.mjs", "release-candidate-manifest.mjs", "promotion-digest.mjs", "prerelease-activation.mjs", "release-soak.mjs", "published-release.mjs", "npm-publication-policy.mjs", "publish-npm.mjs", "install-published-prerelease.mjs", "candidate-runtime-store.mjs"]) {
     if (!record.files.some((item) => item.path === `scripts/${helper}`)) throw new Error(`npm package omitted release gate helper ${helper}`);
   }
-  if (record.files.some((item) => item.path.startsWith("release-acceptance/") || item.path.startsWith(".release-candidate/"))) throw new Error("npm package contains local release acceptance state");
+  if (record.files.some((item) => item.path.startsWith("release-acceptance/") || item.path.startsWith("release-soak/") || item.path.startsWith(".release-candidate/"))) throw new Error("npm package contains local release or soak evidence");
+  if (!record.files.some((item) => item.path === "src/local/runtime-activation.mjs")) throw new Error("npm package omitted persistent runtime activation orchestration");
   if (!record.files.some((item) => item.path === "CONTRIBUTING.md")) throw new Error("npm package omitted contribution/release discipline");
   for (const file of ["CODE_OF_CONDUCT.md", "SUPPORT.md", "GOVERNANCE.md", "docs/UPGRADING.md", "tsconfig.local.json"]) {
     if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);

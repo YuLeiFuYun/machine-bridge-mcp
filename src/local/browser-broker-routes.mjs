@@ -13,6 +13,10 @@ export class BrowserBrokerRoutes {
     this.routes = new Map();
   }
 
+  snapshot() {
+    return Object.freeze({ runtime_clients: this.clients.size, routed_requests: this.routes.size });
+  }
+
   acceptClient(socket) {
     this.clients.add(socket);
     socket.on("message", (data) => this.handleClientMessage(socket, data));

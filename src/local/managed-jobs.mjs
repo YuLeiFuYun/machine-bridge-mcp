@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir } from "./state.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError } from "./errors.mjs";
+import { assertOwnedByContext, principalBinding, visibleToContext } from "./authority-context.mjs";
 import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./managed-job-plan.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { clampInteger } from "./numbers.mjs";
@@ -13,18 +14,22 @@ import {
   atomicWriteJson, readBoundedFile, readJson, readRequiredJson, resourceErrorClass, safeReadDir,
 } from "./managed-job-storage.mjs";
 import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
+import {
+  isTerminalManagedJobResult, scrubManagedJobArtifacts, terminalStatusFromResult,
+} from "./managed-job-terminal.mjs";
 export { launchRunner } from "./managed-job-runner.mjs";
 
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const MAX_JOBS = 50;
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const STAGED_PLAN_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_PLAN_BYTES = 1024 * 1024;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"]);
 const PLAN_RETAINING_STATES = new Set(["staged", ...ACTIVE_JOB_STATES]);
 
 export class ManagedJobManager {
-  constructor({ jobRoot, workspace, policy, authorizeTool = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true }) {
+  constructor({ jobRoot, workspace, policy, authorizeTool = null, policyForContext = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true }) {
     const jobRootInput = resolve(jobRoot);
     ensureOwnerOnlyDir(jobRootInput);
     this.jobRoot = realpathSync.native ? realpathSync.native(jobRootInput) : realpathSync(jobRootInput);
@@ -32,6 +37,7 @@ export class ManagedJobManager {
     this.workspace = realpathSync.native ? realpathSync.native(workspaceInput) : realpathSync(workspaceInput);
     this.policy = policy;
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
+    this.policyForContext = typeof policyForContext === "function" ? policyForContext : () => this.policy;
     this.resources = normalizeResourceRegistry(resources);
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
     this.stateRoot = stateRoot ? resolve(stateRoot) : "";
@@ -62,7 +68,7 @@ export class ManagedJobManager {
     };
   }
 
-  listResources() {
+  listResources(_context = {}) {
     this.authorizeTool("list_local_resources");
     this.assertMaintenanceAvailable();
     const resources = [];
@@ -94,16 +100,16 @@ export class ManagedJobManager {
   }
 
 
-  stage(args = {}) {
+  stage(args = {}, context = {}) {
     this.authorizeTool("stage_job");
     this.assertMaintenanceAvailable();
-    return this.createJob(args, { launch: false });
+    return this.createJob(args, { launch: false }, context);
   }
 
-  start(args = {}) {
+  start(args = {}, context = {}) {
     this.authorizeTool("start_job");
     this.assertMaintenanceAvailable();
-    return this.createJob(args, { launch: true });
+    return this.createJob(args, { launch: true }, context);
   }
 
   approve(args = {}, { localOperator = false } = {}) {
@@ -125,7 +131,7 @@ export class ManagedJobManager {
       status.cleanup_guarantee = "best-effort-finally-and-recovery";
       atomicWriteJson(statusFile, status, 256 * 1024);
       try {
-        launchRunner(dir, false, "", { logger: this.logger });
+        launchRunner(dir, false, "", { logger: this.logger, fullEnv: plan.full_env === true });
       } catch (error) {
         failRunnerLaunch(dir, status, error);
         throw error;
@@ -150,15 +156,16 @@ export class ManagedJobManager {
     }
   }
 
-  createJob(args, { launch }) {
+  createJob(args, { launch }, context = {}) {
     this.prune();
     const retained = safeReadDir(this.jobRoot).filter((entry) => entry.isDirectory() && JOB_ID.test(entry.name)).length;
     if (retained >= MAX_JOBS) throw new Error(`managed job limit reached (${MAX_JOBS})`);
+    const effectivePolicy = this.policyForContext(context);
     const plan = validatePlan(args, {
       workspace: this.workspace,
       resources: this.currentResources(),
-      fullEnv: this.policy.minimalEnv === false,
-      unrestrictedPaths: this.policy.unrestrictedPaths === true,
+      fullEnv: effectivePolicy.minimalEnv === false,
+      unrestrictedPaths: effectivePolicy.unrestrictedPaths === true,
     });
     const planSha256 = createHash("sha256").update(JSON.stringify(plan)).digest("hex");
     const id = `job_${randomBytes(24).toString("base64url")}`;
@@ -178,11 +185,12 @@ export class ManagedJobManager {
       approval: launch ? "mcp" : "pending-local-operator",
       plan_sha256: planSha256,
       cleanup_guarantee: launch ? "best-effort-finally-and-recovery" : "not-started",
+      ...principalBinding(context),
     };
     atomicWriteJson(join(dir, "status.json"), status, 256 * 1024);
     if (launch) {
       try {
-        launchRunner(dir, false, "", { logger: this.logger });
+        launchRunner(dir, false, "", { logger: this.logger, fullEnv: plan.full_env === true });
       } catch (error) {
         failRunnerLaunch(dir, status, error);
         throw error;
@@ -209,14 +217,13 @@ export class ManagedJobManager {
       status: "staged",
       execution_started: false,
       plan_sha256: planSha256,
-      local_inspection_command: `machine-mcp job inspect ${id}`,
-      local_approval_command: `machine-mcp job approve ${id}`,
-      plan_expires_after_days: 7,
+      continuation: "start the staged job through the same authenticated client when ready",
+      plan_expires_after_hours: 24,
     };
   }
 
 
-  list(args = {}) {
+  list(args = {}, context = {}) {
     this.authorizeTool("list_jobs");
     this.assertMaintenanceAvailable();
     this.prune();
@@ -228,23 +235,24 @@ export class ManagedJobManager {
       try {
         this.reconcileStatus(dir);
         const status = readJson(join(dir, "status.json"), 256 * 1024, "job status");
-        if (!status) continue;
+        if (!status || !visibleToContext(status, context)) continue;
         jobs.push(publicStatus(status));
       } catch (error) {
         this.logger.warn?.("managed job status is unreadable; retaining it for inspection", { error_class: resourceErrorClass(error) });
-        jobs.push({ job_id: entry.name, name: "unavailable", status: "unreadable", error_class: resourceErrorClass(error) });
+        if (context?.authority?.owner !== false) jobs.push({ job_id: entry.name, name: "unavailable", status: "unreadable", error_class: resourceErrorClass(error) });
       }
     }
     jobs.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     return { jobs: jobs.slice(0, limit), retained: jobs.length, maximum: MAX_JOBS };
   }
 
-  read(args = {}) {
+  read(args = {}, context = {}) {
     this.authorizeTool("read_job");
     this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
     this.reconcileStatus(dir);
     const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+    assertOwnedByContext(status, context, "managed job");
     const result = readJson(join(dir, "result.json"), 4 * 1024 * 1024);
     return {
       ...publicStatus(status),
@@ -266,7 +274,7 @@ export class ManagedJobManager {
     };
   }
 
-  cancel(args = {}) {
+  cancel(args = {}, context = {}) {
     this.authorizeTool("cancel_job");
     this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
@@ -275,6 +283,7 @@ export class ManagedJobManager {
     try {
       this.reconcileStatus(dir);
       const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+      assertOwnedByContext(status, context, "managed job");
       if (status.status === "staged") {
         const now = new Date().toISOString();
         status.status = "cancelled_before_start";
@@ -342,6 +351,15 @@ export class ManagedJobManager {
       return;
     }
     if (runnerProcessIsCurrent(initial, dir)) return;
+    const terminalResult = readJson(join(dir, "result.json"), 4 * 1024 * 1024, "job result");
+    if (isTerminalManagedJobResult(terminalResult, initial.job_id)) {
+      const recoveredStatus = terminalStatusFromResult(initial, terminalResult, {
+        resultPersisted: true, updatedAt: new Date().toISOString(),
+      });
+      atomicWriteJson(file, recoveredStatus, 256 * 1024);
+      scrubFinishedPlan(dir, recoveredStatus);
+      return;
+    }
     const updated = Date.parse(initial.updated_at || initial.created_at || "");
     if (Number.isFinite(updated) && Date.now() - updated < 10_000) return;
 
@@ -399,6 +417,7 @@ export class ManagedJobManager {
           continue;
         }
       }
+      if (status?.status === "staged" && stagedPlanExpired(status, mtime)) status = expireStagedJob(dir, status);
       if (status && !PLAN_RETAINING_STATES.has(status.status)) scrubFinishedPlan(dir, status);
       entries.push({ dir, status, mtime });
     }
@@ -515,6 +534,8 @@ function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
 }
 
 function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recoveryToken, logger) {
+  const plan = readRequiredJson(join(dir, "plan.json"), MAX_PLAN_BYTES, "job plan");
+  assertPlanIntegrity(plan, status);
   status.status = "interrupted";
   status.updated_at = new Date().toISOString();
   status.finished_at = status.updated_at;
@@ -523,7 +544,40 @@ function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recov
   atomicWriteJson(statusFile, status, 256 * 1024);
   rmSync(join(dir, "runtime"), { recursive: true, force: true });
   rmSync(join(dir, "runner.pid"), { force: true });
-  return launchRunner(dir, true, recoveryToken, { logger });
+  return launchRunner(dir, true, recoveryToken, { logger, fullEnv: plan.full_env === true });
+}
+
+function stagedPlanExpired(status, fallbackMtime) {
+  const createdAt = Date.parse(String(status?.created_at || ""));
+  const baseline = Number.isFinite(createdAt) ? createdAt : fallbackMtime;
+  return Number.isFinite(baseline) && Date.now() - baseline > STAGED_PLAN_RETENTION_MS;
+}
+
+function expireStagedJob(dir, status) {
+  const now = new Date().toISOString();
+  const expired = {
+    ...status,
+    status: "expired_before_start",
+    updated_at: now,
+    finished_at: now,
+    current_phase: null,
+    current_step: null,
+    error_class: "expired",
+    cleanup_guarantee: "not-started",
+  };
+  atomicWriteJson(join(dir, "status.json"), expired, 256 * 1024);
+  atomicWriteJson(join(dir, "result.json"), {
+    job_id: expired.job_id,
+    name: expired.name,
+    status: expired.status,
+    steps: [],
+    finally_steps: [],
+    error_class: "expired",
+    cleanup_error_class: null,
+    finished_at: now,
+  }, 4 * 1024 * 1024);
+  scrubFinishedPlan(dir, expired);
+  return expired;
 }
 
 function planSha256(plan) {
@@ -540,16 +594,18 @@ function assertPlanIntegrity(plan, status) {
 }
 
 function scrubFinishedPlan(dir, status) {
-  if (PLAN_RETAINING_STATES.has(status.status)) return;
-  const safeRm = (path) => {
-    try {
-      rmSync(path, { force: true });
-    } catch (error) {
-      if (!["ENOENT", "EPERM", "EACCES"].includes(error.code)) throw error;
-    }
-  };
-  safeRm(join(dir, "plan.json"));
-  safeRm(join(dir, "runner.pid"));
-  safeRm(join(dir, "recovery.lock"));
-  safeRm(join(dir, "transition.lock"));
+  if (PLAN_RETAINING_STATES.has(status.status)) return { scrubbed: false, errorClass: null, failureCount: 0 };
+  const cleanup = scrubManagedJobArtifacts([
+    join(dir, "runtime"), join(dir, "plan.json"), join(dir, "runner.pid"), join(dir, "cancel"),
+    join(dir, "recovery.lock"), join(dir, "transition.lock"),
+  ], (file) => rmSync(file, { recursive: true, force: true }), resourceErrorClass);
+  const pending = !cleanup.scrubbed;
+  if (status.artifact_cleanup_pending !== pending
+      || (status.artifact_cleanup_error_class || null) !== cleanup.errorClass) {
+    status.artifact_cleanup_pending = pending;
+    status.artifact_cleanup_error_class = cleanup.errorClass;
+    status.updated_at = new Date().toISOString();
+    atomicWriteJson(join(dir, "status.json"), status, 256 * 1024);
+  }
+  return cleanup;
 }

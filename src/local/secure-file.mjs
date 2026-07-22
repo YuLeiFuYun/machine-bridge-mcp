@@ -16,6 +16,9 @@ export function openRegularFileSync(file, flags, options = {}) {
   try {
     const info = fstatSync(fd);
     if (!info.isFile()) throw new Error(`${label} is not a regular file`);
+    if (options.rejectMultipleLinks === true && Number(info.nlink) > 1) {
+      throw new Error(`${label} must not have multiple hard links`);
+    }
     if (options.verifyPathIdentity === true) {
       const pathInfo = lstatSync(file);
       if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) throw new Error(`${label} must be a regular file and not a symbolic link`);
@@ -39,7 +42,7 @@ function withRegularFileSync(file, flags, options, callback) {
 }
 
 export function chmodRegularFileSync(file, mode, label = "path") {
-  return withRegularFileSync(file, fsConstants.O_RDONLY, { label, chmod: mode }, () => undefined);
+  return withRegularFileSync(file, fsConstants.O_RDONLY, { label, chmod: mode, rejectMultipleLinks: true }, () => undefined);
 }
 
 export function readBoundedRegularFileSync(file, maxBytes, label = "path", options = {}) {
@@ -52,6 +55,7 @@ export function readBoundedRegularFileWithInfoSync(file, maxBytes, label = "path
   return withRegularFileSync(file, fsConstants.O_RDONLY, {
     label,
     verifyPathIdentity: options.verifyPathIdentity === true,
+    rejectMultipleLinks: options.rejectMultipleLinks === true,
   }, (fd, info) => {
     if (info.size > limit) throw new Error(`file exceeds ${limit} bytes`);
     options.afterOpen?.({ fd, info });

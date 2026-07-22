@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { packageRoot } from "./state.mjs";
+import { EXPECTED_EXTENSION_ID, normalizeExtensionId } from "./browser-extension-identity.mjs";
 
 export const BROWSER_EXTENSION_PROTOCOL = 3;
 export const EXPECTED_EXTENSION_VERSION = extensionVersion();
@@ -11,13 +12,13 @@ const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
 ]);
 export const MAX_BROWSER_MESSAGE_BYTES = 8 * 1024 * 1024;
 
-/** @typedef {{protocol: number, version: string, capabilities: string[]}} ExtensionInfo */
+/** @typedef {{protocol: number, version: string, extension_id: string, capabilities: string[]}} ExtensionInfo */
 /** @typedef {{readyState: number, close: (code?: number, reason?: string) => unknown, send: (value: string) => unknown}} ProtocolSocket */
 
 /** @param {unknown} value @returns {ExtensionInfo | null} */
 export function normalizeCompatibleExtensionInfo(value) {
   const info = normalizeExtensionInfo(value);
-  if (!info || info.protocol !== BROWSER_EXTENSION_PROTOCOL || info.version !== EXPECTED_EXTENSION_VERSION) return null;
+  if (!info || info.protocol !== BROWSER_EXTENSION_PROTOCOL || info.version !== EXPECTED_EXTENSION_VERSION || info.extension_id !== EXPECTED_EXTENSION_ID) return null;
   if (REQUIRED_EXTENSION_CAPABILITIES.some((capability) => !info.capabilities.includes(capability))) return null;
   return info;
 }
@@ -31,6 +32,9 @@ export function parseExtensionHello(message) {
   if (!info) throw new Error("invalid extension hello; reload the extension");
   if (info.version !== EXPECTED_EXTENSION_VERSION) {
     throw new Error(`extension version mismatch; expected ${EXPECTED_EXTENSION_VERSION}; reload the extension`);
+  }
+  if (info.extension_id !== EXPECTED_EXTENSION_ID) {
+    throw new Error(`extension identity mismatch; expected ${EXPECTED_EXTENSION_ID}; reload the packaged extension`);
   }
   const missing = REQUIRED_EXTENSION_CAPABILITIES.filter((capability) => !info.capabilities.includes(capability));
   if (missing.length) throw new Error(`extension capability mismatch; reload the extension (${missing.join(",")})`);
@@ -77,11 +81,12 @@ function normalizeExtensionInfo(value) {
   const record = /** @type {Record<string, unknown>} */ (value);
   const protocol = Number(record.protocol);
   const version = typeof record.version === "string" && record.version.length <= 100 ? record.version : "";
+  const extension_id = normalizeExtensionId(record.extension_id);
   const capabilities = Array.isArray(record.capabilities)
     ? [...new Set(record.capabilities.filter((entry) => typeof entry === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(entry)))].slice(0, 32)
     : [];
-  if (!Number.isInteger(protocol) || protocol < 1 || !version) return null;
-  return { protocol, version, capabilities };
+  if (!Number.isInteger(protocol) || protocol < 1 || !version || !extension_id) return null;
+  return { protocol, version, extension_id, capabilities };
 }
 
 function extensionVersion() {

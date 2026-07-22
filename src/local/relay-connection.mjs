@@ -1,6 +1,9 @@
 import WebSocket from "ws";
 import { classifyOperationalError } from "./log.mjs";
 import { proxyAgentForWebSocket } from "./network-proxy.mjs";
+import {
+  APPLICATION_PROXY_ROUTE_SCOPE, relayOutageFields, relayRecoveryFields, relayStatusSnapshot,
+} from "./relay-diagnostics.mjs";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 75_000;
@@ -39,6 +42,7 @@ export class RelayConnection {
     this.reconnectDelay = typeof options.reconnectDelay === "function" ? options.reconnectDelay : reconnectDelay;
     this.proxyAgentForUrl = typeof options.proxyAgentForUrl === "function" ? options.proxyAgentForUrl : proxyAgentForWebSocket;
     this.networkRoute = "unresolved";
+    this.networkRouteScope = APPLICATION_PROXY_ROUTE_SCOPE;
     this.maxPayload = boundedPositiveInteger(options.maxPayload, 8 * 1024 * 1024);
     this.heartbeatIntervalMs = boundedPositiveInteger(options.heartbeatIntervalMs, DEFAULT_HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimeoutMs = boundedPositiveInteger(options.heartbeatTimeoutMs, DEFAULT_HEARTBEAT_TIMEOUT_MS);
@@ -72,8 +76,15 @@ export class RelayConnection {
     this.outageNoticeEmitted = false;
     this.outageWarningCount = 0;
     this.lastOutageWarnAt = 0;
+    this.outageCount = 0;
     this.lastCloseCategory = "connection_interrupted";
+    this.lastCloseCode = 0;
     this.lastTransportErrorClass = "";
+    this.lastDisconnectedAt = 0;
+    this.lastReadyAt = 0;
+    this.lastReadyDurationMs = 0;
+    this.lastReconnectDelayMs = 0;
+    this.nextReconnectAt = 0;
     this.pendingCloseCategory = "";
     this.connectedOnce = null;
     this.connectedOnceResolve = null;
@@ -83,16 +94,7 @@ export class RelayConnection {
   }
 
   status() {
-    return {
-      authenticated: this.authenticated,
-      ready: this.ready,
-      readiness_probe_delivered: this.readinessProbeDelivered,
-      closed: this.closed,
-      network_route: this.networkRoute,
-      reconnect_attempt: this.reconnectAttempt,
-      outage_active: this.outageStartedAt > 0,
-      session_generation: this.sessionGeneration,
-    };
+    return relayStatusSnapshot(this, this.now());
   }
 
   currentSessionId() {
@@ -218,17 +220,18 @@ export class RelayConnection {
     this.ready = true;
     this.clearTimer("readinessTimer", "clearTimeout");
     this.reconnectAttempt = 0;
+    this.lastReadyAt = this.now();
+    this.nextReconnectAt = 0;
+    this.lastReconnectDelayMs = 0;
 
     if (!this.hasConnected) {
       this.logger.info?.("remote relay connected and end-to-end result delivery verified");
     } else if (this.outageStartedAt > 0) {
       const outageMs = Math.max(0, this.now() - this.outageStartedAt);
       if (this.outageNoticeEmitted) {
-        this.logger.info?.(`remote relay connection restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`);
-        this.logger.debug?.("remote relay outage recovery details", {
-          outage_seconds: roundSeconds(outageMs),
-          attempts: this.outageAttempts,
-        });
+        const recoveryFields = relayRecoveryFields(this, outageMs);
+        this.logger.info?.(`remote relay connection restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`, recoveryFields);
+        this.logger.debug?.("remote relay outage recovery details", recoveryFields);
       } else {
         this.logger.debug?.("remote relay connection recovered after a brief interruption", {
           outage_ms: outageMs,
@@ -281,7 +284,7 @@ export class RelayConnection {
       const proxy = this.proxyAgentForUrl(wsUrl);
       const headers = this.connectionHeaders();
       if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw new Error("relay connection headers are invalid");
-      this.networkRoute = proxy?.agent ? "proxy" : "direct";
+      this.networkRoute = proxy?.agent ? "application-http-proxy" : "system-network-stack";
       socket = new this.WebSocketClass(wsUrl, {
         headers,
         maxPayload: this.maxPayload,
@@ -290,11 +293,13 @@ export class RelayConnection {
       this.logger.debug?.("remote relay network route selected", { route: this.networkRoute });
     } catch (error) {
       if (error?.code === "relay_proxy_configuration") {
-        this.networkRoute = "invalid-proxy-configuration";
+        this.networkRoute = "invalid-application-proxy-configuration";
         this.failPermanently("relay_proxy_configuration");
         return;
       }
       this.lastTransportErrorClass = classifyRelayTransportError(error);
+      this.lastCloseCode = 0;
+      this.lastDisconnectedAt = this.now();
       this.logger.debug?.("remote relay connection could not be created", { error_class: this.lastTransportErrorClass });
       this.scheduleReconnect("connection_interrupted");
       return;
@@ -362,9 +367,14 @@ export class RelayConnection {
       const reasonText = sanitizeCloseReason(reason);
       const category = this.pendingCloseCategory || relayCloseCategory(code, reasonText);
       this.pendingCloseCategory = "";
-      const connectedForMs = wasAuthenticated && this.connectedAt > 0 ? Math.max(0, this.now() - this.connectedAt) : 0;
+      if (category !== "relay_transport_error") this.lastTransportErrorClass = "";
+      const disconnectedAt = this.now();
+      const connectedForMs = wasAuthenticated && this.connectedAt > 0 ? Math.max(0, disconnectedAt - this.connectedAt) : 0;
+      this.lastDisconnectedAt = disconnectedAt;
+      this.lastReadyDurationMs = wasReady && this.lastReadyAt > 0 ? Math.max(0, disconnectedAt - this.lastReadyAt) : 0;
+      this.lastCloseCode = Number(code) || 0;
       this.logger.debug?.("remote relay transport closed", {
-        close_code: Number(code) || 0,
+        close_code: this.lastCloseCode,
         close_reason: reasonText || "<none>",
         category,
         ready: wasReady,
@@ -457,10 +467,20 @@ export class RelayConnection {
     if (this.closed || this.reconnectTimer) return;
     this.recordOutage(category);
     const delay = this.reconnectDelay(this.reconnectAttempt++);
+    this.lastReconnectDelayMs = delay;
+    this.nextReconnectAt = this.now() + delay;
     this.scheduleOutageWarning();
-    this.logger.debug?.("scheduling daemon reconnect", { delay_ms: delay, attempt: this.outageAttempts });
+    this.logger.debug?.("scheduling daemon reconnect", {
+      delay_ms: delay,
+      next_reconnect_at: new Date(this.nextReconnectAt).toISOString(),
+      attempt: this.outageAttempts,
+      close_category: this.lastCloseCategory,
+      network_route: this.networkRoute,
+      network_route_scope: this.networkRouteScope,
+    });
     this.reconnectTimer = this.scheduler.setTimeout(() => {
       this.reconnectTimer = null;
+      this.nextReconnectAt = 0;
       this.connect();
     }, delay);
     this.reconnectTimer?.unref?.();
@@ -501,6 +521,7 @@ export class RelayConnection {
     const now = this.now();
     if (this.outageStartedAt === 0) {
       this.outageStartedAt = now;
+      this.outageCount += 1;
       this.outageAttempts = 0;
       this.outageNoticeEmitted = false;
       this.lastOutageWarnAt = 0;
@@ -538,13 +559,9 @@ export class RelayConnection {
     const action = outageMs >= 5 * 60_000
       ? " If this persists, check internet access and the deployed Worker."
       : "";
-    this.logger.warn?.(`remote relay unavailable for ${formatDuration(outageMs)}; reconnecting automatically (${formatAttempts(this.outageAttempts)}; ${cause}).${action}`);
-    this.logger.debug?.("remote relay outage details", {
-      outage_seconds: roundSeconds(outageMs),
-      attempts: this.outageAttempts,
-      cause,
-      ...(this.lastTransportErrorClass ? { error_class: this.lastTransportErrorClass } : {}),
-    });
+    const outageFields = relayOutageFields(this, this.now(), cause);
+    this.logger.warn?.(`remote relay unavailable for ${formatDuration(outageMs)}; reconnecting automatically (${formatAttempts(this.outageAttempts)}; ${cause}).${action}`, outageFields);
+    this.logger.debug?.("remote relay outage details", outageFields);
   }
 
   resetOutage() {
@@ -554,8 +571,7 @@ export class RelayConnection {
     this.outageNoticeEmitted = false;
     this.outageWarningCount = 0;
     this.lastOutageWarnAt = 0;
-    this.lastCloseCategory = "connection_interrupted";
-    this.lastTransportErrorClass = "";
+    this.nextReconnectAt = 0;
     this.pendingCloseCategory = "";
   }
 
@@ -666,8 +682,8 @@ export function isSupersededClose(code, reason) {
 
 export function reconnectDelay(attempt, random = Math.random) {
   const safeAttempt = Math.max(0, Number.isFinite(Number(attempt)) ? Number(attempt) : 0);
-  const base = Math.min(3000 * (2 ** Math.min(safeAttempt, 5)), 60_000);
-  return base + Math.floor(random() * 1000);
+  const base = Math.min(1000 * (2 ** Math.min(safeAttempt, 4)), 15_000);
+  return base + Math.floor(random() * 500);
 }
 
 function normalizeWorkerUrl(value) {
@@ -743,8 +759,4 @@ function formatDuration(milliseconds) {
     if (parts.length === 2) break;
   }
   return parts.join(" ") || "1 second";
-}
-
-function roundSeconds(milliseconds) {
-  return Math.max(1, Math.round(milliseconds / 1000));
 }

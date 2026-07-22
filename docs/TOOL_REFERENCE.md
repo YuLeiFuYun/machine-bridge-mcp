@@ -2293,9 +2293,9 @@ Generate or reuse an Ed25519 SSH key pair on the local machine and register the 
 
 ## `stage_job`
 
-**Stage managed job for local approval**
+**Stage managed job draft**
 
-Validate and persist a managed-job plan without starting any process. Use this when execution tools are unavailable or local operator review is required; launch later with machine-mcp job approve JOB_ID.
+Validate and persist a durable managed-job draft without starting any process. This is a non-executing record only; a trusted owner client starts work with start_job after reviewing or reconstructing the plan.
 
 | Contract field | Value |
 |---|---|

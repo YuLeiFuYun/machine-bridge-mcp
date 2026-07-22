@@ -1,111 +1,154 @@
-# Local transaction authorization
+# Local authorization model
 
-Machine Bridge separates **available capability** from **current remote authority**.
+Machine Bridge treats **capability**, **identity**, and **object ownership** as separate controls. A tool is executable only when every control permits it.
 
-The canonical `full` profile still exposes the complete tool catalog, unrestricted local-user paths, shell execution, browser and application automation, managed jobs, absolute paths, and the complete parent environment. It remains the default for a trusted owner. Version 2.0 does not redefine or narrow that profile.
+For a remote request, effective authority is:
 
-An authenticated `owner` account activates the capabilities permitted by the daemon policy ceiling without a second terminal approval step. This preserves uninterrupted owner automation while retaining OAuth identity binding, account-version revocation, device authentication, and the daemon policy as hard boundaries.
-
-For delegated `reviewer`, `editor`, and `operator` accounts, the local daemon applies a final transaction gate after the Worker and local runtime have checked the account role and daemon policy. Ordinary project work remains automatic; an operation that crosses a consequential boundary requires a short-lived local capability lease.
-
-Local stdio calls are not affected by this remote transaction gate. They remain governed by the selected local policy and the MCP host's own approval model.
-
-## What remains automatic
-
-Remote calls do not require a lease for:
-
-- project discovery, status, diagnostics, ordinary metadata, and owner-configured Machine Bridge Agent guidance intended for MCP clients;
-- reads inside the selected workspace, except credential-sensitive paths;
-- ordinary source and configuration writes inside the selected workspace, excluding credential- and persistence-sensitive targets;
-- transactional patches whose source, destination, and move targets remain inside the selected workspace and outside sensitive targets;
-- Git inspection;
-- browser broker status without reading profile content;
-- installed-application discovery without inspecting an application UI;
-- registered-resource metadata inspection.
-
-This is the normal delegated-account coding and review path. A trusted owner is not interrupted by local approval prompts. For non-owner browser work, one reusable profile-session lease covers the session rather than prompting per page read, field, or click.
-
-## What requires a lease
-
-The daemon requests local authorization for these remote effects:
-
-| Scope | Examples |
-|---|---|
-| `shell` | shell commands, direct process launch, process output continuation, interactive process input or termination, registered local commands |
-| `external-read` | reading, searching, imaging, or inspecting a path outside the selected workspace |
-| `sensitive-read` | reading credential-sensitive locations or names such as SSH/AWS/Keychain state, `.env`, tokens, secrets, or private keys |
-| `external-write` | writing, editing, patching, or moving a patch target outside the selected workspace |
-| `sensitive-write` | writing credentials, live `.env` files, SSH/privilege files, shell startup files, Git hooks, LaunchAgents/LaunchDaemons, or other persistence-sensitive paths even when they are inside the selected workspace |
-| `browser-session` | listing or reading tabs, source, screenshots, waits, navigation, form input, clicks, submission, tab management, or extension pairing in the existing browser profile |
-| `data-export` | uploading a file, inserting a registered local resource into a browser or desktop application, or filling an explicitly sensitive browser field |
-| `persistent-job` | staging, starting, listing, reading output from, or cancelling a managed job |
-| `application-control` | opening, inspecting, or operating a desktop application |
-| `credential-operation` | generating an SSH key resource |
-| `full` | all of the above for one explicit temporary automation window |
-
-Classification uses canonicalized paths and bounded operation metadata. A single operation may require more than one scope: for example, a browser upload requires both `browser-session` and `data-export`, and an external credential read requires both `external-read` and `sensitive-read`. Existing leases may satisfy those scopes independently. A pending approval contains only the scopes still missing, and approving it creates one compound lease for those missing scopes. Pending records contain a SHA-256 target digest, not command text, file contents, form values, or uploaded bytes.
-
-Write targets are canonicalized through their nearest existing ancestor even under `full`. A path that enters an in-workspace symbolic-link directory is classified by the real destination, while overwriting a final symbolic link is rejected. Patch `Move to` destinations are classified alongside add/update/delete paths. This preserves unrestricted-path capability without allowing path aliases to weaken the lease boundary.
-
-The browser boundary is intentionally session-granular. The packaged extension controls whichever Chromium profile the user loaded it into; Machine Bridge cannot prove that the profile is isolated. Requiring one `browser-session` lease protects tab metadata and authenticated page content without degrading into per-click prompts. Once granted, ordinary browser reads, navigation, filling, and clicks proceed continuously until expiry. Exporting registered local data remains separately gated.
-
-## Optional delegated-account approval flow
-
-Owner requests never create pending approval IDs. When a lease is missing for a non-owner account, the tool call fails with `local_approval_required` and a command containing a random pending approval ID. List pending requests and active leases locally:
-
-```sh
-machine-mcp --workspace /path/to/project approval list
+```text
+daemon capability ceiling
+∩ authenticated account role
+∩ trusted OAuth client binding
+∩ current account version and refresh-token family
+∩ per-object ownership checks
 ```
 
-Approve only the requested scope for one hour:
+No approval record, token refresh, client reconnect, or local command can expand the account role. A narrower layer always wins.
+
+Local stdio does not use remote OAuth accounts. It runs as the local owner under the selected local policy and remains subject to the MCP host and operating-system controls.
+
+## Account roles
+
+| Role | Effective purpose | Important limits |
+|---|---|---|
+| `reviewer` | Read-only inspection of the selected workspace | No mutation or process execution |
+| `editor` | Workspace reads and deterministic file mutation | No process execution |
+| `operator` | Workspace-confined editing and direct process execution | No unrestricted paths, credentials, browser/desktop control, or persistent job creation |
+| `owner` | Complete bridge authority within the daemon policy ceiling | Generic path-based tools cannot target Machine Bridge control-plane state; owner shell remains OS-user authority |
+
+The daemon may advertise the complete catalog as its capability ceiling. The Worker filters `tools/list` by account role, and the local runtime independently recomputes and validates the same role boundary before dispatch.
+
+## Trusted OAuth clients
+
+Dynamic OAuth registration creates an untrusted client record. The first successful account authorization binds that client to:
+
+- one account ID;
+- the account version at authorization time;
+- the account role;
+- the OAuth client ID.
+
+A client cannot silently switch to another account. Account disablement, role changes, password rotation, client revocation, token-version rotation, and refresh-token replay invalidate the relevant credentials.
+
+Inspect trusted clients locally:
 
 ```sh
-machine-mcp --workspace /path/to/project approval approve APPROVAL_ID --duration 1h
+machine-mcp account clients --workspace /path/to/project
 ```
 
-Then retry the original task. Further matching operations from the same account and OAuth client run without interruption until the lease expires.
-
-For a trusted, intensive automation session, convert the same pending request into an explicit temporary `full` window:
+Revoke one client and all of its authorization codes, access tokens, and refresh tokens:
 
 ```sh
-machine-mcp --workspace /path/to/project approval approve APPROVAL_ID --full
+machine-mcp account revoke-client CLIENT_ID --workspace /path/to/project
 ```
 
-`--full` defaults to eight hours and cannot exceed eight hours. It is local, account-bound, client-bound, time-bounded, and revocable. It does not change the saved policy profile or extend itself remotely.
+Account-management requests are signed by a root-certified ephemeral device session. Machine Bridge does not deploy or retain a long-lived account-administration bearer or HMAC secret.
 
-A specific scope can also be granted in advance. Account and OAuth client IDs are available from `approval list --json` after the client has produced a pending request. Wildcards are supported only when entered explicitly:
+## Automatic execution
 
-```sh
-machine-mcp --workspace /path/to/project approval grant shell \
-  --account ACCOUNT_ID --client CLIENT_ID --duration 2h
-```
+There is no per-operation approval prompt in the current runtime.
 
-## Revocation
+Within the effective role and daemon ceiling, calls execute automatically. Outside that intersection, calls fail immediately with `authorization_denied`; the response does not contain an approval ID or a command to retry.
 
-Revoke one lease:
+Examples:
 
-```sh
-machine-mcp --workspace /path/to/project approval revoke LEASE_ID
-```
+- a reviewer may inspect files inside the selected workspace;
+- an editor may update ordinary workspace files;
+- an operator may run a workspace-confined process only when the delegated process sandbox is behaviorally verified;
+- an owner may use shell, unrestricted paths, browser/application automation, resources, and managed jobs when enabled by the daemon policy.
 
-Revoke every active remote capability lease for the workspace:
+Risk classification still runs for every consequential request. It supplies structured audit metadata and enforces hard boundaries; it is not a mechanism for temporary privilege escalation.
 
-```sh
-machine-mcp --workspace /path/to/project approval clear
-```
+## Hard boundaries
 
-Stopping the daemon prevents execution while it is offline, but leases remain in owner-only state until expiry or explicit revocation. Incident response should therefore stop the daemon, clear leases, revoke or rotate affected OAuth credentials, and inspect account/client state.
+### Machine Bridge control plane
 
-## Binding and storage
+Generic path-based file, image, search, and patch tools cannot target Machine Bridge state, device-root metadata, account-management state, audit-chain state, service metadata, or other protected roots. This applies to `owner` as well as delegated accounts.
 
-Every lease binds:
+This is an application-level path boundary, not an arbitrary-code sandbox. An authorized `owner` shell or interpreter has the daemon OS user's ambient filesystem authority. Control-plane administration uses local CLI interfaces; mutually untrusted owner execution requires external OS isolation.
+
+### Sensitive and persistent targets
+
+Non-owner accounts cannot access credential- or persistence-sensitive targets, including live environment files, private keys, token stores, shell startup files, Git hooks, privilege configuration, LaunchAgents, LaunchDaemons, and equivalent persistence locations.
+
+Final symbolic-link overwrites are rejected. Existing ancestors and patch move destinations are canonicalized before classification so a workspace alias cannot conceal an external or sensitive destination.
+
+### Browser, desktop, and data export
+
+Only `owner` may control the existing browser profile or desktop applications, upload local files, or inject registered resources into an interactive session. Browser and application actions operate on the user's logged-in session and therefore are not delegated to lower roles.
+
+### Persistent jobs
+
+Only `owner` may create persistent execution plans with `start_job` or non-executing drafts with `stage_job`.
+
+`stage_job` does not execute and is not an approval workflow. The removed `machine-mcp job approve` path cannot turn a draft into a running job. Execution requires a trusted owner request through `start_job`, or an explicit local `job submit` operation performed by the machine operator.
+
+## Delegated process isolation
+
+An `operator` process is not accepted merely because its current directory and environment are restricted. Machine Bridge requires a behaviorally verified OS sandbox that:
+
+- exposes the selected workspace and an isolated runtime directory;
+- blocks the real user home and Machine Bridge state;
+- blocks Keychain and desktop automation access;
+- preserves the minimum system runtime needed by ordinary tools.
+
+The probe is fail-closed. The presence of a sandbox executable is not sufficient.
+
+On platforms where the negative security boundary cannot be verified, delegated process execution is unavailable. Owner execution remains governed by the selected daemon policy. For mutually untrusted workloads, use a separate OS account, container, or VM.
+
+Implementation-owned metadata probes are a separate boundary from delegated arbitrary execution. `project_overview` and the read-only Git tools use fixed argv selected by Machine Bridge, never a caller-provided executable or shell string. Those probes run with a minimal isolated environment, bounded output and deadlines, cancellation/process-tree tracking, and the request’s path-visibility rules. They do not grant `run_process`, registered-command, or shell authority to reviewer/editor accounts.
+
+## Object ownership
+
+Long-lived runtime objects bind to the principal that created them:
 
 - account ID;
+- account version;
 - OAuth client ID;
-- one or more explicitly approved scopes, or the standalone `full` scope;
-- creation and expiration times;
-- an optional source pending-approval ID.
+- refresh-token family ID.
 
-Normal scopes may last at most twelve hours. `full` may last at most eight hours. Pending requests expire after ten minutes. Lease and pending files are size-bounded, owner-only, atomically replaced, schema-validated, and validated record by record. Daemon-created pending requests and separate CLI approval/revocation processes serialize mutations through an owner-only process-identity lock, preventing lost updates during concurrent use. Malformed state or lock metadata fails closed.
+The binding applies to interactive processes, retained command-output sessions, and managed jobs. Another account, client, or refresh family cannot read, continue, send input to, cancel, or terminate those objects.
 
-This is an application-level control, not an OS sandbox. A process already running as the same OS user can interfere with local files and memory. Use a separate OS account, VM, or container when the client, repository, or instructions are mutually untrusted.
+## Device-root authorization
+
+The default root on every platform is a portable owner-only P-256 key. It signs the 24-hour ephemeral session certificate without Keychain access or a user-presence prompt. On macOS, `MBM_MACOS_TRUST_BROKER` may explicitly select a separately provisioned app-like broker; only after its code signature, Team ID, canonical non-symlink path with no group/other write access, and real Secure Enclave key probe validate does a non-exportable root replace the portable provider. That provider requests user presence once when signing the daemon session certificate. The private session key remains in memory and handles WebSocket preflight, challenge authentication, reconnects, and local account administration for that daemon lifetime.
+
+Expected interaction frequency:
+
+- ordinary tool calls: no local prompt;
+- portable-root daemon startup: no prompt;
+- provisioned Secure Enclave daemon startup: one user-presence prompt;
+- network reconnect: no prompt;
+- an independent account-management command: no prompt with a portable root, or one prompt with a provisioned Secure Enclave root;
+- root rotation: one explicit operation, with user presence only when the provisioned broker requires it.
+
+Every platform uses the portable P-256 provider unless an explicitly configured non-exportable platform provider has been installed and validated. `server_info.security.device_root` reports the active provider and whether the root key is exportable.
+
+## DPoP
+
+OAuth clients that support DPoP may bind access and refresh tokens to their own P-256 key. The Worker validates the proof method, URL, timestamp, nonce identifier, access-token hash, and key thumbprint. A copied token is insufficient without the client private key.
+
+Bearer remains available for MCP hosts that do not implement DPoP. Client trust, account versioning, refresh-family rotation, and role ceilings still apply.
+
+## Audit and incident response
+
+The local security audit is a bounded SHA-256 hash chain. It records operation class, outcome, duration, byte counts, target digest, and salted principal references. It does not record command text, file paths, file contents, form values, or tool output.
+
+For incident response:
+
+1. stop the daemon;
+2. revoke the affected OAuth client or disable the account;
+3. rotate the account password or global token version when appropriate;
+4. rotate the device root when device identity may be compromised;
+5. inspect the audit-chain health and local endpoint logs;
+6. restart and reconnect only trusted clients.
+
+Legacy capability-lease files from version 2 may still be listed, revoked, or cleared by the local CLI for migration cleanup. The version 3 runtime never consumes them and never creates pending approval IDs.

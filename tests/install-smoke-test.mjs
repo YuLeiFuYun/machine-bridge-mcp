@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -73,6 +73,7 @@ function assertInstalledDefaultStartup(installedPackage, temp) {
   );
 
   const workspace = join(temp, "startup-workspace");
+  const serviceTrap = createServiceManagerTrap(temp);
   const home = join(temp, "startup-home");
   const stateHome = join(temp, "startup-state");
   const appData = join(temp, "startup-appdata");
@@ -87,6 +88,8 @@ function assertInstalledDefaultStartup(installedPackage, temp) {
       USERPROFILE: home,
       XDG_STATE_HOME: stateHome,
       APPDATA: appData,
+      PATH: [serviceTrap.bin, dirname(process.execPath)].join(delimiter),
+      MBM_SERVICE_MANAGER_TRAP: serviceTrap.marker,
       MBM_DEBUG: "1",
       CI: "1",
     },
@@ -100,6 +103,9 @@ function assertInstalledDefaultStartup(installedPackage, temp) {
   }
   if (/ReferenceError|\bis not defined\b/.test(output)) {
     throw new Error(`installed zero-argument startup crashed on an undefined identifier: ${output.slice(0, 2000)}`);
+  }
+  if (existsSync(serviceTrap.marker) || output.includes("Autostart stop command was unavailable")) {
+    throw new Error(`isolated zero-argument startup attempted to control the machine-level service: ${output.slice(0, 2000)}`);
   }
   const stateRoot = process.platform === "win32"
     ? join(appData, "machine-bridge-mcp")
@@ -115,6 +121,27 @@ function assertInstalledDefaultStartup(installedPackage, temp) {
   if (config.selectedWorkspace !== expectedWorkspace) {
     throw new Error(`installed zero-argument startup selected ${config.selectedWorkspace} instead of ${expectedWorkspace}`);
   }
+}
+
+function createServiceManagerTrap(temp) {
+  const bin = join(temp, "service-manager-trap-bin");
+  const marker = join(temp, "service-manager-called.log");
+  mkdirSync(bin, { recursive: true });
+  if (process.platform === "win32") {
+    for (const name of ["schtasks.cmd", "powershell.cmd"]) {
+      writeFileSync(join(bin, name), `@echo ${name} %*>>"%MBM_SERVICE_MANAGER_TRAP%"\r\n@exit /b 97\r\n`, "utf8");
+    }
+  } else {
+    const name = process.platform === "darwin" ? "launchctl" : "systemctl";
+    const script = `#!/bin/sh
+printf '%s\n' "${name} $*" >> "$MBM_SERVICE_MANAGER_TRAP"
+exit 97
+`;
+    const target = join(bin, name);
+    writeFileSync(target, script, "utf8");
+    chmodSync(target, 0o755);
+  }
+  return { bin, marker };
 }
 
 function spawnNpm(args, cwd) {

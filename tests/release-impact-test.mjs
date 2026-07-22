@@ -8,7 +8,12 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temp = mkdtempSync(join(tmpdir(), "mbm-release-impact-test-"));
 try {
   mkdirSync(join(temp, "scripts"), { recursive: true });
+  mkdirSync(join(temp, "src", "local"), { recursive: true });
   cpSync(join(root, "scripts", "release-impact-check.mjs"), join(temp, "scripts", "release-impact-check.mjs"));
+  cpSync(join(root, "scripts", "release-channel.mjs"), join(temp, "scripts", "release-channel.mjs"));
+  for (const name of ["trusted-git-executable.mjs", "trusted-executable.mjs", "errors.mjs"]) {
+    cpSync(join(root, "src", "local", name), join(temp, "src", "local", name));
+  }
   writeJson(join(temp, "package.json"), { name: "release-impact-fixture", version: "1.0.0", files: ["README.md", "scripts"] });
   writeFileSync(join(temp, "CHANGELOG.md"), "# Changelog\n\n## 1.0.0 - 2026-01-01\n\n- Initial.\n");
   writeFileSync(join(temp, "README.md"), "initial\n");
@@ -50,6 +55,9 @@ function expectStatus(expected, message) {
     windowsHide: true,
   });
   if (result.error) throw result.error;
+  if (`${result.stdout}${result.stderr}`.includes("ERR_MODULE_NOT_FOUND")) {
+    throw new Error(`${message}; release-impact fixture failed before the gate ran: ${result.stderr || result.stdout}`);
+  }
   if (result.status !== expected) {
     throw new Error(`${message}; expected ${expected}, got ${result.status}: ${result.stderr || result.stdout}`);
   }

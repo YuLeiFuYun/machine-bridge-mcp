@@ -1,13 +1,16 @@
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/runtime.mjs";
-import { grantOperationLease } from "../src/local/operation-authorization.mjs";
+import { policyProfile } from "../src/local/policy.mjs";
+import { delegatedProcessIsolationStatus } from "../src/local/delegated-process-sandbox.mjs";
+import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 
 export async function runtimeSelfTest() {
   const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
   const outside = await mkdtemp(join(tmpdir(), "mbm-daemon-outside-"));
   const jobState = await mkdtemp(join(tmpdir(), "mbm-daemon-jobs-"));
+  const deviceIdentity = createDeviceIdentity();
   const logEvents = [];
   const logger = {
     info(message, fields) { logEvents.push({ level: "info", message, fields }); },
@@ -18,6 +21,8 @@ export async function runtimeSelfTest() {
   };
   const restricted = new LocalRuntime({
     workerUrl: "https://example.invalid",
+    deviceIdentity,
+    expectedRelayVersion: "3.0.0",
     secret: "test-secret-value-123456",
     workspace,
     policy: { allowWrite: true, allowExec: true },
@@ -27,6 +32,8 @@ export async function runtimeSelfTest() {
   });
   const unrestricted = new LocalRuntime({
     workerUrl: "https://example.invalid",
+    deviceIdentity,
+    expectedRelayVersion: "3.0.0",
     secret: "test-secret-value-123456",
     workspace,
     policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true, exposeAbsolutePaths: false },
@@ -35,22 +42,28 @@ export async function runtimeSelfTest() {
   });
   const unrestrictedVisible = new LocalRuntime({
     workerUrl: "https://example.invalid",
+    deviceIdentity,
+    expectedRelayVersion: "3.0.0",
     secret: "test-secret-value-123456",
     workspace,
     policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true, exposeAbsolutePaths: true },
     logger,
     jobRoot: join(jobState, "unrestricted-visible"),
   });
+  const fullAuthority = new LocalRuntime({
+    workerUrl: "https://example.invalid",
+    deviceIdentity,
+    expectedRelayVersion: "3.0.0",
+    workspace,
+    policy: policyProfile("full"),
+    logger,
+    jobRoot: join(jobState, "full-authority"),
+    approvalRoot: join(jobState, "full-authority-control"),
+  });
   const previousSecret = process.env.MBM_DAEMON_SELFTEST_SECRET;
   process.env.MBM_DAEMON_SELFTEST_SECRET = "should-not-leak";
   try {
-    const ownerAuthorization = { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, role: "owner" };
-    await grantOperationLease(join(jobState, "approvals"), {
-      accountId: ownerAuthorization.account_id,
-      clientId: ownerAuthorization.client_id,
-      scope: "shell",
-      duration: "5m",
-    });
+    const ownerAuthorization = { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, family_id: `mcp_family_${"c".repeat(43)}`, role: "owner" };
     const relayMessages = [];
     const originalSend = restricted.relay.send.bind(restricted.relay);
     restricted.relay.send = (value) => {
@@ -78,6 +91,72 @@ export async function runtimeSelfTest() {
     await writeFile(join(outside, "outside.txt"), "outside-needle", "utf8");
     await writeFile(join(outside, "passwords.txt"), "password-file-visible", "utf8");
     await writeFile(join(outside, ".env"), "OUTSIDE_SECRET=visible", "utf8");
+
+    const reviewerAuthorization = { account_id: `acct_${"r".repeat(32)}`, account_version: 1, client_id: `mcp_client_${"r".repeat(43)}`, family_id: `mcp_family_${"r".repeat(43)}`, role: "reviewer" };
+    const editorAuthorization = { account_id: `acct_${"e".repeat(32)}`, account_version: 1, client_id: `mcp_client_${"e".repeat(43)}`, family_id: `mcp_family_${"e".repeat(43)}`, role: "editor" };
+    const operatorAuthorization = { account_id: `acct_${"o".repeat(32)}`, account_version: 1, client_id: `mcp_client_${"o".repeat(43)}`, family_id: `mcp_family_${"o".repeat(43)}`, role: "operator" };
+    const otherOperatorAuthorization = { account_id: `acct_${"p".repeat(32)}`, account_version: 1, client_id: `mcp_client_${"p".repeat(43)}`, family_id: `mcp_family_${"p".repeat(43)}`, role: "operator" };
+    const otherReviewerAuthorization = { account_id: `acct_${"q".repeat(32)}`, account_version: 1, client_id: `mcp_client_${"q".repeat(43)}`, family_id: `mcp_family_${"q".repeat(43)}`, role: "reviewer" };
+    const relayContext = (authorization) => ({ origin: "relay", authorization });
+
+    const editorOverview = await fullAuthority.executeTool("project_overview", {}, relayContext(editorAuthorization));
+    if (editorOverview.policy?.allowExec !== false || editorOverview.policy?.unrestrictedPaths !== false) {
+      throw new Error("project_overview did not expose the editor-effective policy");
+    }
+    if (editorOverview.daemonPolicy?.profile !== "full" || editorOverview.daemonPolicy?.execMode !== "shell") {
+      throw new Error("project_overview lost the full daemon capability ceiling");
+    }
+    if (editorOverview.tools?.includes("exec_command") || editorOverview.tools?.includes("browser_action")) {
+      throw new Error("project_overview exposed daemon-only tools in the editor-effective tool list");
+    }
+    if (!editorOverview.daemonTools?.includes("exec_command") || !editorOverview.daemonTools?.includes("browser_action")) {
+      throw new Error("project_overview omitted daemon-advertised tools from its explicit ceiling fields");
+    }
+    const reviewerGitStatus = await fullAuthority.executeTool("git_status", {}, relayContext(reviewerAuthorization));
+    if (!Number.isInteger(reviewerGitStatus.code)) {
+      throw new Error("reviewer Git metadata did not use the fixed internal process boundary");
+    }
+
+    await expectReject(
+      () => fullAuthority.executeTool("read_file", { path: join(outside, "outside.txt") }, relayContext(reviewerAuthorization)),
+      "outside the configured workspace",
+    );
+    await expectReject(
+      () => fullAuthority.executeTool("write_file", { path: join(outside, "editor-escape.txt"), content: "blocked" }, relayContext(editorAuthorization)),
+      "outside the configured workspace",
+    );
+    if (delegatedProcessIsolationStatus().available) {
+      const operatorEnvironment = await fullAuthority.executeTool("run_process", {
+        argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || \"unset\")"],
+        timeout_seconds: 5,
+      }, relayContext(operatorAuthorization));
+      if (operatorEnvironment.stdout !== "unset") throw new Error("operator inherited the full daemon parent environment");
+    } else {
+      await expectReject(
+        () => fullAuthority.executeTool("run_process", { argv: [process.execPath, "-e", "process.exit(0)"] }, relayContext(operatorAuthorization)),
+        "requires a behavior-verified OS workspace sandbox",
+      );
+    }
+
+    const ownedProcess = await fullAuthority.executeTool("start_process", {
+      argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"],
+    }, relayContext(ownerAuthorization));
+    await expectReject(
+      () => fullAuthority.executeTool("read_process", { session_id: ownedProcess.session_id }, relayContext(otherOperatorAuthorization)),
+      "belongs to another account",
+    );
+    await fullAuthority.executeTool("kill_process", { session_id: ownedProcess.session_id, force: true }, relayContext(ownerAuthorization));
+
+    const ownedJob = await fullAuthority.executeTool("stage_job", {
+      name: "account-owned-job",
+      steps: [{ argv: [process.execPath, "-e", "process.exit(0)"] }],
+    }, relayContext(ownerAuthorization));
+    const otherJobs = await fullAuthority.executeTool("list_jobs", {}, relayContext(otherReviewerAuthorization));
+    if (otherJobs.jobs.some((job) => job.job_id === ownedJob.job_id)) throw new Error("managed job leaked across account ownership");
+    await expectReject(
+      () => fullAuthority.executeTool("read_job", { job_id: ownedJob.job_id }, relayContext(otherReviewerAuthorization)),
+      "belongs to another account",
+    );
 
     const largeProcess = await restricted.executeTool("run_process", {
       argv: [process.execPath, "-e", "process.stdout.write('R'.repeat(100000) + 'RUNTIME-TAIL')"],
@@ -172,6 +251,21 @@ export async function runtimeSelfTest() {
       await expectReject(() => unrestricted.resolveWritePath(linkPath), "symbolic link");
     } catch (error) {
       if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
+    }
+
+    const hardLinkPath = join(workspace, "outside-hardlink.txt");
+    try {
+      const outsideHardLinkContent = await readFile(join(outside, "outside.txt"), "utf8");
+      await link(join(outside, "outside.txt"), hardLinkPath);
+      await expectReject(() => restricted.readFile(hardLinkPath, 1024), "multiple hard links");
+      await expectReject(() => restricted.editFile({ path: hardLinkPath, old_text: "outside", new_text: "changed" }), "multiple hard links");
+      const hardLinkSearch = await restricted.searchText({ path: hardLinkPath, query: "outside-needle" });
+      if (hardLinkSearch.matches.length !== 0) throw new Error("search_text disclosed content through a hard link");
+      await restricted.writeFile({ path: hardLinkPath, content: "detached-from-hardlink" });
+      if ((await readFile(join(outside, "outside.txt"), "utf8")) !== outsideHardLinkContent) throw new Error("atomic write mutated an external hard-link inode");
+      if ((await restricted.readFile(hardLinkPath, 1024)).content !== "detached-from-hardlink") throw new Error("atomic write did not replace the hard-link directory entry");
+    } catch (error) {
+      if (!["EPERM", "EACCES", "EXDEV", "ENOTSUP"].includes(error?.code)) throw error;
     }
 
     const written = await restricted.writeFile({ path: "nested/written.txt", content: "written", create_only: true });
@@ -352,6 +446,7 @@ export async function runtimeSelfTest() {
     restricted.stop();
     unrestricted.stop();
     unrestrictedVisible.stop();
+    fullAuthority.stop();
     if (previousSecret === undefined) delete process.env.MBM_DAEMON_SELFTEST_SECRET;
     else process.env.MBM_DAEMON_SELFTEST_SECRET = previousSecret;
     await rm(workspace, { recursive: true, force: true }).catch(() => {});

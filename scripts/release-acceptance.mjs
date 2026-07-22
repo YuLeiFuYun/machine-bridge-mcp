@@ -8,12 +8,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { compareReleaseVersions, parseReleaseVersion } from "./release-channel.mjs";
 
 export const ACCEPTANCE_SCHEMA_VERSION = 1;
 export const ACCEPTANCE_POLICY_VERSION = "1.2.8";
 export const AGENT_VERIFIED_ACCEPTANCE_VERSION = "1.2.9";
 export const AGENT_OPERATED_ACCEPTANCE_VERSION = "2.0.0";
 export const ACCEPTANCE_CONFIRMATION = "owner-authorized-agent-operated-local-candidate";
+export const PROMOTION_DIGEST_POLICY_VERSION = "3.0.0-beta.1";
+export const PERSISTENT_OWNER_ACTIVATED_ACCEPTANCE_VERSION = "3.0.0-beta.1";
+export const PERSISTENT_OWNER_ACTIVATED_CONFIRMATION = "owner-activated-agent-verified-persistent-candidate";
 export const OWNER_STARTED_ACCEPTANCE_CONFIRMATION = "owner-started-agent-verified-local-candidate";
 export const LEGACY_ACCEPTANCE_CONFIRMATION = "repository-owner-local-test";
 const MAX_ACCEPTANCE_BYTES = 64 * 1024;
@@ -25,6 +29,9 @@ export function requiresLocalAcceptance(version) {
 
 export function acceptanceConfirmationForVersion(version) {
   const parsed = parseVersion(version);
+  if (compareReleaseVersions(parseReleaseVersion(version), parseReleaseVersion(PERSISTENT_OWNER_ACTIVATED_ACCEPTANCE_VERSION)) >= 0) {
+    return PERSISTENT_OWNER_ACTIVATED_CONFIRMATION;
+  }
   if (compareVersions(parsed, parseVersion(AGENT_OPERATED_ACCEPTANCE_VERSION)) >= 0) return ACCEPTANCE_CONFIRMATION;
   if (compareVersions(parsed, parseVersion(AGENT_VERIFIED_ACCEPTANCE_VERSION)) >= 0) return OWNER_STARTED_ACCEPTANCE_CONFIRMATION;
   return LEGACY_ACCEPTANCE_CONFIRMATION;
@@ -105,6 +112,12 @@ export function verifyAcceptanceRecord(record, metadata) {
   if (!record || typeof record !== "object" || Array.isArray(record)) {
     throw new Error("release acceptance record must be an object");
   }
+  const allowed = new Set([
+    "schema_version", "result", "confirmation", "package_name", "package_version", "filename",
+    "shasum", "integrity", "accepted_at", "package_content_sha256", "promotion_content_sha256",
+  ]);
+  const unknown = Object.keys(record).filter((key) => !allowed.has(key));
+  if (unknown.length) throw new Error(`release acceptance record contains unsupported fields: ${unknown.join(", ")}`);
   if (record.schema_version !== ACCEPTANCE_SCHEMA_VERSION) {
     throw new Error(`unsupported release acceptance schema: ${record.schema_version}`);
   }
@@ -118,12 +131,28 @@ export function verifyAcceptanceRecord(record, metadata) {
   if (!/^[0-9a-f]{64}$/.test(String(record.package_content_sha256 || ""))) {
     throw new Error("local release acceptance portable package-content digest is missing or invalid");
   }
+  if (compareReleaseVersions(parseReleaseVersion(metadata.package_version), parseReleaseVersion(PROMOTION_DIGEST_POLICY_VERSION)) >= 0
+    && !/^[0-9a-f]{64}$/.test(String(record.promotion_content_sha256 || ""))) {
+    throw new Error("local release acceptance promotion-content digest is missing or invalid");
+  }
   for (const key of ["package_name", "package_version", "filename", "shasum", "integrity"]) {
     if (record[key] !== metadata[key]) {
       throw new Error(`local release acceptance ${key} does not match the current npm package`);
     }
   }
-  return record;
+  return Object.freeze({
+    schema_version: ACCEPTANCE_SCHEMA_VERSION,
+    result: "passed",
+    confirmation: expectedConfirmation,
+    package_name: metadata.package_name,
+    package_version: metadata.package_version,
+    filename: metadata.filename,
+    shasum: metadata.shasum,
+    integrity: metadata.integrity,
+    accepted_at: new Date(acceptedAt).toISOString(),
+    package_content_sha256: String(record.package_content_sha256),
+    ...(record.promotion_content_sha256 ? { promotion_content_sha256: String(record.promotion_content_sha256) } : {}),
+  });
 }
 
 export function verifyCurrentReleaseAcceptance(root) {

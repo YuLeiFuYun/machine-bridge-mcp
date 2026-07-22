@@ -5,14 +5,13 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ACCEPTANCE_CONFIRMATION,
+  acceptanceConfirmationForVersion,
   ACCEPTANCE_SCHEMA_VERSION,
   acceptancePath,
   packProject,
@@ -21,6 +20,10 @@ import {
   verifyCurrentReleaseAcceptance,
   verifyTarball,
 } from "./release-acceptance.mjs";
+import { computePromotionContentDigest } from "./promotion-digest.mjs";
+import { parseReleaseVersion } from "./release-channel.mjs";
+import { validateCandidateManifest } from "./release-candidate-manifest.mjs";
+import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateDirectory = join(root, ".release-candidate");
@@ -48,14 +51,16 @@ function prepareCandidate() {
     schema_version: ACCEPTANCE_SCHEMA_VERSION,
     result: "pending",
     ...metadata,
+    promotion_content_sha256: computePromotionContentDigest(root),
     prepared_at: new Date().toISOString(),
   };
-  writeFileSync(candidateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  replaceFileAtomicallySync(candidateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   const phrase = confirmationPhrase(pkg.name, pkg.version);
   console.log(`Release candidate created: ${join(candidateDirectory, metadata.filename)}`);
-  console.log("After the repository owner explicitly authorizes this exact candidate in the active conversation, the coding agent starts it through Machine Bridge with:");
-  console.log("npm run release:candidate:start -- --allow-worker-deploy");
-  console.log("The owner does not need to run a terminal authorization command. The coding agent keeps the candidate running while verifying connection readiness and representative functionality through Machine Bridge.");
+  console.log("The repository owner activates this exact candidate with one persistent owner-side command:");
+  parseReleaseVersion(pkg.version);
+  console.log("npm run release:candidate:activate -- --allow-worker-deploy");
+  console.log("The owner runs this one command. It installs the exact candidate in the private state root, updates the same-name Worker, verifies candidate relay readiness, replaces the login daemon, verifies the background handoff, and exits while the service remains active.");
   console.log("After that observed live verification succeeds, the coding agent records acceptance with:");
   console.log(`npm run release:accept -- --confirm \"${phrase}\"`);
   console.log("Automated tests alone do not authorize acceptance or the first GitHub push.");
@@ -68,10 +73,10 @@ function recordAcceptance() {
   if (supplied !== expected) {
     throw new Error(`interactive candidate verification confirmation must exactly match: ${expected}`);
   }
-  const pending = readJson(candidateManifestPath, "release candidate manifest");
-  if (pending.result !== "pending" || pending.package_name !== pkg.name || pending.package_version !== pkg.version) {
-    throw new Error("release candidate manifest does not match the current package");
-  }
+  const pending = validateCandidateManifest(readJson(candidateManifestPath, "release candidate manifest"), {
+    packageName: pkg.name,
+    packageVersion: pkg.version,
+  });
   verifyTarball(join(candidateDirectory, pending.filename), pending);
 
   const verificationDirectory = join(candidateDirectory, "verification");
@@ -84,10 +89,15 @@ function recordAcceptance() {
     }
   }
 
+  const promotionDigest = computePromotionContentDigest(root);
+  if (pending.promotion_content_sha256 !== promotionDigest) {
+    throw new Error("source changed after candidate preparation: promotion content digest no longer matches");
+  }
+
   const record = {
     schema_version: ACCEPTANCE_SCHEMA_VERSION,
     result: "passed",
-    confirmation: ACCEPTANCE_CONFIRMATION,
+    confirmation: acceptanceConfirmationForVersion(pkg.version),
     package_name: current.package_name,
     package_version: current.package_version,
     filename: current.filename,
@@ -95,11 +105,12 @@ function recordAcceptance() {
     integrity: current.integrity,
     accepted_at: new Date().toISOString(),
     package_content_sha256: computePortablePackageDigest(),
+    promotion_content_sha256: promotionDigest,
   };
   verifyAcceptanceRecord(record, current);
   const path = acceptancePath(root, pkg.version);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+  replaceFileAtomicallySync(path, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o644 });
   console.log(`Interactive local candidate acceptance recorded: ${path}`);
   console.log("Commit this record with the candidate. Any packaged-file change invalidates it.");
 }

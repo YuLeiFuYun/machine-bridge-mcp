@@ -3,80 +3,89 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
-import { EXPECTED_EXTENSION_VERSION } from "./browser-extension-protocol.mjs";
+import { acquireMaintenanceLock, assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
+import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 
 const DEFAULT_BROWSER_PORT = 39393;
 const PAIRING_FILE = "browser-bridge.json";
+const PAIRING_SCHEMA_VERSION = 2;
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,100}$/;
 
 export async function loadOrCreatePairing(stateRoot) {
-  if (!stateRoot) return { token: randomBytes(32).toString("base64url"), port: DEFAULT_BROWSER_PORT };
-  assertStateMaintenanceAvailable(stateRoot);
+  if (!stateRoot) return newPairing(DEFAULT_BROWSER_PORT);
   ensureOwnerOnlyDir(stateRoot);
   const file = join(stateRoot, PAIRING_FILE);
+  if (existsSync(file)) {
+    const current = readPairing(file);
+    if (!current.legacy) { assertStateMaintenanceAvailable(stateRoot); return current.value; }
+    return migrateLegacyPairing(stateRoot, file);
+  }
+  assertStateMaintenanceAvailable(stateRoot);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (existsSync(file)) {
-      ownerOnlyFile(file);
-      let parsed;
-      try { parsed = JSON.parse(readBoundedRegularFileSync(file, 64 * 1024).toString("utf8")); }
-      catch { throw new Error("browser pairing state is not valid bounded JSON"); }
-      if (!/^[A-Za-z0-9_-]{32,100}$/.test(parsed.token) || !Number.isInteger(parsed.port) || parsed.port < 1024 || parsed.port > 65535) {
-        throw new Error("browser pairing state is invalid");
-      }
-      return parsed;
-    }
-    const value = { token: randomBytes(32).toString("base64url"), port: DEFAULT_BROWSER_PORT };
+    const value = newPairing(DEFAULT_BROWSER_PORT);
     try {
-      createExclusiveFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+      createExclusiveFileSync(file, pairingJson(value), { mode: 0o600 });
       ownerOnlyFile(file);
       return value;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
+      const created = readPairing(file);
+      if (!created.legacy) return created.value;
     }
   }
-  throw new Error("browser pairing state could not be initialized");
+  return migrateLegacyPairing(stateRoot, file);
 }
 
 export async function savePairing(stateRoot, value) {
   assertStateMaintenanceAvailable(stateRoot);
+  const normalized = normalizePairing(value);
   const file = join(stateRoot, PAIRING_FILE);
-  replaceFileAtomicallySync(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  replaceFileAtomicallySync(file, pairingJson(normalized), { mode: 0o600 });
   ownerOnlyFile(file);
 }
 
-export function pairingHtml(port, token) {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="machine-bridge-browser-pair" content="1"><meta name="machine-bridge-browser-port" content="${port}"><meta name="machine-bridge-browser-token" content="${token}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Machine Bridge browser pairing</title></head><body><h1>Machine Bridge browser pairing</h1><p>Expected extension build: <strong>${EXPECTED_EXTENSION_VERSION}</strong>. Reload the unpacked extension after every Machine Bridge upgrade.</p><p>The installed extension reads pairing material from this loopback-only page and stores it in browser-local extension storage. It is not sent to any website.</p><p id="status">Waiting for the Machine Bridge extension.</p></body></html>`;
+async function migrateLegacyPairing(stateRoot, file) {
+  const lock = await acquirePairingMigrationLock(stateRoot);
+  try {
+    const current = readPairing(file);
+    if (!current.legacy) return current.value;
+    const value = { schemaVersion: PAIRING_SCHEMA_VERSION, extensionToken: current.value.extensionToken, runtimeToken: token(), port: current.value.port };
+    replaceFileAtomicallySync(file, pairingJson(value), { mode: 0o600 });
+    ownerOnlyFile(file);
+    return value;
+  } finally { lock.release(); }
 }
 
-export function isAllowedExtensionOrigin(origin) {
+async function acquirePairingMigrationLock(stateRoot) {
+  const deadline = createMonotonicDeadline(5_000);
+  do {
+    const lock = acquireMaintenanceLock(stateRoot, { operation: "browser-pairing-migration" });
+    if (lock.acquired) return lock;
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, Math.min(50, Math.max(1, deadline.remainingMs()))); });
+  } while (!deadline.expired());
+  throw new Error("browser pairing migration could not acquire the state maintenance lock");
+}
+
+function readPairing(file) {
+  ownerOnlyFile(file);
   let parsed;
-  try { parsed = new URL(String(origin || "")); } catch { return false; }
-  return parsed.protocol === "chrome-extension:"
-    && /^[a-p]{32}$/.test(parsed.hostname)
-    && !parsed.username
-    && !parsed.password
-    && !parsed.port
-    && (parsed.pathname === "" || parsed.pathname === "/")
-    && !parsed.search
-    && !parsed.hash;
+  try { parsed = JSON.parse(readBoundedRegularFileSync(file, 64 * 1024).toString("utf8")); }
+  catch { throw new Error("browser pairing state is not valid bounded JSON"); }
+  if (parsed?.schemaVersion === PAIRING_SCHEMA_VERSION) return { legacy: false, value: normalizePairing(parsed) };
+  if (TOKEN_PATTERN.test(String(parsed?.token || "")) && validPort(parsed?.port)) {
+    return { legacy: true, value: { extensionToken: parsed.token, port: Number(parsed.port) } };
+  }
+  throw new Error("browser pairing state is invalid");
 }
 
-export function isAllowedLoopbackHost(host, port) {
-  const normalized = String(host || "").toLowerCase();
-  return normalized === `127.0.0.1:${port}` || normalized === `localhost:${port}` || normalized === `[::1]:${port}`;
+function normalizePairing(value) {
+  if (value?.schemaVersion !== PAIRING_SCHEMA_VERSION || !TOKEN_PATTERN.test(String(value.extensionToken || ""))
+      || !TOKEN_PATTERN.test(String(value.runtimeToken || "")) || value.extensionToken === value.runtimeToken || !validPort(value.port)) {
+    throw new Error("browser pairing state is invalid");
+  }
+  return { schemaVersion: PAIRING_SCHEMA_VERSION, extensionToken: String(value.extensionToken), runtimeToken: String(value.runtimeToken), port: Number(value.port) };
 }
-
-export function securityHeaders(contentType) {
-  return {
-    "content-type": contentType,
-    "cache-control": "no-store",
-    "content-security-policy": "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-    "x-content-type-options": "nosniff",
-    "referrer-policy": "no-referrer",
-  };
-}
-
-export function sendJson(response, value) {
-  response.writeHead(200, securityHeaders("application/json; charset=utf-8"));
-  response.end(`${JSON.stringify(value)}\n`);
-}
+function newPairing(port) { return { schemaVersion: PAIRING_SCHEMA_VERSION, extensionToken: token(), runtimeToken: token(), port }; }
+function token() { return randomBytes(32).toString("base64url"); }
+function validPort(value) { return Number.isInteger(Number(value)) && Number(value) >= 1024 && Number(value) <= 65535; }
+function pairingJson(value) { return `${JSON.stringify(value, null, 2)}\n`; }

@@ -1,11 +1,13 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { activeManagedJobs } from "./managed-jobs.mjs";
+import { activeManagedJobLock } from "./managed-job-lock.mjs";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { STATE_SCHEMA_VERSION, expandHome, readDaemonLockOwner, resolveWorkspace } from "./state.mjs";
 
 const PROFILE_NAME = /^[a-f0-9]{24}$/;
+const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
 
@@ -17,7 +19,7 @@ export function knownWorkerNames(stateRoot) {
     const profileDir = resolve(profiles, entry.name);
     const stateFile = resolve(profileDir, "state.json");
     if (!existsSync(stateFile)) {
-      const evidence = readdirSync(profileDir).some((name) => /^state\.json\.corrupt-/.test(name) || name === "daemon.lock");
+      const evidence = readdirSync(profileDir).some((name) => /^state\.json\.corrupt-/.test(name) || name === "state.json.recovery-required" || name === "daemon.lock");
       if (evidence) throw unreadableWorkerState(entry.name);
       continue;
     }
@@ -101,8 +103,14 @@ export function activeStateLocks(stateRoot) {
   if (!existsSync(profiles)) return [];
   const active = [];
   for (const profile of profileDirectories(profiles)) {
-    for (const [kind, name] of [["daemon", "daemon.lock"], ["startup", "startup.lock"]]) {
-      const lockPath = resolve(profiles, profile.name, name);
+    const profileDir = resolve(profiles, profile.name);
+    for (const [kind, name] of [
+      ["daemon", "daemon.lock"],
+      ["startup", "startup.lock"],
+      ["operation-authorization", "operation-authorization.lock"],
+      ["security-audit", "security-audit.lock"],
+    ]) {
+      const lockPath = resolve(profileDir, name);
       if (!existsSync(lockPath)) continue;
       const owner = readDaemonLockOwner(lockPath);
       if (!owner) {
@@ -113,6 +121,16 @@ export function activeStateLocks(stateRoot) {
       const identity = inspectProcessInstance(owner, { maxAgeMs });
       if (identity.current || (identity.alive && !identity.reclaimable)) {
         active.push({ kind, pid: owner.pid, path: lockPath, reason: identity.reason });
+      }
+    }
+    const jobRoot = resolve(profileDir, "jobs");
+    if (!existsSync(jobRoot)) continue;
+    for (const entry of readdirSync(jobRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
+      for (const [kind, name] of [["job-transition", "transition.lock"], ["job-recovery", "recovery.lock"]]) {
+        const lockPath = resolve(jobRoot, entry.name, name);
+        const lock = activeManagedJobLock(lockPath);
+        if (lock?.active) active.push({ kind, pid: lock.pid, path: lockPath, reason: lock.reason, job_id: entry.name });
       }
     }
   }

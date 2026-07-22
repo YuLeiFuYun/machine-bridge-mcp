@@ -46,7 +46,11 @@ export function reviewablePlan(plan) {
  *   plan_sha256?: unknown,
  *   cleanup_guarantee?: unknown,
  *   error_class?: unknown,
- *   recovery_attempts?: unknown
+ *   recovery_attempts?: unknown,
+ *   result_persisted?: unknown,
+ *   terminal_record_error_class?: unknown,
+ *   artifact_cleanup_pending?: unknown,
+ *   artifact_cleanup_error_class?: unknown
  * }} status
  */
 export function publicStatus(status) {
@@ -64,5 +68,9 @@ export function publicStatus(status) {
     cleanup_guarantee: status.cleanup_guarantee ?? "best-effort-finally-and-recovery",
     error_class: status.error_class ?? null,
     recovery_attempts: Number(status.recovery_attempts || 0),
+    result_persisted: typeof status.result_persisted === "boolean" ? status.result_persisted : null,
+    terminal_record_error_class: status.terminal_record_error_class ?? null,
+    artifact_cleanup_pending: status.artifact_cleanup_pending === true,
+    artifact_cleanup_error_class: status.artifact_cleanup_error_class ?? null,
   };
 }
