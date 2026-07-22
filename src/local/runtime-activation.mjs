@@ -82,7 +82,7 @@ export async function activatePersistentRuntime(options = {}) {
     try { candidateRuntime?.stop?.(); } catch (failure) { cleanupErrors.push(failure); }
     try { daemonLock?.release?.(); } catch (failure) { cleanupErrors.push(failure); }
     if (!startupReleased) {
-      try { startupLock.release(); startupReleased = true; }
+      try { startupLock.release(); }
       catch (failure) { cleanupErrors.push(failure); }
     }
     if (cleanupErrors.length) {

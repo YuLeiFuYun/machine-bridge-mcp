@@ -12,7 +12,7 @@ export function delegatedProcessCommand({ command, args = [], workspace, runtime
   if (!principal || principal.kind !== "account" || principal.role === "owner") {
     return { command, args, isolation: "owner-or-local-user" };
   }
-  if (platform === "darwin" && macosSandboxAvailable()) {
+  if (platform === "darwin" && macosSandboxAvailable({ platform })) {
     const profile = macosProfile({ workspace, runtimeDir });
     return {
       command: MACOS_SANDBOX_EXEC,
@@ -28,7 +28,7 @@ export function delegatedProcessCommand({ command, args = [], workspace, runtime
 }
 
 export function delegatedProcessIsolationStatus(platform = process.platform) {
-  if (platform === "darwin" && macosSandboxAvailable()) {
+  if (platform === "darwin" && macosSandboxAvailable({ platform })) {
     return {
       available: true,
       provider: "macos-sandbox-exec-deny-default",
@@ -59,7 +59,9 @@ export function macosDelegatedSandboxProfile({ workspace, runtimeDir } = {}) {
 export function macosSandboxAvailable(options = {}) {
   if (options.refresh === true) macosProbeResult = undefined;
   if (macosProbeResult !== undefined) return macosProbeResult;
-  if (process.platform !== "darwin" || !existsSync(MACOS_SANDBOX_EXEC)) {
+  const platform = String(options.platform || process.platform);
+  const exists = typeof options.exists === "function" ? options.exists : existsSync;
+  if (platform !== "darwin" || !exists(MACOS_SANDBOX_EXEC)) {
     macosProbeResult = false;
     return false;
   }

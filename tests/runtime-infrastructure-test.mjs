@@ -752,15 +752,22 @@ function testTrustedGitExecutable() {
   chmodSync(writableGit, 0o775);
   chmodSync(trustedGit, 0o755);
   try {
+    const platform = process.platform === "win32" ? "win32" : "linux";
+    const candidates = process.platform === "win32"
+      ? ["git", workspaceGit, homeGit, trustedGit]
+      : ["git", workspaceGit, homeGit, writableGit, trustedGit];
+    const rejected = process.platform === "win32"
+      ? [workspaceGit, homeGit]
+      : [workspaceGit, homeGit, writableGit];
     const resolved = resolveTrustedGitExecutable({
-      platform: "linux",
+      platform,
       workspace,
       stateRoot,
       runtimeDir,
       home,
-      candidates: ["git", workspaceGit, homeGit, writableGit, trustedGit],
+      candidates,
     });
     assert(resolved === realpathSync(trustedGit), "trusted Git resolver accepted a relative, workspace, home, or group-writable executable");
-    expectBridgeError(() => resolveTrustedGitExecutable({ platform: "linux", workspace, stateRoot, runtimeDir, home, candidates: [workspaceGit, homeGit, writableGit] }), "unavailable");
+    expectBridgeError(() => resolveTrustedGitExecutable({ platform, workspace, stateRoot, runtimeDir, home, candidates: rejected }), "unavailable");
   } finally { rmSync(root, { recursive: true, force: true }); }
 }

@@ -6,6 +6,7 @@ import {
   delegatedProcessIsolationStatus,
   macosDelegatedSandboxProfile,
   macosSandboxAvailable,
+  probeMacosDelegatedSandbox,
 } from "../src/local/delegated-process-sandbox.mjs";
 
 const root = mkdtempSync(path.join(tmpdir(), "mbm-delegated-sandbox-"));
@@ -46,13 +47,35 @@ try {
     assert(denied, "delegated execution did not fail closed without a verified sandbox provider");
   }
 
-  if (process.platform === "darwin") {
-    assert(macosSandboxAvailable({ refresh: true, behaviorProbe: () => true }), "successful sandbox behavior probe was not accepted");
-    const wrapped = delegatedProcessCommand({ command: "/usr/bin/true", args: [], workspace, runtimeDir, context });
-    assert(wrapped.command === "/usr/bin/sandbox-exec", "verified sandbox probe did not enable wrapping");
-    assert(!macosSandboxAvailable({ refresh: true, behaviorProbe: () => false }), "failed sandbox behavior probe was accepted from executable presence alone");
-    macosSandboxAvailable({ refresh: true });
-  }
+  const behaviorProbe = ({ spawnSyncProcess }) => probeMacosDelegatedSandbox({ spawnSyncProcess });
+  const fakeSpawn = (_command, args) => {
+    const argv = args.slice(2);
+    if (argv[0] === "/bin/cat" && argv[1]?.endsWith("allowed.txt")) return { status: 0 };
+    if (argv[0] === "/bin/sh" && argv[2]?.startsWith("printf allowed > ")) {
+      const match = argv[2].match(/> '([^']+)'$/);
+      if (!match) throw new Error("allowed-write probe did not quote its destination");
+      writeFileSync(match[1], "allowed");
+      return { status: 0 };
+    }
+    return { status: 1 };
+  };
+  assert(probeMacosDelegatedSandbox({ spawnSyncProcess: fakeSpawn }), "deterministic sandbox behavior probe did not accept the required matrix");
+  assert(macosSandboxAvailable({
+    refresh: true,
+    platform: "darwin",
+    exists: () => true,
+    behaviorProbe,
+    spawnSync: fakeSpawn,
+  }), "successful sandbox behavior probe was not accepted");
+  const wrapped = delegatedProcessCommand({ command: "/usr/bin/true", args: [], workspace, runtimeDir, context, platform: "darwin" });
+  assert(wrapped.command === "/usr/bin/sandbox-exec", "verified sandbox probe did not enable wrapping");
+  assert(!macosSandboxAvailable({
+    refresh: true,
+    platform: "darwin",
+    exists: () => true,
+    behaviorProbe: () => false,
+  }), "failed sandbox behavior probe was accepted from executable presence alone");
+  macosSandboxAvailable({ refresh: true });
 
   console.log("delegated process sandbox test ok");
 } finally {

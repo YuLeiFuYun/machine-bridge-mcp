@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0-beta.9 - 2026-07-22
+
+### Cross-platform release-gate repair
+
+- Block `3.0.0-beta.8` after owner activation and acceptance because pull-request CI found three release-blocking defects that local macOS verification could not establish: the Windows trusted-Git regression forced Linux permission semantics onto NTFS, Ubuntu coverage did not execute the macOS delegated-sandbox behavior probe, and CodeQL rejected an unused cleanup-path assignment.
+- Make trusted-Git regression coverage use the actual host platform while retaining POSIX group-writable rejection on Unix. Make macOS sandbox availability accept explicit platform and executable-presence probes for deterministic cross-platform tests, and exercise the complete read/write/outside-path/Keychain behavior matrix with a synthetic process boundary.
+- Remove the unused activation cleanup assignment rather than adding a CodeQL exception. These changes require a new exact candidate, live activation, acceptance, and full prerelease gate.
+
 ## 3.0.0-beta.8 - 2026-07-22
 
 ### Candidate repository hygiene correction
