@@ -12,10 +12,11 @@ const MAX_WALK_ENTRIES = 200_000;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 export class WorkspaceFileService {
-  constructor({ workspace, policy, policyGate, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationLock }) {
+  constructor({ workspace, policy, policyGate, policyForContext = null, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationLock }) {
     this.workspace = workspace;
     this.policy = policy;
     this.policyGate = policyGate;
+    this.policyForContext = typeof policyForContext === "function" ? policyForContext : () => this.policy;
     this.resolveExistingPath = resolveExistingPath;
     this.resolveWritePath = resolveWritePath;
     this.displayPath = displayPath;
@@ -23,18 +24,19 @@ export class WorkspaceFileService {
     this.withMutationLock = withMutationLock;
   }
 
-  listRoots() {
-    const roots = [{ name: this.policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace", path: this.displayPath(this.workspace), default: true }];
-    if (this.policy.unrestrictedPaths) {
+  listRoots(context = {}) {
+    const policy = this.policyForContext(context);
+    const roots = [{ name: policy.exposeAbsolutePaths ? basename(this.workspace) : "workspace", path: this.displayPath(this.workspace, context), default: true }];
+    if (policy.unrestrictedPaths) {
       const home = process.env.HOME || process.env.USERPROFILE;
-      if (home && home !== this.workspace) roots.push({ name: "home", path: this.displayPath(resolve(home)), default: false });
-      roots.push({ name: "filesystem-root", path: this.displayPath(path.parse(this.workspace).root), default: false });
+      if (home && home !== this.workspace) roots.push({ name: "home", path: this.displayPath(resolve(home), context), default: false });
+      roots.push({ name: "filesystem-root", path: this.displayPath(path.parse(this.workspace).root, context), default: false });
     }
     return { roots };
   }
 
   async listDir(inputPath, context = {}) {
-    const full = await this.resolveExistingPath(inputPath);
+    const full = await this.resolveExistingPath(inputPath, context);
     const entries = [];
     let resultBytes = 0;
     let truncated = false;
@@ -44,7 +46,7 @@ export class WorkspaceFileService {
       const info = await lstat(entryPath).catch(() => null);
       const item = {
         name: entry.name,
-        path: this.displayPath(entryPath),
+        path: this.displayPath(entryPath, context),
         type: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
         size: info?.size ?? 0,
       };
@@ -57,26 +59,26 @@ export class WorkspaceFileService {
       resultBytes += itemBytes;
     }
     entries.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
-    return { path: this.displayPath(full), entries, truncated };
+    return { path: this.displayPath(full, context), entries, truncated };
   }
 
   async listFiles(inputPath, maxFiles, context = {}) {
-    const root = await this.resolveExistingPath(inputPath);
+    const root = await this.resolveExistingPath(inputPath, context);
     const info = await stat(root);
-    if (info.isFile()) return { path: this.displayPath(root), files: [this.displayPath(root)], truncated: false };
+    if (info.isFile()) return { path: this.displayPath(root, context), files: [this.displayPath(root, context)], truncated: false };
     if (!info.isDirectory()) throw new Error("path is not a file or directory");
     const files = [];
     let resultBytes = 0;
     const walkResult = await this.walk(root, async full => {
       this.throwIfCancelled(context);
-      const shown = this.displayPath(full);
+      const shown = this.displayPath(full, context);
       const pathBytes = Buffer.byteLength(shown) + 8;
       if (files.length >= maxFiles || resultBytes + pathBytes > MAX_PATH_RESULT_BYTES) return false;
       files.push(shown);
       resultBytes += pathBytes;
       return true;
     }, context);
-    return { path: this.displayPath(root), files, truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated };
+    return { path: this.displayPath(root, context), files, truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated };
   }
 
   async readFile(args, context = {}) {
@@ -85,7 +87,7 @@ export class WorkspaceFileService {
       context = {};
     }
     if (!args.path) throw new Error("path is required");
-    const full = await this.resolveExistingPath(args.path);
+    const full = await this.resolveExistingPath(args.path, context);
     this.throwIfCancelled(context);
     const { buffer, info } = await readBoundedFile(full, MAX_WRITE_BYTES, "readable text file");
     const content = decodeUtf8(buffer);
@@ -107,7 +109,7 @@ export class WorkspaceFileService {
     const selectedBytes = Buffer.byteLength(selected);
     if (selectedBytes > maxBytes) throw new Error(`selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`);
     return {
-      path: this.displayPath(full),
+      path: this.displayPath(full, context),
       size: info.size,
       sha256: sha256(content),
       content: selected,
@@ -120,7 +122,7 @@ export class WorkspaceFileService {
 
   async viewImage(args, context = {}) {
     if (!args.path) throw new Error("path is required");
-    const full = await this.resolveExistingPath(args.path);
+    const full = await this.resolveExistingPath(args.path, context);
     this.throwIfCancelled(context);
     const { buffer, info } = await readBoundedFile(full, MAX_IMAGE_BYTES, "image");
     this.throwIfCancelled(context);
@@ -130,7 +132,7 @@ export class WorkspaceFileService {
       $mcp: {
         content: [{ type: "image", data: buffer.toString("base64"), mimeType }],
         structuredContent: {
-          path: this.displayPath(full),
+          path: this.displayPath(full, context),
           size: info.size,
           sha256: createHash("sha256").update(buffer).digest("hex"),
           mime_type: mimeType,
@@ -147,7 +149,7 @@ export class WorkspaceFileService {
       const content = String(args.content ?? "");
       const bytes = Buffer.byteLength(content);
       if (bytes > MAX_WRITE_BYTES) throw new Error(`content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
-      const full = await this.resolveWritePath(args.path);
+      const full = await this.resolveWritePath(args.path, context);
       const existing = await lstat(full).catch(() => null);
       if (existing?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
       if (args.create_only && existing) throw new Error("file exists and create_only=true");
@@ -162,7 +164,7 @@ export class WorkspaceFileService {
         createOnly: args.create_only === true,
         expectedHash: args.expected_sha256 ? String(args.expected_sha256).toLowerCase() : undefined,
       });
-      return { ok: true, path: this.displayPath(full), sha256: sha256(content), bytes };
+      return { ok: true, path: this.displayPath(full, context), sha256: sha256(content), bytes };
     });
   }
 
@@ -174,7 +176,7 @@ export class WorkspaceFileService {
       const oldText = String(args.old_text ?? "");
       const newText = String(args.new_text ?? "");
       if (!oldText) throw new Error("old_text must not be empty");
-      const full = await this.resolveExistingPath(args.path);
+      const full = await this.resolveExistingPath(args.path, context);
       const info = await lstat(full);
       if (!info.isFile() || info.isSymbolicLink()) throw new Error("path is not a regular non-symbolic-link file");
       const current = await readUtf8File(full);
@@ -187,7 +189,7 @@ export class WorkspaceFileService {
       if (bytes > MAX_WRITE_BYTES) throw new Error(`edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
       this.throwIfCancelled(context);
       await atomicWriteText(full, updated, info, { expectedHash: sha256(current) });
-      return { ok: true, path: this.displayPath(full), replacements: args.replace_all ? occurrences : 1, sha256: sha256(updated), bytes };
+      return { ok: true, path: this.displayPath(full, context), replacements: args.replace_all ? occurrences : 1, sha256: sha256(updated), bytes };
     });
   }
 
@@ -203,13 +205,13 @@ export class WorkspaceFileService {
       for (const operation of parsed) {
         this.throwIfCancelled(context);
         if (operation.kind === "add") {
-          const target = await this.resolveWritePath(operation.path);
+          const target = await this.resolveWritePath(operation.path, context);
           if (await lstat(target).catch(() => null)) throw new Error(`add target already exists: ${operation.path}`);
           assertTextSize(operation.content, operation.path);
           prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
           continue;
         }
-        const source = await this.resolveExistingPath(operation.path);
+        const source = await this.resolveExistingPath(operation.path, context);
         const sourceInfo = await lstat(source);
         if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error(`patch source is not a regular file: ${operation.path}`);
         const original = await readUtf8File(source);
@@ -219,7 +221,7 @@ export class WorkspaceFileService {
         }
         const content = applyUpdateHunks(original, operation.hunks, operation.path);
         assertTextSize(content, operation.path);
-        const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo) : source;
+        const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo, context) : source;
         if (target !== source && await lstat(target).catch(() => null)) throw new Error(`move target already exists: ${operation.moveTo}`);
         prepared.push({ kind: operation.moveTo ? "move" : "update", source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
       }
@@ -231,9 +233,9 @@ export class WorkspaceFileService {
         ...(transaction.warnings.length ? { warnings: transaction.warnings } : {}),
         files: prepared.map((item) => ({
           operation: item.kind,
-          path: this.displayPath(item.target || item.source),
-          from: item.kind === "move" ? this.displayPath(item.source) : undefined,
-          sha256: item.content === undefined ? undefined : sha256(item.content),
+          path: this.displayPath(item.target || item.source, context),
+          ...(item.kind === "move" ? { from: this.displayPath(item.source, context) } : {}),
+          ...(item.content === undefined ? {} : { sha256: sha256(item.content) }),
         })),
       };
     });
@@ -242,7 +244,7 @@ export class WorkspaceFileService {
   async searchText(args, context = {}) {
     const query = String(args.query || "");
     if (!query) throw new Error("query is required");
-    const root = await this.resolveExistingPath(args.path || ".");
+    const root = await this.resolveExistingPath(args.path || ".", context);
     const max = clampInteger(args.max_matches, 100, 1, 1000);
     const maxFiles = clampInteger(args.max_files, 10000, 1, 100000);
     let visitedFiles = 0;
@@ -250,7 +252,7 @@ export class WorkspaceFileService {
     const rootInfo = await stat(root);
     if (rootInfo.isFile()) {
       await this.searchOneFile(root, query, matches, max, context);
-      return { query, root: this.displayPath(root), matches, visited_files: 1, truncated: matches.length >= max };
+      return { query, root: this.displayPath(root, context), matches, visited_files: 1, truncated: matches.length >= max };
     }
     if (!rootInfo.isDirectory()) throw new Error("path is not a file or directory");
     const walkResult = await this.walk(root, async full => {
@@ -260,7 +262,7 @@ export class WorkspaceFileService {
       await this.searchOneFile(full, query, matches, max, context);
       return matches.length < max && visitedFiles < maxFiles;
     }, context);
-    return { query, root: this.displayPath(root), matches, visited_files: visitedFiles, truncated: matches.length >= max || visitedFiles >= maxFiles || walkResult.truncated };
+    return { query, root: this.displayPath(root, context), matches, visited_files: visitedFiles, truncated: matches.length >= max || visitedFiles >= maxFiles || walkResult.truncated };
   }
 
   async searchOneFile(full, query, matches, max, context = {}) {
@@ -274,7 +276,7 @@ export class WorkspaceFileService {
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       if (lines[index].includes(query)) {
-        matches.push({ path: this.displayPath(full), line: index + 1, text: lines[index].slice(0, 500) });
+        matches.push({ path: this.displayPath(full, context), line: index + 1, text: lines[index].slice(0, 500) });
         if (matches.length >= max) break;
       }
     }
@@ -311,6 +313,7 @@ export async function readBoundedFile(filePath, maxBytes, label) {
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new Error(`${label} is not a regular file`);
+    if (Number(info.nlink) > 1) throw new Error(`refusing to read ${label} with multiple hard links`);
     if (info.size > maxBytes) throw new Error(`${label} exceeds maximum size (${info.size} > ${maxBytes})`);
     const buffer = Buffer.alloc(info.size);
     let offset = 0;

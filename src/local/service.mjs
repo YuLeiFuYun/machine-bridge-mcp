@@ -5,10 +5,12 @@ import { runExecutable } from "./shell.mjs";
 import { ensureOwnerOnlyDir, expandHome } from "./state.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { waitForInactiveStatus } from "./service-convergence.mjs";
+import { waitForActiveStatus, waitForInactiveStatus, waitForStatus } from "./service-convergence.mjs";
+import { launchdStatusSummary, systemdStatusSummary } from "./service-status.mjs";
 import { writeServiceEnvironment } from "./service-environment.mjs";
 import {
   installWindowsTask,
+  restartWindowsTask,
   startWindowsTask,
   statusWindowsTask,
   stopWindowsTask,
@@ -18,7 +20,7 @@ export { windowsCommandLineArgument } from "./windows-service.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
 const SERVICE_COMMAND_OUTPUT_BYTES = 64 * 1024;
-const AUTOSTART_LOG_SCHEMA_VERSION = 3;
+const AUTOSTART_LOG_SCHEMA_VERSION = 4;
 
 function serviceRun(command, args) {
   return runServiceCommand(command, args);
@@ -57,7 +59,13 @@ export async function autostartStatus() {
 export async function startAutostart({ logger = console } = {}) {
   if (process.platform === "darwin") return startLaunchd(logger);
   if (process.platform === "win32") return startWindowsTask(logger, { run: serviceRun });
-  return normalizeServiceCommandResult("systemd", await serviceRun("systemctl", ["--user", "start", "machine-bridge-mcp.service"]));
+  return startSystemd(logger);
+}
+
+export async function restartAutostart({ logger = console } = {}) {
+  if (process.platform === "darwin") return restartLaunchd(logger);
+  if (process.platform === "win32") return restartWindowsTask(logger, { run: serviceRun });
+  return restartSystemd(logger);
 }
 
 export async function stopAutostart({ logger = console } = {}) {
@@ -84,33 +92,33 @@ export function trimAutostartLogs(stateRoot, options = {}) {
   const keepBytes = Math.min(maxBytes, Number.isFinite(Number(options.keepBytes)) ? Math.max(1024, Number(options.keepBytes)) : 1024 * 1024);
   const schemaVersion = String(AUTOSTART_LOG_SCHEMA_VERSION);
   const logs = path.join(root, "logs");
+  ensureOwnerOnlyDir(logs);
   const schemaFile = path.join(logs, ".log-schema");
   const reset = readLogSchema(schemaFile) !== schemaVersion;
-
-  for (const name of ["daemon.out.log", "daemon.err.log"]) {
-    const file = path.join(logs, name);
-    let fd;
-    try {
-      const opened = openRegularFileSync(file, fsConstants.O_RDWR, {
-        label: "autostart log path",
-        chmod: 0o600,
-      });
-      fd = opened.fd;
+  const openedLogs = [];
+  try {
+    for (const name of ["daemon.out.log", "daemon.err.log"]) {
+      const file = path.join(logs, name);
+      ensurePrivateLogFile(file);
+      openedLogs.push(openRegularFileSync(file, fsConstants.O_RDWR, {
+        label: "autostart log path", chmod: 0o600, rejectMultipleLinks: true,
+      }));
+    }
+    for (const opened of openedLogs) {
       if (reset) {
-        ftruncateSync(fd, 0);
+        ftruncateSync(opened.fd, 0);
       } else if (opened.info.size > maxBytes) {
-        const tail = readLogTail(fd, opened.info.size, keepBytes);
-        ftruncateSync(fd, 0);
-        if (tail.length) writeSync(fd, tail, 0, tail.length, 0);
+        const tail = readLogTail(opened.fd, opened.info.size, keepBytes);
+        ftruncateSync(opened.fd, 0);
+        if (tail.length) writeSync(opened.fd, tail, 0, tail.length, 0);
       }
-    } catch {
-      // Log maintenance is best effort and must not stop daemon startup.
-    } finally {
-      if (fd !== undefined) try { closeSync(fd); } catch {}
+    }
+    writePrivateServiceFile(schemaFile, `${schemaVersion}\n`);
+  } finally {
+    for (const opened of openedLogs) {
+      try { closeSync(opened.fd); } catch {}
     }
   }
-
-  try { writePrivateServiceFile(schemaFile, `${schemaVersion}\n`); } catch {}
 }
 
 function readLogSchema(file) {
@@ -179,32 +187,63 @@ export function stableNodeExecutable(options = {}) {
 
 export function serviceEnvironmentPath(options = {}) {
   const platform = String(options.platform || process.platform);
+  const pathApi = platform === "win32" ? path.win32 : path;
   const delimiter = String(options.delimiter || (platform === "win32" ? ";" : ":"));
   const pathEnv = String(options.pathEnv ?? process.env.PATH ?? "");
   const node = String(options.node || process.execPath || "");
   const entryScript = String(options.entryScript || "");
+  const entryDirectory = entryScript ? pathApi.dirname(pathApi.resolve(entryScript)) : "";
   const defaults = platform === "darwin"
     ? ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
     : platform === "win32"
       ? []
       : ["/usr/local/bin", "/usr/bin", "/bin", "/usr/local/sbin", "/usr/sbin", "/sbin"];
+  const inheritedEntries = stripNpmLifecyclePathPrefix(pathEnv.split(delimiter));
   const candidates = [
-    node ? path.dirname(path.resolve(node)) : "",
-    entryScript ? path.dirname(path.resolve(entryScript)) : "",
-    ...pathEnv.split(delimiter),
+    node ? pathApi.dirname(pathApi.resolve(node)) : "",
+    entryDirectory,
+    ...inheritedEntries,
     ...defaults,
   ];
   const seen = new Set();
   const entries = [];
   for (const raw of candidates) {
-    if (!raw || !path.isAbsolute(raw)) continue;
-    const normalized = path.resolve(raw);
+    if (!raw || !pathApi.isAbsolute(raw)) continue;
+    const normalized = pathApi.resolve(raw);
+    if (isInactiveCandidateRuntimePath(normalized, entryDirectory, platform)) continue;
     const key = platform === "win32" ? normalized.toLowerCase() : normalized;
     if (seen.has(key)) continue;
     seen.add(key);
     entries.push(normalized);
   }
   return entries.join(delimiter);
+}
+
+function stripNpmLifecyclePathPrefix(entries) {
+  let lastMarker = -1;
+  for (let index = 0; index < entries.length; index += 1) {
+    const portable = String(entries[index] || "").replaceAll("\\", "/").toLowerCase();
+    if (portable.endsWith("/node-gyp-bin") && portable.includes("/@npmcli/run-script/")) lastMarker = index;
+  }
+  return lastMarker >= 0 ? entries.slice(lastMarker + 1) : entries;
+}
+
+function isInactiveCandidateRuntimePath(candidate, entryDirectory, platform) {
+  if (!entryDirectory) return false;
+  const pathApi = platform === "win32" ? path.win32 : path;
+  const normalize = (value) => {
+    const resolved = pathApi.resolve(value);
+    return platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  const current = normalize(entryDirectory);
+  const portable = current.replaceAll("\\", "/");
+  const marker = "/release-channels/runtimes/";
+  const markerIndex = portable.indexOf(marker);
+  if (markerIndex < 0) return false;
+  const runtimeContainer = portable.slice(0, markerIndex + marker.length - 1);
+  const normalizedCandidate = normalize(candidate).replaceAll("\\", "/");
+  return normalizedCandidate !== portable
+    && (normalizedCandidate === runtimeContainer || normalizedCandidate.startsWith(`${runtimeContainer}/`));
 }
 
 export function daemonArgs(spec) {
@@ -223,7 +262,7 @@ function ensurePrivateLogFile(file) {
   const opened = openRegularFileSync(
     file,
     Number(fsConstants.O_WRONLY) | Number(fsConstants.O_CREAT) | Number(fsConstants.O_APPEND),
-    { label: "autostart log path", mode: 0o600, chmod: 0o600 },
+    { label: "autostart log path", mode: 0o600, chmod: 0o600, rejectMultipleLinks: true },
   );
   closeSync(opened.fd);
 }
@@ -260,16 +299,53 @@ async function installLaunchd(spec, logger) {
 
 async function startLaunchd(logger) {
   const plistPath = launchdPlistPath();
-  const target = launchdDomainTarget();
-  if (!existsSync(plistPath)) return { ok: false, error: "launchd plist not installed" };
-  const stopped = await stopLaunchd({ info() {}, warn() {} });
-  if (!stopped.ok) return { ok: false, provider: "launchd", stop: stopped };
-  const boot = await serviceRun("launchctl", ["bootstrap", target, plistPath]);
-  const kick = await serviceRun("launchctl", ["kickstart", "-k", `${target}/${LABEL}`]);
-  const ok = boot.code === 0 || kick.code === 0;
+  const domainTarget = launchdDomainTarget();
+  const serviceTarget = launchdServiceTarget();
+  if (!existsSync(plistPath)) return { ok: false, provider: "launchd", installed: false, loaded: false, active: false, reason: "not_installed" };
+  const before = await statusLaunchd();
+  if (before.active) {
+    logger.info?.("launchd service is already running");
+    return { ...before, ok: true, active_before: true, already_running: true, reason: "already_running" };
+  }
+  const boot = before.loaded
+    ? { code: 0, stdout: "", stderr: "", already_loaded: true }
+    : await serviceRun("launchctl", ["bootstrap", domainTarget, plistPath]);
+  const kick = await serviceRun("launchctl", ["kickstart", serviceTarget]);
+  const after = await waitForActiveStatus(statusLaunchd);
+  const ok = after?.active === true;
   if (ok) logger.info?.("launchd service started");
   else logger.warn?.("launchd service failed to start");
-  return { ok, provider: "launchd", bootstrap: boot, kickstart: kick };
+  return {
+    ok,
+    provider: "launchd",
+    installed: true,
+    loaded: after?.loaded === true,
+    active_before: false,
+    active: after?.active === true,
+    bootstrap: boot,
+    kickstart: kick,
+  };
+}
+
+async function restartLaunchd(logger) {
+  const plistPath = launchdPlistPath();
+  if (!existsSync(plistPath)) return { ok: false, provider: "launchd", installed: false, reason: "not_installed" };
+  const before = await statusLaunchd();
+  if (!before.active) {
+    const started = await startLaunchd(logger);
+    return { ...started, restarted: false, reason: started.ok ? "started_inactive_service" : started.reason || "start_failed" };
+  }
+  const target = launchdServiceTarget();
+  const previousPid = before.pid;
+  const kick = await serviceRun("launchctl", ["kickstart", "-k", target]);
+  const after = await waitForStatus(
+    statusLaunchd,
+    (status) => status?.active === true && (!previousPid || status.pid !== previousPid),
+  );
+  const ok = kick.code === 0 && after?.active === true && (!previousPid || after.pid !== previousPid);
+  if (ok) logger.info?.("launchd service restarted");
+  else logger.warn?.("launchd service restart could not be verified");
+  return { ok, provider: "launchd", installed: true, active_before: true, active: after?.active === true, restarted: ok, kickstart: kick };
 }
 
 async function stopLaunchd(logger) {
@@ -277,12 +353,13 @@ async function stopLaunchd(logger) {
   const domainTarget = launchdDomainTarget();
   const serviceTarget = launchdServiceTarget();
   const before = await statusLaunchd();
-  if (!before.active) {
+  if (!before.loaded) {
     logger.info?.("launchd service is not loaded");
     return {
       ok: true,
       provider: "launchd",
       installed: existsSync(plistPath),
+      loaded: false,
       active_before: false,
       active: false,
       already_stopped: true,
@@ -327,9 +404,8 @@ async function uninstallLaunchd(logger) {
 
 async function statusLaunchd() {
   const plistPath = launchdPlistPath();
-  const target = launchdServiceTarget();
-  const result = await serviceRun("launchctl", ["print", target]);
-  return { ok: existsSync(plistPath), provider: "launchd", installed: existsSync(plistPath), path: plistPath, active: result.code === 0, detail: result.stdout || result.stderr };
+  const result = await serviceRun("launchctl", ["print", launchdServiceTarget()]);
+  return launchdStatusSummary({ installed: existsSync(plistPath), definition: LABEL, result });
 }
 
 export function launchdPlist({ args, pathEnv, stdout, stderr }) {
@@ -393,10 +469,33 @@ ${disable.stderr}`));
   return { ok, provider: "systemd", path: servicePath, disable, active_check: activeCheck, reload, active: false };
 }
 
+async function startSystemd(logger) {
+  const before = await statusSystemd();
+  if (before.active) {
+    logger.info?.("systemd service is already running");
+    return { ...before, ok: true, active_before: true, already_running: true, reason: "already_running" };
+  }
+  const command = await serviceRun("systemctl", ["--user", "start", "machine-bridge-mcp.service"]);
+  const after = await waitForActiveStatus(statusSystemd);
+  const ok = command.code === 0 && after.active === true;
+  if (ok) logger.info?.("systemd service started");
+  else logger.warn?.("systemd service failed to start");
+  return { ok, provider: "systemd", installed: after.installed, active_before: false, active: after.active, command };
+}
+
+async function restartSystemd(logger) {
+  const command = await serviceRun("systemctl", ["--user", "restart", "machine-bridge-mcp.service"]);
+  const after = await waitForActiveStatus(statusSystemd);
+  const ok = command.code === 0 && after.active === true;
+  if (ok) logger.info?.("systemd service restarted");
+  else logger.warn?.("systemd service restart could not be verified");
+  return { ok, provider: "systemd", installed: after.installed, active: after.active, restarted: ok, command };
+}
+
 async function statusSystemd() {
   const servicePath = systemdPath();
-  const result = await serviceRun("systemctl", ["--user", "status", "machine-bridge-mcp.service", "--no-pager"]);
-  return { ok: existsSync(servicePath), provider: "systemd", installed: existsSync(servicePath), path: servicePath, active: result.code === 0, detail: result.stdout || result.stderr };
+  const result = await serviceRun("systemctl", ["--user", "is-active", "machine-bridge-mcp.service"]);
+  return systemdStatusSummary({ installed: existsSync(servicePath), definition: "machine-bridge-mcp.service", result });
 }
 
 export function systemdUnit(spec) {

@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { executionEnv } from "./shell.mjs";
+import { assertOwnedByContext, principalBinding } from "./authority-context.mjs";
+import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
 import { validateArgv } from "./process-contract.mjs";
 import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
@@ -13,10 +15,11 @@ import {
 } from "./execution-limits.mjs";
 
 export class ProcessSessionManager {
-  constructor({ workspace, policy, authorizeTool = null, runtimeDir, processTracker, resolveCwd, displayPath, throwIfCancelled }) {
+  constructor({ workspace, policy, authorizeTool = null, policyForContext = null, runtimeDir, processTracker, resolveCwd, displayPath, throwIfCancelled }) {
     this.workspace = workspace;
     this.policy = policy;
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
+    this.policyForContext = typeof policyForContext === "function" ? policyForContext : () => this.policy;
     this.runtimeDir = runtimeDir;
     this.processTracker = processTracker;
     this.resolveCwd = resolveCwd;
@@ -34,6 +37,7 @@ export class ProcessSessionManager {
   }
 
   clear() {
+    for (const session of this.sessions.values()) notifySessionWaiters(session);
     this.sessions.clear();
   }
 
@@ -41,7 +45,7 @@ export class ProcessSessionManager {
     for (const session of this.sessions.values()) notifySessionWaiters(session);
   }
 
-  retainCompletedOutput({ command, cwd, stdout, stderr, exitCode, startedAt, closedAt = Date.now() }) {
+  retainCompletedOutput({ command, cwd, stdout, stderr, exitCode, startedAt, closedAt = Date.now() }, context = {}) {
     this.prune();
     this.evictExitedForCapacity();
     if (this.sessions.size >= MAX_PROCESS_SESSIONS) return null;
@@ -61,23 +65,25 @@ export class ProcessSessionManager {
       stdinClosed: true,
       waiters: new Set(),
       terminationTimer: null,
+      ...principalBinding(context),
     };
     this.sessions.set(session.id, session);
-    return this.summary(session);
+    return this.summary(session, context);
   }
 
   async start(args, context = {}) {
     this.authorizeTool("start_process");
     const argv = validateArgv(args.argv);
-    const cwd = await this.resolveCwd(args.cwd || ".");
+    const cwd = await this.resolveCwd(args.cwd || ".", context);
     this.prune();
     this.evictExitedForCapacity();
     if (this.sessions.size >= MAX_PROCESS_SESSIONS) throw new Error(`process session limit reached (${MAX_PROCESS_SESSIONS})`);
     this.throwIfCancelled(context);
 
-    const child = spawn(argv[0], argv.slice(1), {
+    const launch = delegatedProcessCommand({ command: argv[0], args: argv.slice(1), workspace: this.workspace, runtimeDir: this.runtimeDir, context });
+    const child = spawn(launch.command, launch.args, {
       cwd,
-      env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false, runtimeDir: this.runtimeDir }),
+      env: executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir }),
       detached: process.platform !== "win32",
       windowsHide: true,
     });
@@ -96,6 +102,7 @@ export class ProcessSessionManager {
       stdinClosed: false,
       waiters: new Set(),
       terminationTimer: null,
+      ...principalBinding(context),
     };
     this.sessions.set(session.id, session);
     this.trackChild(child, context.callId);
@@ -133,12 +140,12 @@ export class ProcessSessionManager {
       throw error;
     }
     this.throwIfCancelled(context);
-    return this.summary(session);
+    return this.summary(session, context);
   }
 
   async read(args, context = {}) {
     this.authorizeTool("read_process");
-    const session = this.get(args.session_id);
+    const session = this.get(args.session_id, context);
     const stdoutOffset = clampInteger(args.stdout_offset, 0, 0, Number.MAX_SAFE_INTEGER);
     const stderrOffset = clampInteger(args.stderr_offset, 0, 0, Number.MAX_SAFE_INTEGER);
     const maxBytes = clampInteger(args.max_bytes, 64 * 1024, 1, 256 * 1024);
@@ -158,7 +165,7 @@ export class ProcessSessionManager {
     this.throwIfCancelled(context);
     session.lastActivity = Date.now();
     return {
-      ...this.summary(session),
+      ...this.summary(session, context),
       stdout: session.stdout.read(stdoutOffset, maxBytes),
       stderr: session.stderr.read(stderrOffset, maxBytes),
     };
@@ -166,7 +173,7 @@ export class ProcessSessionManager {
 
   async write(args, context = {}) {
     this.authorizeTool("write_process");
-    const session = this.get(args.session_id);
+    const session = this.get(args.session_id, context);
     if (session.closedAt !== null) throw new Error("process session has already exited");
     const data = String(args.data ?? "");
     if (Buffer.byteLength(data) > MAX_PROCESS_SESSION_STDIN_BYTES) throw new Error(`stdin data exceeds maximum size (${MAX_PROCESS_SESSION_STDIN_BYTES} bytes)`);
@@ -182,42 +189,45 @@ export class ProcessSessionManager {
       session.stdinClosed = true;
     }
     session.lastActivity = Date.now();
-    return { ...this.summary(session), bytes_written: Buffer.byteLength(data) };
+    return { ...this.summary(session, context), bytes_written: Buffer.byteLength(data) };
   }
 
   async kill(args, context = {}) {
     this.authorizeTool("kill_process");
-    const session = this.get(args.session_id);
+    const session = this.get(args.session_id, context);
     this.throwIfCancelled(context);
     const wasRunning = session.closedAt === null;
     const force = args.force === true;
     if (wasRunning && force) terminateProcessTree(session.child, "SIGKILL");
     else if (wasRunning && !session.terminationTimer) {
-      session.terminationTimer = terminateProcessTreeWithEscalation(session.child);
+      session.terminationTimer = terminateProcessTreeWithEscalation(session.child, {
+        onTerminationSettled: () => { session.terminationTimer = null; },
+      });
     }
     session.lastActivity = Date.now();
     return {
-      ...this.summary(session),
+      ...this.summary(session, context),
       termination_requested: wasRunning,
       force,
       force_after_ms: wasRunning && !force ? 2000 : null,
     };
   }
 
-  get(sessionId) {
+  get(sessionId, context = {}) {
     this.prune();
     const id = String(sessionId || "");
     if (!/^proc_[A-Za-z0-9_-]{20,}$/.test(id)) throw new Error("invalid process session id");
     const session = this.sessions.get(id);
     if (!session) throw new Error("process session not found or expired");
+    assertOwnedByContext(session, context, "process session");
     return session;
   }
 
-  summary(session) {
+  summary(session, context = {}) {
     return {
       session_id: session.id,
       command: session.argv0,
-      cwd: this.displayPath(session.cwd),
+      cwd: this.displayPath(session.cwd, context),
       running: session.closedAt === null,
       exit_code: session.exitCode,
       signal: session.signal,

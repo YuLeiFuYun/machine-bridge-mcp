@@ -13,6 +13,7 @@ import { BrowserRequestRegistry } from "./browser-request-registry.mjs";
 import { handleBrowserBridgeHttp } from "./browser-bridge-http.mjs";
 import { BrowserBrokerRoutes } from "./browser-broker-routes.mjs";
 import { startBrowserBrokerServer } from "./browser-broker-server.mjs";
+import { EXPECTED_EXTENSION_ID } from "./browser-extension-identity.mjs";
 
 const MAX_PORT_ATTEMPTS = 10;
 const MAX_PENDING = 32;
@@ -49,13 +50,11 @@ export class BrowserBridgeManager {
       extensionStatusInfo: () => this.extensionStatusInfo(),
       extensionReloadRequired: () => this.extensionReloadRequired(),
     });
-    // Public aliases remain for diagnostics and compatibility with existing behavioral tests.
-    this.runtimeClients = this.brokerRoutes.clients;
-    this.proxyRoutes = this.brokerRoutes.routes;
     this.startPromise = null;
     this.startGeneration = 0;
     this.port = 0;
-    this.token = "";
+    this.extensionToken = "";
+    this.runtimeToken = "";
     this.extensionPath = resolve(packageRoot, "browser-extension");
     this.operationService = new BrowserOperationService({
       authorizeTool: (tool) => this.authorizeTool(tool),
@@ -67,14 +66,18 @@ export class BrowserBridgeManager {
         extensionConnected: this.extensionConnected(),
         extensionInfo: this.extensionStatusInfo(),
         extensionReloadRequired: this.extensionReloadRequired(),
+        ...this.brokerRoutes.snapshot(),
       }),
       extensionPath: this.extensionPath,
       expectedExtensionVersion: EXPECTED_EXTENSION_VERSION,
+      expectedExtensionId: EXPECTED_EXTENSION_ID,
       runProcess: (...args) => this.runProcess(...args),
       readResourceText: (name) => this.readResourceText(name),
       readResourceBinary: (name) => this.readResourceBinary(name),
     });
   }
+
+  brokerDiagnostics() { return this.brokerRoutes.snapshot(); }
 
   status(context = {}) { return this.operationService.status(context); }
 
@@ -133,14 +136,15 @@ export class BrowserBridgeManager {
     try {
       const pairing = await loadOrCreatePairing(this.stateRoot);
       this.assertStartCurrent(generation);
-      this.token = pairing.token;
+      this.extensionToken = pairing.extensionToken;
+      this.runtimeToken = pairing.runtimeToken;
       for (let offset = 0; offset < MAX_PORT_ATTEMPTS; offset += 1) {
         const port = pairing.port + offset;
         try {
           await this.listen(port);
           this.assertStartCurrent(generation);
           if (port !== pairing.port && this.stateRoot) {
-            await savePairing(this.stateRoot, { token: this.token, port });
+            await savePairing(this.stateRoot, { schemaVersion: pairing.schemaVersion, extensionToken: this.extensionToken, runtimeToken: this.runtimeToken, port });
             this.assertStartCurrent(generation);
           }
           return;
@@ -176,7 +180,8 @@ export class BrowserBridgeManager {
     this.port = port;
     const { server, wss } = await startBrowserBrokerServer({
       port,
-      token: this.token,
+      extensionToken: this.extensionToken,
+      runtimeToken: this.runtimeToken,
       maxPayload: MAX_BROWSER_MESSAGE_BYTES,
       onHttp: (request, response) => this.handleHttp(request, response),
       onSocket: (socket, role) => this.acceptSocket(socket, role),
@@ -189,7 +194,7 @@ export class BrowserBridgeManager {
     const url = `ws://127.0.0.1:${port}/runtime`;
     return new Promise((resolvePromise) => {
       let settled = false;
-      const ws = new WebSocket(url, [`mbm-runtime.${this.token}`], { maxPayload: MAX_BROWSER_MESSAGE_BYTES });
+      const ws = new WebSocket(url, [`mbm-runtime.${this.runtimeToken}`], { maxPayload: MAX_BROWSER_MESSAGE_BYTES });
       const timer = setTimeout(() => finish(false), 1500);
       timer.unref?.();
       const finish = (ok) => {
@@ -372,7 +377,7 @@ export class BrowserBridgeManager {
   handleHttp(request, response) {
     return handleBrowserBridgeHttp(request, response, {
       port: this.port,
-      token: this.token,
+      token: this.extensionToken,
       extensionConnected: () => this.extensionConnected(),
       extensionStatusInfo: () => this.extensionStatusInfo(),
       extensionReloadRequired: () => this.extensionReloadRequired(),

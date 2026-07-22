@@ -14,6 +14,24 @@ export function acquireJobTransitionLock(dir) {
   return acquirePidLock(join(dir, "transition.lock"));
 }
 
+export function activeManagedJobLock(file) {
+  let snapshot;
+  try { snapshot = readPidLockSnapshot(file); } catch {
+    return { active: true, pid: null, reason: "invalid_or_unreadable_lock" };
+  }
+  if (!snapshot) return null;
+  const age = Date.now() - snapshot.info.mtimeMs;
+  if (!snapshot.owner || !Number.isInteger(snapshot.owner.pid) || snapshot.owner.pid <= 0
+      || !Number.isFinite(Date.parse(String(snapshot.owner.startedAt || "")))) {
+    return age < 60_000 ? { active: true, pid: null, reason: "recent_malformed_lock" } : null;
+  }
+  const identity = inspectProcessInstance(snapshot.owner, { maxAgeMs: 5 * 60_000 });
+  if (identity.current || (identity.alive && !identity.reclaimable)) {
+    return { active: true, pid: snapshot.owner.pid, reason: identity.reason };
+  }
+  return null;
+}
+
 function acquirePidLock(file, { allowHandoff = false } = {}) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const owner = pidLockOwner(process.pid, currentProcessStartTimeMs());

@@ -1,9 +1,10 @@
 import { ADMIN_AUTH_SCHEME, ADMIN_AUTH_TTL_SECONDS, adminAuthTranscript } from "../shared/admin-auth.mjs";
+import { decodeBase64Url, verifyDeviceSessionCertificate, verifyP256Signature } from "./device-session-verifier.ts";
 import { json, methodNotAllowed, parseRequestBody } from "./http.ts";
 import { consumeBoundedNonce } from "./nonce-store.ts";
 import {
   accountByName, createAccount, publicAccount, replaceAccountPassword, revokeAccountCredentials,
-  safeEqual, updateAccount, type AccountRecord, type OAuthStore,
+  updateAccount, type AccountRecord, type OAuthStore,
 } from "./oauth-state.ts";
 
 const BODY_LIMIT_BYTES = 64 * 1024;
@@ -16,18 +17,31 @@ export interface AccountAdminAuthorization {
 
 export async function accountAdminAuthorized(
   request: Request,
-  expected: string,
+  rootPublicKeyJson: string,
+  workerOrigin: string,
+  server: string,
+  version: string,
   now = Math.floor(Date.now() / 1000),
 ): Promise<AccountAdminAuthorization | null> {
-  if (!expected) return null;
+  if (!rootPublicKeyJson) return null;
   const scheme = request.headers.get("X-Bridge-Admin-Scheme") || "";
   const issuedAt = Number(request.headers.get("X-Bridge-Admin-Time"));
   const nonce = request.headers.get("X-Bridge-Admin-Nonce") || "";
   const bodyHash = request.headers.get("X-Bridge-Admin-Body-SHA256") || "";
-  const suppliedSignature = request.headers.get("X-Bridge-Admin-Signature") || "";
-  if (scheme !== ADMIN_AUTH_SCHEME) return null;
+  const keyId = request.headers.get("X-Bridge-Admin-Key") || "";
+  const suppliedSignature = decodeBase64Url(request.headers.get("X-Bridge-Admin-Signature") || "", 64);
+  if (scheme !== ADMIN_AUTH_SCHEME || !suppliedSignature) return null;
   if (!Number.isSafeInteger(issuedAt) || Math.abs(now - issuedAt) > ADMIN_AUTH_TTL_SECONDS) return null;
-  if (!/^[A-Za-z0-9_-]{32,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(bodyHash) || !/^[A-Za-z0-9_-]{43}$/.test(suppliedSignature)) return null;
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(bodyHash) || !/^device_[A-Za-z0-9_-]{32}$/.test(keyId)) return null;
+  const certificate = await verifyDeviceSessionCertificate({
+    encodedCertificate: request.headers.get("X-Bridge-Device-Certificate") || "",
+    rootPublicKeyJson,
+    workerOrigin,
+    server,
+    version,
+    now,
+  });
+  if (!certificate || certificate.sessionKeyId !== keyId) return null;
   let transcript: string;
   try {
     transcript = adminAuthTranscript({
@@ -35,25 +49,18 @@ export async function accountAdminAuthorized(
       method: request.method.toUpperCase(),
       pathname: new URL(request.url).pathname,
       bodyHash,
+      keyId,
       issuedAt,
       nonce,
     });
   } catch {
     return null;
   }
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(expected),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const expectedSignature = base64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(transcript))));
-  if (!(await safeEqual(suppliedSignature, expectedSignature))) return null;
+  if (!(await verifyP256Signature(certificate.sessionPublicJwk, transcript, suppliedSignature))) return null;
   const body = new Uint8Array(await request.clone().arrayBuffer());
   if (body.byteLength > BODY_LIMIT_BYTES) return null;
   const actualBodyHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", body)));
-  if (!(await safeEqual(bodyHash, actualBodyHash))) return null;
+  if (bodyHash !== actualBodyHash) return null;
   return { nonce, expiresAt: Math.max(now, issuedAt) + ADMIN_AUTH_TTL_SECONDS };
 }
 
@@ -159,12 +166,6 @@ async function rotatePassword(request: Request, store: OAuthStore, save: () => P
 
 function activeOwnerCount(store: OAuthStore): number {
   return Object.values(store.accounts).filter((account) => account.active && account.role === "owner").length;
-}
-
-function base64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function hex(bytes: Uint8Array): string {

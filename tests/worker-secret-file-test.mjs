@@ -33,7 +33,6 @@ try {
   const state = {
     paths: { profileDir },
     worker: {
-      accountAdminSecret: "synthetic-account-secret",
       deviceIdentity: createDeviceIdentity(),
       oauthTokenVersion: "synthetic-token-version",
     },
@@ -42,7 +41,7 @@ try {
   const returned = await withWorkerSecretsFile(state, async (file) => {
     observedPath = file;
     const record = JSON.parse(await readFile(file, "utf8"));
-    if (record.ACCOUNT_ADMIN_SECRET !== state.worker.accountAdminSecret) throw new Error("temporary secrets payload is incomplete");
+    if (Object.hasOwn(record, "ACCOUNT_ADMIN_SECRET")) throw new Error("legacy account administration secret remained in the Worker deployment payload");
     if (record.DAEMON_DEVICE_PUBLIC_KEY !== publicDeviceJwkJson(state.worker.deviceIdentity)) throw new Error("device public key was not supplied to the Worker deployment");
     if (Object.hasOwn(record, "DAEMON_SHARED_SECRET")) throw new Error("legacy daemon bearer secret remained in the Worker deployment payload");
     if (process.platform !== "win32" && ((await stat(file)).mode & 0o777) !== 0o600) throw new Error("temporary secrets file mode is not 0600");

@@ -122,7 +122,9 @@ try {
 
   send({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "apply_patch", arguments: { patch: "*** Begin Patch\n*** Update File: sample.txt\n@@\n one\n-TWO\n+second\n three\n*** Add File: added.txt\n+added\n*** End Patch" } } });
   const patched = await responseFor(5);
-  assert(patched.result?.isError === false, "apply_patch failed");
+  assert(patched.result?.isError === false, `apply_patch failed: ${JSON.stringify(patched.result?.structuredContent || patched)}`);
+  assert(patched.result?.structuredContent?.files?.every((file) => Object.values(file).every((value) => value !== undefined)),
+    "apply_patch returned undefined fields outside the JSON result contract");
   assert((await readFile(join(workspace, "sample.txt"), "utf8")).includes("second"), "apply_patch did not update file");
   assert(await readFile(join(workspace, "added.txt"), "utf8") === "added\n", "apply_patch did not add file");
 

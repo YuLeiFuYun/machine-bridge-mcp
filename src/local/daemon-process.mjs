@@ -165,6 +165,12 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
   };
 }
 
+export function workspaceDaemonOwnsPlatformAutostart(status = {}) {
+  return status.alive === true
+    && status.verified_service_daemon === true
+    && status.mode === "service";
+}
+
 export function inspectWorkspaceDaemon(state) {
   const owner = readDaemonLockOwner(daemonLockPathForState(state));
   if (!owner) return { present: false, alive: false, verified_service_daemon: false };

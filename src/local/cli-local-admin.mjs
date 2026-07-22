@@ -244,7 +244,10 @@ function readBrowserPairingState(pairingFile) {
     throw new Error("browser bridge state is invalid; restart machine-mcp to repair it");
   }
   const port = Number(pairing.port);
-  if (!/^[A-Za-z0-9_-]{32,100}$/.test(String(pairing.token || ""))) throw new Error("browser bridge state contains an invalid token");
+  const extensionToken = String(pairing.extensionToken || pairing.token || "");
+  if (!/^[A-Za-z0-9_-]{32,100}$/.test(extensionToken) || (pairing.runtimeToken !== undefined && !/^[A-Za-z0-9_-]{32,100}$/.test(String(pairing.runtimeToken)))) {
+    throw new Error("browser bridge state contains invalid bounded tokens");
+  }
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("browser bridge state contains an invalid port");
   return { port };
 }
@@ -302,7 +305,7 @@ function openExternal(target) {
   });
 }
 
-async function jobCommand(args, { chooseWorkspace, confirm }) {
+async function jobCommand(args, { chooseWorkspace }) {
   const action = String(args._[0] || "list").toLowerCase();
   const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
   const state = loadState(workspace, { stateDir: args.stateDir });
@@ -320,19 +323,6 @@ async function jobCommand(args, { chooseWorkspace, confirm }) {
   else if (action === "read") result = manager.read({ job_id: args._[1] });
   else if (action === "inspect") result = manager.inspectLocal({ job_id: args._[1] });
   else if (action === "cancel") result = manager.cancel({ job_id: args._[1] });
-  else if (action === "approve") {
-    if (args.json && !args.yes) throw new Error("job approve --json requires --yes");
-    const inspection = manager.inspectLocal({ job_id: args._[1] });
-    if (!args.yes) {
-      console.log(JSON.stringify(inspection, null, 2));
-      const approved = await confirm(`Approve and execute managed job ${args._[1]}?`, false);
-      if (!approved) {
-        console.log("Managed job approval cancelled. Re-run with --yes after review to skip confirmation.");
-        return;
-      }
-    }
-    result = manager.approve({ job_id: args._[1] }, { localOperator: true });
-  }
   else if (action === "submit") {
     const planPath = args._[1];
     if (!planPath) throw new Error("job submit requires a JSON plan file");

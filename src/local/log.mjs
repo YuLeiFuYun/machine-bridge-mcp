@@ -46,9 +46,21 @@ export function createLogger(options = {}) {
 
   const write = (stream, level, label, color, message, fields) => {
     if (LEVEL_RANK[level] < LEVEL_RANK[minimumLevel]) return;
+    const sanitizedMessage = sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS);
+    if (options.format === "json") {
+      const entry = sanitizeLogValue({
+        timestamp: new Date().toISOString(),
+        level: level === "success" ? "info" : level,
+        component,
+        message: sanitizedMessage,
+        ...(fields && typeof fields === "object" ? fields : {}),
+      });
+      stream.write(`${JSON.stringify(entry)}\n`);
+      return;
+    }
     const prefix = useColor ? `${color}${label}${COLORS.reset}` : label;
     const suffix = formatFields(fields);
-    stream.write(`${prefix} ${component}: ${sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS)}${suffix}\n`);
+    stream.write(`${prefix} ${component}: ${sanitizedMessage}${suffix}\n`);
   };
 
   const event = (level, name, fields = {}, message = "") => {
@@ -83,6 +95,7 @@ export function createLogger(options = {}) {
   return {
     verbose: minimumLevel === "debug",
     level: minimumLevel,
+    format: options.format === "json" ? "json" : "text",
     child(childComponent) {
       return createLogger({ ...options, component: childComponent });
     },

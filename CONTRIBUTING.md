@@ -34,31 +34,26 @@ An npm version is required when a change affects `package.json`, `package-lock.j
 
 Repository-only infrastructure changes, such as a `.github/` workflow update, do not require a synthetic npm version when package bytes are unchanged. They still require review and all applicable CI, dependency-review, CodeQL, governance, and Scorecard checks.
 
-## Required before pushing an npm-package change
+## Required prerelease flow for an npm-package change
 
-1. bump `package.json` to a version newer than the latest reachable `v*` tag;
-2. add the matching dated section to `CHANGELOG.md` and update audit/documentation records;
-3. run targeted tests, both dependency audits, `npm run worker:dry-run`, privacy/history review, signature verification, SBOM generation, and package inspection as applicable;
-4. inspect the complete diff;
-5. run `npm run release:candidate`, which executes the complete suite and creates the exact candidate tarball under ignored `.release-candidate/`;
-6. give the repository owner `npm run release:candidate:start -- --allow-worker-deploy`; the owner explicitly authorizes the in-place candidate Worker deployment, starts the exact candidate locally, and leaves it running;
-7. verify the live candidate through Machine Bridge, including Worker version/hash, remote health, relay readiness, exact local version, and representative functionality relevant to the change;
-8. after observed verification succeeds, have the coding agent run the exact `release:accept` command printed by the candidate tool, creating `release-acceptance/v<version>.json`;
-9. resolve every open issue and pull request before pushing. The current branch may cover an issue only with a standard closing keyword such as `Closes #47`; unrelated open PRs block the push. Commit the acceptance record and push the clean non-`main` branch only with `npm run github:push`, which paginates and enforces that backlog contract.
+1. choose a `dev`, `beta`, or `rc` version; version 3 and later must not begin as stable;
+2. update changelog, audit notes, and documentation;
+3. run targeted and complete checks, dependency audits, Worker dry-run, privacy review, SBOM generation, and package inspection;
+4. inspect the complete diff and run `npm run release:candidate`;
+5. give the owner `npm run release:candidate:activate -- --allow-worker-deploy` and stop;
+6. after the owner runs it, verify the Worker, candidate relay, verified service daemon, exact version, representative behavior, and relevant failure paths through Machine Bridge;
+7. only after observed success, record exact candidate acceptance;
+8. commit and push only with `npm run github:push`, then complete review and required checks;
+9. create the GitHub Prerelease with `npm run prerelease:release`;
+10. the release operator runs `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy`;
+11. use the published prerelease for at least seven days for a major, three days for a minor, or one day for a patch;
+12. every blocking defect increments the prerelease number and restarts the interval;
+13. after explicit owner confirmation, record the soak result; stable promotion must pass `npm run release:soak:verify` and preserve the functional promotion digest;
+14. activate and observe the exact stable candidate, repeat acceptance and review, then run `npm run release`; the owner separately runs `npm run stable:publish`.
 
-Automated checks do not authorize step 8. The coding agent may record acceptance only after it has observed the owner-started candidate operating successfully. Any packaged-file change after acceptance changes the npm tarball hash and requires a regenerated candidate and another observed live verification.
+Automated checks do not authorize candidate acceptance or soak success. The agent observes the live candidate; the owner reports the real soak outcome. Release evidence contains bounded release metadata only and no private user content.
 
-After all required pull-request checks pass, repository automation completes the source release: squash-merge, verify the exact `main` push CI, CodeQL, Governance, and Scorecard runs, and run `npm run release`. The helper requires `HEAD === origin/main`; it does not push `main`. It creates or verifies the annotated version tag and final GitHub Release only after the accepted package hash and exact-commit checks match. `release:publish` remains a compatibility alias.
-
-The release operator separately authorizes npm publication and any live machine update. Automation must not publish, deprecate, or unpublish npm packages; install the CLI globally; deploy the Worker; rotate credentials; mutate live deployment state; or start, stop, install, remove, or replace the daemon or autostart service without explicit user authorization.
-
-Supported upgrade and rollback behavior is defined in [docs/UPGRADING.md](docs/UPGRADING.md). Support requests follow [SUPPORT.md](SUPPORT.md), and repository participation follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
-
-After npm publication, the standard machine update is:
-
-```bash
-npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
-```
+Repository-only infrastructure changes whose package bytes are unchanged skip candidate activation and soak but still require review and applicable checks. The complete state machine is in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Privacy
 

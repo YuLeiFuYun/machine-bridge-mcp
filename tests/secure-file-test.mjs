@@ -1,5 +1,5 @@
 import { renameSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
@@ -32,9 +32,13 @@ try {
   expectThrow(() => readBoundedRegularFileSync(directory, 64), "not a regular file");
 
   if (process.platform !== "win32") {
-    const link = join(root, "value-link");
-    await symlink(file, link);
-    expectThrow(() => readBoundedRegularFileSync(link, 64), "");
+    const symbolicLink = join(root, "value-link");
+    await symlink(file, symbolicLink);
+    expectThrow(() => readBoundedRegularFileSync(symbolicLink, 64), "");
+    const hardLink = join(root, "value-hard-link");
+    await link(file, hardLink);
+    expectThrow(() => readBoundedRegularFileSync(file, 64, "owner state", { rejectMultipleLinks: true }), "multiple hard links");
+    if (readBoundedRegularFileSync(file, 64).toString("utf8") !== "bounded-value") throw new Error("ordinary bounded read rejected a hard link without the secure-owner option");
   }
   expectThrow(() => readBoundedRegularFileSync(file, -1), "maximum file size");
   console.log("secure bounded-file test ok");

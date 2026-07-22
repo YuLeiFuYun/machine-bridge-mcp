@@ -1,5 +1,8 @@
 import { execFileSync } from "node:child_process";
 import process from "node:process";
+import { createTrustedGitResolver } from "../src/local/trusted-git-executable.mjs";
+
+const gitExecutable = createTrustedGitResolver({ workspace: process.cwd() });
 
 const allowedTypes = Object.freeze([
   "feat",
@@ -54,10 +57,10 @@ function readTitles(args) {
   if (rangeIndex !== -1) {
     const range = args[rangeIndex + 1];
     if (!range) throw new Error("--range requires a Git revision range");
-    return execFileSync("git", ["log", "--format=%s", range], { encoding: "utf8" })
+    return execFileSync(gitExecutable(), ["log", "--format=%s", range], { encoding: "utf8" })
       .split(/\r?\n/)
       .filter(Boolean);
   }
 
-  return [execFileSync("git", ["log", "-1", "--format=%s"], { encoding: "utf8" }).trim()];
+  return [execFileSync(gitExecutable(), ["log", "-1", "--format=%s"], { encoding: "utf8" }).trim()];
 }

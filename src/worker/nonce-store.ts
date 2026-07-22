@@ -42,12 +42,8 @@ async function consumeInStorage(
     if (expiresAt <= options.now) delete nonces[nonce];
   }
   if (nonces[options.nonce]) return false;
+  if (Object.keys(nonces).length >= options.maximum) return false;
   nonces[options.nonce] = options.expiresAt;
-  const entries = Object.entries(nonces).sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]));
-  while (entries.length > options.maximum) {
-    const [nonce] = entries.shift()!;
-    delete nonces[nonce];
-  }
   await storage.put(options.key, nonces);
   return true;
 }

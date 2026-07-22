@@ -1,5 +1,6 @@
 import { EXPECTED_EXTENSION_VERSION } from "./browser-extension-protocol.mjs";
-import { isAllowedLoopbackHost, pairingHtml, securityHeaders, sendJson } from "./browser-pairing-store.mjs";
+import { EXPECTED_EXTENSION_ID } from "./browser-extension-identity.mjs";
+import { isAllowedLoopbackHost, pairingHtml, securityHeaders, sendJson } from "./browser-pairing-http.mjs";
 
 export function handleBrowserBridgeHttp(request, response, {
   port,
@@ -26,6 +27,8 @@ export function handleBrowserBridgeHttp(request, response, {
       connected: extensionConnected(),
       broker: "machine-bridge-browser",
       expected_extension_version: EXPECTED_EXTENSION_VERSION,
+      expected_extension_id: EXPECTED_EXTENSION_ID,
+      extension_id: extension?.extension_id || "",
       extension_protocol: extension?.protocol || null,
       extension_version: extension?.version || "",
       extension_capabilities: extension?.capabilities || [],

@@ -3,7 +3,7 @@
 `machine-bridge-mcp` exposes one local workspace to MCP clients through a shared, policy-controlled runtime. Hosted clients connect through an OAuth-protected Cloudflare Worker relay; local clients may launch the same runtime over stdio.
 
 > [!WARNING]
-> The default `full` profile retains every local-user capability: unrestricted files, shell commands, the parent environment, browser automation, applications, resources, and jobs. It is **not** an operating-system sandbox. An authenticated owner may use that ceiling directly without terminal approval. Delegated non-owner accounts require bounded local capability leases for high-impact operations. Use a narrower profile or an isolated OS account, VM, or container for mutually untrusted workloads.
+> The default `full` profile retains every local-user capability: unrestricted files, shell commands, the parent environment, browser automation, applications, resources, and jobs. It is **not** an operating-system sandbox. An authenticated owner may use that ceiling without per-operation prompts. Delegated accounts are permanently constrained by their role; no approval, token, or reconnect can elevate them. Use a narrower profile or an isolated OS account, VM, or container for mutually untrusted workloads.
 
 ## Choose a path
 
@@ -24,7 +24,7 @@ Support boundaries are defined in [SUPPORT.md](SUPPORT.md). Repository participa
 - policy profiles with shared local/Worker enforcement contracts;
 - bounded file, patch, Git, process, diagnostic, application, browser, and managed-job tools;
 - account roles whose authority is intersected with the connected daemon policy;
-- device-signed daemon transport, interruption-free authenticated owner authority, and account/client-bound capability leases for delegated high-impact transactions;
+- root-certified ephemeral daemon sessions, trusted OAuth client binding, refresh-family ownership, and non-escalatable account roles;
 - structured, privacy-conscious lifecycle events and stable error codes;
 - fail-closed state, lock, release, package, and supply-chain checks.
 
@@ -34,8 +34,8 @@ The remote Worker authenticates and relays requests. It cannot directly read loc
 Hosted MCP client
   -> HTTPS + OAuth 2.1 / PKCE
   -> Cloudflare Worker + Durable Object
-  -> P-256 device-authenticated outbound WebSocket
-  -> local transaction authorization
+  -> root-certified ephemeral P-256 WebSocket session
+  -> request-level effective authority and object ownership
   -> local runtime
 
 Local MCP client
@@ -155,7 +155,7 @@ The shared source of truth is `src/shared/policy-contract.json`. The generated m
 
 For remote calls, `server_info.authorization.effective_policy` and `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
 
-`full` is the daemon capability ceiling. An authenticated owner account may exercise it directly without approval IDs or terminal commands. Delegated reviewer, editor, and operator accounts remain constrained by their role profile, and their high-impact operations require account/client-bound, time-bounded local leases. Use `machine-mcp approval` only when administering those delegated-account leases. See [local transaction authorization](docs/LOCAL_AUTHORIZATION.md).
+`full` is the daemon capability ceiling. An authenticated owner may exercise it without per-operation approval IDs. Delegated reviewer, editor, and operator accounts remain inside immutable role ceilings; out-of-role operations are denied rather than converted into a temporary elevation workflow. Process sessions, retained output, and managed jobs are additionally bound to account, client, and refresh-token family. See [local authorization](docs/LOCAL_AUTHORIZATION.md).
 
 ## Browser and application automation
 
@@ -194,11 +194,11 @@ machine-mcp status
 machine-mcp doctor
 machine-mcp workspace show|set|reset
 machine-mcp service status|install|start|stop|uninstall
-machine-mcp account list|add|role|enable|disable|rotate-password|remove
-machine-mcp approval list|approve|grant|revoke|clear
+machine-mcp account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove
+machine-mcp approval list|revoke|clear
 machine-mcp browser status|setup|pair|path
 machine-mcp resource add|list|check|remove
-machine-mcp job submit|inspect|approve|list|read|cancel
+machine-mcp job submit|inspect|list|read|cancel
 machine-mcp rotate-secrets
 machine-mcp uninstall [--keep-worker] [--yes]
 ```
@@ -236,17 +236,24 @@ Testing details and design rules are in [docs/TESTING.md](docs/TESTING.md). Engi
 
 ## Release boundary
 
-A package change requires a version bump, matching changelog section, complete verification, and interactive verification of the exact candidate tarball:
+Version 3 and later use a mandatory prerelease and soak path. Package work starts as `dev`, `beta`, or `rc`; it does not claim the stable version while candidate testing is still underway.
 
 ```sh
 npm run release:candidate
-# After explicit owner authorization in the conversation, the coding agent starts and verifies:
-npm run release:candidate:start -- --allow-worker-deploy
-# The coding agent records acceptance, pushes, merges, then runs:
-npm run release
+# The owner runs the exact persistent activation command printed above:
+npm run release:candidate:activate -- --allow-worker-deploy
+# After the coding agent verifies the live Worker/daemon and records acceptance:
+npm run prerelease:release
+# Explicit owner registry and live-install steps:
+npm run prerelease:publish
+npm run prerelease:install -- --allow-worker-deploy
 ```
 
-The owner action is to explicitly authorize the exact candidate and any in-place update of the configured same-name Worker in the active conversation; the coding agent performs the startup and verification through Machine Bridge. The coding agent must observe the deployed Worker version/hash, remote health, relay readiness, connected candidate version, and representative functionality before recording acceptance; automated checks alone are insufficient. npm publication and Worker deployment remain separate owner-operated live actions. See [docs/RELEASING.md](docs/RELEASING.md).
+Formal soak begins only after the exact published prerelease is installed and activated. Minimum soak is seven days for a major release, three days for a minor release, and one day for a patch. Every blocking fix creates a new prerelease and restarts the clock.
+
+Stable promotion must retain the soaked package's functional digest. After the owner reports successful soak, the agent records the soak result, prepares and verifies the stable candidate, and only then completes `npm run release`; npm stable publication is the separate explicit `npm run stable:publish` operation.
+
+See [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Documentation
 

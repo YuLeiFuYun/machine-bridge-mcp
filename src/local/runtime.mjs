@@ -6,7 +6,7 @@ import { isRelayReadyContext } from "./relay-connection.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
 import { MAX_CONCURRENT_TOOL_CALLS } from "./execution-limits.mjs";
 export { MAX_COMMAND_BYTES } from "./process-contract.mjs";
-import { normalizePolicy, PolicyGate } from "./tools.mjs";
+import { normalizePolicy, PolicyGate, toolNamesForPolicy } from "./tools.mjs";
 import { publicError } from "./errors.mjs";
 import { ProcessTracker } from "./process-tracker.mjs";
 import { CallRegistry } from "./call-registry.mjs";
@@ -14,6 +14,7 @@ import { RuntimeObservability } from "./observability.mjs";
 import { ToolExecutor } from "./tool-executor.mjs";
 import { boundedErrorMessage, ProcessExecutionService } from "./process-execution.mjs";
 import { GitService } from "./git-service.mjs";
+import { createTrustedGitResolver } from "./trusted-git-executable.mjs";
 import { LifecycleController } from "./lifecycle.mjs";
 import { MAX_WRITE_BYTES, sha256, WorkspaceFileService } from "./workspace-file-service.mjs";
 export { MAX_WRITE_BYTES, sha256 } from "./workspace-file-service.mjs";
@@ -32,6 +33,9 @@ import { buildProjectOverview, buildRuntimeInfo } from "./runtime-reporting.mjs"
 import { diagnoseRuntime as runRuntimeDiagnostics } from "./runtime-diagnostics.mjs";
 import { bindRuntimeToolHandlers, runtimeToolHandlerNames as registeredRuntimeToolHandlerNames } from "./runtime-tool-handlers.mjs";
 import { OperationAuthorizer } from "./operation-authorization.mjs";
+import { SecurityAuditLog } from "./security-audit-log.mjs";
+import { delegatedProcessIsolationStatus } from "./delegated-process-sandbox.mjs";
+import { policyForContext } from "./authority-context.mjs";
 import { createRuntimeRelayConnection, normalizeRelayResumeCalls, normalizeRelayToolCall } from "./runtime-relay.mjs";
 import { RelayCallRecovery } from "./relay-call-recovery.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage, stateRootFromProfileStatePath } from "./runtime-paths.mjs";
@@ -47,7 +51,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", approvalRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {} }) {
+  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", approvalRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
@@ -58,6 +62,7 @@ export class LocalRuntime {
     this.logger = logger;
     this.onSuperseded = typeof onSuperseded === "function" ? onSuperseded : null;
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
+    this.deviceRootStatus = deviceRootStatus && typeof deviceRootStatus === "object" ? Object.freeze({ ...deviceRootStatus }) : null;
     this.processTracker = new ProcessTracker();
     this.lifecycle = new LifecycleController("local runtime");
     this.observability = new RuntimeObservability();
@@ -80,13 +85,15 @@ export class LocalRuntime {
     this.mutationQueue = Promise.resolve();
     this.capabilityObserver = new CapabilityObserver();
     this.runtimeDir = createRuntimeDir();
+    this.resolveGitExecutable = createTrustedGitResolver({ resolve: resolveGitExecutable, workspace: this.workspace, stateRoot: browserStateRoot, runtimeDir: this.runtimeDir, home: agentHome });
     this.workspaceFileService = new WorkspaceFileService({
       workspace: this.workspace,
       policy: this.policy,
       policyGate: this.policyGate,
-      resolveExistingPath: (value) => this.resolveExistingPath(value),
-      resolveWritePath: (value) => this.resolveWritePath(value),
-      displayPath: (value) => this.displayPath(value),
+      policyForContext: (context) => this.effectivePolicy(context),
+      resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
+      resolveWritePath: (value, context) => this.resolveWritePath(value, context),
+      displayPath: (value, context) => this.displayPath(value, context),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
       withMutationLock: (operation) => this.withMutationLock(operation),
     });
@@ -96,6 +103,7 @@ export class LocalRuntime {
       workspace: this.workspace,
       policy: this.policy,
       authorizeTool: (tool) => this.policyGate.assert(tool),
+      policyForContext: (context) => this.effectivePolicy(context),
       resources,
       resourceStatePath,
       stateRoot: browserStateRoot,
@@ -106,21 +114,23 @@ export class LocalRuntime {
       workspace: this.workspace,
       policy: this.policy,
       authorizeTool: (tool) => this.policyGate.assert(tool),
+      policyForContext: (context) => this.effectivePolicy(context),
       runtimeDir: this.runtimeDir,
       processTracker: this.processTracker,
-      resolveCwd: async (input) => {
-        const cwd = await this.resolveExistingPath(input);
+      resolveCwd: async (input, context) => {
+        const cwd = await this.resolveExistingPath(input, context);
         if (!(await stat(cwd)).isDirectory()) throw new Error("cwd is not a directory");
         return cwd;
       },
-      displayPath: (value) => this.displayPath(value),
+      displayPath: (value, context) => this.displayPath(value, context),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
     this.agentContextManager = new AgentContextManager({
       workspace: this.workspace,
       policy: this.policy,
-      displayPath: (value) => this.displayPath(value),
-      resolveExistingPath: (value) => this.resolveExistingPath(value),
+      policyForContext: (context) => this.effectivePolicy(context),
+      displayPath: (value, context) => this.displayPath(value, context),
+      resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
       home: agentHome,
       codexHome,
@@ -129,18 +139,20 @@ export class LocalRuntime {
       workspace: this.workspace,
       policy: this.policy,
       policyGate: this.policyGate,
+      policyForContext: (context) => this.effectivePolicy(context),
       runtimeDir: this.runtimeDir,
       processTracker: this.processTracker,
-      resolveExistingPath: (value) => this.resolveExistingPath(value),
+      resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
       resolveLocalCommand: (args, context) => this.agentContextManager.resolveLocalCommand(args, context),
-      displayPath: (value) => this.displayPath(value),
+      displayPath: (value, context) => this.displayPath(value, context),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
-      retainCompletedOutput: (value) => this.processSessionManager.retainCompletedOutput(value),
+      retainCompletedOutput: (value, context) => this.processSessionManager.retainCompletedOutput(value, context),
     });
     this.gitService = new GitService({
-      resolveExistingPath: (value) => this.resolveExistingPath(value),
-      displayPath: (value) => this.displayPath(value),
-      runProcess: (...args) => this.processExecutionService.run(...args),
+      resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
+      displayPath: (value, context) => this.displayPath(value, context),
+      runInternalProcess: (...args) => this.processExecutionService.runFixedInternal(...args),
+      gitExecutable: () => this.resolveGitExecutable(),
       maximumBytes: MAX_WRITE_BYTES,
     });
     const runProcess = (cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin) => this.runProcess(cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin);
@@ -150,16 +162,18 @@ export class LocalRuntime {
       ...applicationAutomation,
       policy: this.policy,
       authorizeTool: (tool) => this.policyGate.assert(tool),
-      displayPath: (value) => this.displayPath(value),
+      displayPath: (value, context) => this.displayPath(value, context),
       runProcess,
       readResourceText,
       throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
+    this.securityAudit = new SecurityAuditLog({ root: approvalRoot });
     this.operationAuthorizer = new OperationAuthorizer({
       workspace: this.workspace,
       root: approvalRoot,
-      resolveExistingPath: (value) => this.resolveExistingPath(value),
-      resolveWritePath: (value) => this.resolveWritePath(value),
+      resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
+      resolveWritePath: (value, context) => this.resolveWritePath(value, context),
+      protectedRoots: [approvalRoot, browserStateRoot],
     });
     this.browserBridgeManager = new BrowserBridgeManager({
       policy: this.policy,
@@ -178,8 +192,9 @@ export class LocalRuntime {
       operationAuthorizer: this.operationAuthorizer,
       callRegistry: this.callRegistry,
       observability: this.observability,
+      securityAudit: this.securityAudit,
       logger: this.logger,
-      safeMessage: (error, args) => this.safeErrorMessage(error, args),
+      safeMessage: (error, args, context) => this.safeErrorMessage(error, args, context),
       slowMs: SLOW_TOOL_CALL_MS,
     });
     this.relay = createRuntimeRelayConnection(this, {
@@ -198,11 +213,11 @@ export class LocalRuntime {
 
   tools() { return this.policyGate.names().filter((name) => name !== "server_info"); }
 
-  runtimeInfo() {
-    return buildRuntimeInfo({
+  runtimeInfo(context = {}) {
+    const info = buildRuntimeInfo({
       workspace: this.workspace,
-      displayPath: (value) => this.displayPath(value),
-      policy: this.policy,
+      displayPath: (value) => this.displayPath(value, context),
+      policy: this.effectivePolicy(context),
       toolNames: this.tools(),
       capabilityObserver: this.capabilityObserver,
       observability: this.observability,
@@ -214,6 +229,16 @@ export class LocalRuntime {
       processSessionManager: this.processSessionManager,
       managedJobManager: this.managedJobManager,
     });
+    return {
+      ...info,
+      security_audit: this.securityAudit.snapshot(),
+      trust: {
+        device_root: this.deviceRootStatus,
+        daemon_session: { ephemeral: true, certificate_lifetime_seconds: 86400, reconnect_prompts: false },
+        delegated_process_isolation: delegatedProcessIsolationStatus(),
+        routine_operation_prompts: false,
+      },
+    };
   }
 
   async start() {
@@ -427,20 +452,24 @@ export class LocalRuntime {
   }
 
   async projectOverview(context = {}) {
+    const effectivePolicy = this.effectivePolicy(context);
     return buildProjectOverview({
       workspace: this.workspace,
-      displayPath: (value) => this.displayPath(value),
-      policy: this.policy,
-      toolNames: this.tools(),
+      displayPath: (value) => this.displayPath(value, context),
+      policy: effectivePolicy,
+      toolNames: toolNamesForPolicy(effectivePolicy).filter((name) => name !== "server_info"),
+      daemonPolicy: this.policy,
+      daemonToolNames: this.tools(),
       capabilityObserver: this.capabilityObserver,
       listTopLevel: (callContext) => this.listDir(".", callContext),
-      runProcess: (...args) => this.runProcess(...args),
-      safeErrorMessage: (error) => this.safeErrorMessage(error),
+      runInternalProcess: (...args) => this.processExecutionService.runFixedInternal(...args),
+      gitExecutable: () => this.resolveGitExecutable(),
+      safeErrorMessage: (error) => this.safeErrorMessage(error, {}, context),
       throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
     }, context);
   }
 
-  listRoots() { return this.workspaceFileService.listRoots(); }
+  listRoots(context = {}) { return this.workspaceFileService.listRoots(context); }
 
   listDir(pathValue, context = {}) { return this.workspaceFileService.listDir(pathValue, context); }
 
@@ -482,6 +511,7 @@ export class LocalRuntime {
       runProcess: (...args) => this.runProcess(...args),
       probeShell: (callContext) => this.processExecutionService.probeShell(callContext),
       managedJobManager: this.managedJobManager,
+      relayStatus: () => this.relay?.status?.() || null,
       throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
     }, context);
   }
@@ -577,6 +607,10 @@ export class LocalRuntime {
     return this.processExecutionService.run(cmd, args, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin);
   }
 
+  effectivePolicy(context = {}) {
+    return policyForContext(context, this.policy);
+  }
+
   resolvePath(inputPath = ".") {
     const raw = String(inputPath || ".");
     if (raw.includes("\0")) throw new Error("path contains a NUL byte");
@@ -599,14 +633,14 @@ export class LocalRuntime {
     return this.workspaceCanonicalPromise;
   }
 
-  async resolveExistingPath(inputPath = ".") {
+  async resolveExistingPath(inputPath = ".", context = {}) {
     const candidate = this.resolvePath(inputPath);
     const [workspace, canonical] = await Promise.all([this.canonicalWorkspace(), realpath(candidate)]);
-    if (!this.policy.unrestrictedPaths) assertContainedPath(workspace, canonical);
+    if (!this.effectivePolicy(context).unrestrictedPaths) assertContainedPath(workspace, canonical);
     return canonical;
   }
 
-  async resolveWritePath(inputPath = ".") {
+  async resolveWritePath(inputPath = ".", context = {}) {
     const candidate = this.resolvePath(inputPath);
     const candidateInfo = await lstat(candidate).catch(() => null);
     if (candidateInfo?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
@@ -617,23 +651,23 @@ export class LocalRuntime {
       ancestor = parent;
     }
     const [workspace, canonicalAncestor] = await Promise.all([this.canonicalWorkspace(), realpath(ancestor)]);
-    if (!this.policy.unrestrictedPaths) assertContainedPath(workspace, canonicalAncestor);
+    if (!this.effectivePolicy(context).unrestrictedPaths) assertContainedPath(workspace, canonicalAncestor);
     const suffix = relative(ancestor, candidate);
     return suffix ? resolve(canonicalAncestor, suffix) : canonicalAncestor;
   }
 
-  displayPath(fullPath) {
+  displayPath(fullPath, context = {}) {
     const absolute = resolve(fullPath);
-    if (this.policy.exposeAbsolutePaths) return absolute;
+    if (this.effectivePolicy(context).exposeAbsolutePaths) return absolute;
     const shown = relative(this.workspace, absolute);
     const insideWorkspace = shown === "" || (!shown.startsWith(`..${sep}`) && shown !== ".." && !isAbsolute(shown));
     if (insideWorkspace) return shown ? shown.split(sep).join("/") : ".";
     return `<external-path:${sha256(absolute).slice(0, 12)}>`;
   }
 
-  safeErrorMessage(error, toolArgs = {}) {
+  safeErrorMessage(error, toolArgs = {}, context = {}) {
     const message = boundedErrorMessage(error);
-    if (this.policy.exposeAbsolutePaths) return message;
+    if (this.effectivePolicy(context).exposeAbsolutePaths) return message;
     return redactRuntimeErrorMessage(message, {
       error,
       toolArgs,
@@ -641,7 +675,7 @@ export class LocalRuntime {
       workspaceInput: this.workspaceInput,
       runtimeDir: this.runtimeDir,
       home: process.env.HOME || process.env.USERPROFILE || "",
-      displayPath: (value) => this.displayPath(value),
+      displayPath: (value) => this.displayPath(value, context),
     });
   }
 

@@ -192,16 +192,25 @@ scheduler.advance(10);
 const outageWarning = events.find((event) => event.level === "warn" && event.message.startsWith("remote relay unavailable for "));
 assert(outageWarning, "sustained outage did not escalate to a warning");
 assert(outageWarning.message.includes("reconnecting automatically") && outageWarning.message.includes("connection interrupted"), "sustained outage warning omitted recovery behavior or the meaningful cause");
-assert(outageWarning.fields === undefined, "default outage warning retained machine-oriented JSON fields");
+assert(outageWarning.fields?.event === "relay.outage.active"
+  && outageWarning.fields.close_category === "connection_interrupted"
+  && outageWarning.fields.close_code === 1006
+  && outageWarning.fields.network_route_scope === "application-proxy-selection-only",
+"outage warning omitted structured recovery diagnostics");
+assert(!Object.hasOwn(outageWarning.fields, "close_reason"), "outage warning exposed the raw WebSocket close reason");
 const outageDebug = events.find((event) => event.level === "debug" && event.message === "remote relay outage details");
 assert(outageDebug?.fields?.cause === "connection interrupted", "debug outage details omitted the classified cause");
-assert(!hasRawCloseFields(outageDebug?.fields), "outage diagnostics exposed raw WebSocket close fields outside the transport-close event");
+assert(!Object.hasOwn(outageDebug?.fields || {}, "close_reason"), "outage diagnostics exposed the raw WebSocket close reason");
 sockets[2].open();
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 completeRelayReadiness(connection, "0.8.1");
 const restored = events.find((event) => event.level === "info" && event.message.startsWith("remote relay connection restored after "));
 assert(restored?.message.includes("reconnect attempt"), "restored connection summary was incomplete or not user-readable");
-assert(restored.fields === undefined, "default recovery summary retained machine-oriented JSON fields");
+assert(restored.fields?.event === "relay.outage.recovered"
+  && restored.fields.close_category === "connection_interrupted"
+  && restored.fields.network_route_scope === "application-proxy-selection-only",
+"recovery summary omitted structured outage diagnostics");
+assert(!Object.hasOwn(restored.fields, "close_reason"), "recovery summary exposed the raw WebSocket close reason");
 const restoredDebug = events.find((event) => event.level === "debug" && event.message === "remote relay outage recovery details");
 assert(restoredDebug?.fields?.attempts >= 1 && restoredDebug.fields.outage_seconds >= 1, "debug recovery details were incomplete");
 
@@ -630,7 +639,7 @@ assert(relayCloseCategory(1002, "protocol error") === "relay_protocol_error", "1
 assert(relayCloseCategory(1008, "daemon hello timeout") === "relay_handshake_timeout", "daemon hello timeout was misclassified as an authentication failure");
 assert(relayCloseCategory(1008, "daemon ready timeout") === "relay_readiness_timeout", "daemon ready timeout was misclassified");
 assert(relayCloseCategory(1011, "") === "relay_internal_error", "1011 close classification failed");
-assert(reconnectDelay(0, () => 0) === 3000 && reconnectDelay(99, () => 0) === 60_000, "reconnect backoff bounds changed");
+assert(reconnectDelay(0, () => 0) === 1000 && reconnectDelay(99, () => 0) === 15_000, "reconnect backoff bounds changed");
 
 const directProxy = proxyAgentForWebSocket("wss://relay.example.invalid/daemon/ws", () => "");
 assert(directProxy.agent === null && directProxy.mode === "direct", "NO_PROXY/direct relay routing did not bypass proxy construction");
@@ -655,7 +664,7 @@ const proxyConnection = new RelayConnection({
   proxyAgentForUrl: () => ({ agent: proxyMarker, mode: "proxy" }),
 });
 proxyConnection.start();
-assert(proxySockets[0].options.agent === proxyMarker && proxyConnection.status().network_route === "proxy", "relay WebSocket did not receive the selected proxy agent");
+assert(proxySockets[0].options.agent === proxyMarker && proxyConnection.status().network_route === "application-http-proxy", "relay WebSocket did not receive the selected proxy agent");
 proxyConnection.stop();
 
 const invalidProxyConnection = new RelayConnection({
@@ -667,7 +676,7 @@ const invalidProxyConnection = new RelayConnection({
 });
 const invalidProxyError = await invalidProxyConnection.start().then(() => null, (error) => error);
 assert(invalidProxyError?.code === "relay_proxy_configuration" && invalidProxyError.message.includes("HTTP_PROXY"), "invalid proxy configuration did not fail fast with corrective guidance");
-assert(invalidProxyConnection.status().network_route === "invalid-proxy-configuration", "invalid proxy route was not observable");
+assert(invalidProxyConnection.status().network_route === "invalid-application-proxy-configuration", "invalid proxy route was not observable");
 
 console.log("relay connection lifecycle/logging test ok");
 

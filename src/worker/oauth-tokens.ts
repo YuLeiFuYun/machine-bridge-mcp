@@ -5,6 +5,7 @@ import {
 } from "./oauth-state.ts";
 import { HttpError, json, parseRequestBody } from "./http.ts";
 import { loadOAuthRefreshStore, OAUTH_REFRESH_STORE_KEY, recordConsumedRefreshToken, revokeOAuthRefreshFamily } from "./oauth-refresh-families.ts";
+import { consumeDpopProof, verifyDpopProof, type VerifiedDpopProof } from "./dpop.ts";
 
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_IDLE_TTL_SECONDS = 60 * 60 * 24 * 14;
@@ -36,9 +37,12 @@ export async function exchangeOAuthToken(
   options: OAuthTokenExchangeOptions,
 ): Promise<Response> {
   const body = await parseRequestBody(request, OAUTH_BODY_LIMIT_BYTES);
+  const hasDpop = Boolean(request.headers.get("DPoP"));
+  const dpop = hasDpop ? await verifyDpopProof({ request, expectedMethod: "POST", expectedUrl: request.url }) : null;
+  if (hasDpop && !dpop) return json({ error: "invalid_dpop_proof" }, 400);
   const grantType = String(body.grant_type ?? "");
-  if (grantType === "authorization_code") return exchangeAuthorizationCode(body, base, options);
-  if (grantType === "refresh_token") return exchangeRefreshToken(body, base, options);
+  if (grantType === "authorization_code") return exchangeAuthorizationCode(body, base, options, dpop || undefined);
+  if (grantType === "refresh_token") return exchangeRefreshToken(body, base, options, dpop || undefined);
   return json({ error: "unsupported_grant_type" }, 400);
 }
 
@@ -46,6 +50,7 @@ async function exchangeAuthorizationCode(
   body: Record<string, unknown>,
   base: string,
   options: OAuthTokenExchangeOptions,
+  dpop?: VerifiedDpopProof,
 ): Promise<Response> {
   const code = String(body.code ?? "");
   const verifier = String(body.code_verifier ?? "");
@@ -69,11 +74,14 @@ async function exchangeAuthorizationCode(
     const client = oauthStore.clients[record.client_id];
     if (!client) return json({ error: "invalid_grant", error_description: "unknown client" }, 400);
 
-    const issued = await issueTokenPair(oauthStore, refreshStore, record, options.tokenVersion);
+    if (dpop && !(await consumeDpopProof(options.storage, dpop))) {
+      return json({ error: "invalid_dpop_proof" }, 400);
+    }
+    const issued = await issueTokenPair(oauthStore, refreshStore, record, options.tokenVersion, dpop?.jkt);
     delete oauthStore.codes[code];
     client.last_used_at = Math.floor(Date.now() / 1000);
     await saveOAuthStores(oauthStore, refreshStore, options.storage);
-    return tokenResponse(issued, record.scope);
+    return tokenResponse(issued, record.scope, dpop?.jkt);
   });
 }
 
@@ -81,6 +89,7 @@ async function exchangeRefreshToken(
   body: Record<string, unknown>,
   base: string,
   options: OAuthTokenExchangeOptions,
+  dpop?: VerifiedDpopProof,
 ): Promise<Response> {
   const refreshToken = String(body.refresh_token ?? "");
   if (!/^mcp_rt_[A-Za-z0-9_-]{43}$/.test(refreshToken)) return json({ error: "invalid_grant" }, 400);
@@ -97,6 +106,8 @@ async function exchangeRefreshToken(
       }
       return json({ error: "invalid_grant" }, 400);
     }
+    if (record.dpop_jkt && record.dpop_jkt !== dpop?.jkt) return json({ error: "invalid_dpop_proof" }, 400);
+    if (!record.dpop_jkt && dpop?.jkt) record.dpop_jkt = dpop.jkt;
     if (refreshStore.revoked_families[record.family_id]) {
       delete refreshStore.tokens[refreshKey];
       await options.storage.put(OAUTH_REFRESH_STORE_KEY, refreshStore);
@@ -124,15 +135,21 @@ async function exchangeRefreshToken(
       || account.version !== record.account_version
       || account.role !== record.role
       || !client
+      || client.trusted_account_id !== account.account_id
+      || client.trusted_account_version !== account.version
+      || client.trusted_role !== account.role
     ) {
       delete refreshStore.tokens[refreshKey];
       await options.storage.put(OAUTH_REFRESH_STORE_KEY, refreshStore);
       return json({ error: "invalid_grant" }, 400);
     }
 
+    if (dpop && !(await consumeDpopProof(options.storage, dpop))) {
+      return json({ error: "invalid_dpop_proof" }, 400);
+    }
     let issued: IssuedTokenPair;
     try {
-      issued = await issueTokenPair(oauthStore, refreshStore, record, options.tokenVersion);
+      issued = await issueTokenPair(oauthStore, refreshStore, record, options.tokenVersion, dpop?.jkt);
     } catch (error) {
       if (error instanceof HttpError && error.code === "invalid_grant") {
         delete refreshStore.tokens[refreshKey];
@@ -143,6 +160,7 @@ async function exchangeRefreshToken(
     }
     delete refreshStore.tokens[refreshKey];
     recordConsumedRefreshToken(
+      oauthStore,
       refreshStore,
       refreshKey,
       record.family_id,
@@ -151,7 +169,7 @@ async function exchangeRefreshToken(
     );
     client.last_used_at = Math.floor(Date.now() / 1000);
     await saveOAuthStores(oauthStore, refreshStore, options.storage);
-    return tokenResponse(issued, record.scope);
+    return tokenResponse(issued, record.scope, dpop?.jkt || record.dpop_jkt);
   });
 }
 
@@ -160,6 +178,7 @@ async function issueTokenPair(
   refreshStore: OAuthRefreshStore,
   source: OAuthCode | OAuthRefreshToken,
   tokenVersion: string,
+  dpopJkt?: string,
 ): Promise<IssuedTokenPair> {
   if (!tokenVersion) throw new HttpError(503, "server_error", "OAuth token version is not configured");
   const now = Math.floor(Date.now() / 1000);
@@ -179,6 +198,7 @@ async function issueTokenPair(
     resource: source.resource,
     version: tokenVersion,
     family_id: familyId,
+    ...(dpopJkt ? { dpop_jkt: dpopJkt } : {}),
   };
   oauthStore.tokens[`sha256:${await sha256Hex(accessToken)}`] = {
     ...common,
@@ -198,11 +218,11 @@ async function issueTokenPair(
   return { accessToken, refreshToken };
 }
 
-function tokenResponse(issued: IssuedTokenPair, scope: string): Response {
+function tokenResponse(issued: IssuedTokenPair, scope: string, dpopJkt?: string): Response {
   return json({
     access_token: issued.accessToken,
     refresh_token: issued.refreshToken,
-    token_type: "Bearer",
+    token_type: dpopJkt ? "DPoP" : "Bearer",
     expires_in: ACCESS_TOKEN_TTL_SECONDS,
     scope,
   });

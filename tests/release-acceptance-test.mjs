@@ -12,10 +12,11 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import {
-  ACCEPTANCE_CONFIRMATION,
+  PERSISTENT_OWNER_ACTIVATED_CONFIRMATION,
   ACCEPTANCE_SCHEMA_VERSION,
   LEGACY_ACCEPTANCE_CONFIRMATION,
   OWNER_STARTED_ACCEPTANCE_CONFIRMATION,
+  acceptanceConfirmationForVersion,
   acceptancePath,
   packProject,
   requiresLocalAcceptance,
@@ -23,6 +24,7 @@ import {
   verifyCurrentReleaseAcceptance,
   verifyTarball,
 } from "../scripts/release-acceptance.mjs";
+import { computePromotionContentDigest } from "../scripts/promotion-digest.mjs";
 import {
   canonicalPackageDigest,
   verifyPortableAcceptance,
@@ -32,27 +34,33 @@ const root = mkdtempSync(join(tmpdir(), "mbm-release-acceptance-test-"));
 const output = join(root, "output");
 try {
   mkdirSync(output, { recursive: true });
-  writePackage("2.0.0");
+  writePackage("3.0.0-beta.1");
   writeFileSync(join(root, "index.js"), "export const value = 1;\n");
   git(["init", "-q"]);
   git(["add", "package.json", "index.js"]);
 
   assert(!requiresLocalAcceptance("1.2.7"), "acceptance was required before the policy version");
   assert(requiresLocalAcceptance("1.2.8"), "acceptance was not required at the policy version");
-  assert(requiresLocalAcceptance("2.0.0"), "acceptance was not required after the policy version");
+  assert(requiresLocalAcceptance("3.0.0-beta.1"), "acceptance was not required after the policy version");
+  assert(acceptanceConfirmationForVersion("3.0.0-beta.1") === PERSISTENT_OWNER_ACTIVATED_CONFIRMATION, "v3 acceptance did not require owner activation plus agent verification");
 
   const metadata = packProject(root, output);
   const portablePack = packFixtureMetadata();
   const record = {
     schema_version: ACCEPTANCE_SCHEMA_VERSION,
     result: "passed",
-    confirmation: ACCEPTANCE_CONFIRMATION,
+    confirmation: PERSISTENT_OWNER_ACTIVATED_CONFIRMATION,
     ...metadata,
     package_content_sha256: canonicalPackageDigest(root, portablePack),
+    promotion_content_sha256: computePromotionContentDigest(root, { packRecord: portablePack[0] }),
     accepted_at: "2026-07-18T12:00:00.000Z",
   };
   verifyAcceptanceRecord(record, metadata);
   expectThrow(() => verifyAcceptanceRecord({ ...record, package_content_sha256: "" }, metadata), "portable package-content digest");
+  expectThrow(() => verifyAcceptanceRecord({ ...record, promotion_content_sha256: "" }, metadata), "promotion-content digest");
+  expectThrow(() => verifyAcceptanceRecord({ ...record, machine_path: "/Users/example/private" }, metadata), "unsupported fields");
+  const normalizedRecord = verifyAcceptanceRecord(record, metadata);
+  assert(!Object.hasOwn(normalizedRecord, "machine_path"), "acceptance normalization retained undeclared data");
   expectThrow(() => verifyAcceptanceRecord({ ...record, confirmation: OWNER_STARTED_ACCEPTANCE_CONFIRMATION }, metadata), "active verification workflow");
   expectThrow(() => verifyAcceptanceRecord({ ...record, confirmation: LEGACY_ACCEPTANCE_CONFIRMATION }, metadata), "active verification workflow");
   const recordPath = acceptancePath(root, metadata.package_version);

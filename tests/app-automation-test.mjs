@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { AppAutomationManager } from "../src/local/app-automation.mjs";
+import { AppAutomationManager, powershellSingleQuotedLiteral } from "../src/local/app-automation.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-app-automation-"));
@@ -108,6 +108,28 @@ try {
   await linux.openApplication({ application: "Example", target: "https://example.test/" });
   assert(linuxCalls.at(-1).cmd === "gio" && linuxCalls.at(-1).argv[0] === "launch" && basename(linuxCalls.at(-1).argv[1]) === "Example.desktop" && linuxCalls.at(-1).argv[2] === "https://example.test/", "Linux desktop launcher did not use gio launch");
   await expectReject(() => linux.inspectApplication({ application: "Example" }), "requires macOS");
+
+  const windowsApplications = join(root, "windows-applications");
+  await mkdir(windowsApplications, { recursive: true });
+  const windowsExecutable = join(windowsApplications, "O'Brien.exe");
+  await writeFile(windowsExecutable, "synthetic", "utf8");
+  const windowsCalls = [];
+  const windows = new AppAutomationManager({
+    policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+    platform: "win32",
+    home: root,
+    applicationRoots: [windowsApplications],
+    displayPath: () => "<application-path>",
+    readResourceText: async () => "",
+    runProcess: async (cmd, argv) => { windowsCalls.push({ cmd, argv }); return { code: 0, stdout: "", stderr: "" }; },
+  });
+  const maliciousTarget = "https://example.test/a'; Write-Output pwned; #";
+  const windowsOpened = await windows.openApplication({ application: "O'Brien", target: maliciousTarget });
+  const powershell = windowsCalls.at(-1);
+  const canonicalWindowsExecutable = await realpath(windowsExecutable);
+  const expectedScript = `Start-Process -FilePath ${powershellSingleQuotedLiteral(canonicalWindowsExecutable)} -ArgumentList ${powershellSingleQuotedLiteral(maliciousTarget)}`;
+  assert(powershell.cmd === "powershell.exe" && powershell.argv.at(-1) === expectedScript, "Windows launcher did not use canonical single-quoted PowerShell literals");
+  assert(windowsOpened.resolved_application === "<application-path>", "application launcher leaked its resolved absolute path");
 
   const routingRuntime = new LocalRuntime({
     workspace: root,

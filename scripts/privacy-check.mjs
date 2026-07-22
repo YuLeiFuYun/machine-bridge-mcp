@@ -3,9 +3,11 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { createTrustedGitResolver } from "../src/local/trusted-git-executable.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const selfPath = "scripts/privacy-check.mjs";
+const gitExecutable = createTrustedGitResolver({ workspace: root });
 const requestedOptions = new Set(process.argv.slice(2));
 for (const option of requestedOptions) {
   if (option !== "--history") throw new Error(`unknown privacy-check option: ${option}`);
@@ -68,7 +70,7 @@ process.stderr.write(`privacy check ok (${candidates.length} tracked/unignored f
 
 function collectCandidateFiles(directory) {
   try {
-    return execFileSync("git", ["-C", directory, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+    return execFileSync(gitExecutable(), ["-C", directory, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
       encoding: "buffer",
       maxBuffer: 32 * 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
@@ -98,7 +100,7 @@ function collectCandidateFiles(directory) {
 function scanReachableHistory(directory, entries, out) {
   let listing;
   try {
-    listing = execFileSync("git", ["-C", directory, "rev-list", "--objects", "--all", "-z"], {
+    listing = execFileSync(gitExecutable(), ["-C", directory, "rev-list", "--objects", "--all", "-z"], {
       encoding: "buffer",
       maxBuffer: 64 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
@@ -130,7 +132,7 @@ function scanReachableHistory(directory, entries, out) {
   const hashes = [...objectPaths.keys()];
   let metadata;
   try {
-    metadata = execFileSync("git", ["-C", directory, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], {
+    metadata = execFileSync(gitExecutable(), ["-C", directory, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], {
       input: `${hashes.join("\n")}\n`,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
@@ -162,7 +164,7 @@ function scanReachableHistory(directory, entries, out) {
     }
     let buffer;
     try {
-      buffer = execFileSync("git", ["-C", directory, "cat-file", "blob", hash], {
+      buffer = execFileSync(gitExecutable(), ["-C", directory, "cat-file", "blob", hash], {
         encoding: "buffer",
         maxBuffer: 6 * 1024 * 1024,
         stdio: ["ignore", "pipe", "pipe"],
@@ -194,7 +196,7 @@ function scanReachableHistory(directory, entries, out) {
 function scanReachableCommitMessages(directory, entries, out) {
   let output;
   try {
-    output = execFileSync("git", ["-C", directory, "log", "--all", "--format=%H%x00%B%x00"], {
+    output = execFileSync(gitExecutable(), ["-C", directory, "log", "--all", "--format=%H%x00%B%x00"], {
       encoding: "buffer",
       maxBuffer: 64 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],

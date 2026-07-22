@@ -7,6 +7,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
 const wranglerConfigSource = readFileSync(join(root, "wrangler.jsonc"), "utf8");
 for (const requiredFlag of ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"]) {
   if (!wranglerConfigSource.includes(`"${requiredFlag}"`)) {
@@ -20,7 +21,12 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
     }
   }
 }
+const patchedSharpVersion = "0.35.3";
+if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
+if (packageLock.packages?.["node_modules/sharp"]?.version !== patchedSharpVersion) throw new Error("package-lock does not resolve the audited Sharp version");
+if (packageJson.allowScripts?.[`sharp@${patchedSharpVersion}`] !== true) throw new Error("the audited Sharp lifecycle-script allowlist entry is missing");
 if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser-service-worker-test.mjs") throw new Error("browser service-worker behavior test is missing");
+if (packageJson.scripts?.["browser-identity:test"] !== "node tests/browser-extension-identity-test.mjs") throw new Error("browser extension identity regression test is missing");
 if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
 if (packageJson.scripts?.["coverage:test"] !== "node scripts/coverage-check.mjs") throw new Error("critical-module coverage gate is missing");
 if (packageJson.scripts?.["check-plan:test"] !== "node tests/check-plan-test.mjs") throw new Error("layered check-plan regression test is missing");
@@ -48,6 +54,7 @@ if (packageJson.scripts?.["runtime-boundaries:test"] !== "node tests/runtime-bou
 if (packageJson.scripts?.["worker-oauth-controller:test"] !== "node tests/worker-oauth-controller-test.mjs") throw new Error("Worker OAuth controller state-machine test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
 if (packageJson.scripts?.["cli-service:test"] !== "node tests/cli-service-test.mjs") throw new Error("CLI service adapter regression test is missing");
+if (packageJson.scripts?.["service-restart:test"] !== "node tests/service-restart-handoff-test.mjs") throw new Error("service restart/status boundary regression test is missing");
 const stateSource = readFileSync(join(root, "src", "local", "state.mjs"), "utf8");
 if (!cliSource.includes('promptOnFirstRun ? defaultFirstRunWorkspace() : process.cwd()')
     || !cliSource.includes("Workspace folder [${fallback}] (press Enter to use the default): ")
@@ -71,16 +78,42 @@ if (packageJson.scripts?.check !== "npm run check:full"
     || packageJson.scripts?.["check:full"] !== "node scripts/run-checks.mjs full") {
   throw new Error("layered fast/full verification entrypoints are missing or drifted");
 }
-for (const required of ["runtime-boundaries:test", "worker-oauth-controller:test", "shell:test", "lint:test", "lint", "deadline:test"]) {
+for (const required of ["runtime-boundaries:test", "worker-oauth-controller:test", "shell:test", "lint:test", "lint", "deadline:test", "release-channel:test", "release-candidate-manifest:test", "release-soak:test", "runtime-activation:test"]) {
   if (!FAST_CHECK_TASKS.includes(required)) throw new Error(`fast check plan omits required task: ${required}`);
 }
 for (const required of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
   if (!PLATFORM_CHECK_TASKS.includes(required)) throw new Error(`platform check plan omits required task: ${required}`);
 }
-for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test"]) {
+for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test", "promotion-digest:test", "published-release:test"]) {
   if (!FULL_CHECK_TASKS.includes(required)) throw new Error(`full check plan omits required task: ${required}`);
 }
 if (packageJson.scripts?.["release:acceptance:test"] !== "node tests/release-acceptance-test.mjs") throw new Error("local release acceptance regression test is missing");
+for (const [name, command] of Object.entries({
+  "release-channel:test": "node tests/release-channel-test.mjs",
+  "release-candidate-manifest:test": "node tests/release-candidate-manifest-test.mjs",
+  "promotion-digest:test": "node tests/promotion-digest-test.mjs",
+  "prerelease-activation:test": "node tests/prerelease-activation-test.mjs",
+  "release-soak:test": "node tests/release-soak-test.mjs",
+  "published-release:test": "node tests/published-release-test.mjs",
+  "npm-publication-policy:test": "node tests/npm-publication-policy-test.mjs",
+  "publish-npm:test": "node tests/publish-npm-test.mjs",
+  "runtime-activation:test": "node tests/runtime-activation-test.mjs",
+  "candidate-runtime-store:test": "node tests/candidate-runtime-store-test.mjs",
+  "device-key-id-compatibility:test": "node tests/device-key-id-compatibility-test.mjs",
+})) {
+  if (packageJson.scripts?.[name] !== command) throw new Error(`release state-machine test is missing or drifted: ${name}`);
+}
+for (const [name, command] of Object.entries({
+  "release:candidate:activate": "node scripts/start-release-candidate.mjs --activate-service",
+  "prerelease:release": "node scripts/github-release.mjs --publish-prerelease",
+  "prerelease:publish": "node scripts/publish-npm.mjs prerelease",
+  "prerelease:install": "node scripts/install-published-prerelease.mjs",
+  "prerelease:soak:accept": "node scripts/release-soak.mjs --record",
+  "release:soak:verify": "node scripts/release-soak.mjs --verify",
+  "stable:publish": "node scripts/publish-npm.mjs stable",
+})) {
+  if (packageJson.scripts?.[name] !== command) throw new Error(`release channel command is missing or drifted: ${name}`);
+}
 if (packageJson.scripts?.["release:candidate"] !== "npm run check && node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses the complete suite");
 if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-release-candidate.mjs") throw new Error("isolated candidate startup command is missing");
 const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.mjs"), "utf8");
@@ -109,8 +142,12 @@ if (!githubBacklogPushSource.includes("assertGitHubBacklogReady") || !githubBack
   throw new Error("guarded GitHub push lost the issue/PR backlog boundary");
 }
 const candidateStartSource = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
-for (const required of ["verifyTarball", ".release-candidate", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", 'stdio: "inherit"']) {
+for (const required of ["verifyTarball", ".release-candidate", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", '"activate"', 'stdio: "inherit"']) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
+}
+const candidateRuntimeStoreSource = readFileSync(join(root, "scripts", "candidate-runtime-store.mjs"), "utf8");
+for (const required of ["release-channels", "runtimes", "withFileTypes", "entry.isDirectory()", "RUNTIME_DIRECTORY_PATTERN", "active candidate runtime is outside"]) {
+  if (!candidateRuntimeStoreSource.includes(required)) throw new Error(`candidate runtime store lost required boundary: ${required}`);
 }
 if (!FULL_CHECK_TASKS.includes("release:acceptance:test")) throw new Error("complete check omits local release acceptance regression coverage");
 if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
@@ -125,7 +162,7 @@ if (!ciSource.includes("npm run check:platform") || !ciSource.includes("npm run 
 const portableAcceptanceCommand = "npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs";
 if ((ciSource.split(portableAcceptanceCommand).length - 1) !== 2) throw new Error("CI no longer verifies portable interactive candidate acceptance in both package paths");
 const portableAcceptanceSource = readFileSync(join(root, ".github", "scripts", "verify-release-acceptance.mjs"), "utf8");
-for (const required of ["canonicalPackageDigest", "package_content_sha256", "git", "ls-files", "--stage", "machine-bridge-mcp-package-content-v1"]) {
+for (const required of ["canonicalPackageDigest", "package_content_sha256", "promotion_content_sha256", "computePromotionContentDigest", "git", "ls-files", "--stage", "machine-bridge-mcp-package-content-v1"]) {
   if (!portableAcceptanceSource.includes(required)) throw new Error(`portable release acceptance verifier lost required content: ${required}`);
 }
 if ((ciSource.match(/node scripts\/prepare-pinned-npm\.mjs/g) || []).length !== 3 || ciSource.includes("npm install --global npm@")) {
@@ -192,6 +229,10 @@ if (packageJson.devDependencies?.["fast-check"] !== "4.9.0" || !readFileSync(joi
 const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
 if (!releaseSource.includes('import { requireSuccessfulWorkflowRun } from "./release-ci.mjs";')
     || !releaseSource.includes('import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";')
+    || !releaseSource.includes('import { verifyCurrentStableSoak } from "./release-soak.mjs";')
+    || !releaseSource.includes("--publish-prerelease")
+    || !releaseSource.includes("--prerelease")
+    || !releaseSource.includes("--latest=false")
     || (releaseSource.match(/assertSuccessfulCi\(head\);/g) || []).length !== 2
     || !releaseSource.includes(".github/workflows/codeql.yml")
     || !releaseSource.includes(".github/workflows/scorecard.yml")
@@ -201,7 +242,7 @@ if (!releaseSource.includes('import { requireSuccessfulWorkflowRun } from "./rel
   throw new Error("GitHub release orchestration lost owner acceptance, exact-commit gates, or the no-main-push boundary");
 }
 const githubPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
-for (const required of ["verifyCurrentReleaseAcceptance", "working tree is not clean", "direct pushes to main are prohibited", "--set-upstream", "release-acceptance/v"]) {
+for (const required of ["verifyCurrentReleaseAcceptance", "verifyCurrentStableSoak", "working tree is not clean", "direct pushes to main are prohibited", "--set-upstream", "release-acceptance/v", "release-soak/v"]) {
   if (!githubPushSource.includes(required)) throw new Error(`guarded GitHub push lost required boundary: ${required}`);
 }
 for (const [name, command] of Object.entries(packageJson.scripts || {})) {
@@ -226,7 +267,6 @@ for (const required of [
 }
 
 
-const installCommand = "npm install -g --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
 const pinnedInstallCommand = "npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
 if (packageJson.engines?.npm !== ">=12.0.0") throw new Error("package metadata no longer declares the npm 12 runtime requirement");
 const installSmokeSource = readFileSync(join(root, "tests", "install-smoke-test.mjs"), "utf8");
@@ -248,7 +288,15 @@ for (const file of [
   join(root, "docs", "ENGINEERING.md"),
 ]) {
   const normalized = readFileSync(file, "utf8").replace(/\s+/g, " ");
-  if (!normalized.includes(installCommand)) throw new Error(`global install/activation guidance drifted in ${relative(root, file)}`);
+  for (const required of [
+    "release:candidate:activate -- --allow-worker-deploy",
+    "prerelease:publish",
+    "prerelease:install -- --allow-worker-deploy",
+    "release:soak:verify",
+    "stable:publish",
+  ]) {
+    if (!normalized.includes(required)) throw new Error(`prerelease/soak guidance drifted in ${relative(root, file)}: ${required}`);
+  }
 }
 if (!cliSource.replace(/\s+/g, " ").includes(`${pinnedInstallCommand} && machine-mcp`)) throw new Error("CLI pinned npm installation guidance drifted from user documentation");
 
@@ -272,7 +320,7 @@ if (!engineering.includes("default profile is intentionally `full`") || !enginee
 
 for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTING.md")]) {
   const releaseContract = readFileSync(file, "utf8").replace(/\s+/g, " ");
-  if (!releaseContract.includes("source release") || !releaseContract.includes("annotated version tag") || !releaseContract.includes("npm")) {
+  if (!releaseContract.includes("prerelease") || !releaseContract.includes("soak") || !releaseContract.includes("npm")) {
     throw new Error(`release ownership contract drifted in ${relative(root, file)}`);
   }
   if (/automation must not[^.]{0,200}(?:create tags|GitHub Releases)/i.test(releaseContract)) {
@@ -280,7 +328,7 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Completion ownership and local acceptance", "annotated `v<version>` tag", "npm run release:candidate", "npm run release:candidate:start -- --allow-worker-deploy", "npm run github:push", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Completion ownership, prerelease activation, and soak", "npm run release:candidate", "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
@@ -289,7 +337,7 @@ if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || 
   throw new Error("generated MCP tool reference is missing or malformed");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
-for (const required of ["GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "standing authorization for repository implementation, local validation, observed candidate verification", "npm run release:candidate", "npm run release:candidate:start -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "must stop before the first GitHub push", "run `npm run release`", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
+for (const required of ["GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "npm run release:candidate", "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
 }
 if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {

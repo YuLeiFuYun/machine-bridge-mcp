@@ -38,6 +38,13 @@ export default [
     rules: correctnessRules,
   },
   {
+    files: ["src/local/**/*.{js,mjs}", "src/shared/**/*.{js,mjs}", "scripts/**/*.{js,mjs}"],
+    rules: {
+      "complexity": ["error", 45],
+      "max-lines-per-function": ["error", { max: 180, skipBlankLines: true, skipComments: true, IIFEs: true }],
+    },
+  },
+  {
     files: ["browser-extension/**/*.js"],
     languageOptions: {
       ecmaVersion: "latest",

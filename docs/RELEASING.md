@@ -1,124 +1,231 @@
 # Release process
 
-The release invariant is:
+Machine Bridge uses a mandatory prerelease-and-soak process. A release candidate is not a stable release, and a green automated suite is not evidence that a real Worker, daemon, browser extension, service manager, and ordinary client remain healthy over time.
 
-- the repository owner started the exact npm tarball represented by `release-acceptance/v<version>.json` on the maintainer machine, and the coding agent observed the live candidate through Machine Bridge before recording a passing result;
-- the current package produces the same SHA-1 and SHA-512 integrity values as that accepted tarball;
-- `main` points to the release commit, and that exact commit has completed successful push-triggered CI, CodeQL, Governance, and OpenSSF Scorecard runs;
-- `v<package version>` points to that same commit locally and on GitHub;
-- a final GitHub Release exists for the tag and contains the accepted npm tarball;
-- `package.json`, `package-lock.json`, the Worker-reported version, and `browser-extension/manifest.json` (`version`/`version_name`) agree;
-- every npm-package change since the prior version tag has a higher package version and matching CHANGELOG section;
-- the same accepted package content is present on GitHub and in a new npm version.
+The invariant for version 3 and later is:
 
-A green automated suite is necessary but is not evidence that the maintainer's ordinary installation path works. The repository therefore separates automated validation from observed live candidate verification and binds both to the final package bytes.
+1. every package change is first assigned a `dev`, `beta`, or `rc` semantic version;
+2. the exact npm tarball is activated on the owner machine with one command that updates the same-name Worker and persistently replaces the login daemon;
+3. the coding agent verifies the connected candidate through Machine Bridge before recording package acceptance;
+4. the accepted prerelease is published under a non-`latest` npm dist-tag and as a GitHub Prerelease;
+5. the owner installs that exact published prerelease and uses it for the required soak period;
+6. every blocking defect produces a new prerelease version and restarts the soak clock;
+7. stable promotion is allowed only when the packaged functional content matches the soaked prerelease; only synchronized version metadata may differ;
+8. the exact stable commit must pass cross-platform CI, CodeQL, Governance, and OpenSSF Scorecard before the stable tag and final GitHub Release are created.
 
-## Change classification
+## Release channels
 
-A change is **npm-package relevant** when it alters `package.json`, `package-lock.json`, or a path included by the package `files` manifest. Source, runtime scripts, browser extension files, shared contracts, shipped documentation, and package metadata therefore require a new version and local acceptance.
+Supported versions and registry channels are:
 
-A repository-only change under paths such as `.github/` may be merged without a synthetic npm version when the package bytes are unchanged. It still requires review and all applicable GitHub checks. `scripts/release-impact-check.mjs` implements this distinction from the package manifest rather than from a duplicated path list.
+| Version form | npm dist-tag | GitHub release type | Purpose |
+|---|---|---|---|
+| `x.y.z-dev.n` | `dev` | Prerelease | short-lived development integration |
+| `x.y.z-beta.n` | `beta` | Prerelease | normal real-world testing channel |
+| `x.y.z-rc.n` | `next` | Prerelease | optional final candidate after beta |
+| `x.y.z` | `latest` | final release | stable users only |
 
-## Prepare the candidate locally
+Do not assign the final `x.y.z` version while implementation is still under candidate testing. A major or behaviorally risky change normally starts at `beta.1`. A release candidate may use `rc.n` after beta when a final freeze checkpoint is useful.
 
-1. Set the new version without creating a tag. The npm version hook synchronizes the Worker and browser-extension versions:
+Minimum published-prerelease soak periods are:
 
-   ```sh
-   npm version <version> --no-git-tag-version
-   ```
+- major release: seven days;
+- minor release: three days;
+- patch release: one day.
 
-2. Add the matching dated `CHANGELOG.md` section and update affected documentation and audit notes.
-3. Run the required dependency, privacy, Worker, and package checks while iterating.
-4. Inspect the complete diff.
-5. Generate the final candidate:
+These are lower bounds, not automatic approval. Continue the soak when use has been too light to exercise the changed behavior.
 
-   ```sh
-   npm run release:candidate
-   ```
+## 1. Prepare an exact prerelease candidate
 
-`release:candidate` runs the complete repository suite and then writes the exact npm tarball plus a bounded pending manifest under ignored `.release-candidate/`. Do not modify a packaged file after generating the candidate without regenerating and retesting it.
-
-## Interactive local candidate acceptance
-
-The repository owner explicitly authorizes the exact `.release-candidate/*.tgz` artifact and any configured same-name Worker update in the active conversation. The coding agent then runs the candidate startup helper through Machine Bridge:
+Complete implementation, tests, documentation, audit notes, and changelog. Set the prerelease version without creating a Git tag:
 
 ```sh
-npm run release:candidate:start -- --allow-worker-deploy
+npm version 3.0.0-beta.1 --no-git-tag-version
 ```
 
-The helper verifies the pending tarball hashes, installs it into the ignored `.release-candidate/runtime/` prefix without replacing the normal global installation, updates the configured same-name Worker when its version or deployment hash differs, and starts the installed candidate in the foreground. This is an in-place live candidate deployment, not an isolated staging Worker. The owner does not need to execute a terminal authorization command. The coding agent then verifies at minimum:
+The version hook synchronizes package metadata, Worker version, and browser-extension metadata.
 
-- the remote Worker reports the candidate version and the persisted deployment hash matches the candidate Worker bundle;
-- the remote health route succeeds without redirect;
-- the connected runtime reports the candidate package version;
-- relay readiness is healthy through the deployed Worker for the intended transport;
-- one representative read-only operation succeeds;
-- representative changed functionality succeeds, including browser, application, service, proxy, credential, or platform-specific behavior when relevant.
-
-The owner does not run the acceptance command. After the coding agent has observed the live candidate passing those checks, the agent records the decision using the exact phrase printed by `release:candidate`, for example:
+Run the complete local gate and inspect the diff:
 
 ```sh
-npm run release:accept -- --confirm "I VERIFIED machine-bridge-mcp 1.2.9 CANDIDATE ON THE OWNER MACHINE AND IT WORKS"
+npm run check
+npm audit --audit-level=high
+npm audit --omit=dev --audit-level=high
+npm run worker:dry-run
+npm pack --dry-run
 ```
 
-This creates `release-acceptance/v<version>.json` containing package identity, npm tarball hashes, a portable Git-content digest, timestamp, result, and a fixed observed-verification marker. The portable digest is computed with a temporary Git index containing `HEAD` plus the complete working tree; the real staging area is not modified. The record does not store a personal name, machine path, command output, credential, or user content. It is intentionally excluded from the npm package, so adding it does not change the tested tarball.
+Generate the exact tarball:
 
-The command repacks the current tree and refuses to record acceptance if any packaged byte changed after candidate preparation. Automated tests alone, a prepared tarball, a process the agent did not observe, or an ambiguous owner response do not authorize acceptance. Version 1.2.8 owner-recorded acceptance and the 1.2.9 owner-started marker remain supported as historical formats; version 2.0.0 and later require explicit owner authorization plus agent-operated, agent-observed verification.
+```sh
+npm run release:candidate
+```
 
-## Push and review
+The candidate manifest records npm SHA-1/SHA-512 values and a promotion-content digest. Any packaged-file change invalidates the candidate.
 
-Commit the candidate changes and acceptance record, then push the branch only through:
+## 2. Owner activates the exact candidate
+
+The coding agent must stop and present this command. The repository owner executes it:
+
+```sh
+npm run release:candidate:activate -- --allow-worker-deploy
+```
+
+The command:
+
+- verifies the exact pending tarball;
+- installs it under the owner-only Machine Bridge state root, separate from the normal global installation;
+- stops only a verified existing service daemon;
+- updates the configured same-name Worker;
+- starts the candidate in-process and verifies device authentication plus relay readiness;
+- installs the candidate as the login service runtime;
+- performs a controlled foreground-to-service handoff;
+- verifies that both the Worker and verified background daemon report the candidate version;
+- exits while the background daemon continues running.
+
+It may request one macOS user-presence or Touch ID operation to certify the daemon session key. It does not ask for per-tool approval.
+
+The private candidate runtime is not stored under the Git checkout, so cleaning `.release-candidate/`, switching branches, or regenerating a candidate cannot delete the daemon currently under test. The previous global installation remains available as recovery information.
+
+## 3. Coding agent verifies the live candidate
+
+After the owner command completes, the coding agent verifies through Machine Bridge:
+
+- `server_info` reports the exact candidate version;
+- Worker health reports the same version and deployment identity;
+- the connected daemon is the verified login-service process;
+- relay readiness succeeds through the deployed Worker;
+- a representative read succeeds;
+- changed functionality and relevant failure paths succeed;
+- browser, application, proxy, credential, service, and platform-specific behavior are tested when affected;
+- logs contain no sensitive arguments, output, tokens, or raw user paths.
+
+Only observed live evidence counts. A green unit suite, prepared tarball, unobserved process, or ambiguous response does not count.
+
+After successful verification, the coding agent records acceptance using the exact phrase emitted by `release:candidate`:
+
+```sh
+npm run release:accept -- --confirm "I VERIFIED machine-bridge-mcp <version> CANDIDATE ON THE OWNER MACHINE AND IT WORKS"
+```
+
+The resulting `release-acceptance/v<version>.json` binds the exact tarball hashes, portable Git package digest, promotion-content digest, timestamp, and fixed verification marker. It contains no personal machine path, command output, account credential, or user content.
+
+## 4. Review and publish the prerelease
+
+Commit the prerelease changes and acceptance record. Push only through:
 
 ```sh
 npm run github:push
 ```
 
-The command requires a clean non-`main` branch, fetches `origin/main`, paginates all open GitHub issues and pull requests, and refuses to push while an unrelated PR remains open or an issue is not covered by a standard closing keyword in `origin/main..HEAD`. An already-open PR for the current branch is allowed so it can be updated. The command then verifies that the acceptance record is tracked, rebuilds the npm package, compares both hashes, and only then executes a non-force push of the current branch. Direct pushes to `main` remain prohibited. Any packaged-file change after acceptance invalidates the hash and blocks the next push until the owner retests a regenerated candidate.
+Create/update the pull request, satisfy required checks, squash-merge, fetch, and fast-forward local `main`.
 
-Open a pull request, satisfy the required checks, and squash-merge. Pull-request CI repeats the acceptance verification. A content-preserving squash changes the Git commit but not the package bytes, so the accepted hash remains valid.
+Create the annotated prerelease tag, GitHub Prerelease, and exact tarball asset:
 
-## Complete the GitHub source release
+```sh
+npm run prerelease:release
+```
 
-From a clean, fast-forwarded `main` worktree whose `HEAD` exactly equals `origin/main`:
+Publish npm through the repository-controlled channel command:
+
+```sh
+npm run prerelease:publish
+```
+
+The command derives `dev`, `beta`, or `next` from the package version. `prepublishOnly` rejects an incorrect or implicit `latest` tag and rechecks the package, GitHub prerelease, exact commit, and candidate acceptance.
+
+## 5. Activate the published prerelease and begin soak
+
+From the exact accepted source checkout, the owner runs:
+
+```sh
+npm run prerelease:install -- --allow-worker-deploy
+```
+
+This command verifies that the npm registry tarball SHA-1/SHA-512 and dist-tag match the locally accepted candidate, installs that exact published version globally, updates the Worker and login daemon, verifies both versions, and writes an owner-only `npm-prerelease` activation record. The formal soak clock starts from this activation record, not from a local unpublished candidate.
+
+Use the prerelease normally. Exercise the changed areas under real workloads. A crash, authorization anomaly, data-loss risk, repeated relay failure, incorrect service lifecycle, significant compatibility regression, or security/privacy defect is blocking.
+
+When a blocking problem is found:
+
+1. fix it on a new branch;
+2. increment `beta.n` or `rc.n`;
+3. regenerate and reactivate the exact candidate;
+4. repeat live verification and prerelease publication;
+5. install the new published prerelease;
+6. restart the full minimum soak interval.
+
+Never edit or replace an already published prerelease version.
+
+## 6. Record successful soak
+
+After the minimum interval and adequate real use, the owner reports that no blocking issue remains. The coding agent records that explicit result with the exact phrase printed by the command, for example:
+
+```sh
+npm run prerelease:soak:accept -- --confirm "I SOAK-TESTED machine-bridge-mcp 3.0.0-beta.1 FOR AT LEAST 7d WITH NO BLOCKING ISSUES"
+```
+
+The command verifies:
+
+- the installed activation came from the published npm prerelease, not a local candidate;
+- the published npm hashes and dist-tag match the accepted tarball;
+- the GitHub release is marked prerelease;
+- the required elapsed time has passed;
+- the promotion-content digest still matches;
+- no blocking issue is recorded.
+
+It writes `release-soak/v<stable-version>.json`. This record is reviewable, contains no private machine path, and is excluded from the npm package.
+
+## 7. Promote to stable
+
+Create a stable-promotion branch. Change only synchronized release metadata from `x.y.z-beta.n` or `x.y.z-rc.n` to `x.y.z`, retain the same functional package content, add the tracked soak record, and update release wording only where it is normalized by the promotion digest.
+
+Any source, runtime, dependency, packaged documentation, script, policy, browser-extension behavior, or Worker behavior change causes `release:soak:verify` to fail. Such a change requires a new prerelease and a new soak period.
+
+Verify the promotion:
+
+```sh
+npm run release:soak:verify
+npm run check
+npm run release:candidate
+```
+
+The owner activates the exact stable candidate with the same persistent command:
+
+```sh
+npm run release:candidate:activate -- --allow-worker-deploy
+```
+
+The coding agent verifies the live stable candidate and records its exact acceptance. Then commit, push with `npm run github:push`, merge, and run:
 
 ```sh
 npm run release
+npm run stable:publish
 ```
 
-`npm run release` never pushes `main`. `release:publish` remains a compatibility alias. It verifies the interactive candidate acceptance, runs the complete project and version checks, requires successful exact-commit push runs for CI, CodeQL, Governance, and Scorecard, creates or verifies the annotated version tag, pushes only the version tag when absent, builds the npm tarball, creates or updates the final GitHub Release, uploads the tarball, and verifies the resulting state.
+`npm run release` creates the final annotated tag and GitHub Release only after the soak record, promotion digest, exact candidate acceptance, exact `origin/main`, and all required push-triggered checks pass. `stable:publish` always uses `latest` and repeats the same gates.
 
-To verify an already completed source release without changing anything:
+## Rollback and recovery
 
-```sh
-npm run release:check
-```
+Candidate and prerelease activation retain the previous global installation metadata, but rollback across a state or protocol migration is not assumed safe. If activation fails:
 
-To create GitHub Release records for historical remote tags that lack releases:
+- preserve the state root and service logs;
+- do not delete locks or edit versions by hand;
+- inspect `machine-mcp service status`, `machine-mcp status`, and `machine-mcp doctor` using the intended runtime;
+- fix forward when Worker/state protocol has changed;
+- restore a complete pre-upgrade backup only when package, Worker, browser extension, service definition, and local state can be restored as one unit.
 
-```sh
-npm run release:backfill
-```
+The activation state machine verifies candidate relay readiness before service handoff and cleans up its temporary runtime and locks on installation failure. A failure after the Worker has changed is reported explicitly rather than hidden by an unsafe automatic downgrade.
 
-Backfill is historical metadata repair. It does not retroactively claim that releases predating the 1.2.8 acceptance policy had a recorded local acceptance.
+## External credentials and controls
 
-## Publish npm
+Live npm publication, global installation, and Worker/service replacement require explicit owner authorization. Repository automation does not infer that authorization from a version change.
 
-Only after `release:check` succeeds:
+Required external controls remain:
 
-```sh
-npm publish --access public
-```
+- authenticated local `git`/`gh` access;
+- npm package-owner or maintainer access;
+- Cloudflare account protection;
+- successful exact-commit CI, CodeQL, Governance, and Scorecard;
+- protected npm publication credentials or trusted publishing when configured.
 
-`prepublishOnly` repeats the complete checks and GitHub synchronization check. npm publication remains a deliberate release-operator action and is not authorized by an ordinary source change.
-
-## Authentication and external controls
-
-Required local access:
-
-- Git push access to `origin` for the accepted branch and version tag;
-- an authenticated GitHub CLI session with pull-request and release permission;
-- an npm account that owns the package or has maintainer permission for the separate registry publication step.
-
-GitHub Actions remains a required cross-platform boundary. Missing, pending, cancelled, skipped, failed, pull-request-only, stale, or wrong-commit runs do not satisfy release publication. Observed local candidate acceptance and successful GitHub checks are complementary evidence; neither substitutes for the other.
-
-The preferred registry target remains npm trusted publishing from a narrowly scoped GitHub Actions workflow using OIDC and a protected GitHub environment. Enabling it requires package-owner configuration in npm and a reviewed workflow change. Until then, never place an npm token in repository files, workflow YAML, logs, local acceptance records, or project notes.
+Never place npm, GitHub, Cloudflare, OAuth, account, or device credentials in source files, workflow YAML, acceptance/soak records, logs, screenshots, or project notes.

@@ -28,7 +28,7 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
       stdio: ["ignore", stdoutFd, stderrFd],
       windowsHide: true,
       shell: false,
-      env: recoveryToken ? { ...process.env, MBM_RECOVERY_LOCK_TOKEN: recoveryToken } : process.env,
+      env: managedRunnerEnvironment({ fullEnv: options.fullEnv === true, recoveryToken, source: options.env || process.env }),
     });
   } finally {
     if (stdoutFd !== undefined) closeSync(stdoutFd);
@@ -70,4 +70,16 @@ function readRunnerOwner(dir, fallback = {}) {
   } catch {
     return { ...fallback };
   }
+}
+
+export function managedRunnerEnvironment({ fullEnv = false, recoveryToken = "", source = process.env } = {}) {
+  const env = fullEnv ? { ...source } : {};
+  if (!fullEnv) {
+    for (const key of ["PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP"]) {
+      if (typeof source[key] === "string" && source[key]) env[key] = source[key];
+    }
+  }
+  if (recoveryToken) env.MBM_RECOVERY_LOCK_TOKEN = recoveryToken;
+  else delete env.MBM_RECOVERY_LOCK_TOKEN;
+  return env;
 }

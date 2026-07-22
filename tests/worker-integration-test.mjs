@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
+import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
 import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
 
 let daemonInstanceSequence = 0;
@@ -21,6 +21,7 @@ const OWNER_PASSWORD = `integration_owner_${"A".repeat(43)}`;
 const REVIEWER_PASSWORD = `integration_reviewer_${"B".repeat(43)}`;
 const EDITOR_PASSWORD = `integration_editor_${"E".repeat(43)}`;
 const DAEMON_DEVICE_IDENTITY = createDeviceIdentity();
+const DAEMON_SESSION_IDENTITY = createDeviceSessionIdentity(DAEMON_DEVICE_IDENTITY, base, "machine-bridge-mcp", pkg.version);
 const args = [
   "dev",
   "--local",
@@ -28,7 +29,6 @@ const args = [
   "--port", String(port),
   "--persist-to", persistDir,
   "--show-interactive-dev-session=false",
-  "--var", "ACCOUNT_ADMIN_SECRET:integration-admin-secret",
   "--var", `DAEMON_DEVICE_PUBLIC_KEY:${publicDeviceJwkJson(DAEMON_DEVICE_IDENTITY)}`,
   "--var", "OAUTH_TOKEN_VERSION:integration-token-version",
   "--var", "MBM_ALLOWED_ORIGINS:http://localhost:3001",
@@ -430,9 +430,10 @@ try {
   });
   ownerAccessToken = replacementOwnerCredentials.accessToken;
 
+  const reviewerRegistration = await registerTestClient({ base, redirectUri, name: "Reviewer Integration Client" });
   const reviewerCredentials = await issueAccountToken({
     base,
-    clientId: registration.body.client_id,
+    clientId: reviewerRegistration.client_id,
     redirectUri,
     accountName: "reviewer",
     password: REVIEWER_PASSWORD,
@@ -440,9 +441,10 @@ try {
   });
   const reviewerToken = reviewerCredentials.accessToken;
   const reviewerRefreshToken = reviewerCredentials.refreshToken;
+  const editorRegistration = await registerTestClient({ base, redirectUri, name: "Editor Integration Client" });
   const editorCredentials = await issueAccountToken({
     base,
-    clientId: registration.body.client_id,
+    clientId: editorRegistration.client_id,
     redirectUri,
     accountName: "editor",
     password: EDITOR_PASSWORD,
@@ -541,7 +543,7 @@ try {
   assert(toolsWithoutDaemon.length === 1 && toolsWithoutDaemon[0].name === "server_info", "disconnected Worker advertised unavailable local tools");
 
   const oneTimePreflightHeaders = createDaemonPreflightHeaders(
-    DAEMON_DEVICE_IDENTITY,
+    DAEMON_SESSION_IDENTITY,
     base,
     "machine-bridge-mcp",
     pkg.version,
@@ -918,7 +920,7 @@ try {
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: reviewerRefreshToken,
-      client_id: registration.body.client_id,
+      client_id: reviewerRegistration.client_id,
       resource: `${base}/mcp`,
     }),
   });
@@ -986,8 +988,10 @@ try {
     type: "tool_result", id: editorOverviewRelay.id, ok: true,
     result: {
       workspace: "/synthetic/workspace", workspaceName: "workspace", gitRoot: "",
-      policy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
-      tools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      policy: { profile: "custom", origin: "effective", revision: 5, allowWrite: true, allowExec: false, execMode: "off", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false },
+      tools: ["server_info", "project_overview", "list_dir", "read_file", "write_file"],
+      daemonPolicy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      daemonTools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
       topLevel: [],
     },
   }));
@@ -1029,6 +1033,16 @@ try {
   await Promise.race([closed, sleep(3000)]);
   terminate(child, "SIGKILL");
   await rm(persistDir, { recursive: true, force: true }).catch(() => {});
+}
+
+async function registerTestClient({ base, redirectUri, name }) {
+  const registration = await fetchJson(`${base}/oauth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: name, redirect_uris: [redirectUri] }),
+  });
+  assert(registration.response.status === 200, `test client registration failed: ${registration.response.status}`);
+  return registration.body;
 }
 
 async function issueAccountToken({ base, clientId, redirectUri, accountName, password, state }) {
@@ -1074,7 +1088,7 @@ async function issueAccountToken({ base, clientId, redirectUri, accountName, pas
 }
 
 async function connectDaemon(origin, headers = createDaemonPreflightHeaders(
-  DAEMON_DEVICE_IDENTITY,
+  DAEMON_SESSION_IDENTITY,
   origin,
   "machine-bridge-mcp",
   pkg.version,
@@ -1118,7 +1132,7 @@ async function sendDaemonHello(socket, tools, policy = defaultDaemonPolicy(), in
 
 async function beginDaemonHello(socket, tools, policy = defaultDaemonPolicy(), instanceId = nextDaemonInstanceId()) {
   const handshake = waitForWsMessageSequence(socket, ["hello_ack", "relay_probe"]);
-  const authentication = await createDaemonAuthentication(DAEMON_DEVICE_IDENTITY, socket.mbmWelcome, instanceId);
+  const authentication = await createDaemonAuthentication(DAEMON_SESSION_IDENTITY, socket.mbmWelcome, instanceId);
   socket.send(JSON.stringify({
     type: "hello",
     instance_id: instanceId,
@@ -1271,7 +1285,8 @@ function withTimeout(promise, timeoutMs, label) {
 async function waitForWorker(origin, processHandle, closedPromise) {
   let consecutiveHealthy = 0;
   let latestBody = null;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
     if (processHandle.exitCode !== null) {
       const result = await closedPromise;
       throw new Error(`wrangler exited before readiness: ${JSON.stringify(result)}`);
@@ -1293,7 +1308,7 @@ async function waitForWorker(origin, processHandle, closedPromise) {
     }
     await sleep(150);
   }
-  throw new Error("wrangler dev did not become stably ready");
+  throw new Error(`wrangler dev did not become stably ready within 30s (exitCode=${processHandle.exitCode}, signalCode=${processHandle.signalCode})`);
 }
 
 
@@ -1303,7 +1318,7 @@ function adminRequest(method, pathname, body) {
     method,
     headers: {
       ...accountAdminRequestHeaders({
-        secret: "integration-admin-secret",
+        sessionIdentity: DAEMON_SESSION_IDENTITY,
         origin: new URL(base).origin,
         method,
         pathname,

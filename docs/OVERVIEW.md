@@ -4,7 +4,7 @@ Machine Bridge is one local authority surface with two MCP transports. The archi
 
 1. **Who may request an operation?** Remote OAuth account/client identity and role, or the local process identity that launched stdio.
 2. **Which tools are exposed?** The shared tool catalog, policy profile, and account-role intersection.
-3. **Is this remote effect currently authorized?** Direct authenticated-owner authority within the daemon ceiling, automatic delegated workspace-safe behavior, or an account/client-bound delegated capability lease.
+3. **Is this remote effect inside the current authority?** The daemon ceiling, account role, trusted client, account version, refresh family, operation invariants, and object owner must all agree.
 4. **What can an authorized tool actually do?** The local runtime, workspace/path rules, operating-system user authority, and platform security controls.
 
 Transport authentication does not create an operating-system sandbox. The local daemon executes with the authority of its OS user.
@@ -15,7 +15,7 @@ Transport authentication does not create an operating-system sandbox. The local 
 flowchart LR
   HC[Hosted MCP client] -->|HTTPS + OAuth 2.1 / PKCE| W[Cloudflare Worker]
   W --> DO[Durable Object room]
-  DO -->|P-256 device-authenticated WebSocket| R[LocalRuntime]
+  DO -->|root-certified ephemeral P-256 session| R[LocalRuntime]
 
   LC[Local MCP client] -->|stdio| S[stdio adapter]
   S --> R
@@ -42,9 +42,9 @@ flowchart LR
 
 1. The Worker validates OAuth client, token, account state, role, resource binding, and MCP session state.
 2. The Worker filters advertised tools by account role and the daemon-reported capability ceiling.
-3. The Durable Object relays a bounded tool envelope carrying account and OAuth client identity over the device-authenticated daemon socket.
+3. The Durable Object relays a bounded tool envelope carrying account, account-version, OAuth-client, refresh-family, and role identity over the root-certified ephemeral daemon socket.
 4. The local runtime revalidates account authorization, policy, call lifecycle, timeout, and cancellation.
-5. The local transaction gate directly permits authenticated owner work within the daemon ceiling; delegated accounts receive automatic workspace-safe behavior or require a matching bounded capability lease for a high-impact effect.
+5. The local authority gate permits work only inside the immutable role ceiling. Consequential effects are classified for hard enforcement and audit; they never create a temporary elevation path.
 6. The selected local service executes with the daemon OS user's authority.
 
 The Worker never receives ambient filesystem or process authority. It receives only explicit request/result messages.
@@ -68,7 +68,7 @@ Local and Worker code consume these contracts. Generated references and drift te
 `LocalRuntime` is an orchestrator, not a low-level implementation module. It composes:
 
 - policy and account authorization;
-- authenticated-owner direct authority plus delegated effect classification and local capability leases;
+- request-scoped effective authority, hard role ceilings, operation classification, and principal-bound object ownership;
 - call registration, timeout, cancellation, and observability;
 - workspace and path services;
 - direct and shell process execution;
@@ -82,9 +82,9 @@ Low-level responsibilities remain in focused modules. Architecture tests enforce
 
 ## State and lifecycle
 
-Each canonical workspace has independent profile state, Worker identity, credentials, local capability leases, locks, service metadata, and managed jobs. State mutations use owner-only files where supported, bounded reads, atomic replacement, and process-identity-aware locks.
+Each canonical workspace has independent profile state, Worker identity, trusted clients, account/token state, legacy-lease cleanup state, audit-chain state, locks, service metadata, and managed jobs. State mutations use owner-only files where supported, bounded reads, atomic replacement, and process-identity-aware locks.
 
-The relay distinguishes signed preflight, challenge authentication, readiness probing, and active service. A candidate daemon must prove possession of the enrolled P-256 key and complete an end-to-end probe before replacing an incumbent. Disconnect cancels relay-owned calls and terminates associated local processes.
+The relay distinguishes a root-certified ephemeral session, signed preflight, challenge authentication, readiness probing, and active service. A candidate daemon must prove possession of the certified session key and complete an end-to-end probe before replacing an incumbent. Disconnect cancels relay-owned calls and terminates associated local processes.
 
 Managed jobs use a separate durable lifecycle. Their plans are integrity-bound, runners are process-identity checked, transitions are lock-protected, terminal plans are scrubbed, and recovery is bounded.
 

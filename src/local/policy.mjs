@@ -111,6 +111,25 @@ export function normalizePolicy(policy = {}) {
   return Object.freeze(normalized);
 }
 
+/** @param {PolicyInput} left @param {PolicyInput} right @param {{profile?: string, origin?: string}} [options] */
+export function intersectPolicies(left, right, options = {}) {
+  const a = normalizePolicy(left);
+  const b = normalizePolicy(right);
+  const rank = { off: 0, direct: 1, shell: 2 };
+  const execMode = rank[a.execMode] <= rank[b.execMode] ? a.execMode : b.execMode;
+  return Object.freeze({
+    profile: typeof options.profile === "string" && options.profile ? options.profile : "custom",
+    origin: typeof options.origin === "string" && options.origin ? options.origin : "custom",
+    revision: Math.max(a.revision, b.revision),
+    allowWrite: a.allowWrite && b.allowWrite,
+    allowExec: execMode !== "off",
+    execMode,
+    unrestrictedPaths: a.unrestrictedPaths && b.unrestrictedPaths,
+    minimalEnv: a.minimalEnv || b.minimalEnv,
+    exposeAbsolutePaths: a.exposeAbsolutePaths && b.exposeAbsolutePaths,
+  });
+}
+
 /** @param {PolicyCapabilities} left @param {PolicyCapabilities} right */
 export function policyCapabilitiesEqual(left, right) {
   return left.allowWrite === right.allowWrite

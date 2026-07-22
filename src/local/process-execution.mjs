@@ -6,6 +6,7 @@ import { executionEnv, workspaceShellCommand } from "./shell.mjs";
 import { MAX_COMMAND_BYTES, validateArgv } from "./process-contract.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { BridgeError } from "./errors.mjs";
+import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
 import { processFailureMessage, publicProcessToolResult } from "./process-result-projection.mjs";
@@ -19,8 +20,7 @@ import {
   PUBLIC_PROCESS_INLINE_OUTPUT_BYTES,
 } from "./execution-limits.mjs";
 
-const PROCESS_OUTPUT_CAPTURE = Symbol("process-output-capture");
-const CONTINUATION_READ_BYTES = 64 * 1024;
+const PROCESS_OUTPUT_CAPTURE = Symbol("process-output-capture"); const CONTINUATION_READ_BYTES = 64 * 1024;
 
 function spawnDirectProcess(command, args, options) {
   // Keep the production child_process API call structurally separate from the
@@ -35,10 +35,11 @@ function spawnDirectProcess(command, args, options) {
 }
 
 export class ProcessExecutionService {
-  constructor({ workspace, policy, policyGate, runtimeDir, processTracker, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, retainCompletedOutput = null, spawnProcess = spawnDirectProcess, terminateProcess = terminateProcessTreeWithEscalation }) {
+  constructor({ workspace, policy, policyGate, policyForContext = null, runtimeDir, processTracker, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, retainCompletedOutput = null, spawnProcess = spawnDirectProcess, terminateProcess = terminateProcessTreeWithEscalation }) {
     this.workspace = workspace;
     this.policy = policy;
     this.policyGate = policyGate;
+    this.policyForContext = typeof policyForContext === "function" ? policyForContext : () => this.policy;
     this.runtimeDir = runtimeDir;
     this.processTracker = processTracker;
     this.resolveExistingPath = resolveExistingPath;
@@ -53,7 +54,7 @@ export class ProcessExecutionService {
   async runDirect(args, context = {}) {
     this.policyGate.assert("run_process");
     const argv = validateArgv(args.argv);
-    const cwd = await this.resolveExistingPath(args.cwd || ".");
+    const cwd = await this.resolveExistingPath(args.cwd || ".", context);
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "cwd is not a directory");
     const result = await this.runPublic(
       argv[0], argv.slice(1),
@@ -67,14 +68,14 @@ export class ProcessExecutionService {
     this.policyGate.assert("run_local_command");
     const command = await this.resolveLocalCommand(args, context);
     const argv = validateArgv(command.argv);
-    const cwd = await this.resolveExistingPath(command.cwd);
+    const cwd = await this.resolveExistingPath(command.cwd, context);
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "registered command cwd is not a directory");
     const requested = args.timeout_seconds === undefined
       ? command.timeoutSeconds
       : clampInteger(args.timeout_seconds, command.timeoutSeconds, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS);
     const timeoutSeconds = Math.min(requested, command.timeoutSeconds);
     const result = await this.runPublic(argv[0], argv.slice(1), timeoutSeconds * 1000, context, cwd);
-    return publicProcessToolResult({ name: command.name, cwd: this.displayPath(cwd), timeout_seconds: timeoutSeconds, ...result });
+    return publicProcessToolResult({ name: command.name, cwd: this.displayPath(cwd, context), timeout_seconds: timeoutSeconds, ...result });
   }
 
   async probeShell(context = {}) {
@@ -82,6 +83,10 @@ export class ProcessExecutionService {
     return this.run(shell.cmd, shell.args, 5000, true, 64 * 1024, context);
   }
 
+  async runFixedInternal(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace) {
+    const argv = validateArgv([cmd, ...args]);
+    return this.run(argv[0], argv.slice(1), timeoutMs, allowFailure, maxOutputBytes, context, cwd, null, { internalFixed: true });
+  }
   async runShell(command, timeoutSeconds, context = {}) {
     this.policyGate.assert("exec_command");
     if (!command || typeof command !== "string") throw new BridgeError("invalid_request", "command is required");
@@ -114,7 +119,7 @@ export class ProcessExecutionService {
         command: basename(cmd), cwd,
         stdout: capture.stdout, stderr: capture.stderr,
         exitCode: result.code, startedAt, closedAt: Date.now(),
-      });
+      }, context);
       if (session) {
         continuation = {
           output_session_id: session.session_id,
@@ -155,9 +160,16 @@ export class ProcessExecutionService {
       const retainedStderr = options.retainOutput ? new ProcessOutputStream(MAX_PROCESS_SESSION_OUTPUT_BYTES) : null;
       let child;
       try {
-        child = this.spawnProcess(cmd, args, {
+        const internalFixed = options.internalFixed === true;
+        const launch = internalFixed
+          ? { command: cmd, args }
+          : delegatedProcessCommand({ command: cmd, args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
+        child = this.spawnProcess(launch.command, launch.args, {
           cwd,
-          env: executionEnv(this.workspace, { fullEnv: this.policy.minimalEnv === false, runtimeDir: this.runtimeDir }),
+          env: executionEnv(this.workspace, {
+            fullEnv: internalFixed ? false : this.policyForContext(context).minimalEnv === false,
+            runtimeDir: this.runtimeDir,
+          }),
           detached: process.platform !== "win32",
           windowsHide: true,
           shell: false,

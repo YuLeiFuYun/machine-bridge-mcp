@@ -55,7 +55,11 @@ export function reviewedOperationToolNames() {
 
 export async function classifyOperation(tool, args = {}, options = {}) {
   const name = String(tool || "");
+  if (name === "list_local_resources") return requirement("sensitive-read", "protected local resource inventory", name, {});
   if (SHELL_TOOLS.has(name)) return requirement("shell", "remote shell or process control", name, args);
+  if ((name === "stage_job" || name === "start_job") && jobUsesProtectedResources(args)) {
+    return requirement(["persistent-job", "sensitive-read"], "managed job using protected local resources", name, protectedJobProjection(args));
+  }
   if (PERSISTENT_TOOLS.has(name)) return requirement("persistent-job", "persistent managed job", name, args);
   if (name === "operate_local_application" && args.value_resource) {
     return requirement(["application-control", "data-export"], "desktop application control using protected local data", name, {
@@ -113,6 +117,19 @@ export async function classifyOperation(tool, args = {}, options = {}) {
   return null;
 }
 
+function jobUsesProtectedResources(args) {
+  const steps = [...(Array.isArray(args?.steps) ? args.steps : []), ...(Array.isArray(args?.finally_steps) ? args.finally_steps : [])];
+  return steps.some((step) => Boolean(step?.stdin_resource) || (step?.env_resources && Object.keys(step.env_resources).length > 0));
+}
+
+function protectedJobProjection(args) {
+  const steps = [...(Array.isArray(args?.steps) ? args.steps : []), ...(Array.isArray(args?.finally_steps) ? args.finally_steps : [])];
+  return {
+    step_count: steps.length,
+    resource_reference_count: steps.reduce((count, step) => count + (step?.stdin_resource ? 1 : 0) + Object.keys(step?.env_resources || {}).length, 0),
+  };
+}
+
 function requirement(scopes, category, tool, target) {
   const normalized = normalizeScopes(Array.isArray(scopes) ? scopes : [scopes]);
   if (!normalized.length) throw new Error("operation approval requirement is missing a scope");
@@ -121,7 +138,18 @@ function requirement(scopes, category, tool, target) {
     scopes: normalized,
     category,
     targetHash: createHash("sha256").update(JSON.stringify({ tool, target: redactTarget(target) })).digest("hex"),
+    canonicalTargets: canonicalTargetPaths(target),
   };
+}
+
+function canonicalTargetPaths(target) {
+  if (!target || typeof target !== "object") return [];
+  const values = [];
+  if (typeof target.path === "string" && path.isAbsolute(target.path)) values.push(path.resolve(target.path));
+  if (Array.isArray(target.paths)) {
+    for (const value of target.paths) if (typeof value === "string" && path.isAbsolute(value)) values.push(path.resolve(value));
+  }
+  return [...new Set(values)];
 }
 
 function normalizeScopes(scopes) {

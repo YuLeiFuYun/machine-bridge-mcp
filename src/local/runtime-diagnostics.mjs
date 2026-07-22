@@ -11,6 +11,7 @@ export async function diagnoseRuntime({
   runProcess,
   probeShell,
   managedJobManager,
+  relayStatus = () => null,
   throwIfCancelled,
 }, context = {}) {
   throwIfCancelled(context);
@@ -23,6 +24,25 @@ export async function diagnoseRuntime({
     ok: policy.execMode === "direct" || policy.execMode === "shell",
     detail: `profile=${policy.profile}; exec_mode=${policy.execMode}; unrestricted_paths=${policy.unrestrictedPaths}`,
   }];
+
+  const relay = typeof relayStatus === "function" ? relayStatus() : null;
+  checks.push(relay ? {
+    layer: "remote-relay",
+    ok: relay.ready === true,
+    network_route: relay.network_route || "unknown",
+    network_route_scope: relay.network_route_scope || "unknown",
+    outage_active: relay.outage_active === true,
+    outage_count: Number(relay.outage_count) || 0,
+    last_close_category: relay.last_close_category || null,
+    last_close_code: Number.isFinite(Number(relay.last_close_code)) ? Number(relay.last_close_code) : null,
+    last_transport_error_class: relay.last_transport_error_class || null,
+    last_disconnected_at: relay.last_disconnected_at || null,
+    last_ready_at: relay.last_ready_at || null,
+    last_ready_duration_ms: Number(relay.last_ready_duration_ms) || 0,
+    next_reconnect_in_ms: Number(relay.next_reconnect_in_ms) || 0,
+  } : {
+    layer: "remote-relay", ok: false, skipped: true, transport: "stdio-or-local",
+  });
 
   const probe = join(runtimeDir, `.diagnostic-${process.pid}-${randomBytes(6).toString("hex")}`);
   try {
@@ -82,6 +102,7 @@ export async function diagnoseRuntime({
     interpretation: {
       tool_call_blocked_before_response: "host/platform or connector gateway",
       diagnostic_reached_daemon_but_spawn_failed: "local OS, endpoint security, shell configuration, or Machine Bridge policy",
+      system_network_stack_scope: "application proxy selection only; an operating-system VPN or TUN may still intercept the relay connection",
       managed_job_accepted_then_later_tools_blocked: "job continues independently; inspect with local CLI or a later read_job call",
     },
     policy,

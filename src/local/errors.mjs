@@ -6,6 +6,9 @@ const ERROR_CODES = new Set([
 ]);
 
 const RETRYABLE_CODES = new Set(["timeout", "network_error", "unavailable"]);
+const MAX_PUBLIC_ERROR_MESSAGE_CHARS = 2000;
+const MAX_PUBLIC_ERROR_DETAILS_BYTES = 512 * 1024;
+const UNSAFE_ERROR_CONTROLS = /[\u0000-\u001f\u007f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
 export class BridgeError extends Error {
   constructor(code, message, options = {}) {
@@ -29,7 +32,7 @@ export function normalizeBridgeError(error, options = {}) {
       : safeFallbackMessage(error, code);
   return new BridgeError(code, message, {
     cause: error instanceof Error ? error : undefined,
-    expose: options.expose !== false,
+    expose: options.expose === true,
     retryable: options.retryable,
   });
 }
@@ -50,11 +53,12 @@ export function errorCode(error, fallback = "execution_failed") {
 
 export function publicError(error, options = {}) {
   const normalized = normalizeBridgeError(error, options);
+  const details = normalized.expose ? publicErrorDetails(normalized.details) : undefined;
   return {
     code: normalized.code,
-    message: normalized.expose ? normalized.message : defaultMessage(normalized.code),
+    message: publicErrorMessage(normalized.expose ? normalized.message : defaultMessage(normalized.code)),
     retryable: normalized.retryable,
-    ...(normalized.expose && normalized.details ? { details: normalized.details } : {}),
+    ...(details ? { details } : {}),
   };
 }
 
@@ -105,4 +109,22 @@ function defaultMessage(code) {
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function publicErrorMessage(value) {
+  const normalized = String(value || "").replace(UNSAFE_ERROR_CONTROLS, " ").replace(/\s+/g, " ").trim();
+  return (normalized || "operation failed").slice(0, MAX_PUBLIC_ERROR_MESSAGE_CHARS);
+}
+
+function publicErrorDetails(value) {
+  if (!isRecord(value)) return undefined;
+  try {
+    const serialized = JSON.stringify(value, (_key, current) => {
+      if (["bigint", "function", "symbol", "undefined"].includes(typeof current)) throw new TypeError("unsupported error detail");
+      if (typeof current === "number" && !Number.isFinite(current)) throw new TypeError("unsupported error detail");
+      return current;
+    });
+    if (!serialized || Buffer.byteLength(serialized) > MAX_PUBLIC_ERROR_DETAILS_BYTES) return undefined;
+    return JSON.parse(serialized);
+  } catch { return undefined; }
 }

@@ -13,6 +13,8 @@ import { runNetworkCommand } from "./network-retry.mjs";
 import { requireSuccessfulWorkflowRun } from "./release-ci.mjs";
 import { tagSyncError } from "./release-state.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
+import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
+import { verifyCurrentStableSoak } from "./release-soak.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -179,7 +181,9 @@ function releaseInfo(tag) {
 
 function assertCoreSync({ requireReleaseAsset }) {
   const pkg = packageMetadata();
+  const parsedVersion = parseReleaseVersion(pkg.version);
   assertLocalAcceptance();
+  if (requiresSoakForStable(pkg.version)) assertStableSoak();
   const tag = `v${pkg.version}`;
   const head = output("git", ["rev-parse", "HEAD"]);
   const originMain = output("git", ["rev-parse", "origin/main"]);
@@ -197,8 +201,10 @@ function assertCoreSync({ requireReleaseAsset }) {
   if (remoteTagError) fail(remoteTagError);
 
   const release = releaseInfo(tag);
-  if (!release || release.isDraft || release.isPrerelease) {
-    fail(`published GitHub Release ${tag} is missing or not final`);
+  if (!release || release.isDraft || release.isPrerelease !== parsedVersion.prerelease) {
+    fail(parsedVersion.prerelease
+      ? `published GitHub prerelease ${tag} is missing or not marked as prerelease`
+      : `published GitHub Release ${tag} is missing or not final`);
   }
 
   if (requireReleaseAsset) {
@@ -250,7 +256,7 @@ function normalizePackRecord(value, packageName) {
   return Object.values(value).find((item) => item && typeof item === "object") ?? null;
 }
 
-function ensureRelease(tag, version, assetPath, latest) {
+function ensureRelease(tag, version, assetPath, { latest, prerelease }) {
   const temp = dirname(assetPath);
   const notes = writeNotesFile(temp, version);
   const existing = releaseInfo(tag);
@@ -266,6 +272,7 @@ function ensureRelease(tag, version, assetPath, latest) {
       "--title",
       title,
       latest ? "--latest" : "--latest=false",
+      prerelease ? "--prerelease" : "--prerelease=false",
     ];
     if (notes) args.push("--notes-file", notes);
     else args.push("--generate-notes");
@@ -279,13 +286,14 @@ function ensureRelease(tag, version, assetPath, latest) {
       "--title",
       title,
       latest ? "--latest" : "--latest=false",
+      prerelease ? "--prerelease" : "--prerelease=false",
       ...(notes ? ["--notes-file", notes] : []),
     ]);
     runNetwork("gh", ["release", "upload", tag, assetPath, "--clobber"]);
   }
 }
 
-function publishCurrent() {
+function publishCurrent({ prereleaseMode = false } = {}) {
   ensureClean();
   fetchRemote();
 
@@ -293,6 +301,13 @@ function publishCurrent() {
   if (branch !== "main") fail(`release must run from main, not ${branch || "detached HEAD"}`);
 
   const pkg = packageMetadata();
+  const parsedVersion = parseReleaseVersion(pkg.version);
+  if (prereleaseMode !== parsedVersion.prerelease) {
+    fail(parsedVersion.prerelease
+      ? "prerelease versions must use npm run prerelease:release"
+      : "stable versions must use npm run release");
+  }
+  if (!parsedVersion.prerelease && requiresSoakForStable(pkg.version)) assertStableSoak();
   const tag = `v${pkg.version}`;
   if (!changelogBody(pkg.version)) {
     fail(`CHANGELOG.md has no section for ${pkg.version}`);
@@ -329,13 +344,27 @@ function publishCurrent() {
   const temp = mkdtempSync(join(tmpdir(), "machine-bridge-mcp-release-"));
   try {
     const assetPath = packReleaseAsset(temp, pkg);
-    ensureRelease(tag, pkg.version, assetPath, true);
+    ensureRelease(tag, pkg.version, assetPath, {
+      latest: !parsedVersion.prerelease,
+      prerelease: parsedVersion.prerelease,
+    });
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
 
   fetchRemote();
   assertCoreSync({ requireReleaseAsset: true });
+}
+
+function assertStableSoak() {
+  try {
+    const result = verifyCurrentStableSoak(root);
+    if (result.required) {
+      console.log(`Stable promotion matches soaked ${result.record.prerelease_version} (${result.promotionDigest}).`);
+    }
+  } catch (error) {
+    fail(String(error?.message || error));
+  }
 }
 
 function assertLocalAcceptance() {
@@ -405,9 +434,11 @@ if (mode === "--check") {
   fetchRemote();
   assertCoreSync({ requireReleaseAsset: true });
 } else if (mode === "--publish") {
-  publishCurrent();
+  publishCurrent({ prereleaseMode: false });
+} else if (mode === "--publish-prerelease") {
+  publishCurrent({ prereleaseMode: true });
 } else if (mode === "--backfill") {
   backfillMissingReleases();
 } else {
-  fail("usage: node scripts/github-release.mjs [--check|--publish|--backfill]");
+  fail("usage: node scripts/github-release.mjs [--check|--publish|--publish-prerelease|--backfill]");
 }

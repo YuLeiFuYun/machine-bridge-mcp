@@ -3,10 +3,10 @@ import { normalizeLogLevel } from "./log.mjs";
 const BOOLEAN_OPTIONS = new Set([
   "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
   "daemonOnly", "noAutostart", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
-  "yes", "keepWorker", "allowInsecurePermissions", "showPaths", "full",
+  "yes", "keepWorker", "allowInsecurePermissions", "showPaths",
 ]);
 const VALUE_OPTIONS = new Set([
-  "workspace", "stateDir", "workerName", "profile", "execMode", "client", "account", "duration", "logLevel", "logFormat",
+  "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel", "logFormat",
 ]);
 
 const LOG_FORMATS = new Set(["text", "json"]);
@@ -15,6 +15,10 @@ const COMMAND_OPTIONS = new Map(Object.entries({
   start: new Set([
     "workspace", "stateDir", "workerName", "quiet", "json", "verbose", "logLevel", "logFormat", "rotateSecrets", "forceWorker",
     "daemonOnly", "noAutostart",
+    "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
+  ]),
+  activate: new Set([
+    "workspace", "stateDir", "workerName", "quiet", "json", "verbose", "logLevel", "logFormat", "rotateSecrets", "forceWorker",
     "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
   ]),
   stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose", "quiet", "logLevel", "logFormat"]),
@@ -28,13 +32,13 @@ const COMMAND_OPTIONS = new Map(Object.entries({
   autostart: new Set(["workspace", "stateDir", "quiet"]),
   resource: new Set(["workspace", "stateDir", "allowInsecurePermissions", "showPaths", "json"]),
   account: new Set(["workspace", "stateDir", "json", "yes"]),
-  approval: new Set(["workspace", "stateDir", "json", "yes", "client", "account", "duration", "full"]),
+  approval: new Set(["workspace", "stateDir", "json", "yes"]),
   browser: new Set(["workspace", "stateDir", "json"]),
   job: new Set(["workspace", "stateDir", "json", "yes"]),
   uninstall: new Set(["stateDir", "keepWorker", "yes"]),
 }));
 
-const SINGLE_WORKSPACE_POSITIONAL_COMMANDS = new Set(["start", "stdio", "status", "doctor", "full-test", "rotate-secrets"]);
+const SINGLE_WORKSPACE_POSITIONAL_COMMANDS = new Set(["start", "activate", "stdio", "status", "doctor", "full-test", "rotate-secrets"]);
 const STATIC_POSITIONAL_RULES = new Map([
   ["client-config", Object.freeze({ max: 1, tooMany: "client-config accepts at most one positional client name" })],
   ["uninstall", Object.freeze({ max: 0, tooMany: "uninstall does not accept positional arguments" })],
@@ -42,7 +46,7 @@ const STATIC_POSITIONAL_RULES = new Map([
 const RESOURCE_POSITIONAL_LIMITS = new Map(Object.entries({ add: 3, "generate-ssh-key": 3, remove: 2, check: 2 }));
 const JOB_POSITIONAL_LIMITS = new Map(Object.entries({ read: 2, inspect: 2, cancel: 2, approve: 2, submit: 2 }));
 const ACCOUNT_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, add: 3, role: 3, enable: 2, disable: 2, "rotate-password": 2, remove: 2 }));
-const APPROVAL_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, approve: 2, grant: 2, revoke: 2, clear: 1 }));
+const APPROVAL_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, revoke: 2, clear: 1 }));
 const ACTION_POSITIONAL_RULES = new Map(Object.entries({
   workspace(args) {
     const action = String(args._[0] || "show");
@@ -50,7 +54,7 @@ const ACTION_POSITIONAL_RULES = new Map(Object.entries({
   },
   service(args) {
     const action = String(args._[0] || "status");
-    return { max: ["install", "status", "stop", "uninstall", "remove"].includes(action) ? 2 : 1, tooMany: `service ${action} received too many positional arguments`, workspaceConflictAfter: 1 };
+    return { max: ["install", "status", "stop"].includes(action) ? 2 : 1, tooMany: `service ${action} received too many positional arguments`, workspaceConflictAfter: 1 };
   },
   autostart(args) { return ACTION_POSITIONAL_RULES.get("service")(args); },
   resource(args) {
@@ -63,7 +67,7 @@ const ACTION_POSITIONAL_RULES = new Map(Object.entries({
   },
   approval(args) {
     const action = String(args._[0] || "list");
-    return { max: APPROVAL_POSITIONAL_LIMITS.get(action) ?? 1, tooMany: `approval ${action} received too many positional arguments` };
+    return { max: APPROVAL_POSITIONAL_LIMITS.get(action) ?? 2, tooMany: `approval ${action} received too many positional arguments` };
   },
   browser(args) {
     const action = String(args._[0] || "status");

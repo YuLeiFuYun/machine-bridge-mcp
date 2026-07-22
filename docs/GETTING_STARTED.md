@@ -16,7 +16,7 @@ Remote and stdio modes use the same local runtime and policy model. The remote W
 
 ## 2. Understand the authority you are granting
 
-A new workspace uses the `full` profile unless another profile is selected explicitly. `full` preserves the complete tool catalog, shell execution, paths outside the selected workspace, absolute paths, browser/application automation, and the complete parent process environment. It is intended for a trusted owner using a trusted MCP host. An authenticated owner account may use the `full` ceiling directly without terminal approval. Delegated non-owner accounts require local time-bounded capability leases for high-impact effects; their normal workspace reads/edits and project inspection remain automatic. See [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
+A new workspace uses the `full` profile unless another profile is selected explicitly. `full` preserves the complete tool catalog, shell execution, paths outside the selected workspace, absolute paths, browser/application automation, and the complete parent process environment. It is intended for a trusted owner using a trusted MCP host. Delegated accounts remain permanently inside their role ceilings; unsupported effects are denied and cannot be enabled by a terminal approval or lease. The default portable root does not access Keychain or request user presence. A separately installed and provisioned macOS trust broker may request user presence once when its Secure Enclave root signs an ephemeral daemon session. See [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
 
 For a first connection to an unfamiliar host, start with a narrower profile:
 
@@ -159,13 +159,14 @@ machine-mcp --workspace /path/to/project --profile review
 The first start performs these operations:
 
 1. canonicalizes and remembers the workspace;
-2. creates owner-only per-workspace state and credentials;
-3. opens the Wrangler/Cloudflare sign-in flow when required;
-4. deploys a Worker and Durable Object for that workspace;
-5. installs a platform-native login service unless `--no-autostart` is supplied;
-6. starts an outbound authenticated WebSocket from the local daemon to the Worker;
-7. creates the initial `owner` account when no account exists and prints its generated password once;
-8. prints the remote `/mcp` URL.
+2. creates owner-only per-workspace state and a deployment token version;
+3. retains or creates the owner-only portable device root; when `MBM_MACOS_TRUST_BROKER` explicitly selects a validated provisioned broker, performs the optional two-phase Secure Enclave enrollment and requests user presence only when that root signs the ephemeral daemon session;
+4. opens the Wrangler/Cloudflare sign-in flow when required;
+5. deploys the Worker with the active or pending root public key and verifies health before promoting a pending root;
+6. installs a platform-native login service unless `--no-autostart` is supplied;
+7. starts an outbound WebSocket authenticated by the root-certified in-memory session key;
+8. creates the initial `owner` account when no account exists and prints its generated password once;
+9. prints the remote `/mcp` URL.
 
 The foreground command remains attached to the terminal. Keep it running while testing. The remote Worker cannot execute local tools when no authenticated daemon is connected.
 
@@ -336,7 +337,7 @@ Do not point two logical trust domains at one broad parent directory merely to r
 
 ## 13. Upgrade
 
-Version 1 supports only MCP protocol `2025-11-25`; upgrade or reconnect clients that still request an older date. The current 0.18.x state schema remains valid and should be preserved.
+Version 3 supports the current MCP protocol contract advertised by the server and rejects incompatible mixed-version Worker/daemon combinations. Preserve the owner-only state root when upgrading from the immediately preceding supported release; malformed, obsolete, or ambiguous trust state fails closed instead of being guessed or silently regenerated. Follow [UPGRADING.md](UPGRADING.md) for blocked prereleases and coordinated Worker/daemon/browser-extension replacement.
 
 
 Repeat the isolated global installation, then start Machine Bridge in the target workspace:

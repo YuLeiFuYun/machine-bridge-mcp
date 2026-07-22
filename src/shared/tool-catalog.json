@@ -1915,8 +1915,8 @@
   },
   {
     "name": "stage_job",
-    "title": "Stage managed job for local approval",
-    "description": "Validate and persist a managed-job plan without starting any process. Use this when execution tools are unavailable or local operator review is required; launch later with machine-mcp job approve JOB_ID.",
+    "title": "Stage managed job draft",
+    "description": "Validate and persist a durable managed-job draft without starting any process. This is a non-executing record only; a trusted owner client starts work with start_job after reviewing or reconstructing the plan.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,

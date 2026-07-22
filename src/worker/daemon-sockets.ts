@@ -2,7 +2,6 @@ import { isLiveDaemonAttachment, withDaemonLastSeenAt, type DaemonRole } from ".
 import { sanitizeMetadataText } from "./http.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools, type DaemonPolicy } from "./policy.ts";
 import { sanitizeDaemonChallengeAttachment, type DaemonChallenge } from "./daemon-auth.ts";
-
 export interface DaemonAttachment {
   role: DaemonRole;
   connectedAt: string;
@@ -15,6 +14,9 @@ export interface DaemonAttachment {
   authIssuedAt?: number;
   authExpiresAt?: number;
   workerOrigin?: string;
+  authSessionPublicKeyJson?: string;
+  authSessionKeyId?: string;
+  authCertificateExpiresAt?: number;
 }
 
 interface WebSocketContext {
@@ -58,7 +60,12 @@ export class DaemonSocketRegistry {
     return this.context.getWebSockets().filter((socket) => this.attachment(socket)?.role !== "daemon" && socket.readyState === WebSocket.OPEN);
   }
 
-  beginCandidate(socket: WebSocket, challenge: DaemonChallenge, connectedAt = new Date().toISOString()): void {
+  beginCandidate(
+    socket: WebSocket,
+    challenge: DaemonChallenge,
+    preflight: { sessionPublicKeyJson: string; sessionKeyId: string; certificateExpiresAt: number },
+    connectedAt = new Date().toISOString(),
+  ): void {
     socket.serializeAttachment({
       role: "candidate",
       connectedAt,
@@ -66,6 +73,9 @@ export class DaemonSocketRegistry {
       authIssuedAt: challenge.issuedAt,
       authExpiresAt: challenge.expiresAt,
       workerOrigin: challenge.workerOrigin,
+      authSessionPublicKeyJson: preflight.sessionPublicKeyJson,
+      authSessionKeyId: preflight.sessionKeyId,
+      authCertificateExpiresAt: preflight.certificateExpiresAt,
     } satisfies DaemonAttachment);
   }
 

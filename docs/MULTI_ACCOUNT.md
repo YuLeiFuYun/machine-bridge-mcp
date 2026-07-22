@@ -2,30 +2,34 @@
 
 ## What isolation means
 
-Machine Bridge remote mode supports several named accounts on one workspace Worker. Each account has an independent password, role, active state, version, OAuth authorization codes, access tokens, and refresh tokens. Account changes revoke only that account's outstanding credentials.
+Remote mode supports several named accounts on one workspace Worker. Each account has an independent password verifier, role, active state, version, authorization codes, access tokens, and refresh-token families.
 
-This is application-level authorization, not operating-system isolation. All accounts ultimately reach one local daemon running as one OS user. Roles limit which Machine Bridge tools can be listed and invoked; they do not create separate filesystems, browser profiles, process namespaces, keychains, network identities, or kernel security boundaries.
+This is application-level authorization, not operating-system multi-tenancy. All accounts ultimately reach one daemon running as one OS user. Roles do not create separate filesystems, browser profiles, process namespaces, Keychains, network identities, or kernel boundaries.
 
-Use separate OS accounts, containers, VMs, state roots, Workers, and workspaces when users are mutually untrusted or require hard isolation.
+Use separate OS accounts, containers, VMs, state roots, Workers, and workspaces when users are mutually untrusted or require hard tenant isolation.
 
 ## Roles
 
-| Role | Effective local profile | Typical use |
+| Role | Effective local profile | Purpose |
 |---|---|---|
-| `reviewer` | `review` | Read-only workspace, Git, image, resource, and job inspection |
-| `editor` | `edit` | Reviewer access plus deterministic file mutation |
-| `operator` | `agent` | Editor access plus workspace-confined direct process execution and sessions |
-| `owner` | `full` | Complete capability ceiling; high-impact remote transactions additionally consume a local account/client-bound lease |
+| `reviewer` | `review` | Read-only selected-workspace inspection |
+| `editor` | `edit` | Reviewer access plus deterministic workspace file mutation |
+| `operator` | `agent` | Editor access plus behaviorally sandboxed workspace-confined direct execution |
+| `owner` | `full` | Complete bridge authority within the daemon capability ceiling |
 
-The effective tool set is the intersection of:
+Effective authority is the intersection of:
 
-1. the account role;
-2. the policy advertised by the connected local daemon;
-3. the tools actually available from that daemon.
+1. the daemon policy and available tools;
+2. the account role;
+3. the trusted OAuth client binding;
+4. the current account version and refresh-token family;
+5. ownership of any long-lived process, output session, or job.
 
-For execution, a fourth local layer distinguishes trusted owner automation from delegated access. An authenticated owner may use the daemon policy ceiling directly. A high-impact call from a reviewer, editor, or operator must also match an active capability lease bound to its `account_id` and OAuth `client_id`. This transaction layer does not remove tools from canonical `full`; it preserves least privilege for delegated credentials without interrupting the owner workflow. The Worker filters `tools/list` and rejects unauthorized calls before relay. Every accepted relay call carries `account_id`, `account_version`, `client_id`, and `role`; the local runtime validates them again before dispatch. See [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md).
+There is no temporary elevation path. A `reviewer`, `editor`, or `operator` cannot acquire `owner` capability through a local lease, approval ID, token refresh, or reconnect.
 
-Authenticated `server_info` deliberately reports both layers. `authorization.effective_policy` and `authorization.effective_tools` are authoritative for the current account. The nested `daemon.policy` and `daemon.tools` fields are only the local capability ceiling before account-role filtering; a `full` daemon does not make an `editor` account full. Remote `project_overview` uses the effective values at top-level `policy` and `tools` and preserves the daemon values as `daemonPolicy` and `daemonTools`.
+The Worker filters `tools/list` and rejects unauthorized calls before relay. Every accepted call carries account ID, account version, OAuth client ID, refresh-family ID, and role. The local runtime validates those values again before dispatch.
+
+Authenticated `server_info.authorization.effective_policy` and `effective_tools` describe the current account. `daemon.policy` and `daemon.tools` describe only the local capability ceiling; a `full` daemon does not make an `editor` account full.
 
 ## Account lifecycle
 
@@ -35,7 +39,7 @@ List accounts:
 machine-mcp account list
 ```
 
-Create an account. The generated password is displayed once and is not stored locally:
+Create an account. The generated password is displayed once:
 
 ```sh
 machine-mcp account add alice reviewer
@@ -50,28 +54,50 @@ machine-mcp account disable build-bot
 machine-mcp account enable build-bot
 ```
 
-Rotate one account's password:
+Rotate a password or remove an account:
 
 ```sh
 machine-mcp account rotate-password alice
-```
-
-Remove an account:
-
-```sh
-machine-mcp account remove alice
 machine-mcp account remove alice --yes
 ```
 
-The final active owner cannot be disabled, demoted, or removed. This prevents an accidental administrative lockout.
+The final active owner cannot be disabled, demoted, or removed.
 
-## OAuth model
+Account disablement, role changes, password rotation, and removal revoke that account's credentials by changing or deleting its account version.
 
-An OAuth `client_id` identifies client software and its registered redirect URIs. It is not an account. One OAuth client may be authorized by several Machine Bridge accounts, and one account may authorize several OAuth clients.
+## Trusted OAuth clients
 
-An authorization code records:
+An OAuth `client_id` identifies client software and redirect URIs. Registration alone has no authority.
 
-- OAuth client ID;
+The first successful account authorization binds the client to:
+
+- account ID;
+- account version;
+- role;
+- authorization time.
+
+A client cannot later authorize as a different account without first being revoked and registered again. This prevents one public client record from becoming a silent cross-account identity switch.
+
+List clients:
+
+```sh
+machine-mcp account clients
+```
+
+Revoke one client and all of its codes, access tokens, and refresh tokens:
+
+```sh
+machine-mcp account revoke-client CLIENT_ID
+machine-mcp account revoke-client CLIENT_ID --yes
+```
+
+One account may still authorize several distinct client records. Each record is independently visible and revocable.
+
+## OAuth tokens
+
+Authorization codes bind:
+
+- client ID;
 - account ID and account version;
 - role;
 - redirect URI;
@@ -79,33 +105,68 @@ An authorization code records:
 - scope and protected resource;
 - expiration.
 
-An access-token record contains the same account binding plus the deployment-wide token version and refresh-family identity. Token values are stored only as SHA-256 lookup keys. Access tokens last fifteen minutes. Refresh tokens rotate on every use, have a fourteen-day idle limit and thirty-day family limit, and leave a bounded consumed-token marker; replay of a consumed token revokes every remaining refresh and access token in that family. Account passwords are CLI-generated 256-bit tokens. The Worker stores independent salted HMAC-SHA-256 verifiers and rejects arbitrary human-chosen passwords; the token entropy, rather than a CPU-intensive dictionary-hardening loop, provides offline-guessing resistance within the Worker CPU budget.
+Access and refresh tokens additionally bind to the deployment token version and refresh-family ID. Token values are stored as SHA-256 lookup keys.
 
-At each authenticated request, the Worker verifies that the account still exists, is active, and has the same version and role recorded in the token. A password rotation, role change, suspension, or removal increments or removes that account state and invalidates only its codes and tokens.
+Access tokens last fifteen minutes. Refresh tokens rotate on every use, have a fourteen-day idle limit and thirty-day family limit, and leave bounded replay markers. Reuse of a consumed refresh token revokes the complete family, including active access tokens.
 
-`machine-mcp rotate-secrets` is intentionally broader. It rotates the account-administration HMAC key, daemon device identity, and deployment-wide token version, invalidating every account token, requiring all clients to authorize again, and requiring the matching Worker/daemon deployment to converge.
+A refresh request also verifies that the client remains bound to the current account version and role.
+
+### DPoP
+
+A capable client may bind the token family to a P-256 DPoP key. The Worker verifies the proof and requires the same key thumbprint for refresh. A copied token cannot be used without the client private key.
+
+Bearer remains available for hosts that do not implement DPoP.
+
+## Object ownership
+
+Interactive processes, retained output sessions, and managed jobs bind to:
+
+- account ID;
+- account version;
+- OAuth client ID;
+- refresh-token family ID.
+
+A different account, client, or token family cannot inspect, continue, send input to, cancel, or terminate the object.
+
+This binding prevents horizontal control between two clients authorized for the same account as well as between different accounts.
 
 ## Administrative boundary
 
-Account administration is not exposed as an MCP tool. It uses an owner-only local HMAC key to sign each CLI request over method, path, body SHA-256, timestamp, and random nonce. The key is stored only in owner-protected local state and Cloudflare Worker secrets and is never transmitted as a network bearer. The Worker consumes each nonce once through bounded Durable Object transaction state and rejects replay or malformed state. The key is never printed by `status`, sent through MCP, or used as an account password.
+Account and client administration is not exposed as an MCP tool and does not use a long-lived administration secret.
 
-The first start of a new deployment creates an `owner` account automatically and prints its generated password once. Subsequent starts do not display account passwords.
+The local CLI creates a root-certified ephemeral P-256 session. Each request signs the Worker origin, HTTP method, path, body hash, session key ID, timestamp, and nonce. The Worker verifies the root certificate, session signature, body, timestamp, and nonce replay state.
+
+The default root is portable owner-only P-256 material, including on macOS, so independent account commands do not normally prompt. When a separately provisioned broker has explicitly enrolled a Secure Enclave root, an independent account command may request user presence once. During normal daemon startup, the same in-memory session is reused for initial owner creation and relay authentication.
+
+The first start of a new deployment creates an owner account automatically and prints its generated password once. Subsequent starts do not display passwords.
+
+## Delegated execution
+
+`operator` direct execution requires a behaviorally verified OS sandbox. The sandbox must expose the selected workspace while denying the real user home, Machine Bridge state, Keychain, and desktop automation.
+
+When the platform cannot prove that boundary, operator process execution is unavailable. The runtime does not fall back to a path blacklist that only appears isolated.
+
+Browser/application control, local data export, credential operations, persistent job creation, sensitive targets, and unrestricted paths remain owner-only.
 
 ## Concurrency and revocation
 
-Pending calls remain bound to the OAuth access token and JSON-RPC request ID. Duplicate in-flight IDs under one token are rejected. Account revocation blocks new requests immediately; calls already relayed remain subject to ordinary cancellation, deadlines, local role validation, and the bounded same-daemon reconnect state machine. A replacement process cannot inherit a detached call.
+MCP sessions provide a request-ID namespace and cancellation boundary. Pending calls are bound to the authenticated token and session.
 
-A relay interruption keeps ordinary relay-owned calls alive only inside the bounded same-daemon reconnect window. Reconciliation or grace expiry cancels calls that no longer have a remote receiver and terminates their child process trees. Process promises settle on cancellation even when a child does not emit `close`; process ownership remains tracked until actual exit.
+A brief relay interruption preserves an ordinary call only within the same-daemon reconnect grace period. Reconciliation or expiry cancels calls without a receiver and terminates their child process trees. A replacement daemon process cannot claim a detached call.
+
+Revoking an account, client, or refresh family blocks new requests immediately. Already-relayed work remains subject to local ownership, cancellation, timeout, daemon lifecycle, and process cleanup.
 
 ## Audit and privacy
 
-Operational metrics identify tools and stable error classes, not account passwords, bearer tokens, arguments, command text, file content, or results. `server_info` may return the authenticated account ID, role, and version to that account so the client can verify its authorization context.
+Operational logs and the local security audit do not contain account passwords, tokens, command text, file content, form values, or results.
 
-Account names and display names are operator-selected metadata. Do not use secrets, email addresses, customer identifiers, or other unnecessary personal data in account names.
+The audit chain records salted principal references, so repeated activity can be correlated locally without storing raw account/client identifiers in each entry. `server_info` may return the current authenticated account ID, role, and version to that account.
+
+Do not use secrets, email addresses, customer identifiers, or unnecessary personal data in account names and display names.
 
 ## Deployment topology
 
-One workspace normally maps to one Worker name, one Durable Object instance, one local state profile, and one active daemon. Multiple accounts share this topology and its OS trust boundary.
+One workspace normally maps to one Worker, one Durable Object instance, one local profile, and one active daemon. Accounts share that topology and OS trust boundary.
 
 Use a separate deployment when any of these differ:
 
@@ -116,10 +177,10 @@ Use a separate deployment when any of these differ:
 - billing or incident-response boundary;
 - requirement for hard tenant isolation.
 
-Do not place several unrelated machines or mutually untrusted teams behind one broad owner deployment merely to reduce administration.
+Do not place unrelated machines or mutually untrusted teams behind one broad owner deployment merely to reduce administration.
 
 ## Security limits
 
-A `reviewer` cannot invoke mutation or process tools through Machine Bridge, but data readable by the local OS user may still be exposed by a bug, compromised dependency, or incorrectly broad workspace. An `operator` can run interpreters, package managers, compilers, and repository scripts; direct argv execution therefore remains powerful even without a shell. An `owner` has effectively the authority of the local OS user and any browser or Accessibility permissions granted to the runtime.
+A reviewer is restricted by Machine Bridge, but a bug or compromised dependency remains possible. An operator can execute interpreters and repository code inside the verified sandbox and can still damage the selected workspace. An owner has effectively the authority of the local OS user and granted browser or Accessibility permissions.
 
-Roles are useful defense in depth and targeted revocation. They are not substitutes for least-privilege OS design, sandboxing, endpoint security, Cloudflare account protection, or careful review of untrusted repositories and instructions.
+Roles, client binding, DPoP, object ownership, and targeted revocation are defense in depth. They do not replace least-privilege OS design, endpoint security, Cloudflare account protection, and careful review of untrusted repositories and instructions.

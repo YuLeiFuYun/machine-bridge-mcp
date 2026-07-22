@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
-import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "../src/local/daemon-process.mjs";
+import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
 import { isIdempotentDaemonOnlyStart, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
@@ -77,7 +77,7 @@ async function stateSelfTest() {
   };
   const legacyTokenVersion = legacyWorkerState.worker.oauthTokenVersion;
   ensureWorkerSecrets(legacyWorkerState);
-  if (!legacyWorkerState.worker.deviceIdentity || legacyWorkerState.worker.daemonSecret !== undefined) {
+  if (!legacyWorkerState.worker.deviceIdentity || legacyWorkerState.worker.daemonSecret !== undefined || legacyWorkerState.worker.accountAdminSecret !== undefined) {
     throw new Error("legacy daemon bearer state was not migrated to a device identity");
   }
   if (legacyWorkerState.worker.oauthTokenVersion === legacyTokenVersion) {
@@ -125,10 +125,9 @@ async function stateSelfTest() {
     startupAgain.release();
 
     const redacted = redactState(state);
-    if (redacted.worker.accountAdminSecret !== "<redacted>") throw new Error("accountAdminSecret was not fully redacted");
     if (redacted.worker.deviceIdentity?.privateJwk?.d !== "<redacted>") throw new Error("device private key was not fully redacted");
     if (redacted.worker.oauthTokenVersion !== "<redacted>") throw new Error("oauthTokenVersion was not fully redacted");
-    if (previewSecret(state.worker.accountAdminSecret) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
+    if (previewSecret(state.worker.oauthTokenVersion) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
     state.resources = { "private-key": { kind: "file", path: join(workspace, "private-key"), size: 10, mode: "0600" } };
     const resourceRedacted = redactState(state);
     if (resourceRedacted.resources["private-key"].path !== "<local-resource-path>") throw new Error("redacted state exposed a local resource path");
@@ -142,16 +141,32 @@ async function stateSelfTest() {
       throw new Error("current policy origin/revision was not persisted");
     }
 
+    const validStateBeforeCorruption = await readFile(state.paths.statePath);
     const backupsBefore = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
     await writeFile(state.paths.statePath, "{not-json", "utf8");
-    const recovered = loadState(workspace, { stateDir: stateRoot });
-    if (recovered.workspace.path !== canonicalWorkspace) throw new Error("corrupt state recovery failed");
+    expectThrow(() => loadState(workspace, { stateDir: stateRoot }), "workspace state recovery is required");
+    const recoveryMarker = join(state.paths.profileDir, "state.json.recovery-required");
+    if (!await existsForSelfTest(recoveryMarker)) throw new Error("corrupt workspace state did not create a persistent recovery marker");
     const backups = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
     if (backups.length !== backupsBefore.length + 1) throw new Error("corrupt state recovery did not create exactly one new backup");
     const newestBackup = backups.find(name => !backupsBefore.includes(name));
     if (!newestBackup || await readFile(join(state.paths.profileDir, newestBackup), "utf8") !== "{not-json") {
       throw new Error("corrupt state backup did not preserve the original bytes");
     }
+    expectThrow(() => loadState(workspace, { stateDir: stateRoot }), "workspace state recovery is required");
+    const backupsAfterRetry = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
+    if (backupsAfterRetry.length !== backups.length) throw new Error("recovery-required retry created another corrupt backup");
+    expectThrow(() => saveState({
+      schemaVersion: state.schemaVersion, workspace: state.workspace, paths: state.paths, worker: {},
+    }), "workspace state envelope");
+    if (!await existsForSelfTest(recoveryMarker)) throw new Error("incomplete saveState input cleared the recovery-required marker");
+    if (await existsForSelfTest(state.paths.statePath)) throw new Error("incomplete saveState input recreated state.json during recovery");
+    await writeFile(state.paths.statePath, validStateBeforeCorruption, { mode: 0o600 });
+    const restored = loadState(workspace, { stateDir: stateRoot });
+    if (restored.policy.profile !== "full" || restored.worker.deviceIdentity?.keyId !== policyPersisted.worker.deviceIdentity?.keyId) {
+      throw new Error("restored workspace state did not preserve policy or device identity");
+    }
+    if (await existsForSelfTest(recoveryMarker)) throw new Error("valid restored workspace state did not clear the recovery marker");
     await writeFile(join(stateRoot, "config.json"), "{invalid-config", { mode: 0o600 });
     const recoveredConfig = loadGlobalConfig(stateRoot);
     if (recoveredConfig.schemaVersion !== 1) throw new Error("corrupt global config did not recover to the current schema");
@@ -311,6 +326,14 @@ setInterval(() => {}, 2 ** 31 - 1);
     if (!serviceDaemon.alive || !serviceDaemon.verified_service_daemon || serviceDaemon.mode !== "service") {
       throw new Error("service daemon was not identified from current lock metadata");
     }
+    if (!workspaceDaemonOwnsPlatformAutostart(serviceDaemon)) {
+      throw new Error("verified workspace service daemon was not authorized for platform autostart takeover");
+    }
+    if (workspaceDaemonOwnsPlatformAutostart({ alive: true, verified_service_daemon: true, mode: "foreground" })
+      || workspaceDaemonOwnsPlatformAutostart({ alive: true, verified_service_daemon: false, mode: "service" })
+      || workspaceDaemonOwnsPlatformAutostart({ alive: false, verified_service_daemon: true, mode: "service" })) {
+      throw new Error("unrelated or unverified daemon state was authorized to stop machine autostart");
+    }
 
     const immediate = await acquireDaemonLockWithTakeover(state, {
       takeOverServiceOwner: false,
@@ -344,6 +367,9 @@ setInterval(() => {}, 2 ** 31 - 1);
     if (!implicitService.alive || !implicitService.verified_service_daemon || implicitService.identity_reason !== "implicit_service_command") {
       throw new Error("implicit daemon-only recovery process could not be verified for safe takeover");
     }
+    if (!workspaceDaemonOwnsPlatformAutostart(implicitService)) {
+      throw new Error("verified implicit workspace service was not authorized for platform takeover");
+    }
     const implicitStop = await stopWorkspaceServiceDaemon(state, { timeoutMs: 5_000, pollMs: 10 });
     if (!implicitStop.ok || implicitStop.reason !== "stopped" || !implicitStop.verified_service_daemon) {
       throw new Error("implicit daemon-only recovery process could not be stopped safely");
@@ -355,6 +381,9 @@ setInterval(() => {}, 2 ** 31 - 1);
     const partialIdentity = inspectWorkspaceDaemon(state);
     if (!partialIdentity.alive || partialIdentity.verified_service_daemon || partialIdentity.identity_reason !== "command_mismatch") {
       throw new Error("daemon with only one explicit identity argument was accepted for takeover");
+    }
+    if (workspaceDaemonOwnsPlatformAutostart(partialIdentity)) {
+      throw new Error("partially identified daemon was allowed to stop machine autostart");
     }
     child.kill("SIGTERM");
     await waitForChildExit(child);
@@ -655,15 +684,24 @@ async function resourceCliSelfTest() {
     if (!inspectionJson.review_plan || !reviewedResource || "path" in reviewedResource || "sha256" in reviewedResource || JSON.stringify(inspectionJson).includes(resourceFile)) {
       throw new Error("local plan inspection omitted the plan or exposed a resource source path/hash");
     }
-    const cliApproved = spawnSync(process.execPath, [entry, "job", "approve", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json", "--yes"], {
+    const removedApproval = spawnSync(process.execPath, [entry, "job", "approve", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json", "--yes"], {
       encoding: "utf8", timeout: 10_000,
     });
-    if (cliApproved.status !== 0 || JSON.parse(cliApproved.stdout).approval !== "local-operator") throw new Error(`local job approve failed: ${cliApproved.stderr || cliApproved.stdout}`);
+    if (removedApproval.status === 0 || !String(removedApproval.stderr).includes("Unknown job action")) {
+      throw new Error(`removed terminal job approval remained usable: ${removedApproval.stderr || removedApproval.stdout}`);
+    }
+    if (await existsForSelfTest(approvedMarker)) throw new Error("rejected terminal job approval executed a staged plan");
+
+    const trustedStarted = manager.start({
+      name: "Trusted direct start",
+      steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'trusted-start')", approvedMarker], env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: 10 }],
+    });
+    if (trustedStarted.status !== "queued") throw new Error("trusted direct managed-job start was not queued");
     for (let attempt = 0; attempt < 200; attempt += 1) {
       if (await existsForSelfTest(approvedMarker)) break;
       await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
-    if (await readFile(approvedMarker, "utf8") !== "cli-approved") throw new Error("local job approve did not execute the staged job");
+    if (await readFile(approvedMarker, "utf8") !== "trusted-start") throw new Error("trusted direct managed-job start did not execute");
 
     const submittedMarker = join(workspace, "submitted-by-cli.txt");
     const planFile = join(workspace, "managed-plan.json");
@@ -759,6 +797,7 @@ function cliSelfTest() {
   expectThrow(() => validateCommandOptions("doctor", { _: [], fullEnv: true }), "not valid for doctor");
   validateCommandOptions("full-test", { _: [], workspace: "/tmp/project", json: true });
   validateCommandOptions("start", { _: [], unrestrictedPaths: true, noExec: true, logLevel: "warn" });
+  validateCommandOptions("activate", { _: [], unrestrictedPaths: true, noExec: true, json: true });
   validateLoggingOptions({ logLevel: "warn" });
   expectThrow(() => validateLoggingOptions({ logLevel: "trace" }), "log level must be");
   expectThrow(() => validateLoggingOptions({ quiet: true, verbose: true }), "cannot be used together");
@@ -905,7 +944,7 @@ async function serviceSelfTest() {
     await writeFile(join(stateRoot, "placeholder"), "", "utf8");
     await import("node:fs/promises").then(({ mkdir }) => mkdir(logs, { recursive: true }));
     const file = join(logs, "daemon.err.log");
-    await writeFile(join(logs, ".log-schema"), "3\n", "utf8");
+    await writeFile(join(logs, ".log-schema"), "4\n", "utf8");
     await writeFile(file, `${"discarded-line\n".repeat(300)}kept-unicode-日志\nlast-line\n`, "utf8");
     trimAutostartLogs(stateRoot, { maxBytes: 2048, keepBytes: 1024 });
     const trimmed = await readFile(file, "utf8");
@@ -916,11 +955,18 @@ async function serviceSelfTest() {
       const outsideTarget = join(stateRoot, "outside-log-target");
       const linkedLog = join(logs, "daemon.out.log");
       await writeFile(outsideTarget, "must-remain-unchanged", "utf8");
+      await rm(linkedLog, { force: true });
       try {
         await symlink(outsideTarget, linkedLog);
-        trimAutostartLogs(stateRoot, { maxBytes: 1024, keepBytes: 1024 });
+        expectThrow(() => trimAutostartLogs(stateRoot, { maxBytes: 1024, keepBytes: 1024 }), "symbolic link");
         if (await readFile(outsideTarget, "utf8") !== "must-remain-unchanged") {
           throw new Error("autostart log trimming followed a symbolic link");
+        }
+        await rm(linkedLog, { force: true });
+        await import("node:fs/promises").then(({ link }) => link(outsideTarget, linkedLog));
+        expectThrow(() => trimAutostartLogs(stateRoot, { maxBytes: 1024, keepBytes: 1024 }), "multiple hard links");
+        if (await readFile(outsideTarget, "utf8") !== "must-remain-unchanged") {
+          throw new Error("autostart log trimming modified a multiple-link inode");
         }
       } catch (error) {
         if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
@@ -935,7 +981,7 @@ async function serviceSelfTest() {
       await writeFile(currentLog, "obsolete-format-line\n", "utf8");
       trimAutostartLogs(obsoleteLogRoot, { maxBytes: 2048, keepBytes: 1024 });
       if (await readFile(currentLog, "utf8") !== "") throw new Error("obsolete active log was not cleared");
-      if ((await readFile(join(obsoleteLogs, ".log-schema"), "utf8")).trim() !== "3") {
+      if ((await readFile(join(obsoleteLogs, ".log-schema"), "utf8")).trim() !== "4") {
         throw new Error("current autostart log schema marker was not written");
       }
       await writeFile(currentLog, "current-format-line\n", "utf8");
@@ -974,6 +1020,60 @@ async function serviceSelfTest() {
       throw new Error("autostart service PATH did not retain absolute command directories or reject relative entries");
     }
     if (servicePathEntries.filter((entry) => entry === nodeBin).length !== 1) throw new Error("autostart service PATH retained duplicates");
+
+    const currentRuntimeBin = join(stateRoot, "release-channels", "runtimes", "v3.0.0-beta.6-current", "lib", "node_modules", "machine-bridge-mcp", "bin");
+    const staleRuntimeBin = join(stateRoot, "release-channels", "runtimes", "v3.0.0-beta.5-stale", "lib", "node_modules", "machine-bridge-mcp", "bin");
+    const npmInjectedProjectBin = join(stateRoot, "project", "node_modules", ".bin");
+    const npmLifecycleMarker = join(stateRoot, "npm", "node_modules", "@npmcli", "run-script", "lib", "node-gyp-bin");
+    const retainedUserBin = join(stateRoot, "user-bin");
+    const lifecyclePath = serviceEnvironmentPath({
+      node: process.platform === "win32" ? nodeTarget : nodeAlias,
+      entryScript: join(currentRuntimeBin, "machine-mcp.mjs"),
+      pathEnv: [
+        join(stateRoot, "outer-project", "node_modules", ".bin"),
+        join(stateRoot, "outer-npm", "node_modules", "@npmcli", "run-script", "lib", "node-gyp-bin"),
+        npmInjectedProjectBin,
+        npmLifecycleMarker,
+        staleRuntimeBin,
+        retainedUserBin,
+      ].join(delimiter),
+    }).split(delimiter);
+    if (!lifecyclePath.includes(currentRuntimeBin) || !lifecyclePath.includes(nodeBin) || !lifecyclePath.includes(retainedUserBin)) {
+      throw new Error("autostart service PATH lost the current runtime, Node, or inherited user tools");
+    }
+    if (lifecyclePath.includes(npmInjectedProjectBin) || lifecyclePath.includes(npmLifecycleMarker) || lifecyclePath.includes(staleRuntimeBin)) {
+      throw new Error("autostart service PATH retained npm lifecycle injection or an inactive candidate runtime");
+    }
+    const intentionalProjectBin = join(stateRoot, "intentional", "node_modules", ".bin");
+    const ordinaryPath = serviceEnvironmentPath({
+      node: process.platform === "win32" ? nodeTarget : nodeAlias,
+      entryScript,
+      pathEnv: [intentionalProjectBin, retainedUserBin].join(delimiter),
+    }).split(delimiter);
+    if (!ordinaryPath.includes(intentionalProjectBin)) {
+      throw new Error("autostart service PATH removed an ordinary user-supplied node_modules bin without an npm lifecycle marker");
+    }
+    const syntheticWindowsPath = serviceEnvironmentPath({
+      platform: "win32",
+      delimiter: ";",
+      node: String.raw`C:\Program Files\nodejs\node.exe`,
+      entryScript: String.raw`C:\Users\operator\state\release-channels\runtimes\v3.0.0-beta.6-current\lib\node_modules\machine-bridge-mcp\bin\machine-mcp.mjs`,
+      pathEnv: [
+        String.raw`C:\outer-repo\node_modules\.bin`,
+        String.raw`C:\outer-npm\node_modules\@npmcli\run-script\lib\node-gyp-bin`,
+        String.raw`C:\repo\node_modules\.bin`,
+        String.raw`C:\npm\node_modules\@npmcli\run-script\lib\node-gyp-bin`,
+        String.raw`C:\Users\operator\state\release-channels\runtimes\v3.0.0-beta.5-stale\lib\node_modules\machine-bridge-mcp\bin`,
+        String.raw`C:\Users\operator\bin`,
+      ].join(";"),
+    }).toLowerCase();
+    if (!syntheticWindowsPath.includes("v3.0.0-beta.6-current") || !syntheticWindowsPath.includes(String.raw`c:\users\operator\bin`)) {
+      throw new Error("synthetic Windows service PATH lost the current runtime or inherited user bin");
+    }
+    if (syntheticWindowsPath.includes("v3.0.0-beta.5-stale") || syntheticWindowsPath.includes("node-gyp-bin")
+        || syntheticWindowsPath.includes(String.raw`c:\repo\node_modules\.bin`)) {
+      throw new Error("synthetic Windows service PATH retained npm lifecycle injection or an inactive candidate runtime");
+    }
     const plist = launchdPlist({ args: [nodeAlias, entryScript], pathEnv: servicePath, stdout: "/tmp/out", stderr: "/tmp/err" });
     if (!plist.includes("<key>EnvironmentVariables</key>") || !plist.includes(`<key>PATH</key><string>${servicePath}</string>`)) {
       throw new Error("launchd definition omitted the explicit service PATH");

@@ -5,12 +5,26 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readLoopbackJson } from "../src/local/loopback-health.mjs";
+import { workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const entry = resolve(root, "bin", "machine-mcp.mjs");
 const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 
 await testDirectLoopbackHealth();
+
+assert(
+  workspaceDaemonOwnsPlatformAutostart({ alive: true, verified_service_daemon: true, mode: "service" }),
+  "verified workspace service daemon was not eligible for platform takeover",
+);
+for (const status of [
+  { alive: false, verified_service_daemon: true, mode: "service" },
+  { alive: true, verified_service_daemon: false, mode: "service" },
+  { alive: true, verified_service_daemon: true, mode: "foreground" },
+  { alive: true, verified_service_daemon: true, mode: "invalid" },
+]) {
+  assert(!workspaceDaemonOwnsPlatformAutostart(status), "unrelated daemon state could stop machine-level autostart");
+}
 
 const version = run(["version"]);
 assert(version.status === 0, `version command failed: ${version.stderr}`);
@@ -21,7 +35,7 @@ assert(versionFlag.status === 0 && versionFlag.stdout.trim() === `${pkg.name} ${
 
 const help = run(["help"]);
 assert(help.status === 0, `help command failed: ${help.stderr}`);
-assert(help.stdout.includes("Usage:") && help.stdout.includes("--log-format"), "help output omitted current CLI options");
+assert(help.stdout.includes("Usage:") && help.stdout.includes("--log-format") && help.stdout.includes("activate          Deploy/update Worker"), "help output omitted current CLI options");
 assert(help.stdout.includes("newly generated account passwords are included once"), "help output incorrectly claims JSON can never contain a generated password");
 
 const stateRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-state-"));
@@ -50,24 +64,18 @@ try {
   const statusPayload = JSON.parse(status.stdout);
   assert(statusPayload.workerHealth.error === "no worker url", "status did not report the missing Worker deterministically");
 
+  const activateWithoutDeployment = run(["activate", "--workspace", workspaceRoot, "--state-dir", stateRoot, "--json"]);
+  assert(activateWithoutDeployment.status !== 0 && activateWithoutDeployment.stderr.includes("requires an existing deployment"), "activate did not fail closed before first deployment");
+
   const clientConfig = run(["client-config", "codex", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
   assert(clientConfig.status === 0 && clientConfig.stdout.includes("[mcp_servers.machine_bridge]"), `client-config failed: ${clientConfig.stderr}`);
 
   const emptyApprovals = run(["approval", "list", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
-  assert(emptyApprovals.status === 0 && emptyApprovals.stdout.includes("No pending approvals"), `approval list failed: ${emptyApprovals.stderr}`);
-  const granted = run([
-    "approval", "grant", "shell", "--account", "*", "--client", "*", "--duration", "15m",
-    "--workspace", workspaceRoot, "--state-dir", stateRoot, "--json",
-  ]);
-  assert(granted.status === 0, `approval grant failed: ${granted.stderr}`);
-  const grantedLease = JSON.parse(granted.stdout);
-  assert(JSON.stringify(grantedLease.scopes) === JSON.stringify(["shell"]) && grantedLease.account_id === "*" && grantedLease.client_id === "*", "approval grant lost explicit wildcard bindings or scope shape");
-  const approvalList = run(["approval", "list", "--workspace", workspaceRoot, "--state-dir", stateRoot, "--json"]);
-  assert(approvalList.status === 0 && JSON.parse(approvalList.stdout).leases.some((lease) => lease.id === grantedLease.id), "approval list omitted the active lease");
-  const revoked = run(["approval", "revoke", grantedLease.id, "--workspace", workspaceRoot, "--state-dir", stateRoot, "--json"]);
-  assert(revoked.status === 0 && JSON.parse(revoked.stdout).revoked === true, "approval revoke did not remove the active lease");
-  const unknownApproval = run(["approval", "approve", "approval_unknown", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
-  assert(unknownApproval.status !== 0 && unknownApproval.stderr.includes("not found or has expired"), "approval approve accepted an unknown pending id");
+  assert(emptyApprovals.status === 0 && emptyApprovals.stdout.includes("automatic within each account role ceiling"), `approval list failed: ${emptyApprovals.stderr}`);
+  const removedGrant = run(["approval", "grant", "shell", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
+  assert(removedGrant.status !== 0 && removedGrant.stderr.includes("Terminal operation approval was removed"), "legacy approval grant remained user-accessible");
+  const removedApprove = run(["approval", "approve", "approval_unknown", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
+  assert(removedApprove.status !== 0 && removedApprove.stderr.includes("Terminal operation approval was removed"), "legacy approval approve remained user-accessible");
 
   const reset = run(["workspace", "reset", "--state-dir", stateRoot]);
   assert(reset.status === 0 && reset.stdout.includes("selection reset"), `workspace reset failed: ${reset.stderr}`);

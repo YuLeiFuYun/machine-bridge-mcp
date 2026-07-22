@@ -29,7 +29,7 @@ for (const file of graph.keys()) visitModule(file, []);
 
 const adapterModules = new Set([
   "cli.mjs", "cli-service.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs",
-  "windows-service.mjs", "relay-connection.mjs", "runtime-relay.mjs", "worker-deployment.mjs",
+  "service-restart-handoff.mjs", "service-restart-scheduler.mjs", "windows-service.mjs", "relay-connection.mjs", "runtime-relay.mjs", "worker-deployment.mjs",
 ]);
 const boundaryModules = new Set([
   "agent-context.mjs",
@@ -50,6 +50,7 @@ const boundaryModules = new Set([
   "process-result-projection.mjs",
   "process-contract.mjs",
   "process-tree.mjs",
+  "process-tree-ownership.mjs",
   "execution-limits.mjs",
   "project-package.mjs",
   "policy.mjs",
@@ -73,9 +74,13 @@ const boundaryModules = new Set([
   "records.mjs",
   "state-inventory.mjs",
   "browser-extension-protocol.mjs",
+  "browser-extension-identity.mjs",
   "browser-pairing-store.mjs",
+  "browser-pairing-http.mjs",
   "worker-secret-file.mjs",
   "service-environment.mjs",
+  "service-status.mjs",
+  "service-ownership.mjs",
   "monotonic-deadline.mjs",
   "runtime-capabilities.mjs",
   "runtime-diagnostics.mjs",
@@ -125,6 +130,7 @@ const lineLimits = Object.freeze({
   "src/local/relay-connection.mjs": 780,
   "src/local/process-contract.mjs": 40,
   "src/local/process-tree.mjs": 70,
+  "src/local/process-tree-ownership.mjs": 80,
   "src/local/execution-limits.mjs": 55,
   "src/local/git-service.mjs": 220,
   "src/local/workspace-file-service.mjs": 550,
@@ -161,6 +167,7 @@ const lineLimits = Object.freeze({
   "src/local/browser-operation-service.mjs": 360,
   "src/local/browser-extension-protocol.mjs": 130,
   "src/local/browser-pairing-store.mjs": 120,
+  "src/local/browser-pairing-http.mjs": 80,
   "src/local/worker-secret-file.mjs": 180,
   "src/local/service-environment.mjs": 140,
   "src/local/windows-service.mjs": 220,

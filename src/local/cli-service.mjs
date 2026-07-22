@@ -3,12 +3,14 @@ import * as defaultService from "./service.mjs";
 import { inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "./daemon-process.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
 import { serviceEnvironmentSummary } from "./service-environment.mjs";
+import { scheduleServiceRestart } from "./service-restart-scheduler.mjs";
 import { loadState, resolveWorkspace, selectedWorkspace } from "./state.mjs";
 
 const SERVICE_ACTION_HANDLERS = new Map([
   ["status", serviceStatusAction],
   ["install", serviceInstallAction],
   ["start", serviceStartAction],
+  ["restart", serviceRestartAction],
   ["stop", serviceStopAction],
   ["uninstall", serviceUninstallAction],
   ["remove", serviceUninstallAction],
@@ -24,6 +26,7 @@ export function createServiceCommand(dependencies) {
     stopWorkspaceServiceDaemon: dependencies.stopWorkspaceServiceDaemon || stopWorkspaceServiceDaemon,
     stopAndRemoveAutostart: dependencies.stopAndRemoveAutostart || stopAndRemoveAutostart,
     serviceEnvironmentSummary: dependencies.serviceEnvironmentSummary || serviceEnvironmentSummary,
+    scheduleServiceRestart: dependencies.scheduleServiceRestart || scheduleServiceRestart,
     loadState: dependencies.loadState || loadState,
     resolveWorkspace: dependencies.resolveWorkspace || resolveWorkspace,
     selectedWorkspace: dependencies.selectedWorkspace || selectedWorkspace,
@@ -73,14 +76,24 @@ async function serviceInstallAction({ args, stateRoot, service, context }) {
 }
 
 async function serviceStartAction({ args, service, context }) {
+  assertGlobalServiceAction(args, "start");
   const result = await service.startAutostart({ logger: context.structuredLogger(Boolean(args.quiet)) });
   printServiceResult(result, context);
 }
 
+async function serviceRestartAction({ args, context }) {
+  assertGlobalServiceAction(args, "restart");
+  const result = await context.scheduleServiceRestart();
+  printServiceResult({ ...result, provider: "detached-handoff", reason: "restart_scheduled" }, context);
+}
+
 async function serviceStopAction({ args, stateRoot, service, context }) {
   const logger = context.structuredLogger(Boolean(args.quiet));
-  const provider = await service.stopAutostart({ logger });
   const state = optionalServiceState(args, stateRoot, context);
+  const status = await service.autostartStatus();
+  const before = state ? context.inspectWorkspaceDaemon(state) : null;
+  assertExplicitStopTarget(args, status, before);
+  const provider = await service.stopAutostart({ logger });
   const workspaceDaemon = state
     ? await context.stopWorkspaceServiceDaemon(state, { logger, reason: "service stop" })
     : { ok: true, found: false, stopped: false, verified_service_daemon: false, reason: "workspace_not_selected" };
@@ -92,16 +105,17 @@ async function serviceStopAction({ args, stateRoot, service, context }) {
   }, context);
 }
 
-async function serviceUninstallAction({ args, stateRoot, service, context }) {
+async function serviceUninstallAction({ args, stateRoot, context }) {
+  assertGlobalServiceAction(args, "uninstall");
   const logger = context.structuredLogger(Boolean(args.quiet));
-  const state = optionalServiceState(args, stateRoot, context);
+  const state = optionalServiceState({ ...args, workspace: undefined, stateDir: undefined }, stateRoot, context);
   const lifecycle = await context.stopAndRemoveAutostart({
     states: state ? [state] : [],
     stateRoot,
     logger,
     reason: "service uninstall",
-    stopAutostart: service.stopAutostart,
-    uninstallAutostart: service.uninstallAutostart,
+    stopAutostart: context.service.stopAutostart,
+    uninstallAutostart: context.service.uninstallAutostart,
     stopWorkspaceServiceDaemon: context.stopWorkspaceServiceDaemon,
   });
   printServiceResult({
@@ -110,6 +124,22 @@ async function serviceUninstallAction({ args, stateRoot, service, context }) {
     workspace_daemon: lifecycle.workspace_daemons[0] || null,
     autostart_removed: lifecycle.removed,
   }, context);
+}
+
+function assertGlobalServiceAction(args, action) {
+  if (args.workspace || args.stateDir || args._[1]) {
+    throw new Error(`service ${action} acts on the single installed machine service and does not accept workspace or state overrides; use service install to change its owner`);
+  }
+}
+
+function assertExplicitStopTarget(args, status, workspaceDaemon) {
+  if (!hasExplicitServiceTarget(args) || status?.active !== true) return;
+  if (workspaceDaemon?.alive === true && workspaceDaemon?.verified_service_daemon === true) return;
+  throw new Error("refusing to stop the active machine service because the requested workspace/state does not own its verified daemon; omit the target to stop the installed service globally");
+}
+
+function hasExplicitServiceTarget(args) {
+  return Boolean(args.workspace || args.stateDir || args._[1]);
 }
 
 function optionalServiceState(args, stateRoot, context) {

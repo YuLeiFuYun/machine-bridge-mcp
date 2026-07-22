@@ -71,11 +71,13 @@ async function testRuntimeReporting() {
     toolNames: ["read_file"],
     capabilityObserver: { snapshot: () => ({ resolutions: 1 }) },
     listTopLevel: async () => ({ entries: [{ name: "README.md" }] }),
-    runProcess: async () => ({ code: 0, stdout: "/workspace/project\n" }),
+    gitExecutable: () => "/usr/bin/git",
+    runInternalProcess: async () => ({ code: 0, stdout: "/workspace/project\n" }),
     safeErrorMessage: (error) => String(error?.message || error),
     throwIfCancelled() {},
   });
   assert(overview.gitRoot === "/workspace/project" && overview.topLevel.length === 1, "project overview lost repository metadata");
+  assert(overview.daemonPolicy.profile === "full" && overview.daemonTools.includes("read_file"), "project overview omitted the explicit daemon ceiling");
 
   const degraded = await buildProjectOverview({
     workspace: "/workspace/project",
@@ -84,7 +86,8 @@ async function testRuntimeReporting() {
     toolNames: [],
     capabilityObserver: { snapshot: () => ({}) },
     listTopLevel: async () => { throw new Error("unreadable"); },
-    runProcess: async () => ({ code: 1, stdout: "" }),
+    gitExecutable: () => "/usr/bin/git",
+    runInternalProcess: async () => ({ code: 1, stdout: "" }),
     safeErrorMessage: () => "safe",
     throwIfCancelled() {},
   });
@@ -108,10 +111,17 @@ async function testRuntimeDiagnostics() {
       runProcess: async () => ({ code: 0, stdout: "ok", stderr: "" }),
       probeShell: async () => ({ code: 0, stdout: "", stderr: "" }),
       managedJobManager,
+      relayStatus: () => ({
+        ready: true, network_route: "system-network-stack", network_route_scope: "application-proxy-selection-only",
+        outage_active: false, outage_count: 2, last_close_category: "relay_transport_error", last_close_code: 1006,
+        last_transport_error_class: "network_error", last_ready_duration_ms: 5000, next_reconnect_in_ms: 0,
+      }),
       throwIfCancelled() {},
     });
     assert(shell.request_reached_local_runtime === true, "runtime diagnostic lost local reachability evidence");
     assert(shell.checks.some((check) => check.layer === "local-shell" && check.ok), "shell diagnostic was not executed");
+    const relayCheck = shell.checks.find((check) => check.layer === "remote-relay");
+    assert(relayCheck?.ok === true && relayCheck.outage_count === 2 && relayCheck.network_route === "system-network-stack", "relay diagnostic history was omitted");
     assert(shell.ok === false, "unavailable local resource was hidden from diagnostic result");
 
     const review = await diagnoseRuntime({
@@ -126,7 +136,8 @@ async function testRuntimeDiagnostics() {
       },
       throwIfCancelled() {},
     });
-    assert(review.checks.filter((check) => check.skipped).length === 2, "review diagnostics executed forbidden process probes");
+    assert(review.checks.filter((check) => ["local-process-spawn", "local-shell"].includes(check.layer) && check.skipped).length === 2, "review diagnostics executed forbidden process probes");
+    assert(review.checks.some((check) => check.layer === "remote-relay" && check.skipped), "stdio/local diagnostics misreported a remote relay");
     assert(review.ok === false, "policy denial was not reflected in diagnostic status");
 
     const failed = await diagnoseRuntime({
@@ -139,9 +150,18 @@ async function testRuntimeDiagnostics() {
         diagnoseStorage: () => ({ ok: false, error_class: "permission_denied" }),
         listResources: () => ({ count: 0, resources: [] }),
       },
+      relayStatus: () => ({
+        ready: false, network_route: "", network_route_scope: "", outage_active: true, outage_count: 0,
+        last_close_category: "", last_close_code: "not-a-number", last_transport_error_class: "",
+        last_disconnected_at: "", last_ready_at: "", last_ready_duration_ms: 0, next_reconnect_in_ms: 12,
+      }),
       throwIfCancelled() {},
     });
     assert(failed.checks.some((check) => check.layer === "local-process-spawn" && !check.ok), "process failure was not classified");
+    const failedRelay = failed.checks.find((check) => check.layer === "remote-relay");
+    assert(failedRelay?.outage_active === true && failedRelay.network_route === "unknown"
+      && failedRelay.last_close_code === null && failedRelay.next_reconnect_in_ms === 12,
+    "degraded relay diagnostics did not normalize missing or invalid fields");
   } finally {
     await rm(runtimeDir, { recursive: true, force: true });
   }

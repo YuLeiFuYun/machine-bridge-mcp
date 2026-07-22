@@ -12,6 +12,8 @@ import {
   normalizeRedirectUri, oauthRedirect, parseRequestBody, searchParamsObject,
 } from "./http.ts";
 import { authorizationPage } from "./oauth-authorization-page.ts";
+import { handleOAuthClientAdminOperation } from "./oauth-client-admin.ts";
+import { loadOAuthRefreshStore } from "./oauth-refresh-families.ts";
 
 const OAUTH_BODY_LIMIT_BYTES = 64 * 1024;
 const OAUTH_UNUSED_CLIENT_TTL_SECONDS = 60 * 60;
@@ -23,7 +25,6 @@ const MAX_OAUTH_CODES = 200;
 const MAX_AUTH_FAILURE_IDENTITIES = 200;
 
 export interface OAuthControllerEnv {
-  ACCOUNT_ADMIN_SECRET: string;
   DAEMON_DEVICE_PUBLIC_KEY: string;
   OAUTH_TOKEN_VERSION: string;
 }
@@ -33,6 +34,8 @@ export interface AuthorizedToken {
   accountId: string;
   accountVersion: number;
   clientId: string;
+  familyId: string;
+  dpopJkt: string;
   role: AccountRole;
 }
 
@@ -40,12 +43,14 @@ export class OAuthController {
   private readonly ctx: DurableObjectState;
   private readonly env: OAuthControllerEnv;
   private readonly serverName: string;
+  private readonly serverVersion: string;
   private oauthQueue: Promise<void> = Promise.resolve();
 
-  constructor(ctx: DurableObjectState, env: OAuthControllerEnv, serverName: string) {
+  constructor(ctx: DurableObjectState, env: OAuthControllerEnv, serverName: string, serverVersion: string) {
     this.ctx = ctx;
     this.env = env;
     this.serverName = serverName;
+    this.serverVersion = serverVersion;
   }
 
   private async oauthStore(): Promise<OAuthStore> {
@@ -108,7 +113,14 @@ export class OAuthController {
   async handleAccountAdmin(request: Request, operation: "accounts" | "rotate-password"): Promise<Response> {
     return this.withOAuthLock(async () => {
       const now = Math.floor(Date.now() / 1000);
-      const authorization = await accountAdminAuthorized(request, this.env.ACCOUNT_ADMIN_SECRET ?? "", now);
+      const authorization = await accountAdminAuthorized(
+        request,
+        this.env.DAEMON_DEVICE_PUBLIC_KEY ?? "",
+        new URL(request.url).origin,
+        this.serverName,
+        this.serverVersion,
+        now,
+      );
       if (!authorization || !(await consumeAccountAdminNonce(this.ctx.storage, authorization, now))) {
         return json({ error: "unauthorized" }, 401);
       }
@@ -117,6 +129,26 @@ export class OAuthController {
         request, operation, store, now,
         save: () => this.ctx.storage.put("oauth", store),
       });
+    });
+  }
+
+  async handleClientAdmin(request: Request): Promise<Response> {
+    return this.withOAuthLock(async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const authorization = await accountAdminAuthorized(
+        request,
+        this.env.DAEMON_DEVICE_PUBLIC_KEY ?? "",
+        new URL(request.url).origin,
+        this.serverName,
+        this.serverVersion,
+        now,
+      );
+      if (!authorization || !(await consumeAccountAdminNonce(this.ctx.storage, authorization, now))) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      const store = await this.oauthStore();
+      const refreshStore = await loadOAuthRefreshStore(store, this.ctx.storage);
+      return handleOAuthClientAdminOperation({ request, store, refreshStore, storage: this.ctx.storage, now });
     });
   }
 
@@ -212,9 +244,16 @@ export class OAuthController {
         const status = store.auth_failures[identity]?.blocked_until > now ? 429 : 401;
         return authorizationPage({ request, base, serverName: this.serverName, error: "Invalid account credentials.", submitted: body, status, authorization: validation.value });
       }
+      if (client.trusted_account_id && client.trusted_account_id !== account.account_id) {
+        return authorizationPage({ request, base, serverName: this.serverName, error: "This client is already bound to another account. Revoke it locally before changing accounts.", submitted: body, status: 409, authorization: validation.value });
+      }
       delete store.auth_failures[identity];
       client.last_used_at = now;
       client.has_been_authorized = true;
+      client.trusted_account_id = account.account_id;
+      client.trusted_account_version = account.version;
+      client.trusted_role = account.role;
+      client.trusted_at ||= now;
 
       const code = randomToken("mcp_code");
       const redirectLocation = authorizationRedirectLocation(redirectUri, code, state);
@@ -263,14 +302,24 @@ export class OAuthController {
       if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
       if (record.resource !== `${base}/mcp`) return null;
       const account = store.accounts[record.account_id];
-      if (!account || !account.active || account.version !== record.account_version || account.role !== record.role) {
+      const client = store.clients[record.client_id];
+      if (
+        !account
+        || !account.active
+        || account.version !== record.account_version
+        || account.role !== record.role
+        || !client
+        || client.trusted_account_id !== account.account_id
+        || client.trusted_account_version !== account.version
+        || client.trusted_role !== account.role
+      ) {
         delete store.tokens[key];
         await this.ctx.storage.put("oauth", store);
         return null;
       }
       return {
         tokenKey: key, accountId: account.account_id,
-        accountVersion: account.version, clientId: record.client_id, role: account.role,
+        accountVersion: account.version, clientId: record.client_id, familyId: String(record.family_id || ""), dpopJkt: String(record.dpop_jkt || ""), role: account.role,
       };
     });
   }
@@ -288,7 +337,7 @@ export class OAuthController {
   }
 
   identityKey(): string {
-    const key = this.env.OAUTH_TOKEN_VERSION || this.env.ACCOUNT_ADMIN_SECRET;
+    const key = this.env.OAUTH_TOKEN_VERSION;
     if (!key) throw new HttpError(503, "server_not_configured", "OAuth identity key is not configured");
     return key;
   }

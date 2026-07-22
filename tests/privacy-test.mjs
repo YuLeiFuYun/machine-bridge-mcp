@@ -11,7 +11,9 @@ try {
   mkdirSync(join(temp, "scripts"), { recursive: true });
   mkdirSync(join(temp, "src", "local"), { recursive: true });
   cpSync(join(root, "scripts", "privacy-check.mjs"), join(temp, "scripts", "privacy-check.mjs"));
-  cpSync(join(root, "src", "local", "secure-file.mjs"), join(temp, "src", "local", "secure-file.mjs"));
+  for (const name of ["secure-file.mjs", "trusted-git-executable.mjs", "trusted-executable.mjs", "errors.mjs"]) {
+    cpSync(join(root, "src", "local", name), join(temp, "src", "local", name));
+  }
   writeFileSync(join(temp, ".privacy-denylist"), `${privateName}\n`, { mode: 0o600 });
   git(["init", "-q"]);
   git(["config", "user.name", "Privacy Test"]);
@@ -21,6 +23,7 @@ try {
   const checkerSource = fsRead(checkerPath);
   writeFileSync(checkerPath, `${checkerSource}\n// ${privateName}\n`);
   const selfResult = runCheck();
+  assert(!`${selfResult.stdout}${selfResult.stderr}`.includes("ERR_MODULE_NOT_FOUND"), "privacy fixture failed before the scanner ran");
   assert(selfResult.status === 1, "privacy checker skipped a denylisted value in its own source");
   assert(!`${selfResult.stdout}${selfResult.stderr}`.toLowerCase().includes(privateName), "privacy checker echoed a denylisted value from its own source");
   writeFileSync(checkerPath, checkerSource);

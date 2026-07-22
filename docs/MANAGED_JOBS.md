@@ -113,6 +113,14 @@ Environment injection is convenient but may expose a value to same-user process 
 
 At job acceptance, referenced resources are reopened, bounded, hashed, and recorded in the owner-only active plan. The runner reopens and verifies the hash before copying. A changed resource causes the job to fail rather than silently using different content.
 
+## Terminal persistence and sensitive-plan cleanup
+
+A job terminal transition is not a single best-effort write. The runner first attempts the bounded `result.json`, then persists a conservative terminal `status.json` with cleanup pending, then removes the private runtime directory, active plan, PID claim, cancellation marker, and transition/recovery artifacts, and finally confirms cleanup state. A result-write failure is visible as `result_persisted=false`; a status-write failure leaves every recovery artifact intact. Artifact removal failures remain visible as `artifact_cleanup_pending` and are retried by later read/list/prune operations.
+
+If the runner writes a valid terminal result but exits before terminal status is committed, the manager reconstructs status from that result before considering recovery. This prevents a completed finally sequence from being replayed merely because the status write was interrupted. If no valid terminal result exists, recovery may still repeat finally work, so finally steps must remain idempotent.
+
+Unexecuted staged plans can contain stdin, environment values, and temporary scripts. They expire after 24 hours and are converted to a non-executing terminal record; ordinary completed-job metadata may remain under the separate seven-day retention policy. A minimal-environment plan also launches its detached runner with a minimal control environment. Full parent-environment inheritance occurs only when the accepted plan explicitly captured that policy.
+
 ## Job-scoped temporary files
 
 Do not create ad hoc helpers in the workspace when the file exists only for one operation. Include it in the job:
@@ -191,35 +199,26 @@ Finally steps are attempted after success, failure, timeout, or cancellation. Ca
 
 Automatic dead-runner recovery is attempted at most three times; persistent failure becomes `recovery_exhausted` to avoid an endless restart loop. Cleanup is best effort, not mathematically guaranteed. Power loss, disk failure, permanent account loss, or a local security product that denies the cleanup executable can still prevent it. Finally steps should therefore be idempotent and safe to run more than once.
 
-## Two-phase local approval
+## Non-executing staged drafts
 
-If the MCP host rejects execution-class tools but still allows state changes, use:
+`stage_job` performs the same schema, cwd, resource, size, and permission validation as `start_job`, but records status `staged` and launches no process.
 
-```text
-stage_job
-```
+A staged record is a review artifact, not an authorization request:
 
-This performs the same schema, cwd, resource, size, and permission validation as `start_job`, but records status `staged` and launches no process. The response includes the local approval command:
+- it contains no executable approval token;
+- it cannot be promoted by `machine-mcp job approve`;
+- no main or finally step runs;
+- no registered resource is copied into a runtime directory;
+- cancellation produces `cancelled_before_start` and removes the plan.
 
-```sh
-machine-mcp job inspect JOB_ID
-machine-mcp job approve JOB_ID
-# or after a separate review, non-interactively:
-machine-mcp job approve JOB_ID --yes
-```
+Use `machine-mcp job inspect JOB_ID` to review the stored plan. The projection includes argv, ordinary environment overrides, stdin, temporary helper content, and finally steps while omitting registered resource source paths and per-resource hashes. The overall `plan_sha256` is displayed and remains integrity-checked.
 
-`job inspect` displays the reviewable plan, including argv, ordinary environment overrides, stdin, temporary helper content, and finally steps, while omitting registered resource source paths and per-resource hashes. The overall `plan_sha256` is displayed for review and is revalidated atomically during approval and again by the runner before execution. A modified staged plan is rejected.
+Execution requires a separate authority-bearing action:
 
-Local approval is a new operator authorization. It intentionally does not depend on the current MCP execution profile: a plan staged under a write-capable profile can be reviewed and approved from the terminal even when the connector is not allowed to execute. The plan retains the filesystem scope and environment mode captured when it was staged.
+- a trusted owner submits the plan through `start_job`; or
+- the local machine operator submits a reviewed JSON plan with `machine-mcp job submit PLAN.json`.
 
-Before approval:
-
-- no main step runs;
-- no finally step runs;
-- no resource is copied into a runtime directory;
-- cancelling produces `cancelled_before_start` and deletes the plan.
-
-Staged plans count toward the 50-item retention limit and expire with the seven-day job retention policy. They are not considered active processes and do not independently block uninstall after the normal uninstall confirmation.
+The current runtime does not implement copy-an-ID, approve, and retry workflows. Staged drafts count toward the 50-item retention limit and expire with the seven-day retention policy. They are not active processes and do not independently block uninstall after normal confirmation.
 
 ## Submit and inspect
 
@@ -233,20 +232,16 @@ read_job
 cancel_job
 ```
 
-From the local terminal, including after an MCP host blocks further execution calls:
+From the local terminal:
 
 ```sh
 machine-mcp job list
 machine-mcp job inspect JOB_ID
-machine-mcp job approve JOB_ID [--yes]
 machine-mcp job cancel JOB_ID
-```
-
-A local JSON fallback is also available:
-
-```sh
 machine-mcp job submit plan.json
 ```
+
+`job submit` is an explicit local operator action; it does not consume or promote a staged MCP draft.
 
 The plan format is the same object accepted by `start_job`.
 
