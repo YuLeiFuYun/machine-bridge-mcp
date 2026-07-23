@@ -180,6 +180,7 @@ const lineLimits = Object.freeze({
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
   "src/worker/pending-calls.ts": 180,
+  "src/worker/pending-call-deadlines.ts": 80,
   "src/worker/mcp-jsonrpc.ts": 130,
   "src/worker/websocket-protocol.ts": 60,
 });

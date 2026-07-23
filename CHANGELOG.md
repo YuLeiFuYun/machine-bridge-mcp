@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-beta.12 - 2026-07-23
+
+### ChatGPT Streamable HTTP task continuity
+
+- Fix remote `tools/call` handling so an HTTP/SSE connection closing is no longer interpreted as MCP cancellation. Only an explicit session-scoped `notifications/cancelled` request may remove the pending request key and send `cancel_call` to the daemon.
+- Negotiate `text/event-stream` for clients that advertise it, prime the response immediately, send a bounded ten-second keepalive comment while work is active, and deliver the terminal JSON-RPC result as an SSE message. This prevents a long-running local operation from leaving the ChatGPT-to-Worker HTTP path completely idle.
+- Preserve the underlying Durable Object operation with `waitUntil` when the response stream is no longer writable, so transport disposal cannot silently terminate local work. JSON-only clients retain the existing single-response behavior.
+- Replace duplicated relay timing literals with one shared contract. Same-daemon reconnect recovery is extended from thirty seconds to two minutes, and the Worker pauses only the remaining normal call deadline while detached, avoiding both premature expiry during recovery and inflated timeouts while the daemon is healthy.
+- Add deterministic and live Worker regressions for SSE negotiation, immediate priming, keepalives, terminal result delivery, HTTP abort without cancellation, explicit cancellation after disconnect, shared timeout ceilings, and same-instance recovery timing.
+
 ## 3.0.0-beta.11 - 2026-07-23
 
 ### External-review verification and observability hardening

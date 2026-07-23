@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { PendingCallRegistrationError, PendingCallRegistry } from "./pending-calls.ts";
 import {
   DAEMON_HELLO_TIMEOUT_MS,
@@ -13,6 +14,7 @@ import {
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
 import { mcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
+import { acceptsEventStream, streamJsonRpcResponse } from "./mcp-stream.ts";
 import { daemonToolTimeoutMs } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors.ts";
@@ -36,14 +38,14 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.11";
+const SERVER_VERSION = "3.0.0-beta.12";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
-const DAEMON_RECONNECT_GRACE_MS = 30_000;
+const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
 
 interface BridgeEnv extends OAuthControllerEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
@@ -363,13 +365,23 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
     const session = await resolveMcpSession(request, body.method, this.oauth.identityKey(), authorized.tokenKey);
     if (session.kind === "invalid") return json(rpcError(body.id, -32001, "MCP session not found"), 404);
-    const response = await this.dispatchJsonRpc(
+    const dispatch = this.dispatchJsonRpc(
       body,
       base,
       authorized,
       session.kind === "active" ? session.sessionId : "",
-      request.signal,
     );
+    if (body.method === "tools/call") {
+      this.ctx.waitUntil(dispatch.then(() => undefined, () => undefined));
+      if (acceptsEventStream(request)) {
+        const streamed = dispatch.catch((error) => {
+          this.observability.event("error", "mcp.stream.dispatch.failed", { error_class: workerErrorClass(error) });
+          return rpcError(body.id, -32603, "Internal error");
+        });
+        return streamJsonRpcResponse(streamed);
+      }
+    }
+    const response = await dispatch;
     if (response === null) return new Response(null, { status: 202 });
     return session.kind === "initialize" ? json(response, 200, { "mcp-session-id": session.sessionId }) : json(response);
   }
@@ -379,7 +391,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     base: string,
     authorized: AuthorizedToken,
     sessionId: string,
-    signal?: AbortSignal,
   ): Promise<Record<string, unknown> | null> {
     if (request.method === "initialize") {
       const requested = asObject(request.params).protocolVersion;
@@ -387,7 +398,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         ? requested
         : MCP_PROTOCOL_VERSION;
       const bootstrap = this.daemonToolEnabled("session_bootstrap")
-        ? await this.callDaemonTool("session_bootstrap", { path: "." }, authorized, undefined, signal).catch(() => null)
+        ? await this.callDaemonTool("session_bootstrap", { path: "." }, authorized).catch(() => null)
         : null;
       const localInstructions = sessionInstructionText(bootstrap);
       return rpcResult(request.id, {
@@ -422,7 +433,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           base,
           authorized,
           mcpClientRequestKey(authorized.tokenKey, sessionId, request.id),
-          signal,
         );
         return rpcResult(request.id, textToolResult(result));
       } catch (error) {
@@ -437,7 +447,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     base: string,
     authorized: AuthorizedToken,
     requestKey?: string,
-    signal?: AbortSignal,
   ): Promise<unknown> {
     if (name === "server_info") {
       const { daemon, tools, authorization } = this.authorityContext(authorized);
@@ -478,7 +487,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!this.daemonToolEnabled(name)) throw new Error(`tool disabled by local daemon policy: ${name}`);
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
-      const result = await this.callDaemonTool(name, args, authorized, requestKey, signal);
+      const result = await this.callDaemonTool(name, args, authorized, requestKey);
       return name === "project_overview" ? decorateProjectOverview(result, { accountId: authorized.accountId,
         accountVersion: authorized.accountVersion, role: authorized.role }) : result;
     }
@@ -489,7 +498,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     args: Record<string, unknown>,
     authorized: AuthorizedToken,
     requestKey?: string,
-    signal?: AbortSignal,
   ): Promise<unknown> {
     this.reclaimStaleDaemonSockets();
     const socket = this.daemonRegistry.readySockets()[0];
@@ -518,11 +526,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           }
           return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
         },
-        signal,
-        onAbort: (record) => {
-          if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
-          return new WorkerToolError("cancelled", "MCP client stopped waiting for the tool result");
-        },
       });
     } catch (error) {
       if (error instanceof PendingCallRegistrationError) {
@@ -531,9 +534,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       throw error;
     }
     this.observability.callStarted(name);
-    if (!signal?.aborted) {
-      try {
-        socket.send(JSON.stringify({
+    try {
+      socket.send(JSON.stringify({
           type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutMs,
           authorization: {
             account_id: authorized.accountId,
@@ -542,11 +544,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
             family_id: authorized.familyId,
             role: authorized.role,
           },
-        }));
-      } catch {
-        this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
-        this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed");
-      }
+      }));
+    } catch {
+      this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
+      this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed");
     }
     try {
       const value = await result;

@@ -1,4 +1,5 @@
 import type { PendingCallRecord, RegisterPendingCall } from "./pending-call-contract.ts";
+import { PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
 
 export class PendingCallRegistrationError extends Error {
   readonly code: "conflict" | "limit_exceeded";
@@ -16,11 +17,12 @@ export class PendingCallRegistry {
   private readonly maximum: number;
   private readonly byId = new Map<string, PendingCallRecord>();
   private readonly byRequestKey = new Map<string, string>();
+  private readonly deadlines: PendingCallDeadlines;
 
-  constructor(maximum: number) {
+  constructor(maximum: number, options: PendingCallDeadlineOptions = {}) {
     this.maximum = maximum;
+    this.deadlines = new PendingCallDeadlines(options);
   }
-
   get size(): number {
     return this.byId.size;
   }
@@ -35,16 +37,9 @@ export class PendingCallRegistry {
     if (input.clientRequestKey && this.byRequestKey.has(input.clientRequestKey)) {
       throw new PendingCallRegistrationError("conflict", "duplicate in-flight JSON-RPC request id within this MCP session");
     }
-    const startedAt = performance.now();
+    const startedAt = this.deadlines.now();
+    const timeoutMs = Math.max(1, Math.floor(Number(input.timeoutMs) || 1));
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        const record = this.take(input.id);
-        if (!record) return;
-        let error: unknown;
-        try { error = input.onTimeout(record); }
-        catch { error = new Error("pending daemon call timed out"); }
-        reject(error instanceof Error ? error : new Error("pending daemon call timed out"));
-      }, input.timeoutMs);
       const abortHandler = () => {
         const record = this.take(input.id);
         if (!record) return;
@@ -60,7 +55,9 @@ export class PendingCallRegistry {
         clientRequestKey: input.clientRequestKey,
         tool: String(input.tool || "unknown"),
         startedAt,
-        timeout,
+        deadlineAt: startedAt + timeoutMs,
+        remainingTimeoutMs: timeoutMs,
+        onTimeout: input.onTimeout,
         resolve,
         reject,
         signal: input.signal,
@@ -68,6 +65,7 @@ export class PendingCallRegistry {
       };
       this.byId.set(input.id, record);
       if (input.clientRequestKey) this.byRequestKey.set(input.clientRequestKey, input.id);
+      this.deadlines.armOperation(record, timeoutMs, (id) => this.expireOperation(id));
       if (input.signal?.aborted) abortHandler();
       else input.signal?.addEventListener("abort", abortHandler, { once: true });
     });
@@ -114,13 +112,13 @@ export class PendingCallRegistry {
     const delay = Math.max(1, Math.floor(Number(graceMs) || 1));
     for (const record of records) {
       record.socket = undefined;
-      if (record.reconnectTimeout) clearTimeout(record.reconnectTimeout);
-      record.reconnectTimeout = setTimeout(() => {
-        const current = this.byId.get(record.id);
+      this.deadlines.pauseOperation(record);
+      this.deadlines.armReconnect(record, delay, (id) => {
+        const current = this.byId.get(id);
         if (!current || current.socket) return;
-        const expired = this.take(record.id);
+        const expired = this.take(id);
         if (expired) expired.reject(createError(expired));
-      }, delay);
+      });
     }
     return records.length;
   }
@@ -130,16 +128,16 @@ export class PendingCallRegistry {
     const rebound: string[] = [];
     for (const record of this.byId.values()) {
       if (record.socket || record.daemonInstanceId !== daemonInstanceId) continue;
-      if (record.reconnectTimeout) clearTimeout(record.reconnectTimeout);
-      record.reconnectTimeout = undefined;
+      this.deadlines.clearReconnect(record);
       record.socket = socket;
+      this.deadlines.armOperation(record, record.remainingTimeoutMs, (id) => this.expireOperation(id));
       rebound.push(record.id);
     }
     return rebound;
   }
 
   snapshot(): { active: number; detached: number; request_keys: number; maximum: number; oldest_ms: number; by_tool: Record<string, number> } {
-    const now = performance.now();
+    const now = this.deadlines.now();
     const byTool: Record<string, number> = {};
     let detached = 0;
     let oldestMs = 0;
@@ -158,11 +156,19 @@ export class PendingCallRegistry {
     };
   }
 
+  private expireOperation(id: string): void {
+    const record = this.take(id);
+    if (!record) return;
+    let error: unknown;
+    try { error = record.onTimeout(record); }
+    catch { error = new Error("pending daemon call timed out"); }
+    record.reject(error instanceof Error ? error : new Error("pending daemon call timed out"));
+  }
+
   private take(id: string): PendingCallRecord | undefined {
     const record = this.byId.get(id);
     if (!record) return undefined;
-    clearTimeout(record.timeout);
-    if (record.reconnectTimeout) clearTimeout(record.reconnectTimeout);
+    this.deadlines.clear(record);
     if (record.signal && record.abortHandler) record.signal.removeEventListener("abort", record.abortHandler);
     this.byId.delete(id);
     if (record.clientRequestKey && this.byRequestKey.get(record.clientRequestKey) === id) {
