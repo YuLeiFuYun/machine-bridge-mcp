@@ -1,5 +1,8 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
+import { acceptsEventStream, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
+import { daemonToolTimeoutMs } from "../src/worker/tool-timeout.ts";
+import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
 import { WorkerObservability } from "../src/worker/observability.ts";
@@ -24,8 +27,11 @@ await testRequestKeyReuse();
 await testRegistrationFailures();
 await testTerminalPaths();
 await testReconnectRebinding();
+await testDetachedTimeoutPause();
 await testTimeoutCallbackFailure();
 await testAbortSignalCleanup();
+await testMcpStreamResponse();
+testRelayTimeoutContract();
 testWorkerPolicyParity();
 testWorkerErrors();
 testWorkerObservability();
@@ -151,6 +157,48 @@ async function testReconnectRebinding() {
   assert(registry.snapshot().active === 0, "expired detached call leaked from the pending registry");
 }
 
+async function testDetachedTimeoutPause() {
+  let now = 0;
+  let nextTimer = 1;
+  const timers = new Map();
+  const scheduler = {
+    setTimeout(callback, delay) {
+      const id = nextTimer++;
+      timers.set(id, { callback, deadline: now + delay });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+  };
+  const advance = (duration) => {
+    now += duration;
+    for (;;) {
+      const due = [...timers.entries()]
+        .filter(([, timer]) => timer.deadline <= now)
+        .sort((left, right) => left[1].deadline - right[1].deadline)[0];
+      if (!due) return;
+      timers.delete(due[0]);
+      due[1].callback();
+    }
+  };
+  const socketA = {};
+  const socketB = {};
+  const registry = new PendingCallRegistry(1, { now: () => now, scheduler });
+  const pending = registry.register({
+    id: "paused-timeout", tool: "run_process", socket: socketA, daemonInstanceId: "daemon_pause_12345678",
+    timeoutMs: 100, onTimeout: () => new Error("operation timeout"),
+  });
+  advance(40);
+  assert(registry.detachSocket(socketA, 120, () => new Error("reconnect timeout")) === 1, "timeout-pause test did not detach its call");
+  advance(100);
+  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 1, "normal operation timeout continued running while detached");
+  assert(registry.rebindInstance("daemon_pause_12345678", socketB).length === 1, "detached timeout test did not rebind");
+  advance(59);
+  assert(registry.snapshot().active === 1, "rebound operation timeout lost its remaining budget");
+  advance(1);
+  await expectReject(pending, "operation timeout");
+  assert(registry.snapshot().active === 0, "expired rebound call leaked from the registry");
+}
+
 async function testTimeoutCallbackFailure() {
   const registry = new PendingCallRegistry(1);
   const timedOut = registry.register({
@@ -159,6 +207,55 @@ async function testTimeoutCallbackFailure() {
   });
   await expectReject(timedOut, "pending daemon call timed out");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "throwing timeout callback leaked pending indexes");
+}
+
+async function testMcpStreamResponse() {
+  assert(acceptsEventStream(new Request("https://example.test/mcp", { headers: { accept: "application/json, text/event-stream" } })), "event-stream content negotiation was not detected");
+  assert(!acceptsEventStream(new Request("https://example.test/mcp", { headers: { accept: "application/json" } })), "JSON-only client was incorrectly upgraded to SSE");
+  assert(!acceptsEventStream(new Request("https://example.test/mcp", { headers: { accept: "text/event-stream; q=0, application/json" } })), "explicitly unacceptable event stream was selected");
+
+  let resolveResult;
+  const result = new Promise((resolve) => { resolveResult = resolve; });
+  let intervalCallback = null;
+  let intervalCleared = false;
+  let keptAlive = null;
+  const response = streamJsonRpcResponse(result, {
+    streamId: "stream_test",
+    heartbeatMs: 1,
+    scheduler: {
+      setInterval(callback) { intervalCallback = callback; return 1; },
+      clearInterval(handle) { if (handle === 1) intervalCleared = true; },
+    },
+    keepAlive(promise) { keptAlive = promise; },
+  });
+  assert(response.headers.get("content-type")?.startsWith("text/event-stream"), "stream response did not advertise SSE");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const initial = decoder.decode((await reader.read()).value);
+  assert(initial === ": connected\n\n", "stream response did not prime the client with a non-message frame");
+  intervalCallback();
+  const heartbeat = decoder.decode((await reader.read()).value);
+  assert(heartbeat === ": keepalive\n\n", "stream response heartbeat was malformed");
+  resolveResult({ jsonrpc: "2.0", id: 7, result: { ok: true } });
+  const terminal = decoder.decode((await reader.read()).value);
+  assert(terminal.includes("event: message") && terminal.includes('"id":7') && terminal.includes('"ok":true'), "stream response lost the terminal JSON-RPC result");
+  assert((await reader.read()).done, "stream response did not close after the terminal result");
+  await keptAlive;
+  assert(intervalCleared, "stream response heartbeat timer was not cleared");
+
+  let resolveDisconnected;
+  const disconnectedResult = new Promise((resolve) => { resolveDisconnected = resolve; });
+  let disconnectedCompletion = null;
+  const disconnected = streamJsonRpcResponse(disconnectedResult, {
+    streamId: "stream_disconnected",
+    scheduler: { setInterval() { return 2; }, clearInterval() {} },
+    keepAlive(promise) { disconnectedCompletion = promise; },
+  });
+  const disconnectedReader = disconnected.body.getReader();
+  await disconnectedReader.read();
+  await disconnectedReader.cancel();
+  resolveDisconnected({ jsonrpc: "2.0", id: 8, result: { ok: true } });
+  await disconnectedCompletion;
 }
 
 async function testAbortSignalCleanup() {
@@ -190,6 +287,16 @@ async function testAbortSignalCleanup() {
   });
   await expectReject(rejectedImmediately, "already cancelled");
   assert(registry.snapshot().active === 0, "already-aborted request entered the pending registry");
+}
+
+function testRelayTimeoutContract() {
+  assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
+  assert(relayContract.streamHeartbeatMs === 10_000, "SSE heartbeat interval drifted from the idle-connection contract");
+  assert(daemonToolTimeoutMs("session_bootstrap", {}) === 10_000, "bootstrap timeout incorrectly inherited the reconnect budget");
+  assert(daemonToolTimeoutMs("read_file", {}) === 60_000, "ordinary tool timeout was extended without a disconnect");
+  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 120 }) === 125_000, "configurable tool timeout lost its protocol overhead");
+  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 600 }) === 605_000, "maximum configurable execution timeout drifted from the relay contract");
+  assert(relayContract.maximumRelayToolTimeoutMs === 610_000, "local relay envelope ceiling drifted from the Worker contract");
 }
 
 function testWorkerPolicyParity() {

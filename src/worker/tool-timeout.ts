@@ -1,3 +1,5 @@
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
+
 export function daemonToolTimeoutMs(name: string, args: Record<string, unknown>): number {
   if (name === "session_bootstrap") return 10_000;
   const configurable = new Set([
@@ -8,7 +10,8 @@ export function daemonToolTimeoutMs(name: string, args: Record<string, unknown>)
   ]);
   if (!configurable.has(name)) return 60_000;
   const seconds = clampNumber(args.timeout_seconds, name === "browser_fill_form" ? 60 : 120, 1, 600);
-  return Math.min((seconds + 5) * 1000, 610_000);
+  const executionMs = Math.min(seconds * 1000, relayContract.maximumExecutionTimeoutMs);
+  return Math.min(executionMs + relayContract.toolCallOverheadMs, relayContract.maximumRelayToolTimeoutMs);
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { RelayConnection } from "./relay-connection.mjs";
 import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
 import { MCP_SUPPORTED_PROTOCOL_VERSIONS, SERVER_NAME } from "./tools.mjs";
@@ -72,7 +73,7 @@ export function normalizeRelayToolCall(message) {
     tool,
     arguments: argumentsValue,
     authorization,
-    timeoutMs: clampInteger(message.timeout_ms, 60_000, 1000, 610_000),
+    timeoutMs: clampInteger(message.timeout_ms, 60_000, 1000, relayContract.maximumRelayToolTimeoutMs),
   };
 }
 

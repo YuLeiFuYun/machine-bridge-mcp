@@ -653,6 +653,50 @@ try {
   assert(!statusAfterHello.daemon?.tools?.includes("exec_command"), "agent policy did not filter shell execution");
   assert(!statusAfterHello.daemon?.tools?.includes("read_file"), "replaced daemon tools remained active");
 
+  const streamedRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const streamedResponsePromise = stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 879, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  });
+  const streamedRelay = await streamedRelayPromise;
+  const streamedResponse = await streamedResponsePromise;
+  assert(streamedResponse.status === 200, `streamed tool call failed: ${streamedResponse.status}`);
+  assert(streamedResponse.headers.get("content-type")?.startsWith("text/event-stream"), "event-stream client received a buffered JSON response");
+  const streamedReader = streamedResponse.body.getReader();
+  const streamedInitial = new TextDecoder().decode((await streamedReader.read()).value);
+  assert(streamedInitial === ": connected\n\n", "streamed tool call did not prime the client with a non-message frame before completion");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: streamedRelay.id, ok: true, result: { streamed: true } }));
+  const streamedResult = await readSseJsonRpcResponse(streamedReader, streamedInitial);
+  assert(streamedResult.result?.structuredContent?.streamed === true, "streamed tool call lost the terminal result");
+
+  const disconnectedHttpRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const disconnectedHttpController = new AbortController();
+  const disconnectedHttpFetch = fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: mcpHeaders(ownerAccessToken, primarySession),
+    signal: disconnectedHttpController.signal,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 878, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  }).catch((error) => error);
+  const disconnectedHttpRelay = await disconnectedHttpRelayPromise;
+  disconnectedHttpController.abort();
+  await disconnectedHttpFetch;
+  await sleep(50);
+  const disconnectedHttpStatus = await callServerInfo(base, ownerAccessToken, 8780);
+  assert(disconnectedHttpStatus.worker?.pending_calls?.active === 1, "HTTP disconnect incorrectly cancelled the MCP operation");
+  assert(disconnectedHttpStatus.worker?.pending_calls?.request_keys === 1, "HTTP disconnect removed the explicit-cancellation request key");
+  const disconnectedHttpCancelNotice = waitForWsMessage(candidateDaemon, "cancel_call", 10_000, "HTTP-disconnect cleanup cancellation");
+  const disconnectedHttpCancellation = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: mcpHeaders(ownerAccessToken, primarySession),
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 878, reason: "explicit cleanup after HTTP disconnect" } }),
+  });
+  assert(disconnectedHttpCancellation.status === 202, "explicit cancellation after HTTP disconnect failed");
+  assert((await disconnectedHttpCancelNotice).id === disconnectedHttpRelay.id, "explicit cancellation after HTTP disconnect targeted the wrong daemon call");
+
   const firstWindowRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const firstWindowCall = toolCallRequest(base, ownerAccessToken, primarySession, 880, "list_dir", { path: "." });
   const firstWindowRelay = await firstWindowRelayPromise;
@@ -732,7 +776,7 @@ try {
   const cancelSecondRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const cancelSecondCall = toolCallRequest(base, ownerAccessToken, secondarySession, 882, "list_dir", { path: "." });
   const cancelSecondRelay = await cancelSecondRelayPromise;
-  const isolatedCancelNotice = waitForWsMessage(candidateDaemon, "cancel_call");
+  const isolatedCancelNotice = waitForWsMessage(candidateDaemon, "cancel_call", 10_000, "session-isolated cancellation");
   const isolatedCancellation = await stableFetch(`${base}/mcp`, {
     method: "POST",
     headers: mcpHeaders(ownerAccessToken, primarySession),
@@ -880,7 +924,7 @@ try {
   });
   const relayedCall = await waitForWsMessage(candidateDaemon, "tool_call");
   assert(relayedCall.tool === "list_dir", "Worker relayed the wrong tool");
-  const cancelNotice = waitForWsMessage(candidateDaemon, "cancel_call");
+  const cancelNotice = waitForWsMessage(candidateDaemon, "cancel_call", 10_000, "ordinary explicit cancellation");
   const cancelled = await stableFetch(`${base}/mcp`, {
     method: "POST",
     headers: {
@@ -1200,7 +1244,7 @@ function waitForWsMessageSequence(socket, expectedTypes, timeoutMs = 5000) {
 }
 
 
-function waitForWsMessage(socket, expectedType, timeoutMs = 5000) {
+function waitForWsMessage(socket, expectedType, timeoutMs = 5000, label = expectedType) {
   return withTimeout(new Promise((resolve, reject) => {
     const onMessage = (data) => {
       cleanup();
@@ -1220,7 +1264,7 @@ function waitForWsMessage(socket, expectedType, timeoutMs = 5000) {
     socket.on("message", onMessage);
     socket.on("error", onError);
     socket.on("close", onClose);
-  }), timeoutMs, `websocket message ${expectedType}`);
+  }), timeoutMs, `websocket message ${label}`);
 }
 
 function waitForWsClose(socket, timeoutMs = 5000) {
@@ -1352,6 +1396,22 @@ async function stableFetch(url, options = {}, attempts = 3) {
   }
   if (lastResponse) return lastResponse;
   throw lastError || new Error("fetch failed without a response");
+}
+
+async function readSseJsonRpcResponse(reader, initialText = "") {
+  const decoder = new TextDecoder();
+  let text = initialText;
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  text += decoder.decode();
+  const dataLines = text.split(/\r?\n/).filter((line) => line.startsWith("data: "));
+  for (let index = dataLines.length - 1; index >= 0; index -= 1) {
+    try { return JSON.parse(dataLines[index].slice(6)); } catch {}
+  }
+  throw new Error(`SSE response omitted a JSON-RPC message: ${text.slice(0, 512)}`);
 }
 
 async function fetchJson(url, options) {

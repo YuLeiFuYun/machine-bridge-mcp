@@ -6,7 +6,10 @@ export interface PendingCallRecord {
   clientRequestKey?: string;
   tool: string;
   startedAt: number;
-  timeout: ReturnType<typeof setTimeout>;
+  timeout?: ReturnType<typeof setTimeout>;
+  deadlineAt: number;
+  remainingTimeoutMs: number;
+  onTimeout: (record: PendingCallRecord) => Error;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   signal?: AbortSignal;

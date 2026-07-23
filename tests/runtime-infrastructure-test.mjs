@@ -16,7 +16,8 @@ import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { workspaceShellCommand } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
-import { normalizeRelayResumeCalls } from "../src/local/runtime-relay.mjs";
+import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/runtime-relay.mjs";
+import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
 
 await testCallRegistry();
@@ -28,6 +29,7 @@ testRelayReadinessProbe();
 await testRelayReadinessStateGuards();
 testRelayCancellationSuppression();
 testRelayResumeReconciliation();
+testRelayToolTimeoutNormalization();
 testRuntimeConvenienceMethods();
 testRelayReconnectDelivery();
 await testProcessExecutionNoShell();
@@ -309,6 +311,32 @@ function testRelayResumeReconciliation() {
     { sessionId: 18, authenticated: true, ready: false },
   );
   assert(violation === "resume_calls_required", "ready_ack without resume_calls was accepted");
+}
+
+function testRelayToolTimeoutNormalization() {
+  const authorization = {
+    account_id: "acct_testowner_12345678901234567890",
+    account_version: 1,
+    client_id: `mcp_client_${"c".repeat(43)}`,
+    family_id: `mcp_family_${"f".repeat(43)}`,
+    role: "owner",
+  };
+  const accepted = normalizeRelayToolCall({
+    id: "call_timeout_contract_12345678",
+    tool: "exec_command",
+    arguments: { command: "true" },
+    authorization,
+    timeout_ms: relayContract.maximumRelayToolTimeoutMs,
+  });
+  assert(accepted.ok && accepted.timeoutMs === relayContract.maximumRelayToolTimeoutMs, "local relay rejected the shared maximum call deadline");
+  const clamped = normalizeRelayToolCall({
+    id: "call_timeout_clamped_12345678",
+    tool: "exec_command",
+    arguments: { command: "true" },
+    authorization,
+    timeout_ms: relayContract.maximumRelayToolTimeoutMs + 60_000,
+  });
+  assert(clamped.ok && clamped.timeoutMs === relayContract.maximumRelayToolTimeoutMs, "local relay accepted a deadline above the shared contract");
 }
 
 function testRuntimeConvenienceMethods() {
