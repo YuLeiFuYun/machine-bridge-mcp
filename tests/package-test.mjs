@@ -34,7 +34,7 @@ try {
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [
     "runtime-reporting.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs",
-    "runtime-tool-handlers.mjs", "runtime-relay.mjs", "runtime-paths.mjs",
+    "runtime-tool-handlers.mjs", "runtime-relay.mjs", "runtime-paths.mjs", "runtime-resource-service.mjs",
   ]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted runtime boundary ${module}`);
   }

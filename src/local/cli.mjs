@@ -519,6 +519,13 @@ async function doctorCommand(args) {
   const state = loadState(workspace, { stateDir: args.stateDir });
   state.policy = resolvePolicy({}, state.policy);
   checks.push({ name: "policy", ok: true, detail: formatPolicySummary(state.policy) });
+  checks.push({
+    name: "authorization-model",
+    ok: true,
+    detail: state.policy.profile === "full"
+      ? "local owner operations execute automatically without per-operation prompts; shell, browser, and application automation use the daemon OS user's ambient authority"
+      : "operations allowed by the selected local policy execute automatically without per-operation prompts",
+  });
   if (state.policy.profile === "full") {
     try {
       assertCanonicalFullPolicy(state.policy);

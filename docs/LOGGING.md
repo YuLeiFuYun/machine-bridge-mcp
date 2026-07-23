@@ -112,6 +112,8 @@ Application discovery and Accessibility operations follow the same rule: permiss
 
 Messages, strings, object depth, object key counts, array item counts, and serialized field payloads are bounded. Control characters and Unicode display controls are neutralized. Fields with secret-like names and path-like keys are recursively redacted. Free-form sanitization covers generic private-key headers, AWS/GitHub/GitLab/npm/Slack/Google/live-payment/API token forms, JWT-shaped values, URLs with embedded credentials, email addresses, and user-home paths.
 
+Local and Worker free-form strings use the same portable value sanitizer. Worker fields are therefore inspected by content even when their key is not secret-shaped. Both structured loggers assign their authoritative metadata after sanitizing caller fields. Local `timestamp`, `level`, `component`, `message`, and `event`, plus Worker `timestamp`, `level`, `component`, and `event`, therefore cannot be forged or replaced by an event payload. Local-only recursive path-key redaction and environment-derived home aliases remain additional protections around the portable rules.
+
 The logger exposes two intentional plain-output boundaries. `safePlain` sanitizes operational guidance and diagnostic text. Raw `plain` output is reserved for explicitly requested credentials or local paths whose display is the command's purpose; callers must not pass external exception text or tool content to it.
 
 This is defense in depth, not content classification. Unknown, split, transformed, encrypted, or application-specific secret formats can evade pattern matching, which is why tool arguments and outputs are omitted rather than merely filtered.

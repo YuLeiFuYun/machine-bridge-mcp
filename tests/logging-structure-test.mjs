@@ -12,6 +12,11 @@ logger.event("info", "tool.call.completed", {
   password: "must-not-appear",
   workspace_path: syntheticHomePath,
   note: "Bearer abc.def.ghi",
+  timestamp: "1970-01-01T00:00:00.000Z",
+  level: "debug",
+  component: "caller",
+  event: "caller.override",
+  message: "forged message",
 });
 logger.event("error", "tool.call.failed", {
   error_code: "permission_denied",
@@ -24,6 +29,7 @@ const completed = JSON.parse(stdout.lines[0]);
 const failed = JSON.parse(stderr.lines[0]);
 assert(completed.event === "tool.call.completed", "structured event name was lost");
 assert(completed.component === "test" && completed.level === "info", "structured event identity is incomplete");
+assert(completed.event === "tool.call.completed" && completed.message === "Tool call completed" && completed.timestamp !== "1970-01-01T00:00:00.000Z", "structured event fields overrode authoritative local log metadata");
 assert(completed.call_id === "call-123" && completed.tool === "read_file" && completed.duration_ms === 12, "safe lifecycle fields were lost");
 assert(completed.password === "<redacted>", "sensitive structured field was not redacted");
 assert(completed.workspace_path === "<local-path>", "local path field was not redacted");
@@ -50,12 +56,13 @@ assert(infoOnly.lines.length === 0, "JSON logger ignored the configured level");
 const directStdout = captureStream();
 const directStderr = captureStream();
 const directLogger = createLogger({ level: "debug", format: "json", component: "daemon", stdout: directStdout, stderr: directStderr, color: false });
-directLogger.info("daemon started", { workspace_path: syntheticHomePath, attempts: 1 });
+directLogger.info("daemon started", { workspace_path: syntheticHomePath, attempts: 1, timestamp: "1970-01-01T00:00:00.000Z", level: "error", component: "caller", message: "forged message" });
 directLogger.warn("relay unavailable", { attempts: 3, token: "must-not-appear" });
 assert(directStdout.lines.length === 1 && directStderr.lines.length === 1, "direct JSON log methods used the wrong streams");
 const directInfo = JSON.parse(directStdout.lines[0]);
 const directWarning = JSON.parse(directStderr.lines[0]);
 assert(Number.isFinite(Date.parse(directInfo.timestamp)) && directInfo.level === "info" && directInfo.component === "daemon", "direct info log omitted structured identity");
+assert(directInfo.timestamp !== "1970-01-01T00:00:00.000Z" && directInfo.message === "daemon started", "direct JSON fields overrode authoritative local log metadata");
 assert(directInfo.workspace_path === "<local-path>" && directInfo.attempts === 1, "direct info log omitted safe fields or leaked a path");
 assert(directWarning.level === "warn" && directWarning.attempts === 3 && directWarning.token === "<redacted>", "direct warning log omitted fields or failed redaction");
 assert(!directStderr.lines[0].includes("must-not-appear"), "direct JSON warning leaked a sensitive field");

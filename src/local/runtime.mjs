@@ -19,14 +19,11 @@ import { LifecycleController } from "./lifecycle.mjs";
 import { MAX_WRITE_BYTES, sha256, WorkspaceFileService } from "./workspace-file-service.mjs";
 export { MAX_WRITE_BYTES, sha256 } from "./workspace-file-service.mjs";
 import { classifyOperationalError } from "./log.mjs";
-import { inspectResourceFile, ManagedJobManager } from "./managed-jobs.mjs";
-import { generateRegisteredSshKey } from "./resource-operations.mjs";
-import { expandHome } from "./state.mjs";
+import { ManagedJobManager } from "./managed-jobs.mjs";
 import { AgentContextManager } from "./agent-context.mjs";
 import { AppAutomationManager } from "./app-automation.mjs";
 import { BrowserBridgeManager } from "./browser-bridge.mjs";
 import { CapabilityObserver } from "./capability-observer.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { isPlainRecord } from "./records.mjs";
 import { AccountAccessGate } from "./account-access.mjs";
 import { buildProjectOverview, buildRuntimeInfo } from "./runtime-reporting.mjs";
@@ -38,7 +35,8 @@ import { delegatedProcessIsolationStatus } from "./delegated-process-sandbox.mjs
 import { policyForContext } from "./authority-context.mjs";
 import { createRuntimeRelayConnection, normalizeRelayResumeCalls, normalizeRelayToolCall } from "./runtime-relay.mjs";
 import { RelayCallRecovery } from "./relay-call-recovery.mjs";
-import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage, stateRootFromProfileStatePath } from "./runtime-paths.mjs";
+import { RuntimeResourceService } from "./runtime-resource-service.mjs";
+import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage } from "./runtime-paths.mjs";
 import {
   resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
   sessionBootstrap as buildRuntimeSessionBootstrap,
@@ -155,9 +153,15 @@ export class LocalRuntime {
       gitExecutable: () => this.resolveGitExecutable(),
       maximumBytes: MAX_WRITE_BYTES,
     });
+    this.runtimeResourceService = new RuntimeResourceService({
+      workspace: this.workspace,
+      resourceStatePath: this.resourceStatePath,
+      currentResources: () => this.managedJobManager.currentResources(),
+      authorizeTool: (tool) => this.policyGate.assert(tool),
+    });
     const runProcess = (cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin) => this.runProcess(cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin);
-    const readResourceText = (name) => this.readLocalResourceText(name);
-    const readResourceBinary = (name) => this.readLocalResourceBinary(name);
+    const readResourceText = (name) => this.runtimeResourceService.readText(name);
+    const readResourceBinary = (name) => this.runtimeResourceService.readBinary(name);
     this.appAutomationManager = new AppAutomationManager({
       ...applicationAutomation,
       policy: this.policy,
@@ -518,37 +522,7 @@ export class LocalRuntime {
 
   async generateSshKeyResource(args = {}, context = {}) {
     this.throwIfCancelled(context);
-    this.policyGate.assert("generate_ssh_key_resource");
-    if (!this.resourceStatePath) throw new Error("local resource state is unavailable in this runtime");
-    const home = process.env.HOME || process.env.USERPROFILE;
-    if (!home) throw new Error("HOME or USERPROFILE is required to choose a default SSH key path");
-    const target = args.path
-      ? resolve(expandHome(String(args.path)))
-      : resolve(home, ".ssh", `machine-mcp-${args.name}-ed25519`);
-    const key = await generateRegisteredSshKey({
-      workspace: this.workspace,
-      stateDir: stateRootFromProfileStatePath(this.resourceStatePath),
-      name: args.name,
-      targetPath: target,
-      comment: args.comment || `machine-mcp:${args.name}`,
-    });
-    const exposePaths = args.expose_paths === true;
-    return {
-      name: key.name,
-      created: key.created,
-      registered: key.registered,
-      fingerprint: key.fingerprint,
-      key_type: key.keyType,
-      private_mode: key.privateMode,
-      public_mode: key.publicMode,
-      private_key_content_exposed: key.privateKeyContentExposed,
-      available_to_new_jobs_immediately: key.availableToNewJobsImmediately,
-      paths_exposed: exposePaths,
-      ...(exposePaths ? {
-        private_key_path: resolve(key.privateKeyPath),
-        public_key_path: resolve(key.publicKeyPath),
-      } : {}),
-    };
+    return this.runtimeResourceService.generateSshKey(args);
   }
 
   async sessionBootstrap(args = {}, context = {}) {
@@ -567,24 +541,6 @@ export class LocalRuntime {
       capabilityObserver: this.capabilityObserver,
       policy: this.policy,
     }, args, context);
-  }
-
-  readLocalResourceBinary(name) {
-    const registry = this.managedJobManager.currentResources();
-    const resource = Object.hasOwn(registry, name) ? registry[name] : null;
-    if (!resource) throw new Error(`unknown local resource: ${name}`);
-    const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
-    if (inspected.size > 1024 * 1024) throw new Error("local resource exceeds 1 MiB browser injection limit");
-    return { buffer: readBoundedRegularFileSync(resource.path, 1024 * 1024), path: resource.path, size: inspected.size };
-  }
-
-  readLocalResourceText(name) {
-    const { buffer } = this.readLocalResourceBinary(name);
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-    } catch {
-      throw new Error(`local resource is not valid UTF-8 text: ${name}`);
-    }
   }
 
   runDirectProcess(args, context = {}) {

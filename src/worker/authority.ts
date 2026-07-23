@@ -31,6 +31,12 @@ type AccountAuthority = {
     daemon_policy: string;
     host_filtering: string;
   };
+  execution_model: {
+    within_effective_authority: "automatic_without_per_operation_prompt";
+    owner_ambient_authority: "daemon_os_user" | "not_owner";
+    generic_control_plane_paths: "denied_even_for_owner";
+    mutually_untrusted_execution_requires: "external_os_isolation";
+  };
   summary: string;
 };
 
@@ -78,9 +84,15 @@ export function accountAuthoritySnapshot(input: AccountIdentity & {
       daemon_policy: "daemon.policy is only the local daemon capability ceiling; it is not the authenticated account permission",
       host_filtering: "the MCP host may expose a smaller subset than effective_tools, and Machine Bridge cannot observe that post-relay subset",
     },
+    execution_model: {
+      within_effective_authority: "automatic_without_per_operation_prompt",
+      owner_ambient_authority: input.role === "owner" ? "daemon_os_user" : "not_owner",
+      generic_control_plane_paths: "denied_even_for_owner",
+      mutually_untrusted_execution_requires: "external_os_isolation",
+    },
     summary: input.daemonPolicy
-      ? `Authenticated account role ${input.role} has effective profile ${effectiveProfile}. daemon.policy.profile=${daemonProfile} is only the daemon capability ceiling, not this account's permission.`
-      : `Authenticated account role ${input.role} is configured for profile ${accountPolicy.profile}, but no daemon is connected; only Worker-local tools are currently available.`,
+      ? `Authenticated account role ${input.role} has effective profile ${effectiveProfile}. daemon.policy.profile=${daemonProfile} is only the daemon capability ceiling, not this account's permission. Operations within effective authority execute automatically without a per-operation prompt${input.role === "owner" ? "; owner shell, browser, and application automation can act with the daemon OS user's ambient authority" : ""}.`
+      : `Authenticated account role ${input.role} is configured for profile ${accountPolicy.profile}, but no daemon is connected; only Worker-local tools are currently available. Operations within effective authority execute automatically without a per-operation prompt.`,
   };
 }
 

@@ -927,6 +927,8 @@ try {
   assert(revokedReviewerRefresh.response.status === 400 && revokedReviewerRefresh.body.error === "invalid_grant", "role change did not revoke the changed account refresh token");
   const ownerAfterReviewerChange = await callServerInfo(base, ownerAccessToken, 274);
   assert(ownerAfterReviewerChange.account?.role === "owner", "another account change invalidated the owner token");
+  assert(ownerAfterReviewerChange.authorization.execution_model.owner_ambient_authority === "daemon_os_user", "owner server_info omitted daemon OS-user ambient authority");
+  assert(ownerAfterReviewerChange.authority_summary?.includes("daemon OS user"), "owner authority summary hid ambient authority");
 
   for (let index = 0; index < 5; index += 1) {
     const extraRegistration = await stableFetch(`${base}/oauth/register`, {
@@ -980,6 +982,9 @@ try {
   assert(!editorStatus.authorization?.effective_tools?.includes("browser_action"), "editor effective tools exposed browser authority");
   assert(JSON.stringify(editorStatus.tools) === JSON.stringify(editorStatus.authorization.effective_tools), "top-level tools diverged from authoritative effective tools");
   assert(editorStatus.authority_summary?.includes("not this account's permission"), "authority summary did not reject the daemon-policy misinterpretation");
+  assert(editorStatus.authority_summary?.includes("without a per-operation prompt"), "authority summary hid automatic execution semantics");
+  assert(editorStatus.authorization.execution_model.within_effective_authority === "automatic_without_per_operation_prompt", "server_info omitted the automatic execution model");
+  assert(editorStatus.authorization.execution_model.owner_ambient_authority === "not_owner", "delegated account was mislabeled as owner ambient authority");
 
   const editorOverviewPromise = toolCallRequest(base, editorToken, "", 276, "project_overview", {});
   const editorOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");

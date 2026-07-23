@@ -1,3 +1,5 @@
+import { sanitizePortableLogText } from "../shared/log-redaction.mjs";
+
 const MAX_ERROR_CODES = 64;
 const MAX_TOOLS = 128;
 const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|secret|token|verifier|private[_-]?key)/i;
@@ -63,11 +65,11 @@ export class WorkerObservability {
 
   event(level: "info" | "warn" | "error", event: string, fields: Record<string, unknown> = {}): void {
     const entry = {
+      ...sanitizeFields(fields),
       timestamp: new Date().toISOString(),
       level,
       component: "worker",
       event: sanitizeName(event),
-      ...sanitizeFields(fields),
     };
     const text = JSON.stringify(entry);
     if (level === "error") console.error(text);
@@ -108,7 +110,7 @@ function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown
       continue;
     }
     if (typeof value === "boolean" || typeof value === "number" || value === null) out[safeKey] = value;
-    else if (typeof value === "string") out[safeKey] = value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 256);
+    else if (typeof value === "string") out[safeKey] = sanitizePortableLogText(value, { maxChars: 256 });
   }
   return out;
 }

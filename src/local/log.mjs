@@ -1,6 +1,7 @@
 import process from "node:process";
 import os from "node:os";
 import { errorCode } from "./errors.mjs";
+import { sanitizePortableLogText } from "../shared/log-redaction.mjs";
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -18,20 +19,6 @@ const MAX_LOG_OBJECT_KEYS = 48;
 const LEVEL_RANK = Object.freeze({ debug: 10, info: 20, success: 20, warn: 30, error: 40 });
 const SENSITIVE_KEY = /(authorization|cookie|password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)/i;
 const LOCAL_PATH_KEY = /(path|paths|cwd|workspace|directory|(?:^|[_-])dir(?:$|[_-])|root|home)/i;
-const SECRET_VALUE = /\b(?:account_admin|account_password|daemon_secret|token_version|mcp_at|mcp_code)_[A-Za-z0-9_-]+\b/g;
-const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*\b/gi;
-const EMAIL_VALUE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
-const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
-const GITHUB_TOKEN = /\bgh[pousr]_[A-Za-z0-9_]{30,}\b/g;
-const GITLAB_TOKEN = /\bglpat-[A-Za-z0-9_-]{20,}\b/g;
-const NPM_TOKEN = /\bnpm_[A-Za-z0-9]{30,}\b/g;
-const SLACK_TOKEN = /\bxox[aboprs]-[A-Za-z0-9-]{10,}\b/g;
-const GOOGLE_API_KEY = /\bAIza[A-Za-z0-9_-]{30,}\b/g;
-const PAYMENT_API_KEY = /\b(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}\b/g;
-const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
-const URL_CREDENTIALS = /https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@[^\s/"'<>]+/gi;
-const API_SECRET = /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g;
-const PRIVATE_KEY_HEADER = /-----BEGIN\s+(?:(?:OPENSSH|RSA|EC|DSA)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/g;
 const HOME_PATHS = [...new Set([process.env.HOME, process.env.USERPROFILE, safeHomeDirectory()].filter(value => typeof value === "string" && value.length > 1))]
   .sort((left, right) => right.length - left.length);
 
@@ -49,11 +36,11 @@ export function createLogger(options = {}) {
     const sanitizedMessage = sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS);
     if (options.format === "json") {
       const entry = sanitizeLogValue({
+        ...(fields && typeof fields === "object" ? fields : {}),
         timestamp: new Date().toISOString(),
         level: level === "success" ? "info" : level,
         component,
         message: sanitizedMessage,
-        ...(fields && typeof fields === "object" ? fields : {}),
       });
       stream.write(`${JSON.stringify(entry)}\n`);
       return;
@@ -66,16 +53,16 @@ export function createLogger(options = {}) {
   const event = (level, name, fields = {}, message = "") => {
     const normalizedLevel = normalizeEventLevel(level);
     const eventName = sanitizeEventName(name);
-    const payload = { event: eventName, ...fields };
+    const payload = { ...fields, event: eventName };
     const humanMessage = message || humanizeEventName(eventName);
     if (options.format === "json") {
       if (LEVEL_RANK[normalizedLevel] < LEVEL_RANK[minimumLevel]) return;
       const entry = sanitizeLogValue({
+        ...payload,
         timestamp: new Date().toISOString(),
         level: normalizedLevel === "success" ? "info" : normalizedLevel,
         component,
         message: sanitizeLogText(humanMessage, MAX_LOG_MESSAGE_CHARS),
-        ...payload,
       });
       const target = normalizedLevel === "info" || normalizedLevel === "success" ? stdout : stderr;
       target.write(`${JSON.stringify(entry)}\n`);
@@ -158,33 +145,7 @@ function sanitizeLogValue(value, key = "", seen = new WeakSet(), depth = 0) {
 }
 
 export function sanitizeLogText(value, maxChars = MAX_LOG_MESSAGE_CHARS) {
-  let raw;
-  try { raw = String(value ?? ""); } catch { raw = "<unprintable>"; }
-  let sanitized = raw
-    .replace(SECRET_VALUE, "<redacted-secret>")
-    .replace(BEARER_VALUE, "Bearer <redacted>")
-    .replace(AWS_ACCESS_KEY, "<redacted-cloud-key>")
-    .replace(GITHUB_TOKEN, "<redacted-access-token>")
-    .replace(GITLAB_TOKEN, "<redacted-access-token>")
-    .replace(NPM_TOKEN, "<redacted-access-token>")
-    .replace(SLACK_TOKEN, "<redacted-access-token>")
-    .replace(GOOGLE_API_KEY, "<redacted-cloud-key>")
-    .replace(PAYMENT_API_KEY, "<redacted-api-secret>")
-    .replace(JWT_VALUE, "<redacted-bearer-token>")
-    .replace(URL_CREDENTIALS, "<redacted-credential-url>")
-    .replace(API_SECRET, "<redacted-api-secret>")
-    .replace(PRIVATE_KEY_HEADER, "<redacted-private-key-header>")
-    .replace(EMAIL_VALUE, "<redacted-email>");
-  for (const home of HOME_PATHS) sanitized = sanitized.split(home).join("<home>");
-  sanitized = sanitized
-    .replace(/\/(?:Users|home)\/[^/\s"'<>]+(?=\/|$)/g, "<home>")
-    .replace(/\b[A-Za-z]:\\Users\\[^\\\s"'<>]+(?=\\|$)/g, "<home>")
-    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
-    .replace(/[\r\n\t]/g, match => match === "\t" ? "\\t" : "\\n")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "?");
-  if (!Number.isFinite(Number(maxChars)) || Number(maxChars) <= 0) return "";
-  const limit = Math.max(16, Number(maxChars));
-  return sanitized.length > limit ? `${sanitized.slice(0, limit - 1)}…` : sanitized;
+  return sanitizePortableLogText(value, { maxChars, homePaths: HOME_PATHS });
 }
 
 function safeHomeDirectory() {

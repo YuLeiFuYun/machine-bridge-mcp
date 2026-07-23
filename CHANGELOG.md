@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0-beta.11 - 2026-07-23
+
+### External-review verification and observability hardening
+
+- Share one portable content-redaction implementation between local and Worker logs. Worker string fields now redact embedded bearer/API tokens, credential URLs, email addresses, private-key headers, and user-home paths even when the field name itself is not sensitive.
+- Prevent caller-supplied local or Worker fields from replacing authoritative `timestamp`, `level`, `component`, `message`, or `event` metadata, and add regression coverage for both value leakage and metadata forgery.
+- Make the automatic execution model explicit in authenticated `server_info` authority snapshots and `machine-mcp doctor`: operations inside effective authority do not use per-operation prompts, and remote owner shell/browser/application actions have the daemon OS user's ambient authority.
+- Extract local-resource reads and SSH-resource registration into `runtime-resource-service.mjs`, reducing `LocalRuntime` from 697 to 653 lines while retaining the existing zero-extra-step browser/application resource path and public result contract.
+- Re-verify review claims against the repository invariants. The default `full` profile, single-maintainer release controls, Node 26/npm 12 baseline, packaged deployment/release helpers, systemd-user support, and cross-platform behavior suites remain intentional; none is weakened or removed merely to reduce surface area or ceremony.
+- Refresh the exact Wrangler runtime from 4.112.0 to 4.113.0 and advance the reviewed npm install-script allowlist to its exact `workerd 1.20260721.1`; a clean install must not depend on an unreviewed or locally cached postinstall.
+
 ## 3.0.0-beta.10 - 2026-07-22
 
 ### Published prerelease activation repair
