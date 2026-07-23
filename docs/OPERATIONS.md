@@ -8,7 +8,7 @@ machine-mcp doctor
 machine-mcp service status
 ```
 
-`status` prints redacted profile state and verifies the deployed Worker version. Resource source paths remain redacted. `doctor` checks Node.js, the package-installed Wrangler binary, Cloudflare login, Worker health, and the same fixed local filesystem/process/shell/job-storage/resource probes exposed by `diagnose_runtime`. Public `/healthz` output contains only server identity and version; daemon details require an authenticated `server_info` call.
+`status` prints redacted profile state and verifies the deployed Worker version. Resource source paths remain redacted. `doctor` checks Node.js, the package-installed Wrangler binary, Cloudflare login, Worker health, the configured policy, the automatic-without-per-operation-prompts authorization model, and the same fixed local filesystem/process/shell/job-storage/resource probes exposed by `diagnose_runtime`. Authenticated `server_info.authorization.execution_model` reports the same contract and identifies whether the account has daemon-OS-user ambient authority. Public `/healthz` output contains only server identity and version; daemon details require an authenticated `server_info` call.
 
 ### Worker deployment and health convergence
 

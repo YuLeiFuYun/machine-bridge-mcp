@@ -1,14 +1,16 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-reporting.mjs";
 import { diagnoseRuntime } from "../src/local/runtime-diagnostics.mjs";
 import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-capabilities.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
+import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
 
 await testRuntimeReporting();
 await testRuntimeDiagnostics();
 await testRuntimeCapabilities();
+await testRuntimeResourceService();
 console.log("runtime boundary services test ok");
 
 async function testRuntimeReporting() {
@@ -210,6 +212,50 @@ async function testRuntimeCapabilities() {
   assert(review.application_matches.length === 0 && review.browser_backend === null, "review capability resolution expanded automation authority");
 }
 
+async function testRuntimeResourceService() {
+  const root = await mkdtemp(join(tmpdir(), "mbm-runtime-resources-"));
+  try {
+    const textPath = join(root, "text-resource");
+    const binaryPath = join(root, "binary-resource");
+    await writeFile(textPath, "resource-text", { mode: 0o600 });
+    await writeFile(binaryPath, Buffer.from([0xff, 0xfe, 0xfd]), { mode: 0o600 });
+    const authorized = [];
+    const resources = {
+      text: { path: textPath },
+      binary: { path: binaryPath },
+    };
+    const service = new RuntimeResourceService({
+      workspace: root,
+      currentResources: () => resources,
+      authorizeTool: (tool) => authorized.push(tool),
+    });
+    assert(service.readText("text") === "resource-text", "runtime resource service lost UTF-8 text content");
+    assert(service.readBinary("text").size === Buffer.byteLength("resource-text"), "runtime resource service lost binary metadata");
+    expectThrow(() => service.readText("binary"), "not valid UTF-8");
+    expectThrow(() => service.readBinary("missing"), "unknown local resource");
+    await expectReject(() => service.generateSshKey({ name: "generated" }), "resource state is unavailable");
+    assert(authorized.join(",") === "generate_ssh_key_resource", "runtime resource service bypassed tool authorization");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function expectThrow(operation, expected) {
+  try { operation(); } catch (error) {
+    assert(String(error?.message || error).includes(expected), `expected ${expected}`);
+    return;
+  }
+  throw new Error(`expected throw containing ${expected}`);
+}
+
+async function expectReject(operation, expected) {
+  try { await operation(); } catch (error) {
+    assert(String(error?.message || error).includes(expected), `expected ${expected}`);
+    return;
+  }
+  throw new Error(`expected rejection containing ${expected}`);
 }

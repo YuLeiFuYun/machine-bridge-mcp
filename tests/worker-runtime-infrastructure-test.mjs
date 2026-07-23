@@ -305,13 +305,24 @@ function testWorkerObservability() {
   const originalWarn = console.warn;
   console.warn = (line) => lines.push(String(line));
   try {
-    metrics.event("warn", "security.test", { access_token: "must-not-leak", path: "/mcp" });
+    metrics.event("warn", "security.test", {
+      access_token: "must-not-leak",
+      path: "/mcp",
+      detail: "Bearer abcdefghijklmnopqrstuvwxyz for operator@example.com under /Users/example/private",
+      level: "info",
+      component: "caller",
+      event: "caller.override",
+      timestamp: "1970-01-01T00:00:00.000Z",
+    });
   } finally {
     console.warn = originalWarn;
   }
   const event = JSON.parse(lines[0]);
   assert(event.access_token === "<redacted>" && !lines[0].includes("must-not-leak"), "Worker structured event leaked a sensitive field");
   assert(event.path === "/mcp", "Worker structured event removed a safe route field");
+  assert(!lines[0].includes("abcdefghijklmnopqrstuvwxyz") && !lines[0].includes("operator@example.com") && !lines[0].includes("/Users/example"), "Worker structured event leaked a sensitive value embedded in a non-sensitive field");
+  assert(event.detail.includes("Bearer <redacted>") && event.detail.includes("<redacted-email>") && event.detail.includes("<home>"), "Worker structured event did not retain redaction markers");
+  assert(event.level === "warn" && event.component === "worker" && event.event === "security.test" && event.timestamp !== "1970-01-01T00:00:00.000Z", "Worker event fields overrode authoritative log metadata");
 }
 
 function tamperSessionId(value) {

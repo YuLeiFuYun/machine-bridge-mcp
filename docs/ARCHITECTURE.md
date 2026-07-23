@@ -37,6 +37,7 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 - `runtime-tool-handlers.mjs` owns catalog-to-handler registration;
 - `runtime-relay.mjs` owns relay construction and inbound envelope normalization, while `relay-call-recovery.mjs` owns the bounded disconnect grace, result queue, authoritative resumed-call reconciliation, replay, and expiry cleanup;
 - `runtime-paths.mjs` owns runtime-directory creation, containment checks, and error-path redaction;
+- `runtime-resource-service.mjs` owns registered-resource lookup, bounded binary/UTF-8 reads for browser/application injection, and SSH-resource registration/result projection;
 - `managed-job-lock.mjs`, `managed-job-runner.mjs`, `managed-job-storage.mjs`, and `managed-job-projection.mjs` separate transition ownership, detached runner identity, private persistence/diagnostics, and public result shaping from the managed-job lifecycle;
 - `browser-request-registry.mjs`, `browser-broker-routes.mjs`, `browser-broker-server.mjs`, and `browser-bridge-http.mjs` separate direct request ownership, runtime-client proxy routing, authenticated loopback WebSocket upgrades/listening, and loopback HTTP handling from broker startup and extension handover;
 - managed jobs, local resources, application automation, and browser automation remain separate managers.
