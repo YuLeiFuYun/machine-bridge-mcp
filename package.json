@@ -168,7 +168,7 @@
   "dependencies": {
     "https-proxy-agent": "9.1.0",
     "proxy-from-env": "2.1.0",
-    "wrangler": "4.113.0",
+    "wrangler": "4.114.0",
     "ws": "8.21.1"
   },
   "devDependencies": {
