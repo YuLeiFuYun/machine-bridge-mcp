@@ -1,6 +1,7 @@
 import type { AuthorizedToken } from "./oauth-controller.ts";
 import { resolveMcpSession } from "./mcp-session.ts";
-import { acceptsEventStream, resumeJsonRpcResponse } from "./mcp-stream.ts";
+import { acceptsEventStream } from "./mcp-stream.ts";
+import { mcpStreamDescriptorResponse } from "./mcp-stream-proxy.ts";
 import type { McpResumptionStore } from "./mcp-resumption.ts";
 import { json } from "./http.ts";
 
@@ -10,7 +11,6 @@ export async function handleMcpResumptionRequest(input: {
   identityKey: string;
   supportedVersions: readonly string[];
   resumption: McpResumptionStore;
-  keepAlive: (promise: Promise<void>) => void;
 }): Promise<Response> {
   if (!acceptsEventStream(input.request)) return json({ error: "event_stream_required" }, 406);
   const protocolVersion = input.request.headers.get("MCP-Protocol-Version");
@@ -37,10 +37,7 @@ export async function handleMcpResumptionRequest(input: {
     case "invalid": return json({ error: "invalid_last_event_id" }, 400);
     case "not_found": return json({ error: "stream_not_found" }, 404);
     case "expired": return json({ error: "stream_expired" }, 410);
-    case "complete": return resumeJsonRpcResponse(null, { streamId: resumed.streamId });
-    case "message": return resumeJsonRpcResponse(resumed.message, {
-      streamId: resumed.streamId,
-      keepAlive: input.keepAlive,
-    });
+    case "complete": return mcpStreamDescriptorResponse("complete", resumed.streamId);
+    case "message": return mcpStreamDescriptorResponse("resume", resumed.streamId);
   }
 }

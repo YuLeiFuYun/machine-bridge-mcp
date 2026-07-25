@@ -128,6 +128,7 @@ try {
     "src/worker/mcp-jsonrpc.ts": [95, 55],
     "src/worker/mcp-resumption-config.ts": [100, 80],
     "src/worker/mcp-resumption-records.ts": [90, 65],
+    "src/worker/mcp-stream-proxy.ts": [85, 55],
     "src/worker/mcp-resumption.ts": [90, 70],
     "src/worker/mcp-stream.ts": [90, 65],
     "src/worker/websocket-protocol.ts": [100, 50],

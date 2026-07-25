@@ -132,6 +132,27 @@ export class McpResumptionStore {
     this.live.delete(streamId);
   }
 
+  async pollMessage(streamId: string): Promise<
+    | { kind: "pending" }
+    | { kind: "not_found" }
+    | { kind: "message"; message: JsonRpcMessage }
+  > {
+    if (!isStreamId(streamId)) return { kind: "not_found" };
+    const record = await this.storage.get<unknown>(streamKey(streamId));
+    if (record === undefined) return { kind: "not_found" };
+    if (!validRecord(record)) throw new Error("resumable MCP stream record is corrupt");
+    if (record.expires_at <= this.now()) {
+      await this.remove(streamId);
+      return { kind: "not_found" };
+    }
+    if (record.status === "ready") return { kind: "message", message: await storedMessage(record) };
+    if (this.live.has(streamId)) return { kind: "pending" };
+
+    const unavailable = workerRestartMessage(record.request_id);
+    await this.complete(streamId, unavailable);
+    return { kind: "message", message: unavailable };
+  }
+
   async resume(input: {
     lastEventId: string;
     tokenKey: string;

@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0-beta.14 - 2026-07-25
+
+### Concurrent MCP control during streamed delivery
+
+- Block `3.0.0-beta.13` after exact owner-machine activation. Live recovery itself succeeded—sequence zero, session isolation, disconnect recovery, and one-time terminal acknowledgement all worked—but a production Cloudflare Durable Object that directly owned the open SSE response did not accept concurrent `server_info` or `notifications/cancelled` requests until that stream ended. Beta.13 has no acceptance record and must not be published or promoted.
+- Move public SSE ownership to the stateless outer Worker. `BridgeRoom` now authenticates and binds the request, commits the resumable record, dispatches local work, and returns only a bounded internal descriptor. The outer Worker emits sequence zero/keepalives/sequence one and polls the Durable Object with short immediate requests for pending or terminal state, so no Durable Object request remains open while a client stream is active.
+- Strip all internal stream-control headers from public requests before forwarding, then add them only on the trusted service-binding path. OAuth/DPoP, signed MCP-session, token/session replay isolation, explicit cancellation, bounded persistence, and acknowledged-terminal suppression remain enforced by `BridgeRoom`.
+- Extend real Wrangler integration to hold an SSE call open while a concurrent `server_info` succeeds and a session-scoped cancellation reaches the exact daemon call. Transport tests now parse complete SSE events rather than assuming one network chunk equals one event.
+
 ## 3.0.0-beta.13 - 2026-07-25
 
 ### Resumable MCP result delivery and outage closure

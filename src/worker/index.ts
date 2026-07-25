@@ -14,9 +14,13 @@ import {
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
 import { mcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
-import { acceptsEventStream, streamJsonRpcResponse } from "./mcp-stream.ts";
+import { acceptsEventStream } from "./mcp-stream.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { handleMcpResumptionRequest } from "./mcp-resumption-http.ts";
+import {
+  handleMcpStreamPollRequest, mcpStreamDescriptorResponse, mcpStreamProxyMode,
+  proxyMcpEventStream, sanitizeBridgeRequest,
+} from "./mcp-stream-proxy.ts";
 import { McpResumptionStore, McpStreamLimitError } from "./mcp-resumption.ts";
 import { daemonToolTimeoutMs } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
@@ -40,7 +44,7 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.13";
+const SERVER_VERSION = "3.0.0-beta.14";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -329,6 +333,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       });
     }
 
+    const proxyMode = mcpStreamProxyMode(request);
+    const polled = await handleMcpStreamPollRequest(request, this.resumption);
+    if (polled) return polled;
+
     const access = await authorizeMcpRequest({
       request,
       base,
@@ -338,13 +346,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     });
     if (access.response) return access.response;
     if (request.method === "GET") {
+      if (proxyMode !== "prepare") return json({ error: "stream_proxy_required" }, 500);
       return await handleMcpResumptionRequest({
         request,
         authorized: access.authorized,
         identityKey: this.oauth.identityKey(),
         supportedVersions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
         resumption: this.resumption,
-        keepAlive: (promise) => this.ctx.waitUntil(promise),
       });
     }
 
@@ -359,6 +367,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const sessionId = session.kind === "active" ? session.sessionId : "";
 
     if (body.method === "tools/call" && acceptsEventStream(request)) {
+      if (proxyMode !== "prepare") return json(rpcError(body.id, -32603, "MCP stream proxy is unavailable"), 500);
       if (body.id === undefined || body.id === null) return json(rpcError(null, -32600, "tools/call requires a non-null request id"), 400);
       const streamId = randomToken("stream");
       try {
@@ -390,10 +399,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       });
       this.resumption.attach(streamId, durable);
       this.ctx.waitUntil(durable.then(() => undefined, () => undefined));
-      return streamJsonRpcResponse(durable, {
-        streamId,
-        keepAlive: (promise) => this.ctx.waitUntil(promise),
-      });
+      return mcpStreamDescriptorResponse("initial", streamId);
     }
 
     const response = await this.dispatchJsonRpc(body, base, access.authorized, sessionId);
@@ -825,9 +831,15 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 }
 
 export default {
-  async fetch(request: Request, env: BridgeEnv): Promise<Response> {
+  async fetch(request: Request, env: BridgeEnv, ctx: ExecutionContext): Promise<Response> {
     const stub = env.BRIDGE.getByName("default");
-    return stub.fetch(request);
+    const streamed = await proxyMcpEventStream({
+      request,
+      bridge: stub,
+      extraOrigins: env.MBM_ALLOWED_ORIGINS ?? "",
+      ctx,
+    });
+    return streamed ?? stub.fetch(sanitizeBridgeRequest(request));
   },
 } satisfies ExportedHandler<BridgeEnv>;
 

@@ -1,5 +1,15 @@
 # Security and privacy audit notes
 
+## 2026-07-25 version 3.0.0-beta.14 production SSE-concurrency audit
+
+The exact beta.13 tarball was activated through the owner command and converged successfully: the same-name Worker, one launchd daemon, private candidate runtime, service definition, status, and doctor all reported `3.0.0-beta.13`. A temporary random owner account and OAuth client were then used only for bounded live protocol verification and were deleted afterward. Sequence-zero delivery, token/session isolation, disconnect followed by authenticated `GET /mcp`, terminal sequence one, and empty acknowledgement replay all succeeded.
+
+The same live run exposed a release-blocking production scheduling defect that the local Wrangler integration had not represented. While `BridgeRoom` directly returned an open SSE response, later requests routed to the same Durable Object—including `server_info` and the authoritative session-scoped `notifications/cancelled` notification—did not enter until the stream ended. The daemon call eventually terminated through its own boundary, but Worker observability did not record a successful cancellation. Beta.13 therefore has no acceptance record, is not pushed or published, and is explicitly blocked.
+
+Beta.14 separates client transport ownership from durable state ownership. The outer stateless Worker creates the public SSE stream. `BridgeRoom` performs OAuth/DPoP authorization, signed MCP-session validation, stream admission, daemon dispatch, explicit cancellation, and terminal persistence, then returns a small internal descriptor. The outer Worker uses short service-binding polls: pending state returns immediately with HTTP 202; terminal state returns buffered JSON; missing or expired state fails closed. No internal poll or descriptor request remains open in the Durable Object. Publicly supplied internal-control headers are stripped before every service-binding forward, so callers cannot select the unauthenticated internal poll path.
+
+The real Wrangler regression keeps the original SSE response open, confirms a concurrent `server_info` sees the pending call, sends `notifications/cancelled`, observes the matching daemon `cancel_call`, and receives a cancelled terminal result on the original stream. Existing disconnect/recovery, wrong-session rejection, sequence-one acknowledgement, CORS, persistence faults, capacity, integrity, and oversized-message tests remain in force. This correction requires a new exact beta.14 candidate, owner activation, and repeated live verification; beta.13 activation evidence cannot be reused.
+
 ## 2026-07-25 version 3.0.0-beta.13 resumable-delivery and self-correction audit
 
 The exercise began from clean released `main` at `ff3e2de` (`v3.0.0-beta.12`). Fast gates passed before modification, so the review concentrated on transport state, Durable Object persistence, protocol delivery, and live outage evidence rather than ordinary syntax defects.

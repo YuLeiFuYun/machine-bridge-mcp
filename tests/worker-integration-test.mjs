@@ -74,6 +74,15 @@ try {
     body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }),
   });
   assert(unauthenticatedMcpDiscovery.status === 401, "unauthenticated MCP discovery request did not return 401");
+  const spoofedInternalStream = await stableFetch(`${base}/mcp`, {
+    method: "GET",
+    headers: {
+      accept: "text/event-stream",
+      "x-machine-bridge-internal-mcp-stream-mode": "poll",
+      "x-machine-bridge-internal-mcp-stream-id": `stream_${"S".repeat(43)}`,
+    },
+  });
+  assert(spoofedInternalStream.status === 401, "public internal-stream headers bypassed MCP authorization");
   assert(
     unauthenticatedMcpDiscovery.headers.get("www-authenticate") === `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
     "unauthenticated MCP response omitted the protected-resource discovery challenge",
@@ -671,13 +680,42 @@ try {
   assert(streamedResponse.status === 200, `streamed tool call failed: ${streamedResponse.status}`);
   assert(streamedResponse.headers.get("content-type")?.startsWith("text/event-stream"), "event-stream client received a buffered JSON response");
   const streamedReader = streamedResponse.body.getReader();
-  const streamedInitial = new TextDecoder().decode((await streamedReader.read()).value);
-  const streamedInitialId = firstSseEventId(streamedInitial);
-  assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(streamedInitialId), "streamed tool call did not prime the client with a resumable sequence-zero event");
+  const streamedInitialFrame = await readSseInitialEvent(streamedReader);
+  const streamedInitial = streamedInitialFrame.text;
+  const streamedInitialId = streamedInitialFrame.eventId;
+  assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(streamedInitialId), `streamed tool call did not prime the client with a resumable sequence-zero event: ${JSON.stringify(streamedInitial.slice(0, 512))}`);
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: streamedRelay.id, ok: true, result: { streamed: true } }));
   const streamedEnvelope = await readSseJsonRpcResponse(streamedReader, streamedInitial);
   assert(streamedEnvelope.message.result?.structuredContent?.streamed === true, "streamed tool call lost the terminal result");
   assert(streamedEnvelope.eventIds.at(-1) === `${streamedInitialId.slice(0, -1)}1`, "streamed tool call terminal event did not advance the resumption sequence");
+
+  const liveCancellationRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const liveCancellationResponse = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 8790, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  });
+  const liveCancellationRelay = await liveCancellationRelayPromise;
+  const liveCancellationReader = liveCancellationResponse.body.getReader();
+  const liveCancellationInitialFrame = await readSseInitialEvent(liveCancellationReader);
+  const liveCancellationInitial = liveCancellationInitialFrame.text;
+  assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(liveCancellationInitialFrame.eventId), "live cancellation stream omitted sequence zero");
+  const openSseStatus = await callServerInfo(base, ownerAccessToken, 87901);
+  assert(openSseStatus.worker?.pending_calls?.active === 1 && openSseStatus.worker?.pending_calls?.request_keys === 1, "open SSE prevented a concurrent server_info request");
+  const liveCancellationNotice = waitForWsMessage(candidateDaemon, "cancel_call", 10_000, "open-SSE explicit cancellation");
+  const liveCancellation = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: mcpHeaders(ownerAccessToken, primarySession),
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 8790, reason: "open SSE cancellation" } }),
+  });
+  assert(liveCancellation.status === 202, "explicit cancellation could not enter while SSE remained open");
+  assert((await liveCancellationNotice).id === liveCancellationRelay.id, "open-SSE cancellation targeted the wrong daemon call");
+  const liveCancellationEnvelope = await readSseJsonRpcResponse(liveCancellationReader, liveCancellationInitial);
+  assert(liveCancellationEnvelope.message.result?.isError === true
+    && JSON.stringify(liveCancellationEnvelope.message).includes("cancelled"), "open-SSE cancellation did not settle the original stream");
 
   const resumableRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const resumableResponse = await stableFetch(`${base}/mcp`, {
@@ -690,8 +728,8 @@ try {
   });
   const resumableRelay = await resumableRelayPromise;
   const resumableReader = resumableResponse.body.getReader();
-  const resumableInitial = new TextDecoder().decode((await resumableReader.read()).value);
-  const resumableEventId = firstSseEventId(resumableInitial);
+  const resumableInitialFrame = await readSseInitialEvent(resumableReader);
+  const resumableEventId = resumableInitialFrame.eventId;
   assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(resumableEventId), "resumable call omitted its initial event id");
   await resumableReader.cancel();
 
@@ -1454,6 +1492,22 @@ async function stableFetch(url, options = {}, attempts = 3) {
   }
   if (lastResponse) return lastResponse;
   throw lastError || new Error("fetch failed without a response");
+}
+
+async function readSseInitialEvent(reader) {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) throw new Error("SSE stream ended before the initial event completed");
+    text += decoder.decode(chunk.value, { stream: true });
+    const boundary = text.search(/\r?\n\r?\n/);
+    if (boundary >= 0) {
+      const eventText = text.slice(0, boundary + (text[boundary] === "\r" ? 4 : 2));
+      return { text: eventText, eventId: firstSseEventId(eventText) };
+    }
+    if (text.length > 64 * 1024) throw new Error("SSE initial event exceeded its bounded frame size");
+  }
 }
 
 async function readSseJsonRpcResponse(reader, initialText = "") {

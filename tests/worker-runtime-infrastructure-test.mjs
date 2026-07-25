@@ -1,6 +1,11 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
 import { acceptsEventStream, resumeJsonRpcResponse, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
+import {
+  MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER,
+  handleMcpStreamPollRequest, mcpStreamDescriptorResponse, mcpStreamProxyId, mcpStreamProxyMode,
+  proxyMcpEventStream, sanitizeBridgeRequest,
+} from "../src/worker/mcp-stream-proxy.ts";
 import { daemonToolTimeoutMs } from "../src/worker/tool-timeout.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
@@ -36,6 +41,7 @@ await testDetachedTimeoutPause();
 await testTimeoutCallbackFailure();
 await testAbortSignalCleanup();
 await testMcpStreamResponse();
+await testMcpStreamProxy();
 testRelayTimeoutContract();
 testWorkerPolicyParity();
 testWorkerErrors();
@@ -272,6 +278,176 @@ async function testMcpStreamResponse() {
 
   const completed = resumeJsonRpcResponse(null, { streamId: STREAM_COMPLETE_ID });
   assert(await completed.text() === "", "completed stream replayed an already acknowledged terminal event");
+}
+
+async function testMcpStreamProxy() {
+  let terminalMessage = null;
+  const resolveTerminal = (message) => { terminalMessage = message; };
+  const calls = [];
+  const bridge = {
+    async fetch(request) {
+      calls.push(request);
+      const mode = request.headers.get(MCP_STREAM_PROXY_MODE_HEADER);
+      if (mode === "prepare") return mcpStreamDescriptorResponse("initial", STREAM_TEST_ID);
+      if (mode === "poll") {
+        if (!terminalMessage) return new Response(null, { status: 202 });
+        return new Response(JSON.stringify(terminalMessage), { headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected proxy mode: ${mode}`);
+    },
+  };
+  const keptAlive = [];
+  const request = new Request("https://example.test/mcp", {
+    method: "POST",
+    headers: {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      origin: "https://chatgpt.com",
+      [MCP_STREAM_PROXY_MODE_HEADER]: "poll",
+      [MCP_STREAM_PROXY_ID_HEADER]: STREAM_COMPLETE_ID,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "list_dir", arguments: {} } }),
+  });
+  const response = await proxyMcpEventStream({
+    request, bridge, extraOrigins: "", ctx: { waitUntil(promise) { keptAlive.push(promise); } }, pollIntervalMs: 1,
+  });
+  assert(response?.headers.get("content-type")?.startsWith("text/event-stream"), "outer Worker did not create the public SSE response");
+  assert(response.headers.get("access-control-allow-origin") === "https://chatgpt.com", "outer Worker SSE response lost CORS");
+  assert(calls[0].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "prepare", "public proxy mode header was not replaced");
+  assert(calls[0].headers.get(MCP_STREAM_PROXY_ID_HEADER) === null, "public internal stream id reached BridgeRoom");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const initial = decoder.decode((await reader.read()).value);
+  assert(initial === `id: ${STREAM_TEST_ID}:0\ndata:\n\n`, "outer Worker proxy did not emit sequence zero");
+  assert(calls.length >= 2 && calls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "poll", "outer Worker did not start the internal terminal poll");
+  assert(calls[1].headers.get(MCP_STREAM_PROXY_ID_HEADER) === STREAM_TEST_ID, "internal poll lost the stream id");
+  resolveTerminal({ jsonrpc: "2.0", id: 10, result: { proxied: true } });
+  const terminalText = decoder.decode((await reader.read()).value);
+  assert(terminalText.includes(`${STREAM_TEST_ID}:1`) && terminalText.includes('"proxied":true'), "outer Worker proxy lost the terminal result");
+  assert((await reader.read()).done, "outer Worker proxy did not close after terminal delivery");
+  await Promise.all(keptAlive);
+
+  const spoofed = new Request("https://example.test/healthz", { headers: {
+    [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID,
+  } });
+  const sanitized = sanitizeBridgeRequest(spoofed);
+  assert(!sanitized.headers.has(MCP_STREAM_PROXY_MODE_HEADER) && !sanitized.headers.has(MCP_STREAM_PROXY_ID_HEADER), "public internal stream headers were not stripped");
+
+  const completeBridge = { async fetch() { return mcpStreamDescriptorResponse("complete", STREAM_COMPLETE_ID); } };
+  const completed = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET", headers: { accept: "text/event-stream" } }),
+    bridge: completeBridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(await completed.text() === "", "outer Worker proxy replayed an acknowledged terminal event");
+  const ordinary = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "POST", headers: { accept: "application/json" }, body: "{}" }),
+    bridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(ordinary === null, "JSON-only MCP request was incorrectly proxied as SSE");
+  const nonMcp = await proxyMcpEventStream({
+    request: new Request("https://example.test/healthz", { method: "GET" }),
+    bridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(nonMcp === null, "non-MCP GET was intercepted by the stream proxy");
+
+  const plainBridge = { async fetch() {
+    return new Response("plain", { status: 418, headers: { "x-machine-bridge-mcp-stream-descriptor": "spoof" } });
+  } };
+  const plain = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: plainBridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(plain.status === 418 && await plain.text() === "plain"
+    && !plain.headers.has("x-machine-bridge-mcp-stream-descriptor"), "ordinary BridgeRoom response leaked its internal descriptor header");
+
+  const resumeBridge = {
+    calls: 0,
+    async fetch(_request) {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 11, result: { resumed: true } }), { headers: { "content-type": "application/json" } });
+    },
+  };
+  const resumedProxy = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET", headers: { accept: "text/event-stream" } }),
+    bridge: resumeBridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  const resumedProxyText = await resumedProxy.text();
+  assert(resumedProxyText.startsWith(": resumed\n\n") && resumedProxyText.includes(`${STREAM_RESUMED_ID}:1`), "resume descriptor did not create an outer resumed stream");
+
+  const polledMessage = { jsonrpc: "2.0", id: 12, result: { polled: true } };
+  const pollStore = { async pollMessage(id) {
+    if (id === STREAM_TEST_ID) return { kind: "message", message: polledMessage };
+    if (id === STREAM_RESUMED_ID) return { kind: "pending" };
+    return { kind: "not_found" };
+  } };
+  const noPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp"), pollStore);
+  assert(noPoll === null, "ordinary request entered the internal stream poll path");
+  const postPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    method: "POST", headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll" }, body: "{}",
+  }), pollStore);
+  assert(postPoll.status === 405 && postPoll.headers.get("allow") === "GET", "internal stream poll accepted POST");
+  const invalidPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: "bad" },
+  }), pollStore);
+  assert(invalidPoll.status === 400, "internal stream poll accepted an invalid stream id");
+  const foundPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " Poll ", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID },
+  }), pollStore);
+  assert(foundPoll.status === 200 && (await foundPoll.json()).result.polled === true, "internal stream poll lost the terminal message");
+  const pendingPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_RESUMED_ID },
+  }), pollStore);
+  assert(pendingPoll.status === 202, "internal stream poll did not report pending execution immediately");
+  const missingPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_COMPLETE_ID },
+  }), pollStore);
+  assert(missingPoll.status === 404, "internal stream poll did not report a missing stream");
+  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " PREPARE " } })) === "prepare", "internal prepare mode was not normalized");
+  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " POLL " } })) === "poll", "internal poll mode was not normalized");
+  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "other" } })) === "", "unknown internal proxy mode was accepted");
+  assert(mcpStreamProxyId(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID } })) === STREAM_TEST_ID, "valid internal stream id was rejected");
+  assert(mcpStreamProxyId(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_ID_HEADER]: "bad" } })) === "", "invalid internal stream id was accepted");
+  expectThrow(() => mcpStreamDescriptorResponse("initial", "stream_short"), "invalid MCP stream descriptor id");
+
+  await expectReject(proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: { async fetch() { return new Response(JSON.stringify({ kind: "invalid", stream_id: STREAM_TEST_ID }), { headers: { "x-machine-bridge-mcp-stream-descriptor": "1" } }); } },
+    extraOrigins: "", ctx: { waitUntil() {} },
+  }), "descriptor is invalid");
+  await expectReject(proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: { async fetch() { return new Response("null", { headers: { "x-machine-bridge-mcp-stream-descriptor": "1" } }); } },
+    extraOrigins: "", ctx: { waitUntil() {} },
+  }), "descriptor is invalid");
+
+  const failedWaitBridge = {
+    calls: 0,
+    async fetch() {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      return new Response(JSON.stringify({ error: "missing" }), { status: 404, headers: { "content-type": "application/json" } });
+    },
+  };
+  const failedWait = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: failedWaitBridge, extraOrigins: "", ctx: { waitUntil() {} }, pollIntervalMs: 1,
+  });
+  assert((await failedWait.text()).startsWith(": resumed\n\n"), "failed internal wait did not close the outer stream safely");
+
+  const invalidMessageBridge = {
+    calls: 0,
+    async fetch() {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      return new Response(JSON.stringify({ not_jsonrpc: true }), { headers: { "content-type": "application/json" } });
+    },
+  };
+  const invalidMessage = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: invalidMessageBridge, extraOrigins: "", ctx: { waitUntil() {} }, pollIntervalMs: 1,
+  });
+  assert((await invalidMessage.text()).startsWith(": resumed\n\n"), "invalid internal terminal message did not close the outer stream safely");
 }
 
 async function testAbortSignalCleanup() {

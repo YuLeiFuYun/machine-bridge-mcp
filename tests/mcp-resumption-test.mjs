@@ -87,6 +87,8 @@ async function testCompletedResultResumption() {
   const resumed = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-owner", sessionId: "session-owner" });
   assert(resumed.kind === "message", "completed stream was not resumable");
   assert((await resumed.message).result.ok === true, "completed stream lost its terminal result");
+  const storedPoll = await store.pollMessage(streamId);
+  assert(storedPoll.kind === "message" && storedPoll.message.result.ok === true, "trusted internal poll lost the stored terminal result");
 
   const complete = await store.resume({ lastEventId: `${streamId}:1`, tokenKey: "token-owner", sessionId: "session-owner" });
   assert(complete.kind === "complete", "terminal event was replayed after the client acknowledged it");
@@ -120,10 +122,17 @@ async function testLiveResultResumption() {
   let resolveResult;
   const live = new Promise((resolve) => { resolveResult = resolve; });
   store.attach(streamId, live);
+  const pendingPoll = await store.pollMessage(streamId);
+  assert(pendingPoll.kind === "pending", "trusted internal poll did not report live execution as pending");
   const resumed = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-live", sessionId: "session-live" });
   assert(resumed.kind === "message", "active stream did not expose its live terminal promise");
-  resolveResult({ jsonrpc: "2.0", id: "live", result: { resumed: true } });
+  const liveMessage = { jsonrpc: "2.0", id: "live", result: { resumed: true } };
+  resolveResult(liveMessage);
   assert((await resumed.message).result.resumed === true, "active stream resumption lost the eventual result");
+  await store.complete(streamId, liveMessage);
+  const readyPoll = await store.pollMessage(streamId);
+  assert(readyPoll.kind === "message" && readyPoll.message.result.resumed === true, "trusted internal poll lost the terminal result");
+  assert((await store.pollMessage("stream_short")).kind === "not_found", "trusted internal poll accepted an invalid stream id");
 }
 
 async function testRestartFallback() {
