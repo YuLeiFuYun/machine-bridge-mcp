@@ -810,6 +810,21 @@ try {
   assert(firstWindowResult.body.result?.structuredContent?.window === "first", "first MCP session received another session's result");
   assert(secondWindowResult.body.result?.structuredContent?.window === "second", "second MCP session received another session's result");
 
+  const handoverRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const handoverCall = toolCallRequest(base, ownerAccessToken, primarySession, 8799, "list_dir", { path: "." });
+  const handoverRelay = await handoverRelayPromise;
+  const handoverPreviousSocket = candidateDaemon;
+  const handoverPreviousClosed = waitForWsClose(handoverPreviousSocket);
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const handoverResume = await sendDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  assert(handoverResume.ids.length === 1 && handoverResume.ids[0] === handoverRelay.id, "verified same-instance socket handover did not transfer the attached call before closing the incumbent");
+  await handoverPreviousClosed;
+  const handoverStatus = await callServerInfo(base, ownerAccessToken, 87990);
+  assert(handoverStatus.worker?.pending_calls?.active === 1 && handoverStatus.worker?.pending_calls?.detached === 0, "verified socket handover left the transferred call detached");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: handoverRelay.id, ok: true, result: { handover: true } }));
+  assert((await handoverCall).body.result?.structuredContent?.handover === true, "transferred call did not complete on the verified replacement socket");
+
   const reconnectRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const reconnectCall = toolCallRequest(base, ownerAccessToken, primarySession, 8801, "list_dir", { path: "." });
   const reconnectRelay = await reconnectRelayPromise;

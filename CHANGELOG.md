@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0-beta.16 - 2026-07-25
+
+### Pending-call recovery and verified handover
+
+- Separate the upstream MCP host/connector shard-mapper incident from Machine Bridge evidence. The exact temporary-keyspace error never appeared in Worker or daemon diagnostics and did not increment Worker server-error counters, so it is documented as an external boundary failure with unknown platform ownership rather than misclassified as a local daemon, OAuth, Git, or Cloudflare defect.
+- Close the Machine Bridge failure-amplification path discovered after recovery. Pending calls now retain monotonic operation and reconnect deadlines, schedule the earliest deadline through the Durable Object alarm, and run a compensating overdue sweep on every HTTP/WebSocket event. In-memory timers remain the fast path; a transient alarm-storage error is observable without converting already-dispatched work into a false terminal failure.
+- Make verified same-instance daemon handover atomic with respect to in-flight calls. Both attached and detached records move to the replacement before the incumbent closes, the complete `resume_calls` set is sent, remaining operation timeout is preserved, and failed replacement acknowledgement restores ownership to a still-open incumbent.
+- Add deterministic disabled-timer deadline tests, direct runtime-alarm scheduling/failure tests, and a real Wrangler/workerd race regression that connects a same-instance replacement while the incumbent still owns an active call. The call remains active rather than detached and completes through the verified replacement.
+- Use null-prototype dictionaries for managed-job `env` and `env_resources`, so valid variable names such as `__proto__`, `constructor`, `toString`, and `valueOf` remain ordinary own data instead of mutating JavaScript object prototypes. Add behavior coverage without weakening duplicate-variable rejection.
+- Correct architecture and operations documentation that still described Durable Object `waitUntil` ownership or direct rejection during socket replacement. Document the three deadline enforcement paths, stale-pending diagnosis, host/connector internal-storage error triage, and the exact test evidence.
+
 ## 3.0.0-beta.15 - 2026-07-25
 
 ### Event-driven streamed-call settlement
