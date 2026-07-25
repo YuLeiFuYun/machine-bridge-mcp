@@ -187,6 +187,7 @@ const lineLimits = Object.freeze({
   "src/worker/tool-timeout.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
+  "src/worker/runtime-alarm.ts": 140,
   "src/worker/pending-calls.ts": 180,
   "src/worker/pending-call-deadlines.ts": 80,
   "src/worker/mcp-jsonrpc.ts": 130,

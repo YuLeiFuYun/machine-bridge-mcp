@@ -1168,7 +1168,7 @@ async function workerSourceSelfTest() {
   const workerModules = await Promise.all([
     "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
     "oauth-controller.ts", "oauth-authorization-page.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts", "daemon-liveness.ts",
-    "daemon-sockets.ts", "mcp-jsonrpc.ts", "websocket-protocol.ts",
+    "daemon-sockets.ts", "runtime-alarm.ts", "mcp-jsonrpc.ts", "websocket-protocol.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
   for (const module of ["mcp-jsonrpc", "websocket-protocol"]) {

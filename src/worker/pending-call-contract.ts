@@ -11,6 +11,8 @@ export interface PendingCallRecord {
   socket?: WebSocket;
   daemonInstanceId?: string;
   reconnectTimeout?: ReturnType<typeof setTimeout>;
+  reconnectDeadlineAt?: number;
+  onReconnectTimeout?: (record: PendingCallRecord) => Error;
   clientRequestKey?: string;
   tool: string;
   startedAt: number;

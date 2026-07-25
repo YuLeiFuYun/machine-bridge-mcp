@@ -3,15 +3,14 @@ import serverMetadata from "../shared/server-metadata.json" with { type: "json" 
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { PendingCallRegistrationError, PendingCallRegistry } from "./pending-calls.ts";
 import {
-  DAEMON_HELLO_TIMEOUT_MS,
   DAEMON_LIVENESS_TIMEOUT_MS,
   DAEMON_READY_TIMEOUT_MS,
   daemonLastSeenMs,
   daemonLivenessDeadlineMs,
-  daemonReadyDeadlineMs,
   isFreshDaemonCandidate,
 } from "./daemon-liveness.ts";
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
 import { mcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
 import { acceptsEventStream } from "./mcp-stream.ts";
@@ -45,7 +44,7 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.15";
+const SERVER_VERSION = "3.0.0-beta.16";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -79,6 +78,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    await this.pending.expireDue();
     const base = baseUrl(request);
     const extraOrigins = this.env.MBM_ALLOWED_ORIGINS ?? "";
     let response: Response;
@@ -146,6 +146,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    await this.pending.expireDue();
     const size = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
     if (size > MAX_DAEMON_MESSAGE_BYTES) {
       closeWebSocketQuietly(ws, 1009, "message too large");
@@ -189,7 +190,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       if (!isFreshDaemonCandidate(socketAttachment.connectedAt)) {
         closeWebSocketQuietly(ws, 1008, "stale daemon candidate");
-        await this.scheduleSocketAlarms();
+        await this.scheduleRuntimeAlarm();
         return;
       }
       const instanceId = daemonInstanceId(body.instance_id);
@@ -245,10 +246,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       } catch {
         this.daemonRegistry.expire(ws);
         closeWebSocketQuietly(ws, 1011, "daemon readiness probe failed");
-        await this.scheduleSocketAlarms();
+        await this.scheduleRuntimeAlarm();
         return;
       }
-      await this.scheduleSocketAlarms();
+      await this.scheduleRuntimeAlarm();
       return;
     }
 
@@ -276,7 +277,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         rejectDaemonMessage(ws, "invalid_relay_readiness_state", 1002, "invalid daemon readiness state");
         return;
       }
-      const reboundCallIds = this.pending.rebindInstance(readyAttachment.instanceId ?? "", ws);
+      const daemonInstanceId = readyAttachment.instanceId ?? "";
+      const previousSockets = this.daemonRegistry.readyRoleSockets().filter((socket) => socket !== ws);
+      const fallbackSocket = previousSockets.find((socket) => this.daemonRegistry.readyAttachment(socket)?.instanceId === daemonInstanceId);
+      const reboundCallIds = this.pending.rebindInstance(daemonInstanceId, ws);
       if (reboundCallIds.length > 0) {
         this.observability.event("info", "daemon.calls.rebound", { rebound_calls: reboundCallIds.length });
       }
@@ -285,12 +289,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         ws.send(JSON.stringify({ type: "ready_ack", server: SERVER_NAME, version: SERVER_VERSION }));
       } catch {
         await this.invalidateDaemonSocket(ws, "daemon readiness acknowledgement failed", "daemon ready timeout", "daemon_ready_timeout");
+        if (fallbackSocket?.readyState === WebSocket.OPEN) this.pending.rebindInstance(daemonInstanceId, fallbackSocket);
+        await this.scheduleRuntimeAlarm();
         return;
       }
       this.observability.socketReady();
-      for (const previous of this.daemonRegistry.readyRoleSockets().filter((socket) => socket !== ws)) {
+      for (const previous of previousSockets) {
+        await this.detachDaemonSocketCalls(previous, "daemon connection replaced after verified handover");
+        this.daemonRegistry.expire(previous);
         closeWebSocketQuietly(previous, 1012, "replaced by verified daemon");
       }
+      await this.scheduleRuntimeAlarm();
       return;
     }
 
@@ -323,7 +332,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private async cleanupDaemonSocket(ws: WebSocket, message: string): Promise<void> {
     this.observability.socketDisconnected();
     await this.detachDaemonSocketCalls(ws, message);
-    await this.scheduleSocketAlarms();
+    await this.scheduleRuntimeAlarm();
   }
   private async handleMcp(request: Request, base: string): Promise<Response> {
     if (request.method !== "GET" && request.method !== "POST") {
@@ -418,6 +427,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
                 accountVersion: access.authorized.accountVersion, role: access.authorized.role })
               : undefined,
           });
+          await this.scheduleRuntimeAlarm();
         }
       } catch (error) {
         await persistImmediateStreamOutcome({
@@ -544,6 +554,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       throw error;
     }
+    await this.scheduleRuntimeAlarm();
     this.observability.callStarted(name);
     try {
       socket.send(JSON.stringify({
@@ -610,7 +621,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     this.ctx.acceptWebSocket(server);
     this.observability.socketCandidate();
     this.daemonRegistry.beginCandidate(server, challenge, preflight);
-    await this.scheduleSocketAlarms();
+    await this.scheduleRuntimeAlarm();
     const welcomed = trySendWebSocket(server, {
       type: "welcome",
       server: SERVER_NAME,
@@ -626,7 +637,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!welcomed) {
       this.daemonRegistry.expire(server);
       closeWebSocketQuietly(server, 1011, "daemon welcome failed");
-      await this.scheduleSocketAlarms();
+      await this.scheduleRuntimeAlarm();
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -657,7 +668,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async touchDaemonSocket(ws: WebSocket): Promise<void> {
     if (!this.daemonRegistry.touch(ws)) return;
-    await this.scheduleSocketAlarms();
+    await this.scheduleRuntimeAlarm();
   }
 
   private async invalidateDaemonSocket(
@@ -694,73 +705,24 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async alarm(): Promise<void> {
-    const now = Date.now();
-    let nextDeadline = Number.POSITIVE_INFINITY;
-    for (const socket of this.daemonRegistry.candidateSockets()) {
-      const attachment = this.daemonRegistry.attachment(socket);
-      const connectedAt = Date.parse(attachment?.connectedAt ?? "");
-      const deadline = connectedAt + DAEMON_HELLO_TIMEOUT_MS;
-      if (!Number.isFinite(connectedAt) || deadline <= now) {
-        this.daemonRegistry.expire(socket);
-        sendWebSocketQuietly(socket, { type: "error", error: "daemon_hello_timeout" });
-        closeWebSocketQuietly(socket, 1008, "daemon hello timeout");
-        continue;
-      }
-      nextDeadline = Math.min(nextDeadline, deadline);
-    }
-    for (const socket of this.daemonRegistry.probingSockets()) {
-      const attachment = this.daemonRegistry.attachment(socket);
-      const readyDeadline = daemonReadyDeadlineMs(attachment);
-      const liveDeadline = daemonLivenessDeadlineMs(attachment);
-      if (!Number.isFinite(readyDeadline) || !Number.isFinite(liveDeadline) || Math.min(readyDeadline, liveDeadline) <= now) {
-        await this.invalidateDaemonSocket(socket, "daemon did not complete end-to-end readiness verification", "daemon ready timeout", "daemon_ready_timeout");
-        continue;
-      }
-      nextDeadline = Math.min(nextDeadline, readyDeadline, liveDeadline);
-    }
-    for (const socket of this.daemonRegistry.readyRoleSockets()) {
-      const deadline = daemonLivenessDeadlineMs(this.daemonRegistry.readyAttachment(socket));
-      if (!Number.isFinite(deadline) || deadline <= now) {
-        await this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
-        continue;
-      }
-      nextDeadline = Math.min(nextDeadline, deadline);
-    }
-    if (Number.isFinite(nextDeadline)) await this.ctx.storage.setAlarm(nextDeadline);
-    else await this.ctx.storage.deleteAlarm();
+    await processRuntimeAlarm(this.runtimeAlarmContext());
   }
 
-  private async scheduleSocketAlarms(): Promise<void> {
-    let nextDeadline = Number.POSITIVE_INFINITY;
-    for (const socket of this.daemonRegistry.candidateSockets()) {
-      const attachment = this.daemonRegistry.attachment(socket);
-      const connectedAt = Date.parse(attachment?.connectedAt ?? "");
-      if (!Number.isFinite(connectedAt)) {
-        closeWebSocketQuietly(socket, 1008, "invalid daemon candidate timestamp");
-        continue;
-      }
-      nextDeadline = Math.min(nextDeadline, connectedAt + DAEMON_HELLO_TIMEOUT_MS);
-    }
-    for (const socket of this.daemonRegistry.probingSockets()) {
-      const attachment = this.daemonRegistry.attachment(socket);
-      const readyDeadline = daemonReadyDeadlineMs(attachment);
-      const liveDeadline = daemonLivenessDeadlineMs(attachment);
-      if (!Number.isFinite(readyDeadline) || !Number.isFinite(liveDeadline)) {
-        await this.invalidateDaemonSocket(socket, "daemon readiness state is invalid", "daemon ready timeout", "daemon_ready_timeout");
-        continue;
-      }
-      nextDeadline = Math.min(nextDeadline, readyDeadline, liveDeadline);
-    }
-    for (const socket of this.daemonRegistry.readyRoleSockets()) {
-      const deadline = daemonLivenessDeadlineMs(this.daemonRegistry.readyAttachment(socket));
-      if (!Number.isFinite(deadline)) {
-        await this.invalidateDaemonSocket(socket, "daemon became unresponsive", "invalid daemon liveness timestamp");
-        continue;
-      }
-      nextDeadline = Math.min(nextDeadline, deadline);
-    }
-    if (Number.isFinite(nextDeadline)) await this.ctx.storage.setAlarm(Math.max(Date.now(), nextDeadline));
-    else await this.ctx.storage.deleteAlarm();
+  private async scheduleRuntimeAlarm(): Promise<void> {
+    await scheduleRuntimeAlarm(this.runtimeAlarmContext());
+  }
+
+  private runtimeAlarmContext() {
+    return {
+      storage: this.ctx.storage,
+      pending: this.pending,
+      daemonRegistry: this.daemonRegistry,
+      invalidateDaemonSocket: (socket: WebSocket, message: string, closeReason: string, errorCode?: string) =>
+        this.invalidateDaemonSocket(socket, message, closeReason, errorCode),
+      onScheduleError: (error: unknown) => this.observability.event(
+        "error", "runtime.alarm.schedule.failed", { error_class: workerErrorClass(error) },
+      ),
+    };
   }
 
   private daemonStatus(detail: boolean): Record<string, unknown> {

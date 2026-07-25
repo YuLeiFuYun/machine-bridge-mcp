@@ -22,6 +22,16 @@ export class PendingCallDeadlines {
     return this.clock();
   }
 
+  nextDelayMs(record: PendingCallRecord): number {
+    const deadline = record.socket ? record.deadlineAt : record.reconnectDeadlineAt;
+    return Number.isFinite(deadline) ? Math.max(0, Number(deadline) - this.clock()) : Number.POSITIVE_INFINITY;
+  }
+
+  isDue(record: PendingCallRecord, now = this.clock()): boolean {
+    const deadline = record.socket ? record.deadlineAt : record.reconnectDeadlineAt;
+    return Number.isFinite(deadline) && Number(deadline) <= now;
+  }
+
   armOperation(record: PendingCallRecord, delayMs: number, expire: (id: string) => void): void {
     if (record.timeout) this.scheduler.clearTimeout(record.timeout);
     const delay = positiveDelay(delayMs);
@@ -38,17 +48,21 @@ export class PendingCallDeadlines {
 
   armReconnect(record: PendingCallRecord, delayMs: number, expire: (id: string) => void): void {
     if (record.reconnectTimeout) this.scheduler.clearTimeout(record.reconnectTimeout);
-    record.reconnectTimeout = this.scheduler.setTimeout(() => expire(record.id), positiveDelay(delayMs));
+    const delay = positiveDelay(delayMs);
+    record.reconnectDeadlineAt = this.clock() + delay;
+    record.reconnectTimeout = this.scheduler.setTimeout(() => expire(record.id), delay);
   }
 
   clearReconnect(record: PendingCallRecord): void {
     if (record.reconnectTimeout) this.scheduler.clearTimeout(record.reconnectTimeout);
     record.reconnectTimeout = undefined;
+    record.reconnectDeadlineAt = undefined;
   }
 
   clear(record: PendingCallRecord): void {
     if (record.timeout) this.scheduler.clearTimeout(record.timeout);
     if (record.reconnectTimeout) this.scheduler.clearTimeout(record.reconnectTimeout);
+    record.reconnectDeadlineAt = undefined;
   }
 }
 

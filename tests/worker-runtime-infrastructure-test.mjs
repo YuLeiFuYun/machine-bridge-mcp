@@ -1,4 +1,5 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
+import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
 import { buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall } from "../src/worker/mcp-stream-dispatch.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
 import { acceptsEventStream, resumeJsonRpcResponse, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
@@ -39,6 +40,8 @@ await testRegistrationFailures();
 await testTerminalPaths();
 await testReconnectRebinding();
 await testDetachedTimeoutPause();
+await testEventBoundaryDeadlineSweep();
+await testRuntimeAlarmCoordinator();
 await testTimeoutCallbackFailure();
 await testEventDrivenPendingCalls();
 await testEventDrivenStreamDispatch();
@@ -212,6 +215,101 @@ async function testDetachedTimeoutPause() {
   advance(1);
   await expectReject(pending, "operation timeout");
   assert(registry.snapshot().active === 0, "expired rebound call leaked from the registry");
+
+  const socketC = {};
+  const handover = registry.register({
+    id: "live-handover", tool: "exec_command", socket: socketA, daemonInstanceId: "daemon_handover_12345678",
+    timeoutMs: 100, onTimeout: () => new Error("handover operation timeout"),
+  });
+  advance(40);
+  assert(registry.rebindInstance("daemon_handover_12345678", socketC)[0] === "live-handover", "verified same-instance handover did not transfer an attached call");
+  assert(!(await registry.resolve("live-handover", socketA, { stale: true })), "old daemon socket retained ownership after handover");
+  advance(59);
+  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 0, "live handover reset or detached the operation timeout");
+  advance(1);
+  await expectReject(handover, "handover operation timeout");
+  assert(registry.snapshot().active === 0, "live handover timeout leaked from the registry");
+}
+
+async function testEventBoundaryDeadlineSweep() {
+  let now = 0;
+  let nextTimer = 1;
+  const scheduler = {
+    setTimeout() { return nextTimer++; },
+    clearTimeout() {},
+  };
+  const outcomes = [];
+  const socket = {};
+  const registry = new PendingCallRegistry(1, { now: () => now, scheduler });
+  registry.registerEvent({
+    id: "event-sweep-timeout", tool: "exec_command", socket, daemonInstanceId: "daemon_sweep_12345678",
+    clientRequestKey: "event:sweep-timeout", timeoutMs: 100,
+    onTimeout: () => new WorkerToolError("timeout", "event-boundary operation timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  assert(registry.nextDeadlineDelayMs() === 100, "pending registry did not expose the operation deadline for Durable Object alarm scheduling");
+  now = 100;
+  assert(await registry.expireDue() === 1, "event-boundary sweep did not expire an overdue attached call");
+  assert(outcomes.at(-1).ok === false && outcomes.at(-1).error.code === "timeout", "event-boundary sweep lost the operation timeout error");
+  assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "event-boundary operation sweep leaked indexes");
+
+  registry.registerEvent({
+    id: "event-sweep-reconnect", tool: "exec_command", socket, daemonInstanceId: "daemon_sweep_12345678",
+    clientRequestKey: "event:sweep-reconnect", timeoutMs: 500,
+    onTimeout: () => new Error("operation timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  assert(registry.detachSocket(socket, 120, () => new WorkerToolError("unavailable", "event-boundary reconnect timeout", true)) === 1, "event-boundary sweep setup did not detach the call");
+  assert(registry.nextDeadlineDelayMs() === 120, "pending registry did not expose the reconnect deadline for Durable Object alarm scheduling");
+  now = 220;
+  assert(await registry.expireDue() === 1, "event-boundary sweep did not expire an overdue detached call");
+  assert(outcomes.at(-1).ok === false && outcomes.at(-1).error.message === "event-boundary reconnect timeout", "event-boundary sweep lost the reconnect timeout error");
+  assert(registry.snapshot().active === 0 && registry.snapshot().detached === 0, "event-boundary reconnect sweep leaked pending state");
+  assert(!Number.isFinite(registry.nextDeadlineDelayMs()), "empty pending registry retained a deadline");
+}
+
+async function testRuntimeAlarmCoordinator() {
+  const scheduled = [];
+  let deleted = 0;
+  let expired = 0;
+  let scheduleErrors = 0;
+  let pendingDelay = 75;
+  const pending = {
+    async expireDue() { expired += 1; return 0; },
+    nextDeadlineDelayMs() { return pendingDelay; },
+  };
+  const daemonRegistry = {
+    candidateSockets() { return []; },
+    probingSockets() { return []; },
+    readyRoleSockets() { return []; },
+  };
+  const context = {
+    storage: {
+      async setAlarm(value) { scheduled.push(Number(value)); },
+      async deleteAlarm() { deleted += 1; },
+    },
+    pending,
+    daemonRegistry,
+    async invalidateDaemonSocket() { throw new Error("empty socket registry must not invalidate a daemon"); },
+    onScheduleError() { scheduleErrors += 1; },
+  };
+
+  await scheduleRuntimeAlarm(context, 1000);
+  assert(scheduled.length === 1 && scheduled[0] === 1075, "runtime alarm did not schedule the earliest pending deadline");
+  assert(deleted === 0 && expired === 0, "alarm scheduling unexpectedly mutated pending state");
+
+  pendingDelay = Number.POSITIVE_INFINITY;
+  await processRuntimeAlarm(context, 2000);
+  assert(expired === 1, "runtime alarm did not sweep overdue pending calls before rescheduling");
+  assert(deleted === 1, "runtime alarm did not remove an alarm when no deadline remained");
+
+  pendingDelay = 10;
+  const failingContext = {
+    ...context,
+    storage: { async setAlarm() { throw new Error("synthetic alarm storage failure"); }, async deleteAlarm() {} },
+  };
+  await scheduleRuntimeAlarm(failingContext, 3000);
+  assert(scheduleErrors === 1, "runtime alarm scheduling failure was not reported through the bounded callback");
 }
 
 async function testTimeoutCallbackFailure() {

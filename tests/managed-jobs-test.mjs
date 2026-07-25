@@ -68,6 +68,25 @@ try {
   });
   assert(prototypeResourceManager.inspectLocal({ job_id: prototypeResourceJob.job_id }).review_plan.resources.constructor?.kind === "file", "prototype-shaped resource lookup used inherited state");
   prototypeResourceManager.cancel({ job_id: prototypeResourceJob.job_id });
+
+  const prototypeEnvironment = JSON.parse('{"__proto__":"plain-value","constructor":"constructor-value","toString":"string-value"}');
+  const prototypeEnvironmentResources = JSON.parse('{"__proto__":"constructor","valueOf":"constructor"}');
+  const prototypeEnvironmentJob = prototypeResourceManager.stage({
+    name: "prototype environment",
+    steps: [
+      { argv: [process.execPath, "-e", ""], env: prototypeEnvironment },
+      { argv: [process.execPath, "-e", ""], env_resources: prototypeEnvironmentResources },
+    ],
+  });
+  const prototypeReviewSteps = prototypeResourceManager.inspectLocal({ job_id: prototypeEnvironmentJob.job_id }).review_plan.steps;
+  const prototypeStep = prototypeReviewSteps[0];
+  const prototypeResourceStep = prototypeReviewSteps[1];
+  assert(Object.hasOwn(prototypeStep.env, "__proto__") && prototypeStep.env.__proto__ === "plain-value", "prototype-shaped environment key mutated the validation object prototype");
+  assert(Object.hasOwn(prototypeStep.env, "constructor") && prototypeStep.env.constructor === "constructor-value", "constructor environment key was not ordinary data");
+  assert(Object.hasOwn(prototypeStep.env, "toString") && prototypeStep.env.toString === "string-value", "toString environment key was not ordinary data");
+  assert(Object.hasOwn(prototypeResourceStep.env_resources, "__proto__") && prototypeResourceStep.env_resources.__proto__ === "constructor", "prototype-shaped resource environment key mutated the validation object prototype");
+  assert(Object.hasOwn(prototypeResourceStep.env_resources, "valueOf") && prototypeResourceStep.env_resources.valueOf === "constructor", "valueOf resource environment key was not ordinary data");
+  prototypeResourceManager.cancel({ job_id: prototypeEnvironmentJob.job_id });
   const manager = new ManagedJobManager({
     jobRoot,
     workspace,

@@ -125,7 +125,7 @@ function validateEnv(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   const entries = Object.entries(value);
   if (entries.length > 64) throw new Error(`${label} has too many entries`);
-  const out = {};
+  const out = Object.create(null);
   for (const [key, raw] of entries) {
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)) throw new Error(`${label} contains invalid variable name: ${key}`);
     out[key] = boundedString(raw, 16 * 1024, `${label}.${key}`);
@@ -138,7 +138,7 @@ function validateEnvResources(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   const entries = Object.entries(value);
   if (entries.length > 32) throw new Error(`${label} has too many entries`);
-  const out = {};
+  const out = Object.create(null);
   for (const [key, raw] of entries) {
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)) throw new Error(`${label} contains invalid variable name: ${key}`);
     out[key] = validateResourceName(raw);

@@ -25,6 +25,17 @@ export class PendingCallRegistry {
   get size(): number { return this.byId.size; }
   hasRequestKey(requestKey?: string): boolean { return Boolean(requestKey && this.byRequestKey.has(requestKey)); }
 
+  nextDeadlineDelayMs(): number {
+    return Math.min(Number.POSITIVE_INFINITY, ...[...this.byId.values()].map((record) => this.deadlines.nextDelayMs(record)));
+  }
+
+  async expireDue(now = this.deadlines.now()): Promise<number> {
+    const due = [...this.byId.values()].filter((record) => this.deadlines.isDue(record, now));
+    let expired = 0;
+    for (const record of due) expired += Number(await this.expireRecord(record));
+    return expired;
+  }
+
   register(input: RegisterPendingCall): Promise<unknown> {
     this.assertCanRegister(input);
     let resolveResult!: (value: unknown) => void;
@@ -66,8 +77,9 @@ export class PendingCallRegistry {
     const delay = Math.max(1, Math.floor(Number(graceMs) || 1));
     for (const record of records) {
       record.socket = undefined;
+      record.onReconnectTimeout = createError;
       this.deadlines.pauseOperation(record);
-      this.deadlines.armReconnect(record, delay, (id) => { void this.expire(id, createError, "pending daemon reconnect expired"); });
+      this.deadlines.armReconnect(record, delay, (id) => { void this.expireReconnect(id); });
     }
     return records.length;
   }
@@ -76,8 +88,10 @@ export class PendingCallRegistry {
     if (!daemonInstanceId) return [];
     const rebound: string[] = [];
     for (const record of this.byId.values()) {
-      if (record.socket || record.daemonInstanceId !== daemonInstanceId) continue;
-      this.deadlines.clearReconnect(record);
+      if (record.daemonInstanceId !== daemonInstanceId || record.socket === socket) continue;
+      if (record.socket) this.deadlines.pauseOperation(record);
+      else this.deadlines.clearReconnect(record);
+      record.onReconnectTimeout = undefined;
       record.socket = socket;
       this.deadlines.armOperation(record, record.remainingTimeoutMs, (id) => { void this.expireOperation(id); });
       rebound.push(record.id);
@@ -122,17 +136,21 @@ export class PendingCallRegistry {
     else if (input.signal && abortHandler) input.signal.addEventListener("abort", abortHandler, { once: true });
   }
 
-  private expireOperation(id: string): Promise<boolean> {
-    const record = this.byId.get(id);
-    return record ? this.fail(id, record.onTimeout, "pending daemon call timed out") : Promise.resolve(false);
+  private expireOperation(id: string): Promise<boolean> { return this.expireRecord(this.byId.get(id)); }
+  private expireReconnect(id: string): Promise<boolean> {
+    const record = this.byId.get(id); return record && !record.socket ? this.expireRecord(record) : Promise.resolve(false);
   }
-
+  private expireRecord(record?: PendingCallRecord): Promise<boolean> {
+    if (!record) return Promise.resolve(false);
+    return record.socket
+      ? this.fail(record.id, record.onTimeout, "pending daemon call timed out")
+      : this.fail(record.id, record.onReconnectTimeout, "pending daemon reconnect expired");
+  }
   private expire(id: string, createError: ((record: PendingCallRecord) => Error) | undefined, fallback: string): Promise<boolean> {
     const record = this.byId.get(id);
-    return record && !record.socket && fallback.includes("reconnect") ? this.fail(id, createError, fallback)
-      : record && !fallback.includes("reconnect") ? this.fail(id, createError, fallback) : Promise.resolve(false);
+    const applicable = record && (fallback.includes("reconnect") ? !record.socket : true);
+    return applicable ? this.fail(id, createError, fallback) : Promise.resolve(false);
   }
-
   private async fail(id: string, createError: ((record: PendingCallRecord) => Error) | undefined, fallback: string): Promise<boolean> {
     const record = this.byId.get(id);
     if (!record) return false;
@@ -140,7 +158,6 @@ export class PendingCallRegistry {
     try { error = createError?.(record) ?? new Error(fallback); } catch { error = new Error(fallback); }
     return this.finish(id, { ok: false, error });
   }
-
   private async finish(id: string, outcome: PendingCallOutcome): Promise<boolean> {
     const record = this.take(id);
     if (!record) return false;
