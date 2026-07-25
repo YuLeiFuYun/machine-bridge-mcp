@@ -204,7 +204,7 @@ assert(!Object.hasOwn(outageDebug?.fields || {}, "close_reason"), "outage diagno
 sockets[2].open();
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 completeRelayReadiness(connection, "0.8.1");
-const restored = events.find((event) => event.level === "info" && event.message.startsWith("remote relay connection restored after "));
+const restored = events.find((event) => event.level === "warn" && event.message.startsWith("remote relay connection restored after "));
 assert(restored?.message.includes("reconnect attempt"), "restored connection summary was incomplete or not user-readable");
 assert(restored.fields?.event === "relay.outage.recovered"
   && restored.fields.close_category === "connection_interrupted"

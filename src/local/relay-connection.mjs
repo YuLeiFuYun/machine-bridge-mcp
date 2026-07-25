@@ -230,7 +230,7 @@ export class RelayConnection {
       const outageMs = Math.max(0, this.now() - this.outageStartedAt);
       if (this.outageNoticeEmitted) {
         const recoveryFields = relayRecoveryFields(this, outageMs);
-        this.logger.info?.(`remote relay connection restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`, recoveryFields);
+        this.logger.warn?.(`remote relay connection restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`, recoveryFields);
         this.logger.debug?.("remote relay outage recovery details", recoveryFields);
       } else {
         this.logger.debug?.("remote relay connection recovered after a brief interruption", {

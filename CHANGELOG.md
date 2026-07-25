@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0-beta.13 - 2026-07-25
+
+### Resumable MCP result delivery and outage closure
+
+- Complete the Streamable HTTP recovery contract. Every streamed `tools/call` now emits a sequence-zero SSE event identifier before local execution can complete, persists a token- and MCP-session-bound delivery record, emits the terminal result as sequence one, and accepts authenticated `GET /mcp` recovery with `Last-Event-ID`. Reusing sequence one returns an empty completed stream instead of delivering the terminal response twice.
+- Separate execution continuity from result-delivery continuity. An HTTP/SSE disconnect does not cancel the daemon call; only session-scoped `notifications/cancelled` does. A new POST always starts a new request, while GET only resumes a previously issued stream identifier, preventing retry semantics from being conflated with replay.
+- Bound Durable Object recovery state to 64 streams, two minutes, and 1.5 MiB per persisted terminal message. A compact metadata index avoids scanning stored result bodies. Result records carry SHA-256 integrity metadata, are isolated by OAuth token and MCP session, evict expired or oldest completed entries first, and return explicit errors for oversized replay data, lost in-memory execution after Worker restart, or stored-result corruption.
+- Preserve online delivery when persistence fails transiently, fail before side effects when a new recovery record cannot be admitted, and allow browser DPoP/resumption preflights by advertising both `DPoP` and `Last-Event-ID` in CORS.
+- Promote the recovery summary for an already-warned relay outage to `warn`, while brief self-healing interruptions remain debug-only. Default background-service logs now contain both outage start and recovery closure without exposing raw close reasons.
+- Add direct store fault/tamper/capacity tests, SSE framing tests, and live Wrangler integration that disconnects after sequence zero, completes the daemon call, rejects another session, recovers through GET, and proves the acknowledged terminal event is not duplicated.
+
 ## 3.0.0-beta.12 - 2026-07-23
 
 ### ChatGPT Streamable HTTP task continuity

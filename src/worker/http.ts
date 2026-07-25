@@ -223,7 +223,7 @@ export function corsPreflight(request: Request, base: string, configured: string
     headers: {
       "access-control-allow-origin": origin,
       "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, content-type, mcp-protocol-version, mcp-session-id",
+      "access-control-allow-headers": "authorization, content-type, dpop, last-event-id, mcp-protocol-version, mcp-session-id",
       "access-control-max-age": "600",
       "cache-control": "no-store",
       "vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",

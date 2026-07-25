@@ -176,6 +176,12 @@ const lineLimits = Object.freeze({
   "src/local/windows-launcher.mjs": 90,
   "src/local/monotonic-deadline.mjs": 60,
   "src/worker/mcp-session.ts": 120,
+  "src/worker/mcp-access.ts": 80,
+  "src/worker/mcp-resumption-http.ts": 80,
+  "src/worker/mcp-resumption-config.ts": 80,
+  "src/worker/mcp-resumption.ts": 240,
+  "src/worker/mcp-resumption-records.ts": 200,
+  "src/worker/mcp-stream.ts": 160,
   "src/worker/tool-timeout.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
@@ -261,10 +267,27 @@ for (const duplicate of [
 }
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
-  "observability", "mcp-session", "tool-timeout", "daemon-liveness", "daemon-sockets",
+  "observability", "mcp-session", "mcp-access", "mcp-resumption-http", "mcp-resumption",
+  "mcp-stream", "tool-timeout", "daemon-liveness", "daemon-sockets",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
+const mcpResumptionBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption.ts"), "utf8");
+for (const required of ["./mcp-resumption-config.ts", "./mcp-resumption-records.ts", "token_key", "session_id", "workerRestartMessage"]) {
+  if (!mcpResumptionBoundary.includes(required)) throw new Error(`MCP resumption lost a lifecycle or isolation boundary: ${required}`);
+}
+if (mcpResumptionBoundary.includes(".list(")) {
+  throw new Error("MCP resumption scans full stored result values instead of its bounded metadata index");
+}
+const mcpResumptionRecordsBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption-records.ts"), "utf8");
+for (const required of ["STREAM_INDEX_KEY", "message_sha256", "sha256Hex", "DEFAULT_MAXIMUM_MESSAGE_BYTES"]) {
+  if (!mcpResumptionRecordsBoundary.includes(required)) throw new Error(`MCP resumption records lost a storage-integrity boundary: ${required}`);
+}
+const mcpResumptionHttpBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption-http.ts"), "utf8");
+for (const required of ["Last-Event-ID", "resolveMcpSession", "tokenKey", "sessionId"]) {
+  if (!mcpResumptionHttpBoundary.includes(required)) throw new Error(`MCP resumption HTTP boundary lost request binding: ${required}`);
+}
+
 const daemonSocketBoundary = readFileSync(join(root, "src", "worker", "daemon-sockets.ts"), "utf8");
 for (const required of ["class DaemonSocketRegistry", "beginProbe", "promote", "readySockets", "probingSockets"]) {
   if (!daemonSocketBoundary.includes(required)) throw new Error(`daemon socket registry lost lifecycle responsibility: ${required}`);

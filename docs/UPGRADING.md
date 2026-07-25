@@ -120,3 +120,6 @@ A rollback must restore together:
 - the prior browser extension.
 
 Do not roll back by editing version or schema fields, copying selected credential files, or restoring only the Worker. Prefer fixing forward when a complete backup is unavailable.
+## Version 3.0.0-beta.13
+
+Beta.13 changes Worker-side Streamable HTTP delivery and daemon outage logging. Upgrade Worker, daemon/CLI, and browser-extension metadata together through the normal candidate activation flow. Clients that support standard resumption should reconnect and reinitialize so they send `MCP-Session-Id` and use `GET /mcp` with `Last-Event-ID`; older JSON-only clients retain single-response behavior but cannot recover a disposed response stream.

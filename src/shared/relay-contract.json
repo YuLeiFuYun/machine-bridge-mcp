@@ -3,5 +3,8 @@
   "streamHeartbeatMs": 10000,
   "maximumExecutionTimeoutMs": 600000,
   "toolCallOverheadMs": 5000,
-  "maximumRelayToolTimeoutMs": 610000
+  "maximumRelayToolTimeoutMs": 610000,
+  "streamResumeRetentionMs": 120000,
+  "maximumResumableStreams": 64,
+  "maximumResumableMessageBytes": 1500000
 }

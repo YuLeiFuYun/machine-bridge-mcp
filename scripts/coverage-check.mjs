@@ -11,6 +11,7 @@ const tests = [
   "tests/runtime-infrastructure-test.mjs",
   "tests/runtime-boundaries-test.mjs",
   "tests/worker-runtime-infrastructure-test.mjs",
+  "tests/mcp-resumption-test.mjs",
   "tests/worker-oauth-controller-test.mjs",
   "tests/logging-structure-test.mjs",
   "tests/runtime-handler-matrix-test.mjs",
@@ -125,6 +126,10 @@ try {
     "src/worker/policy.ts": [100, 25],
     "src/worker/errors.ts": [100, 40],
     "src/worker/mcp-jsonrpc.ts": [95, 55],
+    "src/worker/mcp-resumption-config.ts": [100, 80],
+    "src/worker/mcp-resumption-records.ts": [90, 65],
+    "src/worker/mcp-resumption.ts": [90, 70],
+    "src/worker/mcp-stream.ts": [90, 65],
     "src/worker/websocket-protocol.ts": [100, 50],
   };
   const failures = [];

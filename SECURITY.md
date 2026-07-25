@@ -257,3 +257,8 @@ No logging policy prevents data from being returned to an authorized client that
 Machine Bridge cannot make arbitrary local executables safe, identify all sensitive data, guarantee cleanup across every power/storage/security failure, override MCP-host or endpoint-security policy, neutralize prompt injection, protect against root or a fully compromised same-user account, or manufacture production signing and governance controls.
 
 See [docs/AUDIT.md](docs/AUDIT.md) for historical findings and residual limitations.
+## Resumable Streamable HTTP delivery
+
+SSE event identifiers are cursors, not bearer credentials. Recovery requires a valid OAuth Bearer/DPoP request and the original signed `MCP-Session-Id`; a cursor from another token or session is reported as not found. `GET /mcp` only replays an existing stream, while POST always represents new work.
+
+The Worker stores a bounded terminal response for two minutes to bridge transport loss. Records are limited to 64 streams and 1.5 MiB each and include SHA-256 integrity metadata. This protects against accidental storage corruption, not compromise of the Worker account or Durable Object. A pending record found after Worker restart is reported as an ambiguous execution outcome because the local side effect may already have occurred; clients must reconcile before retrying non-idempotent tools.

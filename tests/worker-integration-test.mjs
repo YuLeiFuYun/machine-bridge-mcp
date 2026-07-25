@@ -133,6 +133,10 @@ try {
   });
   assert(preflight.status === 204, `configured-origin preflight failed: ${preflight.status}`);
   assert(preflight.headers.get("access-control-allow-origin") === "http://localhost:3001", "preflight omitted exact allowed origin");
+  const allowedHeaders = preflight.headers.get("access-control-allow-headers") || "";
+  for (const requiredHeader of ["authorization", "dpop", "last-event-id", "mcp-protocol-version", "mcp-session-id"]) {
+    assert(allowedHeaders.split(/,\s*/).includes(requiredHeader), `MCP CORS preflight omitted ${requiredHeader}`);
+  }
   const corsHealth = await stableFetch(`${base}/healthz`, { headers: { origin: "http://localhost:3001" } });
   assert(corsHealth.status === 200, "configured browser origin could not access health endpoint");
   assert(corsHealth.headers.get("access-control-allow-origin") === "http://localhost:3001", "actual response omitted CORS origin");
@@ -668,10 +672,64 @@ try {
   assert(streamedResponse.headers.get("content-type")?.startsWith("text/event-stream"), "event-stream client received a buffered JSON response");
   const streamedReader = streamedResponse.body.getReader();
   const streamedInitial = new TextDecoder().decode((await streamedReader.read()).value);
-  assert(streamedInitial === ": connected\n\n", "streamed tool call did not prime the client with a non-message frame before completion");
+  const streamedInitialId = firstSseEventId(streamedInitial);
+  assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(streamedInitialId), "streamed tool call did not prime the client with a resumable sequence-zero event");
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: streamedRelay.id, ok: true, result: { streamed: true } }));
-  const streamedResult = await readSseJsonRpcResponse(streamedReader, streamedInitial);
-  assert(streamedResult.result?.structuredContent?.streamed === true, "streamed tool call lost the terminal result");
+  const streamedEnvelope = await readSseJsonRpcResponse(streamedReader, streamedInitial);
+  assert(streamedEnvelope.message.result?.structuredContent?.streamed === true, "streamed tool call lost the terminal result");
+  assert(streamedEnvelope.eventIds.at(-1) === `${streamedInitialId.slice(0, -1)}1`, "streamed tool call terminal event did not advance the resumption sequence");
+
+  const resumableRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const resumableResponse = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 8791, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  });
+  const resumableRelay = await resumableRelayPromise;
+  const resumableReader = resumableResponse.body.getReader();
+  const resumableInitial = new TextDecoder().decode((await resumableReader.read()).value);
+  const resumableEventId = firstSseEventId(resumableInitial);
+  assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(resumableEventId), "resumable call omitted its initial event id");
+  await resumableReader.cancel();
+
+  const wrongSessionResume = await stableFetch(`${base}/mcp`, {
+    method: "GET",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, secondarySession),
+      accept: "text/event-stream",
+      "last-event-id": resumableEventId,
+    },
+  });
+  assert(wrongSessionResume.status === 404, "another MCP session could retrieve a resumable stream");
+  await wrongSessionResume.arrayBuffer();
+
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: resumableRelay.id, ok: true, result: { recovered_delivery: true } }));
+  const resumedResponse = await stableFetch(`${base}/mcp`, {
+    method: "GET",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "text/event-stream",
+      "last-event-id": resumableEventId,
+    },
+  });
+  assert(resumedResponse.status === 200 && resumedResponse.headers.get("content-type")?.startsWith("text/event-stream"), "Last-Event-ID resumption did not return SSE");
+  const resumedEnvelope = parseSseJsonRpcResponse(await resumedResponse.text());
+  assert(resumedEnvelope.message.result?.structuredContent?.recovered_delivery === true, "resumed stream lost the daemon terminal result");
+  const terminalEventId = resumedEnvelope.eventIds.at(-1);
+  assert(terminalEventId === `${resumableEventId.slice(0, -1)}1`, "resumed stream returned the wrong terminal event id");
+
+  const completedResume = await stableFetch(`${base}/mcp`, {
+    method: "GET",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "text/event-stream",
+      "last-event-id": terminalEventId,
+    },
+  });
+  assert(completedResume.status === 200 && await completedResume.text() === "", "acknowledged terminal event was delivered twice");
 
   const disconnectedHttpRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const disconnectedHttpController = new AbortController();
@@ -1407,11 +1465,22 @@ async function readSseJsonRpcResponse(reader, initialText = "") {
     text += decoder.decode(chunk.value, { stream: true });
   }
   text += decoder.decode();
+  return parseSseJsonRpcResponse(text);
+}
+
+function parseSseJsonRpcResponse(text) {
+  const eventIds = text.split(/\r?\n/)
+    .filter((line) => line.startsWith("id: "))
+    .map((line) => line.slice(4));
   const dataLines = text.split(/\r?\n/).filter((line) => line.startsWith("data: "));
   for (let index = dataLines.length - 1; index >= 0; index -= 1) {
-    try { return JSON.parse(dataLines[index].slice(6)); } catch {}
+    try { return { message: JSON.parse(dataLines[index].slice(6)), eventIds, text }; } catch {}
   }
   throw new Error(`SSE response omitted a JSON-RPC message: ${text.slice(0, 512)}`);
+}
+
+function firstSseEventId(text) {
+  return text.split(/\r?\n/).find((line) => line.startsWith("id: "))?.slice(4) || "";
 }
 
 async function fetchJson(url, options) {

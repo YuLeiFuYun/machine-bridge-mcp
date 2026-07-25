@@ -15,18 +15,20 @@ import { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
 import { mcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
 import { acceptsEventStream, streamJsonRpcResponse } from "./mcp-stream.ts";
+import { authorizeMcpRequest } from "./mcp-access.ts";
+import { handleMcpResumptionRequest } from "./mcp-resumption-http.ts";
+import { McpResumptionStore, McpStreamLimitError } from "./mcp-resumption.ts";
 import { daemonToolTimeoutMs } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access.ts";
 import { OAuthController, type AuthorizedToken, type OAuthControllerEnv } from "./oauth-controller.ts";
-import { consumeDpopProof, verifyDpopProof } from "./dpop.ts";
 import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority.ts";
 import { serverInfoTool, workspaceTools } from "./tool-catalog.ts";
 import { OFFLINE_ACCESS_SCOPE, randomToken } from "./oauth-state.ts";
 import {
-  HttpError, applyCors, baseUrl, corsPreflight, discardRequestBody, json, methodNotAllowed, oauthAccessToken,
+  HttpError, applyCors, baseUrl, corsPreflight, json, methodNotAllowed,
   parseJsonRequest, workerErrorClass,
 } from "./http.ts";
 import {
@@ -38,7 +40,7 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.12";
+const SERVER_VERSION = "3.0.0-beta.13";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -62,11 +64,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly observability = new WorkerObservability();
   private readonly oauth: OAuthController;
   private readonly daemonRegistry: DaemonSocketRegistry;
+  private readonly resumption: McpResumptionStore;
 
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env);
     this.oauth = new OAuthController(ctx, env, SERVER_NAME, SERVER_VERSION);
     this.daemonRegistry = new DaemonSocketRegistry(ctx);
+    this.resumption = new McpResumptionStore(ctx.storage);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -318,42 +322,29 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   private async handleMcp(request: Request, base: string): Promise<Response> {
-    if (request.method !== "POST") {
-      return new Response(request.method === "HEAD" ? null : JSON.stringify({ error: "mcp endpoint expects POST JSON-RPC" }), {
+    if (request.method !== "GET" && request.method !== "POST") {
+      return new Response(request.method === "HEAD" ? null : JSON.stringify({ error: "mcp endpoint expects GET or POST" }), {
         status: 405,
-        headers: { "content-type": "application/json; charset=utf-8", "allow": "POST", "cache-control": "no-store" },
+        headers: { "content-type": "application/json; charset=utf-8", "allow": "GET, POST", "cache-control": "no-store" },
       });
     }
 
-    const access = oauthAccessToken(request);
-    const authorized = await this.oauth.verifyAccessToken(access.token, base);
-    let dpopValid = true;
-    if (authorized?.dpopJkt) {
-      const proof = access.scheme === "dpop" ? await verifyDpopProof({
+    const access = await authorizeMcpRequest({
+      request,
+      base,
+      oauth: this.oauth,
+      storage: this.ctx.storage,
+      bodyLimitBytes: this.bodyLimitBytes(),
+    });
+    if (access.response) return access.response;
+    if (request.method === "GET") {
+      return await handleMcpResumptionRequest({
         request,
-        expectedMethod: "POST",
-        expectedUrl: request.url,
-        accessToken: access.token,
-        expectedJkt: authorized.dpopJkt,
-      }) : null;
-      dpopValid = Boolean(proof && await consumeDpopProof(this.ctx.storage, proof));
-    } else if (authorized && access.scheme !== "bearer") {
-      dpopValid = false;
-    }
-    if (!authorized || !dpopValid) {
-      // Durable Object fetch forwarding transfers a live request stream. Consume it
-      // before returning, but retain no bytes, so the 401 cannot race a pending read
-      // and unauthenticated input never enters an in-memory request buffer.
-      await discardRequestBody(request, this.bodyLimitBytes());
-      const scheme = authorized?.dpopJkt ? "DPoP" : "Bearer";
-      return new Response(authorized?.dpopJkt ? "Valid DPoP proof required" : "OAuth bearer token required", {
-        status: 401,
-        headers: {
-          "WWW-Authenticate": `${scheme} resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
-          "cache-control": "no-store",
-          "content-type": "text/plain; charset=utf-8",
-          "x-content-type-options": "nosniff",
-        },
+        authorized: access.authorized,
+        identityKey: this.oauth.identityKey(),
+        supportedVersions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
+        resumption: this.resumption,
+        keepAlive: (promise) => this.ctx.waitUntil(promise),
       });
     }
 
@@ -363,25 +354,49 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const protocolError = validateProtocolVersionHeader(request, body, MCP_SUPPORTED_PROTOCOL_VERSIONS);
     if (protocolError) return json(protocolError, 400);
 
-    const session = await resolveMcpSession(request, body.method, this.oauth.identityKey(), authorized.tokenKey);
+    const session = await resolveMcpSession(request, body.method, this.oauth.identityKey(), access.authorized.tokenKey);
     if (session.kind === "invalid") return json(rpcError(body.id, -32001, "MCP session not found"), 404);
-    const dispatch = this.dispatchJsonRpc(
-      body,
-      base,
-      authorized,
-      session.kind === "active" ? session.sessionId : "",
-    );
-    if (body.method === "tools/call") {
-      this.ctx.waitUntil(dispatch.then(() => undefined, () => undefined));
-      if (acceptsEventStream(request)) {
-        const streamed = dispatch.catch((error) => {
-          this.observability.event("error", "mcp.stream.dispatch.failed", { error_class: workerErrorClass(error) });
-          return rpcError(body.id, -32603, "Internal error");
+    const sessionId = session.kind === "active" ? session.sessionId : "";
+
+    if (body.method === "tools/call" && acceptsEventStream(request)) {
+      if (body.id === undefined || body.id === null) return json(rpcError(null, -32600, "tools/call requires a non-null request id"), 400);
+      const streamId = randomToken("stream");
+      try {
+        await this.resumption.begin({
+          streamId,
+          tokenKey: access.authorized.tokenKey,
+          sessionId,
+          requestId: body.id,
         });
-        return streamJsonRpcResponse(streamed);
+      } catch (error) {
+        if (error instanceof McpStreamLimitError) {
+          return json(rpcError(body.id, -32004, error.message), 429);
+        }
+        this.observability.event("error", "mcp.stream.begin.failed", { error_class: workerErrorClass(error) });
+        return json(rpcError(body.id, -32603, "Resumable stream storage is unavailable"), 503);
       }
+
+      const terminal = this.dispatchJsonRpc(body, base, access.authorized, sessionId).catch((error) => {
+        this.observability.event("error", "mcp.stream.dispatch.failed", { error_class: workerErrorClass(error) });
+        return rpcError(body.id, -32603, "Internal error");
+      });
+      const durable = terminal.then(async (message) => {
+        try {
+          await this.resumption.complete(streamId, message);
+        } catch (error) {
+          this.observability.event("error", "mcp.stream.persist.failed", { error_class: workerErrorClass(error) });
+        }
+        return message;
+      });
+      this.resumption.attach(streamId, durable);
+      this.ctx.waitUntil(durable.then(() => undefined, () => undefined));
+      return streamJsonRpcResponse(durable, {
+        streamId,
+        keepAlive: (promise) => this.ctx.waitUntil(promise),
+      });
     }
-    const response = await dispatch;
+
+    const response = await this.dispatchJsonRpc(body, base, access.authorized, sessionId);
     if (response === null) return new Response(null, { status: 202 });
     return session.kind === "initialize" ? json(response, 200, { "mcp-session-id": session.sessionId }) : json(response);
   }

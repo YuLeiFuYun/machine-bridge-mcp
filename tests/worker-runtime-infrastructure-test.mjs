@@ -1,6 +1,6 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
-import { acceptsEventStream, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
+import { acceptsEventStream, resumeJsonRpcResponse, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
 import { daemonToolTimeoutMs } from "../src/worker/tool-timeout.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
@@ -14,6 +14,11 @@ import {
 import {
   closeWebSocketQuietly, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket,
 } from "../src/worker/websocket-protocol.ts";
+const STREAM_TEST_ID = `stream_${"T".repeat(43)}`;
+const STREAM_DISCONNECTED_ID = `stream_${"D".repeat(43)}`;
+const STREAM_RESUMED_ID = `stream_${"R".repeat(43)}`;
+const STREAM_COMPLETE_ID = `stream_${"C".repeat(43)}`;
+
 import {
   DAEMON_LIVENESS_TIMEOUT_MS,
   daemonLivenessDeadlineMs,
@@ -220,7 +225,7 @@ async function testMcpStreamResponse() {
   let intervalCleared = false;
   let keptAlive = null;
   const response = streamJsonRpcResponse(result, {
-    streamId: "stream_test",
+    streamId: STREAM_TEST_ID,
     heartbeatMs: 1,
     scheduler: {
       setInterval(callback) { intervalCallback = callback; return 1; },
@@ -232,13 +237,13 @@ async function testMcpStreamResponse() {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const initial = decoder.decode((await reader.read()).value);
-  assert(initial === ": connected\n\n", "stream response did not prime the client with a non-message frame");
+  assert(initial === `id: ${STREAM_TEST_ID}:0\ndata:\n\n`, "stream response did not prime the client with a resumable empty event");
   intervalCallback();
   const heartbeat = decoder.decode((await reader.read()).value);
   assert(heartbeat === ": keepalive\n\n", "stream response heartbeat was malformed");
   resolveResult({ jsonrpc: "2.0", id: 7, result: { ok: true } });
   const terminal = decoder.decode((await reader.read()).value);
-  assert(terminal.includes("event: message") && terminal.includes('"id":7') && terminal.includes('"ok":true'), "stream response lost the terminal JSON-RPC result");
+  assert(terminal.includes(`id: ${STREAM_TEST_ID}:1`) && terminal.includes("event: message") && terminal.includes('"id":7') && terminal.includes('"ok":true'), "stream response lost the terminal JSON-RPC result");
   assert((await reader.read()).done, "stream response did not close after the terminal result");
   await keptAlive;
   assert(intervalCleared, "stream response heartbeat timer was not cleared");
@@ -247,7 +252,7 @@ async function testMcpStreamResponse() {
   const disconnectedResult = new Promise((resolve) => { resolveDisconnected = resolve; });
   let disconnectedCompletion = null;
   const disconnected = streamJsonRpcResponse(disconnectedResult, {
-    streamId: "stream_disconnected",
+    streamId: STREAM_DISCONNECTED_ID,
     scheduler: { setInterval() { return 2; }, clearInterval() {} },
     keepAlive(promise) { disconnectedCompletion = promise; },
   });
@@ -256,6 +261,17 @@ async function testMcpStreamResponse() {
   await disconnectedReader.cancel();
   resolveDisconnected({ jsonrpc: "2.0", id: 8, result: { ok: true } });
   await disconnectedCompletion;
+
+  const resumed = resumeJsonRpcResponse(Promise.resolve({ jsonrpc: "2.0", id: 9, result: { ok: true } }), {
+    streamId: STREAM_RESUMED_ID,
+    scheduler: { setInterval() { return 3; }, clearInterval() {} },
+  });
+  const resumedText = await resumed.text();
+  assert(resumedText.startsWith(": resumed\n\n"), "resumed stream emitted another sequence-zero event");
+  assert(resumedText.includes(`id: ${STREAM_RESUMED_ID}:1`), "resumed stream omitted the terminal event id");
+
+  const completed = resumeJsonRpcResponse(null, { streamId: STREAM_COMPLETE_ID });
+  assert(await completed.text() === "", "completed stream replayed an already acknowledged terminal event");
 }
 
 async function testAbortSignalCleanup() {
@@ -292,6 +308,9 @@ async function testAbortSignalCleanup() {
 function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
   assert(relayContract.streamHeartbeatMs === 10_000, "SSE heartbeat interval drifted from the idle-connection contract");
+  assert(relayContract.streamResumeRetentionMs === 120_000, "resumable result retention drifted from the bounded recovery window");
+  assert(relayContract.maximumResumableStreams === 64, "resumable stream capacity drifted from the bounded Worker contract");
+  assert(relayContract.maximumResumableMessageBytes === 1_500_000, "resumable message storage exceeded the Durable Object row budget");
   assert(daemonToolTimeoutMs("session_bootstrap", {}) === 10_000, "bootstrap timeout incorrectly inherited the reconnect budget");
   assert(daemonToolTimeoutMs("read_file", {}) === 60_000, "ordinary tool timeout was extended without a disconnect");
   assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 120 }) === 125_000, "configurable tool timeout lost its protocol overhead");

@@ -155,3 +155,8 @@ The stdio integration test also sends an oversized line, verifies bounded reject
 ## Architecture and documentation regression checks
 
 `npm run architecture:test` runs independent module-boundary, repository-hygiene, browser/security-structure, and release/documentation-contract checks. It validates the explicit fast/full check plans, local import graph, domain/adapter direction, module headroom budgets, immutable workflow references, package-script targets, documentation links, publication inventory, and selected security-shape invariants. These source-shape checks are deliberately supplementary: behavior, denial, race, and fault-injection tests remain authoritative for semantic guarantees. Tests must not depend on a fixed CI job count when the actual invariant is that every npm job uses the same verified bootstrap.
+## Resumable MCP delivery coverage
+
+`npm run mcp-resumption:test` directly exercises stream cursor parsing, OAuth-token/MCP-session isolation, active and completed replay, Worker-restart ambiguity, result-size fallback, SHA-256 tamper detection, transient persistence failure, expiry, capacity, and completed-record eviction.
+
+`npm run worker-runtime-infrastructure:test` verifies sequence-zero/sequence-one SSE framing and the shared two-minute/64-stream/1.5-MiB contract. `npm run worker:integration-test` performs the real Wrangler path: disconnect after sequence zero, finish the daemon call, reject another session, recover with GET plus `Last-Event-ID`, and prove a sequence-one acknowledgement is not delivered twice. CORS coverage requires both `DPoP` and `Last-Event-ID`.
