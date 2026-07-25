@@ -50,6 +50,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "lifecycle:test",
   "logging-structure:test",
   "worker-runtime-infrastructure:test",
+  "mcp-resumption:test",
   "lint:test",
   "lint",
   "typecheck",

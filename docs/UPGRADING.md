@@ -120,3 +120,14 @@ A rollback must restore together:
 - the prior browser extension.
 
 Do not roll back by editing version or schema fields, copying selected credential files, or restoring only the Worker. Prefer fixing forward when a complete backup is unavailable.
+## Version 3.0.0-beta.15
+
+Beta.15 replaces blocked beta.14. Upgrade Worker, daemon/CLI, and browser-extension metadata together through the normal candidate activation flow. Streamed daemon calls now use event-driven settlement: the initiating Durable Object request returns after registration and send, while later WebSocket, cancellation, timeout, send-failure, or reconnect-expiry events persist the terminal result. Clients that support standard resumption should reconnect and reinitialize so they send `MCP-Session-Id` and use `GET /mcp` with `Last-Event-ID`; older JSON-only clients retain single-response behavior but cannot recover a disposed response stream.
+
+## Blocked version 3.0.0-beta.14
+
+Do not activate, accept, publish, or promote beta.14. It moved public SSE to the outer Worker but retained an unresolved terminal Promise in the initiating Durable Object event. Exact owner-machine verification showed that concurrent status and cancellation requests still did not enter while SSE remained open. Beta.15 removes that Promise and requires a new activation and acceptance cycle.
+
+## Blocked version 3.0.0-beta.13
+
+Do not activate, accept, publish, or promote beta.13. Exact owner-machine verification found that recovery worked after disconnect, but an SSE response directly owned by the production Durable Object prevented concurrent control requests—including explicit MCP cancellation—from entering until the stream ended. Beta.14 moves the public stream outside the Durable Object and requires a new activation and acceptance cycle.

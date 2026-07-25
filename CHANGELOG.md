@@ -1,5 +1,37 @@
 # Changelog
 
+## 3.0.0-beta.15 - 2026-07-25
+
+### Event-driven streamed-call settlement
+
+- Block `3.0.0-beta.14` after exact owner-machine activation and repeated production verification. Version, launchd identity, private candidate runtime, status, doctor, sequence-zero delivery, session isolation, disconnect recovery, and terminal acknowledgement all converged, but a concurrent `server_info` still timed out while the original SSE remained open; session-scoped cancellation therefore could not enter. Beta.14 has no acceptance record and must not be pushed, published, or promoted.
+- Remove the last cross-event terminal Promise from streamed `tools/call` initiation. `BridgeRoom` now commits the recovery record, registers an event-settled pending call, sends the daemon envelope, and returns the descriptor without retaining a Promise for the daemon result. The later daemon WebSocket `tool_result`, explicit cancellation request, timeout, send failure, or reconnect-grace expiry owns terminal settlement and persistence.
+- Preserve ordinary JSON-only calls with the existing Promise-based request path while adding a separate event settlement mode to `PendingCallRegistry`. Same-instance daemon reconnect still detaches and rebinds both modes; terminal settlement removes request keys, closes observability, and writes exactly one resumable JSON-RPC result.
+- Replace the resumption store's live Promise map with an active-stream set plus a bounded transient terminal map used only when persistence fails. A pending persisted record without matching active state still produces the existing restart-ambiguity error instead of inventing completion.
+- Add deterministic event-lifecycle regressions that prove stream initiation returns before any terminal event, then exercise success, daemon rejection, cancellation, timeout, send failure, result transformation, persistence failure, and same-instance reconnect. Architecture checks forbid `dispatchJsonRpc` terminal Promises, `resumption.attach`, and Durable Object `waitUntil` from returning to the stream initiation path.
+
+## 3.0.0-beta.14 - 2026-07-25
+
+### Concurrent MCP control during streamed delivery
+
+- Block `3.0.0-beta.13` after exact owner-machine activation. Live recovery itself succeeded—sequence zero, session isolation, disconnect recovery, and one-time terminal acknowledgement all worked—but a production Cloudflare Durable Object that directly owned the open SSE response did not accept concurrent `server_info` or `notifications/cancelled` requests until that stream ended. Beta.13 has no acceptance record and must not be published or promoted.
+- Move public SSE ownership to the stateless outer Worker. `BridgeRoom` now authenticates and binds the request, commits the resumable record, dispatches local work, and returns only a bounded internal descriptor. The outer Worker emits sequence zero/keepalives/sequence one and polls the Durable Object with short immediate requests for pending or terminal state, so no Durable Object request remains open while a client stream is active.
+- Strip all internal stream-control headers from public requests before forwarding, then add them only on the trusted service-binding path. OAuth/DPoP, signed MCP-session, token/session replay isolation, explicit cancellation, bounded persistence, and acknowledged-terminal suppression remain enforced by `BridgeRoom`.
+- Extend real Wrangler integration to hold an SSE call open while a concurrent `server_info` succeeds and a session-scoped cancellation reaches the exact daemon call. Transport tests now parse complete SSE events rather than assuming one network chunk equals one event.
+
+## 3.0.0-beta.13 - 2026-07-25
+
+### Resumable MCP result delivery and outage closure
+
+- Complete the Streamable HTTP recovery contract. Every streamed `tools/call` now emits a sequence-zero SSE event identifier before local execution can complete, persists a token- and MCP-session-bound delivery record, emits the terminal result as sequence one, and accepts authenticated `GET /mcp` recovery with `Last-Event-ID`. Reusing sequence one returns an empty completed stream instead of delivering the terminal response twice.
+- Separate execution continuity from result-delivery continuity. An HTTP/SSE disconnect does not cancel the daemon call; only session-scoped `notifications/cancelled` does. A new POST always starts a new request, while GET only resumes a previously issued stream identifier, preventing retry semantics from being conflated with replay.
+- Bound Durable Object recovery state to 64 streams, two minutes, and 1.5 MiB per persisted terminal message. A compact metadata index avoids scanning stored result bodies. Result records carry SHA-256 integrity metadata, are isolated by OAuth token and MCP session, evict expired or oldest completed entries first, and return explicit errors for oversized replay data, lost in-memory execution after Worker restart, or stored-result corruption.
+- Preserve online delivery when persistence fails transiently, fail before side effects when a new recovery record cannot be admitted, and allow browser DPoP/resumption preflights by advertising both `DPoP` and `Last-Event-ID` in CORS.
+- Promote the recovery summary for an already-warned relay outage to `warn`, while brief self-healing interruptions remain debug-only. Default background-service logs now contain both outage start and recovery closure without exposing raw close reasons.
+- Add direct store fault/tamper/capacity tests, SSE framing tests, and live Wrangler integration that disconnects after sequence zero, completes the daemon call, rejects another session, recovers through GET, and proves the acknowledged terminal event is not duplicated.
+- Refresh the locked development-only `brace-expansion` transitive dependency from 5.0.7 to 5.0.8 after the mandatory pre-candidate registry audit reported GHSA-mh99-v99m-4gvg. Both complete and production-only audits must be clean before beta.13 candidate preparation.
+- Integrate Dependabot PR #56 into the complete beta.13 candidate rather than merging its incomplete two-file update. Wrangler advances to 4.114.0, Miniflare/workerd to the 2026-07-22 build, the exact `workerd@1.20260722.1` postinstall approval is reviewed and updated, and the existing patched `sharp@0.35.3` override remains authoritative.
+
 ## 3.0.0-beta.12 - 2026-07-23
 
 ### ChatGPT Streamable HTTP task continuity

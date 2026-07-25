@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.12",
+  "version": "3.0.0-beta.15",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -163,12 +163,13 @@
     "device-key-id-compatibility:test": "node tests/device-key-id-compatibility-test.mjs",
     "candidate-runtime-store:test": "node tests/candidate-runtime-store-test.mjs",
     "service-restart:test": "node tests/service-restart-handoff-test.mjs",
-    "browser-identity:test": "node tests/browser-extension-identity-test.mjs"
+    "browser-identity:test": "node tests/browser-extension-identity-test.mjs",
+    "mcp-resumption:test": "node tests/mcp-resumption-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
     "proxy-from-env": "2.1.0",
-    "wrangler": "4.113.0",
+    "wrangler": "4.114.0",
     "ws": "8.21.1"
   },
   "devDependencies": {
@@ -208,7 +209,7 @@
     "esbuild@0.28.1": true,
     "fsevents": false,
     "sharp@0.35.3": true,
-    "workerd@1.20260721.1": true
+    "workerd@1.20260722.1": true
   },
   "packageManager": "npm@12.0.1",
   "devEngines": {

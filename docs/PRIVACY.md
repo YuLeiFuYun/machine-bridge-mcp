@@ -57,3 +57,8 @@ The scanner is heuristic. It cannot identify every personal or organizational na
 ## Incident response
 
 For an accidental publication, remove the value from the current tree and release artifacts, determine whether it is merely identifying metadata or an active credential, and rotate/revoke any credential immediately. Public Git and npm history are immutable in ordinary workflows: replacing the current file does not erase old commits or a published package. A coordinated history rewrite, cache invalidation request, or replacement release may be appropriate, but those actions are disruptive and require an explicit repository-owner decision.
+## Transient resumable result storage
+
+For Streamable HTTP recovery, the workspace Durable Object may temporarily persist the terminal JSON-RPC response of a remote tool call. This response can contain source text, command output, file metadata, images encoded by the protocol, or other user data returned by the requested tool. It is operational delivery state, not anonymized telemetry and not publication-safe evidence.
+
+Persistence is bounded to 64 streams, at most 1.5 MiB per terminal response, and a two-minute retention window. Records are bound to the OAuth access-token identity and signed MCP session, carry a SHA-256 integrity value, and are removed on expiry or completed-record eviction. The digest detects accidental corruption; it is not a signature against an attacker who controls the Durable Object. Normal logs continue to omit tool arguments and results.

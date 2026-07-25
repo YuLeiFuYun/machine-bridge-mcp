@@ -1,6 +1,12 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
+import { buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall } from "../src/worker/mcp-stream-dispatch.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
-import { acceptsEventStream, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
+import { acceptsEventStream, resumeJsonRpcResponse, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
+import {
+  MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER,
+  handleMcpStreamPollRequest, mcpStreamDescriptorResponse, mcpStreamProxyId, mcpStreamProxyMode,
+  proxyMcpEventStream, sanitizeBridgeRequest,
+} from "../src/worker/mcp-stream-proxy.ts";
 import { daemonToolTimeoutMs } from "../src/worker/tool-timeout.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
@@ -14,6 +20,11 @@ import {
 import {
   closeWebSocketQuietly, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket,
 } from "../src/worker/websocket-protocol.ts";
+const STREAM_TEST_ID = `stream_${"T".repeat(43)}`;
+const STREAM_DISCONNECTED_ID = `stream_${"D".repeat(43)}`;
+const STREAM_RESUMED_ID = `stream_${"R".repeat(43)}`;
+const STREAM_COMPLETE_ID = `stream_${"C".repeat(43)}`;
+
 import {
   DAEMON_LIVENESS_TIMEOUT_MS,
   daemonLivenessDeadlineMs,
@@ -29,8 +40,12 @@ await testTerminalPaths();
 await testReconnectRebinding();
 await testDetachedTimeoutPause();
 await testTimeoutCallbackFailure();
+await testEventDrivenPendingCalls();
+await testEventDrivenStreamDispatch();
+await testStreamDispatchFailureBoundaries();
 await testAbortSignalCleanup();
 await testMcpStreamResponse();
+await testMcpStreamProxy();
 testRelayTimeoutContract();
 testWorkerPolicyParity();
 testWorkerErrors();
@@ -62,7 +77,7 @@ async function testRequestKeyReuse() {
   });
   assert(registry.hasRequestKey("client:1"), "request key was not indexed");
   assert(registry.snapshot().by_tool.read_file === 1, "pending snapshot omitted the active tool");
-  assert(registry.resolve("one", socket, { ok: 1 }), "pending result was not resolved");
+  assert(await registry.resolve("one", socket, { ok: 1 }), "pending result was not resolved");
   assert((await first).ok === 1, "pending result value was lost");
   assert(!registry.hasRequestKey("client:1"), "resolved request key leaked");
 
@@ -70,7 +85,7 @@ async function testRequestKeyReuse() {
     id: "two", tool: "read_file", socket, clientRequestKey: "client:1", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
-  registry.resolve("two", socket, { ok: 2 });
+  await registry.resolve("two", socket, { ok: 2 });
   assert((await reused).ok === 2, "request id could not be reused immediately after completion");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "terminal resolution leaked pending indexes");
   assert(registry.snapshot().oldest_ms === 0 && Object.keys(registry.snapshot().by_tool).length === 0, "empty pending snapshot retained activity metadata");
@@ -87,7 +102,7 @@ async function testRegistrationFailures() {
     id: "duplicate", tool: "list_dir", socket, clientRequestKey: "session:1", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   }), "conflict", false);
-  conflictRegistry.resolve("original", socket, { ok: true });
+  await conflictRegistry.resolve("original", socket, { ok: true });
   await original;
 
   const limitRegistry = new PendingCallRegistry(1);
@@ -99,7 +114,7 @@ async function testRegistrationFailures() {
     id: "overflow", tool: "read_file", socket, clientRequestKey: "session:3", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   }), "limit_exceeded", true);
-  limitRegistry.resolve("first", socket, { ok: true });
+  await limitRegistry.resolve("first", socket, { ok: true });
   await first;
 }
 
@@ -111,7 +126,7 @@ async function testTerminalPaths() {
     id: "cancel", tool: "list_dir", socket: socketA, clientRequestKey: "cancel-key", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
-  assert(registry.cancelRequest("cancel-key", () => new WorkerToolError("cancelled", "cancelled")), "cancel did not find request key");
+  assert(await registry.cancelRequest("cancel-key", () => new WorkerToolError("cancelled", "cancelled")), "cancel did not find request key");
   await expectReject(cancelled, "cancelled");
   assert(!registry.hasRequestKey("cancel-key"), "cancelled request key leaked");
 
@@ -123,10 +138,10 @@ async function testTerminalPaths() {
     id: "other", tool: "read_file", socket: socketB, clientRequestKey: "other-key", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
-  assert(registry.rejectSocket(socketA, () => new WorkerToolError("unavailable", "disconnected", true)) === 1, "socket cleanup rejected unrelated calls");
+  assert(await registry.rejectSocket(socketA, () => new WorkerToolError("unavailable", "disconnected", true)) === 1, "socket cleanup rejected unrelated calls");
   await expectReject(disconnected, "disconnected");
   assert(registry.snapshot().active === 1 && registry.hasRequestKey("other-key"), "socket cleanup corrupted unrelated index");
-  registry.reject("other", new Error("done"), socketB);
+  await registry.reject("other", new Error("done"), socketB);
   await expectReject(other, "done");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "rejection leaked pending indexes");
 }
@@ -145,7 +160,7 @@ async function testReconnectRebinding() {
   const reboundIds = registry.rebindInstance("daemon_same_instance_1234", socketB);
   assert(reboundIds.length === 1 && reboundIds[0] === "reconnect", "same daemon instance did not reclaim its detached call precisely");
   assert(registry.snapshot().detached === 0, "rebound call remained marked detached");
-  assert(registry.resolve("reconnect", socketB, { resumed: true }), "rebound call rejected the replacement socket result");
+  assert(await registry.resolve("reconnect", socketB, { resumed: true }), "rebound call rejected the replacement socket result");
   assert((await resumed).resumed === true, "rebound call lost its result");
 
   const expiring = registry.register({
@@ -209,6 +224,208 @@ async function testTimeoutCallbackFailure() {
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "throwing timeout callback leaked pending indexes");
 }
 
+async function testEventDrivenPendingCalls() {
+  const socketA = {};
+  const socketB = {};
+  const outcomes = [];
+  const registry = new PendingCallRegistry(4);
+  const registration = registry.registerEvent({
+    id: "event-success", tool: "list_dir", socket: socketA, daemonInstanceId: "daemon_event_12345678",
+    clientRequestKey: "event:success", timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  assert(registration === undefined, "event registration returned a terminal promise");
+  assert(outcomes.length === 0 && registry.snapshot().active === 1 && registry.hasRequestKey("event:success"), "event registration settled before a later event");
+  assert(await registry.resolve("event-success", socketA, { ok: true }), "event result was not matched");
+  assert(outcomes.length === 1 && outcomes[0].ok === true && outcomes[0].value.ok === true, "event result settlement lost its value");
+  assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "event success leaked pending indexes");
+
+  registry.registerEvent({
+    id: "event-cancel", tool: "list_dir", socket: socketA, clientRequestKey: "event:cancel",
+    timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  assert(await registry.cancelRequest("event:cancel", () => new WorkerToolError("cancelled", "cancelled by test")), "event cancellation missed its request key");
+  assert(outcomes.at(-1).ok === false && outcomes.at(-1).error.code === "cancelled", "event cancellation lost its stable error");
+
+  registry.registerEvent({
+    id: "event-reconnect", tool: "exec_command", socket: socketA, daemonInstanceId: "daemon_event_reconnect_1234",
+    clientRequestKey: "event:reconnect", timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  assert(registry.detachSocket(socketA, 10_000, () => new Error("reconnect expired")) === 1, "event call did not detach");
+  assert(registry.snapshot().detached === 1 && outcomes.length === 2, "detached event call settled prematurely");
+  assert(registry.rebindInstance("daemon_event_reconnect_1234", socketB)[0] === "event-reconnect", "event call did not rebind to the same daemon instance");
+  assert(await registry.resolve("event-reconnect", socketB, { resumed: true }), "rebound event call did not settle");
+  assert(outcomes.at(-1).ok === true && outcomes.at(-1).value.resumed === true, "rebound event result was altered");
+
+  registry.registerEvent({
+    id: "event-timeout", tool: "run_process", socket: socketA, clientRequestKey: "event:timeout",
+    timeoutMs: 1, onTimeout: () => new WorkerToolError("timeout", "event timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  await new Promise((resolve) => { setTimeout(resolve, 10); });
+  assert(outcomes.at(-1).ok === false && outcomes.at(-1).error.code === "timeout", "event timeout did not settle through the terminal handler");
+  assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "event timeout leaked pending indexes");
+}
+
+async function testEventDrivenStreamDispatch() {
+  const sent = [];
+  const socket = { send(value) { sent.push(JSON.parse(value)); } };
+  const pending = new PendingCallRegistry(2);
+  const completed = [];
+  const activated = [];
+  const resumption = {
+    activate(streamId) { activated.push(streamId); },
+    async complete(streamId, message) { completed.push({ streamId, message }); },
+  };
+  const observability = new WorkerObservability();
+  const started = startEventDrivenStreamCall({
+    pending, resumption, observability, streamId: STREAM_TEST_ID, requestId: 44,
+    clientRequestKey: "session:44", tool: "list_dir", arguments: { path: "." },
+    socket, daemonInstanceId: "daemon_stream_event_1234", timeoutMs: 10_000,
+    authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
+    onTimeout: () => new WorkerToolError("timeout", "stream timeout"), onSendFailure() {},
+  });
+  await started;
+  assert(activated[0] === STREAM_TEST_ID, "stream dispatch did not mark the delivery active");
+  assert(completed.length === 0, "stream initiation retained or completed a terminal promise");
+  assert(pending.snapshot().active === 1 && pending.snapshot().request_keys === 1, "stream initiation did not leave an event-owned pending record");
+  assert(sent.length === 1 && sent[0].type === "tool_call" && sent[0].tool === "list_dir", "stream dispatch sent the wrong daemon envelope");
+  await pending.resolve(sent[0].id, socket, { entries: ["ok"] });
+  assert(completed.length === 1 && completed[0].message.id === 44
+    && completed[0].message.result.structuredContent.entries[0] === "ok", "daemon result event did not persist the exact streamed terminal result");
+  const reconnectSocket = { send(value) { this.message = JSON.parse(value); } };
+  const reboundSocket = {};
+  await startEventDrivenStreamCall({
+    pending, resumption, observability, streamId: STREAM_RESUMED_ID, requestId: 45,
+    clientRequestKey: "session:45", tool: "list_dir", arguments: { path: "." },
+    socket: reconnectSocket, daemonInstanceId: "daemon_stream_reconnect_1234", timeoutMs: 10_000,
+    authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
+    onTimeout: () => new WorkerToolError("timeout", "stream timeout"), onSendFailure() {},
+  });
+  assert(pending.detachSocket(reconnectSocket, 10_000, () => new Error("reconnect expired")) === 1, "streamed call did not detach after daemon loss");
+  assert(pending.rebindInstance("daemon_stream_reconnect_1234", reboundSocket)[0] === reconnectSocket.message.id, "same daemon instance did not reclaim the streamed call");
+  await pending.resolve(reconnectSocket.message.id, reboundSocket, { resumed: true });
+  assert(completed.at(-1).message.id === 45 && completed.at(-1).message.result.structuredContent.resumed === true, "rebound streamed call lost its terminal result");
+
+  const rejectedSocket = { send(value) { this.message = JSON.parse(value); } };
+  await startEventDrivenStreamCall({
+    pending, resumption, observability, streamId: STREAM_DISCONNECTED_ID, requestId: 46,
+    clientRequestKey: "session:46", tool: "list_dir", arguments: {},
+    socket: rejectedSocket, daemonInstanceId: "daemon_stream_reject_12345", timeoutMs: 10_000,
+    authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {},
+  });
+  await pending.reject(rejectedSocket.message.id, new WorkerToolError("execution_failed", "daemon rejected"), rejectedSocket);
+  assert(completed.at(-1).message.id === 46 && completed.at(-1).message.result.isError === true
+    && completed.at(-1).message.result.structuredContent.error.code === "execution_failed", "daemon rejection did not persist a streamed error result");
+
+  const snapshot = observability.snapshot();
+  assert(snapshot.calls.started === 3 && snapshot.calls.completed === 2 && snapshot.calls.failed === 1
+    && snapshot.tools.list_dir.active === 0, "event-driven stream observability did not close cleanly");
+}
+
+async function testStreamDispatchFailureBoundaries() {
+  const completed = [];
+  const events = [];
+  const observability = new WorkerObservability();
+  const resumption = {
+    activate() {},
+    async complete(streamId, message) { completed.push({ streamId, message }); },
+  };
+  await persistImmediateStreamOutcome({
+    resumption, observability, streamId: STREAM_COMPLETE_ID, requestId: 51,
+    outcome: { ok: false, error: new WorkerToolError("authorization_denied", "denied") },
+  });
+  assert(completed.at(-1).message.result.isError === true
+    && completed.at(-1).message.result.structuredContent.error.code === "authorization_denied", "immediate stream error lost its stable code");
+
+  const failingResumption = {
+    activate() {},
+    async complete() { throw new Error("synthetic persistence failure"); },
+  };
+  const originalError = console.error;
+  console.error = (line) => { events.push(String(line)); };
+  try {
+    await persistImmediateStreamOutcome({
+      resumption: failingResumption, observability, streamId: STREAM_COMPLETE_ID, requestId: 52,
+      outcome: { ok: true, value: { ok: true } }, transformResult() { throw "non-error transform failure"; },
+    });
+  } finally {
+    console.error = originalError;
+  }
+  assert(events.some((line) => line.includes("mcp.stream.persist.failed")), "immediate persistence failure was not observable");
+
+  const transformPending = new PendingCallRegistry(2);
+  const transformSocket = { send(value) { this.message = JSON.parse(value); } };
+  await startEventDrivenStreamCall({
+    pending: transformPending, resumption, observability, streamId: STREAM_RESUMED_ID, requestId: 53,
+    tool: "project_overview", arguments: {}, socket: transformSocket, daemonInstanceId: "daemon_transform_123456",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {}, transformResult(value) { return { transformed: value }; },
+  });
+  await transformPending.resolve(transformSocket.message.id, transformSocket, { source: true });
+  assert(completed.at(-1).message.result.structuredContent.transformed.source === true, "stream result transformation was not applied");
+
+  const throwingTransformPending = new PendingCallRegistry(2);
+  const throwingSocket = { send(value) { this.message = JSON.parse(value); } };
+  await startEventDrivenStreamCall({
+    pending: throwingTransformPending, resumption: failingResumption, observability, streamId: STREAM_DISCONNECTED_ID, requestId: 54,
+    tool: "project_overview", arguments: {}, socket: throwingSocket, daemonInstanceId: "daemon_throwing_123456",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {}, transformResult() { throw new Error("transform failed"); },
+  });
+  const originalError2 = console.error;
+  console.error = (line) => { events.push(String(line)); };
+  try { await throwingTransformPending.resolve(throwingSocket.message.id, throwingSocket, { source: true }); }
+  finally { console.error = originalError2; }
+  const failedSnapshot = observability.snapshot();
+  assert(failedSnapshot.calls.failed >= 1 && events.some((line) => line.includes("mcp.stream.persist.failed")), "transform or settlement persistence failure was not closed observably");
+
+  let sendFailureHandled = false;
+  const sendFailurePending = new PendingCallRegistry(1);
+  await startEventDrivenStreamCall({
+    pending: sendFailurePending, resumption, observability, streamId: STREAM_TEST_ID, requestId: 55,
+    tool: "list_dir", arguments: {}, socket: { send() { throw new Error("closed"); } }, daemonInstanceId: "daemon_send_fail_12345",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() { sendFailureHandled = true; },
+  });
+  assert(sendFailureHandled && sendFailurePending.snapshot().active === 0
+    && completed.at(-1).message.result.isError === true, "send failure did not settle and clean the streamed call");
+
+  const full = new PendingCallRegistry(1);
+  full.registerEvent({ id: "occupied", tool: "list_dir", socket: {}, timeoutMs: 10_000, onTimeout: () => new Error("timeout"), settle() {} });
+  await expectRejectType(startEventDrivenStreamCall({
+    pending: full, resumption, observability, streamId: STREAM_TEST_ID, requestId: 56,
+    tool: "list_dir", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_full_123456789",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {},
+  }), WorkerToolError);
+  await full.reject("occupied", new Error("cleanup"));
+
+  const plainRegistrationFailure = {
+    registerEvent() { throw new RangeError("synthetic registration failure"); },
+  };
+  await expectRejectType(startEventDrivenStreamCall({
+    pending: plainRegistrationFailure, resumption, observability, streamId: STREAM_TEST_ID, requestId: 57,
+    tool: "list_dir", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_plain_fail_1234",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {},
+  }), RangeError);
+
+  const daemonRegistry = {
+    probingSockets: () => [{}, {}], readySockets: () => [{}], candidateSockets: () => [{}], readyRoleSockets: () => [{}, {}],
+  };
+  const info = buildServerInfoResult({
+    serverName: "machine-bridge-mcp", serverVersion: "test", base: "https://example.test", oauth: { issuer: "https://example.test" },
+    authorization: { account: { role: "owner" }, summary: "summary" }, daemon: { tool_count: 2 }, tools: ["server_info", "list_dir"],
+    pending: new PendingCallRegistry(1), daemonRegistry, observability: new WorkerObservability(),
+  });
+  assert(info.worker.sockets_live.authenticated === 4 && info.worker.daemon_candidates === 1
+    && info.tool_delivery.effective_account_tool_count === 2, "server_info builder lost socket or tool-delivery diagnostics");
+}
+
 async function testMcpStreamResponse() {
   assert(acceptsEventStream(new Request("https://example.test/mcp", { headers: { accept: "application/json, text/event-stream" } })), "event-stream content negotiation was not detected");
   assert(!acceptsEventStream(new Request("https://example.test/mcp", { headers: { accept: "application/json" } })), "JSON-only client was incorrectly upgraded to SSE");
@@ -220,7 +437,7 @@ async function testMcpStreamResponse() {
   let intervalCleared = false;
   let keptAlive = null;
   const response = streamJsonRpcResponse(result, {
-    streamId: "stream_test",
+    streamId: STREAM_TEST_ID,
     heartbeatMs: 1,
     scheduler: {
       setInterval(callback) { intervalCallback = callback; return 1; },
@@ -232,13 +449,13 @@ async function testMcpStreamResponse() {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const initial = decoder.decode((await reader.read()).value);
-  assert(initial === ": connected\n\n", "stream response did not prime the client with a non-message frame");
+  assert(initial === `id: ${STREAM_TEST_ID}:0\ndata:\n\n`, "stream response did not prime the client with a resumable empty event");
   intervalCallback();
   const heartbeat = decoder.decode((await reader.read()).value);
   assert(heartbeat === ": keepalive\n\n", "stream response heartbeat was malformed");
   resolveResult({ jsonrpc: "2.0", id: 7, result: { ok: true } });
   const terminal = decoder.decode((await reader.read()).value);
-  assert(terminal.includes("event: message") && terminal.includes('"id":7') && terminal.includes('"ok":true'), "stream response lost the terminal JSON-RPC result");
+  assert(terminal.includes(`id: ${STREAM_TEST_ID}:1`) && terminal.includes("event: message") && terminal.includes('"id":7') && terminal.includes('"ok":true'), "stream response lost the terminal JSON-RPC result");
   assert((await reader.read()).done, "stream response did not close after the terminal result");
   await keptAlive;
   assert(intervalCleared, "stream response heartbeat timer was not cleared");
@@ -247,7 +464,7 @@ async function testMcpStreamResponse() {
   const disconnectedResult = new Promise((resolve) => { resolveDisconnected = resolve; });
   let disconnectedCompletion = null;
   const disconnected = streamJsonRpcResponse(disconnectedResult, {
-    streamId: "stream_disconnected",
+    streamId: STREAM_DISCONNECTED_ID,
     scheduler: { setInterval() { return 2; }, clearInterval() {} },
     keepAlive(promise) { disconnectedCompletion = promise; },
   });
@@ -256,6 +473,187 @@ async function testMcpStreamResponse() {
   await disconnectedReader.cancel();
   resolveDisconnected({ jsonrpc: "2.0", id: 8, result: { ok: true } });
   await disconnectedCompletion;
+
+  const resumed = resumeJsonRpcResponse(Promise.resolve({ jsonrpc: "2.0", id: 9, result: { ok: true } }), {
+    streamId: STREAM_RESUMED_ID,
+    scheduler: { setInterval() { return 3; }, clearInterval() {} },
+  });
+  const resumedText = await resumed.text();
+  assert(resumedText.startsWith(": resumed\n\n"), "resumed stream emitted another sequence-zero event");
+  assert(resumedText.includes(`id: ${STREAM_RESUMED_ID}:1`), "resumed stream omitted the terminal event id");
+
+  const completed = resumeJsonRpcResponse(null, { streamId: STREAM_COMPLETE_ID });
+  assert(await completed.text() === "", "completed stream replayed an already acknowledged terminal event");
+}
+
+async function testMcpStreamProxy() {
+  let terminalMessage = null;
+  const resolveTerminal = (message) => { terminalMessage = message; };
+  const calls = [];
+  const bridge = {
+    async fetch(request) {
+      calls.push(request);
+      const mode = request.headers.get(MCP_STREAM_PROXY_MODE_HEADER);
+      if (mode === "prepare") return mcpStreamDescriptorResponse("initial", STREAM_TEST_ID);
+      if (mode === "poll") {
+        if (!terminalMessage) return new Response(null, { status: 202 });
+        return new Response(JSON.stringify(terminalMessage), { headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected proxy mode: ${mode}`);
+    },
+  };
+  const keptAlive = [];
+  const request = new Request("https://example.test/mcp", {
+    method: "POST",
+    headers: {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      origin: "https://chatgpt.com",
+      [MCP_STREAM_PROXY_MODE_HEADER]: "poll",
+      [MCP_STREAM_PROXY_ID_HEADER]: STREAM_COMPLETE_ID,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "list_dir", arguments: {} } }),
+  });
+  const response = await proxyMcpEventStream({
+    request, bridge, extraOrigins: "", ctx: { waitUntil(promise) { keptAlive.push(promise); } }, pollIntervalMs: 1,
+  });
+  assert(response?.headers.get("content-type")?.startsWith("text/event-stream"), "outer Worker did not create the public SSE response");
+  assert(response.headers.get("access-control-allow-origin") === "https://chatgpt.com", "outer Worker SSE response lost CORS");
+  assert(calls[0].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "prepare", "public proxy mode header was not replaced");
+  assert(calls[0].headers.get(MCP_STREAM_PROXY_ID_HEADER) === null, "public internal stream id reached BridgeRoom");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const initial = decoder.decode((await reader.read()).value);
+  assert(initial === `id: ${STREAM_TEST_ID}:0\ndata:\n\n`, "outer Worker proxy did not emit sequence zero");
+  assert(calls.length >= 2 && calls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "poll", "outer Worker did not start the internal terminal poll");
+  assert(calls[1].headers.get(MCP_STREAM_PROXY_ID_HEADER) === STREAM_TEST_ID, "internal poll lost the stream id");
+  resolveTerminal({ jsonrpc: "2.0", id: 10, result: { proxied: true } });
+  const terminalText = decoder.decode((await reader.read()).value);
+  assert(terminalText.includes(`${STREAM_TEST_ID}:1`) && terminalText.includes('"proxied":true'), "outer Worker proxy lost the terminal result");
+  assert((await reader.read()).done, "outer Worker proxy did not close after terminal delivery");
+  await Promise.all(keptAlive);
+
+  const spoofed = new Request("https://example.test/healthz", { headers: {
+    [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID,
+  } });
+  const sanitized = sanitizeBridgeRequest(spoofed);
+  assert(!sanitized.headers.has(MCP_STREAM_PROXY_MODE_HEADER) && !sanitized.headers.has(MCP_STREAM_PROXY_ID_HEADER), "public internal stream headers were not stripped");
+
+  const completeBridge = { async fetch() { return mcpStreamDescriptorResponse("complete", STREAM_COMPLETE_ID); } };
+  const completed = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET", headers: { accept: "text/event-stream" } }),
+    bridge: completeBridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(await completed.text() === "", "outer Worker proxy replayed an acknowledged terminal event");
+  const ordinary = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "POST", headers: { accept: "application/json" }, body: "{}" }),
+    bridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(ordinary === null, "JSON-only MCP request was incorrectly proxied as SSE");
+  const nonMcp = await proxyMcpEventStream({
+    request: new Request("https://example.test/healthz", { method: "GET" }),
+    bridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(nonMcp === null, "non-MCP GET was intercepted by the stream proxy");
+
+  const plainBridge = { async fetch() {
+    return new Response("plain", { status: 418, headers: { "x-machine-bridge-mcp-stream-descriptor": "spoof" } });
+  } };
+  const plain = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: plainBridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(plain.status === 418 && await plain.text() === "plain"
+    && !plain.headers.has("x-machine-bridge-mcp-stream-descriptor"), "ordinary BridgeRoom response leaked its internal descriptor header");
+
+  const resumeBridge = {
+    calls: 0,
+    async fetch(_request) {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 11, result: { resumed: true } }), { headers: { "content-type": "application/json" } });
+    },
+  };
+  const resumedProxy = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET", headers: { accept: "text/event-stream" } }),
+    bridge: resumeBridge, extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  const resumedProxyText = await resumedProxy.text();
+  assert(resumedProxyText.startsWith(": resumed\n\n") && resumedProxyText.includes(`${STREAM_RESUMED_ID}:1`), "resume descriptor did not create an outer resumed stream");
+
+  const polledMessage = { jsonrpc: "2.0", id: 12, result: { polled: true } };
+  const pollStore = { async pollMessage(id) {
+    if (id === STREAM_TEST_ID) return { kind: "message", message: polledMessage };
+    if (id === STREAM_RESUMED_ID) return { kind: "pending" };
+    return { kind: "not_found" };
+  } };
+  const noPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp"), pollStore);
+  assert(noPoll === null, "ordinary request entered the internal stream poll path");
+  const postPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    method: "POST", headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll" }, body: "{}",
+  }), pollStore);
+  assert(postPoll.status === 405 && postPoll.headers.get("allow") === "GET", "internal stream poll accepted POST");
+  const invalidPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: "bad" },
+  }), pollStore);
+  assert(invalidPoll.status === 400, "internal stream poll accepted an invalid stream id");
+  const foundPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " Poll ", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID },
+  }), pollStore);
+  assert(foundPoll.status === 200 && (await foundPoll.json()).result.polled === true, "internal stream poll lost the terminal message");
+  const pendingPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_RESUMED_ID },
+  }), pollStore);
+  assert(pendingPoll.status === 202, "internal stream poll did not report pending execution immediately");
+  const missingPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_COMPLETE_ID },
+  }), pollStore);
+  assert(missingPoll.status === 404, "internal stream poll did not report a missing stream");
+  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " PREPARE " } })) === "prepare", "internal prepare mode was not normalized");
+  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " POLL " } })) === "poll", "internal poll mode was not normalized");
+  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "other" } })) === "", "unknown internal proxy mode was accepted");
+  assert(mcpStreamProxyId(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID } })) === STREAM_TEST_ID, "valid internal stream id was rejected");
+  assert(mcpStreamProxyId(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_ID_HEADER]: "bad" } })) === "", "invalid internal stream id was accepted");
+  expectThrow(() => mcpStreamDescriptorResponse("initial", "stream_short"), "invalid MCP stream descriptor id");
+
+  await expectReject(proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: { async fetch() { return new Response(JSON.stringify({ kind: "invalid", stream_id: STREAM_TEST_ID }), { headers: { "x-machine-bridge-mcp-stream-descriptor": "1" } }); } },
+    extraOrigins: "", ctx: { waitUntil() {} },
+  }), "descriptor is invalid");
+  await expectReject(proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: { async fetch() { return new Response("null", { headers: { "x-machine-bridge-mcp-stream-descriptor": "1" } }); } },
+    extraOrigins: "", ctx: { waitUntil() {} },
+  }), "descriptor is invalid");
+
+  const failedWaitBridge = {
+    calls: 0,
+    async fetch() {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      return new Response(JSON.stringify({ error: "missing" }), { status: 404, headers: { "content-type": "application/json" } });
+    },
+  };
+  const failedWait = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: failedWaitBridge, extraOrigins: "", ctx: { waitUntil() {} }, pollIntervalMs: 1,
+  });
+  assert((await failedWait.text()).startsWith(": resumed\n\n"), "failed internal wait did not close the outer stream safely");
+
+  const invalidMessageBridge = {
+    calls: 0,
+    async fetch() {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      return new Response(JSON.stringify({ not_jsonrpc: true }), { headers: { "content-type": "application/json" } });
+    },
+  };
+  const invalidMessage = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: invalidMessageBridge, extraOrigins: "", ctx: { waitUntil() {} }, pollIntervalMs: 1,
+  });
+  assert((await invalidMessage.text()).startsWith(": resumed\n\n"), "invalid internal terminal message did not close the outer stream safely");
 }
 
 async function testAbortSignalCleanup() {
@@ -292,6 +690,9 @@ async function testAbortSignalCleanup() {
 function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
   assert(relayContract.streamHeartbeatMs === 10_000, "SSE heartbeat interval drifted from the idle-connection contract");
+  assert(relayContract.streamResumeRetentionMs === 120_000, "resumable result retention drifted from the bounded recovery window");
+  assert(relayContract.maximumResumableStreams === 64, "resumable stream capacity drifted from the bounded Worker contract");
+  assert(relayContract.maximumResumableMessageBytes === 1_500_000, "resumable message storage exceeded the Durable Object row budget");
   assert(daemonToolTimeoutMs("session_bootstrap", {}) === 10_000, "bootstrap timeout incorrectly inherited the reconnect budget");
   assert(daemonToolTimeoutMs("read_file", {}) === 60_000, "ordinary tool timeout was extended without a disconnect");
   assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 120 }) === 125_000, "configurable tool timeout lost its protocol overhead");
@@ -449,6 +850,10 @@ function expectRegistrationError(operation, code, retryable) {
 async function expectReject(promise, expected) {
   try { await promise; } catch (error) { assert(String(error?.message || error).includes(expected), `expected ${expected}`); return; }
   throw new Error(`expected rejection containing ${expected}`);
+}
+async function expectRejectType(promise, constructor) {
+  try { await promise; } catch (error) { assert(error instanceof constructor, `expected ${constructor.name}`); return; }
+  throw new Error(`expected rejection of type ${constructor.name}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
 function expectThrow(operation, expected) { try { operation(); } catch (error) { assert(String(error?.message || error).includes(expected), `expected ${expected}`); return; } throw new Error(`expected throw containing ${expected}`); }

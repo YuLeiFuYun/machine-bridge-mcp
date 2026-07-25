@@ -176,6 +176,14 @@ const lineLimits = Object.freeze({
   "src/local/windows-launcher.mjs": 90,
   "src/local/monotonic-deadline.mjs": 60,
   "src/worker/mcp-session.ts": 120,
+  "src/worker/mcp-access.ts": 80,
+  "src/worker/mcp-resumption-http.ts": 80,
+  "src/worker/mcp-resumption-config.ts": 80,
+  "src/worker/mcp-resumption.ts": 240,
+  "src/worker/mcp-resumption-records.ts": 200,
+  "src/worker/mcp-stream.ts": 160,
+  "src/worker/mcp-stream-proxy.ts": 180,
+  "src/worker/mcp-stream-dispatch.ts": 220,
   "src/worker/tool-timeout.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
@@ -261,10 +269,60 @@ for (const duplicate of [
 }
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
-  "observability", "mcp-session", "tool-timeout", "daemon-liveness", "daemon-sockets",
+  "observability", "mcp-session", "mcp-access", "mcp-resumption-http", "mcp-resumption",
+  "mcp-stream", "mcp-stream-proxy", "mcp-stream-dispatch", "tool-timeout", "daemon-liveness", "daemon-sockets",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
+const mcpStreamProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy.ts"), "utf8");
+for (const required of [
+  "proxyMcpEventStream", "handleMcpStreamPollRequest", "sanitizeBridgeRequest", "MCP_STREAM_PROXY_MODE_HEADER",
+  "streamJsonRpcResponse", "resumeJsonRpcResponse", "waitUntil",
+]) {
+  if (!mcpStreamProxyBoundary.includes(required)) throw new Error(`outer MCP stream proxy lost transport ownership or boundary hardening: ${required}`);
+}
+for (const forbidden of ["streamJsonRpcResponse(", "resumeJsonRpcResponse("]) {
+  if (workerIndexBoundary.includes(forbidden)) throw new Error(`BridgeRoom regained public SSE ownership: ${forbidden}`);
+}
+
+for (const forbidden of [
+  "const terminal = this.dispatchJsonRpc", ".resumption.attach(", "this.ctx.waitUntil(",
+]) {
+  if (workerIndexBoundary.includes(forbidden)) throw new Error(`stream initiation regained a cross-event terminal promise: ${forbidden}`);
+}
+const mcpStreamDispatchBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-dispatch.ts"), "utf8");
+for (const required of [
+  "startEventDrivenStreamCall", "registerEvent", "resumption.activate", "resumption.complete", "persistImmediateStreamOutcome",
+]) {
+  if (!mcpStreamDispatchBoundary.includes(required)) throw new Error(`event-driven stream settlement lost its lifecycle boundary: ${required}`);
+}
+const pendingCallsBoundary = readFileSync(join(root, "src", "worker", "pending-calls.ts"), "utf8");
+for (const required of ["registerEvent", "settlement.kind", "detachSocket", "rebindInstance"]) {
+  if (!pendingCallsBoundary.includes(required)) throw new Error(`pending-call registry lost event settlement or reconnect semantics: ${required}`);
+}
+
+const mcpResumptionBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption.ts"), "utf8");
+for (const required of ["./mcp-resumption-config.ts", "./mcp-resumption-records.ts", "token_key", "session_id", "workerRestartMessage", "active = new Set", "transientReady = new Map"]) {
+  if (!mcpResumptionBoundary.includes(required)) throw new Error(`MCP resumption lost a lifecycle or isolation boundary: ${required}`);
+}
+if (mcpResumptionBoundary.includes(".list(")) {
+  throw new Error("MCP resumption scans full stored result values instead of its bounded metadata index");
+}
+for (const forbidden of ["Map<string, Promise", "attach(streamId", "Promise<JsonRpcMessage>"]) {
+  if (mcpResumptionBoundary.includes(forbidden)) throw new Error(`MCP resumption regained cross-event promise state: ${forbidden}`);
+}
+const mcpResumptionRecordsBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption-records.ts"), "utf8");
+for (const required of ["STREAM_INDEX_KEY", "message_sha256", "sha256Hex", "DEFAULT_MAXIMUM_MESSAGE_BYTES"]) {
+  if (!mcpResumptionRecordsBoundary.includes(required)) throw new Error(`MCP resumption records lost a storage-integrity boundary: ${required}`);
+}
+const mcpResumptionHttpBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption-http.ts"), "utf8");
+for (const required of ["Last-Event-ID", "resolveMcpSession", "tokenKey", "sessionId", "mcpStreamDescriptorResponse"]) {
+  if (!mcpResumptionHttpBoundary.includes(required)) throw new Error(`MCP resumption HTTP boundary lost request binding: ${required}`);
+}
+if (mcpResumptionHttpBoundary.includes("resumeJsonRpcResponse")) {
+  throw new Error("Durable Object resumption boundary regained public SSE ownership");
+}
+
 const daemonSocketBoundary = readFileSync(join(root, "src", "worker", "daemon-sockets.ts"), "utf8");
 for (const required of ["class DaemonSocketRegistry", "beginProbe", "promote", "readySockets", "probingSockets"]) {
   if (!daemonSocketBoundary.includes(required)) throw new Error(`daemon socket registry lost lifecycle responsibility: ${required}`);

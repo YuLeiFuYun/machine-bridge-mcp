@@ -1,8 +1,8 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
+import { streamEventId, type JsonRpcMessage } from "./mcp-resumption.ts";
 
 const DEFAULT_HEARTBEAT_MS = relayContract.streamHeartbeatMs;
 
-type JsonRpcMessage = Record<string, unknown> | null;
 type IntervalHandle = ReturnType<typeof setInterval>;
 
 type StreamScheduler = {
@@ -12,7 +12,7 @@ type StreamScheduler = {
 
 type StreamResponseOptions = {
   heartbeatMs?: number;
-  streamId?: string;
+  streamId: string;
   scheduler?: StreamScheduler;
   keepAlive?: (promise: Promise<void>) => void;
 };
@@ -31,11 +31,26 @@ export function acceptsEventStream(request: Pick<Request, "headers">): boolean {
 
 export function streamJsonRpcResponse(
   result: Promise<JsonRpcMessage>,
-  options: StreamResponseOptions = {},
+  options: StreamResponseOptions,
+): Response {
+  return createEventStream(result, options, `id: ${streamEventId(options.streamId, 0)}\ndata:\n\n`);
+}
+
+export function resumeJsonRpcResponse(
+  result: Promise<JsonRpcMessage> | null,
+  options: StreamResponseOptions,
+): Response {
+  if (!result) return closedEventStreamResponse();
+  return createEventStream(result, options, ": resumed\n\n");
+}
+
+function createEventStream(
+  result: Promise<JsonRpcMessage>,
+  options: StreamResponseOptions,
+  initialFrame: string,
 ): Response {
   const encoder = new TextEncoder();
   const heartbeatMs = positiveInteger(options.heartbeatMs, DEFAULT_HEARTBEAT_MS);
-  const streamId = options.streamId || `stream_${crypto.randomUUID()}`;
   const scheduler = options.scheduler ?? { setInterval, clearInterval };
   let interval: IntervalHandle | undefined;
   let writable = true;
@@ -66,7 +81,7 @@ export function streamJsonRpcResponse(
         try { controller.close(); } catch { /* Client disconnect is not MCP cancellation. */ }
       };
 
-      enqueue(": connected\n\n");
+      enqueue(initialFrame);
       interval = scheduler.setInterval(() => {
         enqueue(": keepalive\n\n");
       }, heartbeatMs);
@@ -74,7 +89,7 @@ export function streamJsonRpcResponse(
       void result.then(
         (message) => {
           if (message !== null) {
-            enqueue(`id: ${streamId}:1\nevent: message\ndata: ${JSON.stringify(message)}\n\n`);
+            enqueue(`id: ${streamEventId(options.streamId, 1)}\nevent: message\ndata: ${JSON.stringify(message)}\n\n`);
           }
           close();
         },
@@ -90,6 +105,14 @@ export function streamJsonRpcResponse(
     },
   });
 
+  return eventStreamResponse(body);
+}
+
+function closedEventStreamResponse(): Response {
+  return eventStreamResponse(new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } }));
+}
+
+function eventStreamResponse(body: ReadableStream<Uint8Array>): Response {
   return new Response(body, {
     status: 200,
     headers: {
