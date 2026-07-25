@@ -86,7 +86,6 @@ async function testCompletedResultResumption() {
 
   const resumed = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-owner", sessionId: "session-owner" });
   assert(resumed.kind === "message", "completed stream was not resumable");
-  assert((await resumed.message).result.ok === true, "completed stream lost its terminal result");
   const storedPoll = await store.pollMessage(streamId);
   assert(storedPoll.kind === "message" && storedPoll.message.result.ok === true, "trusted internal poll lost the stored terminal result");
 
@@ -119,16 +118,12 @@ async function testLiveResultResumption() {
   const store = new McpResumptionStore(storage);
   const streamId = validStreamId("C");
   await store.begin({ streamId, tokenKey: "token-live", sessionId: "session-live", requestId: "live" });
-  let resolveResult;
-  const live = new Promise((resolve) => { resolveResult = resolve; });
-  store.attach(streamId, live);
+  store.activate(streamId);
   const pendingPoll = await store.pollMessage(streamId);
-  assert(pendingPoll.kind === "pending", "trusted internal poll did not report live execution as pending");
+  assert(pendingPoll.kind === "pending", "trusted internal poll did not report active execution as pending");
   const resumed = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-live", sessionId: "session-live" });
-  assert(resumed.kind === "message", "active stream did not expose its live terminal promise");
+  assert(resumed.kind === "message", "active stream was not resumable");
   const liveMessage = { jsonrpc: "2.0", id: "live", result: { resumed: true } };
-  resolveResult(liveMessage);
-  assert((await resumed.message).result.resumed === true, "active stream resumption lost the eventual result");
   await store.complete(streamId, liveMessage);
   const readyPoll = await store.pollMessage(streamId);
   assert(readyPoll.kind === "message" && readyPoll.message.result.resumed === true, "trusted internal poll lost the terminal result");
@@ -144,10 +139,11 @@ async function testRestartFallback() {
   const restarted = new McpResumptionStore(storage);
   const resumed = await restarted.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-restart", sessionId: "session-restart" });
   assert(resumed.kind === "message", "orphaned pending stream did not produce a terminal result");
-  const message = await resumed.message;
-  assert(message.error?.code === -32003, "orphaned pending stream did not report lost execution state");
+  const message = await restarted.pollMessage(streamId);
+  assert(message.kind === "message" && message.message.error?.code === -32003, "orphaned pending stream did not report lost execution state");
   const repeated = await restarted.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-restart", sessionId: "session-restart" });
-  assert((await repeated.message).error?.code === -32003, "restart fallback was not persisted for repeat delivery");
+  const repeatedPoll = await restarted.pollMessage(streamId);
+  assert(repeated.kind === "message" && repeatedPoll.kind === "message" && repeatedPoll.message.error?.code === -32003, "restart fallback was not persisted for repeat delivery");
 }
 
 async function testOversizedFallback() {
@@ -157,8 +153,8 @@ async function testOversizedFallback() {
   await store.begin({ streamId, tokenKey: "token-large", sessionId: "session-large", requestId: 10 });
   await store.complete(streamId, { jsonrpc: "2.0", id: 10, result: { text: "x".repeat(500) } });
   const resumed = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-large", sessionId: "session-large" });
-  const message = await resumed.message;
-  assert(message.error?.code === -32002, "oversized result was stored beyond the resumable message budget");
+  const message = await store.pollMessage(streamId);
+  assert(resumed.kind === "message" && message.kind === "message" && message.message.error?.code === -32002, "oversized result was stored beyond the resumable message budget");
   assert(!JSON.stringify(message).includes("x".repeat(100)), "oversized result content leaked into the fallback record");
 }
 
@@ -173,7 +169,8 @@ async function testStoredIntegrityFailure() {
   record.message_json = record.message_json.replace("true", "false");
   storage.values.set(key, record);
   const resumed = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-integrity", sessionId: "session-integrity" });
-  assert((await resumed.message).error?.code === -32005, "tampered stored result passed integrity validation");
+  const message = await store.pollMessage(streamId);
+  assert(resumed.kind === "message" && message.kind === "message" && message.message.error?.code === -32005, "tampered stored result passed integrity validation");
 }
 
 async function testCompletionStartsResultRetention() {
@@ -204,13 +201,13 @@ async function testTransientPersistenceFailure() {
   const streamId = validStreamId("I");
   const message = { jsonrpc: "2.0", id: 11, result: { retained_in_memory: true } };
   await store.begin({ streamId, tokenKey: "token-failure", sessionId: "session-failure", requestId: 11 });
-  const terminal = Promise.resolve(message);
-  store.attach(streamId, terminal);
+  store.activate(streamId);
   storage.failReadyPut = true;
   await expectReject(store.complete(streamId, message), Error);
   const resumed = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-failure", sessionId: "session-failure" });
-  assert(resumed.kind === "message", "transient persistence failure discarded the live terminal result");
-  assert((await resumed.message).result.retained_in_memory === true, "live terminal result changed after persistence failure");
+  const polled = await store.pollMessage(streamId);
+  assert(resumed.kind === "message" && polled.kind === "message", "transient persistence failure discarded the live terminal result");
+  assert(polled.message.result.retained_in_memory === true, "live terminal result changed after persistence failure");
 }
 
 async function testExpiryAndCapacity() {

@@ -1,4 +1,5 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
+import { buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall } from "../src/worker/mcp-stream-dispatch.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
 import { acceptsEventStream, resumeJsonRpcResponse, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
 import {
@@ -39,6 +40,9 @@ await testTerminalPaths();
 await testReconnectRebinding();
 await testDetachedTimeoutPause();
 await testTimeoutCallbackFailure();
+await testEventDrivenPendingCalls();
+await testEventDrivenStreamDispatch();
+await testStreamDispatchFailureBoundaries();
 await testAbortSignalCleanup();
 await testMcpStreamResponse();
 await testMcpStreamProxy();
@@ -73,7 +77,7 @@ async function testRequestKeyReuse() {
   });
   assert(registry.hasRequestKey("client:1"), "request key was not indexed");
   assert(registry.snapshot().by_tool.read_file === 1, "pending snapshot omitted the active tool");
-  assert(registry.resolve("one", socket, { ok: 1 }), "pending result was not resolved");
+  assert(await registry.resolve("one", socket, { ok: 1 }), "pending result was not resolved");
   assert((await first).ok === 1, "pending result value was lost");
   assert(!registry.hasRequestKey("client:1"), "resolved request key leaked");
 
@@ -81,7 +85,7 @@ async function testRequestKeyReuse() {
     id: "two", tool: "read_file", socket, clientRequestKey: "client:1", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
-  registry.resolve("two", socket, { ok: 2 });
+  await registry.resolve("two", socket, { ok: 2 });
   assert((await reused).ok === 2, "request id could not be reused immediately after completion");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "terminal resolution leaked pending indexes");
   assert(registry.snapshot().oldest_ms === 0 && Object.keys(registry.snapshot().by_tool).length === 0, "empty pending snapshot retained activity metadata");
@@ -98,7 +102,7 @@ async function testRegistrationFailures() {
     id: "duplicate", tool: "list_dir", socket, clientRequestKey: "session:1", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   }), "conflict", false);
-  conflictRegistry.resolve("original", socket, { ok: true });
+  await conflictRegistry.resolve("original", socket, { ok: true });
   await original;
 
   const limitRegistry = new PendingCallRegistry(1);
@@ -110,7 +114,7 @@ async function testRegistrationFailures() {
     id: "overflow", tool: "read_file", socket, clientRequestKey: "session:3", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   }), "limit_exceeded", true);
-  limitRegistry.resolve("first", socket, { ok: true });
+  await limitRegistry.resolve("first", socket, { ok: true });
   await first;
 }
 
@@ -122,7 +126,7 @@ async function testTerminalPaths() {
     id: "cancel", tool: "list_dir", socket: socketA, clientRequestKey: "cancel-key", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
-  assert(registry.cancelRequest("cancel-key", () => new WorkerToolError("cancelled", "cancelled")), "cancel did not find request key");
+  assert(await registry.cancelRequest("cancel-key", () => new WorkerToolError("cancelled", "cancelled")), "cancel did not find request key");
   await expectReject(cancelled, "cancelled");
   assert(!registry.hasRequestKey("cancel-key"), "cancelled request key leaked");
 
@@ -134,10 +138,10 @@ async function testTerminalPaths() {
     id: "other", tool: "read_file", socket: socketB, clientRequestKey: "other-key", timeoutMs: 10_000,
     onTimeout: () => new Error("timeout"),
   });
-  assert(registry.rejectSocket(socketA, () => new WorkerToolError("unavailable", "disconnected", true)) === 1, "socket cleanup rejected unrelated calls");
+  assert(await registry.rejectSocket(socketA, () => new WorkerToolError("unavailable", "disconnected", true)) === 1, "socket cleanup rejected unrelated calls");
   await expectReject(disconnected, "disconnected");
   assert(registry.snapshot().active === 1 && registry.hasRequestKey("other-key"), "socket cleanup corrupted unrelated index");
-  registry.reject("other", new Error("done"), socketB);
+  await registry.reject("other", new Error("done"), socketB);
   await expectReject(other, "done");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "rejection leaked pending indexes");
 }
@@ -156,7 +160,7 @@ async function testReconnectRebinding() {
   const reboundIds = registry.rebindInstance("daemon_same_instance_1234", socketB);
   assert(reboundIds.length === 1 && reboundIds[0] === "reconnect", "same daemon instance did not reclaim its detached call precisely");
   assert(registry.snapshot().detached === 0, "rebound call remained marked detached");
-  assert(registry.resolve("reconnect", socketB, { resumed: true }), "rebound call rejected the replacement socket result");
+  assert(await registry.resolve("reconnect", socketB, { resumed: true }), "rebound call rejected the replacement socket result");
   assert((await resumed).resumed === true, "rebound call lost its result");
 
   const expiring = registry.register({
@@ -218,6 +222,208 @@ async function testTimeoutCallbackFailure() {
   });
   await expectReject(timedOut, "pending daemon call timed out");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "throwing timeout callback leaked pending indexes");
+}
+
+async function testEventDrivenPendingCalls() {
+  const socketA = {};
+  const socketB = {};
+  const outcomes = [];
+  const registry = new PendingCallRegistry(4);
+  const registration = registry.registerEvent({
+    id: "event-success", tool: "list_dir", socket: socketA, daemonInstanceId: "daemon_event_12345678",
+    clientRequestKey: "event:success", timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  assert(registration === undefined, "event registration returned a terminal promise");
+  assert(outcomes.length === 0 && registry.snapshot().active === 1 && registry.hasRequestKey("event:success"), "event registration settled before a later event");
+  assert(await registry.resolve("event-success", socketA, { ok: true }), "event result was not matched");
+  assert(outcomes.length === 1 && outcomes[0].ok === true && outcomes[0].value.ok === true, "event result settlement lost its value");
+  assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "event success leaked pending indexes");
+
+  registry.registerEvent({
+    id: "event-cancel", tool: "list_dir", socket: socketA, clientRequestKey: "event:cancel",
+    timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  assert(await registry.cancelRequest("event:cancel", () => new WorkerToolError("cancelled", "cancelled by test")), "event cancellation missed its request key");
+  assert(outcomes.at(-1).ok === false && outcomes.at(-1).error.code === "cancelled", "event cancellation lost its stable error");
+
+  registry.registerEvent({
+    id: "event-reconnect", tool: "exec_command", socket: socketA, daemonInstanceId: "daemon_event_reconnect_1234",
+    clientRequestKey: "event:reconnect", timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  assert(registry.detachSocket(socketA, 10_000, () => new Error("reconnect expired")) === 1, "event call did not detach");
+  assert(registry.snapshot().detached === 1 && outcomes.length === 2, "detached event call settled prematurely");
+  assert(registry.rebindInstance("daemon_event_reconnect_1234", socketB)[0] === "event-reconnect", "event call did not rebind to the same daemon instance");
+  assert(await registry.resolve("event-reconnect", socketB, { resumed: true }), "rebound event call did not settle");
+  assert(outcomes.at(-1).ok === true && outcomes.at(-1).value.resumed === true, "rebound event result was altered");
+
+  registry.registerEvent({
+    id: "event-timeout", tool: "run_process", socket: socketA, clientRequestKey: "event:timeout",
+    timeoutMs: 1, onTimeout: () => new WorkerToolError("timeout", "event timeout"),
+    settle: async (outcome) => { outcomes.push(outcome); },
+  });
+  await new Promise((resolve) => { setTimeout(resolve, 10); });
+  assert(outcomes.at(-1).ok === false && outcomes.at(-1).error.code === "timeout", "event timeout did not settle through the terminal handler");
+  assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "event timeout leaked pending indexes");
+}
+
+async function testEventDrivenStreamDispatch() {
+  const sent = [];
+  const socket = { send(value) { sent.push(JSON.parse(value)); } };
+  const pending = new PendingCallRegistry(2);
+  const completed = [];
+  const activated = [];
+  const resumption = {
+    activate(streamId) { activated.push(streamId); },
+    async complete(streamId, message) { completed.push({ streamId, message }); },
+  };
+  const observability = new WorkerObservability();
+  const started = startEventDrivenStreamCall({
+    pending, resumption, observability, streamId: STREAM_TEST_ID, requestId: 44,
+    clientRequestKey: "session:44", tool: "list_dir", arguments: { path: "." },
+    socket, daemonInstanceId: "daemon_stream_event_1234", timeoutMs: 10_000,
+    authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
+    onTimeout: () => new WorkerToolError("timeout", "stream timeout"), onSendFailure() {},
+  });
+  await started;
+  assert(activated[0] === STREAM_TEST_ID, "stream dispatch did not mark the delivery active");
+  assert(completed.length === 0, "stream initiation retained or completed a terminal promise");
+  assert(pending.snapshot().active === 1 && pending.snapshot().request_keys === 1, "stream initiation did not leave an event-owned pending record");
+  assert(sent.length === 1 && sent[0].type === "tool_call" && sent[0].tool === "list_dir", "stream dispatch sent the wrong daemon envelope");
+  await pending.resolve(sent[0].id, socket, { entries: ["ok"] });
+  assert(completed.length === 1 && completed[0].message.id === 44
+    && completed[0].message.result.structuredContent.entries[0] === "ok", "daemon result event did not persist the exact streamed terminal result");
+  const reconnectSocket = { send(value) { this.message = JSON.parse(value); } };
+  const reboundSocket = {};
+  await startEventDrivenStreamCall({
+    pending, resumption, observability, streamId: STREAM_RESUMED_ID, requestId: 45,
+    clientRequestKey: "session:45", tool: "list_dir", arguments: { path: "." },
+    socket: reconnectSocket, daemonInstanceId: "daemon_stream_reconnect_1234", timeoutMs: 10_000,
+    authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
+    onTimeout: () => new WorkerToolError("timeout", "stream timeout"), onSendFailure() {},
+  });
+  assert(pending.detachSocket(reconnectSocket, 10_000, () => new Error("reconnect expired")) === 1, "streamed call did not detach after daemon loss");
+  assert(pending.rebindInstance("daemon_stream_reconnect_1234", reboundSocket)[0] === reconnectSocket.message.id, "same daemon instance did not reclaim the streamed call");
+  await pending.resolve(reconnectSocket.message.id, reboundSocket, { resumed: true });
+  assert(completed.at(-1).message.id === 45 && completed.at(-1).message.result.structuredContent.resumed === true, "rebound streamed call lost its terminal result");
+
+  const rejectedSocket = { send(value) { this.message = JSON.parse(value); } };
+  await startEventDrivenStreamCall({
+    pending, resumption, observability, streamId: STREAM_DISCONNECTED_ID, requestId: 46,
+    clientRequestKey: "session:46", tool: "list_dir", arguments: {},
+    socket: rejectedSocket, daemonInstanceId: "daemon_stream_reject_12345", timeoutMs: 10_000,
+    authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {},
+  });
+  await pending.reject(rejectedSocket.message.id, new WorkerToolError("execution_failed", "daemon rejected"), rejectedSocket);
+  assert(completed.at(-1).message.id === 46 && completed.at(-1).message.result.isError === true
+    && completed.at(-1).message.result.structuredContent.error.code === "execution_failed", "daemon rejection did not persist a streamed error result");
+
+  const snapshot = observability.snapshot();
+  assert(snapshot.calls.started === 3 && snapshot.calls.completed === 2 && snapshot.calls.failed === 1
+    && snapshot.tools.list_dir.active === 0, "event-driven stream observability did not close cleanly");
+}
+
+async function testStreamDispatchFailureBoundaries() {
+  const completed = [];
+  const events = [];
+  const observability = new WorkerObservability();
+  const resumption = {
+    activate() {},
+    async complete(streamId, message) { completed.push({ streamId, message }); },
+  };
+  await persistImmediateStreamOutcome({
+    resumption, observability, streamId: STREAM_COMPLETE_ID, requestId: 51,
+    outcome: { ok: false, error: new WorkerToolError("authorization_denied", "denied") },
+  });
+  assert(completed.at(-1).message.result.isError === true
+    && completed.at(-1).message.result.structuredContent.error.code === "authorization_denied", "immediate stream error lost its stable code");
+
+  const failingResumption = {
+    activate() {},
+    async complete() { throw new Error("synthetic persistence failure"); },
+  };
+  const originalError = console.error;
+  console.error = (line) => { events.push(String(line)); };
+  try {
+    await persistImmediateStreamOutcome({
+      resumption: failingResumption, observability, streamId: STREAM_COMPLETE_ID, requestId: 52,
+      outcome: { ok: true, value: { ok: true } }, transformResult() { throw "non-error transform failure"; },
+    });
+  } finally {
+    console.error = originalError;
+  }
+  assert(events.some((line) => line.includes("mcp.stream.persist.failed")), "immediate persistence failure was not observable");
+
+  const transformPending = new PendingCallRegistry(2);
+  const transformSocket = { send(value) { this.message = JSON.parse(value); } };
+  await startEventDrivenStreamCall({
+    pending: transformPending, resumption, observability, streamId: STREAM_RESUMED_ID, requestId: 53,
+    tool: "project_overview", arguments: {}, socket: transformSocket, daemonInstanceId: "daemon_transform_123456",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {}, transformResult(value) { return { transformed: value }; },
+  });
+  await transformPending.resolve(transformSocket.message.id, transformSocket, { source: true });
+  assert(completed.at(-1).message.result.structuredContent.transformed.source === true, "stream result transformation was not applied");
+
+  const throwingTransformPending = new PendingCallRegistry(2);
+  const throwingSocket = { send(value) { this.message = JSON.parse(value); } };
+  await startEventDrivenStreamCall({
+    pending: throwingTransformPending, resumption: failingResumption, observability, streamId: STREAM_DISCONNECTED_ID, requestId: 54,
+    tool: "project_overview", arguments: {}, socket: throwingSocket, daemonInstanceId: "daemon_throwing_123456",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {}, transformResult() { throw new Error("transform failed"); },
+  });
+  const originalError2 = console.error;
+  console.error = (line) => { events.push(String(line)); };
+  try { await throwingTransformPending.resolve(throwingSocket.message.id, throwingSocket, { source: true }); }
+  finally { console.error = originalError2; }
+  const failedSnapshot = observability.snapshot();
+  assert(failedSnapshot.calls.failed >= 1 && events.some((line) => line.includes("mcp.stream.persist.failed")), "transform or settlement persistence failure was not closed observably");
+
+  let sendFailureHandled = false;
+  const sendFailurePending = new PendingCallRegistry(1);
+  await startEventDrivenStreamCall({
+    pending: sendFailurePending, resumption, observability, streamId: STREAM_TEST_ID, requestId: 55,
+    tool: "list_dir", arguments: {}, socket: { send() { throw new Error("closed"); } }, daemonInstanceId: "daemon_send_fail_12345",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() { sendFailureHandled = true; },
+  });
+  assert(sendFailureHandled && sendFailurePending.snapshot().active === 0
+    && completed.at(-1).message.result.isError === true, "send failure did not settle and clean the streamed call");
+
+  const full = new PendingCallRegistry(1);
+  full.registerEvent({ id: "occupied", tool: "list_dir", socket: {}, timeoutMs: 10_000, onTimeout: () => new Error("timeout"), settle() {} });
+  await expectRejectType(startEventDrivenStreamCall({
+    pending: full, resumption, observability, streamId: STREAM_TEST_ID, requestId: 56,
+    tool: "list_dir", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_full_123456789",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {},
+  }), WorkerToolError);
+  await full.reject("occupied", new Error("cleanup"));
+
+  const plainRegistrationFailure = {
+    registerEvent() { throw new RangeError("synthetic registration failure"); },
+  };
+  await expectRejectType(startEventDrivenStreamCall({
+    pending: plainRegistrationFailure, resumption, observability, streamId: STREAM_TEST_ID, requestId: 57,
+    tool: "list_dir", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_plain_fail_1234",
+    timeoutMs: 10_000, authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onTimeout: () => new Error("timeout"), onSendFailure() {},
+  }), RangeError);
+
+  const daemonRegistry = {
+    probingSockets: () => [{}, {}], readySockets: () => [{}], candidateSockets: () => [{}], readyRoleSockets: () => [{}, {}],
+  };
+  const info = buildServerInfoResult({
+    serverName: "machine-bridge-mcp", serverVersion: "test", base: "https://example.test", oauth: { issuer: "https://example.test" },
+    authorization: { account: { role: "owner" }, summary: "summary" }, daemon: { tool_count: 2 }, tools: ["server_info", "list_dir"],
+    pending: new PendingCallRegistry(1), daemonRegistry, observability: new WorkerObservability(),
+  });
+  assert(info.worker.sockets_live.authenticated === 4 && info.worker.daemon_candidates === 1
+    && info.tool_delivery.effective_account_tool_count === 2, "server_info builder lost socket or tool-delivery diagnostics");
 }
 
 async function testMcpStreamResponse() {
@@ -644,6 +850,10 @@ function expectRegistrationError(operation, code, retryable) {
 async function expectReject(promise, expected) {
   try { await promise; } catch (error) { assert(String(error?.message || error).includes(expected), `expected ${expected}`); return; }
   throw new Error(`expected rejection containing ${expected}`);
+}
+async function expectRejectType(promise, constructor) {
+  try { await promise; } catch (error) { assert(error instanceof constructor, `expected ${constructor.name}`); return; }
+  throw new Error(`expected rejection of type ${constructor.name}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
 function expectThrow(operation, expected) { try { operation(); } catch (error) { assert(String(error?.message || error).includes(expected), `expected ${expected}`); return; } throw new Error(`expected throw containing ${expected}`); }

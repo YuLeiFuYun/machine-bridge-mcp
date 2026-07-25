@@ -17,35 +17,29 @@ import {
   type StreamRecord,
 } from "./mcp-resumption-records.ts";
 import { resumptionLimits, type McpResumptionOptions } from "./mcp-resumption-config.ts";
-
 export type { JsonRpcMessage } from "./mcp-resumption-records.ts";
-
 type ResumptionStorage = Pick<DurableObjectStorage, "get" | "put" | "delete" | "transaction">;
 type TransactionStorage = Pick<DurableObjectTransaction, "get" | "put" | "delete">;
-
 export type StreamResumeResult =
   | { kind: "invalid" | "not_found" | "expired" }
   | { kind: "complete"; streamId: string }
-  | { kind: "message"; streamId: string; message: Promise<JsonRpcMessage> };
-
+  | { kind: "message"; streamId: string };
 export class McpStreamLimitError extends Error {
   constructor() {
     super("too many resumable MCP streams are active");
     this.name = "McpStreamLimitError";
   }
 }
-
 const EVENT_ID_PATTERN = /^(stream_[A-Za-z0-9_-]{43}):([01])$/;
-
 export class McpResumptionStore {
   private readonly storage: ResumptionStorage;
-  private readonly live = new Map<string, Promise<JsonRpcMessage>>();
+  private readonly active = new Set<string>();
+  private readonly transientReady = new Map<string, JsonRpcMessage>();
   private readonly now: () => number;
   private readonly retentionMs: number;
   private readonly pendingRetentionMs: number;
   private readonly maximumStreams: number;
   private readonly maximumMessageBytes: number;
-
   constructor(
     storage: ResumptionStorage,
     options: McpResumptionOptions = {},
@@ -58,7 +52,6 @@ export class McpResumptionStore {
     this.maximumStreams = limits.maximumStreams;
     this.maximumMessageBytes = limits.maximumMessageBytes;
   }
-
   async begin(input: {
     streamId: string;
     tokenKey: string;
@@ -87,49 +80,48 @@ export class McpResumptionStore {
       await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
       return [...pruned.removedStreamIds, ...freed.removedStreamIds];
     });
-    for (const removedStreamId of removedStreamIds) this.live.delete(removedStreamId);
+    for (const removedStreamId of removedStreamIds) this.clearMemory(removedStreamId);
   }
 
-  attach(streamId: string, message: Promise<JsonRpcMessage>): void {
+  activate(streamId: string): void {
     if (!isStreamId(streamId)) throw new Error("invalid MCP stream id");
-    this.live.set(streamId, message);
+    this.transientReady.delete(streamId);
+    this.active.add(streamId);
   }
 
   async complete(streamId: string, message: JsonRpcMessage): Promise<void> {
-    const initial = await this.storage.get<unknown>(streamKey(streamId));
-    if (initial === undefined) {
-      this.live.delete(streamId);
-      throw new Error("resumable MCP stream record disappeared before completion");
+    try {
+      const initial = await this.storage.get<unknown>(streamKey(streamId));
+      if (initial === undefined) throw new Error("resumable MCP stream record disappeared before completion");
+      if (!validRecord(initial)) throw new Error("resumable MCP stream record is corrupt");
+      const messageJson = resumableMessageJson(message, initial.request_id, this.maximumMessageBytes);
+      const digest = await messageSha256(messageJson);
+      const expiresAt = this.now() + this.retentionMs;
+      const completed = await this.storage.transaction(async (transaction) => {
+        const record = await transaction.get<unknown>(streamKey(streamId));
+        if (record === undefined) return false;
+        if (!validRecord(record)) throw new Error("resumable MCP stream record is corrupt");
+        if (record.status === "ready") return true;
+        const index = readIndex(await transaction.get<unknown>(STREAM_INDEX_KEY));
+        if (!index.entries.some((candidate) => candidate.stream_id === streamId)) {
+          throw new Error("resumable MCP stream index lost its record");
+        }
+        const ready = readyRecord(record, messageJson, digest, expiresAt);
+        const entries = index.entries.map((candidate) => candidate.stream_id === streamId
+          ? indexEntry(ready)
+          : candidate);
+        await transaction.put(streamKey(streamId), ready);
+        await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
+        return true;
+      });
+      if (!completed) throw new Error("resumable MCP stream record disappeared during completion");
+      this.transientReady.delete(streamId);
+    } catch (error) {
+      this.transientReady.set(streamId, message);
+      throw error;
+    } finally {
+      this.active.delete(streamId);
     }
-    if (!validRecord(initial)) {
-      this.live.delete(streamId);
-      throw new Error("resumable MCP stream record is corrupt");
-    }
-    const messageJson = resumableMessageJson(message, initial.request_id, this.maximumMessageBytes);
-    const digest = await messageSha256(messageJson);
-    const expiresAt = this.now() + this.retentionMs;
-    const completed = await this.storage.transaction(async (transaction) => {
-      const record = await transaction.get<unknown>(streamKey(streamId));
-      if (record === undefined) return false;
-      if (!validRecord(record)) throw new Error("resumable MCP stream record is corrupt");
-      if (record.status === "ready") return true;
-      const index = readIndex(await transaction.get<unknown>(STREAM_INDEX_KEY));
-      if (!index.entries.some((candidate) => candidate.stream_id === streamId)) {
-        throw new Error("resumable MCP stream index lost its record");
-      }
-      const ready = readyRecord(record, messageJson, digest, expiresAt);
-      const entries = index.entries.map((candidate) => candidate.stream_id === streamId
-        ? indexEntry(ready)
-        : candidate);
-      await transaction.put(streamKey(streamId), ready);
-      await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
-      return true;
-    });
-    if (!completed) {
-      this.live.delete(streamId);
-      throw new Error("resumable MCP stream record disappeared during completion");
-    }
-    this.live.delete(streamId);
   }
 
   async pollMessage(streamId: string): Promise<
@@ -138,6 +130,8 @@ export class McpResumptionStore {
     | { kind: "message"; message: JsonRpcMessage }
   > {
     if (!isStreamId(streamId)) return { kind: "not_found" };
+    const transient = this.transientReady.get(streamId);
+    if (transient) return { kind: "message", message: transient };
     const record = await this.storage.get<unknown>(streamKey(streamId));
     if (record === undefined) return { kind: "not_found" };
     if (!validRecord(record)) throw new Error("resumable MCP stream record is corrupt");
@@ -146,7 +140,7 @@ export class McpResumptionStore {
       return { kind: "not_found" };
     }
     if (record.status === "ready") return { kind: "message", message: await storedMessage(record) };
-    if (this.live.has(streamId)) return { kind: "pending" };
+    if (this.active.has(streamId)) return { kind: "pending" };
 
     const unavailable = workerRestartMessage(record.request_id);
     await this.complete(streamId, unavailable);
@@ -169,15 +163,13 @@ export class McpResumptionStore {
       return { kind: "expired" };
     }
     if (event.sequence >= 1) return { kind: "complete", streamId: event.streamId };
-    if (record.status === "ready") {
-      return { kind: "message", streamId: event.streamId, message: storedMessage(record) };
+    if (record.status === "ready" || this.transientReady.has(event.streamId) || this.active.has(event.streamId)) {
+      return { kind: "message", streamId: event.streamId };
     }
-    const live = this.live.get(event.streamId);
-    if (live) return { kind: "message", streamId: event.streamId, message: live };
 
     const unavailable = workerRestartMessage(record.request_id);
     await this.complete(event.streamId, unavailable);
-    return { kind: "message", streamId: event.streamId, message: Promise.resolve(unavailable) };
+    return { kind: "message", streamId: event.streamId };
   }
 
   private async remove(streamId: string): Promise<void> {
@@ -188,7 +180,12 @@ export class McpResumptionStore {
       if (entries.length === 0) await transaction.delete(STREAM_INDEX_KEY);
       else await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
     });
-    this.live.delete(streamId);
+    this.clearMemory(streamId);
+  }
+
+  private clearMemory(streamId: string): void {
+    this.active.delete(streamId);
+    this.transientReady.delete(streamId);
   }
 }
 

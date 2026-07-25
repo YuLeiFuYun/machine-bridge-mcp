@@ -22,6 +22,7 @@ import {
   proxyMcpEventStream, sanitizeBridgeRequest,
 } from "./mcp-stream-proxy.ts";
 import { McpResumptionStore, McpStreamLimitError } from "./mcp-resumption.ts";
+import { buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall } from "./mcp-stream-dispatch.ts";
 import { daemonToolTimeoutMs } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors.ts";
@@ -44,7 +45,7 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.14";
+const SERVER_VERSION = "3.0.0-beta.15";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -259,7 +260,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (body.type === "heartbeat" || body.type === "ping") {
       await this.touchDaemonSocket(ws);
       if (!trySendWebSocket(ws, { type: "pong", ts: body.ts ?? Date.now() })) {
-        this.invalidateDaemonSocket(ws, "failed to acknowledge daemon heartbeat", "daemon pong failed", "daemon_transport_error");
+        await this.invalidateDaemonSocket(ws, "failed to acknowledge daemon heartbeat", "daemon pong failed", "daemon_transport_error");
       }
       return;
     }
@@ -283,7 +284,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         ws.send(JSON.stringify({ type: "resume_calls", ids: reboundCallIds }));
         ws.send(JSON.stringify({ type: "ready_ack", server: SERVER_NAME, version: SERVER_VERSION }));
       } catch {
-        this.invalidateDaemonSocket(ws, "daemon readiness acknowledgement failed", "daemon ready timeout", "daemon_ready_timeout");
+        await this.invalidateDaemonSocket(ws, "daemon readiness acknowledgement failed", "daemon ready timeout", "daemon_ready_timeout");
         return;
       }
       this.observability.socketReady();
@@ -305,8 +306,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
     await this.touchDaemonSocket(ws);
     const matched = body.ok === false
-      ? this.pending.reject(body.id, daemonToolError(body.error), ws)
-      : this.pending.resolve(body.id, ws, body.result);
+      ? await this.pending.reject(body.id, daemonToolError(body.error), ws)
+      : await this.pending.resolve(body.id, ws, body.result);
     if (!matched) this.observability.unmatchedResult();
   }
 
@@ -321,10 +322,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async cleanupDaemonSocket(ws: WebSocket, message: string): Promise<void> {
     this.observability.socketDisconnected();
-    this.detachDaemonSocketCalls(ws, message);
+    await this.detachDaemonSocketCalls(ws, message);
     await this.scheduleSocketAlarms();
   }
-
   private async handleMcp(request: Request, base: string): Promise<Response> {
     if (request.method !== "GET" && request.method !== "POST") {
       return new Response(request.method === "HEAD" ? null : JSON.stringify({ error: "mcp endpoint expects GET or POST" }), {
@@ -385,20 +385,46 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return json(rpcError(body.id, -32603, "Resumable stream storage is unavailable"), 503);
       }
 
-      const terminal = this.dispatchJsonRpc(body, base, access.authorized, sessionId).catch((error) => {
-        this.observability.event("error", "mcp.stream.dispatch.failed", { error_class: workerErrorClass(error) });
-        return rpcError(body.id, -32603, "Internal error");
-      });
-      const durable = terminal.then(async (message) => {
-        try {
-          await this.resumption.complete(streamId, message);
-        } catch (error) {
-          this.observability.event("error", "mcp.stream.persist.failed", { error_class: workerErrorClass(error) });
+      const params = asObject(body.params);
+      const name = requiredString(params, "name");
+      const args = asObject(params.arguments);
+      try {
+        if (name === "server_info") {
+          await persistImmediateStreamOutcome({
+            resumption: this.resumption, observability: this.observability, streamId, requestId: body.id,
+            outcome: { ok: true, value: this.serverInfoResult(base, access.authorized) },
+          });
+        } else {
+          if (!workspaceTools.some((tool) => tool.name === name)) throw new Error(`unknown tool: ${name}`);
+          if (!this.daemonToolEnabled(name)) throw new Error(`tool disabled by local daemon policy: ${name}`);
+          if (!accountRoleAllowsTool(access.authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
+          this.reclaimStaleDaemonSockets();
+          const socket = this.daemonRegistry.readySockets()[0];
+          if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
+          const daemonInstanceId = this.daemonRegistry.readyAttachment(socket)?.instanceId ?? "";
+          if (!daemonInstanceId) throw new WorkerToolError("unavailable", "local daemon connection is missing its instance identity", true);
+          await startEventDrivenStreamCall({
+            pending: this.pending, resumption: this.resumption, observability: this.observability,
+            streamId, requestId: body.id, clientRequestKey: mcpClientRequestKey(access.authorized.tokenKey, sessionId, body.id),
+            tool: name, arguments: args, socket, daemonInstanceId, timeoutMs: daemonToolTimeoutMs(name, args),
+            authorization: {
+              account_id: access.authorized.accountId, account_version: access.authorized.accountVersion,
+              client_id: access.authorized.clientId, family_id: access.authorized.familyId, role: access.authorized.role,
+            },
+            onTimeout: (record) => this.daemonCallTimeout(record, name),
+            onSendFailure: () => this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed"),
+            transformResult: name === "project_overview"
+              ? (value) => decorateProjectOverview(value, { accountId: access.authorized.accountId,
+                accountVersion: access.authorized.accountVersion, role: access.authorized.role })
+              : undefined,
+          });
         }
-        return message;
-      });
-      this.resumption.attach(streamId, durable);
-      this.ctx.waitUntil(durable.then(() => undefined, () => undefined));
+      } catch (error) {
+        await persistImmediateStreamOutcome({
+          resumption: this.resumption, observability: this.observability, streamId, requestId: body.id,
+          outcome: { ok: false, error: error instanceof Error ? error : new Error("streamed tool call failed") },
+        });
+      }
       return mcpStreamDescriptorResponse("initial", streamId);
     }
 
@@ -436,7 +462,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     if (request.method === "notifications/initialized") return null;
     if (request.method === "notifications/cancelled") {
-      this.cancelClientRequest(mcpClientRequestKey(authorized.tokenKey, sessionId, asObject(request.params).requestId));
+      await this.cancelClientRequest(mcpClientRequestKey(authorized.tokenKey, sessionId, asObject(request.params).requestId));
       return null;
     }
     if (request.method === "logging/setLevel") return rpcResult(request.id, {});
@@ -462,6 +488,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     return rpcError(request.id, -32601, `Method not found: ${request.method}`);
   }
+  private serverInfoResult(base: string, authorized: AuthorizedToken): Record<string, unknown> {
+    const { daemon, tools, authorization } = this.authorityContext(authorized);
+    return buildServerInfoResult({
+      serverName: SERVER_NAME, serverVersion: SERVER_VERSION, base,
+      oauth: this.authorizationServerMetadata(base), authorization, daemon, tools,
+      pending: this.pending, daemonRegistry: this.daemonRegistry, observability: this.observability,
+    });
+  }
   private async callTool(
     name: string,
     args: Record<string, unknown>,
@@ -469,42 +503,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     authorized: AuthorizedToken,
     requestKey?: string,
   ): Promise<unknown> {
-    if (name === "server_info") {
-      const { daemon, tools, authorization } = this.authorityContext(authorized);
-      return {
-        name: SERVER_NAME,
-        version: SERVER_VERSION,
-        mcp_url: `${base}/mcp`,
-        oauth: this.authorizationServerMetadata(base),
-        account: authorization.account,
-        authorization,
-        authority_summary: authorization.summary,
-        daemon,
-        worker: {
-          pending_calls: this.pending.snapshot(),
-          daemon_candidates: this.daemonRegistry.candidateSockets().length,
-          daemon_probes: this.daemonRegistry.probingSockets().length,
-          sockets_live: {
-            authenticated: this.daemonRegistry.readyRoleSockets().length + this.daemonRegistry.probingSockets().length,
-            ready: this.daemonRegistry.readySockets().length,
-            probing: this.daemonRegistry.probingSockets().length,
-            candidates: this.daemonRegistry.candidateSockets().length,
-          },
-          observability: this.observability.snapshot(),
-        },
-        tools,
-        tools_scope: "authenticated_account_effective_tools_before_host_filtering",
-        tool_delivery: {
-          full_profile_scope: "daemon-capability-ceiling-before-account-filtering",
-          daemon_advertised_tool_count: daemon.tool_count,
-          relay_advertised_tool_count: tools.length,
-          effective_account_tool_count: tools.length,
-          relay_advertised_scope: "authenticated_account_effective_tools_before_host_filtering",
-          host_exposed_tools_known_to_server: false,
-          host_may_expose_subset: true,
-        },
-      };
-    }
+    if (name === "server_info") return this.serverInfoResult(base, authorized);
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!this.daemonToolEnabled(name)) throw new Error(`tool disabled by local daemon policy: ${name}`);
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
@@ -537,16 +536,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         clientRequestKey: requestKey,
         tool: name,
         timeoutMs,
-        onTimeout: (record) => {
-          if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
-          const silentForMs = record.socket
-            ? Date.now() - daemonLastSeenMs(this.daemonRegistry.readyAttachment(record.socket))
-            : 0;
-          if (record.socket && (!Number.isFinite(silentForMs) || silentForMs > 45_000)) {
-            this.invalidateDaemonSocket(record.socket, "daemon became unresponsive", "daemon liveness timeout");
-          }
-          return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
-        },
+        onTimeout: (record) => this.daemonCallTimeout(record, name),
       });
     } catch (error) {
       if (error instanceof PendingCallRegistrationError) {
@@ -567,8 +557,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           },
       }));
     } catch {
-      this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
-      this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed");
+      await this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
+      await this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed");
     }
     try {
       const value = await result;
@@ -579,14 +569,22 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       throw error;
     }
   }
-  private cancelClientRequest(requestKey?: string): void {
+  private daemonCallTimeout(record: import("./pending-call-contract.ts").PendingCallRecord, name: string): Error {
+    if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
+    const silentForMs = record.socket ? Date.now() - daemonLastSeenMs(this.daemonRegistry.readyAttachment(record.socket)) : 0;
+    if (record.socket && (!Number.isFinite(silentForMs) || silentForMs > 45_000)) {
+      void this.invalidateDaemonSocket(record.socket, "daemon became unresponsive", "daemon liveness timeout");
+    }
+    return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
+  }
+
+  private async cancelClientRequest(requestKey?: string): Promise<void> {
     if (!requestKey) return;
-    this.pending.cancelRequest(requestKey, (record) => {
+    await this.pending.cancelRequest(requestKey, (record) => {
       if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
       return new WorkerToolError("cancelled", "tool call cancelled by client");
     });
   }
-
   private async acceptDaemonWebSocket(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected Upgrade: websocket", { status: 426 });
     if (!this.env.DAEMON_DEVICE_PUBLIC_KEY) return new Response("Daemon device identity is not configured", { status: 503 });
@@ -662,22 +660,23 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     await this.scheduleSocketAlarms();
   }
 
-  private invalidateDaemonSocket(
+  private async invalidateDaemonSocket(
     ws: WebSocket,
     message: string,
     closeReason: string,
     errorCode = "daemon_liveness_timeout",
-  ): void {
-    this.detachDaemonSocketCalls(ws, message);
+  ): Promise<void> {
+    const cleanup = this.detachDaemonSocketCalls(ws, message);
     this.daemonRegistry.expire(ws);
     sendWebSocketQuietly(ws, { type: "error", error: errorCode });
     closeWebSocketQuietly(ws, 1008, closeReason);
+    await cleanup;
   }
 
-  private detachDaemonSocketCalls(ws: WebSocket, message: string): number {
+  private async detachDaemonSocketCalls(ws: WebSocket, message: string): Promise<number> {
     const attachment = this.daemonRegistry.attachment(ws);
     if (!attachment?.instanceId) {
-      return this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
+      return await this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
     }
     return this.pending.detachSocket(
       ws,
@@ -690,7 +689,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     for (const socket of this.daemonRegistry.readyRoleSockets()) {
       const deadline = daemonLivenessDeadlineMs(this.daemonRegistry.readyAttachment(socket));
       if (Number.isFinite(deadline) && deadline > now) continue;
-      this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
+      void this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
     }
   }
 
@@ -714,7 +713,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const readyDeadline = daemonReadyDeadlineMs(attachment);
       const liveDeadline = daemonLivenessDeadlineMs(attachment);
       if (!Number.isFinite(readyDeadline) || !Number.isFinite(liveDeadline) || Math.min(readyDeadline, liveDeadline) <= now) {
-        this.invalidateDaemonSocket(socket, "daemon did not complete end-to-end readiness verification", "daemon ready timeout", "daemon_ready_timeout");
+        await this.invalidateDaemonSocket(socket, "daemon did not complete end-to-end readiness verification", "daemon ready timeout", "daemon_ready_timeout");
         continue;
       }
       nextDeadline = Math.min(nextDeadline, readyDeadline, liveDeadline);
@@ -722,7 +721,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     for (const socket of this.daemonRegistry.readyRoleSockets()) {
       const deadline = daemonLivenessDeadlineMs(this.daemonRegistry.readyAttachment(socket));
       if (!Number.isFinite(deadline) || deadline <= now) {
-        this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
+        await this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
         continue;
       }
       nextDeadline = Math.min(nextDeadline, deadline);
@@ -747,7 +746,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const readyDeadline = daemonReadyDeadlineMs(attachment);
       const liveDeadline = daemonLivenessDeadlineMs(attachment);
       if (!Number.isFinite(readyDeadline) || !Number.isFinite(liveDeadline)) {
-        this.invalidateDaemonSocket(socket, "daemon readiness state is invalid", "daemon ready timeout", "daemon_ready_timeout");
+        await this.invalidateDaemonSocket(socket, "daemon readiness state is invalid", "daemon ready timeout", "daemon_ready_timeout");
         continue;
       }
       nextDeadline = Math.min(nextDeadline, readyDeadline, liveDeadline);
@@ -755,7 +754,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     for (const socket of this.daemonRegistry.readyRoleSockets()) {
       const deadline = daemonLivenessDeadlineMs(this.daemonRegistry.readyAttachment(socket));
       if (!Number.isFinite(deadline)) {
-        this.invalidateDaemonSocket(socket, "daemon became unresponsive", "invalid daemon liveness timestamp");
+        await this.invalidateDaemonSocket(socket, "daemon became unresponsive", "invalid daemon liveness timestamp");
         continue;
       }
       nextDeadline = Math.min(nextDeadline, deadline);

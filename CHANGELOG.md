@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-beta.15 - 2026-07-25
+
+### Event-driven streamed-call settlement
+
+- Block `3.0.0-beta.14` after exact owner-machine activation and repeated production verification. Version, launchd identity, private candidate runtime, status, doctor, sequence-zero delivery, session isolation, disconnect recovery, and terminal acknowledgement all converged, but a concurrent `server_info` still timed out while the original SSE remained open; session-scoped cancellation therefore could not enter. Beta.14 has no acceptance record and must not be pushed, published, or promoted.
+- Remove the last cross-event terminal Promise from streamed `tools/call` initiation. `BridgeRoom` now commits the recovery record, registers an event-settled pending call, sends the daemon envelope, and returns the descriptor without retaining a Promise for the daemon result. The later daemon WebSocket `tool_result`, explicit cancellation request, timeout, send failure, or reconnect-grace expiry owns terminal settlement and persistence.
+- Preserve ordinary JSON-only calls with the existing Promise-based request path while adding a separate event settlement mode to `PendingCallRegistry`. Same-instance daemon reconnect still detaches and rebinds both modes; terminal settlement removes request keys, closes observability, and writes exactly one resumable JSON-RPC result.
+- Replace the resumption store's live Promise map with an active-stream set plus a bounded transient terminal map used only when persistence fails. A pending persisted record without matching active state still produces the existing restart-ambiguity error instead of inventing completion.
+- Add deterministic event-lifecycle regressions that prove stream initiation returns before any terminal event, then exercise success, daemon rejection, cancellation, timeout, send failure, result transformation, persistence failure, and same-instance reconnect. Architecture checks forbid `dispatchJsonRpc` terminal Promises, `resumption.attach`, and Durable Object `waitUntil` from returning to the stream initiation path.
+
 ## 3.0.0-beta.14 - 2026-07-25
 
 ### Concurrent MCP control during streamed delivery
