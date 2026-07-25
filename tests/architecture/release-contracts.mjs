@@ -25,6 +25,14 @@ const patchedSharpVersion = "0.35.3";
 if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
 if (packageLock.packages?.["node_modules/sharp"]?.version !== patchedSharpVersion) throw new Error("package-lock does not resolve the audited Sharp version");
 if (packageJson.allowScripts?.[`sharp@${patchedSharpVersion}`] !== true) throw new Error("the audited Sharp lifecycle-script allowlist entry is missing");
+const resolvedWorkerdVersion = packageLock.packages?.["node_modules/workerd"]?.version;
+if (!/^1\.\d{8}\.\d+$/.test(String(resolvedWorkerdVersion || ""))) throw new Error("package-lock does not resolve an exact workerd build");
+const allowedWorkerdScripts = Object.entries(packageJson.allowScripts || {})
+  .filter(([name, allowed]) => name.startsWith("workerd@") && allowed === true)
+  .map(([name]) => name);
+if (allowedWorkerdScripts.length !== 1 || allowedWorkerdScripts[0] !== `workerd@${resolvedWorkerdVersion}`) {
+  throw new Error("the reviewed workerd lifecycle-script allowlist does not exactly match package-lock");
+}
 if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser-service-worker-test.mjs") throw new Error("browser service-worker behavior test is missing");
 if (packageJson.scripts?.["browser-identity:test"] !== "node tests/browser-extension-identity-test.mjs") throw new Error("browser extension identity regression test is missing");
 if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");

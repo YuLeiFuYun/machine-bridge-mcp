@@ -10,6 +10,8 @@
 - Preserve online delivery when persistence fails transiently, fail before side effects when a new recovery record cannot be admitted, and allow browser DPoP/resumption preflights by advertising both `DPoP` and `Last-Event-ID` in CORS.
 - Promote the recovery summary for an already-warned relay outage to `warn`, while brief self-healing interruptions remain debug-only. Default background-service logs now contain both outage start and recovery closure without exposing raw close reasons.
 - Add direct store fault/tamper/capacity tests, SSE framing tests, and live Wrangler integration that disconnects after sequence zero, completes the daemon call, rejects another session, recovers through GET, and proves the acknowledged terminal event is not duplicated.
+- Refresh the locked development-only `brace-expansion` transitive dependency from 5.0.7 to 5.0.8 after the mandatory pre-candidate registry audit reported GHSA-mh99-v99m-4gvg. Both complete and production-only audits must be clean before beta.13 candidate preparation.
+- Integrate Dependabot PR #56 into the complete beta.13 candidate rather than merging its incomplete two-file update. Wrangler advances to 4.114.0, Miniflare/workerd to the 2026-07-22 build, the exact `workerd@1.20260722.1` postinstall approval is reviewed and updated, and the existing patched `sharp@0.35.3` override remains authoritative.
 
 ## 3.0.0-beta.12 - 2026-07-23
 
