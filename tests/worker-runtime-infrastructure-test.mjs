@@ -1,13 +1,18 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
+import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
 import { buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall } from "../src/worker/mcp-stream-dispatch.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
 import { acceptsEventStream, resumeJsonRpcResponse, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
 import {
   MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER,
-  handleMcpStreamPollRequest, mcpStreamDescriptorResponse, mcpStreamProxyId, mcpStreamProxyMode,
+  handleMcpStreamSubscribeRequest, mcpStreamDescriptorResponse, mcpStreamProxyId, mcpStreamProxyMode,
   proxyMcpEventStream, sanitizeBridgeRequest,
 } from "../src/worker/mcp-stream-proxy.ts";
+import { McpStreamChannel } from "../src/worker/mcp-stream-channel.ts";
+import {
+  durableObjectQuotaResponse, isDurableObjectQuotaError, respondWithoutDurableObject,
+} from "../src/worker/worker-static-routes.ts";
 import { daemonToolTimeoutMs } from "../src/worker/tool-timeout.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
@@ -34,6 +39,45 @@ import {
   withDaemonLastSeenAt,
 } from "../src/worker/daemon-liveness.ts";
 
+class TestWebSocketContext {
+  constructor() { this.sockets = []; this.tags = new Map(); }
+  acceptWebSocket(socket, tags = []) { this.sockets.push(socket); this.tags.set(socket, [...tags]); }
+  getWebSockets(tag) {
+    return this.sockets.filter((socket) => socket.readyState === 1 && (!tag || this.tags.get(socket)?.includes(tag)));
+  }
+}
+
+class TestWebSocket {
+  constructor() {
+    this.readyState = 1;
+    this.listeners = new Map();
+    this.sent = [];
+    this.attachment = null;
+    this.accepted = false;
+    this.closeCode = 0;
+    this.closeReason = "";
+  }
+  accept() { this.accepted = true; }
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(listener);
+  }
+  emit(type, event = {}) {
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+  send(value) { this.sent.push(String(value)); }
+  close(code = 1000, reason = "") {
+    if (this.readyState === 3) return;
+    this.closeCode = code;
+    this.closeReason = reason;
+    this.readyState = 3;
+    this.emit("close", { code, reason });
+  }
+  serializeAttachment(value) { this.attachment = structuredClone(value); }
+  deserializeAttachment() { return this.attachment === null ? null : structuredClone(this.attachment); }
+}
+
+
 await testMcpSessions();
 await testRequestKeyReuse();
 await testRegistrationFailures();
@@ -48,7 +92,9 @@ await testEventDrivenStreamDispatch();
 await testStreamDispatchFailureBoundaries();
 await testAbortSignalCleanup();
 await testMcpStreamResponse();
+await testMcpStreamChannel();
 await testMcpStreamProxy();
+testDaemonSocketIsolation();
 testRelayTimeoutContract();
 testWorkerPolicyParity();
 testWorkerErrors();
@@ -57,7 +103,9 @@ testPrototypeSafeFormFields();
 testMcpJsonRpcProtocol();
 testWebSocketProtocol();
 testDaemonLiveness();
+await testWorkerStaticRoutes();
 console.log("worker runtime infrastructure test ok");
+
 
 
 async function testMcpSessions() {
@@ -584,19 +632,94 @@ async function testMcpStreamResponse() {
   assert(await completed.text() === "", "completed stream replayed an already acknowledged terminal event");
 }
 
+async function testMcpStreamChannel() {
+  const context = new TestWebSocketContext();
+  const metrics = {
+    opened: 0, replaced: 0, pushes: 0, recipients: 0, protocolErrors: 0,
+    streamSubscriberOpened(replaced) { this.opened += 1; this.replaced += replaced; },
+    streamTerminalDelivered(recipients) { this.pushes += 1; this.recipients += recipients; },
+    streamSubscriberProtocolError() { this.protocolErrors += 1; },
+  };
+  const pairs = [];
+  const channel = new McpStreamChannel(
+    context,
+    metrics,
+    () => {
+      const pair = [new TestWebSocket(), new TestWebSocket()];
+      pairs.push(pair);
+      return pair;
+    },
+    (client) => ({ status: 101, webSocket: client }),
+  );
+  const upgrade = { headers: new Headers({ Upgrade: "websocket" }) };
+
+  const readyMessage = { jsonrpc: "2.0", id: 20, result: { ready: true } };
+  const ready = await channel.subscribe(upgrade, STREAM_TEST_ID, {
+    async pollMessage() { return { kind: "message", message: readyMessage }; },
+  });
+  assert(ready.status === 200 && (await ready.json()).result.ready === true, "ready stream unnecessarily opened a subscriber");
+  assert(context.sockets.length === 0, "ready stream leaked a subscriber socket");
+
+  const missing = await channel.subscribe(upgrade, STREAM_COMPLETE_ID, {
+    async pollMessage() { return { kind: "not_found" }; },
+  });
+  assert(missing.status === 404, "missing stream opened a subscriber");
+
+  const pendingStore = sequencePollStore([{ kind: "pending" }, { kind: "pending" }]);
+  const pending = await channel.subscribe(upgrade, STREAM_TEST_ID, pendingStore);
+  assert(pending.status === 101 && pending.webSocket === pairs[0][0], "pending stream did not upgrade to a subscriber");
+  assert(channel.isSubscriber(pairs[0][1]), "subscriber attachment was not recoverable after hibernation");
+  channel.publish(STREAM_TEST_ID, { jsonrpc: "2.0", id: 21, result: { pushed: true } });
+  assert(JSON.parse(pairs[0][1].sent[0]).result.pushed === true, "terminal push was not delivered to the subscriber");
+  assert(pairs[0][1].closeCode === 1000, "terminal subscriber did not close cleanly");
+  assert(metrics.pushes === 1 && metrics.recipients === 1, "terminal push metrics were incorrect");
+
+  const firstReplacement = await channel.subscribe(
+    upgrade,
+    STREAM_RESUMED_ID,
+    sequencePollStore([{ kind: "pending" }, { kind: "pending" }]),
+  );
+  const firstServer = pairs.at(-1)[1];
+  assert(firstReplacement.status === 101, "first resumable subscriber did not upgrade");
+  const secondReplacement = await channel.subscribe(
+    upgrade,
+    STREAM_RESUMED_ID,
+    sequencePollStore([{ kind: "pending" }, { kind: "pending" }]),
+  );
+  assert(secondReplacement.status === 101 && firstServer.closeCode === 1012, "new resume did not replace the stale subscriber");
+  assert(metrics.replaced === 1, "subscriber replacement was not observable");
+
+  const raceMessage = { jsonrpc: "2.0", id: 22, result: { raced: true } };
+  const raced = await channel.subscribe(
+    upgrade,
+    STREAM_DISCONNECTED_ID,
+    sequencePollStore([{ kind: "pending" }, { kind: "message", message: raceMessage }]),
+  );
+  const raceServer = pairs.at(-1)[1];
+  assert(raced.status === 101 && JSON.parse(raceServer.sent[0]).result.raced === true, "completion between lookup and upgrade was lost");
+
+  const protocolSocket = new TestWebSocket();
+  protocolSocket.serializeAttachment({ role: "mcp_stream_subscriber", streamId: STREAM_TEST_ID });
+  channel.rejectSubscriberMessage(protocolSocket);
+  assert(protocolSocket.closeCode === 1008 && metrics.protocolErrors === 1, "receive-only subscriber accepted client data");
+
+  const noUpgrade = await channel.subscribe(
+    { headers: new Headers() },
+    STREAM_TEST_ID,
+    sequencePollStore([{ kind: "pending" }]),
+  );
+  assert(noUpgrade.status === 426, "subscriber route accepted a non-WebSocket request");
+}
+
 async function testMcpStreamProxy() {
-  let terminalMessage = null;
-  const resolveTerminal = (message) => { terminalMessage = message; };
   const calls = [];
+  const subscriptionSocket = new TestWebSocket();
   const bridge = {
     async fetch(request) {
       calls.push(request);
       const mode = request.headers.get(MCP_STREAM_PROXY_MODE_HEADER);
       if (mode === "prepare") return mcpStreamDescriptorResponse("initial", STREAM_TEST_ID);
-      if (mode === "poll") {
-        if (!terminalMessage) return new Response(null, { status: 202 });
-        return new Response(JSON.stringify(terminalMessage), { headers: { "content-type": "application/json" } });
-      }
+      if (mode === "subscribe") return { status: 101, webSocket: subscriptionSocket };
       throw new Error(`unexpected proxy mode: ${mode}`);
     },
   };
@@ -607,32 +730,37 @@ async function testMcpStreamProxy() {
       accept: "application/json, text/event-stream",
       "content-type": "application/json",
       origin: "https://chatgpt.com",
-      [MCP_STREAM_PROXY_MODE_HEADER]: "poll",
+      [MCP_STREAM_PROXY_MODE_HEADER]: "subscribe",
       [MCP_STREAM_PROXY_ID_HEADER]: STREAM_COMPLETE_ID,
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "list_dir", arguments: {} } }),
   });
   const response = await proxyMcpEventStream({
-    request, bridge, extraOrigins: "", ctx: { waitUntil(promise) { keptAlive.push(promise); } }, pollIntervalMs: 1,
+    request, bridge, extraOrigins: "", ctx: { waitUntil(promise) { keptAlive.push(promise); } },
   });
   assert(response?.headers.get("content-type")?.startsWith("text/event-stream"), "outer Worker did not create the public SSE response");
   assert(response.headers.get("access-control-allow-origin") === "https://chatgpt.com", "outer Worker SSE response lost CORS");
   assert(calls[0].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "prepare", "public proxy mode header was not replaced");
   assert(calls[0].headers.get(MCP_STREAM_PROXY_ID_HEADER) === null, "public internal stream id reached BridgeRoom");
+  assert(calls.length === 2, "stream startup exceeded its fixed two-request Durable Object budget");
+  assert(calls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "subscribe", "outer Worker did not open the internal terminal subscription");
+  assert(calls[1].headers.get(MCP_STREAM_PROXY_ID_HEADER) === STREAM_TEST_ID, "internal subscription lost the stream id");
+  assert(calls[1].headers.get("Upgrade")?.toLowerCase() === "websocket", "internal subscription was not a WebSocket upgrade");
+  assert(subscriptionSocket.accepted, "outer Worker did not accept the subscription WebSocket");
+
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const initial = decoder.decode((await reader.read()).value);
   assert(initial === `id: ${STREAM_TEST_ID}:0\ndata:\n\n`, "outer Worker proxy did not emit sequence zero");
-  assert(calls.length >= 2 && calls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "poll", "outer Worker did not start the internal terminal poll");
-  assert(calls[1].headers.get(MCP_STREAM_PROXY_ID_HEADER) === STREAM_TEST_ID, "internal poll lost the stream id");
-  resolveTerminal({ jsonrpc: "2.0", id: 10, result: { proxied: true } });
+  subscriptionSocket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 10, result: { proxied: true } }) });
   const terminalText = decoder.decode((await reader.read()).value);
   assert(terminalText.includes(`${STREAM_TEST_ID}:1`) && terminalText.includes('"proxied":true'), "outer Worker proxy lost the terminal result");
   assert((await reader.read()).done, "outer Worker proxy did not close after terminal delivery");
   await Promise.all(keptAlive);
+  assert(calls.length === 2, "terminal wait regressed into repeated Durable Object requests");
 
   const spoofed = new Request("https://example.test/healthz", { headers: {
-    [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID,
+    [MCP_STREAM_PROXY_MODE_HEADER]: "subscribe", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID,
   } });
   const sanitized = sanitizeBridgeRequest(spoofed);
   assert(!sanitized.headers.has(MCP_STREAM_PROXY_MODE_HEADER) && !sanitized.headers.has(MCP_STREAM_PROXY_ID_HEADER), "public internal stream headers were not stripped");
@@ -664,12 +792,13 @@ async function testMcpStreamProxy() {
   assert(plain.status === 418 && await plain.text() === "plain"
     && !plain.headers.has("x-machine-bridge-mcp-stream-descriptor"), "ordinary BridgeRoom response leaked its internal descriptor header");
 
+  const immediateMessage = { jsonrpc: "2.0", id: 11, result: { resumed: true } };
   const resumeBridge = {
     calls: 0,
-    async fetch(_request) {
+    async fetch() {
       this.calls += 1;
       if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 11, result: { resumed: true } }), { headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify(immediateMessage), { headers: { "content-type": "application/json" } });
     },
   };
   const resumedProxy = await proxyMcpEventStream({
@@ -678,38 +807,34 @@ async function testMcpStreamProxy() {
   });
   const resumedProxyText = await resumedProxy.text();
   assert(resumedProxyText.startsWith(": resumed\n\n") && resumedProxyText.includes(`${STREAM_RESUMED_ID}:1`), "resume descriptor did not create an outer resumed stream");
+  assert(resumeBridge.calls === 2, "immediate resumed result exceeded its fixed request budget");
 
-  const polledMessage = { jsonrpc: "2.0", id: 12, result: { polled: true } };
-  const pollStore = { async pollMessage(id) {
-    if (id === STREAM_TEST_ID) return { kind: "message", message: polledMessage };
-    if (id === STREAM_RESUMED_ID) return { kind: "pending" };
-    return { kind: "not_found" };
-  } };
-  const noPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp"), pollStore);
-  assert(noPoll === null, "ordinary request entered the internal stream poll path");
-  const postPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
-    method: "POST", headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll" }, body: "{}",
-  }), pollStore);
-  assert(postPoll.status === 405 && postPoll.headers.get("allow") === "GET", "internal stream poll accepted POST");
-  const invalidPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
-    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: "bad" },
-  }), pollStore);
-  assert(invalidPoll.status === 400, "internal stream poll accepted an invalid stream id");
-  const foundPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
-    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " Poll ", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID },
-  }), pollStore);
-  assert(foundPoll.status === 200 && (await foundPoll.json()).result.polled === true, "internal stream poll lost the terminal message");
-  const pendingPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
-    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_RESUMED_ID },
-  }), pollStore);
-  assert(pendingPoll.status === 202, "internal stream poll did not report pending execution immediately");
-  const missingPoll = await handleMcpStreamPollRequest(new Request("https://example.test/mcp", {
-    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_COMPLETE_ID },
-  }), pollStore);
-  assert(missingPoll.status === 404, "internal stream poll did not report a missing stream");
+  const channelStub = {
+    calls: 0,
+    async subscribe(_request, streamId, resumption) {
+      this.calls += 1;
+      assert(streamId === STREAM_TEST_ID && resumption.marker === true, "internal subscription lost its dependencies");
+      return new Response(null, { status: 204 });
+    },
+  };
+  const resumptionStub = { marker: true };
+  const noSubscribe = await handleMcpStreamSubscribeRequest(new Request("https://example.test/mcp"), channelStub, resumptionStub);
+  assert(noSubscribe === null, "ordinary request entered the internal stream subscription path");
+  const postSubscribe = await handleMcpStreamSubscribeRequest(new Request("https://example.test/mcp", {
+    method: "POST", headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "subscribe" }, body: "{}",
+  }), channelStub, resumptionStub);
+  assert(postSubscribe.status === 405 && postSubscribe.headers.get("allow") === "GET", "internal stream subscription accepted POST");
+  const invalidSubscribe = await handleMcpStreamSubscribeRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "subscribe", [MCP_STREAM_PROXY_ID_HEADER]: "bad" },
+  }), channelStub, resumptionStub);
+  assert(invalidSubscribe.status === 400, "internal stream subscription accepted an invalid stream id");
+  const validSubscribe = await handleMcpStreamSubscribeRequest(new Request("https://example.test/mcp", {
+    headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " Subscribe ", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID },
+  }), channelStub, resumptionStub);
+  assert(validSubscribe.status === 204 && channelStub.calls === 1, "valid internal subscription was not delegated");
   assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " PREPARE " } })) === "prepare", "internal prepare mode was not normalized");
-  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " POLL " } })) === "poll", "internal poll mode was not normalized");
-  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "other" } })) === "", "unknown internal proxy mode was accepted");
+  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: " SUBSCRIBE " } })) === "subscribe", "internal subscribe mode was not normalized");
+  assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll" } })) === "", "obsolete internal poll mode was accepted");
   assert(mcpStreamProxyId(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID } })) === STREAM_TEST_ID, "valid internal stream id was rejected");
   assert(mcpStreamProxyId(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_ID_HEADER]: "bad" } })) === "", "invalid internal stream id was accepted");
   expectThrow(() => mcpStreamDescriptorResponse("initial", "stream_short"), "invalid MCP stream descriptor id");
@@ -719,13 +844,8 @@ async function testMcpStreamProxy() {
     bridge: { async fetch() { return new Response(JSON.stringify({ kind: "invalid", stream_id: STREAM_TEST_ID }), { headers: { "x-machine-bridge-mcp-stream-descriptor": "1" } }); } },
     extraOrigins: "", ctx: { waitUntil() {} },
   }), "descriptor is invalid");
-  await expectReject(proxyMcpEventStream({
-    request: new Request("https://example.test/mcp", { method: "GET" }),
-    bridge: { async fetch() { return new Response("null", { headers: { "x-machine-bridge-mcp-stream-descriptor": "1" } }); } },
-    extraOrigins: "", ctx: { waitUntil() {} },
-  }), "descriptor is invalid");
 
-  const failedWaitBridge = {
+  const failedBridge = {
     calls: 0,
     async fetch() {
       this.calls += 1;
@@ -735,23 +855,36 @@ async function testMcpStreamProxy() {
   };
   const failedWait = await proxyMcpEventStream({
     request: new Request("https://example.test/mcp", { method: "GET" }),
-    bridge: failedWaitBridge, extraOrigins: "", ctx: { waitUntil() {} }, pollIntervalMs: 1,
+    bridge: failedBridge, extraOrigins: "", ctx: { waitUntil() {} },
   });
-  assert((await failedWait.text()).startsWith(": resumed\n\n"), "failed internal wait did not close the outer stream safely");
+  assert((await failedWait.text()).startsWith(": resumed\n\n"), "failed internal subscription did not close the outer stream safely");
 
-  const invalidMessageBridge = {
+  const invalidSocket = new TestWebSocket();
+  const invalidBridge = {
     calls: 0,
     async fetch() {
       this.calls += 1;
       if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
-      return new Response(JSON.stringify({ not_jsonrpc: true }), { headers: { "content-type": "application/json" } });
+      return { status: 101, webSocket: invalidSocket };
     },
   };
   const invalidMessage = await proxyMcpEventStream({
     request: new Request("https://example.test/mcp", { method: "GET" }),
-    bridge: invalidMessageBridge, extraOrigins: "", ctx: { waitUntil() {} }, pollIntervalMs: 1,
+    bridge: invalidBridge, extraOrigins: "", ctx: { waitUntil() {} },
   });
+  await waitUntil(() => invalidSocket.accepted);
+  invalidSocket.emit("message", { data: JSON.stringify({ not_jsonrpc: true }) });
   assert((await invalidMessage.text()).startsWith(": resumed\n\n"), "invalid internal terminal message did not close the outer stream safely");
+}
+
+function testDaemonSocketIsolation() {
+  const candidate = new TestWebSocket();
+  candidate.serializeAttachment({ role: "candidate", connectedAt: new Date().toISOString() });
+  const subscriber = new TestWebSocket();
+  subscriber.serializeAttachment({ role: "mcp_stream_subscriber", streamId: STREAM_TEST_ID });
+  const registry = new DaemonSocketRegistry({ getWebSockets: () => [candidate, subscriber] });
+  const sockets = registry.nonReadySockets();
+  assert(sockets.length === 1 && sockets[0] === candidate, "daemon candidate cleanup captured a non-daemon stream subscriber");
 }
 
 async function testAbortSignalCleanup() {
@@ -953,6 +1086,25 @@ async function expectRejectType(promise, constructor) {
   try { await promise; } catch (error) { assert(error instanceof constructor, `expected ${constructor.name}`); return; }
   throw new Error(`expected rejection of type ${constructor.name}`);
 }
+async function waitUntil(predicate, attempts = 50) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+  }
+  throw new Error("condition did not become true");
+}
+
+function sequencePollStore(outcomes) {
+  let index = 0;
+  return {
+    async pollMessage() {
+      const outcome = outcomes[Math.min(index, outcomes.length - 1)];
+      index += 1;
+      return outcome;
+    },
+  };
+}
+
 function assert(condition, message) { if (!condition) throw new Error(message); }
 function expectThrow(operation, expected) { try { operation(); } catch (error) { assert(String(error?.message || error).includes(expected), `expected ${expected}`); return; } throw new Error(`expected throw containing ${expected}`); }
 
@@ -992,4 +1144,35 @@ function testDaemonLiveness() {
     connectedAt: "2026-07-17T11:00:00.000Z",
   }, "2026-07-17T12:00:00.000Z");
   assert(touched.lastSeenAt === "2026-07-17T12:00:00.000Z", "lastSeenAt helper did not preserve timestamp");
+}
+
+async function testWorkerStaticRoutes() {
+  const identity = { server: "machine-bridge-mcp", version: "3.0.0-beta.17" };
+  const health = respondWithoutDurableObject(new Request("https://example.test/healthz"), identity);
+  assert(health?.status === 200, "healthz must be served without Durable Object state");
+  assert((await health.json()).version === identity.version, "healthz version must match package identity");
+
+  const root = respondWithoutDurableObject(new Request("https://example.test/"), identity);
+  assert(root?.status === 200, "root must be served without Durable Object state");
+  assert((await root.json()).mcp === "https://example.test/mcp", "root must advertise the MCP path");
+
+  const preflight = respondWithoutDurableObject(new Request("https://example.test/mcp", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://chatgpt.com",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "authorization, content-type, dpop, last-event-id",
+    },
+  }), identity);
+  assert(preflight?.status === 204, "CORS preflight must not depend on Durable Object state");
+  assert(preflight.headers.get("access-control-allow-origin") === "https://chatgpt.com", "CORS preflight lost origin allowlist");
+
+  const passthrough = respondWithoutDurableObject(new Request("https://example.test/mcp", { method: "POST" }), identity);
+  assert(passthrough === null, "stateful MCP routes must still reach the Durable Object");
+
+  assert(isDurableObjectQuotaError(new Error("Exceeded allowed volume of requests in Durable Objects free tier.")), "quota error detector missed free-tier exhaustion");
+  assert(!isDurableObjectQuotaError(new Error("socket closed")), "quota error detector over-matched");
+  const quota = durableObjectQuotaResponse(new Request("https://example.test/mcp", { headers: { Origin: "https://chatgpt.com" } }));
+  assert(quota.status === 503, "quota response must be retryable service unavailable");
+  assert((await quota.json()).error === "durable_object_quota_exceeded", "quota response body is wrong");
 }

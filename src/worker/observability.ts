@@ -9,6 +9,7 @@ export class WorkerObservability {
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
   private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
   private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
+  private readonly streamTransport = { subscribers_opened: 0, subscribers_replaced: 0, terminal_pushes: 0, terminal_recipients: 0, protocol_errors: 0 };
   private readonly errors = new Map<string, number>();
   private readonly tools = new Map<string, { started: number; completed: number; failed: number; active: number }>();
 
@@ -52,12 +53,28 @@ export class WorkerObservability {
     this.incrementError(code || "protocol_error");
   }
 
+  streamSubscriberOpened(replaced: number): void {
+    this.streamTransport.subscribers_opened += 1;
+    this.streamTransport.subscribers_replaced += Math.max(0, Math.floor(replaced));
+  }
+
+  streamTerminalDelivered(recipients: number): void {
+    this.streamTransport.terminal_pushes += 1;
+    this.streamTransport.terminal_recipients += Math.max(0, Math.floor(recipients));
+  }
+
+  streamSubscriberProtocolError(): void {
+    this.streamTransport.protocol_errors += 1;
+    this.incrementError("stream_subscriber_protocol_error");
+  }
+
   snapshot(): Record<string, unknown> {
     return {
       uptime_ms: Math.max(0, performance.now() - this.startedAt),
       requests: { ...this.requests },
       calls: { ...this.calls },
       sockets: { ...this.sockets },
+      stream_transport: { ...this.streamTransport },
       errors: Object.fromEntries([...this.errors.entries()].sort(([left], [right]) => left.localeCompare(right))),
       tools: Object.fromEntries([...this.tools.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, metric]) => [name, { ...metric }])),
     };

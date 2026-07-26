@@ -74,15 +74,17 @@ try {
     body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }),
   });
   assert(unauthenticatedMcpDiscovery.status === 401, "unauthenticated MCP discovery request did not return 401");
-  const spoofedInternalStream = await stableFetch(`${base}/mcp`, {
-    method: "GET",
-    headers: {
-      accept: "text/event-stream",
-      "x-machine-bridge-internal-mcp-stream-mode": "poll",
-      "x-machine-bridge-internal-mcp-stream-id": `stream_${"S".repeat(43)}`,
-    },
-  });
-  assert(spoofedInternalStream.status === 401, "public internal-stream headers bypassed MCP authorization");
+  for (const mode of ["poll", "subscribe"]) {
+    const spoofedInternalStream = await stableFetch(`${base}/mcp`, {
+      method: "GET",
+      headers: {
+        accept: "text/event-stream",
+        "x-machine-bridge-internal-mcp-stream-mode": mode,
+        "x-machine-bridge-internal-mcp-stream-id": `stream_${"S".repeat(43)}`,
+      },
+    });
+    assert(spoofedInternalStream.status === 401, `public internal-stream ${mode} headers bypassed MCP authorization`);
+  }
   assert(
     unauthenticatedMcpDiscovery.headers.get("www-authenticate") === `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
     "unauthenticated MCP response omitted the protected-resource discovery challenge",
