@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.20 - 2026-07-26
+
+### Fixed
+
+- Rewrite the bounded Worker error-cause traversal with an explicit object type guard and `WeakSet<object>` cycle tracking. This preserves the eight-level/cycle-safe classification behavior while eliminating the CodeQL `js/comparison-between-incompatible-types` finding; the existing cyclic-cause regression test continues to enforce non-duplication.
+
 ## 3.0.0-beta.19 - 2026-07-26
 
 ### Fixed

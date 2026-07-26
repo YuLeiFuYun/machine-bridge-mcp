@@ -61,14 +61,21 @@ function errorResponse(request: Request, extraOrigins: string, status: number, e
 
 function boundedErrorChain(value: unknown): unknown[] {
   const chain: unknown[] = [];
-  const seen = new Set<unknown>();
-  let current = value;
-  while (current && chain.length < 8 && !seen.has(current)) {
-    chain.push(current);
+  const seen = new WeakSet<object>();
+  let current: unknown = value;
+  while (current !== undefined && chain.length < 8) {
+    if (!isObjectLike(current)) {
+      chain.push(current);
+      break;
+    }
+    if (seen.has(current)) break;
     seen.add(current);
-    current = typeof current === "object" && current !== null
-      ? (current as { cause?: unknown }).cause
-      : undefined;
+    chain.push(current);
+    current = (current as { cause?: unknown }).cause;
   }
   return chain;
+}
+
+function isObjectLike(value: unknown): value is object {
+  return typeof value === "object" && value !== null;
 }
