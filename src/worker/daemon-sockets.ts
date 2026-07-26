@@ -24,7 +24,8 @@ interface WebSocketContext {
 }
 
 export class DaemonSocketRegistry {
-  constructor(private readonly context: WebSocketContext) {}
+  private readonly context: WebSocketContext;
+  constructor(context: WebSocketContext) { this.context = context; }
 
   attachment(socket: WebSocket): DaemonAttachment | undefined {
     const raw = socket.deserializeAttachment();
@@ -57,7 +58,10 @@ export class DaemonSocketRegistry {
   }
 
   nonReadySockets(): WebSocket[] {
-    return this.context.getWebSockets().filter((socket) => this.attachment(socket)?.role !== "daemon" && socket.readyState === WebSocket.OPEN);
+    return this.context.getWebSockets().filter((socket) => {
+      const role = this.attachment(socket)?.role;
+      return Boolean(role && role !== "daemon" && socket.readyState === WebSocket.OPEN);
+    });
   }
 
   beginCandidate(
@@ -81,13 +85,8 @@ export class DaemonSocketRegistry {
 
   beginProbe(socket: WebSocket, values: { connectedAt: string; probeId: string; instanceId: string; policy: DaemonPolicy; tools: string[] }): void {
     socket.serializeAttachment({
-      role: "probing",
-      connectedAt: values.connectedAt,
-      lastSeenAt: values.connectedAt,
-      probeId: values.probeId,
-      instanceId: values.instanceId,
-      policy: values.policy,
-      tools: values.tools,
+      role: "probing", connectedAt: values.connectedAt, lastSeenAt: values.connectedAt,
+      probeId: values.probeId, instanceId: values.instanceId, policy: values.policy, tools: values.tools,
     } satisfies DaemonAttachment);
   }
 
@@ -112,10 +111,7 @@ export class DaemonSocketRegistry {
     const attachment = this.attachment(socket);
     if (!attachment) return;
     socket.serializeAttachment({
-      role: "expired",
-      connectedAt: attachment.connectedAt,
-      lastSeenAt: attachment.lastSeenAt,
-      instanceId: attachment.instanceId,
+      role: "expired", connectedAt: attachment.connectedAt, lastSeenAt: attachment.lastSeenAt, instanceId: attachment.instanceId,
     } satisfies DaemonAttachment);
   }
 

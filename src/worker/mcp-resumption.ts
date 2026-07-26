@@ -20,6 +20,7 @@ import { resumptionLimits, type McpResumptionOptions } from "./mcp-resumption-co
 export type { JsonRpcMessage } from "./mcp-resumption-records.ts";
 type ResumptionStorage = Pick<DurableObjectStorage, "get" | "put" | "delete" | "transaction">;
 type TransactionStorage = Pick<DurableObjectTransaction, "get" | "put" | "delete">;
+type StreamReadyListener = (streamId: string, message: JsonRpcMessage) => void;
 export type StreamResumeResult =
   | { kind: "invalid" | "not_found" | "expired" }
   | { kind: "complete"; streamId: string }
@@ -40,12 +41,11 @@ export class McpResumptionStore {
   private readonly pendingRetentionMs: number;
   private readonly maximumStreams: number;
   private readonly maximumMessageBytes: number;
-  constructor(
-    storage: ResumptionStorage,
-    options: McpResumptionOptions = {},
-  ) {
+  private readonly onReady: StreamReadyListener;
+  constructor(storage: ResumptionStorage, options: McpResumptionOptions = {}, onReady: StreamReadyListener = () => {}) {
     this.storage = storage;
     this.now = options.now ?? Date.now;
+    this.onReady = onReady;
     const limits = resumptionLimits(options);
     this.retentionMs = limits.retentionMs;
     this.pendingRetentionMs = limits.pendingRetentionMs;
@@ -121,14 +121,12 @@ export class McpResumptionStore {
       throw error;
     } finally {
       this.active.delete(streamId);
+      // Persistent state remains authoritative if a disconnected subscriber misses this push.
+      try { this.onReady(streamId, message); } catch { /* resume/poll remains available */ }
     }
   }
 
-  async pollMessage(streamId: string): Promise<
-    | { kind: "pending" }
-    | { kind: "not_found" }
-    | { kind: "message"; message: JsonRpcMessage }
-  > {
+  async pollMessage(streamId: string): Promise<{ kind: "pending" } | { kind: "not_found" } | { kind: "message"; message: JsonRpcMessage }> {
     if (!isStreamId(streamId)) return { kind: "not_found" };
     const transient = this.transientReady.get(streamId);
     if (transient) return { kind: "message", message: transient };

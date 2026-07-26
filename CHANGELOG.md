@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.0.0-beta.17 - 2026-07-26
+
+### Fixed
+
+- Serve `/healthz`, `/`, and CORS preflight from the outer Worker so activation and doctor checks no longer consume Durable Object free-tier request volume. Durable Object free-tier exhaustion now returns a structured `503 durable_object_quota_exceeded` instead of Cloudflare error 1101.
+
+### Durable Object stream request amplification fix
+
+- Replace the outer Worker's time-proportional internal Durable Object poll loop with a fixed two-request terminal path: one authenticated descriptor `prepare`, then one hibernatable WebSocket `subscribe`.
+- Add `mcp-stream-channel.ts` so `BridgeRoom` accepts a single stream subscriber through `DurableObjectState.acceptWebSocket()`, replaces stale resume subscribers, rechecks storage after registration to close the completion race, and pushes exactly one terminal JSON-RPC message.
+- Persist-ready notifications are fire-and-forget from `McpResumptionStore`; if persistence fails, the current online subscriber can still receive the transient terminal result while recovery storage keeps failure semantics.
+- Keep daemon candidate cleanup from treating stream-subscriber sockets as daemon candidates, and reject client-to-DO data on receive-only stream subscribers.
+- Fix the outer subscription waiter so invalid terminal payloads reject instead of leaving the SSE completion Promise permanently unsettled.
+- Extend deterministic infrastructure coverage for the fixed two-request budget, obsolete poll-mode rejection, subscriber replacement, registration races, immediate-completion paths, protocol errors, and non-daemon socket isolation. Update architecture, engineering, testing, audit, and operations contracts to describe subscribe push delivery instead of short pending/terminal polls.
+
 ## 3.0.0-beta.16 - 2026-07-25
 
 ### Pending-call recovery and verified handover

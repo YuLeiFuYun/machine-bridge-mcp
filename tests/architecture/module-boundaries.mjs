@@ -183,6 +183,8 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-resumption-records.ts": 200,
   "src/worker/mcp-stream.ts": 160,
   "src/worker/mcp-stream-proxy.ts": 180,
+  "src/worker/mcp-stream-channel.ts": 140,
+  "src/worker/worker-static-routes.ts": 90,
   "src/worker/mcp-stream-dispatch.ts": 220,
   "src/worker/tool-timeout.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
@@ -271,16 +273,23 @@ for (const duplicate of [
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
   "observability", "mcp-session", "mcp-access", "mcp-resumption-http", "mcp-resumption",
-  "mcp-stream", "mcp-stream-proxy", "mcp-stream-dispatch", "tool-timeout", "daemon-liveness", "daemon-sockets",
+  "mcp-stream", "mcp-stream-proxy", "mcp-stream-channel", "mcp-stream-dispatch", "worker-static-routes", "tool-timeout", "daemon-liveness", "daemon-sockets",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
 const mcpStreamProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy.ts"), "utf8");
 for (const required of [
-  "proxyMcpEventStream", "handleMcpStreamPollRequest", "sanitizeBridgeRequest", "MCP_STREAM_PROXY_MODE_HEADER",
-  "streamJsonRpcResponse", "resumeJsonRpcResponse", "waitUntil",
+  "proxyMcpEventStream", "handleMcpStreamSubscribeRequest", "sanitizeBridgeRequest", "MCP_STREAM_PROXY_MODE_HEADER",
+  "streamJsonRpcResponse", "resumeJsonRpcResponse", "subscribeTerminalMessage", "Upgrade", "waitUntil",
 ]) {
   if (!mcpStreamProxyBoundary.includes(required)) throw new Error(`outer MCP stream proxy lost transport ownership or boundary hardening: ${required}`);
+}
+const mcpStreamChannelBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-channel.ts"), "utf8");
+for (const required of ["acceptWebSocket", "getWebSockets", "serializeAttachment", "pollMessage", "streamSubscriberOpened"]) {
+  if (!mcpStreamChannelBoundary.includes(required)) throw new Error(`MCP stream channel lost hibernatable subscription behavior: ${required}`);
+}
+for (const forbidden of ["setTimeout(", "setInterval(", "Promise<JsonRpcMessage>"]) {
+  if (mcpStreamChannelBoundary.includes(forbidden)) throw new Error(`MCP stream channel regained polling or cross-event promise state: ${forbidden}`);
 }
 for (const forbidden of ["streamJsonRpcResponse(", "resumeJsonRpcResponse("]) {
   if (workerIndexBoundary.includes(forbidden)) throw new Error(`BridgeRoom regained public SSE ownership: ${forbidden}`);

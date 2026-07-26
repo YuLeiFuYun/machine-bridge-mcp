@@ -17,10 +17,11 @@ import { acceptsEventStream } from "./mcp-stream.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { handleMcpResumptionRequest } from "./mcp-resumption-http.ts";
 import {
-  handleMcpStreamPollRequest, mcpStreamDescriptorResponse, mcpStreamProxyMode,
+  handleMcpStreamSubscribeRequest, mcpStreamDescriptorResponse, mcpStreamProxyMode,
   proxyMcpEventStream, sanitizeBridgeRequest,
 } from "./mcp-stream-proxy.ts";
 import { McpResumptionStore, McpStreamLimitError } from "./mcp-resumption.ts";
+import { McpStreamChannel } from "./mcp-stream-channel.ts";
 import { buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall } from "./mcp-stream-dispatch.ts";
 import { daemonToolTimeoutMs } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
@@ -36,6 +37,9 @@ import {
   parseJsonRequest, workerErrorClass,
 } from "./http.ts";
 import {
+  durableObjectQuotaResponse, isDurableObjectQuotaError, respondWithoutDurableObject,
+} from "./worker-static-routes.ts";
+import {
   asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
   sessionInstructionText, textToolResult, validateProtocolVersionHeader, type JsonRpcRequest,
 } from "./mcp-jsonrpc.ts";
@@ -44,7 +48,7 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.16";
+const SERVER_VERSION = "3.0.0-beta.17";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -68,13 +72,15 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly observability = new WorkerObservability();
   private readonly oauth: OAuthController;
   private readonly daemonRegistry: DaemonSocketRegistry;
+  private readonly streamChannel: McpStreamChannel;
   private readonly resumption: McpResumptionStore;
 
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env);
     this.oauth = new OAuthController(ctx, env, SERVER_NAME, SERVER_VERSION);
     this.daemonRegistry = new DaemonSocketRegistry(ctx);
-    this.resumption = new McpResumptionStore(ctx.storage);
+    this.streamChannel = new McpStreamChannel(ctx, this.observability);
+    this.resumption = new McpResumptionStore(ctx.storage, {}, (streamId, message) => this.streamChannel.publish(streamId, message));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -147,6 +153,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await this.pending.expireDue();
+    if (this.streamChannel.isSubscriber(ws)) {
+      this.streamChannel.rejectSubscriberMessage(ws);
+      return;
+    }
     const size = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
     if (size > MAX_DAEMON_MESSAGE_BYTES) {
       closeWebSocketQuietly(ws, 1009, "message too large");
@@ -321,10 +331,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
+    if (this.streamChannel.isSubscriber(ws)) return;
     await this.cleanupDaemonSocket(ws, "daemon disconnected");
   }
 
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
+    if (this.streamChannel.isSubscriber(ws)) return;
     this.observability.event("warn", "daemon.websocket.error", { error_class: workerErrorClass(error) });
     await this.cleanupDaemonSocket(ws, "daemon transport error");
   }
@@ -343,8 +355,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
 
     const proxyMode = mcpStreamProxyMode(request);
-    const polled = await handleMcpStreamPollRequest(request, this.resumption);
-    if (polled) return polled;
+    const subscribed = await handleMcpStreamSubscribeRequest(request, this.streamChannel, this.resumption);
+    if (subscribed) return subscribed;
 
     const access = await authorizeMcpRequest({
       request,
@@ -793,14 +805,28 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
 export default {
   async fetch(request: Request, env: BridgeEnv, ctx: ExecutionContext): Promise<Response> {
-    const stub = env.BRIDGE.getByName("default");
-    const streamed = await proxyMcpEventStream({
+    const extraOrigins = env.MBM_ALLOWED_ORIGINS ?? "";
+    const staticResponse = respondWithoutDurableObject(
       request,
-      bridge: stub,
-      extraOrigins: env.MBM_ALLOWED_ORIGINS ?? "",
-      ctx,
-    });
-    return streamed ?? stub.fetch(sanitizeBridgeRequest(request));
+      { server: SERVER_NAME, version: SERVER_VERSION },
+      extraOrigins,
+    );
+    if (staticResponse) return staticResponse;
+
+    try {
+      const stub = env.BRIDGE.getByName("default");
+      const streamed = await proxyMcpEventStream({
+        request,
+        bridge: stub,
+        extraOrigins,
+        ctx,
+      });
+      return streamed ?? stub.fetch(sanitizeBridgeRequest(request));
+    } catch (error) {
+      // Free-tier DO request exhaustion must not look like an opaque Worker crash.
+      if (isDurableObjectQuotaError(error)) return durableObjectQuotaResponse(request, extraOrigins);
+      throw error;
+    }
   },
 } satisfies ExportedHandler<BridgeEnv>;
 
