@@ -97,6 +97,19 @@ async function testCompletedResultResumption() {
   assert(wrongSession.kind === "not_found", "another MCP session could discover a resumable stream");
 }
 
+
+async function testStorageWriteBudget() {
+  const rows = [];
+  const storage = new MemoryStorage();
+  const store = new McpResumptionStore(storage, { now: () => 1000 }, () => {}, (count) => rows.push(count));
+  const streamId = validStreamId("Q");
+  await store.begin({ streamId, tokenKey: "token-budget", sessionId: "session-budget", requestId: 30 });
+  await store.complete(streamId, { jsonrpc: "2.0", id: 30, result: { ok: true } });
+  await store.complete(streamId, { jsonrpc: "2.0", id: 30, result: { duplicate: true } });
+  assert(rows[0] === 2 && rows[1] === 2 && rows[2] === 0, "normal stream lifecycle exceeded or misreported its four-row write budget");
+  assert(rows.reduce((sum, value) => sum + value, 0) === 4, "duplicate terminal settlement consumed additional storage writes");
+}
+
 async function testMissingAndCorruptCompletionState() {
   const missingStorage = new MemoryStorage();
   const missingStore = new McpResumptionStore(missingStorage);
@@ -286,6 +299,7 @@ function assert(condition, message) {
 await testEventIdentifiers();
 await testRecordValidationAndLimits();
 await testCompletedResultResumption();
+await testStorageWriteBudget();
 await testMissingAndCorruptCompletionState();
 await testLiveResultResumption();
 await testRestartFallback();

@@ -143,41 +143,55 @@ export async function parseRequestBody(request: Request, limit: number): Promise
 export async function discardRequestBody(request: Pick<Request, "body" | "headers">, limit: number): Promise<{ bytes_read: number; exceeded: boolean }> {
   const boundedLimit = normalizeBodyLimit(limit);
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
-  let exceeded = Number.isFinite(declaredLength) && declaredLength > boundedLimit;
-  let observed = 0;
-  if (!request.body) return { bytes_read: 0, exceeded };
+  const declaredExceeded = Number.isFinite(declaredLength) && declaredLength > boundedLimit;
+  if (!request.body) return { bytes_read: 0, exceeded: declaredExceeded };
   const reader = request.body.getReader();
+  let observed = 0;
   try {
+    if (declaredExceeded) {
+      await cancelBodyReader(reader);
+      return { bytes_read: 0, exceeded: true };
+    }
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) return { bytes_read: observed, exceeded: false };
       if (!value) continue;
       observed = Math.min(boundedLimit + 1, observed + value.byteLength);
-      if (observed > boundedLimit) exceeded = true;
+      if (observed > boundedLimit) {
+        await cancelBodyReader(reader);
+        return { bytes_read: observed, exceeded: true };
+      }
     }
   } finally {
     reader.releaseLock();
   }
-  return { bytes_read: observed, exceeded };
 }
 
 export async function readBoundedText(request: Request, limit: number): Promise<string> {
   const boundedLimit = normalizeBodyLimit(limit);
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
-  let exceeded = Number.isFinite(declaredLength) && declaredLength > boundedLimit;
+  const declaredExceeded = Number.isFinite(declaredLength) && declaredLength > boundedLimit;
   const reader = request.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = [];
   let observed = 0;
+  let exceeded = declaredExceeded;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      const nextObserved = Math.min(boundedLimit + 1, observed + value.byteLength);
-      if (!exceeded && observed + value.byteLength <= boundedLimit) chunks.push(value);
-      else exceeded = true;
-      observed = nextObserved;
+    if (declaredExceeded) await cancelBodyReader(reader);
+    else {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        const nextObserved = Math.min(boundedLimit + 1, observed + value.byteLength);
+        if (observed + value.byteLength <= boundedLimit) chunks.push(value);
+        else {
+          exceeded = true;
+          await cancelBodyReader(reader);
+        }
+        observed = nextObserved;
+        if (exceeded) break;
+      }
     }
   } finally {
     reader.releaseLock();
@@ -193,6 +207,14 @@ export async function readBoundedText(request: Request, limit: number): Promise<
     return new TextDecoder("utf-8", { fatal: true }).decode(combined);
   } catch {
     throw new HttpError(400, "invalid_encoding", "Request body must be valid UTF-8");
+  }
+}
+
+async function cancelBodyReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  try {
+    await reader.cancel("request body limit reached");
+  } catch {
+    // Cancellation is cleanup after the size decision; it must not replace the bounded response.
   }
 }
 

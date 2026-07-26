@@ -403,8 +403,7 @@ try {
   assert(typeof refreshed.body.access_token === "string" && refreshed.body.access_token !== token.body.access_token, "refresh did not rotate the access token");
   assert(typeof refreshed.body.refresh_token === "string" && refreshed.body.refresh_token !== token.body.refresh_token, "refresh did not rotate the refresh token");
   assert(refreshed.body.expires_in === 900, "access-token lifetime was not reduced to 15 minutes");
-  let ownerAccessToken = refreshed.body.access_token;
-  const refreshReplay = await fetchJson(`${base}/oauth/token`, {
+  const concurrentRetry = await fetchJson(`${base}/oauth/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -414,8 +413,11 @@ try {
       resource: `${base}/mcp`,
     }),
   });
-  assert(refreshReplay.response.status === 400 && refreshReplay.body.error === "invalid_grant", "rotated refresh token replay was accepted");
-  const familyRefreshAfterReplay = await fetchJson(`${base}/oauth/token`, {
+  assert(concurrentRetry.response.status === 200
+    && concurrentRetry.body.refresh_token === refreshed.body.refresh_token
+    && concurrentRetry.body.access_token === refreshed.body.access_token,
+  "bounded concurrent refresh retry did not reproduce the original replacement credentials");
+  const familyRefreshAfterRetry = await fetchJson(`${base}/oauth/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -425,25 +427,17 @@ try {
       resource: `${base}/mcp`,
     }),
   });
-  assert(familyRefreshAfterReplay.response.status === 400 && familyRefreshAfterReplay.body.error === "invalid_grant", "refresh-token replay did not revoke the complete token family");
-  const revokedFamilyAccess = await stableFetch(`${base}/mcp`, {
+  assert(familyRefreshAfterRetry.response.status === 200, "concurrent refresh recovery incorrectly revoked the token family");
+  let ownerAccessToken = familyRefreshAfterRetry.body.access_token;
+  const retainedFamilyAccess = await stableFetch(`${base}/mcp`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${ownerAccessToken}`,
     },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "revoked-family", version: "1" } } }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "concurrent-refresh", version: "1" } } }),
   });
-  assert(revokedFamilyAccess.status === 401, "refresh-token replay did not revoke the family's access token");
-  const replacementOwnerCredentials = await issueAccountToken({
-    base,
-    clientId: registration.body.client_id,
-    redirectUri,
-    accountName: "owner",
-    password: OWNER_PASSWORD,
-    state: "owner-replacement-state",
-  });
-  ownerAccessToken = replacementOwnerCredentials.accessToken;
+  assert(retainedFamilyAccess.status === 200, "concurrent refresh retry invalidated the replacement access token");
 
   const reviewerRegistration = await registerTestClient({ base, redirectUri, name: "Reviewer Integration Client" });
   const reviewerCredentials = await issueAccountToken({

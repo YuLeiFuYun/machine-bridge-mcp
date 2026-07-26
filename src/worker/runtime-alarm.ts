@@ -8,6 +8,7 @@ import type { PendingCallRegistry } from "./pending-calls.ts";
 import { closeWebSocketQuietly, sendWebSocketQuietly } from "./websocket-protocol.ts";
 
 interface AlarmStorage {
+  getAlarm(): Promise<number | null>;
   setAlarm(scheduledTime: number | Date): Promise<void>;
   deleteAlarm(): Promise<void>;
 }
@@ -25,6 +26,7 @@ interface RuntimeAlarmContext {
   daemonRegistry: DaemonSocketRegistry;
   invalidateDaemonSocket: InvalidateDaemonSocket;
   onScheduleError: (error: unknown) => void;
+  onAlarmMutation?: (action: "set" | "delete" | "noop") => void;
 }
 
 export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Date.now()): Promise<void> {
@@ -111,8 +113,26 @@ function pendingAlarmDeadline(pending: PendingCallRegistry, now: number): number
 
 async function writeRuntimeAlarm(context: RuntimeAlarmContext, nextDeadline: number, now: number): Promise<void> {
   try {
-    if (Number.isFinite(nextDeadline)) await context.storage.setAlarm(Math.max(now, nextDeadline));
-    else await context.storage.deleteAlarm();
+    const current = await context.storage.getAlarm();
+    if (!Number.isFinite(nextDeadline)) {
+      if (current === null) {
+        context.onAlarmMutation?.("noop");
+        return;
+      }
+      await context.storage.deleteAlarm();
+      context.onAlarmMutation?.("delete");
+      return;
+    }
+
+    const target = Math.max(now, nextDeadline);
+    // An earlier future alarm is safe: it will re-evaluate current liveness and
+    // pending deadlines. Do not rewrite it on every heartbeat merely to move it later.
+    if (current !== null && current > now && current <= target) {
+      context.onAlarmMutation?.("noop");
+      return;
+    }
+    await context.storage.setAlarm(target);
+    context.onAlarmMutation?.("set");
   } catch (error) {
     context.onScheduleError(error);
   }

@@ -1,60 +1,48 @@
+import { applyCors, baseUrl, corsPreflight, json, methodNotAllowed } from "./http.ts";
 import {
-  applyCors,
-  baseUrl,
-  corsPreflight,
-  json,
-  methodNotAllowed,
-} from "./http.ts";
+  authorizationServerMetadata, mcpMetadata, protectedResourceMetadata, type WorkerIdentity,
+} from "./worker-metadata.ts";
 
-export function respondWithoutDurableObject(
-  request: Request,
-  identity: { server: string; version: string },
-  extraOrigins = "",
-): Response | null {
+const STATEFUL_METHODS = new Map([
+  ["/admin/accounts", "GET, POST, PATCH, DELETE"],
+  ["/admin/accounts/rotate-password", "POST"],
+  ["/admin/clients", "GET, DELETE"],
+  ["/daemon/ws", "GET"],
+  ["/mcp", "GET, POST"],
+  ["/oauth/authorize", "GET, POST"],
+  ["/oauth/register", "POST"],
+  ["/oauth/token", "POST"],
+]);
+const AUTHORIZATION_METADATA_PATHS = new Set([
+  "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp",
+  "/.well-known/openid-configuration", "/.well-known/openid-configuration/mcp",
+]);
+const PROTECTED_RESOURCE_PATHS = new Set([
+  "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp",
+]);
+
+export function respondWithoutDurableObject(request: Request, identity: WorkerIdentity, extraOrigins = ""): Response | null {
   const url = new URL(request.url);
   const base = baseUrl(request);
   const path = url.pathname;
-  const serverName = identity.server;
-  const serverVersion = identity.version;
-
-  if (request.method === "OPTIONS" && request.headers.has("Origin")) {
-    // CORS preflight does not need Durable Object state and must not consume DO quota.
-    return corsPreflight(request, base, extraOrigins);
+  if (request.method === "OPTIONS" && request.headers.has("Origin")) return corsPreflight(request, base, extraOrigins);
+  const statefulMethods = STATEFUL_METHODS.get(path);
+  if (statefulMethods) {
+    const allowed = new Set(statefulMethods.split(",").map((method) => method.trim()));
+    if (allowed.has(request.method)) return null;
+    return applyCors(methodNotAllowed(statefulMethods), request, base, extraOrigins);
   }
 
-  if (path === "/healthz") {
-    if (request.method !== "GET") return applyCors(methodNotAllowed("GET"), request, base, extraOrigins);
-    return applyCors(json({ ok: true, server: serverName, version: serverVersion }), request, base, extraOrigins);
-  }
-
-  if (path === "/") {
-    if (request.method !== "GET") return applyCors(methodNotAllowed("GET"), request, base, extraOrigins);
-    return applyCors(
-      json({ ok: true, server: serverName, version: serverVersion, mcp: `${base}/mcp` }),
-      request,
-      base,
-      extraOrigins,
-    );
-  }
-
-  return null;
+  let response: Response;
+  if (path === "/healthz") response = getOnly(request, json({ ok: true, server: identity.server, version: identity.version }));
+  else if (path === "/") response = getOnly(request, json({ ok: true, server: identity.server, version: identity.version, mcp: `${base}/mcp` }));
+  else if (path === "/.well-known/mcp.json") response = getOnly(request, json(mcpMetadata(base, identity)));
+  else if (AUTHORIZATION_METADATA_PATHS.has(path)) response = getOnly(request, json(authorizationServerMetadata(base, identity.server)));
+  else if (PROTECTED_RESOURCE_PATHS.has(path)) response = getOnly(request, json(protectedResourceMetadata(base, identity.server)));
+  else response = json({ error: "not_found" }, 404);
+  return applyCors(response, request, base, extraOrigins);
 }
 
-export function isDurableObjectQuotaError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  return /Exceeded allowed volume of requests in Durable Objects free tier/i.test(message)
-    || /Durable Objects free tier/i.test(message);
-}
-
-export function durableObjectQuotaResponse(request: Request, extraOrigins = ""): Response {
-  return applyCors(
-    json({
-      error: "durable_object_quota_exceeded",
-      message: "Durable Objects free-tier request volume is exhausted until the daily UTC reset.",
-      retryable: true,
-    }, 503),
-    request,
-    baseUrl(request),
-    extraOrigins,
-  );
+function getOnly(request: Request, response: Response): Response {
+  return request.method === "GET" ? response : methodNotAllowed("GET");
 }

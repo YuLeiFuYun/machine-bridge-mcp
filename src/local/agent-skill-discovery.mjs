@@ -4,6 +4,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { assertAllowedPath, MAX_SKILL_ROOTS } from "./agent-contract.mjs";
 import { sha256 } from "./agent-context-projection.mjs";
 import { readRegularUtf8 } from "./agent-text-file.mjs";
+import { classifyOperationalError } from "./log.mjs";
 
 export const MAX_SKILL_ENTRY_BYTES = 512 * 1024;
 export const MAX_SKILL_RESULTS = 500;
@@ -99,10 +100,17 @@ export async function discoverLocalSkills(options) {
         if (entry.isDirectory()) {
           stack.push({ directory: child, depth: current.depth + 1 });
         } else if (entry.isSymbolicLink()) {
-          const target = await realpath(child).catch(() => "");
-          if (!target) continue;
-          const targetInfo = await stat(target).catch(() => null);
-          if (!targetInfo?.isDirectory()) continue;
+          let target;
+          try { target = await realpath(child); } catch (error) {
+            if (warnings.length < 100) warnings.push({ entrypoint: child, message: boundedMessage(error) });
+            continue;
+          }
+          let targetInfo;
+          try { targetInfo = await stat(target); } catch (error) {
+            if (warnings.length < 100) warnings.push({ entrypoint: child, message: boundedMessage(error) });
+            continue;
+          }
+          if (!targetInfo.isDirectory()) continue;
           assertAllowedPath(target, options.workspace, options.unrestricted, "skill symlink target");
           stack.push({ directory: target, depth: current.depth + 1 });
         }
@@ -214,8 +222,11 @@ async function summarizeSkill(entrypoint, sourceRoot) {
 
 /** @param {unknown} error */
 function boundedMessage(error) {
+  if (error !== null && typeof error === "object" && "code" in error && error.code) {
+    return `local skill access failed (${classifyOperationalError(error)})`;
+  }
   const message = error instanceof Error ? error.message : String(error || "invalid local skill");
-  return message.replace(/[\r\n]+/g, " ").slice(0, 1000);
+  return message.replace(/[\r\n\u0000-\u001f\u007f]+/g, " ").slice(0, 1000);
 }
 
 /** @param {string} value */

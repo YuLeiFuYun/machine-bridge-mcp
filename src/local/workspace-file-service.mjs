@@ -3,6 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { link, lstat, mkdir, open, opendir, rename, rm, stat } from "node:fs/promises";
 import path, { basename, dirname, join, resolve } from "node:path";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
+import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
 import { clampInteger } from "./numbers.mjs";
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
@@ -43,12 +44,13 @@ export class WorkspaceFileService {
     for await (const entry of await opendir(full)) {
       this.throwIfCancelled(context);
       const entryPath = resolve(full, entry.name);
-      const info = await lstat(entryPath).catch(() => null);
+      const info = await pathEntryIfExists(entryPath);
+      if (!info) continue;
       const item = {
         name: entry.name,
         path: this.displayPath(entryPath, context),
         type: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
-        size: info?.size ?? 0,
+        size: info.size,
       };
       const itemBytes = Buffer.byteLength(item.name) + Buffer.byteLength(item.path) + 64;
       if (entries.length >= MAX_DIRECTORY_ENTRIES || resultBytes + itemBytes > MAX_PATH_RESULT_BYTES) {
@@ -150,7 +152,7 @@ export class WorkspaceFileService {
       const bytes = Buffer.byteLength(content);
       if (bytes > MAX_WRITE_BYTES) throw new Error(`content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
       const full = await this.resolveWritePath(args.path, context);
-      const existing = await lstat(full).catch(() => null);
+      const existing = await pathEntryIfExists(full);
       if (existing?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
       if (args.create_only && existing) throw new Error("file exists and create_only=true");
       if (existing && !existing.isFile()) throw new Error("path is not a regular file");
@@ -206,7 +208,7 @@ export class WorkspaceFileService {
         this.throwIfCancelled(context);
         if (operation.kind === "add") {
           const target = await this.resolveWritePath(operation.path, context);
-          if (await lstat(target).catch(() => null)) throw new Error(`add target already exists: ${operation.path}`);
+          if (await pathEntryIfExists(target)) throw new Error(`add target already exists: ${operation.path}`);
           assertTextSize(operation.content, operation.path);
           prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
           continue;
@@ -222,7 +224,7 @@ export class WorkspaceFileService {
         const content = applyUpdateHunks(original, operation.hunks, operation.path);
         assertTextSize(content, operation.path);
         const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo, context) : source;
-        if (target !== source && await lstat(target).catch(() => null)) throw new Error(`move target already exists: ${operation.moveTo}`);
+        if (target !== source && await pathEntryIfExists(target)) throw new Error(`move target already exists: ${operation.moveTo}`);
         prepared.push({ kind: operation.moveTo ? "move" : "update", source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
       }
       assertNoResolvedPatchCollisions(prepared);
@@ -267,8 +269,12 @@ export class WorkspaceFileService {
 
   async searchOneFile(full, query, matches, max, context = {}) {
     this.throwIfCancelled(context);
-    const bounded = await readBoundedFile(full, 1024 * 1024, "search file").catch(() => null);
-    if (!bounded || bounded.buffer.includes(0)) return;
+    let bounded;
+    try { bounded = await readBoundedFile(full, 1024 * 1024, "search file"); } catch (error) {
+      if (isSkippableSearchFileError(error)) return;
+      throw error;
+    }
+    if (bounded.buffer.includes(0)) return;
     const buffer = bounded.buffer;
     let text;
     try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch { return; }
@@ -288,7 +294,7 @@ export class WorkspaceFileService {
     while (stack.length) {
       this.throwIfCancelled(context);
       const current = stack.pop();
-      const entries = await opendir(current).catch(() => null);
+      const entries = await openDirectoryIfExists(current);
       if (!entries) continue;
       for await (const entry of entries) {
         this.throwIfCancelled(context);
@@ -328,6 +334,14 @@ export async function readBoundedFile(filePath, maxBytes, label) {
   }
 }
 
+function isSkippableSearchFileError(error) {
+  const message = String(error?.message || "");
+  return error?.code === "ELOOP"
+    || message.startsWith("search file exceeds maximum size")
+    || message === "search file is not a regular file"
+    || message === "refusing to read search file with multiple hard links";
+}
+
 function decodeUtf8(buffer) {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
     throw new Error("file is not valid UTF-8 text");
@@ -364,8 +378,12 @@ async function atomicWriteText(full, content, existing = null, options = {}) {
   try {
     await writeFlushedText(temp, content, existing ? existing.mode & 0o777 : 0o600);
     if (options.expectedHash) {
-      const current = await readUtf8File(full).catch(() => null);
-      if (current === null || sha256(current) !== options.expectedHash) throw new Error("file changed before atomic commit");
+      let current;
+      try { current = await readUtf8File(full); } catch (error) {
+        if (error?.code === "ENOENT") throw new Error("file changed before atomic commit", { cause: error });
+        throw error;
+      }
+      if (sha256(current) !== options.expectedHash) throw new Error("file changed before atomic commit");
     }
     if (options.createOnly) {
       await link(temp, full);
@@ -414,7 +432,7 @@ export async function commitPatchTransaction(operations, options = {}) {
         if (sha256(current) !== operation.originalHash) throw new Error(`patch source changed during apply: ${operation.source}`);
       }
       if (operation.kind === "add" || operation.kind === "move") {
-        if (await lstat(operation.target).catch(() => null)) throw new Error(`patch target appeared during apply: ${operation.target}`);
+        if (await pathEntryIfExists(operation.target)) throw new Error(`patch target appeared during apply: ${operation.target}`);
       }
     }
 

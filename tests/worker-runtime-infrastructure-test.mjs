@@ -10,9 +10,12 @@ import {
   proxyMcpEventStream, sanitizeBridgeRequest,
 } from "../src/worker/mcp-stream-proxy.ts";
 import { McpStreamChannel } from "../src/worker/mcp-stream-channel.ts";
+import { respondWithoutDurableObject } from "../src/worker/worker-static-routes.ts";
+import { createThrottledEdgeLogger } from "../src/worker/worker-edge-log.ts";
 import {
-  durableObjectQuotaResponse, isDurableObjectQuotaError, respondWithoutDurableObject,
-} from "../src/worker/worker-static-routes.ts";
+  admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
+  outerWorkerErrorClass, workerGatewayErrorResponse,
+} from "../src/worker/worker-edge-guard.ts";
 import { daemonToolTimeoutMs } from "../src/worker/tool-timeout.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
@@ -103,6 +106,7 @@ testPrototypeSafeFormFields();
 testMcpJsonRpcProtocol();
 testWebSocketProtocol();
 testDaemonLiveness();
+await testThrottledEdgeLogger();
 await testWorkerStaticRoutes();
 console.log("worker runtime infrastructure test ok");
 
@@ -331,30 +335,48 @@ async function testRuntimeAlarmCoordinator() {
     probingSockets() { return []; },
     readyRoleSockets() { return []; },
   };
+  let currentAlarm = null;
+  const mutations = [];
   const context = {
     storage: {
-      async setAlarm(value) { scheduled.push(Number(value)); },
-      async deleteAlarm() { deleted += 1; },
+      async getAlarm() { return currentAlarm; },
+      async setAlarm(value) { currentAlarm = Number(value); scheduled.push(currentAlarm); },
+      async deleteAlarm() { currentAlarm = null; deleted += 1; },
     },
     pending,
     daemonRegistry,
     async invalidateDaemonSocket() { throw new Error("empty socket registry must not invalidate a daemon"); },
     onScheduleError() { scheduleErrors += 1; },
+    onAlarmMutation(action) { mutations.push(action); },
   };
 
   await scheduleRuntimeAlarm(context, 1000);
   assert(scheduled.length === 1 && scheduled[0] === 1075, "runtime alarm did not schedule the earliest pending deadline");
-  assert(deleted === 0 && expired === 0, "alarm scheduling unexpectedly mutated pending state");
+  assert(deleted === 0 && expired === 0 && mutations.at(-1) === "set", "alarm scheduling unexpectedly mutated pending state");
+
+  pendingDelay = 150;
+  await scheduleRuntimeAlarm(context, 1000);
+  assert(scheduled.length === 1 && mutations.at(-1) === "noop", "later heartbeat deadline rewrote an already safe earlier alarm");
+
+  pendingDelay = 25;
+  await scheduleRuntimeAlarm(context, 1000);
+  assert(scheduled.length === 2 && scheduled.at(-1) === 1025, "earlier pending deadline did not advance the alarm");
 
   pendingDelay = Number.POSITIVE_INFINITY;
   await processRuntimeAlarm(context, 2000);
   assert(expired === 1, "runtime alarm did not sweep overdue pending calls before rescheduling");
-  assert(deleted === 1, "runtime alarm did not remove an alarm when no deadline remained");
+  assert(deleted === 1 && mutations.at(-1) === "delete", "runtime alarm did not remove an alarm when no deadline remained");
+  await scheduleRuntimeAlarm(context, 2100);
+  assert(deleted === 1 && mutations.at(-1) === "noop", "empty alarm state performed a redundant delete write");
 
   pendingDelay = 10;
   const failingContext = {
     ...context,
-    storage: { async setAlarm() { throw new Error("synthetic alarm storage failure"); }, async deleteAlarm() {} },
+    storage: {
+      async getAlarm() { return null; },
+      async setAlarm() { throw new Error("synthetic alarm storage failure"); },
+      async deleteAlarm() {},
+    },
   };
   await scheduleRuntimeAlarm(failingContext, 3000);
   assert(scheduleErrors === 1, "runtime alarm scheduling failure was not reported through the bounded callback");
@@ -747,6 +769,7 @@ async function testMcpStreamProxy() {
   assert(calls[1].headers.get(MCP_STREAM_PROXY_ID_HEADER) === STREAM_TEST_ID, "internal subscription lost the stream id");
   assert(calls[1].headers.get("Upgrade")?.toLowerCase() === "websocket", "internal subscription was not a WebSocket upgrade");
   assert(subscriptionSocket.accepted, "outer Worker did not accept the subscription WebSocket");
+  assert(keptAlive.length === 1, "one terminal operation was registered with waitUntil more than once");
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -875,6 +898,27 @@ async function testMcpStreamProxy() {
   await waitUntil(() => invalidSocket.accepted);
   invalidSocket.emit("message", { data: JSON.stringify({ not_jsonrpc: true }) });
   assert((await invalidMessage.text()).startsWith(": resumed\n\n"), "invalid internal terminal message did not close the outer stream safely");
+
+  const firstRetrySocket = new TestWebSocket();
+  const secondRetrySocket = new TestWebSocket();
+  const retryBridge = {
+    calls: 0,
+    async fetch() {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      return { status: 101, webSocket: this.calls === 2 ? firstRetrySocket : secondRetrySocket };
+    },
+  };
+  const retriedStream = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET" }),
+    bridge: retryBridge, extraOrigins: "", ctx: { waitUntil() {} }, subscribeRetryDelaysMs: [0, 0],
+  });
+  await waitUntil(() => firstRetrySocket.accepted);
+  firstRetrySocket.emit("close", {});
+  await waitUntil(() => secondRetrySocket.accepted);
+  secondRetrySocket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 12, result: { recovered: true } }) });
+  const retriedText = await retriedStream.text();
+  assert(retryBridge.calls === 3 && retriedText.includes('"recovered":true'), "bounded subscription retry did not recover a transient close");
 }
 
 function testDaemonSocketIsolation() {
@@ -1028,17 +1072,27 @@ function testWorkerObservability() {
   metrics.callStarted("write_file");
   metrics.callFinished("write_file", "policy_denied");
   metrics.unmatchedResult();
+  metrics.recordError("session_bootstrap_failed");
   metrics.socketCandidate();
   metrics.socketAuthenticated();
   metrics.socketDisconnected();
   metrics.socketProtocolError("protocol_error");
+  metrics.oauthRefreshEvent("rotated");
+  metrics.oauthRefreshEvent("retry_issued");
+  metrics.streamStorageRowsWritten(4);
+  metrics.runtimeAlarmMutation("set");
+  metrics.runtimeAlarmMutation("noop");
   const snapshot = metrics.snapshot();
   assert(snapshot.requests.total === 3 && snapshot.requests.client_error === 1 && snapshot.requests.server_error === 1, "Worker request metrics are incomplete");
   assert(snapshot.calls.started === 2 && snapshot.calls.completed === 1 && snapshot.calls.failed === 1, "Worker call metrics are incomplete");
   assert(snapshot.calls.unmatched_results === 1, "Worker unmatched-result metric was not retained");
-  assert(snapshot.errors.policy_denied === 1 && snapshot.errors.protocol_error === 1, "Worker error-code metrics are incomplete");
+  assert(snapshot.errors.policy_denied === 1 && snapshot.errors.protocol_error === 1
+    && snapshot.errors.session_bootstrap_failed === 1, "Worker error-code metrics are incomplete");
   assert(snapshot.tools.read_file.completed === 1 && snapshot.tools.write_file.failed === 1, "Worker per-tool metrics are incomplete");
   assert(snapshot.sockets.candidates === 1 && snapshot.sockets.authenticated === 1 && snapshot.sockets.disconnected === 1, "Worker socket metrics are incomplete");
+  assert(snapshot.oauth_refresh.rotated === 1 && snapshot.oauth_refresh.retry_issued === 1, "OAuth refresh metrics are incomplete");
+  assert(snapshot.durable_budget.stream_rows_written_estimate === 4 && snapshot.durable_budget.alarm_sets === 1
+    && snapshot.durable_budget.alarm_noops === 1, "Durable Object budget metrics are incomplete");
 
   const lines = [];
   const originalWarn = console.warn;
@@ -1146,8 +1200,27 @@ function testDaemonLiveness() {
   assert(touched.lastSeenAt === "2026-07-17T12:00:00.000Z", "lastSeenAt helper did not preserve timestamp");
 }
 
+function testThrottledEdgeLogger() {
+  let now = 1_000;
+  const lines = [];
+  const log = createThrottledEdgeLogger({
+    intervalMs: 100,
+    now: () => now,
+    write: (level, text) => lines.push({ level, value: JSON.parse(text) }),
+  });
+  assert(log("warn", "rate.failure", { detail: "first\nline", access_token: "must-not-leak" }) === true, "first edge degradation log was suppressed");
+  assert(log("warn", "rate.failure", { detail: "second" }) === false, "duplicate edge degradation log was not suppressed");
+  assert(log("warn", "rate.failure", { detail: "third" }) === false, "repeated edge degradation log was not suppressed");
+  now += 100;
+  assert(log("warn", "rate.failure", { detail: "reopened" }) === true, "edge degradation log did not reopen after its interval");
+  assert(lines.length === 2 && lines[1].value.suppressed === 2, "edge log did not report its suppressed duplicate count");
+  assert(lines[0].value.detail === "first_line" && lines[0].value.component === "worker-edge"
+    && lines[0].value.access_token === "<redacted>" && !JSON.stringify(lines[0]).includes("must-not-leak"),
+  "edge log did not bound controls, redact sensitive fields, or preserve authoritative metadata");
+}
+
 async function testWorkerStaticRoutes() {
-  const identity = { server: "machine-bridge-mcp", version: "3.0.0-beta.17" };
+  const identity = { server: "machine-bridge-mcp", version: "3.0.0-beta.18" };
   const health = respondWithoutDurableObject(new Request("https://example.test/healthz"), identity);
   assert(health?.status === 200, "healthz must be served without Durable Object state");
   assert((await health.json()).version === identity.version, "healthz version must match package identity");
@@ -1167,12 +1240,51 @@ async function testWorkerStaticRoutes() {
   assert(preflight?.status === 204, "CORS preflight must not depend on Durable Object state");
   assert(preflight.headers.get("access-control-allow-origin") === "https://chatgpt.com", "CORS preflight lost origin allowlist");
 
-  const passthrough = respondWithoutDurableObject(new Request("https://example.test/mcp", { method: "POST" }), identity);
-  assert(passthrough === null, "stateful MCP routes must still reach the Durable Object");
+  for (const path of ["/.well-known/mcp.json", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource/mcp"]) {
+    const metadata = respondWithoutDurableObject(new Request(`https://example.test${path}`), identity);
+    assert(metadata?.status === 200, `${path} unexpectedly consumed Durable Object state`);
+  }
+  const missing = respondWithoutDurableObject(new Request("https://example.test/random-scan-path"), identity);
+  assert(missing?.status === 404, "unknown public route reached the Durable Object");
+
+  for (const [path, method] of [
+    ["/mcp", "POST"], ["/mcp", "GET"], ["/daemon/ws", "GET"], ["/oauth/token", "POST"],
+    ["/oauth/authorize", "GET"], ["/oauth/authorize", "POST"], ["/oauth/register", "POST"],
+    ["/admin/accounts", "GET"], ["/admin/accounts", "PATCH"], ["/admin/clients", "DELETE"],
+  ]) {
+    const passthrough = respondWithoutDurableObject(new Request(`https://example.test${path}`, { method }), identity);
+    assert(passthrough === null, `${method} ${path} no longer reaches stateful routing`);
+  }
+  for (const [path, method, allow] of [
+    ["/mcp", "HEAD", "GET, POST"], ["/daemon/ws", "POST", "GET"], ["/oauth/token", "DELETE", "POST"],
+    ["/admin/clients", "PATCH", "GET, DELETE"],
+  ]) {
+    const rejected = respondWithoutDurableObject(new Request(`https://example.test${path}`, { method }), identity);
+    assert(rejected?.status === 405 && rejected.headers.get("allow") === allow,
+      `${method} ${path} consumed rate-limit or Durable Object capacity before method rejection`);
+  }
+
+  const allowed = await admitStatefulRequest(new Request("https://example.test/mcp"), { async limit() { return { success: true }; } });
+  assert(allowed === null, "stateful rate limiter rejected an admitted request");
+  const limited = await admitStatefulRequest(new Request("https://example.test/mcp"), { async limit() { return { success: false }; } });
+  assert(limited?.status === 429 && limited.headers.get("retry-after") === "60", "stateful rate limiter lost its retry contract");
+  const limiterFailure = await admitStatefulRequest(new Request("https://example.test/mcp"), { async limit() { throw new Error("synthetic limiter outage"); } });
+  assert(limiterFailure === null, "rate-limiter outage disconnected authenticated traffic instead of failing open");
 
   assert(isDurableObjectQuotaError(new Error("Exceeded allowed volume of requests in Durable Objects free tier.")), "quota error detector missed free-tier exhaustion");
+  assert(isDurableObjectQuotaError(new Error("outer", { cause: Object.assign(new Error("quota"), { code: "ERR_DURABLE_OBJECT_QUOTA_EXCEEDED" }) })), "quota detector missed a structured nested error");
   assert(!isDurableObjectQuotaError(new Error("socket closed")), "quota error detector over-matched");
+  const cyclic = new Error("cyclic");
+  cyclic.cause = cyclic;
+  assert(!isDurableObjectQuotaError(cyclic), "quota detector did not bound a cyclic cause chain");
+  assert(outerWorkerErrorClass(cyclic) === "error", "outer error classification did not bound a cyclic cause chain");
+  let deep = Object.assign(new Error("deep"), { code: "DEEPEST" });
+  for (let index = 0; index < 12; index += 1) deep = new Error(`level-${index}`, { cause: deep });
+  assert(!outerWorkerErrorClass(deep).includes("deepest"), "outer error classification exceeded its cause-depth bound");
   const quota = durableObjectQuotaResponse(new Request("https://example.test/mcp", { headers: { Origin: "https://chatgpt.com" } }));
   assert(quota.status === 503, "quota response must be retryable service unavailable");
   assert((await quota.json()).error === "durable_object_quota_exceeded", "quota response body is wrong");
+  const gateway = workerGatewayErrorResponse(new Request("https://example.test/mcp"));
+  assert(gateway.status === 502 && (await gateway.json()).error === "worker_gateway_error", "outer Worker did not normalize unexpected failures");
+  assert(outerWorkerErrorClass(Object.assign(new Error("secret-value-must-not-appear"), { code: "ECONNRESET" })) === "error:econnreset", "outer error class included sensitive exception text");
 }

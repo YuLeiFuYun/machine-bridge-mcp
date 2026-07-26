@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { realpathSync, rmSync } from "node:fs";
-import { lstat, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { isRelayReadyContext } from "./relay-connection.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
@@ -37,6 +37,7 @@ import { createRuntimeRelayConnection, normalizeRelayResumeCalls, normalizeRelay
 import { RelayCallRecovery } from "./relay-call-recovery.mjs";
 import { RuntimeResourceService } from "./runtime-resource-service.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage } from "./runtime-paths.mjs";
+import { pathEntryIfExists } from "./path-inspection.mjs";
 import {
   resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
   sessionBootstrap as buildRuntimeSessionBootstrap,
@@ -598,10 +599,10 @@ export class LocalRuntime {
 
   async resolveWritePath(inputPath = ".", context = {}) {
     const candidate = this.resolvePath(inputPath);
-    const candidateInfo = await lstat(candidate).catch(() => null);
+    const candidateInfo = await pathEntryIfExists(candidate);
     if (candidateInfo?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
     let ancestor = candidate;
-    while (!(await lstat(ancestor).catch(() => null))) {
+    while (!(await pathEntryIfExists(ancestor))) {
       const parent = dirname(ancestor);
       if (parent === ancestor) break;
       ancestor = parent;

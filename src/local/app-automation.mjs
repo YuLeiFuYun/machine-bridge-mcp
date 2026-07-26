@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createToolAuthorizer } from "./policy.mjs";
+import { classifyOperationalError } from "./log.mjs";
 
 const MAX_APPLICATIONS = 1000;
 const MAX_APPLICATION_SCAN_ENTRIES = 20_000;
@@ -60,6 +61,9 @@ export class AppAutomationManager {
       applications: filtered,
       truncated: discovery.truncated || matched.length > limit,
       scanned_entries: discovery.visitedEntries,
+      warnings: discovery.warnings.map((warning) => ({
+        path: this.displayPath(warning.path), error_class: warning.error_class,
+      })),
       capabilities: this.capabilities(),
     };
   }
@@ -238,32 +242,48 @@ async function listExecutableRoots(roots, extensions, context, throwIfCancelled)
 
 async function scanApplicationRoots(roots, { context, throwIfCancelled, match, descend, makeItem }) {
   const results = [];
+  const warnings = [];
   const seenRoots = new Set();
   let visited = 0;
   for (const inputRoot of roots) {
-    const root = await realpath(inputRoot).catch(() => "");
-    if (!root || seenRoots.has(root)) continue;
+    let root;
+    try { root = await realpath(inputRoot); } catch (error) {
+      if (error?.code !== "ENOENT" && warnings.length < 50) {
+        warnings.push({ path: inputRoot, error_class: classifyOperationalError(error) });
+      }
+      continue;
+    }
+    if (seenRoots.has(root)) continue;
     seenRoots.add(root);
     const stack = [{ directory: root, depth: 0 }];
     while (stack.length) {
       const current = stack.pop();
-      const handle = await opendir(current.directory).catch(() => null);
-      if (!handle) continue;
+      let handle;
+      try { handle = await opendir(current.directory); } catch (error) {
+        if (error?.code !== "ENOENT" && warnings.length < 50) {
+          warnings.push({ path: current.directory, error_class: classifyOperationalError(error) });
+        }
+        continue;
+      }
       for await (const entry of handle) {
         throwIfCancelled(context);
         visited += 1;
-        if (visited > MAX_APPLICATION_SCAN_ENTRIES) return { applications: results, truncated: true, visitedEntries: visited };
+        if (visited > MAX_APPLICATION_SCAN_ENTRIES) {
+          return { applications: results, warnings, truncated: true, visitedEntries: visited };
+        }
         const path = join(current.directory, entry.name);
         if (match(entry)) {
           results.push(makeItem(path, entry));
-          if (results.length >= MAX_APPLICATIONS) return { applications: results, truncated: true, visitedEntries: visited };
+          if (results.length >= MAX_APPLICATIONS) {
+            return { applications: results, warnings, truncated: true, visitedEntries: visited };
+          }
         } else if (current.depth < MAX_APPLICATION_SCAN_DEPTH && descend(entry)) {
           stack.push({ directory: path, depth: current.depth + 1 });
         }
       }
     }
   }
-  return { applications: results, truncated: false, visitedEntries: visited };
+  return { applications: results, warnings, truncated: false, visitedEntries: visited };
 }
 
 function requiredApplication(value) {

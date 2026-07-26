@@ -187,13 +187,26 @@ async function testRefreshReplayStateBoundsAndValidation() {
   oauthStore.tokens[`sha256:${"a".repeat(64)}`] = { family_id: familyId };
   refreshStore.tokens[`sha256:${"b".repeat(64)}`] = { family_id: familyId };
   const consumedAt = 1_800_000_000;
+  const source = {
+    client_id: `mcp_client_${"c".repeat(43)}`,
+    account_id: `acct_${"a".repeat(20)}`,
+    account_version: 1,
+    role: "owner",
+    scope: `${SERVER_NAME} offline_access`,
+    resource: `${BASE}/mcp`,
+    version: "token-version",
+    family_id: familyId,
+    issued_at: consumedAt - 60,
+    expires_at: consumedAt + 10_000,
+    family_expires_at: consumedAt + 20_000,
+  };
   for (let index = 0; index < 4_100; index += 1) {
     const hash = `sha256:${index.toString(16).padStart(64, "0")}`;
     recordConsumedRefreshToken(
       oauthStore,
       refreshStore,
       hash,
-      familyId,
+      source,
       consumedAt + 10_000,
       consumedAt + index,
     );
@@ -202,6 +215,17 @@ async function testRefreshReplayStateBoundsAndValidation() {
   assert(!(`sha256:${"0".repeat(64)}` in refreshStore.consumed), "oldest consumed refresh-token marker was not pruned first");
   assert(refreshStore.revoked_families[familyId]?.reason === "replay", "tombstone eviction did not revoke its refresh family");
   assert(Object.keys(oauthStore.tokens).length === 0 && Object.keys(refreshStore.tokens).length === 0, "tombstone eviction retained active family credentials");
+
+  const legacyV2 = structuredClone(refreshStore);
+  legacyV2.schema_version = 2;
+  for (const marker of Object.values(legacyV2.consumed)) {
+    delete marker.retry_until;
+    delete marker.retry_issues;
+    delete marker.source;
+  }
+  const migratedStorage = new MemoryStorage({ "oauth-refresh": legacyV2 });
+  const migrated = await loadOAuthRefreshStore(oauthStore, migratedStorage);
+  assert(migrated.schema_version === 3, "schema-2 refresh state did not migrate without credential loss");
 
   const malformed = emptyOAuthRefreshStore();
   malformed.consumed[`sha256:${"a".repeat(64)}`] = {

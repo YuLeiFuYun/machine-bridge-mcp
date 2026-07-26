@@ -84,7 +84,7 @@ Low-level responsibilities remain in focused modules. Architecture tests enforce
 
 Each canonical workspace has independent profile state, Worker identity, trusted clients, account/token state, legacy-lease cleanup state, audit-chain state, locks, service metadata, and managed jobs. State mutations use owner-only files where supported, bounded reads, atomic replacement, and process-identity-aware locks.
 
-The relay distinguishes a root-certified ephemeral session, signed preflight, challenge authentication, readiness probing, and active service. A candidate daemon must prove possession of the certified session key and complete an end-to-end probe before replacing an incumbent. Disconnect cancels relay-owned calls and terminates associated local processes.
+The relay distinguishes a root-certified ephemeral session, signed preflight, challenge authentication, readiness probing, and active service. A candidate daemon must prove possession of the certified session key and complete an end-to-end probe before replacing an incumbent. A transient socket loss detaches ordinary calls for the bounded same-daemon reconnect window; only explicit cancellation, timeout, reconnect-grace expiry, runtime shutdown, or a non-recoverable daemon replacement terminates their local process trees.
 
 Managed jobs use a separate durable lifecycle. Their plans are integrity-bound, runners are process-identity checked, transitions are lock-protected, terminal plans are scrubbed, and recovery is bounded.
 

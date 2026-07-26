@@ -21,6 +21,7 @@ export type { JsonRpcMessage } from "./mcp-resumption-records.ts";
 type ResumptionStorage = Pick<DurableObjectStorage, "get" | "put" | "delete" | "transaction">;
 type TransactionStorage = Pick<DurableObjectTransaction, "get" | "put" | "delete">;
 type StreamReadyListener = (streamId: string, message: JsonRpcMessage) => void;
+type StorageRowsWrittenListener = (rows: number) => void;
 export type StreamResumeResult =
   | { kind: "invalid" | "not_found" | "expired" }
   | { kind: "complete"; streamId: string }
@@ -42,10 +43,13 @@ export class McpResumptionStore {
   private readonly maximumStreams: number;
   private readonly maximumMessageBytes: number;
   private readonly onReady: StreamReadyListener;
-  constructor(storage: ResumptionStorage, options: McpResumptionOptions = {}, onReady: StreamReadyListener = () => {}) {
+  private readonly onRowsWritten: StorageRowsWrittenListener;
+  constructor(storage: ResumptionStorage, options: McpResumptionOptions = {},
+    onReady: StreamReadyListener = () => {}, onRowsWritten: StorageRowsWrittenListener = () => {}) {
     this.storage = storage;
     this.now = options.now ?? Date.now;
     this.onReady = onReady;
+    this.onRowsWritten = onRowsWritten;
     const limits = resumptionLimits(options);
     this.retentionMs = limits.retentionMs;
     this.pendingRetentionMs = limits.pendingRetentionMs;
@@ -80,9 +84,9 @@ export class McpResumptionStore {
       await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
       return [...pruned.removedStreamIds, ...freed.removedStreamIds];
     });
+    this.onRowsWritten(2 + removedStreamIds.length);
     for (const removedStreamId of removedStreamIds) this.clearMemory(removedStreamId);
   }
-
   activate(streamId: string): void {
     if (!isStreamId(streamId)) throw new Error("invalid MCP stream id");
     this.transientReady.delete(streamId);
@@ -97,11 +101,11 @@ export class McpResumptionStore {
       const messageJson = resumableMessageJson(message, initial.request_id, this.maximumMessageBytes);
       const digest = await messageSha256(messageJson);
       const expiresAt = this.now() + this.retentionMs;
-      const completed = await this.storage.transaction(async (transaction) => {
+      const rowsWritten = await this.storage.transaction(async (transaction) => {
         const record = await transaction.get<unknown>(streamKey(streamId));
-        if (record === undefined) return false;
+        if (record === undefined) return -1;
         if (!validRecord(record)) throw new Error("resumable MCP stream record is corrupt");
-        if (record.status === "ready") return true;
+        if (record.status === "ready") return 0;
         const index = readIndex(await transaction.get<unknown>(STREAM_INDEX_KEY));
         if (!index.entries.some((candidate) => candidate.stream_id === streamId)) {
           throw new Error("resumable MCP stream index lost its record");
@@ -112,17 +116,17 @@ export class McpResumptionStore {
           : candidate);
         await transaction.put(streamKey(streamId), ready);
         await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
-        return true;
+        return 2;
       });
-      if (!completed) throw new Error("resumable MCP stream record disappeared during completion");
+      if (rowsWritten < 0) throw new Error("resumable MCP stream record disappeared during completion");
+      this.onRowsWritten(rowsWritten);
       this.transientReady.delete(streamId);
     } catch (error) {
       this.transientReady.set(streamId, message);
       throw error;
     } finally {
       this.active.delete(streamId);
-      // Persistent state remains authoritative if a disconnected subscriber misses this push.
-      try { this.onReady(streamId, message); } catch { /* resume/poll remains available */ }
+      try { this.onReady(streamId, message); } catch { /* Persistent state remains authoritative. */ }
     }
   }
 
@@ -178,6 +182,7 @@ export class McpResumptionStore {
       if (entries.length === 0) await transaction.delete(STREAM_INDEX_KEY);
       else await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
     });
+    this.onRowsWritten(2);
     this.clearMemory(streamId);
   }
 

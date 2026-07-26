@@ -368,7 +368,7 @@
           ...fallback.result,
           input_mode: "dom",
           trusted_input_fallback: true,
-          fallback_reason: String(error?.message || error).slice(0, 500),
+          fallback_reason: "trusted_input_unavailable_before_dispatch",
         };
       }
     }

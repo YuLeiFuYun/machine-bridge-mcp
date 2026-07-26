@@ -31,14 +31,18 @@ import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from ".
 import { OAuthController, type AuthorizedToken, type OAuthControllerEnv } from "./oauth-controller.ts";
 import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority.ts";
 import { serverInfoTool, workspaceTools } from "./tool-catalog.ts";
-import { OFFLINE_ACCESS_SCOPE, randomToken } from "./oauth-state.ts";
+import { randomToken } from "./oauth-state.ts";
 import {
   HttpError, applyCors, baseUrl, corsPreflight, json, methodNotAllowed,
   parseJsonRequest, workerErrorClass,
 } from "./http.ts";
+import { respondWithoutDurableObject } from "./worker-static-routes.ts";
+import { authorizationServerMetadata } from "./worker-metadata.ts";
+import { createThrottledEdgeLogger } from "./worker-edge-log.ts";
 import {
-  durableObjectQuotaResponse, isDurableObjectQuotaError, respondWithoutDurableObject,
-} from "./worker-static-routes.ts";
+  admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
+  outerWorkerErrorClass, workerGatewayErrorResponse,
+} from "./worker-edge-guard.ts";
 import {
   asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
   sessionInstructionText, textToolResult, validateProtocolVersionHeader, type JsonRpcRequest,
@@ -48,7 +52,7 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.17";
+const SERVER_VERSION = "3.0.0-beta.19";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -56,6 +60,7 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
+const logOuterFetchFailure = createThrottledEdgeLogger();
 
 interface BridgeEnv extends OAuthControllerEnv {
   BRIDGE: DurableObjectNamespace<BridgeRoom>;
@@ -63,6 +68,7 @@ interface BridgeEnv extends OAuthControllerEnv {
   OAUTH_TOKEN_VERSION: string;
   MBM_WORKER_MAX_BODY_BYTES?: string;
   MBM_ALLOWED_ORIGINS?: string;
+  STATEFUL_RATE_LIMITER: RateLimit;
 }
 
 const MCP_INSTRUCTIONS = serverMetadata.instructions.map((value) => String(value)).join("\n");
@@ -77,10 +83,18 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env);
-    this.oauth = new OAuthController(ctx, env, SERVER_NAME, SERVER_VERSION);
+    this.oauth = new OAuthController(
+      ctx, env, SERVER_NAME, SERVER_VERSION,
+      (event) => this.observability.oauthRefreshEvent(event),
+    );
     this.daemonRegistry = new DaemonSocketRegistry(ctx);
     this.streamChannel = new McpStreamChannel(ctx, this.observability);
-    this.resumption = new McpResumptionStore(ctx.storage, {}, (streamId, message) => this.streamChannel.publish(streamId, message));
+    this.resumption = new McpResumptionStore(
+      ctx.storage,
+      {},
+      (streamId, message) => this.streamChannel.publish(streamId, message),
+      (rows) => this.observability.streamStorageRowsWritten(rows),
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -97,31 +111,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private async handleRequest(request: Request, base: string): Promise<Response> {
     const url = new URL(request.url);
     try {
-      if (url.pathname === "/") {
-        if (request.method !== "GET") return methodNotAllowed("GET");
-        return json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, mcp: `${base}/mcp` });
-      }
-      if (url.pathname === "/healthz") {
-        if (request.method !== "GET") return methodNotAllowed("GET");
-        return json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION });
-      }
-      if (url.pathname === "/.well-known/mcp.json") {
-        if (request.method !== "GET") return methodNotAllowed("GET");
-        return json(this.mcpMetadata(base));
-      }
-      if (
-        url.pathname === "/.well-known/oauth-authorization-server" ||
-        url.pathname === "/.well-known/oauth-authorization-server/mcp" ||
-        url.pathname === "/.well-known/openid-configuration" ||
-        url.pathname === "/.well-known/openid-configuration/mcp"
-      ) {
-        if (request.method !== "GET") return methodNotAllowed("GET");
-        return json(this.authorizationServerMetadata(base));
-      }
-      if (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname === "/.well-known/oauth-protected-resource/mcp") {
-        if (request.method !== "GET") return methodNotAllowed("GET");
-        return json(this.protectedResourceMetadata(base));
-      }
       if (url.pathname === "/admin/accounts") return await this.oauth.handleAccountAdmin(request, "accounts");
       if (url.pathname === "/admin/accounts/rotate-password") return await this.oauth.handleAccountAdmin(request, "rotate-password");
       if (url.pathname === "/admin/clients") return await this.oauth.handleClientAdmin(request);
@@ -466,9 +455,15 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const protocolVersion = typeof requested === "string" && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested as typeof MCP_SUPPORTED_PROTOCOL_VERSIONS[number])
         ? requested
         : MCP_PROTOCOL_VERSION;
-      const bootstrap = this.daemonToolEnabled("session_bootstrap")
-        ? await this.callDaemonTool("session_bootstrap", { path: "." }, authorized).catch(() => null)
-        : null;
+      let bootstrap = null;
+      if (this.daemonToolEnabled("session_bootstrap")) {
+        try {
+          bootstrap = await this.callDaemonTool("session_bootstrap", { path: "." }, authorized);
+        } catch {
+          // Initialization remains usable without optional local instructions, but the degradation is observable.
+          this.observability.recordError("session_bootstrap_failed");
+        }
+      }
       const localInstructions = sessionInstructionText(bootstrap);
       return rpcResult(request.id, {
         protocolVersion,
@@ -514,7 +509,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const { daemon, tools, authorization } = this.authorityContext(authorized);
     return buildServerInfoResult({
       serverName: SERVER_NAME, serverVersion: SERVER_VERSION, base,
-      oauth: this.authorizationServerMetadata(base), authorization, daemon, tools,
+      oauth: authorizationServerMetadata(base, SERVER_NAME), authorization, daemon, tools,
       pending: this.pending, daemonRegistry: this.daemonRegistry, observability: this.observability,
     });
   }
@@ -734,6 +729,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       onScheduleError: (error: unknown) => this.observability.event(
         "error", "runtime.alarm.schedule.failed", { error_class: workerErrorClass(error) },
       ),
+      onAlarmMutation: (action: "set" | "delete" | "noop") => this.observability.runtimeAlarmMutation(action),
     };
   }
 
@@ -760,42 +756,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     };
   }
 
-  private mcpMetadata(base: string): Record<string, unknown> {
-    return {
-      name: SERVER_NAME,
-      version: SERVER_VERSION,
-      protocolVersion: MCP_PROTOCOL_VERSION,
-      protocolVersions: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
-      transport: { type: "streamable-http", url: `${base}/mcp` },
-      auth: { type: "oauth", authorization_servers: [base] },
-    };
-  }
-
-  private authorizationServerMetadata(base: string): Record<string, unknown> {
-    return {
-      issuer: base,
-      authorization_endpoint: `${base}/oauth/authorize`,
-      token_endpoint: `${base}/oauth/token`,
-      registration_endpoint: `${base}/oauth/register`,
-      response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code", "refresh_token"],
-      token_endpoint_auth_methods_supported: ["none"],
-      dpop_signing_alg_values_supported: ["ES256"],
-      code_challenge_methods_supported: ["S256"],
-      scopes_supported: [SERVER_NAME, OFFLINE_ACCESS_SCOPE],
-    };
-  }
-
-  private protectedResourceMetadata(base: string): Record<string, unknown> {
-    return {
-      resource: `${base}/mcp`,
-      authorization_servers: [base],
-      scopes_supported: [SERVER_NAME, OFFLINE_ACCESS_SCOPE],
-      bearer_methods_supported: ["header"],
-      resource_name: SERVER_NAME,
-    };
-  }
-
   private bodyLimitBytes(): number {
     const parsed = Number.parseInt(this.env.MBM_WORKER_MAX_BODY_BYTES ?? "", 10);
     if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_BODY_BYTES;
@@ -814,6 +774,8 @@ export default {
     if (staticResponse) return staticResponse;
 
     try {
+      const limited = await admitStatefulRequest(request, env.STATEFUL_RATE_LIMITER, extraOrigins);
+      if (limited) return limited;
       const stub = env.BRIDGE.getByName("default");
       const streamed = await proxyMcpEventStream({
         request,
@@ -823,9 +785,12 @@ export default {
       });
       return streamed ?? stub.fetch(sanitizeBridgeRequest(request));
     } catch (error) {
-      // Free-tier DO request exhaustion must not look like an opaque Worker crash.
       if (isDurableObjectQuotaError(error)) return durableObjectQuotaResponse(request, extraOrigins);
-      throw error;
+      logOuterFetchFailure("error", "outer.fetch.failed", {
+        path: new URL(request.url).pathname,
+        error_class: outerWorkerErrorClass(error),
+      });
+      return workerGatewayErrorResponse(request, extraOrigins);
     }
   },
 } satisfies ExportedHandler<BridgeEnv>;

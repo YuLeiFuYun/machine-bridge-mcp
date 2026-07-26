@@ -3,6 +3,7 @@ import vm from "node:vm";
 import { performance } from "node:perf_hooks";
 
 const serviceWorkerSource = await readFile(new URL("../browser-extension/service-worker.js", import.meta.url), "utf8");
+const browserErrorBoundarySource = await readFile(new URL("../browser-extension/browser-error-boundary.js", import.meta.url), "utf8");
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const browserOperationsSource = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");
 
@@ -10,6 +11,8 @@ await testHandshakeReadiness();
 await testFailedReplacementPreservesPairing();
 await testSocketReplacementCleanup();
 await testResponseDeliveryFailureClosesSocket();
+await testBrowserErrorRedaction();
+await testExtensionConcurrencyLimit();
 await testTrustedFallbackBoundary();
 await testScreenshotRestoresActiveTab();
 await testNavigationWaitStopsWhenTabCloses();
@@ -181,6 +184,56 @@ async function testResponseDeliveryFailureClosesSocket() {
     "browser response send failure did not close the half-dead socket");
 }
 
+async function testBrowserErrorRedaction() {
+  const sent = [];
+  const context = createContext({ chrome: baseChrome() });
+  context.__machineBridgeBrowserOperations = {
+    boundedRequestTimeout: () => 30_000,
+    async dispatch(method) {
+      if (method === "stale") throw new Error("element reference is stale; inspect the page again");
+      throw new Error("page failed at https://private.example/path?token=secret under /Users/private and operator@example.com");
+    },
+  };
+  const api = loadServiceWorker(context, ["handleMessage"]);
+  const socket = {
+    bridgeReady: true,
+    readyState: context.WebSocket.OPEN,
+    send(value) { sent.push(JSON.parse(value)); },
+    close() {},
+  };
+  await api.handleMessage(socket, JSON.stringify({ type: "request", id: "private-error", method: "secret", timeout_ms: 30000 }));
+  assert(sent[0]?.error === "browser operation failed", "unclassified browser exception was exposed to the remote caller");
+  assert(!JSON.stringify(sent[0]).includes("private.example") && !JSON.stringify(sent[0]).includes("/Users/private")
+    && !JSON.stringify(sent[0]).includes("operator@example.com") && !JSON.stringify(sent[0]).includes("secret"),
+  "browser error response leaked URL, path, email, or credential-shaped text");
+  await api.handleMessage(socket, JSON.stringify({ type: "request", id: "safe-error", method: "stale", timeout_ms: 30000 }));
+  assert(sent[1]?.error === "element reference is stale; inspect the page again",
+    "known safe browser guidance was unnecessarily replaced by a generic error");
+  assert(context.__machineBridgeBrowserErrorBoundary.publicError(new Error("invalid CSS selector: body[data-secret='x']")) === "invalid CSS selector",
+    "selector details were retained in the public browser error");
+}
+
+async function testExtensionConcurrencyLimit() {
+  const sent = [];
+  let dispatches = 0;
+  const context = createContext({ chrome: baseChrome() });
+  context.__machineBridgeBrowserOperations = {
+    boundedRequestTimeout: () => 30_000,
+    async dispatch() { dispatches += 1; return { ok: true }; },
+  };
+  const api = loadServiceWorker(context, ["handleMessage", "activeRequests"]);
+  for (let index = 0; index < 32; index += 1) api.activeRequests.set(`occupied-${index}`, { cancelled: false });
+  const socket = {
+    bridgeReady: true,
+    readyState: context.WebSocket.OPEN,
+    send(value) { sent.push(JSON.parse(value)); },
+    close() {},
+  };
+  await api.handleMessage(socket, JSON.stringify({ type: "request", id: "overflow", method: "status", timeout_ms: 30000 }));
+  assert(dispatches === 0 && sent[0]?.ok === false && sent[0]?.error === "too many concurrent browser requests",
+    "browser extension exceeded its independent concurrent-request ceiling");
+}
+
 async function testTrustedFallbackBoundary() {
   const operations = [];
   const context = createContext({
@@ -208,6 +261,9 @@ async function testTrustedFallbackBoundary() {
   };
   const fallback = await api.dispatch("action", { tabId: 7, action: "click", inputMode: "auto", selector: { ref: "e1" }, waitFor: "none" }, { timeoutMs: 30000 });
   assert(fallback.input_mode === "dom" && fallback.trusted_input_fallback === true, "safe pre-dispatch failure did not fall back to DOM");
+  assert(fallback.fallback_reason === "trusted_input_unavailable_before_dispatch"
+    && !JSON.stringify(fallback).includes("debugger attach failed"),
+  "successful trusted-input fallback leaked a raw local debugging error");
   assert(operations.join(",") === "prepareAction,action", "safe fallback did not execute exactly one DOM fallback");
 
   operations.length = 0;
@@ -388,6 +444,7 @@ async function testAggregateFrameAndSourceBudgets() {
 }
 
 function loadServiceWorker(context, names) {
+  vm.runInContext(browserErrorBoundarySource, context, { filename: "browser-error-boundary.js" });
   vm.runInContext(`${serviceWorkerSource}\nglobalThis.__machineBridgeServiceWorkerTest = { ${names.join(", ")} };`, context, { filename: "service-worker.js" });
   return context.__machineBridgeServiceWorkerTest;
 }

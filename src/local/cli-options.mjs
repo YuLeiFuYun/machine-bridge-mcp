@@ -45,7 +45,7 @@ const STATIC_POSITIONAL_RULES = new Map([
 ]);
 const RESOURCE_POSITIONAL_LIMITS = new Map(Object.entries({ add: 3, "generate-ssh-key": 3, remove: 2, check: 2 }));
 const JOB_POSITIONAL_LIMITS = new Map(Object.entries({ read: 2, inspect: 2, cancel: 2, approve: 2, submit: 2 }));
-const ACCOUNT_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, add: 3, role: 3, enable: 2, disable: 2, "rotate-password": 2, remove: 2 }));
+const ACCOUNT_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, clients: 1, "revoke-client": 2, add: 3, role: 3, enable: 2, disable: 2, "rotate-password": 2, remove: 2 }));
 const APPROVAL_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, revoke: 2, clear: 1 }));
 const ACTION_POSITIONAL_RULES = new Map(Object.entries({
   workspace(args) {

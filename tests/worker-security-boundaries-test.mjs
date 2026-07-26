@@ -2,6 +2,7 @@ import { accountAdminAuthorized, handleAccountAdminOperation } from "../src/work
 import { discardRequestBody, readBoundedText } from "../src/worker/http.ts";
 import { handleOAuthClientAdminOperation } from "../src/worker/oauth-client-admin.ts";
 import { exchangeOAuthToken } from "../src/worker/oauth-tokens.ts";
+import { deriveRefreshReplacementPair } from "../src/worker/oauth-token-derivation.ts";
 import {
   loadOAuthRefreshStore,
   recordConsumedRefreshToken,
@@ -146,6 +147,19 @@ async function testClientOperations() {
   assert(Object.keys(store.tokens).length === 0 && Object.keys(refreshStore.tokens).length === 0, "client revocation retained access or refresh tokens");
 }
 
+async function testRefreshReplacementDerivation() {
+  const seed = `mcp_rt_${"s".repeat(43)}`;
+  const first = await deriveRefreshReplacementPair("deployment-secret", seed);
+  const repeated = await deriveRefreshReplacementPair("deployment-secret", seed);
+  const different = await deriveRefreshReplacementPair("deployment-secret", `mcp_rt_${"t".repeat(43)}`);
+  assert(first.accessToken === repeated.accessToken && first.refreshToken === repeated.refreshToken,
+    "refresh replacement derivation was not idempotent");
+  assert(first.accessToken !== different.accessToken && first.refreshToken !== different.refreshToken,
+    "refresh replacement derivation did not bind the consumed token");
+  await expectReject(() => deriveRefreshReplacementPair("", seed), "derivation key");
+  await expectReject(() => deriveRefreshReplacementPair("deployment-secret", "invalid"), "seed is invalid");
+}
+
 async function testTokenRotationAndReplay() {
   const store = emptyOAuthStore();
   const storage = new MemoryStorage();
@@ -192,6 +206,22 @@ async function testTokenRotationAndReplay() {
   const dpopPair = await dpopExchange.json();
   assert(dpopExchange.status === 200 && dpopPair.token_type === "DPoP", "valid DPoP authorization-code exchange failed");
   assert(await storage.get("dpop-proof-jtis"), "successful DPoP grant did not consume a replay marker");
+  const dpopRefreshProof = await createDpopProof({
+    ...dpopKeys, method: "POST", url: `${BASE}/oauth/token`, issuedAt: dpopIssuedAt,
+    jti: "valid-refresh-proof-1234567",
+  });
+  const dpopRefresh = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: dpopPair.refresh_token, client_id: CLIENT_ID,
+    resource: `${BASE}/mcp`, scope: `${SERVER} offline_access`,
+  }, { DPoP: dpopRefreshProof }), BASE, options);
+  assert(dpopRefresh.status === 200, "DPoP-bound refresh rotation failed");
+  const replayedDpopProof = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: dpopPair.refresh_token, client_id: CLIENT_ID,
+    resource: `${BASE}/mcp`, scope: `${SERVER} offline_access`,
+  }, { DPoP: dpopRefreshProof }), BASE, options);
+  assert(replayedDpopProof.status === 400 && (await replayedDpopProof.json()).error === "invalid_dpop_proof",
+    "replayed DPoP proof consumed a concurrent refresh retry");
+
   const exchange = await exchangeOAuthToken(formTokenRequest({
     grant_type: "authorization_code", code, client_id: CLIENT_ID, redirect_uri: REDIRECT, code_verifier: verifier, resource: `${BASE}/mcp`,
   }), BASE, options);
@@ -207,13 +237,58 @@ async function testTokenRotationAndReplay() {
   const second = await refresh.json();
   assert(second.refresh_token !== first.refresh_token && second.access_token !== first.access_token, "refresh rotation reused token material");
 
+  const malformedRefresh = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: "not-a-refresh-token", client_id: CLIENT_ID,
+  }), BASE, options);
+  assert(malformedRefresh.status === 400 && (await malformedRefresh.json()).error === "invalid_grant",
+    "malformed refresh token did not use the bounded invalid-grant path");
+  for (const [overrides, expected] of [
+    [{ client_id: `mcp_client_${"x".repeat(43)}` }, "invalid_grant"],
+    [{ resource: "https://other.example.test/mcp" }, "invalid_target"],
+    [{ scope: SERVER }, "invalid_scope"],
+  ]) {
+    const rejected = await exchangeOAuthToken(formTokenRequest({
+      grant_type: "refresh_token", refresh_token: second.refresh_token, client_id: CLIENT_ID,
+      resource: `${BASE}/mcp`, scope: `${SERVER} offline_access`, ...overrides,
+    }), BASE, options);
+    assert(rejected.status === 400 && (await rejected.json()).error === expected,
+      `refresh grant validation did not reject ${expected}`);
+  }
+
+  const retryOne = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  const retryOnePair = await retryOne.json();
+  assert(retryOne.status === 200
+    && retryOnePair.refresh_token === second.refresh_token
+    && retryOnePair.access_token === second.access_token,
+  "first concurrent refresh retry did not reproduce the original replacement pair");
+  const retryTwo = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  const retryTwoPair = await retryTwo.json();
+  assert(retryTwo.status === 200
+    && retryTwoPair.refresh_token === second.refresh_token
+    && retryTwoPair.access_token === second.access_token,
+  "second bounded concurrent refresh retry created a divergent credential branch");
+  const retryOverflow = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  assert(retryOverflow.status === 429 && (await retryOverflow.json()).error === "temporarily_unavailable", "refresh retry budget was not bounded");
+
+  const refreshKey = `sha256:${await sha256Hex(first.refresh_token)}`;
+  const persistedRefresh = await storage.get("oauth-refresh");
+  persistedRefresh.consumed[refreshKey].consumed_at = Math.floor(Date.now() / 1000) - 60;
+  persistedRefresh.consumed[refreshKey].retry_until = Math.floor(Date.now() / 1000) - 30;
+  await storage.put("oauth-refresh", persistedRefresh);
   const replay = await exchangeOAuthToken(formTokenRequest({
     grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
   }), BASE, options);
-  assert(replay.status === 400 && (await replay.json()).error === "invalid_grant", "consumed refresh-token replay was not rejected");
-  const firstAccessKey = `sha256:${await sha256Hex(first.access_token)}`;
-  const secondAccessKey = `sha256:${await sha256Hex(second.access_token)}`;
-  assert(!store.tokens[firstAccessKey] && !store.tokens[secondAccessKey], "refresh replay did not revoke the complete token family");
+  assert(replay.status === 400 && (await replay.json()).error === "invalid_grant", "post-grace refresh-token replay was not rejected");
+  const familyId = persistedRefresh.consumed[refreshKey].family_id;
+  assert(!Object.values(store.tokens).some((token) => token.family_id === familyId), "post-grace replay did not revoke the complete access-token family");
+  const finalRefreshStore = await storage.get("oauth-refresh");
+  assert(!Object.values(finalRefreshStore.tokens).some((token) => token.family_id === familyId), "post-grace replay retained refresh tokens");
 
   const unsupported = await exchangeOAuthToken(formTokenRequest({ grant_type: "password" }), BASE, options);
   assert(unsupported.status === 400 && (await unsupported.json()).error === "unsupported_grant_type", "unsupported OAuth grant was accepted");
@@ -239,32 +314,63 @@ async function testRefreshStateLifecycle() {
 
   const accessHash = `sha256:${"f".repeat(64)}`;
   oauthStore.tokens[accessHash] = { ...tokenRecord(account, NOW + 300), family_id: family };
-  recordConsumedRefreshToken(oauthStore, loaded, `sha256:${"1".repeat(64)}`, family, NOW + 1200, NOW);
+  recordConsumedRefreshToken(oauthStore, loaded, `sha256:${"1".repeat(64)}`, loaded.tokens[activeHash], NOW + 1200, NOW);
   revokeOAuthRefreshFamily(oauthStore, loaded, family, NOW + 1200);
   assert(!loaded.tokens[activeHash] && !oauthStore.tokens[accessHash] && loaded.revoked_families[family], "refresh family revocation was incomplete");
 }
 
 
 async function testRequestBodyStreamingBoundaries() {
-  const discarded = await discardRequestBody(new Request(`${BASE}/mcp`, {
-    method: "POST", body: new Blob(["A".repeat(48)]), headers: { "content-length": "48" },
-  }), 16);
-  assert(discarded.exceeded === true && discarded.bytes_read === 17, "discarded request body did not remain bounded after the limit");
+  const discardedBody = countedBody(8);
+  const discarded = await discardRequestBody({
+    headers: new Headers(), body: discardedBody.stream,
+  }, 16);
+  assert(discarded.exceeded === true && discarded.bytes_read === 17,
+    "discarded request body did not stop at the bounded overflow marker");
+  assert(discardedBody.cancelled === true && discardedBody.pulls <= 3,
+    "discarded oversized request continued consuming attacker-controlled body data");
 
   const exact = await readBoundedText(new Request(`${BASE}/mcp`, { method: "POST", body: "exact" }), 5);
   assert(exact === "exact", "bounded body reader changed an exact-limit payload");
 
+  const oversizedBody = countedBody(3);
   let oversized;
   try {
-    await readBoundedText(new Request(`${BASE}/mcp`, { method: "POST", body: "oversized" }), 4);
+    await readBoundedText({ headers: new Headers(), body: oversizedBody.stream }, 4);
   } catch (error) { oversized = error; }
-  assert(oversized?.status === 413 && oversized?.code === "request_body_too_large", "bounded body reader did not reject an oversized stream after draining it");
+  assert(oversized?.status === 413 && oversized?.code === "request_body_too_large",
+    "bounded body reader did not reject an oversized stream");
+  assert(oversizedBody.cancelled === true && oversizedBody.pulls <= 2,
+    "bounded body reader drained data after the size limit was known");
 
+  let declaredCancelled = false;
   const declared = await discardRequestBody({
     headers: new Headers({ "content-length": "1000" }),
-    body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("small")); controller.close(); } }),
+    body: new ReadableStream({
+      pull(controller) { controller.enqueue(new TextEncoder().encode("small")); },
+      cancel() { declaredCancelled = true; },
+    }, { highWaterMark: 0 }),
   }, 8);
-  assert(declared.exceeded === true && declared.bytes_read === 5, "declared oversized body was not drained without retaining bytes");
+  assert(declared.exceeded === true && declared.bytes_read === 0 && declaredCancelled,
+    "declared oversized body was read instead of being cancelled immediately");
+}
+
+function countedBody(chunkBytes) {
+  let pulls = 0;
+  let cancelled = false;
+  const stream = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new Uint8Array(chunkBytes));
+      if (pulls >= 16) controller.close();
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  return {
+    stream,
+    get pulls() { return pulls; },
+    get cancelled() { return cancelled; },
+  };
 }
 
 function tokenRecord(account, expiresAt) {
@@ -305,10 +411,18 @@ class MemoryStorage {
 await testAdminAuthentication();
 await testAccountOperations();
 await testClientOperations();
+await testRefreshReplacementDerivation();
 await testTokenRotationAndReplay();
 await testRefreshStateLifecycle();
 await testRequestBodyStreamingBoundaries();
 console.log("Worker security boundary state-machine test ok");
+
+async function expectReject(callback, expected) {
+  let rejection;
+  try { await callback(); } catch (error) { rejection = error; }
+  assert(rejection && String(rejection.message || rejection).includes(expected),
+    `expected rejection containing ${expected}`);
+}
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);

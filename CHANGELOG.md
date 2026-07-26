@@ -1,5 +1,33 @@
 # Changelog
 
+## 3.0.0-beta.19 - 2026-07-26
+
+### Fixed
+
+- Restore the documented `account revoke-client CLIENT_ID` CLI command. The action was implemented end to end, but its positional-argument limit was omitted, so every valid client ID was rejected as an extra positional argument before the signed administration request could be sent. Add direct parser regression coverage for both `account clients` and `account revoke-client`.
+
+## 3.0.0-beta.18 - 2026-07-26
+
+### Fixed
+
+- Prevent intermittent hosted-client account loss during refresh-token rotation. A consumed refresh token may now recover at most two same-client, same-resource, same-scope, same-DPoP retries inside a 30-second concurrency window. Both retries reproduce the original deployment-keyed HMAC replacement pair without creating another credential branch or extending expiration; retries beyond that bound return `temporarily_unavailable`, while replay after the window still revokes the complete family. Schema-2 refresh state migrates in place to schema 3.
+- Normalize unexpected outer-Worker failures to a structured retryable `502 worker_gateway_error` instead of allowing `scriptThrewException`/Cloudflare 1101 to surface as a generic account connection failure. Logged error classes contain only error names/codes, never exception messages.
+- Retry an internal terminal WebSocket subscription with bounded delays after transport closure or retryable 429/5xx responses. Normal streamed calls retain the fixed two-request Durable Object path; failure recovery is capped at three subscription attempts.
+- Stop reading request bodies immediately after a declared or observed size violation instead of draining attacker-controlled bytes. Permission and I/O failures during write-path and workspace traversal checks now propagate rather than being misclassified as missing files.
+- Make partial application and skill discovery explicit through bounded path-projected warnings and coarse error classes. Optional `session_bootstrap` failure remains non-fatal but is now visible in Worker observability.
+- Bound account-administration responses to one MiB, cancel oversized bodies, and require successful replies to be JSON objects. Generated SSH key registration now attempts both cleanup targets and reports incomplete rollback instead of silently leaving an unregistered private key.
+- Add a fixed browser-extension error boundary, remove raw debugger details from successful fallback results, and enforce the 32-operation concurrency ceiling independently inside the extension. Error-cause inspection is cycle-aware and capped at eight levels.
+
+### Quota and deployment hardening
+
+- Serve all public discovery metadata and unknown-path 404 responses in the outer Worker. Only an exact stateful route-and-method allowlist can reach the rate limiter and Durable Object; invalid methods are rejected at the stateless edge.
+- Add a Cloudflare Rate Limiting binding before Durable Object dispatch. Binding failure is fail-open because it is a quota guard rather than an authorization boundary; OAuth, session, and role checks remain inside the Durable Object.
+- Coalesce Durable Object alarms: an already scheduled earlier alarm is reused instead of being rewritten on every daemon heartbeat, and empty alarm state avoids redundant deletes.
+- Report refresh outcomes, estimated resumable-stream row writes, and alarm set/delete/no-op counters in Worker observability. Regression tests hold a normal stream to four storage-row writes before expiry cleanup.
+- Rate-limit repeated edge degradation logs and report suppressed-event counts, while redacting sensitive field names. Remove duplicate `waitUntil` registration for one streamed terminal operation.
+- Add hard critical-coverage thresholds for every new OAuth, stream, metadata, quota, edge-logging, and filesystem-state module rather than relying only on line-count architecture checks.
+- Split OAuth refresh exchange, token issuance, terminal subscription, public metadata, and edge quota guards into focused modules rather than raising architecture limits.
+
 ## 3.0.0-beta.17 - 2026-07-26
 
 ### Fixed

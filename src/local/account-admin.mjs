@@ -5,6 +5,7 @@ import { encodeDeviceSessionCertificate, signWithDeviceSessionIdentity, validate
 import { BridgeError } from "./errors.mjs";
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const MAX_ADMIN_RESPONSE_BYTES = 1024 * 1024;
 
 export function generateAccountPassword() {
   return `account_password_${randomBytes(32).toString("base64url")}`;
@@ -84,13 +85,79 @@ export class AccountAdminClient {
       throw new BridgeError("network_error", "account administration request failed", { cause: error, retryable: true });
     });
     if (response.status === 204) return { removed: true };
-    const payload = await response.json().catch(() => ({}));
+    const payload = await readAdminJsonResponse(response);
     if (!response.ok) {
       const message = typeof payload.message === "string" ? payload.message : typeof payload.error === "string" ? payload.error : `account administration failed (${response.status})`;
       throw new BridgeError(response.status === 404 ? "not_found" : response.status === 409 ? "conflict" : response.status === 401 ? "authentication_failed" : "invalid_request", message);
     }
     return payload;
   }
+}
+
+
+async function readAdminJsonResponse(response) {
+  const declared = Number(response.headers.get("content-length") || "0");
+  if (Number.isFinite(declared) && declared > MAX_ADMIN_RESPONSE_BYTES) {
+    await cancelResponseBody(response.body);
+    throw new BridgeError("invalid_response", "account administration response exceeded the size limit");
+  }
+  if (!response.body) {
+    if (response.ok) throw new BridgeError("invalid_response", "account administration response was empty");
+    return {};
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      bytes += value.byteLength;
+      if (bytes > MAX_ADMIN_RESPONSE_BYTES) {
+        await cancelReader(reader);
+        throw new BridgeError("invalid_response", "account administration response exceeded the size limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  let payload;
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(concatBytes(chunks, bytes));
+    payload = JSON.parse(text);
+  } catch (cause) {
+    if (response.ok) {
+      throw new BridgeError("invalid_response", "account administration response was not valid JSON", { cause });
+    }
+    return {};
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    if (response.ok) throw new BridgeError("invalid_response", "account administration response was not a JSON object");
+    return {};
+  }
+  return payload;
+}
+
+async function cancelResponseBody(body) {
+  if (!body) return;
+  const reader = body.getReader();
+  try { await cancelReader(reader); } finally { reader.releaseLock(); }
+}
+
+async function cancelReader(reader) {
+  try { await reader.cancel("response size limit reached"); } catch { /* cleanup only */ }
+}
+
+function concatBytes(chunks, bytes) {
+  const output = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
 }
 
 export function accountAdminRequestHeaders({

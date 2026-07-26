@@ -1,7 +1,7 @@
 import { normalizeAccountRole, type AccountRole } from "./access.ts";
 
 const OAUTH_STORE_SCHEMA_VERSION = 1;
-const OAUTH_REFRESH_STORE_SCHEMA_VERSION = 2;
+const OAUTH_REFRESH_STORE_SCHEMA_VERSION = 3;
 export const OFFLINE_ACCESS_SCOPE = "offline_access";
 const PASSWORD_TOKEN_PATTERN = /^[a-z][a-z0-9_]{2,31}_[A-Za-z0-9_-]{43}$/;
 const ACCOUNT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/;
@@ -70,6 +70,9 @@ export interface ConsumedOAuthRefreshToken {
   family_id: string;
   consumed_at: number;
   expires_at: number;
+  retry_until?: number;
+  retry_issues?: number;
+  source?: OAuthRefreshToken;
 }
 
 export interface RevokedOAuthRefreshFamily {
@@ -157,7 +160,15 @@ export function isCurrentOAuthRefreshStore(value: unknown): value is OAuthRefres
 export function upgradeOAuthRefreshStore(value: unknown): OAuthRefreshStore | null {
   if (isCurrentOAuthRefreshStore(value)) return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const legacy = value as { schema_version?: unknown; tokens?: unknown };
+  const legacy = value as { schema_version?: unknown; tokens?: unknown; consumed?: unknown; revoked_families?: unknown };
+  if (legacy.schema_version === 2 && isRecord(legacy.tokens) && isRecord(legacy.consumed) && isRecord(legacy.revoked_families)) {
+    return {
+      schema_version: OAUTH_REFRESH_STORE_SCHEMA_VERSION,
+      tokens: legacy.tokens as OAuthRefreshStore["tokens"],
+      consumed: legacy.consumed as OAuthRefreshStore["consumed"],
+      revoked_families: legacy.revoked_families as OAuthRefreshStore["revoked_families"],
+    };
+  }
   if (legacy.schema_version !== 1 || !isRecord(legacy.tokens)) return null;
   const upgraded = emptyOAuthRefreshStore();
   const now = Math.floor(Date.now() / 1000);
