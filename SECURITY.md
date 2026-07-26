@@ -132,7 +132,7 @@ Version 3 has no long-lived `ACCOUNT_ADMIN_SECRET`. Account and OAuth-client adm
 - timestamp;
 - random nonce.
 
-The Worker verifies the root certificate, session signature, bounded timestamp, body hash, and nonce replay state. Nonce capacity fails closed instead of evicting live replay markers.
+The Worker verifies the root certificate, session signature, bounded timestamp, body hash, and nonce replay state. Nonce capacity fails closed instead of evicting live replay markers. The local administration client accepts at most one MiB, cancels oversized responses, and requires every successful non-empty reply to be a JSON object; malformed success cannot be mistaken for an empty valid result.
 
 Account passwords are generated 256-bit tokens. The Worker stores independent salted verifiers, not plaintext passwords. A generated password is printed once by the command that creates or rotates it.
 
@@ -174,6 +174,8 @@ The browser broker:
 
 These controls do not make web content trustworthy. Pages may contain prompt injection, deceptive labels, hidden consequences, changing UI state, inaccessible cross-origin frames, or high-value authenticated sessions. Machine Bridge cannot prove the extension is loaded in an isolated profile.
 
+The extension independently caps active operations at 32. Its public error boundary returns only fixed or allowlisted guidance; raw Chrome, DevTools, page, URL, selector, filesystem-path, account-shaped, and credential-shaped exception text is not forwarded to a remote client. Successful trusted-input fallback likewise reports a fixed reason rather than the local debugger failure.
+
 After trusted input dispatch begins, an ambiguous failure is reported as unknown outcome and is not automatically replayed.
 
 Local resources may be injected without returning their bytes through MCP, but the destination page or application still receives them. Screenshots and page source can themselves contain secrets.
@@ -192,15 +194,15 @@ Sensitive and persistence targets are owner-only. Generic remote file tools cann
 
 Direct processes use argv without shell parsing. Shell expansion is available only through the explicit shell tool.
 
-Process counts, stdin, output, timeouts, retained sessions, and tool-call concurrency are bounded. Timeout, cancellation, disconnect, daemon replacement, and shutdown use process-tree termination with bounded graceful and forced phases.
+Process counts, stdin, output, timeouts, retained sessions, and tool-call concurrency are bounded. Timeout, explicit cancellation, reconnect-grace expiry, runtime shutdown, and non-recoverable daemon replacement use process-tree termination with bounded graceful and forced phases. A transient relay or HTTP/SSE disconnect is not cancellation.
 
-Interactive process sessions die with runtime disconnect or replacement. Retained output sessions and process control are bound to account, account version, OAuth client, and refresh family.
+Interactive process sessions die when their owning runtime stops or is replaced; an ordinary same-process relay reconnect does not itself destroy them. Retained output sessions and process control are bound to account, account version, OAuth client, and refresh family.
 
 The daemon does not enforce universal CPU, memory, disk, or network quotas. An authorized owner process can still exhaust host or external resources.
 
 ## Local resources and managed jobs
 
-Registered resources store canonical paths and bounded metadata, not file contents. Private resource files require restrictive permissions on Unix-like systems unless explicitly overridden.
+Registered resources store canonical paths and bounded metadata, not file contents. Private resource files require restrictive permissions on Unix-like systems unless explicitly overridden. Generated SSH private-key bytes are never returned through MCP. If state registration fails after a new key pair is created, both files are removed; failure to complete that rollback is surfaced as a compound error rather than silently leaving an unregistered private key.
 
 At job acceptance, referenced resources are reopened, bounded, hashed, and copied into a private runtime area. Changed or unavailable resources fail closed. Environment injection may be visible to same-user process inspection; private file-path substitution or stdin is generally safer.
 

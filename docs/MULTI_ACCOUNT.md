@@ -107,7 +107,7 @@ Authorization codes bind:
 
 Access and refresh tokens additionally bind to the deployment token version and refresh-family ID. Token values are stored as SHA-256 lookup keys.
 
-Access tokens last fifteen minutes. Refresh tokens rotate on every use, have a fourteen-day idle limit and thirty-day family limit, and leave bounded replay markers. Reuse of a consumed refresh token revokes the complete family, including active access tokens.
+Access tokens last fifteen minutes. Refresh tokens rotate on every use, have a fourteen-day idle limit and thirty-day family limit, and leave bounded replay markers. To tolerate a lost response or concurrent hosted-client refresh, the same consumed token may return the same HMAC-derived replacement pair at most twice during a 30-second window. These retries do not create new credential branches or extend expiration. Further in-window attempts are rate-limited; reuse after that window revokes the complete family, including active access tokens.
 
 A refresh request also verifies that the client remains bound to the current account version and role.
 

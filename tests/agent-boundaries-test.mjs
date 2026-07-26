@@ -41,6 +41,16 @@ try {
   assert(discovered.skills.map((skill) => skill.name).join(",") === "alpha-skill,beta-skill", "skill discovery lost deterministic ordering or lowercase entrypoint support");
   assert(discovered.warnings.length === 1 && discovered.warnings[0].message.includes("requires non-empty name and description"), "invalid skill metadata was not bounded into a warning");
 
+  const brokenLink = join(skillRoot, "broken-skill-link");
+  if (await createSymlink(join(skillRoot, "missing-target"), brokenLink, "dir")) {
+    const withBrokenLink = await discoverLocalSkills(discoveryOptions({ skillRoots: [skillRoot] }));
+    const brokenWarning = withBrokenLink.warnings.find((warning) => warning.entrypoint.endsWith("broken-skill-link"));
+    assert(brokenWarning, "broken skill symlink was silently omitted without a bounded warning");
+    assert(!brokenWarning.message.includes(root) && brokenWarning.message.includes("not_found"),
+      "skill warning leaked an absolute path instead of a coarse error class");
+    await rm(brokenLink, { force: true });
+  }
+
   const filtered = await discoverLocalSkills(discoveryOptions({ skillRoots: [skillRoot], query: "beta" }));
   assert(filtered.skills.length === 1 && filtered.skills[0].name === "beta-skill", "skill query did not filter metadata");
   const limited = await discoverLocalSkills(discoveryOptions({ skillRoots: [skillRoot], maxResults: 1 }));

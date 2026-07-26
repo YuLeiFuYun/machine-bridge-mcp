@@ -2,7 +2,9 @@ import {
   emptyOAuthRefreshStore,
   isCurrentOAuthRefreshStore,
   upgradeOAuthRefreshStore,
+  type ConsumedOAuthRefreshToken,
   type OAuthRefreshStore,
+  type OAuthRefreshToken,
   type OAuthStore,
 } from "./oauth-state.ts";
 import { HttpError } from "./http.ts";
@@ -10,6 +12,8 @@ import { HttpError } from "./http.ts";
 export const OAUTH_REFRESH_STORE_KEY = "oauth-refresh";
 const MAX_CONSUMED_REFRESH_TOKENS = 4096;
 const MAX_REVOKED_REFRESH_FAMILIES = 1024;
+export const OAUTH_REFRESH_RETRY_GRACE_SECONDS = 30;
+export const MAX_REFRESH_RETRY_ISSUES = 2;
 const TOKEN_HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const FAMILY_ID_PATTERN = /^mcp_family_[A-Za-z0-9_-]{43}$/;
 
@@ -64,18 +68,39 @@ export function recordConsumedRefreshToken(
   oauthStore: OAuthStore,
   store: OAuthRefreshStore,
   tokenHash: string,
-  familyId: string,
+  source: OAuthRefreshToken,
   expiresAt: number,
   consumedAt = Math.floor(Date.now() / 1000),
 ): void {
-  if (!TOKEN_HASH_PATTERN.test(tokenHash) || !FAMILY_ID_PATTERN.test(familyId)) {
+  if (!TOKEN_HASH_PATTERN.test(tokenHash) || !FAMILY_ID_PATTERN.test(source.family_id)) {
     throw new Error("consumed refresh-token identity is invalid");
   }
   if (!Number.isSafeInteger(consumedAt) || !Number.isSafeInteger(expiresAt) || consumedAt <= 0 || expiresAt <= consumedAt) {
     throw new Error("consumed refresh-token lifetime is invalid");
   }
-  store.consumed[tokenHash] = { family_id: familyId, consumed_at: consumedAt, expires_at: expiresAt };
+  store.consumed[tokenHash] = {
+    family_id: source.family_id,
+    consumed_at: consumedAt,
+    expires_at: expiresAt,
+    retry_until: Math.min(expiresAt, consumedAt + OAUTH_REFRESH_RETRY_GRACE_SECONDS),
+    retry_issues: 0,
+    source: { ...source },
+  };
   pruneOAuthRefreshReplayState(store, oauthStore);
+}
+
+export function consumedRefreshRetrySource(
+  marker: ConsumedOAuthRefreshToken,
+  now = Math.floor(Date.now() / 1000),
+): OAuthRefreshToken | null {
+  if (!marker.source || !Number.isSafeInteger(marker.retry_until) || marker.retry_until! < now) return null;
+  if (!Number.isSafeInteger(marker.retry_issues) || marker.retry_issues! < 0 || marker.retry_issues! >= MAX_REFRESH_RETRY_ISSUES) return null;
+  return { ...marker.source };
+}
+
+export function recordConsumedRefreshRetry(marker: ConsumedOAuthRefreshToken): void {
+  const current = Number.isSafeInteger(marker.retry_issues) ? marker.retry_issues! : 0;
+  marker.retry_issues = current + 1;
 }
 
 export function pruneOAuthRefreshReplayState(store: OAuthRefreshStore, oauthStore?: OAuthStore): boolean {
@@ -102,8 +127,38 @@ export function pruneOAuthRefreshReplayState(store: OAuthRefreshStore, oauthStor
 
 function validRefreshStoreRecords(store: OAuthRefreshStore): boolean {
   return Object.entries(store.tokens).every(([key, token]) => (
+    TOKEN_HASH_PATTERN.test(key) && validRefreshTokenRecord(token)
+  )) && Object.entries(store.consumed).every(([key, token]) => (
     TOKEN_HASH_PATTERN.test(key)
     && plainRecord(token)
+    && FAMILY_ID_PATTERN.test(token.family_id)
+    && validTimestamp(token.consumed_at)
+    && validTimestamp(token.expires_at)
+    && token.consumed_at < token.expires_at
+    && (token.retry_until === undefined || (
+      validTimestamp(token.retry_until)
+      && token.retry_until >= token.consumed_at
+      && token.retry_until <= token.expires_at
+    ))
+    && (token.retry_issues === undefined || (
+      Number.isSafeInteger(token.retry_issues)
+      && token.retry_issues >= 0
+      && token.retry_issues <= MAX_REFRESH_RETRY_ISSUES
+    ))
+    && (token.source === undefined || validRefreshTokenRecord(token.source))
+    && ((token.source === undefined && token.retry_until === undefined && token.retry_issues === undefined)
+      || (token.source !== undefined && token.retry_until !== undefined && token.retry_issues !== undefined
+        && token.source.family_id === token.family_id))
+  )) && Object.entries(store.revoked_families).every(([familyId, value]) => (
+    FAMILY_ID_PATTERN.test(familyId)
+    && plainRecord(value)
+    && value.reason === "replay"
+    && validTimestamp(value.expires_at)
+  ));
+}
+
+function validRefreshTokenRecord(token: OAuthRefreshToken): boolean {
+  return plainRecord(token)
     && /^mcp_client_[A-Za-z0-9_-]{43}$/.test(token.client_id)
     && /^acct_[A-Za-z0-9_-]{20,96}$/.test(token.account_id)
     && Number.isSafeInteger(token.account_version)
@@ -122,20 +177,7 @@ function validRefreshStoreRecords(store: OAuthRefreshStore): boolean {
     && validTimestamp(token.expires_at)
     && validTimestamp(token.family_expires_at)
     && token.issued_at < token.expires_at
-    && token.expires_at <= token.family_expires_at
-  )) && Object.entries(store.consumed).every(([key, token]) => (
-    TOKEN_HASH_PATTERN.test(key)
-    && plainRecord(token)
-    && FAMILY_ID_PATTERN.test(token.family_id)
-    && validTimestamp(token.consumed_at)
-    && validTimestamp(token.expires_at)
-    && token.consumed_at < token.expires_at
-  )) && Object.entries(store.revoked_families).every(([familyId, value]) => (
-    FAMILY_ID_PATTERN.test(familyId)
-    && plainRecord(value)
-    && value.reason === "replay"
-    && validTimestamp(value.expires_at)
-  ));
+    && token.expires_at <= token.family_expires_at;
 }
 
 function validTimestamp(value: unknown): value is number {

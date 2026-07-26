@@ -170,7 +170,7 @@ The first start performs these operations:
 
 The foreground command remains attached to the terminal. Keep it running while testing. The remote Worker cannot execute local tools when no authenticated daemon is connected.
 
-The Worker name is a persistent workspace identity, not a retry counter. A successful Wrangler upload is recorded before health verification, so a later timeout does not require a new name and does not make the next start upload again. Supplying a different `--worker-name` for an initialized workspace requires `--force-worker` because it intentionally creates/replaces a separate Cloudflare Worker identity.
+The Worker name is a persistent workspace identity, not a retry counter. A successful Wrangler upload is recorded before health verification, so a later timeout does not require a new name and does not make the next start upload again. Supplying a different `--worker-name` for an initialized workspace requires `--force-worker` because it intentionally creates/replaces a separate Cloudflare Worker identity. The printed `workers.dev` MCP URL is the standard public endpoint and requires no separately owned domain.
 
 To run only in the background after setup:
 

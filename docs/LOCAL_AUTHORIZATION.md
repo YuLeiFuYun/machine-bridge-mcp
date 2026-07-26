@@ -36,7 +36,7 @@ Dynamic OAuth registration creates an untrusted client record. The first success
 - the account role;
 - the OAuth client ID.
 
-A client cannot silently switch to another account. Account disablement, role changes, password rotation, client revocation, token-version rotation, and refresh-token replay invalidate the relevant credentials.
+A client cannot silently switch to another account. Account disablement, role changes, password rotation, client revocation, token-version rotation, and refresh-token replay outside the bounded concurrent-refresh window invalidate the relevant credentials.
 
 Inspect trusted clients locally:
 

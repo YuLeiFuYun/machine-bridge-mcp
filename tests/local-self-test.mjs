@@ -813,6 +813,8 @@ function cliSelfTest() {
   validatePositionals("client-config", { _: ["codex"] });
   validatePositionals("resource", { _: ["add", "test-key", "/tmp/key"] });
   validatePositionals("resource", { _: ["generate-ssh-key", "test-key", "/tmp/key"] });
+  validatePositionals("account", { _: ["clients"] });
+  validatePositionals("account", { _: ["revoke-client", `mcp_client_${"a".repeat(43)}`] });
   validatePositionals("full-test", { _: ["/tmp/project"] });
   validatePositionals("job", { _: ["read", "job_abcdefghijklmnopqrstuvwxyz"] });
   validatePositionals("job", { _: ["submit", "/tmp/plan.json"] });
@@ -1167,7 +1169,7 @@ async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const workerModules = await Promise.all([
     "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
-    "oauth-controller.ts", "oauth-authorization-page.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts", "daemon-liveness.ts",
+    "oauth-token-issuance.ts", "oauth-refresh-exchange.ts", "oauth-controller.ts", "oauth-authorization-page.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts", "daemon-liveness.ts",
     "daemon-sockets.ts", "runtime-alarm.ts", "mcp-jsonrpc.ts", "websocket-protocol.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");

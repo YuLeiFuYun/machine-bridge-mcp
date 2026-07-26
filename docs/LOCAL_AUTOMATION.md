@@ -93,7 +93,7 @@ Menu-bar and menu subtrees are not recursively expanded by default. This keeps m
 
 ## Capability discovery and automatic selection
 
-`resolve_task_capabilities` rescans instruction files, skills, explicit/automatic package commands, and relevant local automation metadata on every call. It ranks matching skills and commands, optionally loads the best skill, and compares every canonical-full task with cached installed-application names, so a task that directly names an app does not need generic “app/window” wording. Application inventory is refreshed after a bounded cache interval.
+`resolve_task_capabilities` rescans instruction files, skills, explicit/automatic package commands, and relevant local automation metadata on every call. It ranks matching skills and commands, optionally loads the best skill, and compares every canonical-full task with cached installed-application names, so a task that directly names an app does not need generic “app/window” wording. Application inventory is refreshed after a bounded cache interval. Per-root discovery failures are returned as bounded `warnings`, and capability resolution reports `application_discovery.available`, warning count, truncation, and a coarse error class instead of silently treating an unreadable inventory as an empty successful scan.
 
 This is the strongest reliable server-side automation boundary available through MCP: discovery, refresh, ranking, and progressive skill loading are automatic. The MCP host still owns the model loop and decides whether a recommended tool is exposed, approved, or invoked. Machine Bridge cannot force ChatGPT web or another host to make a call that the host declines.
 

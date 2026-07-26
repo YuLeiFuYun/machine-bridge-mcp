@@ -10,6 +10,8 @@ export class WorkerObservability {
   private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
   private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
   private readonly streamTransport = { subscribers_opened: 0, subscribers_replaced: 0, terminal_pushes: 0, terminal_recipients: 0, protocol_errors: 0 };
+  private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
+  private readonly durableBudget = { stream_rows_written_estimate: 0, alarm_sets: 0, alarm_deletes: 0, alarm_noops: 0 };
   private readonly errors = new Map<string, number>();
   private readonly tools = new Map<string, { started: number; completed: number; failed: number; active: number }>();
 
@@ -43,6 +45,7 @@ export class WorkerObservability {
   }
 
   unmatchedResult(): void { this.calls.unmatched_results += 1; }
+  recordError(code: string): void { this.incrementError(code); }
 
   socketCandidate(): void { this.sockets.candidates += 1; }
   socketAuthenticated(): void { this.sockets.authenticated += 1; }
@@ -68,6 +71,20 @@ export class WorkerObservability {
     this.incrementError("stream_subscriber_protocol_error");
   }
 
+  oauthRefreshEvent(event: "rotated" | "retry_issued" | "retry_exhausted" | "family_revoked" | "rejected"): void {
+    this.oauthRefresh[event] += 1;
+  }
+
+  streamStorageRowsWritten(rows: number): void {
+    this.durableBudget.stream_rows_written_estimate += Math.max(0, Math.floor(rows));
+  }
+
+  runtimeAlarmMutation(action: "set" | "delete" | "noop"): void {
+    if (action === "set") this.durableBudget.alarm_sets += 1;
+    else if (action === "delete") this.durableBudget.alarm_deletes += 1;
+    else this.durableBudget.alarm_noops += 1;
+  }
+
   snapshot(): Record<string, unknown> {
     return {
       uptime_ms: Math.max(0, performance.now() - this.startedAt),
@@ -75,6 +92,8 @@ export class WorkerObservability {
       calls: { ...this.calls },
       sockets: { ...this.sockets },
       stream_transport: { ...this.streamTransport },
+      oauth_refresh: { ...this.oauthRefresh },
+      durable_budget: { ...this.durableBudget },
       errors: Object.fromEntries([...this.errors.entries()].sort(([left], [right]) => left.localeCompare(right))),
       tools: Object.fromEntries([...this.tools.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, metric]) => [name, { ...metric }])),
     };

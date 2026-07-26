@@ -120,6 +120,18 @@ A rollback must restore together:
 - the prior browser extension.
 
 Do not roll back by editing version or schema fields, copying selected credential files, or restoring only the Worker. Prefer fixing forward when a complete backup is unavailable.
+## Version 3.0.0-beta.18
+
+Beta.18 replaces beta.17 for hosted clients that experienced intermittent account connection loss during refresh rotation. Upgrade Worker, daemon/CLI, and browser-extension metadata together. Existing refresh state migrates from schema 2 to schema 3 without credential deletion.
+
+Activate the candidate through the standard owner command:
+
+```sh
+npm run release:candidate:activate -- --allow-worker-deploy
+```
+
+The existing same-name `workers.dev` endpoint remains the public MCP URL, so users do not need to own a domain or update the hosted client endpoint solely for this upgrade.
+
 ## Version 3.0.0-beta.15
 
 Beta.15 replaces blocked beta.14. Upgrade Worker, daemon/CLI, and browser-extension metadata together through the normal candidate activation flow. Streamed daemon calls now use event-driven settlement: the initiating Durable Object request returns after registration and send, while later WebSocket, cancellation, timeout, send-failure, or reconnect-expiry events persist the terminal result. Clients that support standard resumption should reconnect and reinitialize so they send `MCP-Session-Id` and use `GET /mcp` with `Last-Event-ID`; older JSON-only clients retain single-response behavior but cannot recover a disposed response stream.

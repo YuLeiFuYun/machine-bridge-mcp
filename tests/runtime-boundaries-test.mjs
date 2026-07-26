@@ -5,12 +5,14 @@ import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-rep
 import { diagnoseRuntime } from "../src/local/runtime-diagnostics.mjs";
 import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-capabilities.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
+import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-inspection.mjs";
 import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
 
 await testRuntimeReporting();
 await testRuntimeDiagnostics();
 await testRuntimeCapabilities();
 await testRuntimeResourceService();
+await testPathInspectionFailures();
 console.log("runtime boundary services test ok");
 
 async function testRuntimeReporting() {
@@ -199,9 +201,22 @@ async function testRuntimeCapabilities() {
     policy: policyProfile("full"),
   }, { task: "Open Google Chrome and fill a browser form" }, {});
   assert(full.application_matches[0].name === "Google Chrome", "application ranking lost an exact task match");
+  assert(full.application_discovery.available === true && full.application_discovery.warning_count === 0,
+    "successful application discovery was not represented in capability routing");
   assert(full.recommended_tools.includes("operate_local_application"), "application match did not add structured tools");
   assert(full.browser_backend?.existing_profile === true, "full capability resolution omitted existing-profile browser backend");
   assert(resolutions.length === 1, "capability routing observation was not recorded");
+
+  const degradedFull = await resolveTaskCapabilities({
+    agentContextManager: { resolveTaskCapabilities: async () => ({ recommended_tools: [] }) },
+    appAutomationManager: { listApplications: async () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); } },
+    capabilityObserver: { recordResolution() {} },
+    policy: policyProfile("full"),
+  }, { task: "open app" });
+  assert(degradedFull.application_matches.length === 0
+    && degradedFull.application_discovery.available === false
+    && degradedFull.application_discovery.error_class === "permission_denied",
+  "application discovery failure was silently converted to an empty successful result");
 
   const review = await resolveTaskCapabilities({
     agentContextManager: { resolveTaskCapabilities: async () => ({ recommended_tools: [] }) },
@@ -210,6 +225,7 @@ async function testRuntimeCapabilities() {
     policy: policyProfile("review"),
   }, { task: "open app" });
   assert(review.application_matches.length === 0 && review.browser_backend === null, "review capability resolution expanded automation authority");
+  assert(review.application_discovery.reason === "policy", "policy-disabled application discovery was reported as an operational failure");
 }
 
 async function testRuntimeResourceService() {
@@ -237,6 +253,21 @@ async function testRuntimeResourceService() {
     assert(authorized.join(",") === "generate_ssh_key_resource", "runtime resource service bypassed tool authorization");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testPathInspectionFailures() {
+  const missing = Object.assign(new Error("missing"), { code: "ENOENT" });
+  assert(await pathEntryIfExists("ignored", async () => { throw missing; }) === null,
+    "missing path was not represented as absence");
+  assert(await openDirectoryIfExists("ignored", async () => { throw missing; }) === null,
+    "missing directory was not represented as absence");
+
+  for (const inspect of [pathEntryIfExists, openDirectoryIfExists]) {
+    const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+    let observed;
+    try { await inspect("ignored", async () => { throw denied; }); } catch (error) { observed = error; }
+    assert(observed === denied, "filesystem permission failure was misclassified as a missing path");
   }
 }
 

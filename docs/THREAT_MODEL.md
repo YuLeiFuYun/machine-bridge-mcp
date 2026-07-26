@@ -122,10 +122,10 @@ The implementation aims to preserve these invariants:
 - delegated process execution is accepted only when an OS sandbox is behaviorally verified;
 - direct argv execution is used unless the explicit shell tool is authorized;
 - confined paths are canonicalized and symbolic-link write escape is rejected;
-- request bodies, files, messages, output, logs, state, retained results, and concurrency are bounded;
+- request bodies, files, messages, output, logs, state, retained results, concurrency, and error-cause traversal are bounded; byte limits stop further source consumption rather than merely truncating retained data;
 - cancellation, timeout, disconnect, replacement, and shutdown have explicit process ownership and cleanup semantics;
 - candidate daemons and browser extensions cannot replace healthy incumbents before compatibility and readiness verification;
-- default logs and audit records omit secrets, arguments, contents, raw paths, form values, and output;
+- default logs, audit records, discovery warnings, browser responses, and administration errors omit secrets, arguments, contents, raw paths, form values, raw local exception text, and output;
 - multi-stage mutations are atomic or recoverable and do not silently claim partial success;
 - device-root rotation is two-phase and does not promote an undeployed key;
 - supply-chain actions are pinned, minimally permissioned, reviewed, and separately gated.
@@ -159,9 +159,13 @@ A compromised active owner client can exercise the daemon ceiling without a seco
 
 Use a narrower profile, separate OS account, container, or VM when prompts, repositories, clients, or workloads are mutually untrusted.
 
+### Public Worker endpoint and quota guards
+
+The default public endpoint remains the automatically provisioned `workers.dev` origin so ordinary users need no DNS zone or custom domain. The in-Worker Rate Limiting binding is deliberately a Durable Object burst guard, not an authentication boundary or an exact global quota accountant. It runs after a Worker invocation begins, is scoped by Cloudflare location, and currently uses one deployment-wide stateful bucket per location. A concentrated source can therefore cause a temporary localized denial for other clients sharing that location, while distributed traffic can still consume the account-wide Workers request allowance. Binding failure is fail-open to avoid turning a quota helper into an account outage. Operators who already control an external edge may add pre-Worker filtering independently, but the public package does not require or assume a private domain.
+
 ### Bearer clients
 
-DPoP is optional for interoperability. A Bearer token can be used by whoever possesses it until expiry or revocation. Short access-token lifetime, rotating refresh families, client binding, account versioning, and replay-family revocation reduce but do not eliminate token theft risk.
+DPoP is optional for interoperability. A Bearer token can be used by whoever possesses it until expiry or revocation. Short access-token lifetime, rotating refresh families, client binding, account versioning, a bounded identity-equivalent concurrency window, and post-window replay-family revocation reduce but do not eliminate token theft risk.
 
 ### Same-user interference
 
@@ -199,11 +203,11 @@ Regression suites cover:
 
 - account roles, trusted clients, account-version revocation, refresh-family rotation/replay, DPoP proofs, and non-escalatable effective authority;
 - root-certified ephemeral sessions, preflight nonce replay, daemon challenge binding, readiness, reconnect, and candidate replacement;
-- signed account administration, client revocation, and removal of the long-lived administration secret;
+- signed account administration, client revocation, bounded strict-JSON administration responses, and removal of the long-lived administration secret;
 - control-plane path denial, path canonicalization, symlink handling, sensitive/persistence targets, and object ownership;
 - delegated sandbox behavior and fail-closed platform detection;
-- process/session cleanup, managed-job lifecycle and recovery, state locks, atomic persistence, and destructive removal;
-- browser pairing, version/capability handshake, broker routing, sensitive input, and navigation controls;
+- process/session cleanup, generated-key rollback including cleanup failure, managed-job lifecycle and recovery, state locks, atomic persistence, and destructive removal;
+- browser pairing, version/capability handshake, broker routing, independent concurrency limits, public-error redaction, sensitive input, and navigation controls;
 - audit-chain integrity, privacy redaction, package contents, installation, release impact, dependency integrity, CodeQL, and Scorecard findings;
 - malformed, over-limit, concurrent, replayed, stale, and fault-injected inputs.
 

@@ -9,13 +9,15 @@ const root = await mkdtemp(join(tmpdir(), "mbm-app-automation-"));
 const applications = join(root, "Applications");
 await mkdir(join(applications, "Example.app"), { recursive: true });
 await mkdir(join(applications, "Utilities", "Nested Utility.app"), { recursive: true });
+const invalidApplicationRoot = join(root, "not-a-directory");
+await writeFile(invalidApplicationRoot, "not a directory", "utf8");
 const calls = [];
 let applicationClock = 0;
 const manager = new AppAutomationManager({
   policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
   platform: "darwin",
   home: root,
-  applicationRoots: [applications],
+  applicationRoots: [applications, invalidApplicationRoot],
   applicationCacheMs: 100,
   now: () => applicationClock,
   displayPath: (value) => value,
@@ -29,6 +31,9 @@ const manager = new AppAutomationManager({
 try {
   const listed = await manager.listApplications({ query: "example" });
   assert(listed.applications.length === 1 && listed.applications[0].name === "Example", "macOS application discovery failed");
+  assert(listed.warnings.length === 1 && typeof listed.warnings[0].error_class === "string"
+    && listed.warnings[0].error_class.length > 0,
+  "partial application discovery silently hid an unreadable root");
   const nested = await manager.listApplications({ query: "nested utility" });
   assert(nested.applications.length === 1 && nested.applications[0].name === "Nested Utility", "nested macOS application discovery failed");
   assert(listed.capabilities.arbitrary_script_execution === false, "application capabilities claim arbitrary script support");

@@ -63,7 +63,7 @@ Rules:
 - Adapters may translate data but should not duplicate policy or schemas.
 - Every protocol control message emitted by one side must be explicitly accepted, rejected, or version-gated by the other side, with an end-to-end contract test covering the message name and semantics.
 - State transitions are explicit; readiness is not inferred from a lower-level event. An open WebSocket is not authenticated until `hello_ack`, and authenticated transport is not service readiness until an end-to-end result probe has returned on the same relay session. Pre-ready work and premature readiness acknowledgements fail closed.
-- Every externally controlled input is bounded before expensive allocation, traversal, parsing, storage, or execution.
+- Every externally controlled input is bounded before expensive allocation, traversal, parsing, storage, or execution. A byte limit constrains bytes actually consumed and duration work, not only the subset retained in memory; once a declared or observed bound is crossed, cancel or close the source immediately.
 - Externally controlled string keys must not use prototype-chain membership or truthiness on ordinary objects. Use `Map`, `Set`, `Object.hasOwn`, or null-prototype records for command dispatch, enums, ACLs, form fields, registries, and other key-addressed contracts.
 - Repository text must not contain invisible ASCII controls other than tab, CR, and LF; architecture tests enforce this even when JavaScript syntax remains valid.
 - Persistent mutations use owner-only files, bounded no-follow reads, flushed atomic replacement, and integrity checks appropriate to the data.
@@ -72,7 +72,7 @@ Rules:
 - Exclusive locks use the shared complete-before-visible hard-link claim. Reclamation requires process identity plus a matching file snapshot/token; do not unlink a path merely because an earlier read looked stale.
 - Service providers normalize success/failure to one result contract. Definition removal follows the shared platform-stop → verified-daemon-stop → remove order.
 - Retry is limited to classified transient failures. Authentication, authorization, validation, integrity, and policy errors fail immediately.
-- Cleanup-only catches may be best effort, but primary failures must not be silently discarded.
+- Cleanup-only catches may be best effort, but primary failures must not be silently discarded. Rollback of newly created credentials, keys, or other sensitive artifacts is part of the primary integrity result: incomplete rollback must be reported explicitly after attempting every cleanup target.
 - New work should not increase an already broad orchestration module when the behavior has an independent lifecycle or test surface. Extract the domain first.
 
 `runtime.mjs` owns local tool semantics. `relay-connection.mjs` owns authenticated relay connection lifecycle. The CLI orchestrates them; it must not become the second implementation of either.

@@ -1,13 +1,12 @@
-importScripts("devtools-input.js", "browser-operations.js");
-
+importScripts("browser-error-boundary.js", "devtools-input.js", "browser-operations.js");
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 const MAX_RESULT_BYTES = 7 * 1024 * 1024;
 const BROWSER_EXTENSION_PROTOCOL = 3;
 const HANDSHAKE_TIMEOUT_MS = 3000;
+const MAX_ACTIVE_REQUESTS = 32;
 const activeRequests = new Map();
-
 chrome.runtime.onInstalled.addListener(() => { ensureReconnectAlarm(); void connectFromStorage(); });
 chrome.runtime.onStartup.addListener(() => { ensureReconnectAlarm(); void connectFromStorage(); });
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -21,7 +20,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 chrome.action.onClicked.addListener((tab) => void handleActionClick(tab));
-
 async function handleActionClick(tab) {
   if (tab?.id && parsePairingPage(tab.url)) {
     await confirmRepairFromTab(tab);
@@ -31,12 +29,10 @@ async function handleActionClick(tab) {
   const pairUrl = pairingUrlFromEndpoint(current.endpoint) || "http://127.0.0.1:39393/pair";
   await chrome.tabs.create({ url: pairUrl });
 }
-
 function pairingUrlFromEndpoint(endpoint) {
   const parsed = parseBrokerEndpoint(endpoint);
   return parsed ? `http://127.0.0.1:${parsed.port}/pair` : "";
 }
-
 function parsePairingPage(value) {
   let parsed;
   try { parsed = new URL(String(value || "")); } catch { return null; }
@@ -299,6 +295,12 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     closeSocketQuietly(ws, 1002, "duplicate browser request id");
     return;
   }
+  if (activeRequests.size >= MAX_ACTIVE_REQUESTS) {
+    if (!sendResponse(ws, message.id, false, null, "too many concurrent browser requests")) {
+      closeSocketQuietly(ws, 1011, "browser overload response delivery failed");
+    }
+    return;
+  }
   const state = { cancelled: false, timeoutMs: browserOperations().boundedRequestTimeout(message.timeout_ms), socket: ws };
   activeRequests.set(message.id, state);
   try {
@@ -309,7 +311,7 @@ async function handleMessage(ws, raw, onReady = () => {}) {
       closeSocketQuietly(ws, 1011, "browser response delivery failed");
     }
   } catch (error) {
-    if (!state.cancelled && !sendResponse(ws, message.id, false, null, String(error?.message || error).slice(0, 2000))) {
+    if (!state.cancelled && !sendResponse(ws, message.id, false, null, globalThis.__machineBridgeBrowserErrorBoundary.publicError(error))) {
       closeSocketQuietly(ws, 1011, "browser error delivery failed");
     }
   } finally {
@@ -335,7 +337,6 @@ function sendResponse(ws, id, ok, result, error = "") {
   }
   return sendSocketQuietly(ws, payload);
 }
-
 
 function browserOperations() {
   const api = globalThis.__machineBridgeBrowserOperations;

@@ -1,6 +1,6 @@
 import { DEFAULT_ACCOUNT_ROLE, normalizeAccountRole, type AccountRole } from "./access.ts";
 import { accountAdminAuthorized, consumeAccountAdminNonce, handleAccountAdminOperation } from "./account-admin.ts";
-import { exchangeOAuthToken } from "./oauth-tokens.ts";
+import { exchangeOAuthToken, type OAuthRefreshEvent } from "./oauth-tokens.ts";
 import {
   AUTH_BLOCK_SECONDS, accountByName, authorizationIdentity, emptyOAuthStore,
   isCurrentOAuthStore, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
@@ -44,13 +44,21 @@ export class OAuthController {
   private readonly env: OAuthControllerEnv;
   private readonly serverName: string;
   private readonly serverVersion: string;
+  private readonly onRefreshEvent?: (event: OAuthRefreshEvent) => void;
   private oauthQueue: Promise<void> = Promise.resolve();
 
-  constructor(ctx: DurableObjectState, env: OAuthControllerEnv, serverName: string, serverVersion: string) {
+  constructor(
+    ctx: DurableObjectState,
+    env: OAuthControllerEnv,
+    serverName: string,
+    serverVersion: string,
+    onRefreshEvent?: (event: OAuthRefreshEvent) => void,
+  ) {
     this.ctx = ctx;
     this.env = env;
     this.serverName = serverName;
     this.serverVersion = serverVersion;
+    this.onRefreshEvent = onRefreshEvent;
   }
 
   private async oauthStore(): Promise<OAuthStore> {
@@ -283,6 +291,7 @@ export class OAuthController {
       serverName: this.serverName,
       loadOAuthStore: () => this.oauthStore(),
       withLock: (callback) => this.withOAuthLock(callback),
+      onRefreshEvent: this.onRefreshEvent,
     });
   }
 

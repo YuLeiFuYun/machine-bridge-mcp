@@ -10,6 +10,7 @@ const localAutomationFiles = [
   join(root, "src", "local", "browser-bridge.mjs"),
   join(root, "src", "local", "browser-operation-service.mjs"),
   join(root, "browser-extension", "service-worker.js"),
+  join(root, "browser-extension", "browser-error-boundary.js"),
   join(root, "browser-extension", "browser-operations.js"),
   join(root, "browser-extension", "devtools-input.js"),
   join(root, "browser-extension", "page-automation.js"),
@@ -40,6 +41,7 @@ if (!brokerServerSource.includes("isAllowedExtensionOrigin(origin, EXPECTED_EXTE
   throw new Error("browser broker no longer pins WebSocket Origin to the packaged extension identity");
 }
 const serviceWorkerSource = readFileSync(join(root, "browser-extension", "service-worker.js"), "utf8");
+const browserErrorBoundarySource = readFileSync(join(root, "browser-extension", "browser-error-boundary.js"), "utf8");
 const browserOperationsSource = readFileSync(join(root, "browser-extension", "browser-operations.js"), "utf8");
 const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
 const appAutomationSource = readFileSync(join(root, "src", "local", "app-automation.mjs"), "utf8");
@@ -96,7 +98,13 @@ if (!appAutomationSource.includes("matchesList[payload.selector.index]")) {
 if (!appAutomationSource.includes("item.role === 'AXSecureTextField'") || !appAutomationSource.includes("includeValues && !item.sensitive")) {
   throw new Error("application UI inspection does not suppress secure field values");
 }
-if (!serviceWorkerSource.includes('importScripts("devtools-input.js", "browser-operations.js")')) throw new Error("browser service worker lost fixed browser module loading");
+if (!serviceWorkerSource.includes('importScripts("browser-error-boundary.js", "devtools-input.js", "browser-operations.js")')) {
+  throw new Error("browser service worker lost fixed browser module loading");
+}
+if (!browserErrorBoundarySource.includes("__machineBridgeBrowserErrorBoundary")
+    || !browserErrorBoundarySource.includes('return SAFE_EXACT.has(message) ? message : "browser operation failed"')) {
+  throw new Error("browser error boundary no longer defaults unclassified exceptions to a fixed public message");
+}
 if (!browserOperationsSource.includes('files: ["page-automation.js"]')) {
   throw new Error("browser operations module does not inject the fixed page automation module");
 }
@@ -114,6 +122,7 @@ for (const [name, source] of [
   ["src/worker/index.ts", workerSource],
   ["src/worker/websocket-protocol.ts", workerWebSocketProtocolSource],
   ["browser-extension/service-worker.js", serviceWorkerSource],
+  ["browser-extension/browser-error-boundary.js", browserErrorBoundarySource],
 ]) {
   if (/catch\s*(?:\([^)]*\))?\s*\{\s*\}/.test(source)) throw new Error(`${name} contains an unexplained empty catch`);
 }

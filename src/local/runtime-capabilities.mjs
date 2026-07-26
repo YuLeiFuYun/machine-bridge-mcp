@@ -1,3 +1,5 @@
+import { classifyOperationalError } from "./log.mjs";
+
 export async function sessionBootstrap({
   agentContextManager,
   appAutomationManager,
@@ -26,9 +28,18 @@ export async function resolveTaskCapabilities({
   const result = await agentContextManager.resolveTaskCapabilities(args, context);
   const task = String(args.task || "");
   if (policy.profile === "full") {
-    const applications = await appAutomationManager
-      .listApplications({ query: "", max_results: 500 }, context)
-      .catch(() => ({ applications: [] }));
+    let applications;
+    try {
+      applications = await appAutomationManager.listApplications({ query: "", max_results: 500 }, context);
+    } catch (error) {
+      applications = { applications: [], warnings: [{ error_class: classifyOperationalError(error) }], truncated: false };
+    }
+    result.application_discovery = {
+      available: !(applications.warnings?.length),
+      warning_count: applications.warnings?.length ?? 0,
+      truncated: applications.truncated === true,
+      ...(applications.warnings?.[0]?.error_class ? { error_class: applications.warnings[0].error_class } : {}),
+    };
     const lower = task.toLowerCase();
     result.application_matches = applications.applications
       .map((application) => ({ application, score: applicationMatchScore(lower, application) }))
@@ -38,6 +49,7 @@ export async function resolveTaskCapabilities({
       .map(({ application, score }) => ({ ...application, score }));
   } else {
     result.application_matches = [];
+    result.application_discovery = { available: false, warning_count: 0, truncated: false, reason: "policy" };
   }
   if (result.application_matches.length) {
     result.recommended_tools = [...new Set([

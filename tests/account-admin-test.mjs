@@ -37,6 +37,9 @@ const fetchImpl = async (url, options = {}) => {
   for (const name of ["X-Bridge-Admin-Scheme", "X-Bridge-Admin-Time", "X-Bridge-Admin-Nonce", "X-Bridge-Admin-Body-SHA256", "X-Bridge-Admin-Key", "X-Bridge-Admin-Signature", "X-Bridge-Device-Certificate"]) {
     assert(typeof options.headers[name] === "string" && options.headers[name], `account admin device-signature header was omitted: ${name}`);
   }
+  if (url.endsWith("/admin/clients") && options.method === "GET") {
+    return jsonResponse({ clients: [{ client_id: `mcp_client_${"c".repeat(43)}`, client_name: "Test Client" }] });
+  }
   if (options.method === "GET") return jsonResponse({ accounts, maximum: 64 });
   if (url.endsWith("/rotate-password")) return jsonResponse({ account: accounts[1] });
   if (options.method === "DELETE") return new Response(null, { status: 204 });
@@ -70,6 +73,11 @@ const client = new AccountAdminClient({ workerUrl: origin, sessionIdentity, fetc
 assert((await client.list()).accounts.length === 2, "account list response was not returned");
 assert((await client.find("reviewer")).account_id === accounts[1].account_id, "account lookup by name failed");
 assert((await client.find(accounts[0].account_id)).name === "owner", "account lookup by id failed");
+const listedClients = await client.listClients();
+assert(listedClients.clients.length === 1, "OAuth client list response was not returned");
+assert((await client.removeClient({ clientId: listedClients.clients[0].client_id })).removed === true,
+  "OAuth client removal response was not normalized");
+expectThrow(() => client.removeClient({ clientId: "invalid" }), "client id is invalid");
 await client.create({ name: "build-bot", role: "operator", password: generated });
 await client.update({ accountId: accounts[1].account_id, role: "editor", active: false });
 await client.rotatePassword({ accountId: accounts[1].account_id, password: generated });
@@ -80,7 +88,55 @@ expectThrow(() => new AccountAdminClient({ workerUrl: "https://bridge.example.te
 expectThrow(() => client.create({ name: "INVALID NAME", role: "reviewer", password: generated }), "account name");
 expectThrow(() => client.create({ name: "a", role: "reviewer", password: generated }), "3-64");
 
+const invalidJsonClient = new AccountAdminClient({
+  workerUrl: origin,
+  sessionIdentity,
+  fetchImpl: async () => new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }),
+});
+await expectReject(() => invalidJsonClient.list(), "not valid JSON");
+
+let oversizedCancelled = false;
+const oversizedClient = new AccountAdminClient({
+  workerUrl: origin,
+  sessionIdentity,
+  fetchImpl: async () => new Response(new ReadableStream({
+    pull(controller) { controller.enqueue(new Uint8Array(600 * 1024)); },
+    cancel() { oversizedCancelled = true; },
+  }, { highWaterMark: 0 }), { status: 200, headers: { "content-type": "application/json" } }),
+});
+await expectReject(() => oversizedClient.list(), "size limit");
+assert(oversizedCancelled, "oversized account-admin response was not cancelled after crossing the bound");
+
+const declaredOversizedClient = new AccountAdminClient({
+  workerUrl: origin,
+  sessionIdentity,
+  fetchImpl: async () => new Response(new ReadableStream({
+    pull(controller) { controller.enqueue(new TextEncoder().encode("{}")); },
+    cancel() { oversizedCancelled = true; },
+  }, { highWaterMark: 0 }), { status: 200, headers: { "content-length": String(2 * 1024 * 1024) } }),
+});
+await expectReject(() => declaredOversizedClient.list(), "size limit");
+
+const cancellationFailureClient = new AccountAdminClient({
+  workerUrl: origin,
+  sessionIdentity,
+  fetchImpl: async () => new Response(new ReadableStream({
+    pull(controller) { controller.enqueue(new TextEncoder().encode("{}")); },
+    cancel() { throw new Error("synthetic cancellation failure"); },
+  }, { highWaterMark: 0 }), { status: 200, headers: { "content-length": String(2 * 1024 * 1024) } }),
+});
+await expectReject(() => cancellationFailureClient.list(), "size limit");
+
 console.log("account authorization/device-signed admin client test ok");
+
+
+async function expectReject(callback, message) {
+  try { await callback(); } catch (error) {
+    assert(String(error?.message || error).includes(message), `unexpected error: ${error?.message || error}`);
+    return;
+  }
+  throw new Error(`expected rejection containing: ${message}`);
+}
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
