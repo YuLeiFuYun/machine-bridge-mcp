@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
 import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
+import { accountRoleToolNames } from "../src/worker/access.ts";
+import { workspaceTools } from "../src/worker/tool-catalog.ts";
 
 let daemonInstanceSequence = 0;
 
@@ -505,6 +507,7 @@ try {
   assert(initialized.body.result?.protocolVersion === "2025-11-25", "initialize did not negotiate the latest supported protocol");
   assert(initialized.body.result?.serverInfo?.version === pkg.version, "initialize returned the wrong Worker version");
   assert(initialized.body.result?.capabilities?.tools, "initialize omitted tools capability");
+  assert(initialized.body.result.capabilities.tools.listChanged === false, "stable tool catalog did not declare listChanged=false");
   const primarySession = initialized.response.headers.get("mcp-session-id");
   assert(/^mcp_[A-Za-z0-9_-]{32}_[A-Za-z0-9_-]{43}$/.test(primarySession || ""), "initialize did not issue a valid MCP session id");
 
@@ -549,7 +552,13 @@ try {
   assert(unsupportedProtocol.body.error?.data?.supported?.includes("2025-11-25"), "unsupported protocol response omitted supported versions");
 
   const toolsWithoutDaemon = await callToolsList(base, ownerAccessToken, 3);
-  assert(toolsWithoutDaemon.length === 1 && toolsWithoutDaemon[0].name === "server_info", "disconnected Worker advertised unavailable local tools");
+  const stableOwnerToolNames = ["server_info", ...accountRoleToolNames("owner", workspaceTools.map((tool) => tool.name))].sort();
+  assert(JSON.stringify(toolsWithoutDaemon.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
+    "transient daemon absence changed the authenticated account tool catalog");
+  const unavailableWithoutDaemon = await callTool(base, ownerAccessToken, primarySession, 31, "list_dir", { path: "." });
+  assert(unavailableWithoutDaemon.result?.isError === true
+    && unavailableWithoutDaemon.result?.structuredContent?.error?.code === "unavailable",
+  "stable catalog did not fail closed when the daemon was unavailable");
 
   const oneTimePreflightHeaders = createDaemonPreflightHeaders(
     DAEMON_SESSION_IDENTITY,
@@ -565,6 +574,9 @@ try {
   const firstDaemon = await connectDaemon(base);
   daemonSockets.push(firstDaemon);
   await sendDaemonHello(firstDaemon, ["read_file", "write_file", "exec_command"]);
+  const toolsWithDaemon = await callToolsList(base, ownerAccessToken, 20);
+  assert(JSON.stringify(toolsWithDaemon.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
+    "daemon connection changed the stable authenticated account tool catalog");
   const firstStatus = await callServerInfo(base, ownerAccessToken, 21);
   assert(firstStatus.daemon?.connected === true, "first daemon did not become active after hello");
   assert(firstStatus.daemon?.tools?.includes("read_file"), "first daemon tools were not advertised");
@@ -935,10 +947,9 @@ try {
   assert(idlessToolCall.response.status === 200 && idlessToolCall.body.error?.code === -32600, "Worker accepted tools/call without a request id");
 
   const activeTools = await callToolsList(base, ownerAccessToken, 26);
-  assert(activeTools.some((tool) => tool.name === "server_info"), "active tool list omitted server_info");
-  assert(activeTools.some((tool) => tool.name === "list_dir"), "active tool list omitted daemon-advertised tool");
-  assert(activeTools.some((tool) => tool.name === "session_bootstrap"), "active tool list omitted session bootstrap");
-  assert(!activeTools.some((tool) => tool.name === "read_file"), "active tool list retained a replaced daemon tool");
+  assert(JSON.stringify(activeTools.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
+    "verified daemon replacement changed the stable owner tool catalog");
+  assert(activeTools.some((tool) => tool.name === "read_file"), "stable owner catalog omitted a policy-gated tool");
   assert(activeTools.find((tool) => tool.name === "list_dir")?.annotations?.readOnlyHint === true, "tool annotations were not returned");
 
   const reviewerTools = await callToolsList(base, reviewerToken, 27);
@@ -1402,6 +1413,12 @@ function toolCallRequest(origin, accessToken, sessionId, id, name, argumentsValu
     headers: mcpHeaders(accessToken, sessionId),
     body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: argumentsValue } }),
   });
+}
+
+async function callTool(origin, accessToken, sessionId, id, name, argumentsValue) {
+  const response = await toolCallRequest(origin, accessToken, sessionId, id, name, argumentsValue);
+  assert(response.response.status === 200, `${name} call failed: ${response.response.status}`);
+  return response.body;
 }
 
 async function callServerInfo(origin, accessToken, id) {

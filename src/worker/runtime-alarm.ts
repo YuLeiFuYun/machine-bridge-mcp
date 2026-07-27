@@ -4,14 +4,10 @@ import {
   daemonReadyDeadlineMs,
 } from "./daemon-liveness.ts";
 import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import type { McpPendingCallStore, PendingStreamCallView } from "./mcp-pending-call-store.ts";
 import type { PendingCallRegistry } from "./pending-calls.ts";
 import { closeWebSocketQuietly, sendWebSocketQuietly } from "./websocket-protocol.ts";
-
-interface AlarmStorage {
-  getAlarm(): Promise<number | null>;
-  setAlarm(scheduledTime: number | Date): Promise<void>;
-  deleteAlarm(): Promise<void>;
-}
+import { writeEarliestRuntimeAlarm, type AlarmStorage } from "./runtime-alarm-storage.ts";
 
 type InvalidateDaemonSocket = (
   socket: WebSocket,
@@ -23,6 +19,8 @@ type InvalidateDaemonSocket = (
 interface RuntimeAlarmContext {
   storage: AlarmStorage;
   pending: PendingCallRegistry;
+  durableCalls?: Pick<McpPendingCallStore, "due" | "nextDeadlineDelayMs">;
+  expireDurableCall?: (call: PendingStreamCallView) => Promise<void>;
   daemonRegistry: DaemonSocketRegistry;
   invalidateDaemonSocket: InvalidateDaemonSocket;
   onScheduleError: (error: unknown) => void;
@@ -31,7 +29,10 @@ interface RuntimeAlarmContext {
 
 export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Date.now()): Promise<void> {
   await context.pending.expireDue();
-  let nextDeadline = pendingAlarmDeadline(context.pending, now);
+  if (context.durableCalls && context.expireDurableCall) {
+    for (const call of await context.durableCalls.due(now)) await context.expireDurableCall(call);
+  }
+  let nextDeadline = await pendingAlarmDeadline(context, now);
   for (const socket of context.daemonRegistry.candidateSockets()) {
     const attachment = context.daemonRegistry.attachment(socket);
     const connectedAt = Date.parse(attachment?.connectedAt ?? "");
@@ -67,11 +68,17 @@ export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Da
     }
     nextDeadline = Math.min(nextDeadline, deadline);
   }
-  await writeRuntimeAlarm(context, nextDeadline, now);
+  await writeEarliestRuntimeAlarm({
+    storage: context.storage,
+    nextDeadline,
+    now,
+    onError: context.onScheduleError,
+    onMutation: context.onAlarmMutation,
+  });
 }
 
 export async function scheduleRuntimeAlarm(context: RuntimeAlarmContext, now = Date.now()): Promise<void> {
-  let nextDeadline = pendingAlarmDeadline(context.pending, now);
+  let nextDeadline = await pendingAlarmDeadline(context, now);
   for (const socket of context.daemonRegistry.candidateSockets()) {
     const connectedAt = Date.parse(context.daemonRegistry.attachment(socket)?.connectedAt ?? "");
     if (!Number.isFinite(connectedAt)) {
@@ -103,37 +110,20 @@ export async function scheduleRuntimeAlarm(context: RuntimeAlarmContext, now = D
     }
     nextDeadline = Math.min(nextDeadline, deadline);
   }
-  await writeRuntimeAlarm(context, nextDeadline, now);
+  await writeEarliestRuntimeAlarm({
+    storage: context.storage,
+    nextDeadline,
+    now,
+    onError: context.onScheduleError,
+    onMutation: context.onAlarmMutation,
+  });
 }
 
-function pendingAlarmDeadline(pending: PendingCallRegistry, now: number): number {
-  const delay = pending.nextDeadlineDelayMs();
+async function pendingAlarmDeadline(context: RuntimeAlarmContext, now: number): Promise<number> {
+  const transientDelay = context.pending.nextDeadlineDelayMs();
+  const durableDelay = context.durableCalls
+    ? await context.durableCalls.nextDeadlineDelayMs()
+    : Number.POSITIVE_INFINITY;
+  const delay = Math.min(transientDelay, durableDelay);
   return Number.isFinite(delay) ? now + Math.max(1, Math.ceil(delay)) : Number.POSITIVE_INFINITY;
-}
-
-async function writeRuntimeAlarm(context: RuntimeAlarmContext, nextDeadline: number, now: number): Promise<void> {
-  try {
-    const current = await context.storage.getAlarm();
-    if (!Number.isFinite(nextDeadline)) {
-      if (current === null) {
-        context.onAlarmMutation?.("noop");
-        return;
-      }
-      await context.storage.deleteAlarm();
-      context.onAlarmMutation?.("delete");
-      return;
-    }
-
-    const target = Math.max(now, nextDeadline);
-    // An earlier future alarm is safe: it will re-evaluate current liveness and
-    // pending deadlines. Do not rewrite it on every heartbeat merely to move it later.
-    if (current !== null && current > now && current <= target) {
-      context.onAlarmMutation?.("noop");
-      return;
-    }
-    await context.storage.setAlarm(target);
-    context.onAlarmMutation?.("set");
-  } catch (error) {
-    context.onScheduleError(error);
-  }
 }

@@ -12,22 +12,34 @@ export function captureProcessTreeOwnership(child, options = {}) {
   return { platform, pid, members: processGroupMembers(pid, options) };
 }
 
+export function refreshProcessTreeOwnership(snapshot, options = {}) {
+  if (!snapshot?.pid || snapshot.platform === "win32") return snapshot;
+  const members = [...(snapshot.members || [])];
+  for (const observed of processGroupMembers(snapshot.pid, options)) {
+    if (!members.some((expected) => sameProcessIdentity(expected, observed))) members.push(observed);
+  }
+  return { ...snapshot, members };
+}
+
 export function processTreeOwnershipStillCurrent(snapshot, child, options = {}) {
   if (!snapshot?.pid) return false;
   if (snapshot.platform === "win32") return !childHasExited(child);
   if (!Array.isArray(snapshot.members) || snapshot.members.length === 0) return !childHasExited(child);
   const current = processGroupMembers(snapshot.pid, options);
-  return snapshot.members.some((expected) => current.some((observed) => sameProcessIdentity(expected, observed)));
+  if (snapshot.members.some((expected) => current.some((observed) => sameProcessIdentity(expected, observed)))) return true;
+  return snapshot.members.some((expected) => processGroupMembers(snapshot.pid, options, expected.pid)
+    .some((observed) => sameProcessIdentity(expected, observed)));
 }
 
-function processGroupMembers(groupId, options = {}) {
+function processGroupMembers(groupId, options = {}, pid = 0) {
   const list = typeof options.listProcessGroups === "function" ? options.listProcessGroups : listProcessGroups;
-  return list(options).filter((entry) => entry.pgid === groupId).map(({ pid, startedAt }) => ({ pid, startedAt }));
+  return list(options, pid).filter((entry) => entry.pgid === groupId).map(({ pid: memberPid, startedAt }) => ({ pid: memberPid, startedAt }));
 }
 
-function listProcessGroups(options = {}) {
+function listProcessGroups(options = {}, pid = 0) {
   const run = typeof options.spawnSyncProcess === "function" ? options.spawnSyncProcess : spawnSync;
-  const result = run("ps", ["-axo", "pid=,pgid=,lstart="], {
+  const args = pid ? ["-p", String(pid), "-o", "pid=,pgid=,lstart="] : ["-axo", "pid=,pgid=,lstart="];
+  const result = run("ps", args, {
     encoding: "utf8",
     timeout: PROCESS_SNAPSHOT_TIMEOUT_MS,
     maxBuffer: PROCESS_SNAPSHOT_BYTES,

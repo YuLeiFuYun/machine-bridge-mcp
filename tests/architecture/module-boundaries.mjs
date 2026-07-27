@@ -184,6 +184,12 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-resumption-config.ts": 80,
   "src/worker/mcp-resumption.ts": 240,
   "src/worker/mcp-resumption-records.ts": 200,
+  "src/worker/mcp-resumption-index.ts": 60,
+  "src/worker/mcp-pending-call-store.ts": 300,
+  "src/worker/mcp-pending-call-records.ts": 80,
+  "src/worker/mcp-pending-call-expiry.ts": 40,
+  "src/worker/mcp-pending-call-storage.ts": 40,
+  "src/worker/mcp-pending-call-inspection.ts": 50,
   "src/worker/mcp-stream.ts": 160,
   "src/worker/mcp-stream-proxy.ts": 180,
   "src/worker/mcp-stream-subscription.ts": 130,
@@ -196,11 +202,17 @@ const lineLimits = Object.freeze({
   "src/worker/oauth-token-derivation.ts": 70,
   "src/worker/oauth-refresh-exchange.ts": 180,
   "src/worker/mcp-stream-dispatch.ts": 220,
+  "src/worker/durable-stream-calls.ts": 140,
+  "src/worker/durable-stream-result.ts": 40,
+  "src/worker/worker-entry.ts": 80,
   "src/worker/tool-timeout.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
+  "src/worker/daemon-socket-attachment.ts": 80,
   "src/worker/runtime-alarm.ts": 140,
+  "src/worker/runtime-alarm-storage.ts": 60,
   "src/worker/pending-calls.ts": 180,
+  "src/worker/pending-admission.ts": 40,
   "src/worker/pending-call-deadlines.ts": 80,
   "src/worker/mcp-jsonrpc.ts": 130,
   "src/worker/websocket-protocol.ts": 60,
@@ -271,6 +283,7 @@ if (!localPolicySource.includes('policy-contract.json') || !workerPolicySource.i
   throw new Error("local and Worker policy enforcement do not share the generated policy contract");
 }
 const workerIndexBoundary = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+const workerEntryBoundary = readFileSync(join(root, "src", "worker", "worker-entry.ts"), "utf8");
 const workerOAuthControllerBoundary = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
 const workerOAuthPageBoundary = readFileSync(join(root, "src", "worker", "oauth-authorization-page.ts"), "utf8");
 for (const duplicate of [
@@ -283,9 +296,13 @@ for (const duplicate of [
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
   "observability", "mcp-session", "mcp-access", "mcp-resumption-http", "mcp-resumption",
-  "mcp-stream", "mcp-stream-proxy", "mcp-stream-channel", "mcp-stream-dispatch", "worker-static-routes", "tool-timeout", "daemon-liveness", "daemon-sockets",
+  "mcp-stream", "mcp-stream-proxy", "mcp-stream-channel", "mcp-stream-dispatch", "durable-stream-calls",
+  "worker-entry", "tool-timeout", "daemon-liveness", "daemon-sockets",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
+}
+for (const module of ["worker-static-routes", "worker-edge-guard", "worker-edge-log", "mcp-stream-proxy"]) {
+  if (!workerEntryBoundary.includes(`./${module}`)) throw new Error(`outer Worker entry lost boundary module: ${module}`);
 }
 const mcpStreamProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy.ts"), "utf8");
 for (const required of [
@@ -312,17 +329,20 @@ for (const forbidden of [
 }
 const mcpStreamDispatchBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-dispatch.ts"), "utf8");
 for (const required of [
-  "startEventDrivenStreamCall", "registerEvent", "resumption.activate", "resumption.complete", "persistImmediateStreamOutcome",
+  "startEventDrivenStreamCall", "resumption.calls.activate", "resumption.calls.complete", "persistImmediateStreamOutcome",
 ]) {
-  if (!mcpStreamDispatchBoundary.includes(required)) throw new Error(`event-driven stream settlement lost its lifecycle boundary: ${required}`);
+  if (!mcpStreamDispatchBoundary.includes(required)) throw new Error(`durable stream dispatch lost its lifecycle boundary: ${required}`);
 }
 const pendingCallsBoundary = readFileSync(join(root, "src", "worker", "pending-calls.ts"), "utf8");
-for (const required of ["registerEvent", "settlement.kind", "detachSocket", "rebindInstance"]) {
-  if (!pendingCallsBoundary.includes(required)) throw new Error(`pending-call registry lost event settlement or reconnect semantics: ${required}`);
+for (const required of ["register(input", "detachSocket", "rebindInstance"]) {
+  if (!pendingCallsBoundary.includes(required)) throw new Error(`pending-call registry lost bounded JSON-call semantics: ${required}`);
+}
+for (const forbidden of ["registerEvent", "settlement.kind", 'kind: "event"']) {
+  if (pendingCallsBoundary.includes(forbidden)) throw new Error(`obsolete event settlement returned to the transient pending registry: ${forbidden}`);
 }
 
 const mcpResumptionBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption.ts"), "utf8");
-for (const required of ["./mcp-resumption-config.ts", "./mcp-resumption-records.ts", "token_key", "session_id", "workerRestartMessage", "active = new Set", "transientReady = new Map"]) {
+for (const required of ["./mcp-resumption-config.ts", "./mcp-resumption-records.ts", "./mcp-pending-call-store.ts", "token_key", "session_id", "workerRestartMessage", "active = new Set", "transientReady = new Map"]) {
   if (!mcpResumptionBoundary.includes(required)) throw new Error(`MCP resumption lost a lifecycle or isolation boundary: ${required}`);
 }
 if (mcpResumptionBoundary.includes(".list(")) {

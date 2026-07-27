@@ -2,9 +2,10 @@ export type PendingCallOutcome =
   | { ok: true; value: unknown }
   | { ok: false; error: Error };
 
-export type PendingCallSettlement =
-  | { kind: "promise"; resolve: (value: unknown) => void; reject: (error: Error) => void }
-  | { kind: "event"; settle: (outcome: PendingCallOutcome) => void | Promise<void> };
+export type PendingCallSettlement = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+};
 
 export interface PendingCallRecord {
   id: string;
@@ -35,8 +36,4 @@ export interface RegisterPendingCall {
   onTimeout: (record: PendingCallRecord) => Error;
   signal?: AbortSignal;
   onAbort?: (record: PendingCallRecord) => Error;
-}
-
-export interface RegisterEventPendingCall extends RegisterPendingCall {
-  settle: (outcome: PendingCallOutcome) => void | Promise<void>;
 }

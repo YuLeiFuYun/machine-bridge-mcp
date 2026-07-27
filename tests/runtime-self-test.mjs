@@ -191,6 +191,12 @@ export async function runtimeSelfTest() {
     await restricted.handleMessage("null");
     await restricted.handleMessage("{");
     await restricted.handleMessage(JSON.stringify({ type: "future_server_message" }));
+    const originalSendForSession = restricted.relay.sendForSession.bind(restricted.relay);
+    for (const reason of ["send_failed", "transport_unavailable", "session_ended"]) {
+      restricted.relay.sendForSession = () => ({ ok: false, reason });
+      restricted.handleRelayProbe({ type: "relay_probe", id: "probe_transport-race" }, { sessionId: 1 });
+    }
+    restricted.relay.sendForSession = originalSendForSession;
     restricted.relay.handleServerError = originalHandleServerError;
     if (JSON.stringify(relayProtocolErrors) !== JSON.stringify([
       "daemon_hello_timeout",

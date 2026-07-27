@@ -21,6 +21,10 @@ export function sendWebSocketQuietly(ws: WebSocket, value: unknown): void {
   trySendWebSocket(ws, value);
 }
 
+export function daemonErrorCloseCode(errorCode: string): number {
+  return errorCode === "daemon_transport_error" || errorCode === "daemon_liveness_timeout" ? 1012 : 1008;
+}
+
 export function closeWebSocketQuietly(ws: WebSocket, code?: number, reason?: string): void {
   try {
     ws.close(code, reason);

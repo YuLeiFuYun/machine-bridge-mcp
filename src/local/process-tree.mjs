@@ -2,8 +2,9 @@ import { spawn } from "node:child_process";
 import {
   captureProcessTreeOwnership,
   processTreeOwnershipStillCurrent,
+  refreshProcessTreeOwnership,
 } from "./process-tree-ownership.mjs";
-export { captureProcessTreeOwnership, processTreeOwnershipStillCurrent } from "./process-tree-ownership.mjs";
+export { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership } from "./process-tree-ownership.mjs";
 
 export const DEFAULT_PROCESS_TERMINATION_GRACE_MS = 2000;
 
@@ -40,10 +41,13 @@ export function terminateProcessTreeWithEscalation(child, options = {}) {
     : DEFAULT_PROCESS_TERMINATION_GRACE_MS;
   const schedule = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
   const terminate = typeof options.terminate === "function" ? options.terminate : terminateProcessTree;
-  const ownership = typeof options.captureOwnership === "function"
+  let ownership = typeof options.captureOwnership === "function"
     ? options.captureOwnership(child)
     : captureProcessTreeOwnership(child, options);
   terminate(child, "SIGTERM", options);
+  ownership = typeof options.refreshOwnership === "function"
+    ? options.refreshOwnership(ownership, child)
+    : refreshProcessTreeOwnership(ownership, options);
   return schedule(() => {
     try {
       const owned = typeof options.isTerminationTargetOwned === "function"

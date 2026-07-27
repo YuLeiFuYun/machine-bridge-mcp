@@ -1,0 +1,50 @@
+import {
+  proxyMcpEventStream,
+  sanitizeBridgeRequest,
+} from "./mcp-stream-proxy.ts";
+import { respondWithoutDurableObject } from "./worker-static-routes.ts";
+import { createThrottledEdgeLogger } from "./worker-edge-log.ts";
+import {
+  admitStatefulRequest,
+  durableObjectQuotaResponse,
+  isDurableObjectQuotaError,
+  outerWorkerErrorClass,
+  workerGatewayErrorResponse,
+} from "./worker-edge-guard.ts";
+
+type OuterBridgeStub = { fetch(request: Request): Promise<Response> };
+type OuterBridgeNamespace = { getByName(name: string): OuterBridgeStub };
+
+export interface OuterWorkerEnv {
+  BRIDGE: OuterBridgeNamespace;
+  STATEFUL_RATE_LIMITER: RateLimit;
+  MBM_ALLOWED_ORIGINS?: string;
+}
+
+const logOuterFetchFailure = createThrottledEdgeLogger();
+
+export async function handleOuterWorkerFetch(
+  request: Request,
+  env: OuterWorkerEnv,
+  ctx: ExecutionContext,
+  identity: { server: string; version: string },
+): Promise<Response> {
+  const extraOrigins = env.MBM_ALLOWED_ORIGINS ?? "";
+  const staticResponse = respondWithoutDurableObject(request, identity, extraOrigins);
+  if (staticResponse) return staticResponse;
+
+  try {
+    const limited = await admitStatefulRequest(request, env.STATEFUL_RATE_LIMITER, extraOrigins);
+    if (limited) return limited;
+    const stub = env.BRIDGE.getByName("default");
+    const streamed = await proxyMcpEventStream({ request, bridge: stub, extraOrigins, ctx });
+    return streamed ?? stub.fetch(sanitizeBridgeRequest(request));
+  } catch (error) {
+    if (isDurableObjectQuotaError(error)) return durableObjectQuotaResponse(request, extraOrigins);
+    logOuterFetchFailure("error", "outer.fetch.failed", {
+      path: new URL(request.url).pathname,
+      error_class: outerWorkerErrorClass(error),
+    });
+    return workerGatewayErrorResponse(request, extraOrigins);
+  }
+}

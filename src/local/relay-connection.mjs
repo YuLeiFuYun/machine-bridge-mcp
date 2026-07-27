@@ -167,7 +167,7 @@ export class RelayConnection {
     this.logger.debug?.("remote relay welcome received");
     Promise.resolve(this.helloMessage(message)).then((hello) => {
       if (this.socket !== socket || this.closed || this.authenticated) return;
-      if (!this.sendOnSocket(socket, hello)) this.failPermanently("relay_authentication_failed");
+      this.sendOnSocket(socket, hello);
     }).catch((error) => {
       this.logger.debug?.("could not create daemon authentication proof", { error_class: classifyOperationalError(error) });
       this.failPermanently("relay_authentication_failed");
@@ -256,18 +256,18 @@ export class RelayConnection {
 
   handleServerError(message = {}) {
     const errorCode = sanitizeProtocolErrorCode(message?.error);
-    this.logger.debug?.("remote relay reported a protocol error", { error_code: errorCode });
-    if (errorCode === "daemon_hello_timeout" && !this.authenticated) {
+    const reconnectCategory = relayServerErrorReconnectCategory(errorCode, {
+      authenticated: this.authenticated,
+      ready: this.ready,
+    });
+    this.logger.debug?.(
+      reconnectCategory ? "remote relay requested connection recovery" : "remote relay reported a protocol error",
+      { error_code: errorCode, reconnect_category: reconnectCategory || "none" },
+    );
+    if (reconnectCategory) {
       const socket = this.socket;
       if (this.closed || !socket) return true;
-      this.pendingCloseCategory = "relay_handshake_timeout";
-      terminateSocket(socket);
-      return true;
-    }
-    if (errorCode === "daemon_ready_timeout" && this.authenticated && !this.ready) {
-      const socket = this.socket;
-      if (this.closed || !socket) return true;
-      this.pendingCloseCategory = "relay_readiness_timeout";
+      this.pendingCloseCategory = reconnectCategory;
       terminateSocket(socket);
       return true;
     }
@@ -587,12 +587,25 @@ export class RelayConnection {
   }
 }
 
+export function relayServerErrorReconnectCategory(errorCode, state = {}) {
+  const code = sanitizeProtocolErrorCode(errorCode);
+  const authenticated = state?.authenticated === true;
+  const ready = state?.ready === true;
+  if (code === "daemon_hello_timeout" && !authenticated) return "relay_handshake_timeout";
+  if (code === "daemon_ready_timeout" && authenticated && !ready) return "relay_readiness_timeout";
+  if (code === "daemon_transport_error") return "relay_transport_error";
+  if (code === "daemon_liveness_timeout") return "relay_heartbeat_timeout";
+  return "";
+}
+
 export function relayCloseCategory(code, reason = "") {
   const numeric = Number(code);
   const reasonText = String(reason || "");
   if (isSupersededClose(numeric, reasonText)) return "superseded";
   if (numeric === 1008 && reasonText === "daemon hello timeout") return "relay_handshake_timeout";
   if (numeric === 1008 && reasonText === "daemon ready timeout") return "relay_readiness_timeout";
+  if ([1008, 1012].includes(numeric) && ["daemon pong failed", "daemon send failed"].includes(reasonText)) return "relay_transport_error";
+  if ([1008, 1012].includes(numeric) && reasonText === "daemon liveness timeout") return "relay_heartbeat_timeout";
   if (numeric === 1008 && ["stale daemon candidate", "expired daemon candidate"].includes(reasonText)) return "relay_restarting_or_unavailable";
   if (numeric === 1008 && ["daemon hello required", "missing daemon attachment", "invalid daemon candidate timestamp"].includes(reasonText)) return "relay_protocol_error";
   if (numeric === 1000) return "normal_close";

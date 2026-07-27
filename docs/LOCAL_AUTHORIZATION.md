@@ -25,7 +25,7 @@ Local stdio does not use remote OAuth accounts. It runs as the local owner under
 | `operator` | Workspace-confined editing and direct process execution | No unrestricted paths, credentials, browser/desktop control, or persistent job creation |
 | `owner` | Complete bridge authority within the daemon policy ceiling | Generic path-based tools cannot target Machine Bridge control-plane state; owner shell remains OS-user authority |
 
-The daemon may advertise the complete catalog as its capability ceiling. The Worker filters `tools/list` by account role, and the local runtime independently recomputes and validates the same role boundary before dispatch.
+The package catalog defines the stable discovery surface. The Worker filters `tools/list` by account role without rewriting it during a brief daemon outage. The live daemon advertisement remains the execution ceiling, and the local runtime independently recomputes and validates the role and policy boundary before dispatch.
 
 ## Trusted OAuth clients
 

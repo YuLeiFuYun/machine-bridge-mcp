@@ -7,7 +7,7 @@ import { BridgeError, errorCode, publicError, remoteBridgeError } from "../src/l
 import { CallRegistry } from "../src/local/call-registry.mjs";
 import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
-import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
+import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
 import { executionGuardrailsSnapshot } from "../src/local/execution-limits.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
 import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
@@ -656,6 +656,19 @@ function testProcessTreeSupervisor() {
   assert(processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [snapshotRows[1]] }), "surviving original descendant did not preserve process-group ownership");
   assert(!processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [{ pid: 4243, pgid: 4242, startedAt: Date.parse("2026-07-22T00:01:00Z") }] }), "PID-reused process group was accepted for escalation");
   assert(!processTreeOwnershipStillCurrent({ platform: "linux", pid: 4242, members: [] }, { ...child, exitCode: 0 }, { listProcessGroups: () => [] }), "empty ownership snapshot ignored parent exit");
+  const refreshed = refreshProcessTreeOwnership(
+    { platform: "linux", pid: 4242, members: [snapshotRows[0]] },
+    { listProcessGroups: () => snapshotRows },
+  );
+  assert(refreshed.members.length === 2, "post-SIGTERM ownership refresh did not capture a surviving descendant");
+  let ownershipQueries = 0;
+  assert(processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
+    listProcessGroups(_options, pid) {
+      ownershipQueries += 1;
+      return pid === 4243 ? [snapshotRows[1]] : [];
+    },
+  }), "targeted ownership fallback lost a captured descendant when the full process table was unavailable");
+  assert(ownershipQueries > 1, "targeted ownership fallback was not exercised");
 
   const groupSignals = [];
   assert(terminateProcessTree(child, "SIGTERM", {

@@ -27,7 +27,7 @@ Effective authority is the intersection of:
 
 There is no temporary elevation path. A `reviewer`, `editor`, or `operator` cannot acquire `owner` capability through a local lease, approval ID, token refresh, or reconnect.
 
-The Worker filters `tools/list` and rejects unauthorized calls before relay. Every accepted call carries account ID, account version, OAuth client ID, refresh-family ID, and role. The local runtime validates those values again before dispatch.
+The Worker filters the stable `tools/list` discovery catalog by account role. It separately rejects calls that are outside the current account role or the live end-to-end-ready daemon ceiling before relay. Every accepted call carries account ID, account version, OAuth client ID, refresh-family ID, and role. The local runtime validates those values again before dispatch.
 
 Authenticated `server_info.authorization.effective_policy` and `effective_tools` describe the current account. `daemon.policy` and `daemon.tools` describe only the local capability ceiling; a `full` daemon does not make an `editor` account full.
 

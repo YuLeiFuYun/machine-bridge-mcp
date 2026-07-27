@@ -41,7 +41,7 @@ flowchart LR
 ### Remote transport
 
 1. The Worker validates OAuth client, token, account state, role, resource binding, and MCP session state.
-2. The Worker filters advertised tools by account role and the daemon-reported capability ceiling.
+2. The Worker exposes a stable account-role discovery catalog, then independently intersects each execution with the current end-to-end-ready daemon capability ceiling.
 3. The Durable Object relays a bounded tool envelope carrying account, account-version, OAuth-client, refresh-family, and role identity over the root-certified ephemeral daemon socket.
 4. The local runtime revalidates account authorization, policy, call lifecycle, timeout, and cancellation.
 5. The local authority gate permits work only inside the immutable role ceiling. Consequential effects are classified for hard enforcement and audit; they never create a temporary elevation path.

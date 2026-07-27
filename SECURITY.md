@@ -67,7 +67,7 @@ The roles are:
 
 No approval ID, refresh token, reconnect, client registration, or legacy lease can expand a role. Out-of-role operations fail with `authorization_denied`.
 
-The Worker filters the tool catalog, and the local runtime independently recomputes the role boundary before dispatch. Account disablement, role change, password rotation, account removal, client revocation, token-version rotation, and refresh-family replay invalidate the appropriate credentials.
+The Worker filters the stable discovery catalog by account role. Discovery is not authorization: each call is separately intersected with the current end-to-end-ready daemon capability ceiling, and the local runtime independently recomputes the role and policy boundary before dispatch. Account disablement, role change, password rotation, account removal, client revocation, token-version rotation, and refresh-family replay invalidate the appropriate credentials.
 
 An OAuth client is bound to one account, account version, and role after successful authorization. It cannot silently switch accounts. Use `machine-mcp account clients` to inspect clients and `machine-mcp account revoke-client CLIENT_ID` to revoke one client and its credentials.
 
@@ -194,7 +194,7 @@ Sensitive and persistence targets are owner-only. Generic remote file tools cann
 
 Direct processes use argv without shell parsing. Shell expansion is available only through the explicit shell tool.
 
-Process counts, stdin, output, timeouts, retained sessions, and tool-call concurrency are bounded. Timeout, explicit cancellation, reconnect-grace expiry, runtime shutdown, and non-recoverable daemon replacement use process-tree termination with bounded graceful and forced phases. A transient relay or HTTP/SSE disconnect is not cancellation.
+Process counts, stdin, output, timeouts, retained sessions, and tool-call concurrency are bounded. Timeout, explicit cancellation, reconnect-grace expiry, runtime shutdown, and non-recoverable daemon replacement use process-tree termination with bounded graceful and forced phases. A transient relay or HTTP/SSE disconnect is not cancellation. Streamed-call ownership and deadlines survive Durable Object hibernation, while a random per-WebSocket generation prevents an obsolete socket from settling or detaching a rebound call.
 
 Interactive process sessions die when their owning runtime stops or is replaced; an ordinary same-process relay reconnect does not itself destroy them. Retained output sessions and process control are bound to account, account version, OAuth client, and refresh family.
 
@@ -226,7 +226,7 @@ Destructive state removal validates marker files, selected workspace, known layo
 
 Only one verified daemon is active. Candidates have preflight, hello, readiness, and liveness deadlines. A candidate cannot displace the current daemon before authentication and end-to-end readiness.
 
-Pending calls are bounded, socket-bound, request-bound, timed out, cancellable, and recoverable only for the same verified daemon instance during the documented reconnect grace period.
+Pending calls are bounded, socket-generation-bound, request-bound, timed out, cancellable, and recoverable only for the same verified daemon instance during the documented reconnect grace period. Worker transport/liveness invalidation is retryable and cannot by itself stop the daemon process; unknown protocol messages, authentication rejection, and identity/version mismatch remain fatal.
 
 Request bodies, messages, traversals, files, output, OAuth stores, nonce stores, sessions, and failure identities are bounded. These controls do not replace Cloudflare MFA, WAF/rate limits, billing alerts, or external cost controls.
 
@@ -263,4 +263,4 @@ See [docs/AUDIT.md](docs/AUDIT.md) for historical findings and residual limitati
 
 SSE event identifiers are cursors, not bearer credentials. Recovery requires a valid OAuth Bearer/DPoP request and the original signed `MCP-Session-Id`; a cursor from another token or session is reported as not found. `GET /mcp` only replays an existing stream, while POST always represents new work.
 
-The Worker stores a bounded terminal response for two minutes to bridge transport loss. Records are limited to 64 streams and 1.5 MiB each and include SHA-256 integrity metadata. This protects against accidental storage corruption, not compromise of the Worker account or Durable Object. A pending record found after Worker restart is reported as an ambiguous execution outcome because the local side effect may already have occurred; clients must reconcile before retrying non-idempotent tools.
+The Worker stores bounded stream and call state to bridge transport loss. Active streamed-call records contain opaque ownership/generation identifiers, request correlation, deadlines, and no tool arguments; terminal records retain at most 1.5 MiB for two minutes and include SHA-256 integrity metadata. The index is limited to 64 streams. This protects continuity and detects accidental storage corruption, not compromise of the Worker account or Durable Object. A valid persisted call remains pending after Worker restart. Only a pending stream record with no durable call owner is reported as an ambiguous execution outcome; clients must reconcile before retrying a non-idempotent tool in that case.

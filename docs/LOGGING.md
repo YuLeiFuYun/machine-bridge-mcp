@@ -64,7 +64,9 @@ Brief network interruptions are expected on laptop network changes, Worker deplo
 - failure to receive `hello_ack` within the handshake deadline, or `ready_ack` within the independent end-to-end readiness deadline, terminates the candidate socket and retries;
 - lack of inbound heartbeat activity terminates a half-open socket and reconnects.
 
-A WebSocket close code such as `1006` means the transport ended without a normal close handshake. It is useful for debug diagnosis but not useful as the default user message. Default logs therefore describe the effect and recovery behavior rather than printing `{"code":1006,"reason":""}`.
+A WebSocket close code such as `1006` means the transport ended without a normal close handshake. It is useful for debug diagnosis but not useful as the default user message. It is not evidence that the daemon process restarted. Worker `daemon_transport_error` / `daemon_liveness_timeout` messages and their 1012 close frames are likewise retryable connection conditions, not upgrade instructions. Only an unknown/incompatible Worker error, authentication failure, or identity/version mismatch may produce the fatal protocol/configuration log and daemon exit. Default logs therefore describe the affected layer, duration, classification, and recovery behavior rather than printing raw close envelopes.
+
+Persisted streamed-call diagnostics are deliberately coarse. Logs and `server_info` may report aggregate active/detached counts, oldest age, tool-name counts, alarm mutations, unmatched-result counts, and whether a call was transient or durable. They must not include tool arguments, terminal results, command text, request keys, account identifiers, raw call IDs, raw connection generations, private paths, or subscriber payloads. A stale-generation result is counted as unmatched rather than logged with its envelope.
 
 Examples:
 
