@@ -19,11 +19,14 @@ export async function activatePersistentRuntime(options = {}) {
   let daemonLock = null;
   let candidateRuntime = null;
   let candidateRelayVerified = false;
+  let providerStopped = false;
+  let serviceStarted = false;
   try {
     const providerStop = await options.stopAutostart();
     if (providerStop?.ok === false && providerStop?.active === true) {
       throw new Error("the existing autostart service could not be stopped before activation");
     }
+    providerStopped = providerStop?.active_before === true && providerStop?.active === false;
 
     daemonLock = await options.acquireDaemonLock();
     if (!daemonLock?.acquired) {
@@ -60,6 +63,7 @@ export async function activatePersistentRuntime(options = {}) {
     if (serviceStart?.ok === false) {
       throw new Error(`autostart start failed (${serviceStart.provider || "unknown"})`);
     }
+    serviceStarted = true;
 
     const convergence = await waitForActivatedRuntime({
       expectedVersion: options.expectedVersion,
@@ -85,6 +89,9 @@ export async function activatePersistentRuntime(options = {}) {
       try { startupLock.release(); }
       catch (failure) { cleanupErrors.push(failure); }
     }
+    try {
+      await restoreStoppedProvider(options.startAutostart, { providerStopped, serviceStarted });
+    } catch (failure) { cleanupErrors.push(failure); }
     if (cleanupErrors.length) {
       throw new AggregateError(
         [error, ...cleanupErrors],
@@ -92,6 +99,15 @@ export async function activatePersistentRuntime(options = {}) {
       );
     }
     throw error;
+  }
+}
+
+
+async function restoreStoppedProvider(startAutostart, { providerStopped, serviceStarted }) {
+  if (!providerStopped || serviceStarted) return;
+  const restored = await startAutostart();
+  if (restored?.ok === false) {
+    throw new Error(`previous autostart service could not be restored (${restored.provider || "unknown"})`);
   }
 }
 

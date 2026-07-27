@@ -5,6 +5,8 @@ await testSuccessfulHandoff();
 await testForegroundRefusal();
 await testInstallFailureCleanup();
 await testCandidateFatalDuringInstall();
+await testRemotePreparationFailureRestoresService();
+await testRestorationFailureAggregation();
 await testServiceFailureAfterVerifiedCandidate();
 await testCleanupFailureAggregation();
 
@@ -146,6 +148,65 @@ async function testCandidateFatalDuringInstall() {
     checkWorker: unexpected,
   }), "relay fatal during install");
   assert(events.includes("runtime:stop") && events.includes("daemon:release") && events.includes("startup:release"), "candidate fatal did not clean up runtime and locks");
+}
+
+async function testRemotePreparationFailureRestoresService() {
+  const events = [];
+  const startup = lock("startup", events);
+  const daemon = lock("daemon", events);
+  await expectReject(() => activatePersistentRuntime({
+    expectedVersion: "3.0.0-beta.1",
+    acquireStartupLock: async () => startup,
+    stopAutostart: async () => {
+      events.push("service:stop");
+      return { ok: true, active_before: true, active: false, provider: "test" };
+    },
+    acquireDaemonLock: async () => daemon,
+    prepareRemoteState: async () => {
+      events.push("relay:prepare");
+      throw new Error("worker propagation timeout");
+    },
+    createRuntime: unexpected,
+    installAutostart: unexpected,
+    startAutostart: async () => {
+      events.push("service:restore");
+      return { ok: true, active: true, provider: "test" };
+    },
+    inspectDaemon: unexpected,
+    checkWorker: unexpected,
+  }), "worker propagation timeout");
+  assert(JSON.stringify(events) === JSON.stringify([
+    "service:stop",
+    "relay:prepare",
+    "daemon:release",
+    "startup:release",
+    "service:restore",
+  ]), `failed activation did not restore the previous provider after releasing locks: ${events.join(",")}`);
+}
+
+async function testRestorationFailureAggregation() {
+  const events = [];
+  const startup = lock("startup", events);
+  const daemon = lock("daemon", events);
+  let caught;
+  try {
+    await activatePersistentRuntime({
+      expectedVersion: "3.0.0-beta.1",
+      acquireStartupLock: async () => startup,
+      stopAutostart: async () => ({ ok: true, active_before: true, active: false, provider: "test" }),
+      acquireDaemonLock: async () => daemon,
+      prepareRemoteState: async () => { throw new Error("remote preparation failed"); },
+      createRuntime: unexpected,
+      installAutostart: unexpected,
+      startAutostart: async () => ({ ok: false, active: false, provider: "test" }),
+      inspectDaemon: unexpected,
+      checkWorker: unexpected,
+    });
+  } catch (error) { caught = error; }
+  assert(caught instanceof AggregateError && caught.errors?.length === 2
+    && caught.errors[0]?.message.includes("remote preparation failed")
+    && caught.errors[1]?.message.includes("could not be restored"),
+  "activation did not preserve both the primary and provider-restoration failures");
 }
 
 async function testServiceFailureAfterVerifiedCandidate() {

@@ -107,7 +107,7 @@ A full daemon policy is not proof that a delegated account has full authority. U
 
 Machine Bridge rejects unreadable, malformed, foreign-schema, or ambiguous state rather than silently initializing replacement state.
 
-Worker deployment records upload success separately from health convergence. A post-upload network failure does not trigger an uncontrolled repeated write, and a pending root is not promoted merely because Wrangler returned success.
+Worker deployment records upload success separately from health convergence. Post-deployment verification allows a longer bounded edge-propagation window. Once the current package fingerprint and version are recorded, ordinary retries verify that deployment without uploading again; only explicit `--force-worker` authorizes a duplicate deployment after diagnosis. A failed activation that stopped an active service restores the provider after releasing candidate and workflow locks, and a pending root is not promoted merely because Wrangler returned success.
 
 The packaged Swift broker source is a development and protocol-conformance fixture only. The local build is ad-hoc signed and is deliberately rejected by the production validator because it cannot obtain a provisioning-profile-validated data-protection Keychain access group. A production Secure Enclave broker must be shipped as an app-like, correctly signed and provisioned component outside the npm runtime build.
 

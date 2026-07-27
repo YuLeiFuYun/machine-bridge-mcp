@@ -12,6 +12,8 @@ import {
   workerHealthUserReason,
 } from "./worker-health.mjs";
 
+const DEFAULT_DEPLOYMENT_HEALTH_ATTEMPTS = 20;
+
 export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   const logger = options.logger || console;
   const expectedVersion = options.expectedVersion || currentPackageVersion(options.packageRoot || packageRoot);
@@ -24,18 +26,24 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   const complete = hasCompleteWorkerState(state.worker);
 
   if (!args.forceWorker && !args.rotateSecrets && complete && state.worker.deployHash === desiredHash) {
-    const health = await retryHealthFn(state.worker.url, expectedVersion, options.existingHealthAttempts || 2, healthOptions);
+    const recordedCurrentDeployment = state.worker.deployedVersion === expectedVersion;
+    const attempts = recordedCurrentDeployment
+      ? (options.recordedDeploymentHealthAttempts ?? DEFAULT_DEPLOYMENT_HEALTH_ATTEMPTS)
+      : (options.existingHealthAttempts ?? 2);
+    const health = await retryHealthFn(state.worker.url, expectedVersion, attempts, healthOptions);
     if (health.ok) {
       logger.success?.("Worker unchanged and healthy", { url: state.worker.url });
       logger.debug?.("Worker health route", { network_route: health.networkRoute || "unknown" });
       return state.worker;
     }
+    logger.debug?.("Worker health check detail", { health_error: health.error, network_route: health.networkRoute || "unknown" });
+    if (recordedCurrentDeployment) {
+      throw workerVerificationError(health.error, { deploymentSucceeded: false, recordedCurrentDeployment: true });
+    }
     if (!workerHealthRequiresRedeploy(health.error)) {
-      logger.debug?.("Worker health check detail", { health_error: health.error, network_route: health.networkRoute || "unknown" });
       throw workerVerificationError(health.error, { deploymentSucceeded: false });
     }
     logger.warn?.("Recorded Worker is stale; redeploying the same Worker", { reason: workerHealthUserReason(health.error) });
-    logger.debug?.("Worker health check detail", { health_error: health.error, network_route: health.networkRoute || "unknown" });
   }
 
   logger.info?.("Checking Cloudflare Wrangler login");
@@ -68,7 +76,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   state.worker.updatedAt = new Date().toISOString();
   saveStateFn(state);
 
-  const health = await retryHealthFn(state.worker.url, expectedVersion, options.deploymentHealthAttempts || 8, healthOptions);
+  const health = await retryHealthFn(state.worker.url, expectedVersion, options.deploymentHealthAttempts ?? DEFAULT_DEPLOYMENT_HEALTH_ATTEMPTS, healthOptions);
   if (!health.ok) {
     logger.debug?.("Worker post-deployment health detail", { health_error: health.error, network_route: health.networkRoute || "unknown" });
     throw workerVerificationError(health.error, { deploymentSucceeded: true });
@@ -143,12 +151,14 @@ function collectHashFiles(target, out) {
   }
 }
 
-function workerVerificationError(reason, { deploymentSucceeded }) {
+function workerVerificationError(reason, { deploymentSucceeded, recordedCurrentDeployment = false }) {
   const readable = workerHealthUserReason(reason);
   const guidance = workerVerificationGuidance(reason);
   const message = deploymentSucceeded
     ? `Cloudflare reported the Worker deployment succeeded, but ${readable}. The deployment fingerprint was saved, so retrying will verify the same Worker instead of deploying again. ${guidance}`
-    : `The recorded Worker could not be verified because ${readable}. No deployment was attempted. ${guidance}`;
+    : recordedCurrentDeployment
+      ? `The current Worker deployment fingerprint is already recorded, but ${readable}. No deployment was attempted because duplicating the recorded deployment is unsafe; use --force-worker only after diagnosis. ${guidance}`
+      : `The recorded Worker could not be verified because ${readable}. No deployment was attempted. ${guidance}`;
   const error = new Error(message);
   error.code = "worker_health_unverified";
   error.healthError = reason;

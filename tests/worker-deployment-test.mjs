@@ -220,6 +220,8 @@ try {
   assert.equal(configuration.error, "proxy_configuration");
   assert.equal(configurationProbes, 1);
 
+  await verifyDeploymentPropagationBudget();
+  await verifyRecordedCurrentDeploymentDoesNotRedeploy();
   await verifyDeploymentIdempotency();
   await verifyPersistedDeploymentIdempotency();
   await verifyDefinitiveStalenessRedeploys();
@@ -231,6 +233,58 @@ try {
 } finally {
   await close(proxy);
   await close(target);
+}
+
+async function verifyDeploymentPropagationBudget() {
+  const state = workerState("mbm-propagation-budget-test");
+  let observedAttempts = 0;
+  await ensureWorkerDeployment(state, {}, {
+    packageRoot: root,
+    expectedVersion: version,
+    runWrangler: async (args) => args[0] === "whoami"
+      ? { code: 0, stdout: "authenticated", stderr: "" }
+      : { code: 0, stdout: "Deployed https://mbm-propagation-budget-test.account-example.workers.dev", stderr: "" },
+    withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
+    saveState: () => {},
+    retryHealth: async (_url, _version, attempts) => {
+      observedAttempts = attempts;
+      return { ok: true, version, networkRoute: "direct" };
+    },
+    logger: quietLogger(),
+  });
+  assert.equal(observedAttempts, 20, "post-deployment health verification retained the short propagation window");
+}
+
+async function verifyRecordedCurrentDeploymentDoesNotRedeploy() {
+  const state = workerState("mbm-recorded-current-test");
+  state.worker.url = "https://mbm-recorded-current-test.account-example.workers.dev";
+  state.worker.mcpServerUrl = `${state.worker.url}/mcp`;
+  state.worker.deployHash = workerDeploymentFingerprint(state, { packageRoot: root });
+  state.worker.deployedVersion = version;
+  let deploys = 0;
+  let observedAttempts = 0;
+  await assert.rejects(
+    ensureWorkerDeployment(state, {}, {
+      packageRoot: root,
+      expectedVersion: version,
+      retryHealth: async (_url, _version, attempts) => {
+        observedAttempts = attempts;
+        return { ok: false, error: "version_mismatch:1.0.0!=9.8.7", networkRoute: "direct" };
+      },
+      runWrangler: async (args) => {
+        if (args[0] === "deploy") deploys += 1;
+        return { code: 0, stdout: "", stderr: "" };
+      },
+      withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
+      saveState: () => {},
+      logger: quietLogger(),
+    }),
+    error => error.code === "worker_health_unverified"
+      && error.deploymentSucceeded === false
+      && /No deployment was attempted because duplicating/.test(error.message),
+  );
+  assert.equal(observedAttempts, 20, "recorded current deployment did not receive the propagation verification budget");
+  assert.equal(deploys, 0, "a recorded current deployment was duplicated after a version mismatch");
 }
 
 async function verifyDeploymentIdempotency() {
