@@ -359,7 +359,9 @@ export class LocalRuntime {
     const relaySessionId = Number(relayContext.sessionId) || 0;
     if (!id || !relaySessionId) return this.handleRelayProtocolViolation("invalid_relay_probe");
     const outcome = this.relay?.sendForSession?.({ type: "relay_probe_result", id }, relaySessionId);
-    if (!outcome?.ok) this.handleRelayProtocolViolation("relay_probe_delivery_failed");
+    if (!outcome?.ok && !["send_failed", "transport_unavailable", "session_ended"].includes(outcome?.reason)) {
+      this.handleRelayProtocolViolation("relay_probe_delivery_failed");
+    }
   }
 
   async handleRelayToolCall(message) {

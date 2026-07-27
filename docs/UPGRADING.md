@@ -67,6 +67,12 @@ Legacy version 2 lease state may be listed, revoked, or cleared for cleanup, but
 
 `ACCOUNT_ADMIN_SECRET` is deleted from local state and is no longer deployed to the Worker. Account and OAuth-client administration uses the same root-certified ephemeral session established for daemon startup or an independently authorized local administration command.
 
+## Version 3 beta.21 relay-continuity change
+
+Beta.21 changes the Worker-side stream-call record and MCP discovery contract. `tools/list` is stable for an authenticated account role; `server_info.authorization.effective_tools` remains the live execution authority. Streamed calls persist their daemon instance, WebSocket generation, request correlation, and deadlines so Durable Object hibernation or restart does not itself orphan an active call. JSON-only requests retain the prior bounded in-event path.
+
+Treat beta.21 as a coordinated Worker and daemon candidate. A beta.20 Worker or daemon does not implement the same generation and persistence contract, so exact-version convergence is required before continuity claims are accepted. The change preserves calls only across a relay interruption while the same local daemon process and machine remain alive. A daemon-process restart, machine shutdown, or lost local execution state is still not durable execution; use managed jobs for that requirement.
+
 ## Normal upgrade
 
 1. Inspect or cancel interactive processes and managed jobs that should not survive daemon replacement.

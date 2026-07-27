@@ -1,4 +1,5 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
+import { validPendingStreamCall, type PendingStreamCall } from "./mcp-pending-call-records.ts";
 export type JsonRpcMessage = Record<string, unknown> | null;
 export type StreamStatus = "pending" | "ready";
 export type StreamIndexEntry = {
@@ -6,6 +7,7 @@ export type StreamIndexEntry = {
   status: StreamStatus;
   created_at: number;
   expires_at: number;
+  call?: PendingStreamCall;
 };
 export type StreamIndex = { schema_version: 1; entries: StreamIndexEntry[] };
 export type StreamRecord = StreamIndexEntry & {
@@ -55,6 +57,7 @@ export function validRecord(value: unknown): value is StreamRecord {
     return false;
   }
   if (record.status === "pending") return record.message_json === undefined && record.message_sha256 === undefined;
+  if (record.call !== undefined) return false;
   return typeof record.message_json === "string"
     && new TextEncoder().encode(record.message_json).byteLength <= DEFAULT_MAXIMUM_MESSAGE_BYTES
     && typeof record.message_sha256 === "string"
@@ -67,6 +70,7 @@ export function indexEntry(record: StreamRecord): StreamIndexEntry {
     status: record.status,
     created_at: record.created_at,
     expires_at: record.expires_at,
+    ...(record.call ? { call: structuredClone(record.call) } : {}),
   };
 }
 
@@ -90,8 +94,9 @@ export function readyRecord(
   messageSha256: string,
   expiresAt: number,
 ): StreamRecord {
+  const { call: _call, ...base } = record;
   return {
-    ...record,
+    ...base,
     status: "ready",
     expires_at: expiresAt,
     message_json: messageJson,
@@ -150,7 +155,8 @@ function validIndexEntry(value: unknown): value is StreamIndexEntry {
   return typeof entry.stream_id === "string" && isStreamId(entry.stream_id)
     && (entry.status === "pending" || entry.status === "ready")
     && Number.isSafeInteger(entry.created_at) && Number.isSafeInteger(entry.expires_at)
-    && entry.expires_at! > entry.created_at!;
+    && entry.expires_at! > entry.created_at!
+    && (entry.call === undefined || (entry.status === "pending" && validPendingStreamCall(entry.call)));
 }
 
 function storedIntegrityMessage(requestId: string | number): Record<string, unknown> {

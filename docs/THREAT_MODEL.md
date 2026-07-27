@@ -113,6 +113,7 @@ Machine Bridge considers:
 The implementation aims to preserve these invariants:
 
 - unknown, malformed, stale, replayed, duplicated, unauthorized, and over-limit input is rejected;
+- the stable account-role discovery catalog is not treated as execution authority; every call is intersected with the current end-to-end-ready daemon policy and fails closed when that authority is absent;
 - remote authority is the intersection of daemon policy and account role, never the union;
 - no approval record, token refresh, or local migration state can elevate a delegated role;
 - OAuth clients are bound to one account/version/role and can be revoked independently;
@@ -123,7 +124,7 @@ The implementation aims to preserve these invariants:
 - direct argv execution is used unless the explicit shell tool is authorized;
 - confined paths are canonicalized and symbolic-link write escape is rejected;
 - request bodies, files, messages, output, logs, state, retained results, concurrency, and error-cause traversal are bounded; byte limits stop further source consumption rather than merely truncating retained data;
-- cancellation, timeout, disconnect, replacement, and shutdown have explicit process ownership and cleanup semantics;
+- cancellation, timeout, disconnect, replacement, and shutdown have explicit process ownership and cleanup semantics; streamed calls persist ownership and deadlines across Durable Object hibernation, and per-WebSocket generations reject delayed results or close events from an obsolete connection;
 - candidate daemons and browser extensions cannot replace healthy incumbents before compatibility and readiness verification;
 - default logs, audit records, discovery warnings, browser responses, and administration errors omit secrets, arguments, contents, raw paths, form values, raw local exception text, and output;
 - multi-stage mutations are atomic or recoverable and do not silently claim partial success;
@@ -189,7 +190,7 @@ Application-level limits bound many requests and outputs. An authorized owner pr
 
 ### System VPN/TUN and distributed activation
 
-A system VPN/TUN can remain administratively connected while its selected upstream route, synthetic DNS mapping, or transport path is temporarily unusable. Machine Bridge can detect missing inbound relay traffic, classify the socket close, bound retry delay, and report outage history, but it cannot select or repair a third-party VPN node. `system-network-stack` is therefore not a claim of direct routing.
+A system VPN/TUN can remain administratively connected while its selected upstream route, synthetic DNS mapping, or transport path is temporarily unusable. Machine Bridge can detect missing inbound relay traffic, classify the socket close, bound retry delay, and report outage history, but it cannot select or repair a third-party VPN node. `system-network-stack` is therefore not a claim of direct routing. A Worker transport/liveness invalidation is treated as a retryable socket-generation failure; elevating it to a permanent protocol error would let an ordinary network fault restart the daemon and amplify the outage. Unknown protocol messages and authentication or version mismatch remain fail-closed.
 
 Candidate activation verifies the foreground candidate before service handoff and records exact package/deployment evidence. It does not provide an atomic transaction spanning Cloudflare deployment and every local service manager. If the Worker changes and the local handoff later fails, the operator may need the recorded previous runtime/deployment evidence to complete rollback. Local cleanup errors are aggregated rather than hidden, but remote rollback is not fabricated.
 

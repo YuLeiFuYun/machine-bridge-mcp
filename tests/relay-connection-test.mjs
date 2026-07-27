@@ -575,6 +575,125 @@ policyScheduler.advance(100_000);
 assert(policySockets.length === 1, "policy close entered the reconnect loop");
 policyConnection.stop();
 
+{
+  const helloSendScheduler = new ManualScheduler();
+  const helloSendSockets = [];
+  let helloSendFatal = false;
+  const helloSendConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    secret: "test-daemon-secret-123456",
+    logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) {
+        super(url, options);
+        helloSendSockets.push(this);
+      }
+      send() { throw new Error("synthetic hello transport failure"); }
+    },
+    scheduler: helloSendScheduler,
+    now: () => helloSendScheduler.now,
+    reconnectDelay: () => 5,
+    helloMessage: () => ({ type: "hello", tools: ["server_info"] }),
+    onFatal: () => { helloSendFatal = true; },
+  });
+  void helloSendConnection.start().catch(() => {});
+  helloSendSockets[0].open();
+  helloSendConnection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "test" });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert(!helloSendFatal, "hello send transport failure was misclassified as authentication failure");
+  assert(helloSendConnection.status().last_close_category === "relay_transport_error",
+    "hello send transport failure lost its retryable category");
+  helloSendScheduler.advance(5);
+  assert(helloSendSockets.length === 2, "hello send transport failure did not reconnect");
+  helloSendConnection.stop();
+}
+
+for (const [errorCode, expectedCategory] of [
+  ["daemon_transport_error", "relay_transport_error"],
+  ["daemon_liveness_timeout", "relay_heartbeat_timeout"],
+]) {
+  const transientScheduler = new ManualScheduler();
+  const transientSockets = [];
+  const transientEvents = [];
+  let transientFatal = false;
+  let transientDisconnects = 0;
+  const transientConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    secret: "test-daemon-secret-123456",
+    logger: captureLogger(transientEvents),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) {
+        super(url, options);
+        transientSockets.push(this);
+      }
+    },
+    scheduler: transientScheduler,
+    now: () => transientScheduler.now,
+    reconnectDelay: () => 5,
+    onFatal: () => { transientFatal = true; },
+    onDisconnect: () => { transientDisconnects += 1; },
+  });
+  const transientReady = transientConnection.start();
+  transientSockets[0].open();
+  transientConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(transientConnection, "test");
+  await transientReady;
+  transientConnection.handleServerError({ type: "error", error: errorCode });
+  await Promise.resolve();
+  assert(transientSockets[0].terminated, `${errorCode} did not terminate the stale relay socket`);
+  assert(!transientFatal, `${errorCode} was misclassified as a permanent protocol failure`);
+  assert(transientDisconnects === 1, `${errorCode} did not preserve normal disconnect cleanup`);
+  assert(transientConnection.status().last_close_category === expectedCategory,
+    `${errorCode} did not preserve its retryable outage category`);
+  transientScheduler.advance(5);
+  assert(transientSockets.length === 2, `${errorCode} did not enter the reconnect loop`);
+  assert(!transientEvents.some((event) => event.level === "error" && event.message.includes("upgrade and redeploy")),
+    `${errorCode} emitted a false protocol-upgrade instruction`);
+  transientConnection.stop();
+}
+
+for (const [closeCode, closeReason, expectedCategory] of [
+  [1008, "daemon pong failed", "relay_transport_error"],
+  [1012, "daemon pong failed", "relay_transport_error"],
+  [1008, "daemon send failed", "relay_transport_error"],
+  [1012, "daemon send failed", "relay_transport_error"],
+  [1008, "daemon liveness timeout", "relay_heartbeat_timeout"],
+  [1012, "daemon liveness timeout", "relay_heartbeat_timeout"],
+]) {
+  const closeScheduler = new ManualScheduler();
+  const closeSockets = [];
+  let closeFatal = false;
+  const closeConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    secret: "test-daemon-secret-123456",
+    logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) {
+        super(url, options);
+        closeSockets.push(this);
+      }
+    },
+    scheduler: closeScheduler,
+    now: () => closeScheduler.now,
+    reconnectDelay: () => 5,
+    onFatal: () => { closeFatal = true; },
+  });
+  const closeReady = closeConnection.start();
+  closeSockets[0].open();
+  closeConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(closeConnection, "test");
+  await closeReady;
+  closeSockets[0].remoteClose(closeCode, closeReason);
+  await Promise.resolve();
+  assert(!closeFatal, `${closeReason} close was misclassified as a permanent policy rejection`);
+  assert(closeConnection.status().last_close_category === expectedCategory,
+    `${closeReason} close lost its retryable outage category`);
+  closeScheduler.advance(5);
+  assert(closeSockets.length === 2, `${closeReason} close did not enter the reconnect loop`);
+  closeConnection.stop();
+}
+
 let protocolFatalCallback = false;
 const protocolScheduler = new ManualScheduler();
 const protocolSockets = [];

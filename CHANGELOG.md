@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.0.0-beta.21 - 2026-07-27
+
+### Relay continuity and stable MCP catalog
+
+- Keep `tools/list` stable for an authenticated account role instead of withdrawing almost every tool whenever the local relay is briefly unavailable. The Worker still fails every execution closed against the live daemon capability ceiling, and `server_info` now distinguishes the stable advertised catalog from the currently effective daemon/account intersection.
+- Persist streamed daemon-call ownership, request correlation, operation deadlines, reconnect deadlines, and result transformation metadata in Durable Object storage. A hibernated or restarted Worker can recover the active call, a verified same-instance daemon can reclaim it, and a per-WebSocket connection generation prevents stale close events or delayed results from mutating the rebound call. Active-record expiry advances monotonically across repeated detach/rebind cycles instead of being capped by the original single-reconnect window.
+- Make Durable Object alarms the sole deadline owner for persisted streamed calls while retaining the existing Promise/timer path for bounded JSON-only calls. A FIFO admission gate computes one combined 32-call ceiling across both paths. Cancellation, send failure, operation timeout, reconnect-grace expiry, daemon replacement, and successful completion all converge through one guarded terminal write.
+- Classify Worker-requested transport and liveness invalidation as retryable relay recovery instead of a permanent protocol mismatch. The daemon now terminates only the affected socket, preserves ordinary disconnect cleanup, and reconnects automatically; Worker transient invalidation uses WebSocket 1012, while unknown protocol messages, authentication failure, and identity/version mismatch remain fatal. Close-only delivery is also classified from bounded reasons so loss of the preceding error frame cannot restart the daemon. A failed daemon `hello` send and a readiness-probe result lost to an ending relay generation are likewise transport races, not authentication or protocol violations.
+- Add red-green persistence, stale-generation, exactly-once, stable-catalog, disconnected-execution, reconnect, cancellation, timeout, transient Worker-error/close-only recovery, and real Wrangler OAuth/MCP integration coverage.
+- Repair POSIX process-tree escalation after workflow-level repeated full verification exposed a surviving anti-`SIGTERM` descendant. Ownership is refreshed immediately after graceful termination, and escalation falls back to targeted PID/start-time/PGID checks when a full process-table snapshot is unavailable under load; PID reuse still fails closed.
+
+### Audit and documentation
+
+- Re-audit the relay lifecycle, tool-advertisement contract, pending-call accounting, storage validation, state-machine boundaries, privacy-safe diagnostics, and obsolete event-settlement code. Synchronize architecture, operations, logging, testing, security, privacy, upgrading, and audit documentation with the implemented continuity model and its residual failure boundaries.
+
 ## 3.0.0-beta.20 - 2026-07-26
 
 ### Fixed

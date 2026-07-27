@@ -1,4 +1,4 @@
-import type { PendingCallOutcome, PendingCallRecord, PendingCallSettlement, RegisterEventPendingCall, RegisterPendingCall } from "./pending-call-contract.ts";
+import type { PendingCallOutcome, PendingCallRecord, PendingCallSettlement, RegisterPendingCall } from "./pending-call-contract.ts";
 import { PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
 
 export class PendingCallRegistrationError extends Error {
@@ -41,13 +41,8 @@ export class PendingCallRegistry {
     let resolveResult!: (value: unknown) => void;
     let rejectResult!: (error: Error) => void;
     const result = new Promise<unknown>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
-    this.add(input, { kind: "promise", resolve: resolveResult, reject: rejectResult });
+    this.add(input, { resolve: resolveResult, reject: rejectResult });
     return result;
-  }
-
-  registerEvent(input: RegisterEventPendingCall): void {
-    this.assertCanRegister(input);
-    this.add(input, { kind: "event", settle: input.settle });
   }
 
   resolve(id: string, socket: WebSocket, value: unknown): Promise<boolean> {
@@ -101,7 +96,7 @@ export class PendingCallRegistry {
 
   snapshot(): { active: number; detached: number; request_keys: number; maximum: number; oldest_ms: number; by_tool: Record<string, number> } {
     const now = this.deadlines.now();
-    const byTool: Record<string, number> = {};
+    const byTool = Object.create(null) as Record<string, number>;
     let detached = 0;
     let oldestMs = 0;
     for (const record of this.byId.values()) {
@@ -161,8 +156,7 @@ export class PendingCallRegistry {
   private async finish(id: string, outcome: PendingCallOutcome): Promise<boolean> {
     const record = this.take(id);
     if (!record) return false;
-    if (record.settlement.kind === "promise") outcome.ok ? record.settlement.resolve(outcome.value) : record.settlement.reject(outcome.error);
-    else await record.settlement.settle(outcome);
+    outcome.ok ? record.settlement.resolve(outcome.value) : record.settlement.reject(outcome.error);
     return true;
   }
 
