@@ -135,7 +135,7 @@ logs/daemon.out.log
 logs/daemon.err.log
 ```
 
-Existing files are opened without following symbolic links where supported and tail-trimmed on UTF-8/line boundaries before startup. Background services use `warn`, so ordinary tool traffic and brief relay interruptions do not cause sustained growth.
+Existing files are opened without following symbolic links where supported and tail-trimmed on UTF-8/line boundaries before startup. The active background daemon repeats the same secure trim every 15 minutes, so a long-lived process remains bounded even under repeated warning-level failures. Maintenance errors expose only a coarse error class. Background services use `warn`, so ordinary tool traffic and brief relay interruptions do not cause sustained growth.
 
 The log format has an explicit schema marker. If the marker differs from the current format, the daemon clears the active files before startup and writes the current marker. Runtime code recognizes only `daemon.out.log` and `daemon.err.log`; it does not parse or archive other log formats.
 

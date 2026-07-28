@@ -66,10 +66,12 @@ export async function runtimeSelfTest() {
     const ownerAuthorization = { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, family_id: `mcp_family_${"c".repeat(43)}`, role: "owner" };
     const relayMessages = [];
     const originalSend = restricted.relay.send.bind(restricted.relay);
+    const originalRecoverable = restricted.relayCallRecovery.isRecoverable;
     restricted.relay.send = (value) => {
       relayMessages.push(value);
       return true;
     };
+    restricted.relayCallRecovery.isRecoverable = () => true;
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
       id: "deadline-call",
@@ -84,8 +86,6 @@ export async function runtimeSelfTest() {
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
     if (invalidEnvelope?.ok !== false || invalidEnvelope.error?.code !== "invalid_request" || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
-    restricted.relay.send = originalSend;
-
     await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
     await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
     await writeFile(join(outside, "outside.txt"), "outside-needle", "utf8");
@@ -225,6 +225,7 @@ export async function runtimeSelfTest() {
     };
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     restricted.relay.send = originalSend;
+    restricted.relayCallRecovery.isRecoverable = originalRecoverable;
     const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
     if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");
     if (logEvents.some(event => event.level === "warn" && event.event === "tool.call.failed")) {

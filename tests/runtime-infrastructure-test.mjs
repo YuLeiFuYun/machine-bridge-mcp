@@ -19,6 +19,7 @@ import { LocalRuntime } from "../src/local/runtime.mjs";
 import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/runtime-relay.mjs";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
+import { startAutostartLogMaintenance } from "../src/local/autostart-log-maintenance.mjs";
 
 await testCallRegistry();
 await testToolExecutor();
@@ -32,6 +33,7 @@ testRelayResumeReconciliation();
 testRelayToolTimeoutNormalization();
 testRuntimeConvenienceMethods();
 testRelayReconnectDelivery();
+testAutostartLogMaintenance();
 await testProcessExecutionNoShell();
 await testFixedInternalProcessBoundary();
 testTrustedGitExecutable();
@@ -284,10 +286,15 @@ function testRelayResumeReconciliation() {
 
   let violation = "";
   let confirmed = 0;
+  let acknowledged = "";
   const controlRuntime = {
     relayResumeSessionId: 0,
     reconcileRelayCalls(ids) { this.resumed = ids; },
     handleRelayProtocolViolation(reason) { violation = reason; },
+    relayCallRecovery: {
+      pulse() {},
+      acknowledge(id) { acknowledged = id; return true; },
+    },
     relay: {
       acknowledge() {},
       confirmReady() { confirmed += 1; return true; },
@@ -305,6 +312,12 @@ function testRelayResumeReconciliation() {
     { sessionId: 17, authenticated: true, ready: false },
   );
   assert(confirmed === 1 && controlRuntime.relayResumeSessionId === 0, "ready_ack was not gated by resume reconciliation");
+  LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "tool_result_ack", id: "call_valid_12345678" },
+    { sessionId: 17, authenticated: true, ready: true },
+  );
+  assert(acknowledged === "call_valid_12345678", "valid Worker result acknowledgement was not applied");
   LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "ready_ack" },
@@ -399,6 +412,15 @@ function testRelayReconnectDelivery() {
     },
   });
 
+  sendSucceeds = true;
+  activeCalls.add("call_ack");
+  assert(recovery.deliver({ id: "call_ack", ok: true }) === true, "connected result was not sent");
+  assert(recovery.pendingResults.has("call_ack"), "connected result was discarded before Worker acknowledgement");
+  assert(recovery.acknowledge("call_ack") && !recovery.pendingResults.has("call_ack"),
+    "Worker acknowledgement did not clear a connected result");
+  activeCalls.delete("call_ack");
+  sendSucceeds = false;
+
   assert(recovery.deliver({ id: "call_reconnect", ok: true }) === false, "result queued during an outage was reported as delivered");
   assert(recovery.pendingResults.has("call_reconnect"), "completed result was not retained for reconnect delivery");
   assert(scheduled === 1 && typeof scheduledCallback === "function", "queued result did not arm reconnect expiry");
@@ -408,8 +430,13 @@ function testRelayReconnectDelivery() {
 
   sendSucceeds = true;
   recovery.ready();
-  assert(recovery.pendingResults.size === 0 && scheduledCallback === null, "queued result was not replayed and cleared after reconnect");
+  assert(recovery.pendingResults.has("call_reconnect") && scheduledCallback === null,
+    "replayed result was discarded before Worker acknowledgement");
   assert(events.some((event) => event.name === "relay.tool_results.replayed" && event.fields.delivered_results === 1), "replayed result was not observable");
+  recovery.pulse();
+  assert(recovery.pendingResults.has("call_reconnect"), "heartbeat replay discarded an unacknowledged result");
+  assert(recovery.acknowledge("call_reconnect") && recovery.pendingResults.size === 0,
+    "Worker acknowledgement did not clear the retained result");
   activeCalls.delete("call_reconnect");
 
   sendSucceeds = false;
@@ -421,6 +448,32 @@ function testRelayReconnectDelivery() {
   assert(cancelled === 1 && terminated === 1, "reconnect expiry did not cancel calls and terminate ordinary processes");
   assert(suppressed.get("call_expire") === "relay_reconnect_timeout", "reconnect expiry did not suppress the eventual result");
   assert(recovery.pendingResults.size === 0, "reconnect expiry retained queued results");
+}
+
+
+function testAutostartLogMaintenance() {
+  let callback = null;
+  let delay = 0;
+  let unref = 0;
+  let trims = 0;
+  let failures = 0;
+  const maintenance = startAutostartLogMaintenance("/state", {
+    intervalMs: 1234,
+    trim(root) {
+      assert(root === "/state", "log maintenance changed its state root");
+      trims += 1;
+      if (trims === 2) throw new Error("synthetic trim failure");
+    },
+    onError() { failures += 1; },
+    scheduler: {
+      setInterval(fn, value) { callback = fn; delay = value; return { unref() { unref += 1; } }; },
+    },
+  });
+  assert(maintenance.intervalMs === 1234 && delay === 1234 && unref === 1,
+    "background log maintenance lost its bounded unreferenced schedule");
+  callback();
+  callback();
+  assert(trims === 2 && failures === 1, "background log maintenance did not contain a trim failure");
 }
 
 async function testProcessExecutionNoShell() {
