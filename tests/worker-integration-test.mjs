@@ -995,6 +995,7 @@ try {
   });
   const relayedImageCall = await waitForWsMessage(candidateDaemon, "tool_call");
   assert(relayedImageCall.tool === "view_image", "Worker relayed the wrong rich-content tool");
+  const imageResultAck = waitForWsMessage(candidateDaemon, "tool_result_ack", 10_000, "rich result acknowledgement");
   candidateDaemon.send(JSON.stringify({
     type: "tool_result",
     id: relayedImageCall.id,
@@ -1006,6 +1007,8 @@ try {
       },
     },
   }));
+  const acknowledgedImage = await imageResultAck;
+  assert(acknowledgedImage.id === relayedImageCall.id, "Worker acknowledged the wrong daemon result");
   const remoteImage = await remoteImageCall;
   assert(remoteImage.response.status === 200, "rich image tools/call failed");
   assert(remoteImage.body.result?.content?.[0]?.type === "image", "Worker flattened native MCP image content");

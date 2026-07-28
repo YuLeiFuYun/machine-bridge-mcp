@@ -334,7 +334,20 @@ export class LocalRuntime {
       this.relayResumeSessionId = 0;
       return true;
     }
-    if (message.type === "pong") return true;
+    if (message.type === "pong") {
+      this.relayCallRecovery.pulse();
+      return true;
+    }
+    if (message.type === "tool_result_ack") {
+      if (!isRelayReadyContext(relayContext, this.relay)
+          || typeof message.id !== "string"
+          || !/^call_[A-Za-z0-9_-]{8,240}$/.test(message.id)) {
+        this.handleRelayProtocolViolation("invalid_tool_result_ack");
+        return true;
+      }
+      this.relayCallRecovery.acknowledge(message.id);
+      return true;
+    }
     if (message.type === "error") {
       this.relay?.handleServerError(message);
       return true;

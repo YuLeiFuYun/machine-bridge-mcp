@@ -1,5 +1,6 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
 import { PendingAdmissionGate } from "../src/worker/pending-admission.ts";
+import { DurableStreamCallCoordinator } from "../src/worker/durable-stream-calls.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
 import {
@@ -110,6 +111,7 @@ await testTimeoutCallbackFailure();
 await testPendingAdmissionGate();
 await testEventDrivenStreamDispatch();
 await testStreamDispatchFailureBoundaries();
+await testDurableSettlementPersistenceFailure();
 await testAbortSignalCleanup();
 await testMcpStreamResponse();
 await testMcpStreamChannel();
@@ -594,6 +596,43 @@ async function testStreamDispatchFailureBoundaries() {
   "server_info builder lost socket, catalog, or effective-tool diagnostics");
 }
 
+
+async function testDurableSettlementPersistenceFailure() {
+  const events = [];
+  const finished = [];
+  const call = {
+    call_id: `call_${"P".repeat(43)}`,
+    connection_id: `connection_${"P".repeat(43)}`,
+    daemon_instance_id: "daemon_persist_failure_1234",
+    streamId: STREAM_TEST_ID,
+    requestId: 91,
+    tool: "exec_command",
+    state: "attached",
+    started_at: 1,
+    operation_deadline_at: 10_000,
+    remaining_timeout_ms: 9_999,
+  };
+  const coordinator = new DurableStreamCallCoordinator(
+    {
+      async get() { return call; },
+      async complete() { throw new Error("synthetic terminal persistence failure"); },
+    },
+    {},
+    {
+      event(level, name, fields) { events.push({ level, name, fields }); },
+      callFinished(tool, code) { finished.push({ tool, code }); },
+    },
+    32,
+  );
+  await expectRejectType(
+    coordinator.settle(call.call_id, call.connection_id, { ok: true, value: { complete: true } }),
+    Error,
+  );
+  assert(events.some((event) => event.name === "mcp.stream.persist.failed"),
+    "terminal persistence failure was not observable");
+  assert(finished.length === 0, "unpersisted terminal result was reported as completed");
+}
+
 async function testMcpStreamResponse() {
   assert(acceptsEventStream(new Request("https://example.test/mcp", { headers: { accept: "application/json, text/event-stream" } })), "event-stream content negotiation was not detected");
   assert(!acceptsEventStream(new Request("https://example.test/mcp", { headers: { accept: "application/json" } })), "JSON-only client was incorrectly upgraded to SSE");
@@ -970,8 +1009,9 @@ function testRelayTimeoutContract() {
   assert(relayContract.maximumResumableMessageBytes === 1_500_000, "resumable message storage exceeded the Durable Object row budget");
   assert(daemonToolTimeoutMs("session_bootstrap", {}) === 10_000, "bootstrap timeout incorrectly inherited the reconnect budget");
   assert(daemonToolTimeoutMs("read_file", {}) === 60_000, "ordinary tool timeout was extended without a disconnect");
-  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 120 }) === 125_000, "configurable tool timeout lost its protocol overhead");
-  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 600 }) === 605_000, "maximum configurable execution timeout drifted from the relay contract");
+  assert(relayContract.maximumInteractiveExecutionTimeoutMs === 85_000, "interactive relay deadline lost its host-safe bound");
+  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 120 }) === 90_000, "configurable tool timeout exceeded the interactive relay budget");
+  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 600 }) === 90_000, "maximum configurable execution timeout bypassed the interactive relay budget");
   assert(relayContract.maximumRelayToolTimeoutMs === 610_000, "local relay envelope ceiling drifted from the Worker contract");
 }
 

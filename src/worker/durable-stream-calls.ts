@@ -1,4 +1,3 @@
-import { daemonLastSeenMs } from "./daemon-liveness.ts";
 import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import { publicWorkerToolError, WorkerToolError } from "./errors.ts";
 import { workerErrorClass } from "./http.ts";
@@ -8,13 +7,6 @@ import { streamTerminalMessage } from "./mcp-stream-dispatch.ts";
 import { transformDurableStreamOutcome } from "./durable-stream-result.ts";
 import type { WorkerObservability } from "./observability.ts";
 import { sendWebSocketQuietly } from "./websocket-protocol.ts";
-
-type InvalidateDaemonSocket = (
-  socket: WebSocket,
-  message: string,
-  closeReason: string,
-  errorCode?: string,
-) => Promise<void>;
 
 type TransientPendingSnapshot = {
   active: number;
@@ -29,20 +21,17 @@ export class DurableStreamCallCoordinator {
   private readonly daemonRegistry: DaemonSocketRegistry;
   private readonly observability: WorkerObservability;
   private readonly maximumPendingCalls: number;
-  private readonly invalidateDaemonSocket: InvalidateDaemonSocket;
 
   constructor(
     calls: McpPendingCallStore,
     daemonRegistry: DaemonSocketRegistry,
     observability: WorkerObservability,
     maximumPendingCalls: number,
-    invalidateDaemonSocket: InvalidateDaemonSocket,
   ) {
     this.calls = calls;
     this.daemonRegistry = daemonRegistry;
     this.observability = observability;
     this.maximumPendingCalls = maximumPendingCalls;
-    this.invalidateDaemonSocket = invalidateDaemonSocket;
   }
 
   async snapshot(transient: TransientPendingSnapshot): Promise<Record<string, unknown>> {
@@ -66,9 +55,10 @@ export class DurableStreamCallCoordinator {
     connectionId: string,
     outcome: PendingCallOutcome,
     knownCall?: PendingStreamCallView,
-  ): Promise<boolean> {
+  ): Promise<"committed" | "missing" | "stale"> {
     const call = knownCall ?? await this.calls.get(callId);
-    if (!call || call.connection_id !== connectionId) return false;
+    if (!call) return "missing";
+    if (call.connection_id !== connectionId) return "stale";
     const normalized = transformDurableStreamOutcome(call, outcome);
     const code = normalized.ok ? "" : publicWorkerToolError(normalized.error).code;
     try {
@@ -77,23 +67,21 @@ export class DurableStreamCallCoordinator {
         connectionId,
         streamTerminalMessage(call.requestId, normalized),
       );
-      if (!completed) return false;
+      if (!completed) {
+        const current = await this.calls.get(callId);
+        return current ? "stale" : "missing";
+      }
     } catch (error) {
       this.observability.event("error", "mcp.stream.persist.failed", { error_class: workerErrorClass(error) });
+      throw error;
     }
     this.observability.callFinished(call.tool, code);
-    return true;
+    return "committed";
   }
 
   async expire(call: PendingStreamCallView): Promise<void> {
     const socket = call.state === "attached" ? this.daemonRegistry.socketForConnectionId(call.connection_id) : undefined;
-    if (socket) {
-      sendWebSocketQuietly(socket, { type: "cancel_call", id: call.call_id });
-      const silentForMs = Date.now() - daemonLastSeenMs(this.daemonRegistry.readyAttachment(socket));
-      if (!Number.isFinite(silentForMs) || silentForMs > 45_000) {
-        void this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
-      }
-    }
+    if (socket) sendWebSocketQuietly(socket, { type: "cancel_call", id: call.call_id });
     const error = call.state === "attached"
       ? new WorkerToolError("timeout", `daemon tool timed out: ${call.tool}`, true)
       : new WorkerToolError("unavailable", "daemon disconnected; reconnect grace expired", true);
@@ -111,12 +99,12 @@ export class DurableStreamCallCoordinator {
     if (!call) return false;
     const socket = call.state === "attached" ? this.daemonRegistry.socketForConnectionId(call.connection_id) : undefined;
     if (socket) sendWebSocketQuietly(socket, { type: "cancel_call", id: call.call_id });
-    return this.settle(
+    return (await this.settle(
       call.call_id,
       call.connection_id,
       { ok: false, error: new WorkerToolError("cancelled", "tool call cancelled by client") },
       call,
-    );
+    )) === "committed";
   }
 
   detach(connectionId: string, graceMs: number): Promise<number> {

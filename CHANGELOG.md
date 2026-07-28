@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.0.0-beta.22 - 2026-07-28
+
+### ChatGPT call continuity and terminal delivery
+
+- Add an explicit daemon-result acknowledgement. The local runtime retains every terminal result after WebSocket queueing, replays unacknowledged results after reconnect and on heartbeat, and removes them only after the Worker confirms that the generation-guarded terminal transaction committed. This closes the loss window between local `send()` acceptance and Durable Object persistence that could leave a completed local command as a ghost Worker call.
+- Make durable settlement fail closed. A terminal-storage exception is observable and retryable instead of being reported as a completed call; stale connection generations remain unacknowledged, while duplicate results for an already terminal call are acknowledged idempotently so replay converges.
+- Stop treating one tool deadline as proof that the complete daemon socket is dead. Tool timeout now cancels only that call; the independent 90-second daemon-liveness alarm remains the sole connection-invalidating authority.
+- Bound remote foreground execution to 85 seconds plus five seconds of relay overhead, below the observed hosted-client request ceiling. The local process APIs retain their 600-second schema range, but work expected to exceed the interactive budget must use process sessions or managed jobs rather than one foreground ChatGPT call.
+- Tail-trim background daemon logs every 15 minutes as well as before startup, reusing the existing owner-only, no-follow, single-link, schema-checked, UTF-8 line-safe maintenance path.
+
+### Verification
+
+- Add acknowledgement-loss/replay, persistent-terminal-write failure, stale generation, hosted-client deadline, runtime log-maintenance, and real Wrangler acknowledgement coverage. Type checking, lint, architecture, privacy, structured logging, security properties, SARIF, critical coverage, local self-test, Worker infrastructure, and Worker OAuth/MCP integration pass.
+
 ## 3.0.0-beta.21 - 2026-07-27
 
 ### Relay continuity and stable MCP catalog

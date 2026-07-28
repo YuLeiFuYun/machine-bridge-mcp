@@ -43,28 +43,36 @@ export class RelayCallRecovery {
   /** @param {RelayResult} response */
   deliver(response) {
     const callId = String(response?.id || "");
-    if (this.send(response)) {
-      if (callId) this.pendingResults.delete(callId);
-      return true;
-    }
-    if (callId && this.isRecoverable()) {
-      this.pendingResults.set(callId, response);
-      this.scheduleExpiry();
-      this.logger.event?.("debug", "relay.tool_result.queued", {
-        call_id: shortCallId(callId), queued_results: this.pendingResults.size,
-      }, "Queued a completed tool result while the relay reconnects");
+    if (!callId) return this.send(response);
+    if (!this.isRecoverable()) {
+      this.logger.event?.("debug", "relay.tool_result.discarded", {
+        call_id: shortCallId(callId), reason: "transport_unavailable",
+      }, "Discarded a tool result because the relay is no longer recoverable");
       return false;
     }
-    this.logger.event?.("debug", "relay.tool_result.discarded", {
-      call_id: shortCallId(callId), reason: "transport_unavailable",
-    }, "Discarded a tool result because the relay is no longer recoverable");
+
+    // Retain sent results until the Worker commits and acknowledges them.
+    this.pendingResults.set(callId, response);
+    const sent = this.send(response);
+    if (sent) {
+      this.logger.event?.("debug", "relay.tool_result.awaiting_ack", {
+        call_id: shortCallId(callId), unacknowledged_results: this.pendingResults.size,
+      }, "Delivered a tool result and retained it until Worker acknowledgement");
+      return true;
+    }
+
+    this.scheduleExpiry();
+    this.logger.event?.("debug", "relay.tool_result.queued", {
+      call_id: shortCallId(callId), queued_results: this.pendingResults.size,
+    }, "Queued a completed tool result while the relay reconnects");
     return false;
   }
 
   /** @param {unknown} callId */
-  discard(callId) {
-    return this.pendingResults.delete(String(callId));
-  }
+  acknowledge(callId) { return this.pendingResults.delete(String(callId)); }
+
+  /** @param {unknown} callId */
+  discard(callId) { return this.pendingResults.delete(String(callId)); }
 
   /** @param {Iterable<string>} resumedCallIds @param {(callId: string) => boolean} cancelCall */
   reconcile(resumedCallIds, cancelCall) {
@@ -94,18 +102,29 @@ export class RelayCallRecovery {
 
   ready() {
     this.clearTimer();
+    this.retryUnacknowledged("reconnected");
+  }
+
+  pulse() {
+    this.retryUnacknowledged("heartbeat");
+  }
+
+  /** @param {string} reason */
+  retryUnacknowledged(reason) {
     let delivered = 0;
-    for (const [callId, response] of [...this.pendingResults]) {
+    for (const response of this.pendingResults.values()) {
       if (!this.send(response)) {
         this.scheduleExpiry();
         break;
       }
-      this.pendingResults.delete(callId);
       delivered += 1;
     }
     if (delivered > 0) {
-      this.logger.event?.("info", "relay.tool_results.replayed", { delivered_results: delivered },
-        "Delivered completed tool results after the relay reconnected");
+      this.logger.event?.(reason === "reconnected" ? "info" : "debug", "relay.tool_results.replayed", {
+        delivered_results: delivered,
+        reason,
+        unacknowledged_results: this.pendingResults.size,
+      }, "Replayed completed tool results awaiting Worker acknowledgement");
     }
   }
 
@@ -122,7 +141,7 @@ export class RelayCallRecovery {
       const cancelled = this.cancelOrigin("remote relay reconnect grace expired");
       const discarded = this.pendingResults.size;
       this.pendingResults.clear();
-      this.terminate();
+      if (cancelled > 0) this.terminate();
       if (cancelled > 0 || discarded > 0) {
         this.logger.warn?.(`remote relay did not recover within ${this.graceMs / 1000} seconds; cancelled ${cancelled} call(s) and discarded ${discarded} queued result(s)`);
       }

@@ -287,6 +287,16 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }
     runtime = createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity: readiness.deviceSessionIdentity });
     await runtime.start();
     reportRemoteReady(args, state, readiness, logger);
+    if (args.daemonOnly) {
+      const { startAutostartLogMaintenance } = await import("./autostart-log-maintenance.mjs");
+      startAutostartLogMaintenance(state.paths.stateRoot, {
+        onError(error) {
+          logger.event?.("warn", "service.log_maintenance.failed", {
+            error_class: classifyOperationalError(error),
+          }, "Background log maintenance failed");
+        },
+      });
+    }
     keepProcessAlive({ daemon: runtime, lock: daemonLock, logger });
   } catch (error) {
     try { runtime?.stop?.(); } catch {}

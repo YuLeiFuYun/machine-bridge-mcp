@@ -7,7 +7,6 @@ import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import {
   DAEMON_LIVENESS_TIMEOUT_MS,
   DAEMON_READY_TIMEOUT_MS,
-  daemonLastSeenMs,
   daemonLivenessDeadlineMs,
   isFreshDaemonCandidate,
 } from "./daemon-liveness.ts";
@@ -50,7 +49,7 @@ import {
 } from "./websocket-protocol.ts";
 
 const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.21";
+const SERVER_VERSION = "3.0.0-beta.22";
 const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
 const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -99,7 +98,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       this.daemonRegistry,
       this.observability,
       MAX_PENDING_CALLS,
-      (socket, message, closeReason, errorCode) => this.invalidateDaemonSocket(socket, message, closeReason, errorCode),
     );
   }
 
@@ -343,9 +341,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     let matched = outcome.ok
       ? await this.pending.resolve(body.id, ws, outcome.value)
       : await this.pending.reject(body.id, outcome.error, ws);
+    let acknowledge = Boolean(matched);
     if (!matched && socketAttachment.connectionId) {
-      matched = await this.durableCalls.settle(body.id, socketAttachment.connectionId, outcome);
+      const settlement = await this.durableCalls.settle(body.id, socketAttachment.connectionId, outcome);
+      matched = settlement === "committed";
+      acknowledge = settlement !== "stale";
     }
+    if (acknowledge) trySendWebSocket(ws, { type: "tool_result_ack", id: body.id });
     if (!matched) this.observability.unmatchedResult();
     else await this.scheduleRuntimeAlarm();
   }
@@ -630,10 +632,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
   private daemonCallTimeout(record: import("./pending-call-contract.ts").PendingCallRecord, name: string): Error {
     if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
-    const silentForMs = record.socket ? Date.now() - daemonLastSeenMs(this.daemonRegistry.readyAttachment(record.socket)) : 0;
-    if (record.socket && (!Number.isFinite(silentForMs) || silentForMs > 45_000)) {
-      void this.invalidateDaemonSocket(record.socket, "daemon became unresponsive", "daemon liveness timeout");
-    }
     return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
   }
 
