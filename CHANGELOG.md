@@ -22,6 +22,7 @@
 ### Verification
 
 - Add fault-injection coverage for service-stop refusal, ambiguous provider results, daemon-lock takeover denial, malformed version/wait/repair inputs, missing lock-release contracts, invalid retry budgets, first-attempt authentication rejection, exactly one same-identity repair deployment, bounded repeated rejection, compatible-service forward recovery, cleanup aggregation, normal foreground-to-service convergence, and cross-platform separation of default profile state from the machine-service control root.
+- Keep the runtime-diagnostics composition test platform-correct: macOS must classify the injected `utun` route as VPN/TUN interception, while Linux and Windows must skip the macOS-only fixed route probe with `unsupported_platform`. Dedicated route tests cover both contracts independently.
 - Add deterministic child-settlement tests, process-snapshot budget accounting, repeated managed-job timeout/descendant termination runs, and an explicit assertion that the detached runner exits after terminal persistence.
 - Reject non-numeric, fractional, zero, negative, non-finite, or over-limit remote `timeout_seconds` values before daemon dispatch; generated schemas and runtime enforcement now share the exact 1–85 second integer contract.
 - Add strict checked-JavaScript contracts for child settlement, process-tree ownership, and system-route classification, plus a dedicated child-settlement coverage threshold of 100% functions and 85% branches.

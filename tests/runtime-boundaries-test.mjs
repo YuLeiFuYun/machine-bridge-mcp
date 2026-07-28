@@ -129,9 +129,14 @@ async function testRuntimeDiagnostics() {
     const relayCheck = shell.checks.find((check) => check.layer === "remote-relay");
     assert(relayCheck?.ok === true && relayCheck.outage_count === 2 && relayCheck.network_route === "system-network-stack", "relay diagnostic history was omitted");
     const routeCheck = shell.checks.find((check) => check.layer === "system-network-route");
-    assert(routeCheck?.ok === true && routeCheck.route_class === "tunnel-or-vpn"
-      && routeCheck.operating_system_interception === true,
-    "runtime diagnostics did not identify a system VPN/TUN default route");
+    if (process.platform === "darwin") {
+      assert(routeCheck?.ok === true && routeCheck.route_class === "tunnel-or-vpn"
+        && routeCheck.operating_system_interception === true,
+      "runtime diagnostics did not identify a system VPN/TUN default route");
+    } else {
+      assert(routeCheck?.skipped === true && routeCheck.error_class === "unsupported_platform",
+        "non-macOS runtime diagnostics did not skip the macOS-only default-route probe");
+    }
     assert(shell.ok === false, "unavailable local resource was hidden from diagnostic result");
 
     const review = await diagnoseRuntime({
@@ -178,6 +183,9 @@ async function testRuntimeDiagnostics() {
     "system route interface classification drifted");
     const unsupportedRoute = await inspectSystemNetworkRoute({ platform: "win32" });
     assert(unsupportedRoute.supported === false, "unsupported route inspection did not degrade safely");
+    const unsupportedRouteCheck = await systemNetworkRouteCheck({ platform: "linux" });
+    assert(unsupportedRouteCheck.skipped === true && unsupportedRouteCheck.error_class === "unsupported_platform",
+      "unsupported platform route diagnostics did not expose a bounded skipped result");
     const missingRunner = await inspectSystemNetworkRoute({ platform: "darwin" });
     assert(missingRunner.supported === false, "missing fixed-command boundary did not disable route inspection");
     const unavailableRoute = await systemNetworkRouteCheck({

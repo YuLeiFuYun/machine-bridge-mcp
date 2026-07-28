@@ -5,9 +5,9 @@
   "package_name": "machine-bridge-mcp",
   "package_version": "3.0.0-beta.24",
   "filename": "machine-bridge-mcp-3.0.0-beta.24.tgz",
-  "shasum": "71c4f583b0f0934ff438c09df5300b4cb6a9db2b",
-  "integrity": "sha512-FOPiZGaVMvaYdv3zaNxOR5jkOGyjNYlscburNmWbX8CeHPXcXrOAk80Ktk8b7fZWJRox1pl5hjLnEA9n4THLZQ==",
-  "accepted_at": "2026-07-28T16:33:14.975Z",
-  "package_content_sha256": "de554b8f90701c69e53c9a70327135f8f9f5b422e43fb78079bce9b05c52d890",
-  "promotion_content_sha256": "04eca6330552855fa064748e07345566cd8b029c6d7e450231f97db8a8622f4a"
+  "shasum": "4938efac28a8bd0d893dee33301bf33523167342",
+  "integrity": "sha512-ocb1kOiSZHHt2gV9Y+qsvaKzE3v2rjjzwZFRUvEo84ZsG5RrLrvC6XEuQ+38ink5ofnQl0XPlW9vS2EW8CrG2g==",
+  "accepted_at": "2026-07-28T17:13:57.779Z",
+  "package_content_sha256": "692602a4723b7d40795c14c999f9c0e33dfd5cd2784412dc86a9f075c30732d6",
+  "promotion_content_sha256": "d2b99ae4e32677a14f5b2b376252e0656db7ce0e72f79f057f3164de8c364cf7"
 }
