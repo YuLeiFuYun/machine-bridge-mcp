@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-reporting.mjs";
 import { diagnoseRuntime } from "../src/local/runtime-diagnostics.mjs";
+import { classifySystemRouteInterface, inspectSystemNetworkRoute, systemNetworkRouteCheck } from "../src/local/system-network-route.mjs";
 import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-capabilities.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-inspection.mjs";
@@ -113,6 +114,7 @@ async function testRuntimeDiagnostics() {
       runtimeDir,
       workspace: runtimeDir,
       runProcess: async () => ({ code: 0, stdout: "ok", stderr: "" }),
+      runFixedInternal: async () => ({ code: 0, stdout: "   interface: utun4\n", stderr: "" }),
       probeShell: async () => ({ code: 0, stdout: "", stderr: "" }),
       managedJobManager,
       relayStatus: () => ({
@@ -126,6 +128,10 @@ async function testRuntimeDiagnostics() {
     assert(shell.checks.some((check) => check.layer === "local-shell" && check.ok), "shell diagnostic was not executed");
     const relayCheck = shell.checks.find((check) => check.layer === "remote-relay");
     assert(relayCheck?.ok === true && relayCheck.outage_count === 2 && relayCheck.network_route === "system-network-stack", "relay diagnostic history was omitted");
+    const routeCheck = shell.checks.find((check) => check.layer === "system-network-route");
+    assert(routeCheck?.ok === true && routeCheck.route_class === "tunnel-or-vpn"
+      && routeCheck.operating_system_interception === true,
+    "runtime diagnostics did not identify a system VPN/TUN default route");
     assert(shell.ok === false, "unavailable local resource was hidden from diagnostic result");
 
     const review = await diagnoseRuntime({
@@ -166,6 +172,52 @@ async function testRuntimeDiagnostics() {
     assert(failedRelay?.outage_active === true && failedRelay.network_route === "unknown"
       && failedRelay.last_close_code === null && failedRelay.next_reconnect_in_ms === 12,
     "degraded relay diagnostics did not normalize missing or invalid fields");
+    assert(classifySystemRouteInterface("en0") === "physical-or-other"
+      && classifySystemRouteInterface("utun12") === "tunnel-or-vpn"
+      && classifySystemRouteInterface("lo0") === "loopback",
+    "system route interface classification drifted");
+    const unsupportedRoute = await inspectSystemNetworkRoute({ platform: "win32" });
+    assert(unsupportedRoute.supported === false, "unsupported route inspection did not degrade safely");
+    const missingRunner = await inspectSystemNetworkRoute({ platform: "darwin" });
+    assert(missingRunner.supported === false, "missing fixed-command boundary did not disable route inspection");
+    const unavailableRoute = await systemNetworkRouteCheck({
+      platform: "darwin",
+      runFixedInternal: async () => ({ code: 1, stdout: "", stderr: "unavailable" }),
+    });
+    assert(unavailableRoute.skipped === true && unavailableRoute.error_class === "unavailable",
+      "failed default-route lookup was not represented as an unavailable diagnostic");
+    const malformedRoute = await inspectSystemNetworkRoute({
+      platform: "darwin",
+      runFixedInternal: async () => ({ code: 0, stdout: "route without interface", stderr: "" }),
+    });
+    assert(malformedRoute.supported === true && malformedRoute.available === false,
+      "default-route output without an interface was treated as usable");
+    const physicalRoute = await inspectSystemNetworkRoute({
+      platform: "darwin",
+      runFixedInternal: async (...args) => {
+        assert(args[5]?.request === "diagnostic", "route inspection dropped the request cancellation context");
+        return { code: 0, stdout: " interface: en0\n", stderr: "" };
+      },
+      context: { request: "diagnostic" },
+    });
+    assert(physicalRoute.route_class === "physical-or-other" && physicalRoute.operating_system_interception === false,
+      "physical route was classified as operating-system tunnel interception");
+    const failedRoute = await systemNetworkRouteCheck({
+      platform: "darwin",
+      runFixedInternal: async () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); },
+      classifyError: () => "permission_denied",
+    });
+    assert(failedRoute.skipped === true && failedRoute.error_class === "permission_denied",
+      "system route diagnostic leaked or misclassified a fixed-command failure");
+    const defaultClassifiedFailure = await systemNetworkRouteCheck({
+      platform: "darwin",
+      runFixedInternal: async () => { throw new Error("unknown"); },
+    });
+    assert(defaultClassifiedFailure.error_class === "unavailable",
+      "system route diagnostic default error classification drifted");
+    assert(classifySystemRouteInterface("") === "unknown"
+      && classifySystemRouteInterface("bridge0") === "other",
+    "unknown and non-standard route interfaces were not bounded to coarse classes");
   } finally {
     await rm(runtimeDir, { recursive: true, force: true });
   }

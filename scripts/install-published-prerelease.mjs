@@ -11,6 +11,7 @@ import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { readPublishedNpmPrerelease } from "./published-release.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { assertSoakEligiblePrerelease } from "./release-channel.mjs";
+import { persistentActivationSpawnOptions } from "./persistent-activation-process.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const npmCli = process.env.npm_execpath;
@@ -103,13 +104,11 @@ function currentGlobalInstallation(packageName) {
 }
 
 function runActivation(entry, args) {
-  const result = spawnSync(process.execPath, [entry, ...args], {
-    cwd: root,
-    env: process.env,
-    encoding: "utf8",
-    timeout: 300_000,
-    windowsHide: true,
-  });
+  const result = spawnSync(
+    process.execPath,
+    [entry, ...args],
+    persistentActivationSpawnOptions({ cwd: root, env: process.env }),
+  );
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`prerelease runtime activation failed: ${boundedDiagnostic(result.stderr || result.stdout)}`);
   try { return JSON.parse(result.stdout); } catch { throw new Error("prerelease runtime activation did not return valid JSON"); }
@@ -121,6 +120,7 @@ function runNpm(args) {
     env: process.env,
     encoding: "utf8",
     timeout: 300_000,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   if (result.error) throw result.error;

@@ -123,6 +123,7 @@ function runBounded(command, args) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
     timeout: COMMAND_TIMEOUT_MS,
+    killSignal: "SIGKILL",
     maxBuffer: COMMAND_OUTPUT_BYTES,
     windowsHide: true,
     env: process.platform === "win32" ? process.env : { ...process.env, LC_ALL: "C", LANG: "C" },

@@ -24,7 +24,7 @@
     "Managed-job resource redaction is defense in depth, not a guarantee against transformed or partial secret output. Use capture_output=discard for steps that may echo credentials.",
     "Do not use shell encoding, renaming, or alternate tools to bypass host or platform safety policy.",
     "run_process avoids shell parsing but is not an OS sandbox. exec_command is exposed only in shell mode and has the local user's authority.",
-    "For commands that may produce substantial output, prefer start_process/read_process or use the output_session_id returned by a truncated run_process, run_local_command, or exec_command result. Read output in bounded pages instead of repeatedly requesting a larger one-shot response.",
+    "Remote foreground run_process, run_local_command, exec_command, browser, and application calls are limited to 85 seconds and reject larger requested timeouts before local side effects begin. Keep mutations separate from validation. For longer work, use start_process/read_process or start_job/read_job. If the host omits those tools, start a non-interactive command that writes bounded output and an exit-status file under ignored project-local state, then poll those files with short calls.",
     "Per-tool success, failure, cancellation, and timing events are debug-only; default logs contain lifecycle and infrastructure events, not a tool-call transcript.",
     "Inspect before editing, prefer read_file line ranges, edit_file, or apply_patch over whole-file replacement, and report commands that were run."
   ]

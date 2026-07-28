@@ -5,12 +5,14 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultStateRoot, expandHome } from "../src/local/state.mjs";
+import { defaultStateRoot, expandHome, selectedWorkspace } from "../src/local/state.mjs";
 import { ensureOwnerOnlyDirectorySync } from "../src/local/secure-file.mjs";
 import { createCandidateRuntimePrefix, pruneInactiveCandidateRuntimes } from "./candidate-runtime-store.mjs";
 import { writePrereleaseActivation } from "./prerelease-activation.mjs";
 import { verifyTarball } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
+import { discoverForegroundDaemonRecovery } from "./foreground-daemon-recovery.mjs";
+import { persistentActivationSpawnOptions, persistentCandidateFailureMessage } from "./persistent-activation-process.mjs";
 import { validateCandidateManifest } from "./release-candidate-manifest.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -111,15 +113,21 @@ function activatePersistentCandidate({ manifest, installedPackage, installPrefix
   const args = ["activate", ...withoutManagedFlags(forwardedArgs), "--state-dir", stateRoot, "--json"];
   const previous = currentGlobalInstallation(manifest.package_name);
   console.log("Activating the exact prerelease as the persistent login daemon. Portable-root startup does not prompt; a separately provisioned Secure Enclave broker may request one user-presence operation.");
-  const result = spawnSync(process.execPath, [cli, ...args], {
-    cwd: root,
-    env: process.env,
-    encoding: "utf8",
-    timeout: 300_000,
-    windowsHide: true,
-  });
+  const result = spawnSync(
+    process.execPath,
+    [cli, ...args],
+    persistentActivationSpawnOptions({ cwd: root, env: process.env }),
+  );
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`persistent candidate activation failed: ${result.stderr || result.stdout}`);
+  if (result.status !== 0) {
+    const output = result.stderr || result.stdout;
+    const requestedWorkspace = argumentListValue("--workspace", withoutManagedFlags(forwardedArgs))
+      || selectedWorkspace(stateRoot);
+    const previousRuntime = discoverForegroundDaemonRecovery({
+      output, stateRoot, workspace: requestedWorkspace,
+    });
+    throw new Error(persistentCandidateFailureMessage(output, { cli, stateRoot, previousRuntime }));
+  }
   let activation;
   try { activation = JSON.parse(result.stdout); } catch { throw new Error("persistent candidate activation did not return valid JSON"); }
   if (
@@ -155,6 +163,7 @@ function activatePersistentCandidate({ manifest, installedPackage, installPrefix
   if (previous?.version) console.log(`Rollback baseline retained: globally installed ${previous.version}.`);
 }
 
+
 function currentGlobalInstallation(packageName) {
   try {
     const globalRoot = runNpm(["root", "--global"], root).stdout.trim();
@@ -180,6 +189,13 @@ function withoutManagedFlags(args) {
   return out;
 }
 
+function argumentListValue(name, args) {
+  const exact = args.find(value => value.startsWith(`${name}=`));
+  if (exact) return exact.slice(name.length + 1);
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] || "" : "";
+}
+
 function argumentValue(name) {
   const exact = process.argv.find((value) => value.startsWith(`${name}=`));
   if (exact) return exact.slice(name.length + 1);
@@ -198,6 +214,7 @@ function runNpm(args, cwd) {
     encoding: "utf8",
     env: process.env,
     timeout: 300_000,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   if (result.error) throw result.error;

@@ -9,7 +9,7 @@ import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { inspectProcessInstance } from "../src/local/process-identity.mjs";
-import { acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, loadGlobalConfig, loadState } from "../src/local/state.mjs";
+import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath } from "../src/local/state.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temp = await mkdtemp(join(tmpdir(), "mbm-process-lock-test-"));
@@ -17,14 +17,44 @@ try {
   await atomicExclusiveCreateTest();
   await atomicReplacementTest();
   processIdentityTest();
+  assert(defaultFirstRunWorkspace({ platform: "darwin", cwd: temp }) === resolve(temp),
+    "default first-run workspace did not use the supplied POSIX cwd");
+  stateRootSeparationTest();
+  await daemonReadinessLockTest();
   await startupWaitTest();
   await startupWaitIgnoresWallClockRollbackTest();
   await maintenanceLockTest();
+  await machineServiceLockTest();
   await malformedAndReusedPidLockTest();
   await symbolicLinkLockTest();
   console.log("process identity/lock test ok");
 } finally {
   await rm(temp, { recursive: true, force: true });
+}
+
+function stateRootSeparationTest() {
+  const posixHome = join(temp, "posix-home");
+  const posixState = defaultStateRoot({ platform: "darwin", home: posixHome, environment: {} });
+  const posixControl = machineServiceControlRoot({ platform: "darwin", home: posixHome, environment: {} });
+  assert(posixState === join(posixHome, ".local", "state", "machine-bridge-mcp"),
+    "POSIX default state root drifted from the profile-state directory");
+  assert(posixControl === join(posixHome, ".local", "state", "machine-bridge-mcp-control") && posixControl !== posixState,
+    "POSIX machine-service control root collided with the profile-state root");
+
+  const xdgState = defaultStateRoot({
+    platform: "linux", home: posixHome, environment: { XDG_STATE_HOME: "~/xdg-state" },
+  });
+  assert(xdgState === join(posixHome, "xdg-state", "machine-bridge-mcp"),
+    "XDG state root did not preserve the application profile directory");
+
+  const appData = join(temp, "windows-appdata");
+  const windowsHome = join(temp, "windows-home");
+  const windowsState = defaultStateRoot({ platform: "win32", home: windowsHome, environment: { APPDATA: appData } });
+  const windowsControl = machineServiceControlRoot({ platform: "win32", home: windowsHome, environment: { APPDATA: appData } });
+  assert(windowsState === join(appData, "machine-bridge-mcp")
+    && windowsControl === join(appData, "machine-bridge-mcp-control")
+    && windowsState !== windowsControl,
+  "Windows profile and machine-service control roots are not separated");
 }
 
 async function atomicExclusiveCreateTest() {
@@ -116,6 +146,33 @@ function processIdentityTest() {
     getProcessStartTime: () => now,
   });
   assert(!future.current && future.reason === "future_lock_timestamp" && future.reclaimable === false, "future lock timestamp was not retained fail-closed");
+}
+
+async function daemonReadinessLockTest() {
+  const workspace = join(temp, "daemon-readiness-workspace");
+  const stateRoot = join(temp, "daemon-readiness-state");
+  await mkdir(workspace, { recursive: true });
+  const state = loadState(workspace, { stateDir: stateRoot });
+  const lock = acquireStartupLock(state, { operation: "readiness-fixture" });
+  assert(lock.acquired, "readiness fixture could not acquire startup lock");
+  lock.release();
+  const { acquireDaemonLock, daemonLockPathForState, readDaemonLockOwner } = await import("../src/local/state.mjs");
+  const daemon = acquireDaemonLock(state, { mode: "service", version: "3.0.0-test" });
+  assert(daemon.acquired && daemon.owner.startupReady === false && daemon.owner.startupReadyAt === null,
+    "daemon lock did not begin with unverified startup readiness");
+  const readyAt = new Date().toISOString();
+  const updated = daemon.update({ startupReady: true, startupReadyAt: readyAt });
+  assert(updated.startupReady === true && updated.startupReadyAt === readyAt,
+    "daemon lock readiness update was not returned");
+  const persisted = readDaemonLockOwner(daemonLockPathForState(state));
+  assert(persisted.startupReady === true && persisted.pid === process.pid && persisted.token === daemon.owner.token,
+    "daemon readiness update changed identity or was not persisted");
+  expectThrow(() => daemon.update({ startupReady: true, startupReadyAt: readyAt }), "already published");
+  expectThrow(() => daemon.update({ startupReady: false, startupReadyAt: null }), "only be published as true");
+  expectThrow(() => daemon.update({ startupReady: true, startupReadyAt: readyAt, pid: 1 }), "immutable");
+  daemon.release();
+  assert(readDaemonLockOwner(daemonLockPathForState(state)) === null,
+    "updated daemon lock could not be released by its original token");
 }
 
 async function startupWaitTest() {
@@ -236,6 +293,29 @@ setTimeout(() => { lock.release(); process.exit(0); }, 1200);
   const browserStatus = await existingBrowser.status();
   assert(browserStatus.running !== false, "browser manager did not recover after maintenance release");
   existingBrowser.stop();
+}
+
+async function machineServiceLockTest() {
+  const controlRoot = join(temp, "machine-service-control");
+  const first = acquireMachineServiceLock({ operation: "activation" }, { controlRoot });
+  assert(first.acquired, "machine-service lock was not acquired");
+  assert(first.path === machineServiceLockPath({ controlRoot }), "machine-service lock path drifted from the fixed control root");
+  const competingState = loadState(join(temp, "wait-workspace"), { stateDir: join(temp, "wait-state") });
+  assert(competingState.workspace.path, "machine-service fixture lost its unrelated workspace state");
+  const duplicate = acquireMachineServiceLock({ operation: "service-start" }, { controlRoot });
+  assert(!duplicate.acquired && duplicate.owner?.operation === "activation",
+    "machine-service lock did not serialize operations independently of workspace");
+  const waiter = acquireMachineServiceLockWithWait({
+    operation: "service-start", controlRoot, timeoutMs: 500, pollMs: 5, logger: { info() {} },
+  });
+  setTimeout(() => first.release(), 25);
+  const second = await waiter;
+  assert(second.acquired && second.owner?.operation === "service-start",
+    "machine-service lock waiter did not acquire after token-aware release");
+  second.release();
+  const final = acquireMachineServiceLock({ operation: "service-stop" }, { controlRoot });
+  assert(final.acquired, "released machine-service lock remained unavailable");
+  final.release();
 }
 
 async function malformedAndReusedPidLockTest() {

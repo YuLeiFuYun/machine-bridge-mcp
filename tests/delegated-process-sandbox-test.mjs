@@ -48,7 +48,9 @@ try {
   }
 
   const behaviorProbe = ({ spawnSyncProcess }) => probeMacosDelegatedSandbox({ spawnSyncProcess });
-  const fakeSpawn = (_command, args) => {
+  const fakeSpawn = (_command, args, options) => {
+    assert(options.timeout === 5_000 && options.killSignal === "SIGKILL",
+      "delegated sandbox probe timeout could remain blocked after SIGTERM");
     const argv = args.slice(2);
     if (argv[0] === "/bin/cat" && argv[1]?.endsWith("allowed.txt")) return { status: 0 };
     if (argv[0] === "/bin/sh" && argv[2]?.startsWith("printf allowed > ")) {

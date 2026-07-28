@@ -2,8 +2,9 @@ import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon } from "./daemon-
 import { effectiveLogFormat, effectiveLogLevel } from "./cli-options.mjs";
 import { createLogger } from "./log.mjs";
 import { activatePersistentRuntime } from "./runtime-activation.mjs";
-import { installAutostart, startAutostart, stopAutostart } from "./service.mjs";
-import { acquireStartupLockWithWait, loadState } from "./state.mjs";
+import { autostartStatus, installAutostart, startAutostart, stopAutostart } from "./service.mjs";
+import { startOwnedServiceRuntime } from "./service-runtime.mjs";
+import { acquireMachineServiceLockWithWait, acquireStartupLockWithWait, daemonLockPathForState, loadState, readDaemonLockOwner } from "./state.mjs";
 import { workerHealth } from "./worker-health.mjs";
 
 export function createActivateCommand({
@@ -42,13 +43,41 @@ export function createActivateCommand({
     const result = await activatePersistentRuntime({
       expectedVersion,
       acquireStartupLock: () => acquireStartupLockWithWait(state, { operation: "activate", logger }),
+      acquireServiceLock: () => acquireMachineServiceLockWithWait({ operation: "activate", logger }),
+      inspectActivationOwnership: async () => {
+        const daemon = inspectWorkspaceDaemon(state);
+        const owner = daemon.alive && daemon.verified_service_daemon
+          ? readDaemonLockOwner(daemonLockPathForState(state))
+          : null;
+        return {
+          daemon,
+          provider: await autostartStatus(),
+          previousRuntime: owner ? { version: owner.version, entryScript: owner.entryScript } : null,
+        };
+      },
       stopAutostart: () => stopAutostart({ logger: structuredLogger(true) }),
       acquireDaemonLock: () => acquireDaemonLockWithTakeover(state, {
         takeOverServiceOwner: true,
         ownerMetadata: { mode: "foreground", version: expectedVersion },
         logger,
       }),
-      prepareRemoteState: () => prepareRemoteState({ args: activationArgs, workspace, state, logger }),
+      prepareRemoteState: ({ onRemotePrepared } = {}) => prepareRemoteState({
+        args: activationArgs,
+        workspace,
+        state,
+        logger,
+        onRemotePrepared,
+      }),
+      repairRemoteState: async ({ onRemotePrepared } = {}) => {
+        logger.warn("candidate device authentication was rejected; redeploying the same Worker once with the current device identity");
+        return prepareRemoteState({
+          args: { ...activationArgs, forceWorker: true, rotateSecrets: false },
+          workspace,
+          state,
+          logger,
+          onRemotePrepared,
+        });
+      },
       createRuntime: ({ daemonLock, readiness }) => createRemoteRuntime({
         args: activationArgs,
         workspace,
@@ -61,10 +90,17 @@ export function createActivateCommand({
         workspace,
         stateRoot: state.paths.stateRoot,
         entryScript: process.argv[1],
+        version: expectedVersion,
         logger: structuredLogger(true),
       }),
-      startAutostart: () => startAutostart({ logger: structuredLogger(true) }),
-      inspectDaemon: async () => inspectWorkspaceDaemon(state),
+      startAutostart: () => startOwnedServiceRuntime({ logger: structuredLogger(true) }),
+      restorePreviousAutostart: () => startAutostart({ logger: structuredLogger(true) }),
+      inspectPreviousAutostart: (identity) => inspectWorkspaceDaemon(state, {
+        expectedVersion: identity.version, expectedEntryScript: identity.entryScript,
+      }),
+      inspectDaemon: async () => inspectWorkspaceDaemon(state, {
+        expectedVersion, expectedEntryScript: process.argv[1],
+      }),
       checkWorker: async () => workerHealth(state.worker.url, expectedVersion, { expectedWorkerName: state.worker.name }),
     });
     const convergence = result.convergence;
@@ -76,6 +112,7 @@ export function createActivateCommand({
       daemon: convergence.daemon,
       service: result.serviceStart,
       candidate_relay_verified_before_handoff: result.candidateRelayVerified,
+      candidate_auth_recovery_redeployed: result.candidateRecoveryRedeployed,
     };
     if (args.json) console.log(JSON.stringify(payload, null, 2));
     else {

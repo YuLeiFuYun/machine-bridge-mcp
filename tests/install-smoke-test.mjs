@@ -50,6 +50,7 @@ try {
     encoding: "utf8",
     env: process.env,
     timeout: 30_000,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   if (cli.error) throw cli.error;
@@ -94,6 +95,7 @@ function assertInstalledDefaultStartup(installedPackage, temp) {
       CI: "1",
     },
     timeout: 30_000,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   if (result.error) throw result.error;
@@ -150,6 +152,7 @@ function spawnNpm(args, cwd) {
     encoding: "utf8",
     env: process.env,
     timeout: 300_000,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
 }

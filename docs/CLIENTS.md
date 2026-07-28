@@ -159,7 +159,7 @@ The local `full` profile controls Machine Bridge's own tool catalog, path resolv
 
 Machine Bridge itself does not block files because their names look sensitive. In remote mode, first inspect `server_info.authorization.effective_policy` and `effective_tools`; `daemon.policy` is only the local ceiling. If the effective profile is `full` and the effective tool is present but a direct call is still rejected before a structured result, the host/connector may have blocked delivery. If `diagnose_runtime` responds but its fixed process or shell probe fails, the likely source is local OS policy, endpoint-security software, permissions, or shell configuration. Changing `--profile`, `--unrestricted-paths`, or `--absolute-paths` cannot override either layer.
 
-Do not attempt to evade a host refusal by renaming, encoding, or switching to another arbitrary execution tool. Instead:
+Remote configurable foreground tools advertise an 85-second maximum while preserving each tool’s 30- or 60-second default. Requests above that limit fail before daemon dispatch with `side_effects_started=false`. Do not treat this as a retry invitation for the same oversized mutation, and do not attempt to evade a host refusal by renaming, encoding, or switching to another arbitrary execution tool. Instead:
 
 1. register credentials locally as resource aliases so their values never enter MCP arguments;
 2. submit a complete owner-authorized `start_job` plan before the workflow depends on later cleanup calls; `stage_job` is only a non-running draft, while an explicit local operator may use `machine-mcp job submit PLAN.json`;

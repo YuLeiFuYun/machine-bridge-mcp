@@ -27,10 +27,17 @@ const MAX_MARKER_BYTES = 4096;
 const STARTUP_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const MALFORMED_LOCK_GRACE_MS = 60_000;
 const MAINTENANCE_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const MACHINE_SERVICE_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
 export function expandHome(input = "") {
   if (!input || input === "~") return os.homedir();
   if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
+  return input;
+}
+
+function expandHomeFrom(input, home) {
+  if (!input || input === "~") return home;
+  if (input.startsWith("~/")) return path.join(home, input.slice(2));
   return input;
 }
 
@@ -49,13 +56,16 @@ export function ensureWorkspaceDirectory(input) {
   return resolveWorkspace(requested);
 }
 
-export function defaultStateRoot() {
-  if (process.platform === "win32") {
-    const base = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+export function defaultStateRoot(options = {}) {
+  const platform = String(options.platform || process.platform);
+  const home = path.resolve(String(options.home || os.homedir()));
+  const environment = options.environment && typeof options.environment === "object" ? options.environment : process.env;
+  if (platform === "win32") {
+    const base = environment.APPDATA ? expandHomeFrom(String(environment.APPDATA), home) : path.join(home, "AppData", "Roaming");
     return path.join(base, appName);
   }
-  if (process.env.XDG_STATE_HOME) return path.join(expandHome(process.env.XDG_STATE_HOME), appName);
-  return path.join(os.homedir(), ".local", "state", appName);
+  if (environment.XDG_STATE_HOME) return path.join(expandHomeFrom(String(environment.XDG_STATE_HOME), home), appName);
+  return path.join(home, ".local", "state", appName);
 }
 
 
@@ -272,6 +282,57 @@ function lockPathForState(state, name) {
   return path.join(profileDir, name);
 }
 
+export function machineServiceControlRoot(options = {}) {
+  const home = path.resolve(String(options.home || os.homedir()));
+  if (options.controlRoot) return path.resolve(expandHomeFrom(String(options.controlRoot), home));
+  if (String(options.platform || process.platform) === "win32") {
+    const environment = options.environment && typeof options.environment === "object" ? options.environment : process.env;
+    const base = environment.APPDATA ? expandHomeFrom(String(environment.APPDATA), home) : path.join(home, "AppData", "Roaming");
+    return path.join(base, `${appName}-control`);
+  }
+  return path.join(home, ".local", "state", `${appName}-control`);
+}
+
+export function machineServiceLockPath(options = {}) {
+  return path.join(machineServiceControlRoot(options), "service-operation.lock");
+}
+
+export function acquireMachineServiceLock(metadata = {}, options = {}) {
+  const root = machineServiceControlRoot(options);
+  ensureOwnerOnlyDir(root);
+  assertNoForeignMaintenance(root);
+  const operation = typeof metadata.operation === "string" && /^[a-z][a-z0-9._-]{0,63}$/.test(metadata.operation)
+    ? metadata.operation
+    : "service-operation";
+  return acquireProcessLock(machineServiceLockPath({ controlRoot: root }), {
+    workspace: { path: "" },
+    paths: { profileDir: root, stateRoot: root },
+  }, "machine-service", { operation }, { maxAgeMs: MACHINE_SERVICE_LOCK_MAX_AGE_MS });
+}
+
+export async function acquireMachineServiceLockWithWait(options = {}) {
+  const timeoutMs = boundedPositiveInteger(options.timeoutMs, 30_000);
+  const pollMs = boundedPositiveInteger(options.pollMs, 100);
+  const logger = options.logger || { info() {} };
+  const metadata = { operation: options.operation };
+  let lock = acquireMachineServiceLock(metadata, options);
+  if (lock.acquired) return lock;
+  const ownerPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "another process";
+  logger.info?.(`waiting for ${ownerPid} to finish the current machine-service operation`);
+  const deadline = createMonotonicDeadline(timeoutMs);
+  while (!deadline.expired()) {
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline.remainingMs()))); });
+    lock = acquireMachineServiceLock(metadata, options);
+    if (lock.acquired) {
+      logger.info?.("the previous machine-service operation finished; continuing");
+      return lock;
+    }
+  }
+  const pid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "unknown pid";
+  const operation = typeof lock.owner?.operation === "string" ? ` (${lock.owner.operation})` : "";
+  throw new Error(`another machine-service operation did not finish within ${Math.ceil(timeoutMs / 1000)} seconds (${pid}${operation}); inspect the process before retrying`);
+}
+
 export function acquireMaintenanceLock(stateRoot, metadata = {}) {
   const root = path.resolve(expandHome(stateRoot));
   if (!existsSync(root)) throw new Error("cannot acquire maintenance lock for a missing state root");
@@ -316,7 +377,7 @@ function assertNoForeignMaintenance(stateRoot) {
 
 export function acquireDaemonLock(state, metadata = {}) {
   assertNoForeignMaintenance(state?.paths?.stateRoot);
-  const details = {};
+  const details = { startupReady: false, startupReadyAt: null };
   if (metadata?.mode === "foreground" || metadata?.mode === "service") details.mode = metadata.mode;
   if (typeof metadata?.version === "string" && /^[0-9A-Za-z.+_-]{1,64}$/.test(metadata.version)) details.version = metadata.version;
   return acquireProcessLock(daemonLockPathForState(state), state, "daemon", details, { maxAgeMs: Number.POSITIVE_INFINITY });
@@ -371,12 +432,17 @@ function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}
       createExclusiveFileSync(lockPath, `${JSON.stringify(payload, null, 2)}
 `, { mode: 0o600 });
       ownerOnlyFile(lockPath);
-      return {
+      const lock = {
         acquired: true,
         path: lockPath,
         owner: payload,
+        update(patch) {
+          lock.owner = updateProcessLock(lockPath, token, patch);
+          return lock.owner;
+        },
         release() { releaseProcessLock(lockPath, token); },
       };
+      return lock;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       const snapshot = readProcessLockSnapshot(lockPath);
@@ -450,6 +516,37 @@ function lockIdentity(info) {
 
 function sameLockIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
+function updateProcessLock(lockPath, token, patch) {
+  if (!isPlainRecord(patch)) throw new TypeError("process lock update must be a plain record");
+  const allowed = new Set(["startupReady", "startupReadyAt"]);
+  for (const key of Object.keys(patch)) {
+    if (!allowed.has(key)) throw new Error(`process lock field is immutable: ${key}`);
+  }
+  if (patch.startupReady !== true) {
+    throw new TypeError("process lock startup readiness can only be published as true");
+  }
+  if (typeof patch.startupReadyAt !== "string" || !Number.isFinite(Date.parse(patch.startupReadyAt))) {
+    throw new TypeError("process lock startupReadyAt update must be an ISO timestamp");
+  }
+  const snapshot = readProcessLockSnapshot(lockPath);
+  if (!snapshot?.owner || snapshot.owner.token !== token || snapshot.owner.pid !== process.pid) {
+    throw new Error("process lock ownership changed before update");
+  }
+  if (snapshot.owner.purpose !== "daemon") {
+    throw new Error("only daemon locks can publish startup readiness");
+  }
+  if (snapshot.owner.startupReady === true || snapshot.owner.startupReadyAt !== null) {
+    throw new Error("process lock startup readiness was already published");
+  }
+  const updated = { ...snapshot.owner, startupReady: true, startupReadyAt: patch.startupReadyAt };
+  const content = `${JSON.stringify(updated, null, 2)}
+`;
+  if (Buffer.byteLength(content) > MAX_LOCK_BYTES) throw new Error("process lock update exceeds the size limit");
+  replaceFileAtomicallySync(lockPath, content, { mode: 0o600 });
+  ownerOnlyFile(lockPath);
+  return updated;
 }
 
 function releaseProcessLock(lockPath, token) {

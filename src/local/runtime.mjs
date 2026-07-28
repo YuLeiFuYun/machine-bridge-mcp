@@ -529,6 +529,7 @@ export class LocalRuntime {
       runtimeDir: this.runtimeDir,
       workspace: this.workspace,
       runProcess: (...args) => this.runProcess(...args),
+      runFixedInternal: (...args) => this.processExecutionService.runFixedInternal(...args),
       probeShell: (callContext) => this.processExecutionService.probeShell(callContext),
       managedJobManager: this.managedJobManager,
       relayStatus: () => this.relay?.status?.() || null,

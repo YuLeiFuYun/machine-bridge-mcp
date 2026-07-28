@@ -5,9 +5,10 @@ import { runExecutable } from "./shell.mjs";
 import { ensureOwnerOnlyDir, expandHome } from "./state.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { waitForActiveStatus, waitForInactiveStatus, waitForStatus } from "./service-convergence.mjs";
+import { waitForInactiveStatus, waitForStableActiveStatus, waitForStatus } from "./service-convergence.mjs";
 import { launchdStatusSummary, systemdStatusSummary } from "./service-status.mjs";
 import { writeServiceEnvironment } from "./service-environment.mjs";
+import { beginServiceOwnerUpdate, removeServiceOwner } from "./service-owner.mjs";
 import {
   installWindowsTask,
   restartWindowsTask,
@@ -20,6 +21,7 @@ export { windowsCommandLineArgument } from "./windows-service.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
 const SERVICE_COMMAND_OUTPUT_BYTES = 64 * 1024;
+const SERVICE_COMMAND_TIMEOUT_MS = 30_000;
 const AUTOSTART_LOG_SCHEMA_VERSION = 4;
 
 function serviceRun(command, args) {
@@ -30,24 +32,67 @@ export function runServiceCommand(command, args, execute = runExecutable) {
   return execute(command, args, {
     capture: true,
     allowFailure: true,
+    timeoutMs: SERVICE_COMMAND_TIMEOUT_MS,
     maxOutputBytes: SERVICE_COMMAND_OUTPUT_BYTES,
   });
 }
 
-export async function installAutostart({ workspace, stateRoot, entryScript, logger = console }) {
+export async function installAutostart({ workspace, stateRoot, entryScript, version, logger = console,
+  installProvider = defaultInstallProvider, beginOwnerUpdate = beginServiceOwnerUpdate,
+  writeEnvironment = writeServiceEnvironment } = {}) {
   const spec = serviceSpec({ workspace, stateRoot, entryScript });
-  const serviceEnvironment = writeServiceEnvironment(spec.stateRoot);
+  const ownerUpdate = beginOwnerUpdate({ ...spec, version });
+  let serviceEnvironment;
+  try { serviceEnvironment = writeEnvironment(spec.stateRoot); }
+  catch (error) {
+    try { ownerUpdate.rollback(); }
+    catch (rollbackError) {
+      throw new AggregateError([error, rollbackError],
+        "service environment preparation failed and the previous machine service owner could not be restored");
+    }
+    throw error;
+  }
   let result;
-  if (process.platform === "darwin") result = await installLaunchd(spec, logger);
-  else if (process.platform === "win32") result = await installWindowsTask(spec, logger, { run: serviceRun });
-  else result = await installSystemd(spec, logger);
-  return { ...result, service_environment: serviceEnvironment };
+  try { result = await installProvider(spec, logger); }
+  catch (error) {
+    throw new Error(
+      "autostart installation threw after its machine service owner became pending; service start is blocked until reinstall",
+      { cause: error },
+    );
+  }
+  if (result?.ok !== true) {
+    return {
+      ...result,
+      service_environment: serviceEnvironment,
+      service_owner: { status: "pending", version },
+      reason: result?.reason || "installation_failed_owner_pending",
+    };
+  }
+  let owner;
+  try { owner = ownerUpdate.commit(); }
+  catch (error) {
+    throw new Error(
+      "autostart definition was installed but its machine service owner could not be committed; the pending owner was retained and service start is blocked until reinstall",
+      { cause: error },
+    );
+  }
+  return { ...result, service_environment: serviceEnvironment, service_owner: { status: owner.status, version: owner.version } };
 }
 
+async function defaultInstallProvider(spec, logger) {
+  if (process.platform === "darwin") return installLaunchd(spec, logger);
+  if (process.platform === "win32") return installWindowsTask(spec, logger, { run: serviceRun });
+  return installSystemd(spec, logger);
+}
+
+
 export async function uninstallAutostart({ stateRoot, logger = console } = {}) {
-  if (process.platform === "darwin") return uninstallLaunchd(logger);
-  if (process.platform === "win32") return uninstallWindowsTask(logger, { run: serviceRun, stateRoot });
-  return uninstallSystemd(logger);
+  let result;
+  if (process.platform === "darwin") result = await uninstallLaunchd(logger);
+  else if (process.platform === "win32") result = await uninstallWindowsTask(logger, { run: serviceRun, stateRoot });
+  else result = await uninstallSystemd(logger);
+  if (result?.ok === true) removeServiceOwner();
+  return result;
 }
 
 export async function autostartStatus() {
@@ -71,7 +116,7 @@ export async function restartAutostart({ logger = console } = {}) {
 export async function stopAutostart({ logger = console } = {}) {
   if (process.platform === "darwin") return stopLaunchd(logger);
   if (process.platform === "win32") return stopWindowsTask(logger, { run: serviceRun });
-  return normalizeServiceCommandResult("systemd", await serviceRun("systemctl", ["--user", "stop", "machine-bridge-mcp.service"]), { allowAlreadyStopped: true });
+  return stopSystemdService(logger);
 }
 
 export function normalizeServiceCommandResult(provider, result, { allowAlreadyStopped = false } = {}) {
@@ -304,15 +349,19 @@ async function startLaunchd(logger) {
   if (!existsSync(plistPath)) return { ok: false, provider: "launchd", installed: false, loaded: false, active: false, reason: "not_installed" };
   const before = await statusLaunchd();
   if (before.active) {
-    logger.info?.("launchd service is already running");
-    return { ...before, ok: true, active_before: true, already_running: true, reason: "already_running" };
+    const existing = await waitForStableActiveStatus(statusLaunchd);
+    if (existing.stable) {
+      logger.info?.("launchd service is already running");
+      return { ...existing.status, ok: true, active_before: true, already_running: true, reason: "already_running" };
+    }
   }
   const boot = before.loaded
     ? { code: 0, stdout: "", stderr: "", already_loaded: true }
     : await serviceRun("launchctl", ["bootstrap", domainTarget, plistPath]);
   const kick = await serviceRun("launchctl", ["kickstart", serviceTarget]);
-  const after = await waitForActiveStatus(statusLaunchd);
-  const ok = after?.active === true;
+  const stability = await waitForStableActiveStatus(statusLaunchd);
+  const after = stability.status;
+  const ok = stability.stable;
   if (ok) logger.info?.("launchd service started");
   else logger.warn?.("launchd service failed to start");
   return {
@@ -338,14 +387,18 @@ async function restartLaunchd(logger) {
   const target = launchdServiceTarget();
   const previousPid = before.pid;
   const kick = await serviceRun("launchctl", ["kickstart", "-k", target]);
-  const after = await waitForStatus(
+  const changed = await waitForStatus(
     statusLaunchd,
     (status) => status?.active === true && (!previousPid || status.pid !== previousPid),
   );
-  const ok = kick.code === 0 && after?.active === true && (!previousPid || after.pid !== previousPid);
+  const stability = changed?.active === true && (!previousPid || changed.pid !== previousPid)
+    ? await waitForStableActiveStatus(statusLaunchd, { identity: (status) => status?.pid || null })
+    : { stable: false, status: changed };
+  const after = stability.status;
+  const ok = kick.code === 0 && stability.stable && (!previousPid || after?.pid !== previousPid);
   if (ok) logger.info?.("launchd service restarted");
   else logger.warn?.("launchd service restart could not be verified");
-  return { ok, provider: "launchd", installed: true, active_before: true, active: after?.active === true, restarted: ok, kickstart: kick };
+  return { ok, provider: "launchd", installed: true, active_before: true, active: after?.active === true && stability.stable, restarted: ok, kickstart: kick };
 }
 
 async function stopLaunchd(logger) {
@@ -362,6 +415,7 @@ async function stopLaunchd(logger) {
       loaded: false,
       active_before: false,
       active: false,
+      restore_required: false,
       already_stopped: true,
       code: 0,
       stdout: "",
@@ -384,8 +438,9 @@ async function stopLaunchd(logger) {
     ok,
     provider: "launchd",
     installed: existsSync(plistPath),
-    active_before: true,
+    active_before: before.active === true,
     active,
+    restore_required: ok,
     already_stopped: false,
     code: ok ? 0 : rawResult.code,
     bootout_service_target: byServiceTarget,
@@ -469,15 +524,77 @@ ${disable.stderr}`));
   return { ok, provider: "systemd", path: servicePath, disable, active_check: activeCheck, reload, active: false };
 }
 
+export async function stopSystemdService(logger = console, options = {}) {
+  const run = typeof options.run === "function" ? options.run : serviceRun;
+  const readStatus = typeof options.readStatus === "function" ? options.readStatus : statusSystemd;
+  const waitForInactive = typeof options.waitForInactive === "function"
+    ? options.waitForInactive
+    : callback => waitForInactiveStatus(callback);
+  const before = await readStatus();
+  if (systemdStatusIsInactive(before)) {
+    logger.info?.("systemd service is not active");
+    return {
+      ok: true,
+      provider: "systemd",
+      installed: before?.installed === true,
+      active_before: false,
+      active: false,
+      restore_required: false,
+      already_stopped: true,
+      state: before?.state || "inactive",
+    };
+  }
+  if (before?.active !== true && ["unknown", "maintenance"].includes(before?.state)) {
+    return {
+      ok: false,
+      provider: "systemd",
+      installed: before?.installed === true,
+      active_before: null,
+      active: null,
+      restore_required: null,
+      reason: "status_unavailable",
+      status: before,
+    };
+  }
+  const command = await run("systemctl", ["--user", "stop", "machine-bridge-mcp.service"]);
+  const after = await waitForInactive(readStatus);
+  const inactive = systemdStatusIsInactive(after);
+  if (inactive) logger.info?.("systemd service stopped");
+  else logger.warn?.("systemd service stop could not be verified");
+  return {
+    ok: inactive,
+    provider: "systemd",
+    installed: after?.installed === true,
+    active_before: before?.active === true,
+    active: inactive ? false : after?.active ?? null,
+    restore_required: inactive && systemdStatusRequiresRestore(before),
+    already_stopped: false,
+    command,
+    status: after,
+    reason: inactive ? "stopped" : "stop_not_observed",
+  };
+}
+
+function systemdStatusIsInactive(status) {
+  return status?.installed === false || status?.active === false && ["inactive", "failed"].includes(status?.state);
+}
+function systemdStatusRequiresRestore(status) {
+  return status?.active === true || ["activating", "reloading"].includes(status?.state);
+}
+
 async function startSystemd(logger) {
   const before = await statusSystemd();
   if (before.active) {
-    logger.info?.("systemd service is already running");
-    return { ...before, ok: true, active_before: true, already_running: true, reason: "already_running" };
+    const existing = await waitForStableActiveStatus(statusSystemd);
+    if (existing.stable) {
+      logger.info?.("systemd service is already running");
+      return { ...existing.status, ok: true, active_before: true, already_running: true, reason: "already_running" };
+    }
   }
   const command = await serviceRun("systemctl", ["--user", "start", "machine-bridge-mcp.service"]);
-  const after = await waitForActiveStatus(statusSystemd);
-  const ok = command.code === 0 && after.active === true;
+  const stability = await waitForStableActiveStatus(statusSystemd);
+  const after = stability.status;
+  const ok = command.code === 0 && stability.stable;
   if (ok) logger.info?.("systemd service started");
   else logger.warn?.("systemd service failed to start");
   return { ok, provider: "systemd", installed: after.installed, active_before: false, active: after.active, command };
@@ -485,8 +602,9 @@ async function startSystemd(logger) {
 
 async function restartSystemd(logger) {
   const command = await serviceRun("systemctl", ["--user", "restart", "machine-bridge-mcp.service"]);
-  const after = await waitForActiveStatus(statusSystemd);
-  const ok = command.code === 0 && after.active === true;
+  const stability = await waitForStableActiveStatus(statusSystemd);
+  const after = stability.status;
+  const ok = command.code === 0 && stability.stable;
   if (ok) logger.info?.("systemd service restarted");
   else logger.warn?.("systemd service restart could not be verified");
   return { ok, provider: "systemd", installed: after.installed, active: after.active, restarted: ok, command };

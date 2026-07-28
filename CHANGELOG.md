@@ -1,5 +1,47 @@
 # Changelog
 
+## 3.0.0-beta.24 - 2026-07-28
+
+### Candidate activation authentication convergence
+
+- Treat a current-version Worker health response and successful upload as necessary but insufficient activation evidence. The exact candidate must also complete device preflight, challenge authentication, and end-to-end relay readiness before service handoff.
+- Recover one explicit candidate device-authentication rejection by redeploying the same Worker exactly once with the already selected device identity. The repair never rotates credentials, never changes the Worker name, and is bounded to three candidate starts with exponential delay.
+- Prevent split-version recovery after a remote transition. If remote preparation has changed or verified the candidate Worker but activation later fails, cleanup installs and starts the compatible candidate service definition instead of reviving an older daemon that cannot authenticate to the current Worker. Failures remain explicit, and cleanup errors are aggregated rather than hidden.
+- Report whether activation used the authentication-repair deployment in structured output. The operator warning contains only the failure class and repair action; it does not expose device identifiers, public keys, Worker endpoints, or credentials.
+- Require persistent-service state, not merely a successful service-manager command. Candidate activation now consumes verified stop/restore evidence on launchd, systemd, and Windows; systemd activating/reloading states retain restoration intent while unknown/maintenance states fail before mutation, and a Windows task that exits successfully without remaining active is reported as `completed_without_persistence`.
+- Bind the machine-global service definition to an owner-only `service-owner.json` record containing the canonical workspace, state root, exact runtime entrypoint, and package version. Installation writes `pending` before provider mutation and commits only after the definition succeeds; ambiguous or partial installation remains pending so start/restart fail closed instead of trusting an obsolete owner.
+- Make daemon readiness a token-protected, monotonic checkpoint in the daemon process lock. A login service is accepted only after the exact service-mode process completes device authentication, relay probe, and `ready_ack`; provider-active samples alone are no longer treated as runtime truth.
+- Serialize every machine-global service mutation with one fixed user-level lock and acquire it before any workspace startup lock. Foreground takeover releases the machine-service lock after service/daemon ownership is established, while activation retains it through the complete persistent handoff; daemon-only service children never re-enter the parent transaction lock.
+- Keep the ordinary profile state root and machine-service control root distinct on every platform. POSIX defaults to `~/.local/state/machine-bridge-mcp`, while the global service lock/owner ledger uses the sibling `machine-bridge-mcp-control`; XDG and Windows APPDATA preserve the same application-versus-control separation. This prevents the standard candidate command from installing its runtime into the control directory and then failing state-schema initialization.
+- Reject a foreground or unverifiable daemon before any launchd/systemd/Task Scheduler mutation. Pre-remote recovery of an older compatible service also requires the same version and entrypoint to reappear as a verified service daemon; post-remote recovery continues forward with the candidate owner/readiness contract.
+- Remove the candidate wrapper's outer hard kill around the activation transaction. Deployment, health, relay, service-manager, and convergence stages retain their own bounded deadlines, while service-manager commands now have an explicit 30-second hard boundary; the wrapper cannot bypass lock release and compensation with an unrelated global timeout.
+- Fail closed before POSIX forced escalation when no process ownership snapshot was captured, and require exact process start-time continuity instead of accepting adjacent-second identities. This favors a diagnosable surviving descendant over signaling a possibly reused process group.
+- Make synchronous helper deadlines real. Process-tree and process-identity probes, delegated sandbox checks, macOS trust-broker commands, candidate activation, published-prerelease installation, and synchronous verification helpers now use `SIGKILL` on `spawnSync` timeout; the Node default `SIGTERM` can otherwise be ignored while the caller remains blocked indefinitely. Trust-broker `ETIMEDOUT` is classified before signal-based signing diagnostics.
+- Bound managed-job and foreground-shell process-tree shutdown under macOS process-table stalls. Darwin ownership capture and revalidation now query only the target process group with `ps -g <PGID>` instead of scanning the complete process table; other full and targeted probes still share one three-second monotonic budget instead of multiplying a three-second timeout by every captured descendant. This prevents an overloaded full-table snapshot from yielding empty fail-closed ownership and leaving an anti-`SIGTERM` descendant alive. If libuv reports `exit` but omits the final `close` event, the runner waits one second for output drain, then destroys residual stream handles and settles through the same terminal path.
+
+### Verification
+
+- Add fault-injection coverage for service-stop refusal, ambiguous provider results, daemon-lock takeover denial, malformed version/wait/repair inputs, missing lock-release contracts, invalid retry budgets, first-attempt authentication rejection, exactly one same-identity repair deployment, bounded repeated rejection, compatible-service forward recovery, cleanup aggregation, normal foreground-to-service convergence, and cross-platform separation of default profile state from the machine-service control root.
+- Add deterministic child-settlement tests, process-snapshot budget accounting, repeated managed-job timeout/descendant termination runs, and an explicit assertion that the detached runner exits after terminal persistence.
+- Reject non-numeric, fractional, zero, negative, non-finite, or over-limit remote `timeout_seconds` values before daemon dispatch; generated schemas and runtime enforcement now share the exact 1–85 second integer contract.
+- Add strict checked-JavaScript contracts for child settlement, process-tree ownership, and system-route classification, plus a dedicated child-settlement coverage threshold of 100% functions and 85% branches.
+- Add `runtime-activation.mjs` to the critical coverage gate. The module reaches 100% function coverage and 80% branch coverage in the current suite.
+- Block beta.23 from acceptance, publication, or promotion because owner-machine activation exposed the authentication-convergence and split-version recovery defects after the Worker had already advanced.
+
+## 3.0.0-beta.23 - 2026-07-28
+
+### Workflow closeout continuity
+
+- Correct the remote foreground timeout contract instead of silently shortening a caller-declared 120–600 second operation. The Worker-specific catalog now advertises an 85-second maximum while preserving 30- or 60-second tool defaults for configurable foreground process, shell, browser, and application tools. A larger request is rejected before daemon dispatch with `side_effects_started=false`, so a mutation cannot complete locally and then appear to fail only when validation loses its response.
+- Direct long work to process sessions or managed jobs. Initialization instructions now require mutation and validation to be independently terminal, and describe a bounded output/status-file fallback for hosts that omit durable tools.
+- Add a fixed macOS default-route diagnostic. `diagnose_runtime` and `doctor` report only a coarse `tunnel-or-vpn`, `physical-or-other`, `loopback`, or `other` route class plus an interception boolean; they never return interface names, addresses, DNS answers, proxy endpoints, or credentials. This distinguishes application proxy selection from an operating-system VPN/TUN that Machine Bridge cannot repair.
+- Preserve architecture limits by extracting route inspection into its own boundary module, then add line budgets and critical coverage thresholds for the new route module and the Worker timeout/catalog projection.
+
+### Verification
+
+- Add direct timeout-unit tests and a real Wrangler integration proving an over-limit request produces no daemon `tool_call`. Add macOS-route success, unsupported-platform, and fixed-command failure coverage. Refresh architecture, operations, logging, threat-model, client, testing, upgrading, and audit contracts.
+- Refresh the exact development-only pins for `@types/node`, ESLint, and `globals` to their current patch releases; the production dependency graph is unchanged and `npm audit` reports zero known vulnerabilities.
+
 ## 3.0.0-beta.22 - 2026-07-28
 
 ### ChatGPT call continuity and terminal delivery

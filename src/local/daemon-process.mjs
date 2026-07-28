@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -171,18 +172,27 @@ export function workspaceDaemonOwnsPlatformAutostart(status = {}) {
     && status.mode === "service";
 }
 
-export function inspectWorkspaceDaemon(state) {
+export function inspectWorkspaceDaemon(state, options = {}) {
   const owner = readDaemonLockOwner(daemonLockPathForState(state));
-  if (!owner) return { present: false, alive: false, verified_service_daemon: false };
+  if (!owner) return { present: false, alive: false, verified_service_daemon: false, startup_readiness_verified: false };
   const alive = Boolean(owner.pid && isPidAlive(owner.pid));
-  const identity = alive
+  let identity = alive
     ? inspectWorkspaceDaemonOwner(state, owner)
     : { verified_service_daemon: false, reason: "stale_lock" };
+  if (identity.verified_service_daemon && options.expectedVersion
+      && owner.version !== options.expectedVersion) {
+    identity = { verified_service_daemon: false, reason: "version_mismatch" };
+  }
+  if (identity.verified_service_daemon && options.expectedEntryScript
+      && !sameCanonicalFile(owner.entryScript, options.expectedEntryScript)) {
+    identity = { verified_service_daemon: false, reason: "entrypoint_mismatch" };
+  }
   return {
     present: true,
     alive,
     verified_service_daemon: identity.verified_service_daemon,
     identity_reason: identity.reason,
+    startup_readiness_verified: identity.verified_service_daemon && owner.startupReady === true,
     ...publicDaemonOwner(owner),
   };
 }
@@ -233,6 +243,17 @@ function sameCanonicalPath(left, right) {
   try {
     const a = resolveWorkspace(left);
     const b = resolveWorkspace(right);
+    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    return false;
+  }
+}
+
+function sameCanonicalFile(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  try {
+    const a = realpathSync(left);
+    const b = realpathSync(right);
     return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
   } catch {
     return false;

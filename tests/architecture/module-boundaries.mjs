@@ -29,7 +29,7 @@ for (const file of graph.keys()) visitModule(file, []);
 
 const adapterModules = new Set([
   "cli.mjs", "cli-service.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs",
-  "service-restart-handoff.mjs", "service-restart-scheduler.mjs", "windows-service.mjs", "relay-connection.mjs", "runtime-relay.mjs", "worker-deployment.mjs",
+  "service-restart-handoff.mjs", "service-restart-scheduler.mjs", "windows-service.mjs", "windows-service-convergence.mjs", "relay-connection.mjs", "runtime-relay.mjs", "worker-deployment.mjs",
 ]);
 const boundaryModules = new Set([
   "agent-context.mjs",
@@ -56,6 +56,7 @@ const boundaryModules = new Set([
   "policy.mjs",
   "errors.mjs",
   "call-registry.mjs",
+  "child-process-settlement.mjs",
   "tool-executor.mjs",
   "observability.mjs",
   "process-tracker.mjs",
@@ -84,6 +85,7 @@ const boundaryModules = new Set([
   "monotonic-deadline.mjs",
   "runtime-capabilities.mjs",
   "runtime-diagnostics.mjs",
+  "system-network-route.mjs",
   "runtime-reporting.mjs",
   "runtime-resource-service.mjs",
   "runtime-tool-handlers.mjs",
@@ -108,6 +110,15 @@ for (const name of boundaryModules) {
   }
 }
 
+for (const name of ["process-tree-ownership.mjs", "process-identity.mjs", "delegated-process-sandbox.mjs", "macos-trust-broker.mjs"]) {
+  const source = readFileSync(join(localRoot, name), "utf8");
+  const timeoutCount = (source.match(/\btimeout:/g) || []).length;
+  const hardKillCount = (source.match(/killSignal:\s*["']SIGKILL["']/g) || []).length;
+  if (timeoutCount !== hardKillCount) {
+    throw new Error(`${name} has a bounded synchronous runtime probe without a hard timeout signal`);
+  }
+}
+
 const lineLimits = Object.freeze({
   "src/local/runtime.mjs": 700,
   "src/local/runtime-tool-handlers.mjs": 100,
@@ -119,6 +130,7 @@ const lineLimits = Object.freeze({
   "src/local/resource-operations.mjs": 110,
   "src/local/account-admin.mjs": 240,
   "src/local/runtime-diagnostics.mjs": 120,
+  "src/local/system-network-route.mjs": 80,
   "src/local/runtime-capabilities.mjs": 100,
   "src/local/cli.mjs": 950,
   "src/local/cli-service.mjs": 220,
@@ -174,7 +186,10 @@ const lineLimits = Object.freeze({
   "src/local/browser-pairing-http.mjs": 80,
   "src/local/worker-secret-file.mjs": 180,
   "src/local/service-environment.mjs": 140,
+  "src/local/service-owner.mjs": 150,
+  "src/local/service-runtime.mjs": 150,
   "src/local/windows-service.mjs": 220,
+  "src/local/windows-service-convergence.mjs": 60,
   "src/local/windows-launcher.mjs": 90,
   "src/local/monotonic-deadline.mjs": 60,
   "src/local/path-inspection.mjs": 50,
@@ -206,6 +221,7 @@ const lineLimits = Object.freeze({
   "src/worker/durable-stream-result.ts": 40,
   "src/worker/worker-entry.ts": 80,
   "src/worker/tool-timeout.ts": 80,
+  "src/worker/tool-catalog.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
   "src/worker/daemon-socket-attachment.ts": 80,

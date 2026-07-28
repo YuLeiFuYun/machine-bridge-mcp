@@ -4,6 +4,8 @@ import { inspectWorkspaceDaemon, stopWorkspaceServiceDaemon } from "./daemon-pro
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
 import { serviceEnvironmentSummary } from "./service-environment.mjs";
 import { scheduleServiceRestart } from "./service-restart-scheduler.mjs";
+import { startOwnedServiceRuntime } from "./service-runtime.mjs";
+import { loadServiceOwner } from "./service-owner.mjs";
 import { loadState, resolveWorkspace, selectedWorkspace } from "./state.mjs";
 
 const SERVICE_ACTION_HANDLERS = new Map([
@@ -21,12 +23,18 @@ export function createServiceCommand(dependencies) {
     chooseWorkspace: requiredFunction(dependencies.chooseWorkspace, "chooseWorkspace"),
     stateRootFromArgs: requiredFunction(dependencies.stateRootFromArgs, "stateRootFromArgs"),
     structuredLogger: requiredFunction(dependencies.structuredLogger, "structuredLogger"),
+    currentPackageVersion: requiredFunction(dependencies.currentPackageVersion, "currentPackageVersion"),
     service: dependencies.service || defaultService,
     inspectWorkspaceDaemon: dependencies.inspectWorkspaceDaemon || inspectWorkspaceDaemon,
     stopWorkspaceServiceDaemon: dependencies.stopWorkspaceServiceDaemon || stopWorkspaceServiceDaemon,
     stopAndRemoveAutostart: dependencies.stopAndRemoveAutostart || stopAndRemoveAutostart,
     serviceEnvironmentSummary: dependencies.serviceEnvironmentSummary || serviceEnvironmentSummary,
+    loadServiceOwner: dependencies.loadServiceOwner || loadServiceOwner,
     scheduleServiceRestart: dependencies.scheduleServiceRestart || scheduleServiceRestart,
+    startOwnedServiceRuntime: dependencies.startOwnedServiceRuntime || startOwnedServiceRuntime,
+    acquireMachineServiceLockWithWait: requiredFunction(
+      dependencies.acquireMachineServiceLockWithWait, "acquireMachineServiceLockWithWait",
+    ),
     loadState: dependencies.loadState || loadState,
     resolveWorkspace: dependencies.resolveWorkspace || resolveWorkspace,
     selectedWorkspace: dependencies.selectedWorkspace || selectedWorkspace,
@@ -42,18 +50,45 @@ async function serviceCommand(args, context) {
   const handler = SERVICE_ACTION_HANDLERS.get(action);
   if (!handler) throw new Error(`Unknown service action: ${action}`);
   const stateRoot = context.stateRootFromArgs(args);
-  return handler({ args, stateRoot, service: context.service, context });
+  if (!new Set(["install", "start", "stop", "uninstall", "remove"]).has(action)) {
+    return handler({ args, stateRoot, service: context.service, context });
+  }
+  const lock = await context.acquireMachineServiceLockWithWait({ operation: `service-${action}` });
+  if (!lock?.acquired || typeof lock.release !== "function") {
+    throw new Error("machine-service operation lock could not be acquired");
+  }
+  try {
+    return await handler({ args, stateRoot, service: context.service, context });
+  } finally {
+    lock.release();
+  }
 }
 
 async function serviceStatusAction({ args, stateRoot, service, context }) {
   const status = await service.autostartStatus();
-  const state = optionalServiceState(args, stateRoot, context);
-  const workspaceDaemon = state ? context.inspectWorkspaceDaemon(state) : null;
+  let owner = null;
+  let ownerProjection = { status: "missing", version: null };
+  try {
+    owner = context.loadServiceOwner();
+    if (owner) ownerProjection = { status: owner.status, version: owner.version };
+  } catch {
+    ownerProjection = { status: "invalid", version: null, error_class: "invalid_state" };
+  }
+  const explicitState = hasExplicitServiceTarget(args) ? optionalServiceState(args, stateRoot, context) : null;
+  const ownerState = !explicitState && owner?.status === "committed"
+    ? context.loadState(owner.workspace, { stateDir: owner.stateRoot })
+    : null;
+  const state = explicitState || ownerState || optionalServiceState(args, stateRoot, context);
+  const effectiveStateRoot = ownerState ? owner.stateRoot : stateRoot;
+  const workspaceDaemon = state ? context.inspectWorkspaceDaemon(state, ownerState ? {
+    expectedVersion: owner.version, expectedEntryScript: owner.entryScript,
+  } : {}) : null;
   printServiceResult({
     ...status,
     workspace: state?.workspace?.path || null,
     workspace_daemon: workspaceDaemon,
-    service_environment: context.serviceEnvironmentSummary(stateRoot),
+    service_owner: ownerProjection,
+    service_environment: context.serviceEnvironmentSummary(effectiveStateRoot),
     effective_active: Boolean(status.active || workspaceDaemon?.alive),
     orphaned_workspace_daemon: Boolean(status.active === false && workspaceDaemon?.alive && workspaceDaemon?.verified_service_daemon),
   }, context, false);
@@ -66,10 +101,19 @@ async function serviceInstallAction({ args, stateRoot, service, context }) {
   if (!state.worker?.url) {
     throw new Error("No deployed Worker is recorded for this workspace. Run `machine-mcp` once before `machine-mcp service install`.");
   }
+  const provider = await service.autostartStatus();
+  const daemon = context.inspectWorkspaceDaemon(state);
+  if (typeof provider?.active !== "boolean") {
+    throw new Error("machine service activity could not be verified before installation");
+  }
+  if (provider.active || daemon?.alive) {
+    throw new Error("refusing to replace the machine service definition while a provider or workspace daemon is active");
+  }
   const result = await service.installAutostart({
     workspace,
     stateRoot,
     entryScript: context.entryScript,
+    version: context.currentPackageVersion(),
     logger: context.structuredLogger(Boolean(args.quiet)),
   });
   printServiceResult(result, context);
@@ -77,7 +121,13 @@ async function serviceInstallAction({ args, stateRoot, service, context }) {
 
 async function serviceStartAction({ args, service, context }) {
   assertGlobalServiceAction(args, "start");
-  const result = await service.startAutostart({ logger: context.structuredLogger(Boolean(args.quiet)) });
+  const logger = context.structuredLogger(Boolean(args.quiet));
+  const result = await context.startOwnedServiceRuntime({
+    logger,
+    readProvider: service.autostartStatus,
+    mutateProvider: service.startAutostart,
+    stopProvider: service.stopAutostart,
+  });
   printServiceResult(result, context);
 }
 

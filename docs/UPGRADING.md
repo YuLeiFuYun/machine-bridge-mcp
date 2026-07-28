@@ -67,6 +67,22 @@ Legacy version 2 lease state may be listed, revoked, or cleared for cleanup, but
 
 `ACCOUNT_ADMIN_SECRET` is deleted from local state and is no longer deployed to the Worker. Account and OAuth-client administration uses the same root-certified ephemeral session established for daemon startup or an independently authorized local administration command.
 
+## Version 3.0.0-beta.24 candidate-activation convergence
+
+Beta.23 is blocked and must not be accepted, published, or promoted. Owner-machine activation proved that a Worker could report the expected version and pass health verification while rejecting the candidate daemon before WebSocket admission because the active device-authentication material had not converged. The failed transaction then restarted an older service definition that could not authenticate to the already advanced Worker.
+
+Beta.24 treats candidate device authentication and end-to-end readiness as required deployment evidence. One explicit authentication rejection triggers exactly one same-name redeployment with the unchanged selected identity; it does not rotate the device root, OAuth token version, account credentials, or Worker name. Candidate startup is bounded to three attempts. If remote preparation has occurred and activation still fails, local recovery installs and starts the compatible candidate service instead of restoring an incompatible old daemon. Before remote preparation, an older service is restored only when the same version and entrypoint reappear as a verified service daemon. Provider stop and start results must include verified inactive/active state; ambiguous systemd states and non-persistent Windows task completion fail closed. The original failure remains visible for diagnosis.
+
+Beta.24 also introduces an owner-only machine-service ledger and an explicit readiness checkpoint. Service installation binds the canonical workspace, state root, exact runtime entrypoint, and version in a pending-to-committed transaction. Start/restart refuse missing, corrupt, pending, or mismatched ownership and do not accept a provider PID as proof of readiness; the exact service daemon must complete authentication, relay probing, and `ready_ack`. All machine-global service writers use one fixed per-user lock before any workspace startup lock, eliminating cross-workspace definition races and lock-order cycles. Existing beta.23 service definitions do not have this ledger; exact candidate activation installs and commits the beta.24 owner before the final handoff. Do not manually fabricate or copy `service-owner.json`.
+
+No state-schema, OAuth-store, browser-pairing, resource, or managed-job migration is introduced. Upgrade through the exact candidate workflow. Do not delete state or rotate secrets in response to an isolated activation rejection.
+
+## Version 3.0.0-beta.23 foreground-contract change
+
+Beta.23 requires coordinated Worker and daemon/CLI metadata convergence. The Worker-specific `tools/list` schema narrows configurable foreground timeouts to 85 seconds while preserving each tool’s 30- or 60-second default and rejects larger values before daemon dispatch. Local/stdio callers retain the 1–600 second schema. Work that can exceed the remote foreground boundary must use process sessions, managed jobs, or independently terminal mutation/validation calls.
+
+`machine-mcp doctor` and `diagnose_runtime` also gain a macOS-only coarse default-route check. A `tunnel-or-vpn` result is evidence that an operating-system packet tunnel carries the route; it does not identify a failing node and is not authority to modify third-party VPN settings. Upgrade through the normal exact-version candidate flow and reload the packaged extension because its `version_name` is synchronized with the package.
+
 ## Version 3 beta.21 relay-continuity change
 
 Beta.21 changes the Worker-side stream-call record and MCP discovery contract. `tools/list` is stable for an authenticated account role; `server_info.authorization.effective_tools` remains the live execution authority. Streamed calls persist their daemon instance, WebSocket generation, request correlation, and deadlines so Durable Object hibernation or restart does not itself orphan an active call. JSON-only requests retain the prior bounded in-event path.

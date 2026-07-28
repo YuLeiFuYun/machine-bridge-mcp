@@ -1,12 +1,15 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { BridgeError, errorCode, publicError, remoteBridgeError } from "../src/local/errors.mjs";
 import { CallRegistry } from "../src/local/call-registry.mjs";
 import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
+import { createChildProcessSettlement } from "../src/local/child-process-settlement.mjs";
 import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
 import { executionGuardrailsSnapshot } from "../src/local/execution-limits.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
@@ -40,6 +43,8 @@ testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
 testProcessTreeSupervisor();
+testChildProcessSettlement();
+testHardSpawnSyncTimeout();
 testExecutionGuardrails();
 testErrors();
 testWorkspaceShellSelection();
@@ -704,11 +709,28 @@ function testProcessTreeSupervisor() {
     { pid: 4242, pgid: 4242, startedAt: Date.parse("2026-07-22T00:00:00Z") },
     { pid: 4243, pgid: 4242, startedAt: Date.parse("2026-07-22T00:00:01Z") },
   ];
+  const darwinQueries = [];
+  const darwinOwnership = captureProcessTreeOwnership(child, {
+    platform: "darwin",
+    spawnSyncProcess(_command, args) {
+      darwinQueries.push(args);
+      return { status: 0, stdout: " 4242  4242 Tue Jul 22 00:00:00 2026\n 4243  4242 Tue Jul 22 00:00:01 2026\n" };
+    },
+  });
+  assert(darwinOwnership.members.length === 2
+    && darwinQueries[0]?.[0] === "-g" && darwinQueries[0]?.[1] === "4242"
+    && !darwinQueries[0]?.includes("-axo"),
+  "macOS process ownership capture scanned the full process table instead of the target process group");
+
   const ownership = captureProcessTreeOwnership(child, { platform: "linux", listProcessGroups: () => snapshotRows });
   assert(ownership.members.length === 2, "process group snapshot omitted a descendant");
   assert(processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [snapshotRows[1]] }), "surviving original descendant did not preserve process-group ownership");
   assert(!processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [{ pid: 4243, pgid: 4242, startedAt: Date.parse("2026-07-22T00:01:00Z") }] }), "PID-reused process group was accepted for escalation");
   assert(!processTreeOwnershipStillCurrent({ platform: "linux", pid: 4242, members: [] }, { ...child, exitCode: 0 }, { listProcessGroups: () => [] }), "empty ownership snapshot ignored parent exit");
+  assert(!processTreeOwnershipStillCurrent({ platform: "linux", pid: 4242, members: [] }, child, { listProcessGroups: () => snapshotRows }), "empty ownership snapshot authorized forced termination without process identity");
+  assert(!processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, {
+    listProcessGroups: () => [{ ...snapshotRows[0], startedAt: snapshotRows[0].startedAt + 1000 }],
+  }), "adjacent-second PID reuse was accepted as the captured process identity");
   const refreshed = refreshProcessTreeOwnership(
     { platform: "linux", pid: 4242, members: [snapshotRows[0]] },
     { listProcessGroups: () => snapshotRows },
@@ -723,12 +745,93 @@ function testProcessTreeSupervisor() {
   }), "targeted ownership fallback lost a captured descendant when the full process table was unavailable");
   assert(ownershipQueries > 1, "targeted ownership fallback was not exercised");
 
+  const boundedTimeouts = [];
+  const boundedKillSignals = [];
+  assert(!processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
+    ownershipCheckBudgetMs: 90,
+    monotonicNow: () => 0,
+    spawnSyncProcess(_command, _args, processOptions) {
+      boundedTimeouts.push(processOptions.timeout);
+      boundedKillSignals.push(processOptions.killSignal);
+      return { status: 1, stdout: "" };
+    },
+  }), "failed process snapshots were treated as current ownership");
+  assert(boundedTimeouts.length === 3 && boundedTimeouts.every((value) => value > 0)
+    && boundedTimeouts.reduce((sum, value) => sum + value, 0) <= 90,
+  `targeted ownership fallback exceeded its global budget: ${boundedTimeouts.join(",")}`);
+  assert(boundedKillSignals.every((value) => value === "SIGKILL"),
+    "bounded process snapshots used a soft timeout signal that can leave spawnSync blocked");
+
+  let expiredSnapshotCalls = 0;
+  let clockSample = 0;
+  assert(!processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
+    ownershipCheckBudgetMs: 1,
+    monotonicNow: () => clockSample++ === 0 ? 0 : 2,
+    spawnSyncProcess() { expiredSnapshotCalls += 1; return { status: 0, stdout: "" }; },
+  }), "expired process ownership budget was treated as current ownership");
+  assert(expiredSnapshotCalls === 0, "expired process ownership budget invoked an unbounded timeout-zero process snapshot");
+
   const groupSignals = [];
   assert(terminateProcessTree(child, "SIGTERM", {
     platform: "linux",
     killProcess(pid, signal) { groupSignals.push({ pid, signal }); },
   }), "POSIX process-group termination was not requested");
   assert(groupSignals[0].pid === -child.pid && groupSignals[0].signal === "SIGTERM", "POSIX termination did not target the child process group");
+}
+
+function testChildProcessSettlement() {
+  const direct = [];
+  const closeGuard = createChildProcessSettlement({ onSettle: (...args) => direct.push(args) });
+  assert(closeGuard.onClose(0, null) && !closeGuard.onExit(0, null), "direct child close did not settle exactly once");
+  assert(direct.length === 1 && direct[0][2] === "close", "direct child close used the wrong settlement source");
+
+  let scheduled = null;
+  let cleared = null;
+  let fallbackCount = 0;
+  const fallback = [];
+  const exitGuard = createChildProcessSettlement({
+    fallbackMs: 25,
+    schedule(callback, delay) { scheduled = { callback, delay }; return "exit-fallback"; },
+    clearSchedule(timer) { cleared = timer; },
+    onFallback() { fallbackCount += 1; },
+    onSettle: (...args) => fallback.push(args),
+  });
+  assert(exitGuard.onExit(7, "SIGTERM") && scheduled?.delay === 25, "child exit did not schedule bounded close fallback");
+  scheduled.callback();
+  assert(fallbackCount === 1 && fallback.length === 1 && fallback[0][0] === 7
+    && fallback[0][1] === "SIGTERM" && fallback[0][2] === "exit_fallback",
+  "child exit fallback did not preserve terminal identity");
+
+  scheduled = null;
+  const raced = [];
+  const raceGuard = createChildProcessSettlement({
+    schedule(callback) { scheduled = { callback }; return "race-timer"; },
+    clearSchedule(timer) { cleared = timer; },
+    onSettle: (...args) => raced.push(args),
+  });
+  raceGuard.onExit(1, null);
+  assert(raceGuard.onClose(0, null) && cleared === "race-timer", "close did not cancel the pending exit fallback");
+  scheduled.callback();
+  assert(raced.length === 1 && raced[0][0] === 0 && raced[0][2] === "close", "late exit fallback settled a closed child twice");
+  assert(!raceGuard.cancel(), "settled child guard accepted cancellation");
+  let missingSettle;
+  try { createChildProcessSettlement({}); } catch (error) { missingSettle = error; }
+  assert(missingSettle?.message.includes("requires onSettle"), "child settlement accepted a missing callback");
+  let invalidDelay;
+  try { createChildProcessSettlement({ onSettle() {}, fallbackMs: -1 }); } catch (error) { invalidDelay = error; }
+  assert(invalidDelay?.message.includes("between 0 and 10000"), "child settlement accepted an invalid fallback delay");
+}
+
+function testHardSpawnSyncTimeout() {
+  const script = "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)";
+  const started = performance.now();
+  const result = spawnSync(process.execPath, ["-e", script], {
+    encoding: "utf8", timeout: 100, killSignal: "SIGKILL", windowsHide: true,
+  });
+  const elapsed = performance.now() - started;
+  assert(result.error?.code === "ETIMEDOUT" && result.signal === "SIGKILL",
+    "hard synchronous timeout did not force the uncooperative child");
+  assert(elapsed < 1500, `hard synchronous timeout remained blocked for ${elapsed} ms`);
 }
 
 function testExecutionGuardrails() {

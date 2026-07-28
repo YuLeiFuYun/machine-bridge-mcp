@@ -1,11 +1,7 @@
 import { waitForInactiveStatus } from "./service-convergence.mjs";
-import {
-  windowsLauncherPath, windowsTaskAction, writeWindowsLauncher,
-} from "./windows-launcher.mjs";
-export {
-  windowsBatchArgument, windowsCommandLineArgument, windowsLauncherContent,
-  windowsLauncherPath, windowsTaskAction, writeWindowsLauncher,
-} from "./windows-launcher.mjs";
+import { stableWindowsStatus, waitForWindowsStatus, windowsStatusWaitOptions } from "./windows-service-convergence.mjs";
+import { windowsLauncherPath, windowsTaskAction, writeWindowsLauncher } from "./windows-launcher.mjs";
+export { windowsBatchArgument, windowsCommandLineArgument, windowsLauncherContent, windowsLauncherPath, windowsTaskAction, writeWindowsLauncher } from "./windows-launcher.mjs";
 
 export const WINDOWS_TASK = "MachineBridgeMCP";
 const WINDOWS_STATUS_SCRIPT = [
@@ -28,7 +24,9 @@ export async function installWindowsTask(spec, logger = console, options = {}) {
     "/RL", "LIMITED",
     "/F",
   ]);
-  const status = await waitForWindowsStatus(value => value.installed === true, { ...options, run });
+  const status = await waitForWindowsStatus(
+    () => statusWindowsTask({ ...options, run }), value => value.installed === true, options,
+  );
   const ok = create?.code === 0 && status.installed === true;
   if (ok) logger.info?.("Windows Scheduled Task installed for user logon");
   else logger.warn?.("Windows Scheduled Task installation failed", { reason: windowsServiceFailureReason(create, status) });
@@ -51,35 +49,37 @@ export async function startWindowsTask(logger = console, options = {}) {
   if (before.installed === null) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "task_status_unavailable", status: before };
   if (before.installed === false) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "not_installed", status: before };
   if (before.active === true) {
-    logger.info?.("Windows Scheduled Task is already running");
-    return {
-      ok: true,
-      provider: "schtasks",
-      task: WINDOWS_TASK,
-      installed: true,
-      active_before: true,
-      active: true,
-      already_running: true,
-      reason: "already_running",
-      status: before,
-    };
+    const existing = await stableWindowsStatus(() => statusWindowsTask({ ...options, run }), options);
+    if (existing.stable) {
+      logger.info?.("Windows Scheduled Task is already running");
+      return {
+        ok: true, provider: "schtasks", task: WINDOWS_TASK, installed: true,
+        active_before: true, active: true, already_running: true, reason: "already_running", status: existing.status,
+      };
+    }
   }
   const command = await run("schtasks", ["/Run", "/TN", WINDOWS_TASK]);
   const after = await waitForWindowsStatus(
-    status => status.active === true || completedSince(before, status),
-    { ...options, run },
+    () => statusWindowsTask({ ...options, run }),
+    status => status.active === true || completedSince(before, status), options,
   );
-  const completed = completedSince(before, after);
-  const ok = after.active === true || completed;
+  const stability = after.active === true
+    ? await stableWindowsStatus(() => statusWindowsTask({ ...options, run }), options)
+    : { stable: false, status: after };
+  const observed = stability.status;
+  const completed = completedSince(before, observed);
+  const ok = stability.stable;
   if (ok) logger.info?.("Windows Scheduled Task started");
-  else logger.warn?.("Windows Scheduled Task did not reach a running or successful completed state");
+  else logger.warn?.("Windows Scheduled Task did not remain active after the start request");
   return {
     ok,
     provider: "schtasks",
     task: WINDOWS_TASK,
     command,
-    status: after,
-    reason: after.active === true ? "started" : completed ? "completed" : "start_not_observed",
+    status: observed,
+    active_before: false,
+    active: observed?.active === true && stability.stable,
+    reason: stability.stable ? "started" : completed ? "completed_without_persistence" : "start_not_stable",
   };
 }
 export async function restartWindowsTask(logger = console, options = {}) {
@@ -101,6 +101,7 @@ export async function stopWindowsTask(logger = console, options = {}) {
       installed: before.installed,
       active_before: false,
       active: false,
+      restore_required: false,
       already_stopped: true,
       reason: before.installed ? "already_stopped" : "not_installed",
       status: before,
@@ -121,6 +122,7 @@ export async function stopWindowsTask(logger = console, options = {}) {
     installed: after?.installed !== false,
     active_before: true,
     active: after?.active !== false,
+    restore_required: ok,
     already_stopped: false,
     command,
     status: after,
@@ -134,8 +136,7 @@ export async function uninstallWindowsTask(logger = console, options = {}) {
   if (!stopped.ok) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, stop: stopped, reason: "stop_failed" };
   const command = await run("schtasks", ["/Delete", "/TN", WINDOWS_TASK, "/F"]);
   const status = await waitForWindowsStatus(
-    value => value.installed === false,
-    { ...options, run },
+    () => statusWindowsTask({ ...options, run }), value => value.installed === false, options,
   );
   const ok = status.installed === false;
   if (ok) logger.info?.("Windows Scheduled Task removed");
@@ -188,32 +189,8 @@ function windowsServiceFailureReason(command, status) {
   return "task_installation_unverified";
 }
 
-async function waitForWindowsStatus(predicate, options) {
-  const attempts = boundedPositiveInteger(options.statusAttempts, 10);
-  const delayMs = boundedPositiveInteger(options.statusDelayMs, 100);
-  const sleep = typeof options.sleep === "function" ? options.sleep : milliseconds => new Promise(resolve => { setTimeout(resolve, milliseconds); });
-  let status = await statusWindowsTask(options);
-  for (let index = 1; index < attempts && !predicate(status); index += 1) {
-    await sleep(delayMs);
-    status = await statusWindowsTask(options);
-  }
-  return status;
-}
-
-function windowsStatusWaitOptions(options) {
-  return {
-    attempts: boundedPositiveInteger(options.statusAttempts, 10),
-    delayMs: boundedPositiveInteger(options.statusDelayMs, 100),
-    sleep: typeof options.sleep === "function" ? options.sleep : undefined,
-  };
-}
 
 function requiredRun(run) {
   if (typeof run !== "function") throw new Error("Windows service command runner is required");
   return run;
-}
-
-function boundedPositiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }

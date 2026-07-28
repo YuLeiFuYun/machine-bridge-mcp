@@ -674,6 +674,58 @@ try {
   assert(!statusAfterHello.daemon?.tools?.includes("exec_command"), "agent policy did not filter shell execution");
   assert(!statusAfterHello.daemon?.tools?.includes("read_file"), "replaced daemon tools remained active");
 
+  const remoteAgentTools = await callToolsList(base, ownerAccessToken, 2501);
+  const remoteRunProcess = remoteAgentTools.find((tool) => tool.name === "run_process");
+  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 85
+    && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 60,
+  "remote tools/list advertised a foreground timeout beyond the hosted delivery boundary");
+  const overLimitMessages = captureWsMessageTypes(candidateDaemon);
+  const overLimit = await callTool(base, ownerAccessToken, primarySession, 2502, "run_process", {
+    argv: ["must-not-run"], timeout_seconds: 120,
+  });
+  assert(!overLimitMessages.stop().includes("tool_call"),
+    "over-limit JSON tool call reached the daemon before rejection");
+  assert(overLimit.result?.isError === true, "over-limit foreground call was not rejected");
+  assert(overLimit.result?.structuredContent?.error?.details?.side_effects_started === false
+    && overLimit.result?.structuredContent?.error?.details?.maximum_foreground_timeout_seconds === 85,
+  "over-limit foreground rejection omitted the pre-dispatch safety contract");
+
+  const malformedTimeoutMessages = captureWsMessageTypes(candidateDaemon);
+  const malformedTimeout = await callTool(base, ownerAccessToken, primarySession, 25021, "run_process", {
+    argv: ["must-not-run"], timeout_seconds: "60",
+  });
+  assert(!malformedTimeoutMessages.stop().includes("tool_call"),
+    "malformed JSON foreground timeout reached the daemon before rejection");
+  assert(malformedTimeout.result?.isError === true
+    && malformedTimeout.result?.structuredContent?.error?.details?.side_effects_started === false
+    && malformedTimeout.result?.structuredContent?.error?.details?.minimum_foreground_timeout_seconds === 1,
+  "malformed foreground timeout omitted the strict pre-dispatch contract");
+
+  const overLimitStreamMessages = captureWsMessageTypes(candidateDaemon);
+  const overLimitStreamResponse = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 2503, method: "tools/call",
+      params: { name: "run_process", arguments: { argv: ["must-not-stream-run"], timeout_seconds: 120 } },
+    }),
+  });
+  assert(overLimitStreamResponse.status === 200
+    && overLimitStreamResponse.headers.get("content-type")?.startsWith("text/event-stream"),
+  "over-limit streamed call did not settle through the resumable MCP path");
+  const overLimitStreamReader = overLimitStreamResponse.body.getReader();
+  const overLimitInitial = await readSseInitialEvent(overLimitStreamReader);
+  const overLimitStream = await readSseJsonRpcResponse(overLimitStreamReader, overLimitInitial.text);
+  assert(!overLimitStreamMessages.stop().includes("tool_call"),
+    "over-limit streamed tool call reached the daemon before rejection");
+  assert(overLimitStream.message.result?.isError === true
+    && overLimitStream.message.result?.structuredContent?.error?.details?.side_effects_started === false
+    && overLimitStream.message.result?.structuredContent?.error?.details?.maximum_foreground_timeout_seconds === 85,
+  "over-limit streamed call omitted the pre-dispatch no-side-effect error");
+
   const streamedRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const streamedResponsePromise = stableFetch(`${base}/mcp`, {
     method: "POST",
@@ -1364,6 +1416,23 @@ function waitForWsMessageSequence(socket, expectedTypes, timeoutMs = 5000) {
   }), timeoutMs, `websocket message sequence ${expectedTypes.join(", ")}`);
 }
 
+
+function captureWsMessageTypes(socket) {
+  const types = [];
+  let parseError = null;
+  const onMessage = (data) => {
+    try { types.push(JSON.parse(String(data)).type); }
+    catch (error) { parseError = error; }
+  };
+  socket.on("message", onMessage);
+  return {
+    stop() {
+      socket.off("message", onMessage);
+      if (parseError) throw parseError;
+      return types;
+    },
+  };
+}
 
 function waitForWsMessage(socket, expectedType, timeoutMs = 5000, label = expectedType) {
   return withTimeout(new Promise((resolve, reject) => {
