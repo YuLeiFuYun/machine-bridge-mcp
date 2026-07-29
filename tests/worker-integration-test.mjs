@@ -1441,14 +1441,25 @@ function captureWsMessageTypes(socket) {
 }
 
 function waitForWsMessage(socket, expectedType, timeoutMs = 5000, label = expectedType) {
+  const interleavedTypes = expectedType === "tool_call" || expectedType === "cancel_call"
+    ? new Set(["tool_result_ack"])
+    : new Set();
   return withTimeout(new Promise((resolve, reject) => {
     const onMessage = (data) => {
-      cleanup();
       try {
         const value = JSON.parse(String(data));
-        if (value.type !== expectedType) throw new Error(`expected websocket message ${expectedType}, received ${value.type}`);
-        resolve(value);
-      } catch (error) { reject(error); }
+        if (value.type === expectedType) {
+          cleanup();
+          resolve(value);
+          return;
+        }
+        if (interleavedTypes.has(value.type)) return;
+        cleanup();
+        reject(new Error(`expected websocket message ${expectedType}, received ${value.type}`));
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
     };
     const onError = (error) => { cleanup(); reject(error); };
     const onClose = (code) => { cleanup(); reject(new Error(`websocket closed before ${expectedType}: ${code}`)); };

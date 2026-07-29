@@ -88,7 +88,7 @@ async function serviceOwnerTransactionTest() {
   const stateRoot = path.join(root, "state");
   const entryScript = path.join(root, "machine-mcp.mjs");
   try {
-    for (const directory of [workspace, stateRoot]) (await import("node:fs/promises")).mkdir(directory, { recursive: true });
+    for (const directory of [workspace, stateRoot]) mkdirSync(directory, { recursive: true });
     writeFileSync(entryScript, "export {};\n", { mode: 0o600 });
     const first = beginServiceOwnerUpdate({ workspace, stateRoot, entryScript, version: "3.0.0-test.1" }, { controlRoot });
     assert.equal(loadOwnerFailure({ controlRoot }), "machine service owner transition is incomplete; reinstall the service before starting it");
@@ -103,7 +103,7 @@ async function serviceOwnerTransactionTest() {
     assert.equal(storedOwner.entryScript, canonical(entryScript));
 
     const secondWorkspace = path.join(root, "workspace-2");
-    (await import("node:fs/promises")).mkdir(secondWorkspace, { recursive: true });
+    mkdirSync(secondWorkspace, { recursive: true });
     const second = beginServiceOwnerUpdate({ workspace: secondWorkspace, stateRoot, entryScript, version: "3.0.0-test.2" }, { controlRoot });
     second.rollback();
     assert.equal(loadCommittedServiceOwner({ controlRoot }).version, "3.0.0-test.1", "owner rollback did not restore the prior committed record");
@@ -144,8 +144,12 @@ async function serviceOwnerTransactionTest() {
     assert.throws(() => stale.commit(), /transaction changed/);
     replacement.rollback();
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
+}
+
+function removeTestTree(root) {
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 }
 
 function loadOwnerFailure(options) {
@@ -221,7 +225,7 @@ async function serviceInstallOwnerCommitTest() {
     assert.deepEqual(events, ["owner:commit-failed"],
       "provider commit failure rolled the owner back to a definition that no longer matches the installed service");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 }
 
@@ -355,7 +359,7 @@ function windowsLauncherLiveTest() {
     );
     assert.equal(existsSync(marker), true, "real cmd.exe did not execute the generated launcher with quoted special-character paths");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 }
 
@@ -385,7 +389,7 @@ async function windowsInstallTest() {
     const launcher = readFileSync(result.launcher, "utf8");
     assert(launcher.includes("--daemon-only"), "installed launcher omitted daemon startup arguments");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 }
 
