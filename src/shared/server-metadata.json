@@ -1,14 +1,15 @@
 {
   "name": "machine-bridge-mcp",
-  "protocolVersion": "2025-11-25",
+  "protocolVersion": "2026-07-28",
   "supportedProtocolVersions": [
+    "2026-07-28",
     "2025-11-25"
   ],
   "instructions": [
     "You are connected to a local workspace through machine-bridge-mcp.",
-    "At the start of each substantive local task, call resolve_task_capabilities with the current user request and target path. Apply the returned session/project instructions, follow the automatically selected relevant skill when present, and prefer registered local commands for repeatable workflows.",
+    "At the start of each substantive local task, call resolve_task_capabilities with the current user request and target path. Its execution_routing is bounded, set-level, and advisory: direct Bash remains the general escape hatch whenever the effective policy allows it. Reuse refresh.fingerprint as known_refresh_fingerprint to avoid repeating unchanged static instructions. MCP transport connections are not conversation identity; refresh task-specific ranking explicitly rather than assuming prior requests established context.",
     "Before any GitHub read or mutation, apply the effective project control-plane instructions. When a project requires local git, gh, and gh api through Machine Bridge, never use a hosted GitHub connector or ChatGPT GitHub plugin; if the local control plane is unavailable, stop rather than substitute another GitHub tool.",
-    "The MCP initialize response automatically appends conservative built-in working agreements, bounded automatic project facts, the configured global model_instructions_file, and the current root instruction chain when the local daemon is reachable; session_bootstrap exposes the same material explicitly.",
+    "MCP 2026-07-28 clients use server/discover and per-request metadata. The discovery result includes conservative built-in working agreements; session_bootstrap remains an explicit refresh tool for project facts, local instructions, and capability routing. Legacy 2025-11-25 initialize clients receive the same guidance through the compatibility adapter.",
     "For existing-browser work, use the paired Machine Bridge browser extension. It operates the user current Chromium profile and tabs, can inspect DOM/source, fill complex forms, and inject sensitive text from registered local resources without returning those values.",
     "For local application work, use structured application discovery and Accessibility actions. Arbitrary caller-supplied AppleScript or JavaScript is intentionally not accepted.",
     "Remote mode uses a Cloudflare relay; stdio mode runs on the local machine. File and command operations execute on the user's local runtime, not in the Worker.",
@@ -27,5 +28,11 @@
     "Remote foreground run_process, run_local_command, exec_command, browser, and application calls are limited to 85 seconds and reject larger requested timeouts before local side effects begin. Keep mutations separate from validation. For longer work, use start_process/read_process or start_job/read_job. If the host omits those tools, start a non-interactive command that writes bounded output and an exit-status file under ignored project-local state, then poll those files with short calls.",
     "Per-tool success, failure, cancellation, and timing events are debug-only; default logs contain lifecycle and infrastructure events, not a tool-call transcript.",
     "Inspect before editing, prefer read_file line ranges, edit_file, or apply_patch over whole-file replacement, and report commands that were run."
+  ],
+  "modernProtocolVersions": [
+    "2026-07-28"
+  ],
+  "legacyProtocolVersions": [
+    "2025-11-25"
   ]
 }

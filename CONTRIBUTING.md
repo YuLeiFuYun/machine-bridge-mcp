@@ -38,7 +38,7 @@ Repository-only infrastructure changes, such as a `.github/` workflow update, do
 
 1. choose a `dev`, `beta`, or `rc` version; version 3 and later must not begin as stable;
 2. update changelog, audit notes, and documentation;
-3. run targeted and complete checks, dependency audits, Worker dry-run, privacy review, SBOM generation, and package inspection;
+3. run targeted and complete checks, dependency audits, Worker dry-run, privacy review, `npm run sbom:test`, and package inspection;
 4. inspect the complete diff and run `npm run release:candidate`;
 5. give the owner `npm run release:candidate:activate -- --allow-worker-deploy` and stop;
 6. after the owner runs it, verify the Worker, candidate relay, verified service daemon, exact version, representative behavior, and relevant failure paths through Machine Bridge;

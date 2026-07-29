@@ -35,12 +35,23 @@ export function projectMcpResult(value) {
     const structuredContent = { ...object };
     const text = String(structuredContent[MCP_TEXT_PROJECTION_KEY]).slice(0, 4096);
     delete structuredContent[MCP_TEXT_PROJECTION_KEY];
-    return { text, structuredContent };
+    return { text, hasStructuredContent: true, structuredContent };
   }
   return {
     text: mirroredResultText(value),
-    structuredContent: value && typeof value === "object" && !Array.isArray(value) ? value : null,
+    hasStructuredContent: isJsonValue(value),
+    structuredContent: value,
   };
+}
+
+/** @param {unknown} value */
+function isJsonValue(value) {
+  return value === null
+    || typeof value === "string"
+    || typeof value === "boolean"
+    || (typeof value === "number" && Number.isFinite(value))
+    || Array.isArray(value)
+    || (value && typeof value === "object");
 }
 
 /** @param {unknown} value */

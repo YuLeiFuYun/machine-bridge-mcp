@@ -235,22 +235,56 @@ export function normalizeRedirectUri(value: string): string | null {
   }
 }
 
-export function corsPreflight(request: Request, base: string, configured: string): Response {
+export function mcpOriginRejection(request: Request, base: string, configured: string): Response | null {
+  const origin = request.headers.get("Origin") ?? "";
+  if (!origin || isConfiguredOrSameOrigin(origin, base, configured)) return null;
+  return json({ error: "origin_not_allowed" }, 403);
+}
+
+export function corsPreflight(
+  request: Request, base: string, configured: string, allowedParameterHeaders: ReadonlySet<string> = EMPTY_CORS_HEADER_SET,
+): Response {
   const origin = request.headers.get("Origin") ?? "";
   if (!isConfiguredOrSameOrigin(origin, base, configured)) return json({ error: "origin_not_allowed" }, 403);
   const requestedMethod = (request.headers.get("Access-Control-Request-Method") ?? "").toUpperCase();
   if (requestedMethod && !["GET", "POST"].includes(requestedMethod)) return methodNotAllowed("GET, POST, OPTIONS");
+  const requestedHeaders = requestedCorsHeaders(request);
+  if (!requestedHeaders) return json({ error: "cors_header_invalid" }, 400);
+  const rejected = requestedHeaders.filter((name) => !isAllowedMcpCorsHeader(name, allowedParameterHeaders));
+  if (rejected.length > 0) return json({ error: "cors_header_not_allowed" }, 403);
+  const allowedHeaders = [...new Set([...DEFAULT_MCP_CORS_HEADERS, ...requestedHeaders])];
   return new Response(null, {
     status: 204,
     headers: {
       "access-control-allow-origin": origin,
       "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers": "authorization, content-type, dpop, last-event-id, mcp-protocol-version, mcp-session-id",
+      "access-control-allow-headers": allowedHeaders.join(", "),
       "access-control-max-age": "600",
       "cache-control": "no-store",
       "vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
     },
   });
+}
+
+const DEFAULT_MCP_CORS_HEADERS = Object.freeze([
+  "authorization", "content-type", "dpop", "mcp-protocol-version", "mcp-method", "mcp-name",
+  "mcp-session-id", "last-event-id", "traceparent", "tracestate", "baggage",
+]);
+const EMPTY_CORS_HEADER_SET: ReadonlySet<string> = new Set();
+const CORS_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-z-]+$/;
+const MAX_CORS_REQUEST_HEADER_BYTES = 8192;
+const MAX_CORS_REQUEST_HEADERS = 64;
+
+function requestedCorsHeaders(request: Request): string[] | null {
+  const raw = request.headers.get("Access-Control-Request-Headers") ?? "";
+  if (new TextEncoder().encode(raw).byteLength > MAX_CORS_REQUEST_HEADER_BYTES) return null;
+  const values = [...new Set(raw.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean))];
+  if (values.length > MAX_CORS_REQUEST_HEADERS || values.some((name) => !CORS_HEADER_NAME.test(name))) return null;
+  return values;
+}
+
+function isAllowedMcpCorsHeader(name: string, allowedParameterHeaders: ReadonlySet<string>): boolean {
+  return DEFAULT_MCP_CORS_HEADERS.includes(name) || allowedParameterHeaders.has(name);
 }
 
 export function applyCors(response: Response, request: Request, base: string, configured: string): Response {

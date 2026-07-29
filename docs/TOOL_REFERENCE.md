@@ -66,7 +66,7 @@ Tool count: **51**.
 
 **Server information**
 
-Return authenticated account authority, effective policy/tools, daemon capability ceiling, runtime metadata, and protocol status. Treat authorization.effective_policy and authorization.effective_tools as authoritative; daemon.policy is only a ceiling.
+Return live authorization, effective tools, daemon/relay health, runtime state, and protocol status. Use this for authority or connectivity diagnosis, not for repository inventory. Treat authorization.effective_policy and authorization.effective_tools as authoritative; daemon.policy is only a ceiling.
 
 | Contract field | Value |
 |---|---|
@@ -89,7 +89,7 @@ Return authenticated account authority, effective policy/tools, daemon capabilit
 
 **Project overview**
 
-Summarize the connected workspace and repository. Remote responses report the authenticated account effective policy/tools at policy and tools, with the daemon capability ceiling preserved separately as daemonPolicy and daemonTools.
+Summarize the connected workspace, repository root, top-level entries, and project-facing runtime context. Use this for repository inventory, not as the primary live relay-health check. Remote responses report authenticated-account effective policy/tools separately from the daemon capability ceiling.
 
 | Contract field | Value |
 |---|---|
@@ -112,7 +112,7 @@ Summarize the connected workspace and repository. Remote responses report the au
 
 **Load session bootstrap**
 
-Load built-in working agreements, bounded automatic project facts, user-global and root workspace instructions, and capability refresh metadata for MCP session initialization.
+Load built-in working agreements, bounded automatic project facts, user-global and root workspace instructions, and capability refresh metadata. Modern clients call it explicitly; legacy initialize clients receive the same bounded guidance through the compatibility adapter.
 
 | Contract field | Value |
 |---|---|
@@ -142,7 +142,7 @@ Load built-in working agreements, bounded automatic project facts, user-global a
 
 **Resolve task capabilities**
 
-Rescan built-in and automatic project context, local instruction files, skills, explicit and automatic package commands, installed applications, and browser capability metadata; rank the capabilities relevant to the current task and optionally load the best skill.
+Rescan task-relevant instructions, skills, registered commands, installed applications, browser metadata, and the effective tool catalog. Return bounded set-level execution routes, ranked tools, routing ambiguity, and an optional selected skill. Pass known_refresh_fingerprint to omit unchanged static instructions while recomputing task-specific ranking. The result is advisory: direct Bash and every other policy-allowed tool remain available.
 
 | Contract field | Value |
 |---|---|
@@ -178,6 +178,12 @@ Rescan built-in and automatic project context, local instruction files, skills, 
     "include_selected_skill": {
       "type": "boolean",
       "default": true
+    },
+    "known_refresh_fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "maxLength": 64,
+      "description": "Previous refresh fingerprint. When it still matches, unchanged static instructions are omitted while task-specific ranking is recomputed."
     }
   },
   "required": [
@@ -490,7 +496,7 @@ Open the local pairing page and return the packaged unpacked-extension path for 
 
 **List browser tabs**
 
-List tabs from the paired user's existing Chromium browser profile.
+Read the tab inventory from the paired existing Chromium profile without creating, activating, or closing a tab. Use browser_manage_tabs for tab mutations.
 
 | Contract field | Value |
 |---|---|
@@ -529,7 +535,7 @@ List tabs from the paired user's existing Chromium browser profile.
 
 **Manage browser tabs**
 
-Create, activate, or close tabs in the paired existing browser profile.
+Create, activate, or close tabs in the paired existing Chromium profile. Use browser_list_tabs when only a read-only tab inventory is needed.
 
 | Contract field | Value |
 |---|---|
@@ -585,7 +591,7 @@ Create, activate, or close tabs in the paired existing browser profile.
 
 **Read browser page source**
 
-Read bounded serialized current DOM HTML from the active or selected browser tab. max_bytes is one aggregate budget across at most 64 accessible frames, with explicit frame, node, and byte truncation metadata.
+Read bounded raw serialized DOM HTML from the active or selected tab when source markup is required. Use browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames.
 
 | Contract field | Value |
 |---|---|
@@ -634,7 +640,7 @@ Read bounded serialized current DOM HTML from the active or selected browser tab
 
 **Inspect browser page**
 
-Inspect a bounded snapshot-version-2 semantic representation across at most 64 accessible frames, with one aggregate element budget, bounded reusable refs, actionability state, bounded page-controlled metadata, and explicit scan/frame truncation.
+Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames.
 
 | Contract field | Value |
 |---|---|
@@ -1300,7 +1306,7 @@ Populate a browser file input from registered local resource files without retur
 
 **Load agent context**
 
-Discover built-in defaults, bounded automatic project facts, Codex-compatible global/root-to-target instruction precedence, progressively disclosed local skills, explicit commands, and safe automatic package-script command aliases for a target path.
+Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Use this when the caller needs the context itself; use resolve_task_capabilities when it needs task-specific ranking and execution-route advice.
 
 | Contract field | Value |
 |---|---|
@@ -1455,7 +1461,7 @@ List effective direct-argv commands from project manifests and safe automatic pa
 
 **Run registered local command**
 
-Run an effective manifest or automatic package-script command through its fixed argv, cwd, timeout ceiling, and extra-argument policy. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.
+Prefer this when the repository already defines the desired operation as a registered command or package script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation; use exec_command for ad hoc pipelines or run_process for an unregistered executable argv. Large output is retained for read_process.
 
 | Contract field | Value |
 |---|---|
@@ -1988,7 +1994,7 @@ Return bounded metadata and patch output for one revision without running reposi
 
 **Run process directly**
 
-Execute an argv array without a command shell. This avoids shell parsing but does not sandbox the executable or code it launches. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.
+Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Large output is retained for read_process.
 
 | Contract field | Value |
 |---|---|
@@ -2796,7 +2802,7 @@ Request cancellation of a detached managed job. The runner terminates the active
 
 **Execute shell command**
 
-Execute a shell command with workspace cwd. This is not a sandbox and has the operating-system authority of the local user. Large stdout/stderr is previewed inline and retained temporarily for paged read_process continuation.
+Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Large output is retained for read_process.
 
 | Contract field | Value |
 |---|---|

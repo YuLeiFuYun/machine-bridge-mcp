@@ -134,16 +134,37 @@ export class AgentContextManager {
       skillRelevant: Boolean(selected),
     });
     const refresh = capabilityFingerprint(state, discovered.skills);
-    return {
-      task,
-      target: this.displayPath(state.target, context),
+    const knownRefreshFingerprint = args.known_refresh_fingerprint === undefined
+      ? ""
+      : String(args.known_refresh_fingerprint || "");
+    if (knownRefreshFingerprint && !/^[a-f0-9]{64}$/.test(knownRefreshFingerprint)) {
+      throw new Error("known_refresh_fingerprint must be a lowercase SHA-256 hex digest");
+    }
+    const contextUnchanged = Boolean(knownRefreshFingerprint && knownRefreshFingerprint === refresh);
+    const staticContext = contextUnchanged ? {} : {
       effective_instructions: renderEffectiveInstructions(effectiveInstructionItems(state), (value) => this.displayPath(value, context)),
       builtin_instructions: publicVirtualInstruction(state.builtinInstructions, false),
       automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, false),
       model_instructions_file: state.modelInstructions ? this.displayPath(state.modelInstructions.path, context) : null,
       instruction_files: state.instructions.map((item) => ({ path: this.displayPath(item.path, context), scope: item.scope, bytes: item.bytes, sha256: item.sha256, precedence: item.precedence })),
+    };
+    return {
+      task,
+      target: this.displayPath(state.target, context),
+      ...staticContext,
       instructions_truncated: state.instructionsTruncated,
-      refresh: { strategy: "rescan-on-every-call", fingerprint: refresh, generated_at: new Date().toISOString() },
+      refresh: {
+        strategy: "rescan-on-every-call",
+        fingerprint: refresh,
+        context_unchanged: contextUnchanged,
+        generated_at: new Date().toISOString(),
+      },
+      context_reuse: {
+        static_context_omitted: contextUnchanged,
+        omitted_fields: contextUnchanged
+          ? ["effective_instructions", "builtin_instructions", "automatic_project_context", "model_instructions_file", "instruction_files"]
+          : [],
+      },
       selected_skill: selectedSkill,
       skill_matches: skillMatches.map(({ skill, score }) => ({ ...publicSkill(skill, (value) => this.displayPath(value, context)), score })),
       command_matches: commandMatches.map(({ command, score }) => ({ ...publicCommands(new Map([[command.name, command]]), (value) => this.displayPath(value, context))[0], score })),

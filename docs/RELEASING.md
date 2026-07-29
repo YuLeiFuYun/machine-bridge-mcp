@@ -44,12 +44,25 @@ npm version 3.0.0-beta.1 --no-git-tag-version
 
 The version hook synchronizes package metadata, Worker version, and browser-extension metadata.
 
+When MCP protocol behavior changes, an official conformance checkout may be run without adding the alpha runner to the package dependency graph:
+
+```sh
+MBM_OFFICIAL_CONFORMANCE_CHECKOUT=/path/to/modelcontextprotocol-conformance \
+MBM_OFFICIAL_CONFORMANCE_SCENARIOS=http-header-validation,caching,server-stateless \
+MBM_OFFICIAL_CONFORMANCE_TIMEOUT_MS=75000 \
+npm run worker:integration-test
+```
+
+The test-only loopback proxy injects the integration account's short-lived bearer token; it must never be enabled in production. Expected failures are check-scoped in `tests/mcp-conformance-baseline.yml` and may cover only intentionally absent capabilities. A new failure or stale baseline blocks release.
+
 Run the complete local gate and inspect the diff:
 
 ```sh
 npm run check
 npm audit --audit-level=high
 npm audit --omit=dev --audit-level=high
+npm audit signatures
+npm run sbom:test
 npm run worker:dry-run
 npm pack --dry-run
 ```
@@ -60,7 +73,7 @@ Generate the exact tarball:
 npm run release:candidate
 ```
 
-The candidate manifest records npm SHA-1/SHA-512 values and a promotion-content digest. Any packaged-file change invalidates the candidate.
+The candidate manifest records npm SHA-1/SHA-512 values and a promotion-content digest. Any packaged-file change invalidates the candidate. Every candidate start or activation recomputes the current digest and compares package identity before tarball verification, npm installation, Worker deployment, or service mutation; a stale but internally self-consistent tarball cannot be installed. Preparing or testing a candidate never authorizes npm publication; only the repository owner may invoke a publication command. An existing tag, GitHub Release, or npm version is immutable and must never be reused after source changes.
 
 ## 2. Owner activates the exact candidate
 
@@ -72,7 +85,7 @@ npm run release:candidate:activate -- --allow-worker-deploy
 
 The command:
 
-- verifies the exact pending tarball;
+- verifies that the pending manifest still matches the current packaged source, then verifies the exact pending tarball;
 - installs it under the owner-only ordinary Machine Bridge profile state root, separate from both the normal global installation and the machine-service control root;
 - acquires the machine-global service lock before the workspace startup lock and rejects a foreground or unverifiable daemon before changing the service manager;
 - stops only a verified existing service daemon;

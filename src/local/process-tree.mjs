@@ -4,7 +4,7 @@ import {
   processTreeOwnershipStillCurrent,
   refreshProcessTreeOwnership,
 } from "./process-tree-ownership.mjs";
-export { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership } from "./process-tree-ownership.mjs";
+export { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership } from "./process-tree-ownership.mjs";
 
 export const DEFAULT_PROCESS_TERMINATION_GRACE_MS = 2000;
 

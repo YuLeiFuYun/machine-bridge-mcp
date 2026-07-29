@@ -3,12 +3,32 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentContextManager, parseSkillMetadata } from "../src/local/agent-context.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
+import { capabilityFingerprint } from "../src/local/agent-context-projection.mjs";
 import { automaticPackageCommands, packageScriptCommand } from "../src/local/project-package.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-agent-context-"));
 const workspace = join(root, "workspace");
 const jobs = join(root, "jobs");
 const nested = join(workspace, "packages", "example");
+
+const fingerprintState = {
+  target: "/workspace/a",
+  targetDir: "/workspace/a",
+  scopeRoot: "/workspace",
+  configFiles: ["/workspace/.machine-bridge/agent.json"],
+  builtinInstructions: { source: "machine-bridge://defaults", scope: "builtin", bytes: 4, sha256: "a".repeat(64), precedence: -2, content: "base" },
+  automaticProjectContext: null,
+  modelInstructions: null,
+  instructions: [{ path: "/workspace/AGENTS.md", scope: "project", bytes: 4, sha256: "b".repeat(64), precedence: 1, content: "same" }],
+  commands: new Map([["check", { name: "check", description: "Check", argv: ["node", "check.mjs"], cwd: "/workspace", timeoutSeconds: 30, allowExtraArgs: false, source: "/workspace/package.json" }]]),
+};
+const fingerprintBase = capabilityFingerprint(fingerprintState, []);
+assert(fingerprintBase !== capabilityFingerprint({ ...fingerprintState, target: "/workspace/b", targetDir: "/workspace/b" }, []),
+  "capability fingerprint did not bind the target path");
+assert(fingerprintBase !== capabilityFingerprint({ ...fingerprintState, instructions: [{ ...fingerprintState.instructions[0], path: "/workspace/OTHER.md" }] }, []),
+  "capability fingerprint did not bind instruction provenance");
+assert(fingerprintBase !== capabilityFingerprint({ ...fingerprintState, commands: new Map([["check", { ...fingerprintState.commands.get("check"), cwd: "/workspace/subdir" }]]) }, []),
+  "capability fingerprint did not bind registered-command cwd");
 
 const windowsPackageCommand = packageScriptCommand("npm", "test", "win32", "cmd.exe");
 if (JSON.stringify(windowsPackageCommand) !== JSON.stringify(["cmd.exe", "/d", "/s", "/c", "npm run test"])) {
@@ -150,8 +170,27 @@ Follow the sample workflow.
     assert(resolved.selected_skill?.name === "sample-skill", "task capability resolver did not automatically select the relevant skill");
     const namedWithSpaces = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "Load and use the sample skill" });
     assert(namedWithSpaces.selected_skill?.name === "sample-skill", "task capability resolver did not match a hyphenated skill name written with spaces");
+    const metadataOnlySkill = await runtime.executeTool("resolve_task_capabilities", {
+      path: "packages/example", task: "Load and use the sample skill", include_selected_skill: false,
+    });
+    assert(metadataOnlySkill.selected_skill === null && metadataOnlySkill.execution_routing?.primary_route?.id === "guided-workflow",
+      "omitting selected-skill instructions incorrectly disabled the relevant skill route");
     assert(resolved.effective_instructions.includes("root project") && resolved.effective_instructions.includes("nested local"), "task capability resolver omitted effective instructions for a reused host session");
     assert(resolved.recommended_tools.includes("run_local_command"), "task capability resolver did not recommend the registered command surface");
+    const reusedContext = await runtime.executeTool("resolve_task_capabilities", {
+      path: "packages/example",
+      task: "Run the same repository workflow again",
+      known_refresh_fingerprint: resolved.refresh.fingerprint,
+    });
+    assert(reusedContext.refresh.context_unchanged === true && reusedContext.context_reuse.static_context_omitted === true,
+      "matching capability fingerprint did not enable conditional static-context reuse");
+    assert(!("effective_instructions" in reusedContext) && !("instruction_files" in reusedContext),
+      "unchanged static instructions were repeated despite a matching refresh fingerprint");
+    assert(Array.isArray(reusedContext.command_matches) && reusedContext.execution_routing?.routes?.length > 0,
+      "conditional context reuse incorrectly omitted task-specific command or execution routing");
+    await expectReject(() => runtime.executeTool("resolve_task_capabilities", {
+      path: "packages/example", task: "invalid fingerprint", known_refresh_fingerprint: "ABC",
+    }), "input schema");
     const chineseValidation = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "运行完整测试并检查代码质量" });
     assert(chineseValidation.command_matches.some((command) => command.name === "package.check"), "Chinese validation intent did not match the automatic package check command");
     assert(chineseValidation.recommended_tools.includes("run_local_command"), "Chinese validation intent did not recommend the registered command surface");

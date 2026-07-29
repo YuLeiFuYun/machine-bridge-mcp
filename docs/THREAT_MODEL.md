@@ -37,9 +37,16 @@ The hosted MCP client, its prompts, tools, extensions, and retrieved content are
 - OAuth state, PKCE, redirect URI, resource binding, and request size;
 - account status, account version, account role, trusted client binding, token expiry, and refresh-family state;
 - DPoP proof method, target URL, timestamp, unique identifier, access-token hash, and key thumbprint when DPoP is used;
-- MCP session state, protocol version, method shape, request IDs, cancellation, and allowed tool exposure.
+- modern per-request protocol metadata, valid positive `Accept` quality values, actual `/mcp` Origin, header/body consistency for version/method/name/declared primitive parameters, request IDs, role-visible tool exposure, raw argument schemas, and response-stream cancellation;
+- legacy initialization, signed session, explicit cancellation, and bounded replay state when the client selects MCP `2025-11-25`.
 
 A client registration is not authority. Authority begins only after successful account authorization binds the client to one account and role version.
+
+Capability discovery is also an authorization boundary. Task routing and application/browser metadata are built from the effective account/daemon policy intersection, not from the daemon ceiling. Route scores and fallbacks are advisory and cannot manufacture authority; direct Bash remains available only when the effective policy already exposes it. A restricted account must not learn hidden local application inventory or receive names of unavailable execution tools through the resolver.
+
+Mirrored MCP headers are an intermediary-routing boundary. The Worker compares every required modern header with the JSON-RPC body before authorization-dependent dispatch; a mismatch fails with `-32020` before the daemon can observe the call. Tool schemas are compiled from a bounded JSON Schema 2020-12 subset at startup and runtime traversal charges every array item and own object property to a fixed work budget. Open metadata/capability/subscription JSON also has a fixed structural-node/depth/key budget, and resource subscriptions are count/length bounded. Unsupported dialects or keywords fail closed, external network `$ref` values are not dereferenced, and validation diagnostics omit argument values and unbounded caller identifiers.
+
+Modern cancellation deliberately crosses the OAuth boundary only through an unguessable internal stream capability. The public Worker strips caller-provided control headers before the service binding, the cancellation request contains no bearer token or DPoP proof, and the Durable Object consumes the capability before OAuth only to cancel a currently indexed call. Guessing remains bounded by 256-bit randomness; a compromised service binding or Worker runtime is already inside this trust boundary.
 
 ### Worker to local daemon
 
@@ -113,6 +120,8 @@ Machine Bridge considers:
 The implementation aims to preserve these invariants:
 
 - unknown, malformed, stale, replayed, duplicated, unauthorized, and over-limit input is rejected;
+- an intermediary cannot authorize or route one modern method/name while the Worker executes another body; mirrored-header mismatch is rejected before dispatch;
+- modern request IDs are not global identities across clients sharing one bearer token, while legacy duplicate and cancellation domains remain bound to the signed session;
 - the stable account-role discovery catalog is not treated as execution authority; every call is intersected with the current end-to-end-ready daemon policy and fails closed when that authority is absent;
 - remote authority is the intersection of daemon policy and account role, never the union;
 - no approval record, token refresh, or local migration state can elevate a delegated role;

@@ -89,22 +89,22 @@ async function testToolExecutor() {
   const metrics = new RuntimeObservability({ now: () => 1000 });
   const registry = new CallRegistry({ maximum: 4 });
   const fullPolicy = { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true };
-  const gate = { policy: fullPolicy, assert(name) { if (name === "denied") throw new BridgeError("policy_denied", "denied"); } };
+  const gate = { policy: fullPolicy, assert(name) { if (name === "write_file") throw new BridgeError("policy_denied", "denied"); } };
   const accountAccessGate = {
     assert(role, name) { if (role !== "owner" || name === "account-denied") throw new BridgeError("policy_denied", "account denied"); },
     authority() { return { principal: { kind: "account", role: "owner" }, effectivePolicy: fullPolicy, owner: true }; },
   };
   const executor = new ToolExecutor({
     handlers: {
-      ok: async (args, context) => ({ value: args.value, call_id: context.callId }),
-      fail: async () => { throw new Error("raw implementation failure"); },
-      authority_denied: async () => ({ unexpected: true }),
+      read_file: async (args, context) => ({ value: args.path, call_id: context.callId }),
+      git_status: async () => { throw new Error("raw implementation failure"); },
+      exec_command: async () => ({ unexpected: true }),
     },
     policyGate: gate,
     accountAccessGate,
     operationAuthorizer: {
       async authorize(operation) {
-        if (operation.tool === "authority_denied") throw new BridgeError("authorization_denied", "request exceeds the account role ceiling");
+        if (operation.tool === "exec_command") throw new BridgeError("authorization_denied", "request exceeds the account role ceiling");
         return { allowed: true, source: "trusted-owner", category: "ordinary operation", scopes: [] };
       },
     },
@@ -113,12 +113,12 @@ async function testToolExecutor() {
     logger: { event(level, name, fields) { events.push({ level, name, fields }); } },
     safeMessage: () => "safe failure",
   });
-  const result = await executor.execute("ok", { value: 7 }, { callId: "ok-call", origin: "stdio" });
-  assert(result.value === 7 && result.call_id === "ok-call", "tool executor lost arguments or lifecycle context");
-  await expectReject(() => executor.execute("fail", {}, { callId: "fail-call", origin: "relay", authorization: { role: "owner" } }), "execution_failed", "safe failure");
-  await expectReject(() => executor.execute("denied", {}, { callId: "deny-call" }), "policy_denied", "denied");
+  const result = await executor.execute("read_file", { path: "fixture.txt" }, { callId: "ok-call", origin: "stdio" });
+  assert(result.value === "fixture.txt" && result.call_id === "ok-call", "tool executor lost arguments or lifecycle context");
+  await expectReject(() => executor.execute("git_status", {}, { callId: "fail-call", origin: "relay", authorization: { role: "owner" } }), "execution_failed", "safe failure");
+  await expectReject(() => executor.execute("write_file", { path: "denied.txt", content: "x" }, { callId: "deny-call" }), "policy_denied", "denied");
   const authorityError = await expectReject(
-    () => executor.execute("authority_denied", {}, { callId: "authority-call", origin: "relay", authorization: { role: "owner" } }),
+    () => executor.execute("exec_command", { command: "true" }, { callId: "authority-call", origin: "relay", authorization: { role: "owner" } }),
     "authorization_denied",
     "request exceeds the account role ceiling",
   );
@@ -147,12 +147,12 @@ async function testToolExecutorConcurrency() {
   const registry = new CallRegistry({ maximum: 4 });
   const executor = new ToolExecutor({
     handlers: {
-      blocked: async () => {
+      read_file: async () => {
         markStarted();
         await blocked;
         return "blocked-complete";
       },
-      fast: async () => "fast-complete",
+      git_status: async () => "fast-complete",
     },
     policyGate: { policy: { profile: 'full', origin: 'explicit', revision: 5, allowWrite: true, allowExec: true, execMode: 'shell', unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }, assert() {} },
     accountAccessGate: { assert() {}, authority(_authorization, policy) { return { principal: { kind: 'account', role: 'owner' }, effectivePolicy: policy, owner: true }; } },
@@ -161,11 +161,11 @@ async function testToolExecutorConcurrency() {
     logger: { event() {} },
   });
 
-  const first = executor.execute("blocked", {}, { callId: "concurrent-first", origin: "relay", authorization: { role: "owner" } });
+  const first = executor.execute("read_file", { path: "blocked.txt" }, { callId: "concurrent-first", origin: "relay", authorization: { role: "owner" } });
   await started;
   assert(registry.snapshot().active === 1, "blocked tool was not registered as active");
   const second = await Promise.race([
-    executor.execute("fast", {}, { callId: "concurrent-second", origin: "relay", authorization: { role: "owner" } }),
+    executor.execute("git_status", {}, { callId: "concurrent-second", origin: "relay", authorization: { role: "owner" } }),
     new Promise((_, reject) => { setTimeout(() => reject(new Error("independent tool call was serialized behind another call")), 250); }),
   ]);
   assert(second === "fast-complete", "concurrent tool returned the wrong result");

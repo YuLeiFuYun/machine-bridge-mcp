@@ -153,6 +153,13 @@ const candidateStartSource = readFileSync(join(root, "scripts", "start-release-c
 for (const required of ["verifyTarball", ".release-candidate", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", '"activate"', 'stdio: "inherit"']) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
 }
+const candidateSourceGuard = candidateStartSource.indexOf("assertCandidateMatchesCurrentSource(manifest");
+const candidateTarballVerification = candidateStartSource.indexOf("verifyTarball(tarball, manifest)");
+const candidateInstall = candidateStartSource.indexOf('"install",');
+if (candidateSourceGuard < 0 || candidateTarballVerification < 0 || candidateInstall < 0
+    || candidateSourceGuard > candidateTarballVerification || candidateSourceGuard > candidateInstall) {
+  throw new Error("candidate startup no longer rejects stale source before tarball verification or installation");
+}
 if (!candidateStartSource.includes("persistentActivationSpawnOptions")
     || (candidateStartSource.match(/killSignal: "SIGKILL"/g) || []).length !== 1) {
   throw new Error("candidate startup must hard-bound npm installation without externally killing the activation transaction");
@@ -183,6 +190,15 @@ for (const required of ["release-channels", "runtimes", "withFileTypes", "entry.
 if (!FULL_CHECK_TASKS.includes("release:acceptance:test")) throw new Error("complete check omits local release acceptance regression coverage");
 if (packageJson.scripts?.["privacy:history"] !== "node scripts/privacy-check.mjs --history") {
   throw new Error("package privacy history check is missing or drifted");
+}
+if (packageJson.scripts?.["sbom:test"] !== "node scripts/sbom-check.mjs"
+    || packageJson.scripts?.["sbom-check:test"] !== "node tests/sbom-check-test.mjs"
+    || !FULL_CHECK_TASKS.includes("sbom:test") || !FAST_CHECK_TASKS.includes("sbom-check:test")) {
+  throw new Error("SBOM generation or validation is missing from the release gates");
+}
+const sbomCheckSource = readFileSync(join(root, "scripts", "sbom-check.mjs"), "utf8");
+for (const required of ["npm_execpath", "--sbom-format", "cyclonedx", "CycloneDX 1.5", "SIGKILL", "MAX_SBOM_BYTES"]) {
+  if (!sbomCheckSource.includes(required)) throw new Error(`SBOM validation lost required boundary: ${required}`);
 }
 const ciSource = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
 if (!ciSource.includes("npm run privacy:history")) throw new Error("CI package audit no longer scans reachable Git history");

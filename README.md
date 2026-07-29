@@ -45,6 +45,19 @@ Local MCP client
 
 The complete component and trust-boundary diagram is in [docs/OVERVIEW.md](docs/OVERVIEW.md).
 
+## MCP protocol model
+
+Machine Bridge is a dual-era server with a modern core:
+
+- **MCP `2026-07-28` is primary.** Every request carries protocol version and client capabilities in `_meta`; HTTP requests also mirror the version, method, and applicable name/parameter values into validated headers. Clients use `server/discover`; no `initialize` handshake or MCP session is created.
+- **MCP `2025-11-25` is a compatibility adapter.** Legacy clients still use `initialize`, a signed `Mcp-Session-Id`, and the older resumable Streamable HTTP behavior.
+- **Modern HTTP streams are request-scoped and not resumable.** Closing the response stream cancels that request. `Last-Event-ID`, recovery GETs, and session-bound replay exist only in the legacy adapter.
+- **Transport identity is not conversation identity.** Modern stdio and HTTP processes/connections may interleave unrelated requests; state that spans calls must use an explicit tool, job, process-session, or resource identifier.
+
+The Worker validates the actual `/mcp` Origin, mirrored headers, role-filtered tool visibility, and raw arguments before routing, durable stream allocation, or daemon dispatch. Tool arguments use one bounded JSON Schema 2020-12 contract in both Worker and local runtime; validation has fixed schema and runtime-work budgets and never echoes rejected values. Modern stream cancellation uses a private random capability stripped from public requests and forwards no OAuth/DPoP credential.
+
+`resolve_task_capabilities` provides bounded, set-level route advice across registered commands, direct Bash/argv, process sessions, managed jobs, files/Git, browser, applications, resources, and diagnostics. It does not hide or disable tools: Bash through `exec_command` remains the first-class general escape hatch under a shell-capable effective policy. The versioned result is filtered by the authenticated account's effective authority, reports routing ambiguity and fallbacks, and accepts the previous `refresh.fingerprint` to omit unchanged static instructions while still recomputing task-specific matches. Route scores are deterministic relative ranks within one response, not probabilities or cross-version metrics.
+
 ## Requirements
 
 - Node.js 26 or newer
@@ -110,7 +123,7 @@ Use the printed endpoint in the hosted client:
 https://<worker>.<account>.workers.dev/mcp
 ```
 
-Remote readiness is end-to-end. A daemon becomes available only after a Worker probe traverses the same authenticated local dispatch and session-bound result path used by real tool calls. A replacement daemon is verified before it displaces a healthy incumbent.
+Remote readiness is end-to-end. A daemon becomes available only after a Worker probe traverses the same authenticated local dispatch and result-delivery path used by real tool calls. A replacement daemon is verified before it displaces a healthy incumbent.
 
 For account roles, OAuth lifecycle, supported callback behavior, and tenancy limits, read [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) and [docs/MULTI_ACCOUNT.md](docs/MULTI_ACCOUNT.md).
 

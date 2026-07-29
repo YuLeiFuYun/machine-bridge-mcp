@@ -15,6 +15,7 @@ import {
   proxyMcpEventStream, sanitizeBridgeRequest,
 } from "../src/worker/mcp-stream-proxy.ts";
 import { McpStreamChannel } from "../src/worker/mcp-stream-channel.ts";
+import { modernJsonRpcResponseStream } from "../src/worker/mcp-modern-stream.ts";
 import { respondWithoutDurableObject } from "../src/worker/worker-static-routes.ts";
 import { createThrottledEdgeLogger } from "../src/worker/worker-edge-log.ts";
 import {
@@ -22,12 +23,13 @@ import {
   outerWorkerErrorClass, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
 import { daemonToolTimeoutMs, remoteForegroundDefaultSeconds, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
-import { workspaceTools } from "../src/worker/tool-catalog.ts";
+import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
 import { WorkerObservability } from "../src/worker/observability.ts";
-import { searchParamsObject } from "../src/worker/http.ts";
+import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
+import { corsPreflight, searchParamsObject } from "../src/worker/http.ts";
 import {
   asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
   sessionInstructionText, textToolResult, validateProtocolVersionHeader,
@@ -117,7 +119,9 @@ await testAbortSignalCleanup();
 await testMcpStreamResponse();
 await testMcpStreamChannel();
 await testMcpStreamProxy();
+await testModernDirectStreamCancellation();
 testDaemonSocketIsolation();
+testWorkerRuntimeConfig();
 testRelayTimeoutContract();
 testWorkerPolicyParity();
 testWorkerErrors();
@@ -959,6 +963,272 @@ async function testMcpStreamProxy() {
   secondRetrySocket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 12, result: { recovered: true } }) });
   const retriedText = await retriedStream.text();
   assert(retryBridge.calls === 3 && retriedText.includes('"recovered":true'), "bounded subscription retry did not recover a transient close");
+
+  const modernCalls = [];
+  const modernKeptAlive = [];
+  let upstreamController;
+  const modernBridge = {
+    async fetch(request) {
+      modernCalls.push(request);
+      const mode = request.headers.get(MCP_STREAM_PROXY_MODE_HEADER);
+      if (mode === "modern-cancel") return new Response(null, { status: 202 });
+      assert(mode === "modern-direct", "modern proxy used a legacy descriptor mode");
+      const body = new ReadableStream({
+        start(controller) {
+          upstreamController = controller;
+          controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+        },
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    },
+  };
+  const modernProxy = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "list_dir",
+        authorization: "DPoP test-access-token",
+        dpop: "test-proof",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 90, method: "tools/call", params: {} }),
+    }),
+    bridge: modernBridge,
+    extraOrigins: "",
+    ctx: { waitUntil(promise) { modernKeptAlive.push(promise); } },
+  });
+  const modernReader = modernProxy.body.getReader();
+  assert(new TextDecoder().decode((await modernReader.read()).value) === ": connected\n\n",
+    "modern proxy omitted its direct initial frame");
+  await modernReader.cancel("test closed stream");
+  await Promise.allSettled(modernKeptAlive);
+  assert(modernCalls.length === 2
+    && modernCalls[0].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-direct"
+    && modernCalls[0].headers.get("authorization") === "DPoP test-access-token"
+    && modernCalls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-cancel"
+    && !modernCalls[1].headers.has("authorization")
+    && !modernCalls[1].headers.has("dpop"),
+  "modern proxy did not isolate its credential-free cancellation control");
+  const directId = modernCalls[0].headers.get(MCP_STREAM_PROXY_ID_HEADER);
+  assert(directId && modernCalls[1].headers.get(MCP_STREAM_PROXY_ID_HEADER) === directId,
+    "modern proxy cancellation did not preserve its stream-scoped identity");
+  assert(modernCalls.every((request) => !request.headers.has("Last-Event-ID")),
+    "modern proxy leaked legacy resumption headers");
+  try { upstreamController.close(); } catch { /* Cancellation already closed the mock stream. */ }
+
+  let jsonWaitUntilCalls = 0;
+  const jsonProxy = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/list",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 91, method: "tools/list", params: {} }),
+    }),
+    bridge: { async fetch() {
+      return new Response('{"jsonrpc":"2.0","id":91,"result":{}}', {
+        headers: { "content-type": "application/json" },
+      });
+    } },
+    extraOrigins: "",
+    ctx: { waitUntil() { jsonWaitUntilCalls += 1; } },
+  });
+  assert(await jsonProxy.text() === '{"jsonrpc":"2.0","id":91,"result":{}}' && jsonWaitUntilCalls === 0,
+    "modern proxy corrupted or treated an application/json response as SSE");
+
+  const errorCalls = [];
+  const errorKeptAlive = [];
+  let errorController;
+  const errorProxy = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "list_dir",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 92, method: "tools/call", params: {} }),
+    }),
+    bridge: { async fetch(request) {
+      errorCalls.push(request);
+      if (request.headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-cancel") return new Response(null, { status: 202 });
+      return new Response(new ReadableStream({
+        start(controller) {
+          errorController = controller;
+          controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    } },
+    extraOrigins: "",
+    ctx: { waitUntil(promise) { errorKeptAlive.push(promise); } },
+  });
+  const errorReader = errorProxy.body.getReader();
+  assert(new TextDecoder().decode((await errorReader.read()).value) === ": connected\n\n",
+    "modern error fixture omitted its initial frame");
+  errorController.error(new Error("upstream failed"));
+  await errorReader.read().catch(() => {});
+  await Promise.allSettled(errorKeptAlive);
+  assert(errorCalls.length === 2
+    && errorCalls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-cancel",
+  "modern upstream stream failure did not cancel its pending call");
+
+  const earlyAbortController = new AbortController();
+  const earlyAbortCalls = [];
+  const earlyAbortKeptAlive = [];
+  let resolveEarlyDirect;
+  let earlyInnerCancelled = 0;
+  const earlyDirect = new Promise((resolve) => { resolveEarlyDirect = resolve; });
+  const earlyProxyPromise = proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "list_dir",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 93, method: "tools/call", params: {} }),
+      signal: earlyAbortController.signal,
+    }),
+    bridge: { async fetch(request) {
+      earlyAbortCalls.push(request);
+      if (request.headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-cancel") return new Response(null, { status: 202 });
+      return await earlyDirect;
+    } },
+    extraOrigins: "",
+    ctx: { waitUntil(promise) { earlyAbortKeptAlive.push(promise); } },
+  });
+  await waitUntil(() => earlyAbortCalls.length === 1);
+  earlyAbortController.abort("closed before internal response");
+  resolveEarlyDirect(new Response(new ReadableStream({
+    start() {},
+    cancel() { earlyInnerCancelled += 1; },
+  }), { headers: { "content-type": "text/event-stream" } }));
+  const earlyProxy = await earlyProxyPromise;
+  await Promise.allSettled(earlyAbortKeptAlive);
+  assert(earlyAbortCalls.length === 2
+    && earlyAbortCalls[0].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-direct"
+    && earlyAbortCalls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-cancel"
+    && earlyAbortCalls[0].headers.get(MCP_STREAM_PROXY_ID_HEADER) === earlyAbortCalls[1].headers.get(MCP_STREAM_PROXY_ID_HEADER)
+    && earlyInnerCancelled === 1,
+  "modern proxy lost an abort or retained the internal response body before public SSE startup");
+  await earlyProxy.body?.cancel().catch(() => {});
+
+  const completedCalls = [];
+  const completedProxy = await proxyMcpEventStream({
+    request: modernProxyRequest(94),
+    bridge: { async fetch(request) {
+      completedCalls.push(request);
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: complete\n\n"));
+          controller.close();
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    } },
+    extraOrigins: "", ctx: { waitUntil() {} },
+  });
+  assert(await completedProxy.text() === "data: complete\n\n" && completedCalls.length === 1,
+    "modern proxy did not complete a healthy upstream SSE without cancellation");
+
+  const requestAbortController = new AbortController();
+  const requestAbortCalls = [];
+  const requestAbortKeptAlive = [];
+  let abortInnerCancelled = 0;
+  const requestAbortProxy = await proxyMcpEventStream({
+    request: modernProxyRequest(95, requestAbortController.signal),
+    bridge: { async fetch(request) {
+      requestAbortCalls.push(request);
+      if (request.headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-cancel") {
+        throw new Error("simulated cancellation control outage");
+      }
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode(": connected\n\n")); },
+        cancel() { abortInnerCancelled += 1; },
+      }), { headers: { "content-type": "text/event-stream" } });
+    } },
+    extraOrigins: "", ctx: { waitUntil(promise) { requestAbortKeptAlive.push(promise); } },
+  });
+  const requestAbortReader = requestAbortProxy.body.getReader();
+  await requestAbortReader.read();
+  requestAbortController.abort("network closed");
+  await Promise.allSettled(requestAbortKeptAlive);
+  assert(requestAbortCalls.length === 2 && abortInnerCancelled === 1,
+    "modern proxy request abort did not cancel the inner reader and attempt private cancellation exactly once");
+  await requestAbortReader.cancel().catch(() => {});
+
+  const rejectedAbortController = new AbortController();
+  const rejectedAbortCalls = [];
+  let rejectDirect;
+  const rejectedProxyPromise = proxyMcpEventStream({
+    request: modernProxyRequest(96, rejectedAbortController.signal),
+    bridge: { async fetch(request) {
+      rejectedAbortCalls.push(request);
+      if (request.headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-cancel") return new Response(null, { status: 202 });
+      return await new Promise((_resolve, reject) => { rejectDirect = reject; });
+    } },
+    extraOrigins: "", ctx: { waitUntil(promise) { requestAbortKeptAlive.push(promise); } },
+  });
+  await waitUntil(() => rejectedAbortCalls.length === 1);
+  rejectedAbortController.abort("closed during direct fetch");
+  rejectDirect(new Error("direct request aborted"));
+  await expectReject(rejectedProxyPromise, "direct request aborted");
+  await Promise.allSettled(requestAbortKeptAlive);
+  assert(rejectedAbortCalls.length === 2
+    && rejectedAbortCalls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "modern-cancel",
+  "modern proxy fetch rejection after public abort omitted private cancellation");
+
+}
+
+function modernProxyRequest(id, signal) {
+  return new Request("https://example.test/mcp", {
+    method: "POST", signal,
+    headers: {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "MCP-Protocol-Version": "2026-07-28",
+      "Mcp-Method": "tools/call",
+      "Mcp-Name": "list_dir",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: {} }),
+  });
+}
+
+async function testModernDirectStreamCancellation() {
+  let resolveResult;
+  const result = new Promise((resolve) => { resolveResult = resolve; });
+  let cancellations = 0;
+  const response = modernJsonRpcResponseStream(result, {
+    onCancel() { cancellations += 1; },
+    onError() { return { jsonrpc: "2.0", id: 1, error: { code: -32603, message: "Internal error" } }; },
+  });
+  const reader = response.body.getReader();
+  const initial = await reader.read();
+  assert(new TextDecoder().decode(initial.value) === ": connected\n\n",
+    "modern direct stream omitted its initial non-resumable frame");
+  await reader.cancel("client closed response");
+  await reader.cancel("duplicate close");
+  assert(cancellations === 1, "modern direct stream did not cancel exactly once");
+  resolveResult({ jsonrpc: "2.0", id: 1, result: { resultType: "complete" } });
+  await Promise.resolve();
+
+  const failed = modernJsonRpcResponseStream(Promise.reject(new Error("private failure details")), {
+    onCancel() {},
+    onError() { return { jsonrpc: "2.0", id: 2, error: { code: -32603, message: "Internal error" } }; },
+  });
+  const failureText = await failed.text();
+  assert(failureText.includes('"code":-32603') && failureText.includes('"message":"Internal error"')
+    && !failureText.includes("private failure details"),
+  "modern response stream did not surface a privacy-safe terminal internal error");
 }
 
 function testDaemonSocketIsolation() {
@@ -1002,6 +1272,13 @@ async function testAbortSignalCleanup() {
   assert(registry.snapshot().active === 0, "already-aborted request entered the pending registry");
 }
 
+function testWorkerRuntimeConfig() {
+  assert(workerBodyLimitBytes(undefined) === 8 * 1024 * 1024, "missing Worker body limit did not use the safe default");
+  assert(workerBodyLimitBytes("0") === 8 * 1024 * 1024, "zero Worker body limit bypassed the safe default");
+  assert(workerBodyLimitBytes("1048576") === 1024 * 1024, "valid Worker body limit was not preserved");
+  assert(workerBodyLimitBytes(String(32 * 1024 * 1024)) === 16 * 1024 * 1024, "Worker body limit exceeded the hard maximum");
+}
+
 function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
   assert(relayContract.streamHeartbeatMs === 10_000, "SSE heartbeat interval drifted from the idle-connection contract");
@@ -1034,6 +1311,14 @@ function testRelayTimeoutContract() {
       && rejected.details?.maximum_foreground_timeout_seconds === 85,
     `malformed remote foreground timeout ${String(requested)} omitted its strict pre-dispatch bounds`);
   }
+  const validArguments = validateWorkerToolArguments("read_file", { path: "fixture.txt" });
+  assert(validArguments.known && validArguments.valid, "Worker tool argument validator rejected a valid catalog call");
+  const invalidArguments = validateWorkerToolArguments("read_file", { path: "fixture.txt", unexpected: true });
+  assert(invalidArguments.known && !invalidArguments.valid
+    && invalidArguments.issues.some((issue) => issue.keyword === "additionalProperties"),
+  "Worker tool argument validator accepted an unknown field or lost its stable issue keyword");
+  assert(validateWorkerToolArguments("missing_tool", {}).known === false,
+    "Worker tool argument validator treated an unknown tool as a known schema");
   const configurableRemoteTools = workspaceTools.filter((tool) => tool.inputSchema?.properties?.timeout_seconds);
   for (const tool of configurableRemoteTools) {
     const timeout = tool.inputSchema.properties.timeout_seconds;
@@ -1083,6 +1368,14 @@ function testMcpJsonRpcProtocol() {
   assert(structured.structuredContent?.ok === true, "special MCP tool result lost structured content");
   const ordinary = textToolResult({ ok: true });
   assert(ordinary.structuredContent?.ok === true && ordinary.content[0].type === "text", "ordinary tool result lost text or structured content");
+  for (const value of [[1], "text", 0, false, null]) {
+    const projected = textToolResult(value);
+    assert(Object.hasOwn(projected, "structuredContent") && JSON.stringify(projected.structuredContent) === JSON.stringify(value),
+      `ordinary structuredContent lost JSON value ${JSON.stringify(value)}`);
+    const rich = textToolResult({ $mcp: { content: [{ type: "text", text: "ok" }], structuredContent: value } });
+    assert(Object.hasOwn(rich, "structuredContent") && JSON.stringify(rich.structuredContent) === JSON.stringify(value),
+      `rich structuredContent lost JSON value ${JSON.stringify(value)}`);
+  }
   assert(Object.keys(asObject(null)).length === 0, "non-object params were not normalized");
   assert(requiredString({ name: " read_file " }, "name") === "read_file", "required string was not normalized");
   expectThrow(() => requiredString({}, "name"), "non-empty string");
@@ -1319,6 +1612,49 @@ async function testWorkerStaticRoutes() {
   }), identity);
   assert(preflight?.status === 204, "CORS preflight must not depend on Durable Object state");
   assert(preflight.headers.get("access-control-allow-origin") === "https://chatgpt.com", "CORS preflight lost origin allowlist");
+
+  const undeclaredParameterHeader = respondWithoutDurableObject(new Request("https://example.test/mcp", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://chatgpt.com",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "authorization, mcp-param-secret",
+    },
+  }), identity);
+  assert(undeclaredParameterHeader?.status === 403, "CORS reflected an undeclared MCP parameter header");
+
+  const declaredParameterHeader = corsPreflight(new Request("https://example.test/mcp", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://chatgpt.com",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "authorization, Mcp-Param-Region",
+    },
+  }), "https://example.test", "", new Set(["mcp-param-region"]));
+  assert(declaredParameterHeader.status === 204
+    && declaredParameterHeader.headers.get("access-control-allow-headers")?.includes("mcp-param-region"),
+  "CORS rejected a schema-declared MCP parameter header");
+
+  const malformedParameterHeader = corsPreflight(new Request("https://example.test/mcp", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://chatgpt.com",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "authorization, invalid header",
+    },
+  }), "https://example.test", "");
+  assert(malformedParameterHeader.status === 400, "CORS accepted a malformed requested header name");
+
+  const excessiveNames = Array.from({ length: 65 }, (_, index) => `mcp-param-${index}`);
+  const excessiveParameterHeaders = corsPreflight(new Request("https://example.test/mcp", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://chatgpt.com",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": excessiveNames.join(","),
+    },
+  }), "https://example.test", "", new Set(excessiveNames));
+  assert(excessiveParameterHeaders.status === 400, "CORS accepted an excessive requested-header set");
 
   for (const path of ["/.well-known/mcp.json", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource/mcp"]) {
     const metadata = respondWithoutDurableObject(new Request(`https://example.test${path}`), identity);

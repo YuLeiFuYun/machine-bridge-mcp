@@ -1,4 +1,5 @@
 import { projectMcpResult } from "../shared/result-projection.mjs";
+import { MCP_LEGACY_PROTOCOL_VERSION, resultForProtocol } from "../shared/mcp-protocol.mjs";
 const JSONRPC_VERSION = "2.0";
 const MAX_SESSION_INSTRUCTION_BYTES = 3 * 1024 * 1024;
 
@@ -37,16 +38,21 @@ export function rpcError(id: JsonRpcId | undefined, code: number, message: strin
   return { jsonrpc: JSONRPC_VERSION, id: id ?? null, error };
 }
 
-export function textToolResult(value: unknown, isError = false): Record<string, unknown> {
+export function textToolResult(
+  value: unknown,
+  isError = false,
+  protocolVersion: string = MCP_LEGACY_PROTOCOL_VERSION,
+  serverInfo?: Record<string, unknown>,
+): Record<string, unknown> {
   const special = asObject(value).$mcp;
   if (special && typeof special === "object" && !Array.isArray(special)) {
     const specialObject = special as Record<string, unknown>;
     if (Array.isArray(specialObject.content)) {
       const result: Record<string, unknown> = { content: specialObject.content, isError };
-      if (specialObject.structuredContent && typeof specialObject.structuredContent === "object" && !Array.isArray(specialObject.structuredContent)) {
-        result.structuredContent = specialObject.structuredContent;
+      if (Object.prototype.hasOwnProperty.call(specialObject, "structuredContent")) {
+        result.structuredContent = structuredClone(specialObject.structuredContent);
       }
-      return result;
+      return resultForProtocol(protocolVersion, result, { serverInfo });
     }
   }
   const projection = projectMcpResult(value);
@@ -54,8 +60,8 @@ export function textToolResult(value: unknown, isError = false): Record<string, 
     content: [{ type: "text", text: projection.text }],
     isError,
   };
-  if (projection.structuredContent) result.structuredContent = projection.structuredContent;
-  return result;
+  if (projection.hasStructuredContent) result.structuredContent = structuredClone(projection.structuredContent);
+  return resultForProtocol(protocolVersion, result, { serverInfo });
 }
 
 export function asObject(value: unknown): Record<string, unknown> {

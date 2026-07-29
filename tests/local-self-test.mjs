@@ -952,7 +952,7 @@ async function cliSelfTest() {
   if (reviewNames.has("write_file") || reviewNames.has("run_process") || reviewNames.has("exec_command")) throw new Error("review profile exposes mutation tools");
   const agentNames = new Set(toolsForPolicy(agent).map((tool) => tool.name));
   if (!agentNames.has("apply_patch") || !agentNames.has("run_process") || !agentNames.has("start_job") || agentNames.has("exec_command")) throw new Error("agent profile tool inventory is incorrect");
-  if (MCP_PROTOCOL_VERSION !== "2025-11-25") throw new Error("MCP protocol version drifted");
+  if (MCP_PROTOCOL_VERSION !== "2026-07-28") throw new Error("primary MCP protocol version drifted");
 }
 
 function logSelfTest() {
@@ -1214,13 +1214,21 @@ async function shellSelfTest() {
   try {
     const childPidFile = join(treeRoot, "child.pid");
     const treeScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(() => {}, 1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);`;
-    const treeResult = await runExecutable(process.execPath, ["-e", treeScript, childPidFile], {
+    const treeExecution = runExecutable(process.execPath, ["-e", treeScript, childPidFile], {
       capture: true,
       allowFailure: true,
-      timeoutMs: 200,
+      timeoutMs: 5000,
     });
+    let treeResult;
+    let descendantPid;
+    try {
+      descendantPid = await waitForPidFile(childPidFile, 4000);
+      treeResult = await treeExecution;
+    } catch (error) {
+      await treeExecution.catch(() => {});
+      throw error;
+    }
     if (treeResult.code !== 124) throw new Error("shell process-tree timeout did not report timeout");
-    const descendantPid = Number((await readFile(childPidFile, "utf8")).trim());
     const exited = await waitForPidExit(descendantPid, 8000);
     if (!exited) throw new Error("shell timeout left a descendant process running");
   } finally {
@@ -1236,7 +1244,9 @@ async function workerSourceSelfTest() {
     "daemon-sockets.ts", "daemon-socket-attachment.ts", "runtime-alarm.ts", "runtime-alarm-storage.ts",
     "mcp-resumption.ts", "mcp-resumption-records.ts", "mcp-pending-call-store.ts", "mcp-pending-call-records.ts",
     "mcp-pending-call-expiry.ts", "mcp-pending-call-storage.ts", "mcp-pending-call-inspection.ts",
-    "pending-admission.ts", "durable-stream-calls.ts", "mcp-jsonrpc.ts", "websocket-protocol.ts",
+    "pending-admission.ts", "durable-stream-calls.ts", "mcp-jsonrpc.ts", "mcp-http-contract.ts",
+    "mcp-legacy-dispatch.ts", "mcp-modern-controller.ts", "mcp-modern-stream.ts", "mcp-modern-proxy.ts",
+    "worker-mcp-config.ts", "mcp-stream-proxy.ts", "mcp-stream-proxy-contract.ts", "websocket-protocol.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
   for (const module of ["mcp-jsonrpc", "websocket-protocol"]) {
@@ -1288,7 +1298,8 @@ async function workerSourceSelfTest() {
     "daemon_hello_timeout",
     "daemon_ready_timeout",
     "replaced by verified daemon",
-    "serverMetadata.protocolVersion",
+    "serverMetadata.modernProtocolVersions",
+    "serverMetadata.legacyProtocolVersions",
     "notifications/cancelled",
     "structuredContent",
     "../shared/tool-catalog.json",
@@ -1303,6 +1314,20 @@ async function workerSourceSelfTest() {
   ]) {
     if (combinedSource.includes(removed)) throw new Error(`obsolete or public-sensitive Worker route remains: ${removed}`);
   }
+}
+
+async function waitForPidFile(file, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number((await readFile(file, "utf8")).trim());
+      if (Number.isSafeInteger(pid) && pid > 0) return pid;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
+  }
+  throw new Error("shell process-tree fixture did not publish a valid descendant PID before its timeout");
 }
 
 async function waitForPidExit(pid, timeoutMs) {

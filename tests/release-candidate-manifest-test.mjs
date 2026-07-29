@@ -1,4 +1,4 @@
-import { validateCandidateManifest } from "../scripts/release-candidate-manifest.mjs";
+import { assertCandidateMatchesCurrentSource, validateCandidateManifest } from "../scripts/release-candidate-manifest.mjs";
 const value = {
   schema_version: 1,
   result: "pending",
@@ -16,6 +16,15 @@ expectThrow(() => validateCandidateManifest({ ...value, local_path: "/Users/exam
 expectThrow(() => validateCandidateManifest({ ...value, filename: "other.tgz" }), "filename is invalid");
 expectThrow(() => validateCandidateManifest({ ...value, package_version: "3.0.0-preview.1" }), "unsupported prerelease channel");
 expectThrow(() => validateCandidateManifest({ ...value, promotion_content_sha256: "" }), "promotion digest");
+assertCandidateMatchesCurrentSource(normalized, {
+  packageName: value.package_name, packageVersion: value.package_version, promotionDigest: value.promotion_content_sha256,
+});
+expectThrow(() => assertCandidateMatchesCurrentSource(normalized, {
+  packageName: value.package_name, packageVersion: "3.0.0-beta.2", promotionDigest: value.promotion_content_sha256,
+}), "package identity");
+expectThrow(() => assertCandidateMatchesCurrentSource(normalized, {
+  packageName: value.package_name, packageVersion: value.package_version, promotionDigest: "c".repeat(64),
+}), "promotion content digest");
 console.log("release candidate manifest schema test ok");
 function expectThrow(callback, expected) { try { callback(); } catch (error) { if (String(error?.message || error).includes(expected)) return; throw error; } throw new Error(`expected throw containing: ${expected}`); }
 function assert(condition, message) { if (!condition) throw new Error(message); }

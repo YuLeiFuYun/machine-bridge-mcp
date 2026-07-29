@@ -16,12 +16,16 @@ This document records project-wide decisions that must survive individual fixes,
 10. **Exclusive claims are complete before visible.** Never create a final lock/PID claim and then populate it. Use the shared exclusive-file primitive, ownership tokens, process-start identity, and snapshot-checked reclamation.
 11. **Service and state removal are fail-closed state machines.** Stop the platform provider and every verified daemon before removing definitions or recursive state. An unreadable lock, failed stop, active job, or ambiguous identity retains state for diagnosis.
 12. **Read failure is not empty state.** Permission, type, symbolic-link, size, encoding, and I/O errors must propagate. Corrupt backup/reconstruction applies only after a successful read proves that JSON content is invalid.
-13. **The public protocol contract is current-only.** Shared metadata advertises only the current MCP protocol version. Compatibility code for obsolete protocol dates, lock formats, or state schemas is not retained in the final runtime; upgrade safety comes from explicit version negotiation, fail-closed state validation, and bounded operator convergence.
+13. **Protocol eras are explicit and non-overlapping.** Shared metadata advertises modern MCP `2026-07-28` as primary and legacy `2025-11-25` only through a named compatibility adapter. Per-request modern metadata must never enter the legacy session/replay machinery, and legacy state must never be inferred for a modern request. Other obsolete protocol dates, lock formats, and state schemas are not retained.
 14. **Security analysis is a failing gate.** CodeQL or Scorecard execution alone is not success. Generated SARIF must contain no unaccepted result, and missing rule metadata fails closed rather than being interpreted as non-security. An intentional or externally constrained finding requires an exact rule/path record with a substantive rationale and an expiry date.
 15. **Ambiguous health is not permission to repeat a remote write.** A successful Wrangler deployment is recorded before secondary health verification. Timeout, proxy, TLS, network, and temporary service failures preserve the deployment fingerprint and fail for diagnosis; only bounded evidence of a stale identity/version permits ordinary automatic same-name redeployment. During owner-authorized candidate activation, an explicit cryptographic device-authentication rejection after current-version health is separate positive evidence that deployment secrets did not converge; it permits one same-name redeployment with the unchanged selected identity, never rotation or resource renaming. Changing the Worker name remains an explicit remote-resource transition, not a retry strategy.
-16. **Execution continuity and delivery continuity are separate proof obligations.** Keeping work alive after a client transport closes is insufficient unless the same authenticated principal can recover a terminal result or a durable handle. Fresh requests and replay endpoints must remain separate so recovery cannot accidentally duplicate a non-idempotent operation.
+16. **Execution continuity and delivery continuity are separate proof obligations.** Legacy transport-surviving work requires authenticated recovery or a durable handle, and fresh requests must remain separate from replay. Modern request-scoped HTTP work instead treats stream closure as cancellation and must not silently continue or enter the legacy replay store.
 17. **Remote compound commands are not persistence evidence.** When a remote edit and a long test share one relay call, a transport interruption can obscure whether the edit completed. High-impact writes must be followed by an independent read of stable anchors or a Git diff before tests and conclusions rely on them.
-18. **Durable state owners do not retain cross-event terminal Promises or depend on JavaScript timers as durable ownership.** A Durable Object that must accept cancellation, status, recovery, or hibernation cannot retain the public SSE response, an internal request waiting for completion, or an unresolved Promise owned by the initiating fetch event. The outer Worker owns streaming. Stream initiation transactionally persists the stream plus daemon-call ownership, connection generation, operation deadline, reconnect deadline, request correlation, and bounded result-transform metadata before sending work. Later WebSocket, cancellation, timeout, send-failure, or reconnect-expiry events converge through one guarded terminal write. Durable Object alarms and compensating event-entry sweeps own cross-event deadlines; JavaScript timers remain only for bounded JSON-response calls. Descriptor requests remain short; terminal delivery uses one authenticated hibernatable WebSocket subscription. Both are admitted only on the internal service-binding path and are unreachable through caller-supplied internal headers.
+18. **Durable state owners do not retain cross-event terminal Promises or depend on JavaScript timers as durable ownership.** Legacy recoverable stream initiation validates the call, then transactionally persists stream and daemon-call ownership before dispatch; later events converge through one guarded terminal write, with alarms and event-entry sweeps owning deadlines. Its descriptor and hibernatable subscription paths are internal-only. Modern streams are different: one Durable Object fetch owns the direct response, the outer Worker keeps it observable with bounded SSE comments, and a random private capability indexes only the already-active pending call. Public control headers are stripped, cancellation carries no OAuth/DPoP credential, and modern code must never add prepare/subscribe descriptors, terminal-result retention, or a cross-event Promise registry.
+19. **Validation cost is part of the input contract.** Schema compilation and runtime validation have independent depth/node/pattern/issue/work budgets. Every traversed array item and own object property consumes work before recursive validation; code must not allocate an unbounded key/value inventory and only then check limits.
+20. **A pending release candidate is valid only against the current packaged source.** Candidate start/activation must compare package identity and promotion digest before tarball verification, installation, deployment, or service mutation. Tarball-to-manifest integrity alone is insufficient after later edits.
+21. **Capability routing advises; effective policy authorizes.** The resolver may shortlist tool sets, report ambiguity, and suggest fallbacks, but it must neither hide an allowed escape hatch nor recommend a tool outside the request's effective account/daemon intersection. Canonical full continues to expose direct Bash. A routing fallback is not a safety-policy bypass.
+22. **Capability fingerprints reduce repetition, not freshness checks.** A matching client-supplied fingerprint may omit unchanged static instructions, but task-specific ranking, application discovery, and route computation must still run. The fingerprint is not conversation identity, authorization, or a cached execution result.
 
 A proposed change that conflicts with an invariant requires an explicit owner decision and corresponding documentation update. It must not be hidden inside an unrelated refactor.
 
@@ -76,6 +80,23 @@ Rules:
 - New work should not increase an already broad orchestration module when the behavior has an independent lifecycle or test surface. Extract the domain first.
 
 `runtime.mjs` owns local tool semantics. `relay-connection.mjs` owns authenticated relay connection lifecycle. The CLI orchestrates them; it must not become the second implementation of either.
+
+## MCP and tool-schema contract
+
+MCP protocol-era selection is an adapter concern. Domain execution must not depend on connection history, an HTTP socket, or a process as conversation identity. Modern requests are interpreted solely from their per-request metadata; legacy session state must stay in legacy modules and may not leak into modern request keys, cancellation, caching, or result framing.
+
+The shared tool catalog is executable schema:
+
+- absent `$schema` means JSON Schema 2020-12;
+- only the explicitly implemented bounded keyword set may be used;
+- unsupported dialects/keywords fail process/module initialization rather than being ignored;
+- external `$ref` values are rejected and never fetched;
+- schema depth, total nodes, regular-expression length, and returned issue count are bounded;
+- Worker validation occurs before daemon dispatch, and local validation remains defense in depth for every transport;
+- validation errors contain paths and constraints, never argument values;
+- a schema or validation change requires direct validator tests plus Worker and stdio integration when observable protocol behavior changes.
+
+`structuredContent` is arbitrary JSON, not object-only. Code must distinguish absence from the valid value `null`; truthiness is not a presence check for structured protocol fields.
 
 ## Logging contract
 
@@ -153,7 +174,7 @@ The required matrix includes:
 - stdio JSON-RPC integration;
 - Worker OAuth/WebSocket/MCP integration;
 - managed-job integrity, recovery, cancellation, cleanup, and redaction;
-- dependency audit, registry signatures/attestations, SBOM, and Worker dry run.
+- dependency audit, registry signatures/attestations, the first-party `sbom:test` CycloneDX identity/graph/privacy check, and Worker dry run.
 
 Cross-platform tests must not depend on shell syntax, case-sensitive Windows paths, Unix-only executable shims, or timing races when a deterministic scheduler can be injected. Local success cannot substitute for the required Linux/macOS/Windows push CI result used by the release gate.
 

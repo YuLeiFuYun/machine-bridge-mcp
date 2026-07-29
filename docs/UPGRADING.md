@@ -67,6 +67,22 @@ Legacy version 2 lease state may be listed, revoked, or cleared for cleanup, but
 
 `ACCOUNT_ADMIN_SECRET` is deleted from local state and is no longer deployed to the Worker. Account and OAuth-client administration uses the same root-certified ephemeral session established for daemon startup or an independently authorized local administration command.
 
+## Version 3.0.0-beta.25 MCP 2026-07-28 transition
+
+Beta.25 makes MCP `2026-07-28` primary while retaining MCP `2025-11-25` as a compatibility adapter.
+
+Modern clients must:
+
+- send `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` in every request `_meta`;
+- include both `application/json` and `text/event-stream` in HTTP `Accept` and the required `MCP-Protocol-Version`, `Mcp-Method`, and applicable `Mcp-Name`/`Mcp-Param-*` headers;
+- use `server/discover` instead of `initialize`;
+- treat each HTTP response stream as request-scoped and cancelled when closed;
+- not use `Mcp-Session-Id`, recovery GET, SSE event IDs, or `Last-Event-ID`.
+
+Legacy MCP `2025-11-25` clients may continue to initialize and use the signed-session resumable path. Reconnect modern clients by rediscovering and issuing fresh requests; reconnect legacy clients by reinitializing. Existing OAuth accounts, daemon identity, service state, managed jobs, resources, and browser pairing do not require migration solely because of the protocol change.
+
+The tool catalog is now enforced as bounded JSON Schema 2020-12 at both Worker and local runtime boundaries. Clients that previously sent unknown fields, wrong scalar types, fractional integer values, or out-of-range values will receive `-32602` before side effects rather than handler-specific fallback behavior. Fix the request; do not retry unchanged.
+
 ## Version 3.0.0-beta.24 candidate-activation convergence
 
 Beta.23 is blocked and must not be accepted, published, or promoted. Owner-machine activation proved that a Worker could report the expected version and pass health verification while rejecting the candidate daemon before WebSocket admission because the active device-authentication material had not converged. The failed transaction then restarted an older service definition that could not authenticate to the already advanced Worker.

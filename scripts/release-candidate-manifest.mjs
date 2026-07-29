@@ -38,3 +38,15 @@ export function validateCandidateManifest(value, expected = {}) {
     prepared_at: new Date(preparedAt).toISOString(),
   });
 }
+
+export function assertCandidateMatchesCurrentSource(manifest, current) {
+  const packageName = String(current?.packageName || "");
+  const packageVersion = String(current?.packageVersion || "");
+  const promotionDigest = String(current?.promotionDigest || "");
+  if (manifest.package_name !== packageName || manifest.package_version !== packageVersion) {
+    throw new Error("release candidate is stale: package identity no longer matches the current source");
+  }
+  if (!/^[0-9a-f]{64}$/.test(promotionDigest) || manifest.promotion_content_sha256 !== promotionDigest) {
+    throw new Error("release candidate is stale: promotion content digest no longer matches the current source");
+  }
+}

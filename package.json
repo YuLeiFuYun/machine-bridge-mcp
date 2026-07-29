@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.24",
+  "version": "3.0.0-beta.25",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -56,6 +56,7 @@
     "release:backfill": "node scripts/github-release.mjs --backfill",
     "stdio:integration-test": "node tests/stdio-integration-test.mjs",
     "catalog:test": "node tests/catalog-test.mjs",
+    "tool-arguments:test": "node tests/tool-argument-validation-test.mjs",
     "managed-jobs:test": "node tests/managed-jobs-test.mjs",
     "ssh-key:test": "node tests/ssh-key-test.mjs",
     "full-access:test": "node tests/full-access-test.mjs",
@@ -100,6 +101,7 @@
     "policy-docs:check": "node scripts/generate-policy-reference.mjs --check",
     "coverage:test": "node scripts/coverage-check.mjs",
     "capability-ranking:test": "node tests/capability-ranking-test.mjs",
+    "execution-routing:test": "node tests/execution-routing-test.mjs",
     "lifecycle:test": "node tests/lifecycle-test.mjs",
     "runtime-handlers:test": "node tests/runtime-handler-matrix-test.mjs",
     "cli-entrypoint:test": "node tests/cli-entrypoint-test.mjs",
@@ -164,12 +166,18 @@
     "candidate-runtime-store:test": "node tests/candidate-runtime-store-test.mjs",
     "service-restart:test": "node tests/service-restart-handoff-test.mjs",
     "browser-identity:test": "node tests/browser-extension-identity-test.mjs",
-    "mcp-resumption:test": "node tests/mcp-resumption-test.mjs"
+    "mcp-resumption:test": "node tests/mcp-resumption-test.mjs",
+    "mcp-protocol:test": "node tests/mcp-protocol-test.mjs",
+    "mcp-modern-controller:test": "node tests/mcp-modern-controller-test.mjs",
+    "mcp:conformance": "node scripts/official-mcp-conformance.mjs",
+    "mcp:conformance:test": "node tests/official-mcp-conformance-test.mjs",
+    "sbom-check:test": "node tests/sbom-check-test.mjs",
+    "sbom:test": "node scripts/sbom-check.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
     "proxy-from-env": "2.1.0",
-    "wrangler": "4.114.0",
+    "wrangler": "4.115.0",
     "ws": "8.21.1"
   },
   "devDependencies": {

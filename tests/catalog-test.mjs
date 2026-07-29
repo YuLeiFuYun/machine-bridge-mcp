@@ -5,14 +5,21 @@ import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
 assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
-assert(metadata.protocolVersion === "2025-11-25", "shared protocol version is invalid");
-assert(JSON.stringify(metadata.supportedProtocolVersions) === JSON.stringify([metadata.protocolVersion]), "v1 must expose only the current MCP protocol version");
+assert(metadata.protocolVersion === "2026-07-28", "shared primary protocol version is invalid");
+assert(JSON.stringify(metadata.modernProtocolVersions) === JSON.stringify(["2026-07-28"]), "modern protocol versions are invalid");
+assert(JSON.stringify(metadata.legacyProtocolVersions) === JSON.stringify(["2025-11-25"]), "legacy protocol versions are invalid");
+assert(JSON.stringify(metadata.supportedProtocolVersions) === JSON.stringify([...metadata.modernProtocolVersions, ...metadata.legacyProtocolVersions]), "dual-era protocol inventory is inconsistent");
 assert(Array.isArray(metadata.instructions) && metadata.instructions.length >= 4, "shared server instructions are missing");
 assert(metadata.instructions.some((line) => line.includes("never use a hosted GitHub connector or ChatGPT GitHub plugin") && line.includes("stop rather than substitute")), "shared initialization omitted the fail-closed local GitHub control-plane rule");
 assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
 const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
 const workerCatalogSource = await readFile(new URL("../src/worker/tool-catalog.ts", import.meta.url), "utf8");
-assert(workerSource.includes('server-metadata.json'), "Worker does not import shared server metadata");
+const workerMcpConfigSource = await readFile(new URL("../src/worker/worker-mcp-config.ts", import.meta.url), "utf8");
+const workerMetadataSource = await readFile(new URL("../src/worker/worker-metadata.ts", import.meta.url), "utf8");
+assert(workerSource.includes('./worker-mcp-config.ts'), "Worker entrypoint bypasses the MCP configuration boundary");
+assert(workerMcpConfigSource.includes('../shared/server-metadata.json')
+  && workerMetadataSource.includes('../shared/server-metadata.json'),
+"Worker MCP and discovery metadata do not derive from shared server metadata");
 assert(!workerSource.includes("const MCP_INSTRUCTIONS = ["), "Worker retains a second hand-maintained instruction catalog");
 assert(!workerSource.includes('const MCP_PROTOCOL_VERSION = "'), "Worker retains a second hand-maintained protocol version");
 
@@ -54,6 +61,16 @@ const result = toolResult({ ok: true, nested: { value: 1 } });
 assert(result.isError === false, "successful tool result was marked as an error");
 assert(result.structuredContent?.nested?.value === 1, "structuredContent was not preserved");
 assert(JSON.parse(result.content[0].text).nested.value === 1, "text and structured tool content diverged");
+for (const value of [[1, 2], "text", 7, false, null]) {
+  const projected = toolResult(value);
+  assert(Object.hasOwn(projected, "structuredContent"), `structuredContent presence was lost for ${JSON.stringify(value)}`);
+  assert(JSON.stringify(projected.structuredContent) === JSON.stringify(value), `structuredContent value was lost for ${JSON.stringify(value)}`);
+}
+for (const value of [["array"], "text", 0, false, null]) {
+  const projected = toolResult({ $mcp: { content: [{ type: "text", text: "ok" }], structuredContent: value } });
+  assert(Object.hasOwn(projected, "structuredContent"), `special structuredContent presence was lost for ${JSON.stringify(value)}`);
+  assert(JSON.stringify(projected.structuredContent) === JSON.stringify(value), `special structuredContent value was lost for ${JSON.stringify(value)}`);
+}
 
 assert(workerSource.includes('./tool-catalog'), "Worker entrypoint does not use the catalog boundary");
 assert(workerCatalogSource.includes('../shared/tool-catalog.json'), "Worker catalog boundary does not import the shared tool catalog");

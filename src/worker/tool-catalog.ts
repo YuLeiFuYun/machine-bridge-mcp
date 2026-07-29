@@ -1,4 +1,6 @@
 import toolCatalog from "../shared/tool-catalog.json" with { type: "json" };
+import { compileToolArgumentValidators } from "../shared/tool-argument-validation.mjs";
+import { toolParameterHeaderNames } from "./mcp-http-contract.ts";
 import {
   isConfigurableForegroundTool,
   remoteForegroundDefaultSeconds,
@@ -12,6 +14,14 @@ const allTools = toolCatalog as WorkerToolDefinition[];
 
 export const serverInfoTool = publicTool(allTools.find((tool) => tool.name === "server_info")!);
 export const workspaceTools = Object.freeze(allTools.filter((tool) => tool.name !== "server_info").map(remotePublicTool));
+
+const publicTools = [serverInfoTool, ...workspaceTools];
+const workerToolArguments = compileToolArgumentValidators(publicTools);
+export const workerToolParameterHeaders = toolParameterHeaderNames(publicTools);
+
+export function validateWorkerToolArguments(name: unknown, value: unknown) {
+  return workerToolArguments.validate(name, value);
+}
 
 function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
   const definition = publicTool(tool);

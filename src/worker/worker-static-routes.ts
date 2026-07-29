@@ -1,4 +1,5 @@
-import { applyCors, baseUrl, corsPreflight, json, methodNotAllowed } from "./http.ts";
+import { applyCors, baseUrl, corsPreflight, json, mcpOriginRejection, methodNotAllowed } from "./http.ts";
+import { workerToolParameterHeaders } from "./tool-catalog.ts";
 import {
   authorizationServerMetadata, mcpMetadata, protectedResourceMetadata, type WorkerIdentity,
 } from "./worker-metadata.ts";
@@ -25,7 +26,11 @@ export function respondWithoutDurableObject(request: Request, identity: WorkerId
   const url = new URL(request.url);
   const base = baseUrl(request);
   const path = url.pathname;
-  if (request.method === "OPTIONS" && request.headers.has("Origin")) return corsPreflight(request, base, extraOrigins);
+  if (request.method === "OPTIONS" && request.headers.has("Origin")) return corsPreflight(request, base, extraOrigins, workerToolParameterHeaders);
+  if (path === "/mcp") {
+    const originRejection = mcpOriginRejection(request, base, extraOrigins);
+    if (originRejection) return originRejection;
+  }
   const statefulMethods = STATEFUL_METHODS.get(path);
   if (statefulMethods) {
     const allowed = new Set(statefulMethods.split(",").map((method) => method.trim()));
