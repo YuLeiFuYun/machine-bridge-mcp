@@ -28,6 +28,12 @@
     "src/local/agent-context-projection.mjs",
     "src/local/agent-skill-discovery.mjs",
     "src/local/agent-text-file.mjs",
-    "src/local/managed-job-projection.mjs"
+    "src/local/managed-job-projection.mjs",
+    "src/local/child-process-settlement.mjs",
+    "src/local/system-network-route.mjs",
+    "src/local/process-tree-ownership.mjs",
+    "src/local/service-owner.mjs",
+    "src/local/service-runtime.mjs",
+    "src/local/windows-service-convergence.mjs"
   ]
 }

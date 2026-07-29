@@ -21,7 +21,8 @@ import {
   admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
   outerWorkerErrorClass, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
-import { daemonToolTimeoutMs } from "../src/worker/tool-timeout.ts";
+import { daemonToolTimeoutMs, remoteForegroundDefaultSeconds, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
+import { workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
@@ -1010,8 +1011,41 @@ function testRelayTimeoutContract() {
   assert(daemonToolTimeoutMs("session_bootstrap", {}) === 10_000, "bootstrap timeout incorrectly inherited the reconnect budget");
   assert(daemonToolTimeoutMs("read_file", {}) === 60_000, "ordinary tool timeout was extended without a disconnect");
   assert(relayContract.maximumInteractiveExecutionTimeoutMs === 85_000, "interactive relay deadline lost its host-safe bound");
-  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 120 }) === 90_000, "configurable tool timeout exceeded the interactive relay budget");
-  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 600 }) === 90_000, "maximum configurable execution timeout bypassed the interactive relay budget");
+  assert(REMOTE_FOREGROUND_TIMEOUT_SECONDS === 85, "remote foreground schema limit drifted from the relay execution budget");
+  assert(daemonToolTimeoutMs("exec_command", {}) === 65_000, "remote configurable tool default lost its delivery margin");
+  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 85 }) === 90_000, "maximum accepted foreground timeout lost its delivery margin");
+  for (const requested of [86, 120, 600]) {
+    let rejected;
+    try { daemonToolTimeoutMs("exec_command", { timeout_seconds: requested }); }
+    catch (error) { rejected = error; }
+    assert(rejected instanceof WorkerToolError && rejected.code === "invalid_request" && rejected.retryable === false,
+      `remote foreground timeout ${requested} was not rejected before dispatch`);
+    assert(rejected.details?.side_effects_started === false && rejected.details?.maximum_foreground_timeout_seconds === 85,
+      `remote foreground timeout ${requested} omitted the no-side-effect contract`);
+  }
+  for (const requested of [0, -1, 1.5, "60", null, {}, Number.NaN]) {
+    let rejected;
+    try { daemonToolTimeoutMs("exec_command", { timeout_seconds: requested }); }
+    catch (error) { rejected = error; }
+    assert(rejected instanceof WorkerToolError && rejected.code === "invalid_request" && rejected.retryable === false,
+      `malformed remote foreground timeout ${String(requested)} was not rejected before dispatch`);
+    assert(rejected.details?.side_effects_started === false
+      && rejected.details?.minimum_foreground_timeout_seconds === 1
+      && rejected.details?.maximum_foreground_timeout_seconds === 85,
+    `malformed remote foreground timeout ${String(requested)} omitted its strict pre-dispatch bounds`);
+  }
+  const configurableRemoteTools = workspaceTools.filter((tool) => tool.inputSchema?.properties?.timeout_seconds);
+  for (const tool of configurableRemoteTools) {
+    const timeout = tool.inputSchema.properties.timeout_seconds;
+    const expectedDefault = remoteForegroundDefaultSeconds(tool.name);
+    assert(timeout.maximum === 85 && timeout.default === expectedDefault,
+      `remote ${tool.name} schema drifted from its hosted timeout contract`);
+    assert(daemonToolTimeoutMs(tool.name, {}) === expectedDefault * 1000 + 5000,
+      `remote ${tool.name} runtime default differs from tools/list`);
+  }
+  const remoteExec = workspaceTools.find((tool) => tool.name === "exec_command");
+  assert(String(remoteExec?.description || "").includes("managed jobs"),
+    "remote exec_command description omitted the durable execution path");
   assert(relayContract.maximumRelayToolTimeoutMs === 610_000, "local relay envelope ceiling drifted from the Worker contract");
 }
 

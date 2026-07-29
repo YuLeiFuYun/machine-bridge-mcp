@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.22",
+  "version": "3.0.0-beta.24",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -173,10 +173,10 @@
     "ws": "8.21.1"
   },
   "devDependencies": {
-    "@types/node": "26.1.1",
-    "eslint": "10.7.0",
+    "@types/node": "26.1.2",
+    "eslint": "10.8.0",
     "fast-check": "4.9.0",
-    "globals": "17.7.0",
+    "globals": "17.8.0",
     "typescript": "7.0.2"
   },
   "keywords": [

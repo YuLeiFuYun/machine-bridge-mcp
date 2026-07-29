@@ -153,6 +153,29 @@ const candidateStartSource = readFileSync(join(root, "scripts", "start-release-c
 for (const required of ["verifyTarball", ".release-candidate", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", '"activate"', 'stdio: "inherit"']) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
 }
+if (!candidateStartSource.includes("persistentActivationSpawnOptions")
+    || (candidateStartSource.match(/killSignal: "SIGKILL"/g) || []).length !== 1) {
+  throw new Error("candidate startup must hard-bound npm installation without externally killing the activation transaction");
+}
+const publishedPrereleaseInstallSource = readFileSync(join(root, "scripts", "install-published-prerelease.mjs"), "utf8");
+if (!publishedPrereleaseInstallSource.includes("persistentActivationSpawnOptions")
+    || (publishedPrereleaseInstallSource.match(/killSignal: "SIGKILL"/g) || []).length !== 1) {
+  throw new Error("published prerelease installation must hard-bound npm without externally killing the activation transaction");
+}
+const persistentActivationProcessSource = readFileSync(join(root, "scripts", "persistent-activation-process.mjs"), "utf8");
+if (!persistentActivationProcessSource.includes("transactional cleanup")
+    || /timeout\s*:|killSignal\s*:/.test(persistentActivationProcessSource)) {
+  throw new Error("persistent activation subprocess regained an outer timeout that can bypass compensation");
+}
+const foregroundRecoverySource = readFileSync(join(root, "scripts", "foreground-daemon-recovery.mjs"), "utf8");
+for (const required of ["inspectProcessInstance", "processCommandLine", "splitProcessCommandLine", "machine-bridge-mcp", "--workspace", "--state-dir", "--daemon-only"]) {
+  if (!foregroundRecoverySource.includes(required)) throw new Error(`foreground recovery resolver lost required identity boundary: ${required}`);
+}
+if (!candidateStartSource.includes("discoverForegroundDaemonRecovery")
+    || !candidateStartSource.includes("previousRuntime")) {
+  throw new Error("candidate activation refusal lost exact previous-runtime recovery discovery");
+}
+
 const candidateRuntimeStoreSource = readFileSync(join(root, "scripts", "candidate-runtime-store.mjs"), "utf8");
 for (const required of ["release-channels", "runtimes", "withFileTypes", "entry.isDirectory()", "RUNTIME_DIRECTORY_PATTERN", "active candidate runtime is outside"]) {
   if (!candidateRuntimeStoreSource.includes(required)) throw new Error(`candidate runtime store lost required boundary: ${required}`);

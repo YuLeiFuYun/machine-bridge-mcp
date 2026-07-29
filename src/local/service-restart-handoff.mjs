@@ -1,24 +1,38 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { restartAutostart } from "./service.mjs";
+import { restartOwnedServiceRuntime } from "./service-runtime.mjs";
 import { createLogger } from "./log.mjs";
+import { acquireMachineServiceLockWithWait } from "./state.mjs";
 
 const DEFAULT_DELAY_MS = 300;
 const MAX_DELAY_MS = 5_000;
 
 export async function runServiceRestartHandoff(options = {}) {
   const delayMs = boundedDelay(options.delayMs ?? process.argv[2]);
-  const restart = typeof options.restartAutostart === "function" ? options.restartAutostart : restartAutostart;
+  const restart = typeof options.restartServiceRuntime === "function"
+    ? options.restartServiceRuntime
+    : typeof options.restartAutostart === "function" ? options.restartAutostart : restartOwnedServiceRuntime;
   const sleep = typeof options.sleep === "function" ? options.sleep : delay;
   const logger = options.logger || createLogger({ component: "service-restart", level: "warn", format: "json", stderrOnly: true });
+  const acquireLock = typeof options.acquireServiceLock === "function"
+    ? options.acquireServiceLock
+    : () => acquireMachineServiceLockWithWait({ operation: "service-restart", logger, ...(options.serviceLockOptions || {}) });
   await sleep(delayMs);
-  const result = await restart({ logger });
-  if (result?.ok !== true) {
-    const error = new Error(`service restart handoff failed (${result?.reason || result?.provider || "unknown"})`);
-    error.result = result;
-    throw error;
+  const lock = await acquireLock();
+  if (!lock?.acquired || typeof lock.release !== "function") {
+    throw new Error("machine-service operation lock could not be acquired for restart");
   }
-  return result;
+  try {
+    const result = await restart({ logger });
+    if (result?.ok !== true) {
+      const error = new Error(`service restart handoff failed (${result?.reason || result?.provider || "unknown"})`);
+      error.result = result;
+      throw error;
+    }
+    return result;
+  } finally {
+    lock.release();
+  }
 }
 
 export async function serviceRestartHandoffMain(options = {}) {

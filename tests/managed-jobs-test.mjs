@@ -380,10 +380,15 @@ try {
       timeout_seconds: 1,
     }],
   });
+  await waitForRunning(manager, treeTimeout.job_id);
+  const treeRunnerClaim = JSON.parse(await readFile(join(jobRoot, treeTimeout.job_id, "runner.pid"), "utf8"));
+  const treeRunnerPid = Number(treeRunnerClaim.pid);
+  assert(Number.isInteger(treeRunnerPid) && treeRunnerPid > 0, "managed job private runner claim omitted the runner pid");
   const treeTimeoutResult = await waitForJob(manager, treeTimeout.job_id, null, 20_000);
   assert(treeTimeoutResult.result.steps[0].timed_out === true, "managed job process-tree fixture did not time out");
   const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
   await waitForPidExit(descendantPid, 10_000);
+  await waitForPidExit(treeRunnerPid, 10_000);
 
   const cancellable = manager.start({
     name: "cancel with cleanup",

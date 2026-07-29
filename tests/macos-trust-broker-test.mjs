@@ -25,14 +25,14 @@ try {
   assert((info.mode & 0o077) === 0, "development trust broker is accessible to group or other users");
   assert((info.mode & 0o700) === 0o700, "development trust broker is not owner-executable");
 
-  const signature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", timeout: 30_000 });
+  const signature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", killSignal: "SIGKILL", timeout: 30_000 });
   assert(signature.status === 0, `development trust broker ad-hoc signature verification failed: ${signature.stderr}`);
   expectThrow(
     () => inspectProvisionedMacosTrustBroker(binary),
     "ad-hoc signing cannot access the data-protection Keychain",
   );
 
-  const usage = spawnSync(binary, [], { encoding: "utf8", timeout: 10_000 });
+  const usage = spawnSync(binary, [], { encoding: "utf8", killSignal: "SIGKILL", timeout: 10_000 });
   assert(usage.status !== 0 && usage.stderr.includes("usage:"), "development trust broker did not fail closed on an invalid command");
 
   const second = buildDevelopmentTrustBrokerBinary(root);
@@ -40,8 +40,10 @@ try {
 
   const publicJwk = createDeviceIdentity().publicJwk;
   const calls = [];
-  const provisionedSpawn = (command, args) => {
-    calls.push({ command, args: [...args] });
+  const provisionedSpawn = (command, args, processOptions) => {
+    assert(processOptions?.killSignal === "SIGKILL",
+      "macOS trust broker bounded subprocess used a soft timeout signal");
+    calls.push({ command, args: [...args], processOptions });
     if (command === "/usr/bin/codesign" && args[0] === "--verify") return result(0, "", "");
     if (command === "/usr/bin/codesign" && args[0] === "-dvvv") {
       return result(0, "", [
@@ -103,7 +105,9 @@ try {
   assert(identity.brokerIdentifier === broker.identifier && identity.brokerTeamIdentifier === broker.teamIdentifier, "Secure Enclave root did not bind the broker signing identity");
   assert(!identity.privateJwk, "Secure Enclave root exposed private JWK material");
 
-  const incompleteCleanupSpawn = (command, args) => {
+  const incompleteCleanupSpawn = (command, args, processOptions) => {
+    assert(processOptions?.killSignal === "SIGKILL",
+      "macOS trust broker cleanup path used a soft timeout signal");
     if (command === "/usr/bin/codesign" && args[0] === "--verify") return result(0, "", "");
     if (command === "/usr/bin/codesign" && args[0] === "-dvvv") {
       return result(0, "", [
@@ -115,8 +119,8 @@ try {
     if (command !== canonicalBinary) return result(1, "", "unexpected executable");
     const action = args[0];
     const tag = args[2];
-    if (action === "ensure" && String(tag).includes(".probe.")) return provisionedSpawn(command, args);
-    if (action === "delete" && String(tag).includes(".probe.")) return provisionedSpawn(command, args);
+    if (action === "ensure" && String(tag).includes(".probe.")) return provisionedSpawn(command, args, processOptions);
+    if (action === "delete" && String(tag).includes(".probe.")) return provisionedSpawn(command, args, processOptions);
     if (action === "ensure") return jsonResult({
       ok: true, provider: "macos-secure-enclave-v1", keyTag: tag, publicJwk, signature: null, secureEnclave: false,
     });
@@ -141,12 +145,28 @@ try {
   const signed = signWithMacosSecureDeviceRoot(identity, "device-session-transcript", { options });
   assert(signed === "A".repeat(86), "provisioned broker signature was not returned");
 
-  const changedIdentitySpawn = (command, args) => {
+  const timedOutSpawn = (command, args, processOptions) => {
+    assert(processOptions?.killSignal === "SIGKILL",
+      "macOS trust broker timeout path used a soft timeout signal");
+    if (command === "/usr/bin/codesign") return provisionedSpawn(command, args, processOptions);
+    return {
+      status: null, stdout: "", stderr: "", signal: "SIGKILL",
+      error: Object.assign(new Error("spawnSync timed out"), { code: "ETIMEDOUT" }),
+    };
+  };
+  expectThrow(
+    () => signWithMacosSecureDeviceRoot(identity, "device-session-transcript", { options: { spawnSync: timedOutSpawn } }),
+    "trust broker timed out",
+  );
+
+  const changedIdentitySpawn = (command, args, processOptions) => {
+    assert(processOptions?.killSignal === "SIGKILL",
+      "macOS trust broker identity verification used a soft timeout signal");
     if (command === "/usr/bin/codesign" && args[0] === "--verify") return result(0, "", "");
     if (command === "/usr/bin/codesign" && args[0] === "-dvvv") {
       return result(0, "", "Identifier=com.machine-bridge-mcp.other\nTeamIdentifier=ABCDEFGHIJ\nSignature=Apple Development: Test Identity\n");
     }
-    return provisionedSpawn(command, args);
+    return provisionedSpawn(command, args, processOptions);
   };
   expectThrow(
     () => signWithMacosSecureDeviceRoot(identity, "device-session-transcript", { options: { spawnSync: changedIdentitySpawn } }),

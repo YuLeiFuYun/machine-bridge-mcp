@@ -87,6 +87,7 @@ export function probeMacosDelegatedSandbox(options = {}) {
     const execute = (argv) => run(MACOS_SANDBOX_EXEC, ["-p", profile, ...argv], {
       encoding: "utf8",
       timeout: 5_000,
+      killSignal: "SIGKILL",
       maxBuffer: 64 * 1024,
       windowsHide: true,
       env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: workspace, TMPDIR: runtimeDir, LANG: "C", LC_ALL: "C" },

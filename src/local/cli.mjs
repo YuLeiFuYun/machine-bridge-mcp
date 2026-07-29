@@ -29,6 +29,7 @@ import { workerHealth } from "./worker-health.mjs";
 export { workerHealthUserReason } from "./worker-health.mjs";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
 import {
+  acquireMachineServiceLockWithWait,
   acquireMaintenanceLock,
   acquireStartupLockWithWait,
   daemonLockPathForState,
@@ -54,7 +55,7 @@ import {
 const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm });
 const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
 const approvalCommand = createApprovalCommand({ chooseWorkspace, confirm });
-const serviceCommand = createServiceCommand({ chooseWorkspace, stateRootFromArgs, structuredLogger });
+const serviceCommand = createServiceCommand({ chooseWorkspace, stateRootFromArgs, structuredLogger, acquireMachineServiceLockWithWait, currentPackageVersion });
 const activateCommand = createActivateCommand({
   chooseWorkspace,
   prepareRemoteState,
@@ -190,9 +191,12 @@ async function startCommand(args) {
     const serviceEnvironment = loadServiceEnvironment(state.paths.stateRoot);
     logger.debug?.("Loaded persisted service network environment", { keys: serviceEnvironment.keys });
   }
-  const startupLock = await acquireStartupLockWithWait(state, { operation: "start", logger });
+  let startupLock = null;
+  let serviceLock = null;
 
   try {
+    serviceLock = await acquireRuntimeStartServiceLock(args, acquireMachineServiceLockWithWait, logger);
+    startupLock = await acquireStartupLockWithWait(state, { operation: "start", logger });
     const startMode = await prepareStartMode(args, state, logger);
     const daemonLock = await acquireDaemonLockWithTakeover(state, {
       takeOverServiceOwner: startMode.takeOverServiceOwner,
@@ -206,9 +210,12 @@ async function startCommand(args) {
       reportExistingDaemon(args, state, daemonLock.owner, logger);
       return;
     }
+    serviceLock?.release?.();
+    serviceLock = null;
     await startRemoteRuntime({ args, workspace, state, daemonLock, logger });
   } finally {
-    startupLock.release();
+    serviceLock?.release?.();
+    startupLock?.release?.();
   }
 }
 
@@ -264,6 +271,20 @@ function reportExistingDaemon(args, state, owner, logger) {
   logger.plain(`  Workspace: ${state.workspace.path}`);
 }
 
+export function runtimeStartRequiresMachineServiceLock(args = {}) {
+  return args.daemonOnly !== true;
+}
+
+export async function acquireRuntimeStartServiceLock(args = {}, acquireLock = acquireMachineServiceLockWithWait, logger = console) {
+  if (!runtimeStartRequiresMachineServiceLock(args)) return null;
+  if (typeof acquireLock !== "function") throw new TypeError("runtime start requires a machine-service lock acquirer");
+  const lock = await acquireLock({ operation: "runtime-start", logger });
+  if (!lock?.acquired || typeof lock.release !== "function") {
+    throw new Error("machine-service operation lock could not be acquired for runtime start");
+  }
+  return lock;
+}
+
 export function isIdempotentDaemonOnlyStart(args) {
   if (!args.daemonOnly || args.json) return false;
   return !Boolean(
@@ -286,6 +307,8 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }
     const readiness = await prepareRemoteState({ args, workspace, state, logger });
     runtime = createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity: readiness.deviceSessionIdentity });
     await runtime.start();
+    if (typeof daemonLock.update !== "function") throw new Error("daemon lock cannot publish startup readiness");
+    daemonLock.update({ startupReady: true, startupReadyAt: new Date().toISOString() });
     reportRemoteReady(args, state, readiness, logger);
     if (args.daemonOnly) {
       const { startAutostartLogMaintenance } = await import("./autostart-log-maintenance.mjs");
@@ -299,15 +322,24 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }
     }
     keepProcessAlive({ daemon: runtime, lock: daemonLock, logger });
   } catch (error) {
-    try { runtime?.stop?.(); } catch {}
-    daemonLock.release();
-    throw error;
+    throw cleanupRuntimeStartFailure(error, runtime, daemonLock);
   }
 }
 
-async function prepareRemoteState({ args, workspace, state, logger }) {
+export function cleanupRuntimeStartFailure(error, runtime, daemonLock) {
+  const cleanupErrors = [];
+  try { runtime?.stop?.(); } catch (failure) { cleanupErrors.push(failure); }
+  try { daemonLock?.release?.(); } catch (failure) { cleanupErrors.push(failure); }
+  return cleanupErrors.length
+    ? new AggregateError([error, ...cleanupErrors],
+      "runtime startup failed and local cleanup was incomplete")
+    : error;
+}
+
+async function prepareRemoteState({ args, workspace, state, logger, onRemotePrepared }) {
   if (!args.daemonOnly) {
     await convergeRemoteConfiguration({ args, state });
+    onRemotePrepared?.();
   } else if (!state.worker.url) {
     throw new Error("--daemon-only requires an existing Worker URL; run start once without --daemon-only");
   } else if (state.worker.pendingDeviceIdentity) {
@@ -589,8 +621,11 @@ async function rotateSecretsCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
   const state = loadState(workspace, { stateDir: args.stateDir });
   const operationLogger = createLogger({ level: args.quiet ? "error" : "warn", component: "service" });
-  const startupLock = await acquireStartupLockWithWait(state, { operation: "rotate-secrets", logger: operationLogger });
+  let startupLock = null;
+  let serviceLock = null;
   try {
+    serviceLock = await acquireMachineServiceLockWithWait({ operation: "rotate-secrets", logger: operationLogger });
+    startupLock = await acquireStartupLockWithWait(state, { operation: "rotate-secrets", logger: operationLogger });
     await stopOwnedPlatformService({
       state,
       inspectWorkspaceDaemon,
@@ -620,14 +655,15 @@ async function rotateSecretsCommand(args) {
     console.log("Prepared a two-phase rotation for account administration, device root, and token-version secrets.");
     console.log("All account access tokens are invalid. Run machine-mcp to deploy, verify, and atomically promote the pending device root.");
   } finally {
-    startupLock.release();
+    startupLock?.release?.();
+    serviceLock?.release?.();
   }
 }
 
 async function installAutostartBestEffort({ workspace, stateRoot, entryScript, logger }) {
   try {
     const { installAutostart } = await import("./service.mjs");
-    const result = await installAutostart({ workspace, stateRoot, entryScript, logger: structuredLogger(true) });
+    const result = await installAutostart({ workspace, stateRoot, entryScript, version: currentPackageVersion(), logger: structuredLogger(true) });
     if (result?.ok) logger.info("Autostart installed for future logins", { provider: result.provider });
     else logger.warn("Autostart installation reported a problem; run `machine-mcp service status` for details", {
       provider: result?.provider || "unknown",
@@ -672,7 +708,9 @@ async function uninstallCommand(args) {
     const pid = maintenance.owner?.pid ? `pid ${maintenance.owner.pid}` : "another process";
     throw new Error(`another state maintenance operation is active (${pid})`);
   }
+  let serviceLock = null;
   try {
+    serviceLock = await acquireMachineServiceLockWithWait({ operation: "uninstall" });
     if (currentValidation.exists) validateStateRootForRemoval(stateRoot);
     assertNoActiveJobsForUninstall(stateRoot);
     const autostartRemoved = await removeAutostartBestEffort(stateRoot);
@@ -689,6 +727,7 @@ async function uninstallCommand(args) {
     console.log("If installed globally, remove the npm package with:");
     console.log("  npm uninstall -g machine-bridge-mcp");
   } finally {
+    serviceLock?.release?.();
     maintenance?.release?.();
   }
 }

@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
-import { isIdempotentDaemonOnlyStart, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { acquireRuntimeStartServiceLock, cleanupRuntimeStartFailure, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
@@ -514,6 +514,7 @@ async function activeDaemonPolicyMutationSelfTest() {
         cwd: workspace,
         encoding: "utf8",
         timeout: 10_000,
+        killSignal: "SIGKILL",
       });
       if (idempotentServiceStart.error) throw idempotentServiceStart.error;
       if (idempotentServiceStart.status !== 0 || idempotentServiceStart.stdout !== "" || idempotentServiceStart.stderr !== "") {
@@ -532,6 +533,7 @@ async function activeDaemonPolicyMutationSelfTest() {
         cwd: workspace,
         encoding: "utf8",
         timeout: 10_000,
+        killSignal: "SIGKILL",
       });
       if (child.error) throw child.error;
       if (child.status !== 0) throw new Error(`locked start failed unexpectedly: ${child.stderr || child.stdout}`);
@@ -572,6 +574,7 @@ async function clientConfigDefaultSelfTest() {
       cwd: workspace,
       encoding: "utf8",
       timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (child.error) throw child.error;
     if (child.status !== 0) throw new Error(`client-config failed: ${child.stderr || child.stdout}`);
@@ -597,6 +600,7 @@ async function resourceCliSelfTest() {
   try {
     const added = spawnSync(process.execPath, [entry, "resource", "add", "test-key", resourceFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (added.error) throw added.error;
     if (added.status !== 0) throw new Error(`resource add failed: ${added.stderr || added.stdout}`);
@@ -607,6 +611,7 @@ async function resourceCliSelfTest() {
 
     const status = spawnSync(process.execPath, [entry, "status", "--workspace", workspace, "--state-dir", stateRoot], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (status.error) throw status.error;
     if (status.status !== 0) throw new Error(`status after resource add failed: ${status.stderr || status.stdout}`);
@@ -617,6 +622,7 @@ async function resourceCliSelfTest() {
     const generatedKeyPath = join(workspace, "generated-operator-key");
     const generated = spawnSync(process.execPath, [entry, "resource", "generate-ssh-key", "generated-key", generatedKeyPath, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 30_000,
+      killSignal: "SIGKILL",
     });
     if (generated.error) throw generated.error;
     if (generated.status !== 0) throw new Error(`SSH key resource generation failed: ${generated.stderr || generated.stdout}`);
@@ -628,6 +634,7 @@ async function resourceCliSelfTest() {
     if (process.platform !== "win32" && ((await stat(generatedKeyPath)).mode & 0o777) !== 0o600) throw new Error("generated private key mode is not 0600");
     const generatedAgain = spawnSync(process.execPath, [entry, "resource", "generate-ssh-key", "generated-key", generatedKeyPath, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 30_000,
+      killSignal: "SIGKILL",
     });
     if (generatedAgain.status !== 0 || JSON.parse(generatedAgain.stdout).created !== false) throw new Error("SSH key resource generation is not idempotent");
 
@@ -643,6 +650,7 @@ async function resourceCliSelfTest() {
 
     const listed = spawnSync(process.execPath, [entry, "resource", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (listed.status !== 0) throw new Error(`resource list failed: ${listed.stderr || listed.stdout}`);
     const listedJson = JSON.parse(listed.stdout);
@@ -651,6 +659,7 @@ async function resourceCliSelfTest() {
     }
     const listedWithPaths = spawnSync(process.execPath, [entry, "resource", "list", "--show-paths", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     const listedWithPathsJson = JSON.parse(listedWithPaths.stdout);
     if (listedWithPaths.status !== 0 || listedWithPathsJson.paths_exposed !== true || listedWithPathsJson.resources?.["test-key"]?.path !== resourceFile) {
@@ -659,6 +668,7 @@ async function resourceCliSelfTest() {
 
     const checked = spawnSync(process.execPath, [entry, "resource", "check", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     const checkedJson = JSON.parse(checked.stdout);
     if (checked.status !== 0 || checkedJson.contents_exposed !== false || checkedJson.paths_exposed !== false || "path" in checkedJson || checked.stdout.includes(resourceFile)) {
@@ -667,6 +677,7 @@ async function resourceCliSelfTest() {
 
     const jobs = spawnSync(process.execPath, [entry, "job", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (jobs.status !== 0 || !Array.isArray(JSON.parse(jobs.stdout).jobs)) throw new Error("local job list fallback failed");
 
@@ -677,6 +688,7 @@ async function resourceCliSelfTest() {
     });
     const inspectedPlan = spawnSync(process.execPath, [entry, "job", "inspect", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (inspectedPlan.status !== 0) throw new Error(`local job inspect failed: ${inspectedPlan.stderr || inspectedPlan.stdout}`);
     const inspectionJson = JSON.parse(inspectedPlan.stdout);
@@ -686,6 +698,7 @@ async function resourceCliSelfTest() {
     }
     const removedApproval = spawnSync(process.execPath, [entry, "job", "approve", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json", "--yes"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (removedApproval.status === 0 || !String(removedApproval.stderr).includes("Unknown job action")) {
       throw new Error(`removed terminal job approval remained usable: ${removedApproval.stderr || removedApproval.stdout}`);
@@ -714,6 +727,7 @@ async function resourceCliSelfTest() {
       await symlink(planFile, linkedPlan);
       const linked = spawnSync(process.execPath, [entry, "job", "submit", linkedPlan, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
         encoding: "utf8", timeout: 10_000,
+        killSignal: "SIGKILL",
       });
       if (linked.status === 0 || !String(linked.stderr).includes("must not be a symbolic link")) {
         throw new Error("local job submit accepted a symbolic-link plan file");
@@ -721,6 +735,7 @@ async function resourceCliSelfTest() {
     }
     const submitted = spawnSync(process.execPath, [entry, "job", "submit", planFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (submitted.status !== 0) throw new Error(`local job submit failed: ${submitted.stderr || submitted.stdout}`);
     const submittedId = JSON.parse(submitted.stdout).job_id;
@@ -729,6 +744,7 @@ async function resourceCliSelfTest() {
     for (let attempt = 0; attempt < 200; attempt += 1) {
       const read = spawnSync(process.execPath, [entry, "job", "read", submittedId, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
         encoding: "utf8", timeout: 10_000,
+        killSignal: "SIGKILL",
       });
       if (read.status !== 0) throw new Error(`local job read failed: ${read.stderr || read.stdout}`);
       submittedStatus = JSON.parse(read.stdout).status;
@@ -756,6 +772,7 @@ async function resourceCliSelfTest() {
     }
     const uninstallBlocked = spawnSync(process.execPath, [entry, "uninstall", "--state-dir", stateRoot, "--keep-worker", "--yes"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (uninstallBlocked.status === 0 || !String(uninstallBlocked.stderr).includes("managed jobs are active")) {
       throw new Error(`uninstall did not refuse an active managed job: ${uninstallBlocked.stderr || uninstallBlocked.stdout}`);
@@ -769,6 +786,7 @@ async function resourceCliSelfTest() {
 
     const removed = spawnSync(process.execPath, [entry, "resource", "remove", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: 10_000,
+      killSignal: "SIGKILL",
     });
     if (removed.status !== 0 || JSON.parse(removed.stdout).removed !== true) throw new Error("resource remove failed");
     const resourcesAfterRemoval = manager.listResources();
@@ -781,7 +799,52 @@ async function resourceCliSelfTest() {
   }
 }
 
-function cliSelfTest() {
+async function cliSelfTest() {
+  if (runtimeStartRequiresMachineServiceLock({ daemonOnly: true })) {
+    throw new Error("daemon-only service child would self-block on the machine-service transaction lock");
+  }
+  if (!runtimeStartRequiresMachineServiceLock({ daemonOnly: false })
+      || !runtimeStartRequiresMachineServiceLock({})) {
+    throw new Error("foreground runtime takeover lost machine-service serialization");
+  }
+  let runtimeLockCalls = 0;
+  const skippedRuntimeLock = await acquireRuntimeStartServiceLock(
+    { daemonOnly: true },
+    async () => { runtimeLockCalls += 1; throw new Error("daemon-only lock acquirer must not run"); },
+  );
+  if (skippedRuntimeLock !== null || runtimeLockCalls !== 0) {
+    throw new Error("daemon-only runtime start did not skip the machine-service lock");
+  }
+  const acquiredRuntimeLock = await acquireRuntimeStartServiceLock(
+    { daemonOnly: false },
+    async (options) => {
+      runtimeLockCalls += 1;
+      if (options.operation !== "runtime-start") throw new Error("runtime start lock operation label drifted");
+      return { acquired: true, release() {} };
+    },
+    {},
+  );
+  if (!acquiredRuntimeLock?.acquired || runtimeLockCalls !== 1) {
+    throw new Error("foreground runtime start did not acquire the machine-service lock exactly once");
+  }
+  await expectReject(
+    acquireRuntimeStartServiceLock({}, async () => ({ acquired: false, release() {} })),
+    "could not be acquired for runtime start",
+  );
+  await expectReject(acquireRuntimeStartServiceLock({}, null), "requires a machine-service lock acquirer");
+  const primary = new Error("runtime failed");
+  if (cleanupRuntimeStartFailure(primary, { stop() {} }, { release() {} }) !== primary) {
+    throw new Error("successful runtime cleanup replaced the primary startup error");
+  }
+  const cleanupFailure = cleanupRuntimeStartFailure(
+    primary,
+    { stop() { throw new Error("runtime stop failed"); } },
+    { release() { throw new Error("daemon lock release failed"); } },
+  );
+  if (!(cleanupFailure instanceof AggregateError) || cleanupFailure.errors?.length !== 3
+      || cleanupFailure.errors[0] !== primary) {
+    throw new Error("runtime startup cleanup did not preserve the primary and cleanup errors");
+  }
   const parsed = parseArgs(["--no-write", "/tmp/example", "--unrestricted-paths=false", "--worker-name", "mbm-test"]);
   if (parsed.noWrite !== true || parsed._[0] !== "/tmp/example") throw new Error("boolean option consumed positional workspace");
   if (parsed.unrestrictedPaths !== false || parsed.workerName !== "mbm-test") throw new Error("CLI option parsing failed");
@@ -1158,7 +1221,7 @@ async function shellSelfTest() {
     });
     if (treeResult.code !== 124) throw new Error("shell process-tree timeout did not report timeout");
     const descendantPid = Number((await readFile(childPidFile, "utf8")).trim());
-    const exited = await waitForPidExit(descendantPid, 5000);
+    const exited = await waitForPidExit(descendantPid, 8000);
     if (!exited) throw new Error("shell timeout left a descendant process running");
   } finally {
     await rm(treeRoot, { recursive: true, force: true });
@@ -1253,6 +1316,16 @@ async function waitForPidExit(pid, timeoutMs) {
 
 async function existsForSelfTest(file) {
   try { await stat(file); return true; } catch { return false; }
+}
+
+async function expectReject(promise, pattern) {
+  try {
+    await promise;
+  } catch (error) {
+    if (String(error?.message || error).includes(pattern)) return;
+    throw error;
+  }
+  throw new Error(`expected rejection containing: ${pattern}`);
 }
 
 function expectThrow(callback, pattern) {

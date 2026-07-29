@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs
 import { basename, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { executionEnv } from "./shell.mjs";
+import { createChildProcessSettlement } from "./child-process-settlement.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
@@ -308,28 +309,44 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
       stderr = next.buffer;
       stderrTruncated += next.truncated;
     });
-    child.on("error", (error) => finish(() => rejectPromise(error)));
-    child.on("close", (code, signal) => finish(() => {
-      if (cancellationAware && isCancellationRequested()) {
-        rejectPromise(new JobCancelledError());
-        return;
-      }
-      resolvePromise({
-        code: Number.isInteger(code) ? code : 1,
-        signal: signal ? String(signal) : null,
-        timedOut,
-        stdout,
-        stderr,
-        stdoutTruncated,
-        stderrTruncated,
-      });
-    }));
+    const settlement = createChildProcessSettlement({
+      onFallback() {
+        for (const stream of [child.stdin, child.stdout, child.stderr]) {
+          try { stream?.destroy?.(); } catch {}
+        }
+        try { child.unref(); } catch {}
+      },
+      onSettle(code, signal) {
+        finish(() => {
+          if (cancellationAware && isCancellationRequested()) {
+            rejectPromise(new JobCancelledError());
+            return;
+          }
+          resolvePromise({
+            code: Number.isInteger(code) ? code : 1,
+            signal: signal ? String(signal) : null,
+            timedOut,
+            stdout,
+            stderr,
+            stdoutTruncated,
+            stderrTruncated,
+          });
+        });
+      },
+    });
+    child.on("error", (error) => {
+      settlement.cancel();
+      finish(() => rejectPromise(error));
+    });
+    child.on("exit", (code, signal) => settlement.onExit(code, signal));
+    child.on("close", (code, signal) => settlement.onClose(code, signal));
     if (input && input.length) child.stdin.end(input);
     else child.stdin.end();
 
     function finish(callback) {
       if (closed) return;
       closed = true;
+      settlement.cancel();
       clearTimeout(timer);
       if (killTimer && !timedOut) clearTimeout(killTimer);
       clearInterval(cancellationPoll);

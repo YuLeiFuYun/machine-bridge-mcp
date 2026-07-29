@@ -1,8 +1,11 @@
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { launchdStatusSummary, systemdStatusSummary } from "../src/local/service-status.mjs";
 import { runServiceRestartHandoff, serviceRestartHandoffMain } from "../src/local/service-restart-handoff.mjs";
-import { waitForActiveStatus, waitForInactiveStatus, waitForStatus } from "../src/local/service-convergence.mjs";
+import { waitForActiveStatus, waitForInactiveStatus, waitForStableActiveStatus, waitForStatus } from "../src/local/service-convergence.mjs";
 import { scheduleServiceRestart, serviceControlEnvironment } from "../src/local/service-restart-scheduler.mjs";
 import { restartWindowsTask, startWindowsTask } from "../src/local/windows-service.mjs";
 import { stopOwnedPlatformService } from "../src/local/service-ownership.mjs";
@@ -12,6 +15,7 @@ await testHandoffExecution();
 await testWindowsIdempotentStartAndRestart();
 await testServiceOwnershipBoundary();
 await testServiceConvergenceBranches();
+await testStableActiveConvergence();
 await testHandoffMainAndDefaults();
 testServiceStatusSanitization();
 console.log("service restart handoff and status boundary test ok");
@@ -66,26 +70,50 @@ async function testHandoffExecution() {
   const result = await runServiceRestartHandoff({
     delayMs: 125,
     sleep: async (milliseconds) => { events.push(["sleep", milliseconds]); },
+    acquireServiceLock: async () => {
+      events.push(["lock"]);
+      return { acquired: true, release() { events.push(["release"]); } };
+    },
     logger: {},
     restartAutostart: async ({ logger }) => { events.push(["restart", logger]); return { ok: true, provider: "test", restarted: true }; },
   });
   assert.equal(result.restarted, true);
-  assert.deepEqual(events.map((entry) => entry[0]), ["sleep", "restart"]);
+  assert.deepEqual(events.map((entry) => entry[0]), ["sleep", "lock", "restart", "release"]);
   assert.equal(events[0][1], 125);
   await assert.rejects(() => runServiceRestartHandoff({
     delayMs: 1,
     sleep: async () => {},
+    acquireServiceLock: async () => testServiceLock(),
     logger: {},
     restartAutostart: async () => ({ ok: false, provider: "test", reason: "synthetic" }),
   }), /service restart handoff failed \(synthetic\)/);
   await assert.rejects(
-    () => runServiceRestartHandoff({ delayMs: 1, sleep: async () => {}, logger: {}, restartAutostart: async () => ({ ok: false, provider: "test" }) }),
+    () => runServiceRestartHandoff({ delayMs: 1, sleep: async () => {}, acquireServiceLock: async () => testServiceLock(), logger: {}, restartAutostart: async () => ({ ok: false, provider: "test" }) }),
     /service restart handoff failed \(test\)/,
   );
   await assert.rejects(
-    () => runServiceRestartHandoff({ delayMs: 1, sleep: async () => {}, logger: {}, restartAutostart: async () => null }),
+    () => runServiceRestartHandoff({ delayMs: 1, sleep: async () => {}, acquireServiceLock: async () => testServiceLock(), logger: {}, restartAutostart: async () => null }),
     /service restart handoff failed \(unknown\)/,
   );
+  await assert.rejects(() => runServiceRestartHandoff({
+    delayMs: 1, sleep: async () => {}, acquireServiceLock: async () => ({ acquired: false }),
+    logger: {}, restartAutostart: async () => { throw new Error("provider must not run without the lock"); },
+  }), /operation lock could not be acquired/);
+  await assert.rejects(() => runServiceRestartHandoff({
+    delayMs: 1, sleep: async () => {}, acquireServiceLock: async () => ({ acquired: true }),
+    logger: {}, restartAutostart: async () => { throw new Error("provider must not run without releasable lock"); },
+  }), /operation lock could not be acquired/);
+
+  const controlRoot = mkdtempSync(join(tmpdir(), "mbm-service-restart-lock-"));
+  try {
+    const defaultLocked = await runServiceRestartHandoff({
+      delayMs: 1, sleep: async () => {}, serviceLockOptions: { controlRoot, timeoutMs: 100, pollMs: 5 },
+      logger: {}, restartAutostart: async () => ({ ok: true, provider: "test", restarted: true }),
+    });
+    assert.equal(defaultLocked.restarted, true, "restart default machine-service lock adapter did not execute");
+  } finally {
+    rmSync(controlRoot, { recursive: true, force: true });
+  }
 }
 
 async function testWindowsIdempotentStartAndRestart() {
@@ -98,7 +126,8 @@ async function testWindowsIdempotentStartAndRestart() {
   });
   assert.equal(alreadyRunning.ok, true);
   assert.equal(alreadyRunning.already_running, true);
-  assert.deepEqual(idempotentCalls, ["powershell.exe"], "already-running start still issued schtasks /Run");
+  assert(idempotentCalls.length > 1 && idempotentCalls.every((command) => command === "powershell.exe"),
+    "already-running start issued schtasks /Run or skipped stable provider sampling");
 
   let running = true;
   const commands = [];
@@ -166,6 +195,10 @@ function testServiceStatusSanitization() {
   assert.equal(unknown.active, false);
   assert.equal(unknown.state, "unknown");
   assert.equal(unknown.definition, "");
+}
+
+function testServiceLock() {
+  return { acquired: true, release() {} };
 }
 
 function scheduledTaskResult(state, lastRunTime = "2026-07-22T00:00:00.0000000Z", lastResult = 0) {
@@ -238,22 +271,65 @@ async function testServiceConvergenceBranches() {
   await assert.rejects(() => waitForStatus(async () => ({}), null), /predicate must be a function/);
 }
 
+async function testStableActiveConvergence() {
+  const stableStatuses = [
+    { active: false },
+    { active: true, pid: 10 },
+    { active: true, pid: 10 },
+    { active: true, pid: 10 },
+  ];
+  const stable = await waitForStableActiveStatus(
+    async () => stableStatuses.shift() || { active: true, pid: 10 },
+    { attempts: 6, stableSamples: 3, delayMs: 1, sleep: async () => {} },
+  );
+  assert.equal(stable.stable, true);
+  assert.equal(stable.status.pid, 10);
+
+  const changingStatuses = [
+    { active: true, pid: 10 },
+    { active: true, pid: 11 },
+    { active: false },
+    { active: true, pid: 12 },
+  ];
+  const unstable = await waitForStableActiveStatus(
+    async () => changingStatuses.shift() || { active: false },
+    { attempts: 5, stableSamples: 3, delayMs: 1, sleep: async () => {} },
+  );
+  assert.equal(unstable.stable, false, "transient active states or PID replacement were accepted as persistent service evidence");
+
+  const lostIdentityStatuses = [
+    { active: true, pid: 20 },
+    { active: true, pid: null },
+    { active: true, pid: null },
+  ];
+  const lostIdentity = await waitForStableActiveStatus(
+    async () => lostIdentityStatuses.shift() || { active: false },
+    { attempts: 3, stableSamples: 3, delayMs: 1, sleep: async () => {} },
+  );
+  assert.equal(lostIdentity.stable, false, "loss of process identity did not reset stable-active evidence");
+  await assert.rejects(() => waitForStableActiveStatus(null), /readStatus/);
+  await assert.rejects(() => waitForStableActiveStatus(async () => ({}), { identity: null }), /identity/);
+}
+
 async function testHandoffMainAndDefaults() {
   const delays = [];
   await runServiceRestartHandoff({
     delayMs: "not-a-number",
     sleep: async (value) => delays.push(value),
+    acquireServiceLock: async () => testServiceLock(),
     restartAutostart: async () => ({ ok: true }),
   });
   await runServiceRestartHandoff({
     delayMs: 99_999,
     sleep: async (value) => delays.push(value),
+    acquireServiceLock: async () => testServiceLock(),
     logger: {},
     restartAutostart: async () => ({ ok: true }),
   });
   await runServiceRestartHandoff({
     delayMs: 1,
     sleep: async (value) => delays.push(value),
+    acquireServiceLock: async () => testServiceLock(),
     logger: {},
     restartAutostart: async () => ({ ok: true }),
   });
@@ -261,6 +337,7 @@ async function testHandoffMainAndDefaults() {
 
   const realDelay = await runServiceRestartHandoff({
     delayMs: 50,
+    acquireServiceLock: async () => testServiceLock(),
     logger: {},
     restartAutostart: async () => ({ ok: true, provider: "test" }),
   });
@@ -269,7 +346,7 @@ async function testHandoffMainAndDefaults() {
   const logs = [];
   assert.equal(await serviceRestartHandoffMain({ run: async () => {}, logger: { error() { logs.push("unexpected"); } } }), 0);
   assert.equal(await serviceRestartHandoffMain({
-    handoffOptions: { delayMs: 50, sleep: async () => {}, logger: {}, restartAutostart: async () => ({ ok: true }) },
+    handoffOptions: { delayMs: 50, sleep: async () => {}, acquireServiceLock: async () => testServiceLock(), logger: {}, restartAutostart: async () => ({ ok: true }) },
   }), 0);
   assert.equal(await serviceRestartHandoffMain({
     run: async () => { const error = new Error("synthetic"); error.code = "synthetic_code"; throw error; },

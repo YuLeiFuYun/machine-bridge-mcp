@@ -73,16 +73,19 @@ npm run release:candidate:activate -- --allow-worker-deploy
 The command:
 
 - verifies the exact pending tarball;
-- installs it under the owner-only Machine Bridge state root, separate from the normal global installation;
+- installs it under the owner-only ordinary Machine Bridge profile state root, separate from both the normal global installation and the machine-service control root;
+- acquires the machine-global service lock before the workspace startup lock and rejects a foreground or unverifiable daemon before changing the service manager;
 - stops only a verified existing service daemon;
 - updates the configured same-name Worker;
 - starts the candidate in-process and verifies device authentication plus relay readiness;
-- installs the candidate as the login service runtime;
+- if that current-version candidate receives an explicit device-authentication rejection, redeploys the same Worker once with the unchanged selected identity and retries within a three-start bound;
+- installs the candidate as the login service runtime and atomically commits the canonical workspace/state/entrypoint/version owner record;
 - performs a controlled foreground-to-service handoff;
+- accepts the background runtime only after its matching daemon lock publishes the post-authentication, post-relay-probe `ready_ack` checkpoint;
 - verifies that both the Worker and verified background daemon report the candidate version;
 - exits while the background daemon continues running.
 
-It may request one macOS user-presence or Touch ID operation to certify the daemon session key. It does not ask for per-tool approval.
+It may request one macOS user-presence or Touch ID operation to certify the daemon session key. It does not ask for per-tool approval. The wrapper does not impose a transaction-wide hard kill: each internal deployment, health, relay, service-manager, and convergence stage is independently bounded so lock release and compensation cannot be skipped.
 
 The private candidate runtime is not stored under the Git checkout, so cleaning `.release-candidate/`, switching branches, or regenerating a candidate cannot delete the daemon currently under test. The previous global installation remains available as recovery information.
 
@@ -214,7 +217,7 @@ Candidate and prerelease activation retain the previous global installation meta
 - fix forward when Worker/state protocol has changed;
 - restore a complete pre-upgrade backup only when package, Worker, browser extension, service definition, and local state can be restored as one unit.
 
-The activation state machine verifies candidate relay readiness before service handoff and cleans up its temporary runtime and locks on installation failure. A failure after the Worker has changed is reported explicitly rather than hidden by an unsafe automatic downgrade.
+The activation state machine verifies candidate relay readiness before service handoff and cleans up its temporary runtime and locks on failure. Before remote preparation changes or verifies the candidate deployment, a provider whose verified stop result requires restoration is restarted after lock cleanup. After remote preparation, activation never revives a daemon known to be incompatible with the current Worker: cleanup installs and starts the compatible candidate service definition instead. This is forward recovery, not a fabricated distributed rollback; the primary failure remains visible, and any candidate-service installation or start failure is aggregated with it.
 
 ## External credentials and controls
 

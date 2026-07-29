@@ -216,6 +216,7 @@ export function buildDevelopmentTrustBrokerBinary(profileDir, options = {}) {
   ], {
     encoding: "utf8",
     timeout: 120_000,
+    killSignal: "SIGKILL",
     maxBuffer: MAX_OUTPUT_BYTES,
     env: minimalEnvironment(),
   });
@@ -225,6 +226,7 @@ export function buildDevelopmentTrustBrokerBinary(profileDir, options = {}) {
   const sign = (options.spawnSync || spawnSync)("/usr/bin/codesign", ["--force", "--sign", "-", temporary], {
     encoding: "utf8",
     timeout: 30_000,
+    killSignal: "SIGKILL",
     maxBuffer: MAX_OUTPUT_BYTES,
     env: minimalEnvironment(),
   });
@@ -257,12 +259,16 @@ function runBroker(binary, args, { input, timeoutMs }, options = {}) {
     input,
     encoding: "utf8",
     timeout: timeoutMs,
+    killSignal: "SIGKILL",
     maxBuffer: MAX_OUTPUT_BYTES,
     env: minimalEnvironment(),
     windowsHide: true,
   });
   if (result.status !== 0 || result.error) {
     const diagnostic = boundedDiagnostic(result.stderr || result.error?.message || result.signal || `exit ${result.status}`);
+    if (result.error?.code === "ETIMEDOUT") {
+      throw new MacosTrustBrokerUnavailableError("macOS trust broker timed out");
+    }
     if (/-34018|missing entitlement|required entitlement/i.test(diagnostic)) {
       throw new MacosTrustBrokerUnavailableError(
         "macOS trust broker lacks a provisioning-profile-validated data-protection Keychain entitlement",
@@ -297,6 +303,7 @@ function codesignOptions() {
   return {
     encoding: "utf8",
     timeout: 30_000,
+    killSignal: "SIGKILL",
     maxBuffer: MAX_OUTPUT_BYTES,
     env: minimalEnvironment(),
   };

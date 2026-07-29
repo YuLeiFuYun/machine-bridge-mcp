@@ -155,7 +155,7 @@ The shared source of truth is `src/shared/policy-contract.json`. The generated m
 
 For remote calls, `server_info.authorization.effective_policy` and `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
 
-`tools/list` is a stable discovery catalog for the authenticated account role. A brief relay interruption does not withdraw tool definitions or require a tools-list-changed notification. Discovery is not authority: every `tools/call` is still intersected with the current end-to-end-ready daemon policy and tool ceiling, and fails retryably with `unavailable` when no daemon is ready. `server_info.tool_delivery` distinguishes the stable advertised catalog from the currently effective daemon/account intersection.
+`tools/list` is a stable discovery catalog for the authenticated account role. A brief relay interruption does not withdraw tool definitions or require a tools-list-changed notification. Discovery is not authority: every `tools/call` is still intersected with the current end-to-end-ready daemon policy and tool ceiling, and fails retryably with `unavailable` when no daemon is ready. `server_info.tool_delivery` distinguishes the stable advertised catalog from the currently effective daemon/account intersection. The remote catalog also narrows configurable foreground timeouts to 85 seconds while preserving each tool’s 30- or 60-second default; larger requests fail before daemon dispatch instead of being silently truncated after side effects may have begun.
 
 `full` is the daemon capability ceiling. An authenticated owner may exercise it without per-operation approval IDs. Delegated reviewer, editor, and operator accounts remain inside immutable role ceilings; out-of-role operations are denied rather than converted into a temporary elevation workflow. Process sessions, retained output, and managed jobs are additionally bound to account, client, and refresh-token family. See [local authorization](docs/LOCAL_AUTHORIZATION.md).
 
@@ -174,7 +174,7 @@ Machine Bridge does not launch or identify a separate browser profile. It contro
 
 ## Durable work and local resources
 
-Interactive process sessions end with the daemon connection. Long, cleanup-sensitive, or remotely initiated workflows should use managed jobs, which persist ordered argv steps and `finally_steps` under owner-only local state.
+Remote foreground process, shell, browser, and application calls are bounded to 85 seconds. Keep mutations and validation in independently terminal calls. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
 
 Credentials and files can be registered by alias without returning their contents through MCP:
 
@@ -244,6 +244,10 @@ Version 3 and later use a mandatory prerelease and soak path. Package work start
 npm run release:candidate
 # The owner runs the exact persistent activation command printed above:
 npm run release:candidate:activate -- --allow-worker-deploy
+# Activation requires device-authenticated relay readiness. One explicit authentication rejection may
+# redeploy the same Worker once with the unchanged selected identity; it never rotates credentials.
+# The login service is accepted only after a committed machine owner and the matching daemon
+# publish the post-authentication, post-relay-probe readiness checkpoint.
 # After the coding agent verifies the live Worker/daemon and records acceptance:
 npm run prerelease:release
 # Explicit owner registry and live-install steps:

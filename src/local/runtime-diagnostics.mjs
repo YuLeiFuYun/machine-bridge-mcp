@@ -3,12 +3,14 @@ import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { classifyOperationalError } from "./log.mjs";
 import { readBoundedFile } from "./workspace-file-service.mjs";
+import { systemNetworkRouteCheck } from "./system-network-route.mjs";
 
 export async function diagnoseRuntime({
   policy,
   runtimeDir,
   workspace,
   runProcess,
+  runFixedInternal,
   probeShell,
   managedJobManager,
   relayStatus = () => null,
@@ -43,6 +45,8 @@ export async function diagnoseRuntime({
   } : {
     layer: "remote-relay", ok: false, skipped: true, transport: "stdio-or-local",
   });
+
+  checks.push(await systemNetworkRouteCheck({ runFixedInternal, classifyError: classifyOperationalError, context }));
 
   const probe = join(runtimeDir, `.diagnostic-${process.pid}-${randomBytes(6).toString("hex")}`);
   try {
@@ -103,6 +107,7 @@ export async function diagnoseRuntime({
       tool_call_blocked_before_response: "host/platform or connector gateway",
       diagnostic_reached_daemon_but_spawn_failed: "local OS, endpoint security, shell configuration, or Machine Bridge policy",
       system_network_stack_scope: "application proxy selection only; an operating-system VPN or TUN may still intercept the relay connection",
+      tunnel_default_route_detected: "the operating-system route is carried by a VPN/TUN; node selection and repair remain outside Machine Bridge",
       managed_job_accepted_then_later_tools_blocked: "job continues independently; inspect with local CLI or a later read_job call",
     },
     policy,
