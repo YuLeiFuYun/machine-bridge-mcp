@@ -137,7 +137,7 @@ const TRANSACTION = /^[A-Za-z0-9_-]{20,128}$/;
 
 /** @param {unknown} value @param {string} label */ function canonicalPath(value, label) {
   if (typeof value !== "string" || !path.isAbsolute(value)) throw new Error(`machine service owner ${label} must be absolute`);
-  try { return realpathSync(value); }
+  try { return realpathSync.native ? realpathSync.native(value) : realpathSync(value); }
   catch (error) { throw new Error(`machine service owner ${label} is unavailable`, { cause: error }); }
 }
 

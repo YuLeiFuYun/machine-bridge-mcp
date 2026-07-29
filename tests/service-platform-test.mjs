@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -96,7 +96,11 @@ async function serviceOwnerTransactionTest() {
     assert.equal(committed.status, "committed");
     assert.throws(() => first.commit(), /already closed/);
     assert.equal(first.rollback(), false);
-    assert.equal(loadCommittedServiceOwner({ controlRoot }).workspace, await (await import("node:fs/promises")).realpath(workspace));
+    const storedOwner = loadCommittedServiceOwner({ controlRoot });
+    const canonical = (value) => realpathSync.native ? realpathSync.native(value) : realpathSync(value);
+    assert.equal(storedOwner.workspace, canonical(workspace));
+    assert.equal(storedOwner.stateRoot, canonical(stateRoot));
+    assert.equal(storedOwner.entryScript, canonical(entryScript));
 
     const secondWorkspace = path.join(root, "workspace-2");
     (await import("node:fs/promises")).mkdir(secondWorkspace, { recursive: true });

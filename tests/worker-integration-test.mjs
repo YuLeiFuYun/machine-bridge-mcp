@@ -38,6 +38,7 @@ const args = [
 
 let logs = "";
 const daemonSockets = [];
+const activeHttpRequests = new Set();
 const child = spawn(process.execPath, [wrangler, ...args], {
   cwd: packageRoot,
   env: { ...process.env, NO_COLOR: "1", CI: "1" },
@@ -1243,6 +1244,9 @@ try {
   assert((await unknownMessageClosed).code === 1002, "unknown daemon message did not close with protocol-error status");
 
   assert(!logs.includes("Uncaught TypeError"), "wrangler reported an uncaught runtime TypeError");
+  await Promise.resolve();
+  assert(activeHttpRequests.size === 0,
+    `worker integration left ${activeHttpRequests.size} HTTP request(s) unsettled`);
   console.log("worker OAuth/MCP integration test ok");
 } catch (error) {
   process.stderr.write(`${error.stack || error.message}\n--- wrangler output ---\n${logs}\n`);
@@ -1254,6 +1258,8 @@ try {
   terminate(child, "SIGTERM");
   await Promise.race([closed, sleep(3000)]);
   terminate(child, "SIGKILL");
+  await withTimeout(Promise.allSettled([...activeHttpRequests]), 3000,
+    "outstanding worker integration HTTP requests").catch(() => {});
   await rm(persistDir, { recursive: true, force: true }).catch(() => {});
 }
 
@@ -1575,7 +1581,11 @@ function adminRequest(method, pathname, body) {
   };
 }
 
-async function stableFetch(url, options = {}, attempts = 3) {
+function stableFetch(url, options = {}, attempts = 3) {
+  return trackHttpRequest(stableFetchAttempt(url, options, attempts));
+}
+
+async function stableFetchAttempt(url, options = {}, attempts = 3) {
   let lastResponse;
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -1637,12 +1647,24 @@ function firstSseEventId(text) {
   return text.split(/\r?\n/).find((line) => line.startsWith("id: "))?.slice(4) || "";
 }
 
-async function fetchJson(url, options) {
-  const response = await stableFetch(url, options);
+function fetchJson(url, options) {
+  return trackHttpRequest(fetchJsonResponse(url, options));
+}
+
+async function fetchJsonResponse(url, options) {
+  const response = await stableFetchAttempt(url, options);
   const text = await response.text();
   let body;
   try { body = JSON.parse(text); } catch { body = { unparsed: text }; }
   return { response, body };
+}
+
+function trackHttpRequest(promise) {
+  const request = Promise.resolve(promise);
+  activeHttpRequests.add(request);
+  const release = () => { activeHttpRequests.delete(request); };
+  request.then(release, release);
+  return request;
 }
 
 function openPort() {
