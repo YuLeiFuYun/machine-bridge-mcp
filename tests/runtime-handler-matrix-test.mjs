@@ -93,6 +93,16 @@ try {
   };
 
   const argumentsByTool = {
+    resolve_task_capabilities: { task: "verify runtime handler routing" },
+    open_local_application: { application: "Example" },
+    inspect_local_application: { application: "Example" },
+    operate_local_application: { application: "Example", action: "activate" },
+    browser_manage_tabs: { action: "new" },
+    browser_action: { action: "reload" },
+    browser_fill_form: { fields: [{ selector: { css: "#field" }, value: "value" }] },
+    browser_upload_files: { selector: { css: "#upload" }, resources: ["matrix-file"] },
+    load_local_skill: { skill: "matrix-skill" },
+    run_local_command: { name: "matrix-command" },
     list_files: { path: ".", max_files: 2 },
     read_file: { path: "file.txt" },
     view_image: { path: "image.png" },
@@ -100,8 +110,17 @@ try {
     edit_file: { path: "file.txt", old_text: "a", new_text: "b" },
     apply_patch: { patch: "*** Begin Patch\n*** End Patch" },
     search_text: { path: ".", query: "value" },
-    exec_command: { command: "echo matrix", timeout_seconds: 1 },
     run_process: { argv: [process.execPath, "--version"], timeout_seconds: 1 },
+    start_process: { argv: [process.execPath, "--version"] },
+    read_process: { session_id: "matrix-session" },
+    write_process: { session_id: "matrix-session", data: "value" },
+    kill_process: { session_id: "matrix-session" },
+    generate_ssh_key_resource: { name: "matrix-key" },
+    stage_job: { steps: [{ argv: [process.execPath, "--version"] }] },
+    start_job: { steps: [{ argv: [process.execPath, "--version"] }] },
+    read_job: { job_id: `job_${"A".repeat(24)}` },
+    cancel_job: { job_id: `job_${"B".repeat(24)}` },
+    exec_command: { command: "echo matrix", timeout_seconds: 1 },
   };
 
   const names = runtimeToolHandlerNames();

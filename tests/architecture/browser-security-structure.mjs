@@ -51,6 +51,7 @@ const workerWebSocketProtocolSource = readFileSync(join(root, "src", "worker", "
 const workerOAuthControllerSource = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
 const workerOAuthPageSource = readFileSync(join(root, "src", "worker", "oauth-authorization-page.ts"), "utf8");
 const workerHttpSource = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
+const workerStaticRoutesSource = readFileSync(join(root, "src", "worker", "worker-static-routes.ts"), "utf8");
 const oauthBrowserNavigationSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
 
@@ -63,10 +64,18 @@ for (const origin of ["https://chatgpt.com", "https://chat.openai.com", "https:/
 if (!workerHttpSource.includes("BUILT_IN_BROWSER_ORIGIN_SET.has(origin)") || !workerHttpSource.includes("allowed.includes(origin)")) {
   throw new Error("Worker CORS validation no longer combines built-in and configured exact origins");
 }
-if (workerSource.includes("validateOrigin(request") || workerSource.includes('error: "origin_not_allowed"')) {
-  throw new Error("Worker actual requests are again being rejected solely by the Origin header");
+if (!workerSource.includes('mcpOriginRejection(request, base, this.env.MBM_ALLOWED_ORIGINS ?? "")')) {
+  throw new Error("Durable Object no longer validates Origin on actual MCP endpoint requests");
 }
-if (!workerSource.includes('request.method === "OPTIONS"') || !workerSource.includes("corsPreflight(request, base, extraOrigins)")) {
+if (workerSource.indexOf("this.modernMcp.handleControl(request, proxyMode)")
+  > workerSource.indexOf("authorizeMcpRequest({")) {
+  throw new Error("private modern cancellation again reuses the public OAuth/DPoP proof");
+}
+if (!workerStaticRoutesSource.includes('path === "/mcp"')
+  || !workerStaticRoutesSource.includes("mcpOriginRejection(request, base, extraOrigins)")) {
+  throw new Error("outer Worker no longer rejects invalid MCP origins before Durable Object routing");
+}
+if (!workerSource.includes('request.method === "OPTIONS"') || !workerSource.includes("corsPreflight(request, base, extraOrigins, workerToolParameterHeaders)")) {
   throw new Error("Worker no longer gates browser CORS preflight through the exact-origin policy");
 }
 if (!workerHttpSource.includes("authorizationFormActionSources(formActionOrigin)") || !workerHttpSource.includes("const sources = [url.origin]") || !workerHttpSource.includes("form-action ${formAction}")) {

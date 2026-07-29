@@ -1,0 +1,18 @@
+# Official MCP conformance exclusions for capabilities this production server
+# intentionally does not expose. Every entry is check-scoped so any unrelated
+# protocol regression still fails the run.
+server:
+  # These checks require conformance-only diagnostic tools. Production builds
+  # do not advertise test_missing_capability, test_streaming_elicitation, or
+  # test_logging_tool.
+  - server-stateless:sep-2575-server-rejects-undeclared-capability
+  - server-stateless:sep-2575-missing-capability-http-400
+  - server-stateless:sep-2575-http-server-no-independent-requests-on-stream
+  - server-stateless:sep-2575-server-no-log-without-loglevel
+
+  # Machine Bridge advertises tools only; prompts and resources are not
+  # implemented or declared. The alpha caching scenario probes all feature
+  # families unconditionally rather than skipping absent capabilities.
+  - caching:sep-2549-prompts-list-caching-hints
+  - caching:sep-2549-resources-list-caching-hints
+  - caching:sep-2549-resources-templates-list-caching-hints

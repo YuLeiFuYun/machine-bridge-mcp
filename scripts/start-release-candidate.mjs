@@ -13,7 +13,8 @@ import { verifyTarball } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { discoverForegroundDaemonRecovery } from "./foreground-daemon-recovery.mjs";
 import { persistentActivationSpawnOptions, persistentCandidateFailureMessage } from "./persistent-activation-process.mjs";
-import { validateCandidateManifest } from "./release-candidate-manifest.mjs";
+import { assertCandidateMatchesCurrentSource, validateCandidateManifest } from "./release-candidate-manifest.mjs";
+import { computePromotionContentDigest } from "./promotion-digest.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateDirectory = join(root, ".release-candidate");
@@ -24,9 +25,17 @@ const npmCli = process.env.npm_execpath;
 if (!npmCli) fail("candidate startup must run through npm so npm_execpath is available");
 
 try {
-  const manifest = readJson(manifestPath, "release candidate manifest");
-  validateCandidateManifest(manifest);
-  const tarball = join(candidateDirectory, String(manifest.filename || ""));
+  const currentPackage = readJson(join(root, "package.json"), "current package");
+  const manifest = validateCandidateManifest(
+    readJson(manifestPath, "release candidate manifest"),
+    { packageName: currentPackage.name, packageVersion: currentPackage.version },
+  );
+  assertCandidateMatchesCurrentSource(manifest, {
+    packageName: currentPackage.name,
+    packageVersion: currentPackage.version,
+    promotionDigest: computePromotionContentDigest(root, { npmCli }),
+  });
+  const tarball = join(candidateDirectory, manifest.filename);
   verifyTarball(tarball, manifest);
 
   const npmVersion = runNpm(["--version"], root).stdout.trim();

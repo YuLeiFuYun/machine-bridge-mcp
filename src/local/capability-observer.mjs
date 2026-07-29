@@ -34,6 +34,11 @@ export class CapabilityObserver {
       matched_commands: Array.isArray(result?.command_matches) ? result.command_matches.length : 0,
       matched_applications: Array.isArray(result?.application_matches) ? result.application_matches.length : 0,
       recommended_tools: Array.isArray(result?.recommended_tools) ? [...result.recommended_tools] : [],
+      primary_route: result?.execution_routing?.primary_route?.id || null,
+      routing_ambiguity: result?.execution_routing?.ambiguity?.level || "none",
+      routing_score_gap: Number.isFinite(Number(result?.execution_routing?.ambiguity?.score_gap))
+        ? Number(result.execution_routing.ambiguity.score_gap)
+        : 0,
       refresh_fingerprint: String(result?.refresh?.fingerprint || ""),
     };
   }

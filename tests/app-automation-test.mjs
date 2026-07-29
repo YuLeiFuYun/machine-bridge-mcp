@@ -158,6 +158,26 @@ try {
     });
     assert(routed.application_matches.some((application) => application.name === "Late Arrival"), "task resolver required generic app wording instead of matching an installed application name");
     assert(routed.recommended_tools.includes("operate_local_application"), "task resolver did not recommend structured application tools for a named application");
+    assert(routed.execution_routing?.primary_route?.id === "application", "installed application match did not become the primary execution route");
+    assert(routed.execution_routing?.routes?.some((route) => route.id === "shell"), "application routing removed the direct shell escape hatch");
+
+    const reviewerRouted = await routingRuntime.executeTool("resolve_task_capabilities", {
+      path: ".",
+      task: "Use Late Arrival and the browser to complete this task",
+    }, {
+      origin: "relay",
+      authorization: {
+        account_id: `acct_${"A".repeat(32)}`,
+        account_version: 1,
+        client_id: `mcp_client_${"B".repeat(43)}`,
+        family_id: `mcp_family_${"C".repeat(43)}`,
+        role: "reviewer",
+      },
+    });
+    assert(reviewerRouted.application_matches.length === 0 && reviewerRouted.browser_backend === null,
+      "reviewer task resolution leaked application discovery or browser metadata from the daemon's full policy");
+    assert(!reviewerRouted.execution_routing.routes.some((route) => ["application", "browser", "shell"].includes(route.id)),
+      "reviewer task resolution recommended execution surfaces outside the account's effective policy");
   } finally {
     routingRuntime.stop();
   }

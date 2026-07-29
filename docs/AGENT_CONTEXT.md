@@ -8,13 +8,13 @@ This approximates a local coding agent without pretending that the MCP server ow
 
 - `session_bootstrap` returns built-in working agreements, bounded automatic project facts, explicit instruction text, and a refresh fingerprint.
 - `agent_context` returns the complete target-specific instruction chain, skill summaries, and command registry.
-- `resolve_task_capabilities` rescans default/project context and ranks skills/commands for the current task, optionally loading the best skill; the runtime also adds application and browser capability metadata.
+- `resolve_task_capabilities` rescans default/project context, ranks skills/commands and effective-policy-visible tools, returns bounded set-level execution routes with ambiguity/fallback metadata, and optionally loads the best skill. Direct Bash remains available whenever the effective policy permits it.
 - `list_local_skills` searches discovered `SKILL.md` bundles.
 - `load_local_skill` returns one skill entrypoint and bounded file inventory without execution.
 - `list_local_commands` returns effective registered commands.
 - `run_local_command` executes a registered direct-argv command when policy permits.
 
-Both stdio and remote Worker connection initialization attempt `session_bootstrap`. Its instruction text is appended to the MCP `initialize` result. Because a host may reuse one MCP connection across conversations, the explicit tool and per-task `resolve_task_capabilities` call remain necessary to refresh and reapply instructions reliably. `server_info.observability.capability_routing` and `project_overview.capabilityRouting` report whether those calls reached the local runtime, their counts and timestamps, loaded-source flags, selected capability metadata, and a runtime-keyed HMAC task fingerprint. Raw task text is not retained.
+Both stdio and remote Worker connection initialization attempt `session_bootstrap`. Its instruction text is appended to the MCP `initialize` result. Because a host may reuse one MCP connection across conversations, the explicit tool and per-task `resolve_task_capabilities` call remain necessary to refresh and reapply instructions reliably. A host may return the previous `refresh.fingerprint` as `known_refresh_fingerprint`; a match suppresses only unchanged static instruction metadata, not the fresh task-specific scan or routing. `server_info.observability.capability_routing` and `project_overview.capabilityRouting` report whether those calls reached the local runtime, their counts and timestamps, loaded-source flags, selected capability metadata, primary route, ambiguity class, score gap, and a runtime-keyed HMAC task fingerprint. Raw task text is not retained.
 
 ## Useful defaults without configuration
 
@@ -190,15 +190,17 @@ description: Review a release without publishing it.
 
 The entrypoint requires non-empty `name` and `description`. Invalid bundles are skipped with bounded warnings. Symlinked skill directories are followed after canonical policy validation; symbolic-link entrypoint files are rejected. Traversal, depth, entries, summaries, content, and inventory are bounded.
 
-No persistent skill or project-context index is trusted as authoritative. `session_bootstrap`, `agent_context`, and `resolve_task_capabilities` rebuild the relevant context; skill-list/load calls rescan effective roots. The refresh fingerprint changes when built-in/default context, explicit instruction hashes, skill hashes, command definitions, or relevant configuration changes. Newly created or edited files are visible without restarting the daemon or changing the MCP tool catalog.
+No persistent skill or project-context index is trusted as authoritative. `session_bootstrap`, `agent_context`, and `resolve_task_capabilities` rebuild the relevant context; skill-list/load calls rescan effective roots. The refresh fingerprint binds the target/scope, configuration paths, instruction source/precedence/content identity, skill source identity, and complete registered-command definition including cwd and timeout. A matching `known_refresh_fingerprint` permits response compaction only; task ranking, effective-policy filtering, installed-application matching, and route scoring still run. Newly created or edited files are visible without restarting the daemon or changing the MCP tool catalog.
 
 ## Progressive disclosure and task selection
 
-`agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions and command names/descriptions/argv, returns matches with scores, and loads the leading skill only when its relevance threshold is met. Under canonical `full`, it also compares the task with installed application names on every call; application discovery is cached briefly and refreshed after a bounded interval.
+`agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions, command names/descriptions/argv, and public tool definitions, then scores compatible execution surfaces as sets. It returns a schema-versioned envelope with the primary route, alternatives, ambiguity, fallback routes, ranked tools, and failure-aware guidance. Scores are relative within the current response, not probabilities or values to compare across package versions. Registered commands, direct Bash/argv, interactive sessions, durable jobs, files/Git, browser, applications, protected resources, and diagnostics remain separate choices; the advice does not hide or disable any effective-policy-visible tool.
+
+When the effective policy permits application discovery, the resolver also compares the task with cached installed-application names. Browser/application metadata and every route are filtered through the authenticated account/daemon policy intersection before they are returned. A delegated reviewer connected to a full daemon therefore cannot use capability resolution to inventory hidden applications or receive shell/browser/write recommendations.
 
 Matching remains deterministic and local. Hyphens, underscores, dots, and whitespace are normalized; common English inflections are reduced to a small canonical form; and a bounded Chinese/English workflow vocabulary covers creation, improvement, installation, search, current/official documentation, verification, testing, frontend/design, browser/web, email, performance, and security intents. Capability-name token matches receive more weight than incidental words in a long description. This lets Chinese tasks select English-metadata skills such as `skill-creator`, `web-research-cli`, and `skill-installer`, while avoiding the prior tie where generic “create” wording could select `frontend-design`. An explicitly named skill or registered command still receives the strongest deterministic boost.
 
-This ranking is deterministic local assistance, not semantic certainty. Weak positive matches remain visible for diagnosis, but only a skill meeting the selection threshold is recommended for loading. The model must still evaluate whether the selected skill applies. Machine Bridge does not execute skill scripts implicitly and does not fabricate a dynamically named MCP tool per skill.
+This ranking is deterministic local assistance, not semantic certainty. Weak positive matches remain visible for diagnosis, but only a skill meeting the selection threshold is recommended for loading. A high-ambiguity result tells the host to compare the competing route sets rather than over-trust one name. Fallbacks are recovery alternatives, not permission to evade a host or policy denial. The model must still evaluate whether the selected skill and route apply. Machine Bridge does not execute skill scripts implicitly and does not fabricate a dynamically named MCP tool per skill.
 
 ## Registered and automatic package commands
 
@@ -216,9 +218,10 @@ Directly invoking `npm run`, `pnpm run`, `yarn run`, or `bun run` does not make 
 2. call `resolve_task_capabilities` with the complete user task and target path;
 3. apply explicit global/project instructions over lower-precedence defaults;
 4. follow the selected skill only after checking relevance;
-5. prefer registered commands for stable workflows;
+5. use the returned route set as advice: prefer registered commands for stable workflows, direct Bash for efficient ad hoc composition, process sessions for interactive work, and managed jobs for disconnect-surviving multi-step work;
 6. use structured application/browser tools where applicable;
-7. inspect before mutation or submission and report operations performed.
+7. inspect stable state after ambiguous mutation failures before retrying;
+8. inspect before mutation or submission and report operations performed.
 
 Machine Bridge can automatically discover, refresh, rank, and load capabilities. Actual invocation remains a host/model decision. This boundary cannot be removed by server architecture alone.
 

@@ -54,6 +54,81 @@ rl.on("line", (line) => {
 });
 
 try {
+  const modernMeta = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {},
+    "io.modelcontextprotocol/clientInfo": { name: "stdio-modern-test", version: "1" },
+  };
+  send({ jsonrpc: "2.0", id: 900, method: "server/discover", params: { _meta: modernMeta } });
+  const discovered = await responseFor(900);
+  assert(discovered.result?.resultType === "complete", "modern stdio discovery omitted resultType");
+  assert(JSON.stringify(discovered.result?.supportedVersions) === JSON.stringify(["2026-07-28"]), "modern stdio discovery advertised a legacy retry version");
+  assert(discovered.result?.cacheScope === "public" && discovered.result?.ttlMs >= 0, "modern stdio discovery omitted cache policy");
+  assert(discovered.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.name === "machine-bridge-mcp", "modern stdio discovery omitted server identity");
+
+  send({ jsonrpc: "2.0", id: 901, method: "tools/list", params: { _meta: modernMeta } });
+  const modernTools = await responseFor(901);
+  assert(modernTools.result?.resultType === "complete", "modern stdio tools/list omitted resultType");
+  assert(modernTools.result?.cacheScope === "private" && Array.isArray(modernTools.result?.tools), "modern stdio tools/list omitted private cache semantics");
+
+  send({ jsonrpc: "2.0", id: 902, method: "subscriptions/listen", params: {
+    _meta: modernMeta,
+    notifications: { toolsListChanged: true },
+  } });
+  const acknowledged = await messageFor((item) => item.method === "notifications/subscriptions/acknowledged"
+    && item.params?._meta?.["io.modelcontextprotocol/subscriptionId"] === 902);
+  assert(Object.keys(acknowledged.params.notifications).length === 0, "modern stdio acknowledged an unsupported notification type");
+  const subscriptionClosed = await responseFor(902);
+  assert(subscriptionClosed.result?.resultType === "complete"
+    && subscriptionClosed.result?._meta?.["io.modelcontextprotocol/subscriptionId"] === 902,
+  "modern stdio subscription did not close gracefully");
+  send({ jsonrpc: "2.0", id: 909, method: "subscriptions/listen", params: { _meta: modernMeta } });
+  const invalidSubscription = await responseFor(909);
+  assert(invalidSubscription.error?.code === -32602, "modern stdio accepted a missing subscription filter");
+
+  send({ jsonrpc: "2.0", id: 903, method: "tools/call", params: {
+    _meta: modernMeta,
+    name: "read_file",
+    arguments: { path: "sample.txt", start_line: 1, end_line: 1 },
+  } });
+  const modernRead = await responseFor(903);
+  assert(modernRead.result?.resultType === "complete" && modernRead.result?.isError === false, "modern stdio tool call failed");
+  assert(modernRead.result?.structuredContent?.content === "one\n", "modern stdio tool call returned the wrong result");
+
+  send({ jsonrpc: "2.0", id: 906, method: "tools/call", params: {
+    _meta: modernMeta,
+    name: "read_file",
+    arguments: { path: "sample.txt", unexpected: "must-not-run" },
+  } });
+  const invalidModernArguments = await responseFor(906);
+  assert(invalidModernArguments.error?.code === -32602
+    && invalidModernArguments.error?.data?.validation_issues?.[0]?.instancePath === "/unexpected",
+  "modern stdio malformed tool arguments were not a protocol error");
+  send({ jsonrpc: "2.0", id: 907, method: "tools/call", params: {
+    _meta: modernMeta,
+    name: "missing_tool",
+    arguments: {},
+  } });
+  const unknownModernTool = await responseFor(907);
+  assert(unknownModernTool.error?.code === -32602, "modern stdio unknown tool was not a protocol error");
+
+  send({ jsonrpc: "2.0", id: 908, method: "initialize", params: { _meta: modernMeta } });
+  const modernInitialize = await responseFor(908);
+  assert(modernInitialize.error?.code === -32601, "modern stdio initialize entered the legacy adapter");
+
+  send({ jsonrpc: "2.0", id: 904, method: "ping", params: { _meta: modernMeta } });
+  const removedPing = await responseFor(904);
+  assert(removedPing.error?.code === -32601, "modern stdio retained removed ping semantics");
+
+  send({ jsonrpc: "2.0", id: 905, method: "tools/list", params: { _meta: {
+    "io.modelcontextprotocol/protocolVersion": "1900-01-01",
+    "io.modelcontextprotocol/clientCapabilities": {},
+  } } });
+  const unsupportedModern = await responseFor(905);
+  assert(unsupportedModern.error?.code === -32022
+    && unsupportedModern.error?.data?.supported?.[0] === "2026-07-28",
+  "modern stdio unsupported-version error is invalid");
+
   send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "stdio-test", version: "1" } } });
   const initialized = await responseFor(1);
   assert(initialized.result?.protocolVersion === "2025-11-25", "stdio protocol negotiation failed");
@@ -97,6 +172,11 @@ try {
   send({ jsonrpc: "2.0", id: 202, method: "tools/call", params: { name: "resolve_task_capabilities", arguments: { path: ".", task: "inspect browser form and edit source files" } } });
   const capabilities = await responseFor(202);
   assert(capabilities.result?.structuredContent?.recommended_tools?.includes("browser_fill_form"), "task capability resolver omitted browser form tools");
+  assert(capabilities.result?.structuredContent?.execution_routing?.routes?.some((route) => route.id === "browser")
+    && capabilities.result?.structuredContent?.execution_routing?.routes?.some((route) => route.id === "shell"),
+  "task capability resolver did not return set-level browser routing with a direct-shell alternative");
+  assert(capabilities.result?.structuredContent?.execution_routing?.enforcement?.startsWith("advisory_only"),
+    "task capability routing did not expose its non-enforcement boundary");
   assert(capabilities.result?.structuredContent?.refresh?.strategy === "rescan-on-every-call", "task capability resolver did not advertise live refresh semantics");
 
   send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "read_file", arguments: { path: "sample.txt", start_line: 2, end_line: 2 } } });
@@ -322,6 +402,27 @@ try {
 
 function send(value) {
   child.stdin.write(`${JSON.stringify(value)}\n`);
+}
+
+function messageFor(predicate, timeoutMs = 5_000) {
+  const existingIndex = responses.findIndex(predicate);
+  if (existingIndex >= 0) return Promise.resolve(responses.splice(existingIndex, 1)[0]);
+  return new Promise((resolvePromise, rejectPromise) => {
+    const deadline = Date.now() + timeoutMs;
+    const poll = () => {
+      const index = responses.findIndex(predicate);
+      if (index >= 0) {
+        resolvePromise(responses.splice(index, 1)[0]);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        rejectPromise(new Error(`timed out waiting for stdio message; stderr=${stderr}`));
+        return;
+      }
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
 }
 
 function responseFor(id, timeoutMs = 5_000) {

@@ -248,7 +248,8 @@ async function testRuntimeCapabilities() {
     capabilityObserver: { recordBootstrap() {} },
     policy: policyProfile("review"),
   });
-  assert(reviewBootstrap.local_automation.browser === null, "review bootstrap advertised full browser authority");
+  assert(reviewBootstrap.local_automation.browser === null && reviewBootstrap.local_automation.applications === null,
+    "review bootstrap advertised browser or application authority outside the effective policy");
 
   const resolutions = [];
   const full = await resolveTaskCapabilities({
@@ -265,6 +266,10 @@ async function testRuntimeCapabilities() {
     "successful application discovery was not represented in capability routing");
   assert(full.recommended_tools.includes("operate_local_application"), "application match did not add structured tools");
   assert(full.browser_backend?.existing_profile === true, "full capability resolution omitted existing-profile browser backend");
+  assert(full.execution_routing?.primary_route?.id === "application" || full.execution_routing?.primary_route?.id === "browser",
+    "set-level capability routing did not recognize the application/browser task");
+  assert(full.execution_routing?.routes?.some((route) => route.id === "shell"),
+    "capability routing removed the direct shell escape hatch");
   assert(resolutions.length === 1, "capability routing observation was not recorded");
 
   const degradedFull = await resolveTaskCapabilities({
@@ -285,7 +290,9 @@ async function testRuntimeCapabilities() {
     policy: policyProfile("review"),
   }, { task: "open app" });
   assert(review.application_matches.length === 0 && review.browser_backend === null, "review capability resolution expanded automation authority");
-  assert(review.application_discovery.reason === "policy", "policy-disabled application discovery was reported as an operational failure");
+  assert(review.application_discovery.reason === "effective_policy", "policy-disabled application discovery was reported as an operational failure");
+  assert(!review.execution_routing.routes.some((route) => ["application", "browser", "shell"].includes(route.id)),
+    "review capability routing leaked application, browser, or shell surfaces outside the effective policy");
 }
 
 async function testRuntimeResourceService() {

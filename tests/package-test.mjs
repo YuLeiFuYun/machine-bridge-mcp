@@ -33,7 +33,7 @@ try {
   if (!record.files.some((item) => item.path === "src/local/relay-connection.mjs")) throw new Error("npm package omitted the relay lifecycle module");
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [
-    "runtime-reporting.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs",
+    "runtime-reporting.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs", "execution-routing.mjs",
     "runtime-tool-handlers.mjs", "runtime-relay.mjs", "runtime-paths.mjs", "runtime-resource-service.mjs",
   ]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted runtime boundary ${module}`);
@@ -58,8 +58,18 @@ try {
   }
   if (!record.files.some((item) => item.path === "src/local/browser-operation-service.mjs")) throw new Error("npm package omitted browser operation semantics");
   if (!record.files.some((item) => item.path === "src/worker/index.ts")) throw new Error("npm package omitted the worker entrypoint");
-  for (const module of ["mcp-jsonrpc.ts", "websocket-protocol.ts"]) {
+  for (const module of [
+    "mcp-jsonrpc.ts", "websocket-protocol.ts", "mcp-http-contract.ts", "mcp-legacy-dispatch.ts",
+    "mcp-modern-controller.ts", "mcp-modern-proxy.ts", "mcp-modern-stream.ts", "mcp-stream-proxy-contract.ts",
+    "mcp-tool-call-input.ts", "worker-mcp-config.ts", "worker-runtime-config.ts",
+  ]) {
     if (!record.files.some((item) => item.path === `src/worker/${module}`)) throw new Error(`npm package omitted extracted Worker protocol ${module}`);
+  }
+  for (const module of [
+    "mcp-protocol.mjs", "mcp-protocol.d.mts", "mcp-subscriptions.mjs", "mcp-subscriptions.d.mts",
+    "tool-argument-validation.mjs", "tool-argument-validation.d.mts",
+  ]) {
+    if (!record.files.some((item) => item.path === `src/shared/${module}`)) throw new Error(`npm package omitted shared MCP contract ${module}`);
   }
   if (!record.files.some((item) => item.path === "src/worker/pending-calls.ts")) throw new Error("npm package omitted the worker pending calls module");
   if (!record.files.some((item) => item.path === "src/worker/daemon-liveness.ts")) throw new Error("npm package omitted the worker daemon liveness module");
@@ -78,6 +88,7 @@ try {
   if (!record.files.some((item) => item.path === "src/local/secure-file.mjs")) throw new Error("npm package omitted the shared secure-file primitive");
   if (record.files.some((item) => item.path === "src/local/daemon.mjs")) throw new Error("npm package retained the obsolete local daemon module name");
   if (!record.files.some((item) => item.path === "scripts/privacy-check.mjs")) throw new Error("npm package omitted the privacy checker");
+  if (!record.files.some((item) => item.path === "scripts/sbom-check.mjs")) throw new Error("npm package omitted the SBOM validator");
   if (!record.files.some((item) => item.path === "scripts/release-impact-check.mjs")) throw new Error("npm package omitted the release-impact checker");
   if (!record.files.some((item) => item.path === "scripts/start-release-candidate.mjs")) throw new Error("npm package omitted the isolated candidate startup helper");
   if (!record.files.some((item) => item.path === "scripts/network-retry.mjs")) throw new Error("npm package omitted the network retry helper");

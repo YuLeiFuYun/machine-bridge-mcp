@@ -46,7 +46,7 @@ Autostart installation and daemon startup may report the names of allowlisted pr
 
 ## Relay connection event policy
 
-A TCP/WebSocket `open` event is only transport availability, and `hello_ack` proves only authenticated bidirectional control traffic. The daemon is reported as ready only after a random Worker probe returns through the ordinary local dispatcher and session-bound result path and the Worker sends `ready_ack`.
+A TCP/WebSocket `open` event is only transport availability, and `hello_ack` proves only authenticated bidirectional control traffic. The daemon is reported as ready only after a random Worker probe returns through the ordinary local dispatcher and ordinary authenticated result path and the Worker sends `ready_ack`.
 
 Brief network interruptions are expected on laptop network changes, Worker deployment, proxy rotation, and ordinary internet transport. They are handled as follows:
 
@@ -66,7 +66,7 @@ Brief network interruptions are expected on laptop network changes, Worker deplo
 
 A WebSocket close code such as `1006` means the transport ended without a normal close handshake. It is useful for debug diagnosis but not useful as the default user message. It is not evidence that the daemon process restarted. Worker `daemon_transport_error` / `daemon_liveness_timeout` messages and their 1012 close frames are likewise retryable connection conditions, not upgrade instructions. Only an unknown/incompatible Worker error, authentication failure, or identity/version mismatch may produce the fatal protocol/configuration log and daemon exit. Default logs therefore describe the affected layer, duration, classification, and recovery behavior rather than printing raw close envelopes.
 
-Persisted streamed-call diagnostics are deliberately coarse. Logs and `server_info` may report aggregate active/detached counts, oldest age, tool-name counts, alarm mutations, unmatched-result counts, and whether a call was transient or durable. They must not include tool arguments, terminal results, command text, request keys, account identifiers, raw call IDs, raw connection generations, private paths, or subscriber payloads. A stale-generation result is counted as unmatched rather than logged with its envelope.
+Streamed-call diagnostics are deliberately coarse. Modern request-scoped stream ownership is memory-only; legacy MCP `2025-11-25` may additionally report aggregate persistent active/detached counts, oldest age, tool-name counts, alarm mutations, unmatched-result counts, and whether a legacy call is transient or durable. Logs and `server_info` must not include tool arguments, terminal results, command text, request keys, account identifiers, raw call IDs, raw connection generations, mirrored parameter values, private paths, or subscriber payloads. A stale-generation result is counted as unmatched rather than logged with its envelope.
 
 Examples:
 
@@ -84,7 +84,7 @@ All per-tool starts, successes, failures, cancellations, timing, and expected la
 
 The layered repository check runner follows the same noise rule. Green child-task output is discarded after the child exits; only task name and elapsed time are printed. Failed tasks expose bounded head/tail stdout and stderr diagnostics. `MBM_CHECK_VERBOSE=1` is an explicit operator choice to stream raw child output and is not used by default or CI.
 
-A completed local result is normally sent on the ready relay connection. If that socket disappears, the runtime queues the bounded result envelope during the shared two-minute same-daemon reconnect window rather than logging a terminal delivery failure. Debug output records only a shortened call ID and queue/reconnect counts. After the same daemon process completes readiness, replay emits one recovery event; a different process cannot inherit the result. Explicit MCP cancellation suppresses eventual delivery; loss of the HTTP/SSE response stream does not. If the relay does not recover before the grace deadline, ordinary calls are cancelled, queued results are discarded, and the existing outage state machine determines whether the persistent failure warrants a warning. Tool arguments, commands, and result content are never logged.
+A completed local result is normally sent on the ready relay connection. If that daemon WebSocket disappears, the runtime may queue the bounded result envelope during the shared two-minute same-daemon reconnect window; this relay-layer queue is independent of the public MCP protocol era. Debug output records only a shortened call ID and queue/reconnect counts. After the same daemon process completes readiness, replay emits one recovery event; a different process cannot inherit the result. For modern MCP `2026-07-28`, closing the public HTTP response stream cancels that request through a random internal capability; the control request contains no Authorization or DPoP header, and the capability is not logged. For legacy MCP `2025-11-25`, disposing the public response does not cancel the session-bound operation because the host may recover it with `Last-Event-ID`; explicit legacy cancellation suppresses eventual delivery. Tool arguments, mirrored header values, validation values, and result content are never logged.
 
 Debug per-tool fields may include tool name, duration, coarse outcome class, and a shortened random call identifier. The identifier is for correlating adjacent local events and is not a stable audit identifier. Authorization failures expose a random approval ID, scope, and expiry to the caller; daemon logs still omit normalized targets and request arguments.
 
@@ -112,7 +112,7 @@ Application discovery and Accessibility operations follow the same rule: permiss
 
 ## Bounding and redaction
 
-Messages, strings, object depth, object key counts, array item counts, and serialized field payloads are bounded. Control characters and Unicode display controls are neutralized. Fields with secret-like names and path-like keys are recursively redacted. Free-form sanitization covers generic private-key headers, AWS/GitHub/GitLab/npm/Slack/Google/live-payment/API token forms, JWT-shaped values, URLs with embedded credentials, email addresses, and user-home paths.
+Messages, strings, object depth, object key counts, array item counts, and serialized field payloads are bounded. Tool-argument validation reports only a bounded tool name, JSON Pointer path, schema keyword, and constraint message; it never includes the rejected value. Control characters and Unicode display controls are neutralized. Fields with secret-like names and path-like keys are recursively redacted. Free-form sanitization covers generic private-key headers, AWS/GitHub/GitLab/npm/Slack/Google/live-payment/API token forms, JWT-shaped values, URLs with embedded credentials, email addresses, and user-home paths.
 
 Local and Worker free-form strings use the same portable value sanitizer. Worker fields are therefore inspected by content even when their key is not secret-shaped. Both structured loggers assign their authoritative metadata after sanitizing caller fields. Local `timestamp`, `level`, `component`, `message`, and `event`, plus Worker `timestamp`, `level`, `component`, and `event`, therefore cannot be forged or replaced by an event payload. Local-only recursive path-key redaction and environment-derived home aliases remain additional protections around the portable rules.
 
@@ -153,7 +153,7 @@ Schema 4 is strict NDJSON. Before daemon startup, both active log files are open
 
 Canonical `full` does not remove tools based on filenames. For remote execution, the operation classifier treats credential-sensitive paths and persistence targets as hard authorization boundaries: delegated roles are denied, while owner requests remain risk-classified and audited. An MCP host, connector, model provider, desktop application, operating system, or endpoint-security layer may independently reject a request before it reaches Machine Bridge.
 
-Use `server_info`, `project_overview`, `machine-mcp status`, `machine-mcp doctor`, and `diagnose_runtime` to distinguish local policy from host-side enforcement. Capability-routing status is returned on demand rather than written as task logs; it stores a runtime-keyed task fingerprint, not raw task text. Changing the Machine Bridge profile cannot override another layer.
+Use `server_info`, `project_overview`, `machine-mcp status`, `machine-mcp doctor`, and `diagnose_runtime` to distinguish local policy from host-side enforcement. Capability-routing status is returned on demand rather than written as task logs. The in-memory observer stores a runtime-keyed task fingerprint, selected skill/match counts, recommended tool names, primary route, ambiguity class, and score gap; it never stores raw task text, static instruction content, application inventory, or route explanations. Changing the Machine Bridge profile cannot override another layer.
 
 ## Adding or changing logs
 

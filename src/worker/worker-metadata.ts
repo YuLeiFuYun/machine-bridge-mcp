@@ -8,7 +8,16 @@ export function mcpMetadata(base: string, identity: WorkerIdentity): Record<stri
     version: identity.version,
     protocolVersion: String(serverMetadata.protocolVersion),
     protocolVersions: serverMetadata.supportedProtocolVersions.map((value) => String(value)),
-    transport: { type: "streamable-http", url: `${base}/mcp` },
+    protocolEras: {
+      modern: serverMetadata.modernProtocolVersions.map((value) => String(value)),
+      legacy: serverMetadata.legacyProtocolVersions.map((value) => String(value)),
+    },
+    transport: {
+      type: "streamable-http",
+      url: `${base}/mcp`,
+      modern: { methods: ["POST"], protocolSessions: false, resumableSse: false },
+      legacy: { methods: ["GET", "POST"], protocolSessions: true, resumableSse: true },
+    },
     auth: { type: "oauth", authorization_servers: [base] },
   };
 }

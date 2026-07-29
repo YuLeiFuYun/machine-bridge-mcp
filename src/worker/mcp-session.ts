@@ -66,7 +66,16 @@ export async function resolveMcpSession(
   return { kind: "active", sessionId };
 }
 
-export function mcpClientRequestKey(tokenKey: string, sessionId: string, requestId: unknown): string | undefined {
-  if (!sessionId || requestId === null || (typeof requestId !== "string" && typeof requestId !== "number")) return undefined;
-  return `${tokenKey}:${sessionId}:${typeof requestId}:${String(requestId)}`;
+export function legacyMcpClientRequestKey(tokenKey: string, sessionId: string, requestId: unknown): string | undefined {
+  if (!sessionId || !isRequestId(requestId)) return undefined;
+  return `${tokenKey}:legacy:${sessionId}:${typeof requestId}:${String(requestId)}`;
+}
+
+export function modernMcpStreamRequestKey(streamId: string): string | undefined {
+  if (!/^stream_[A-Za-z0-9_-]{43}$/.test(streamId)) return undefined;
+  return `modern:${streamId}`;
+}
+
+function isRequestId(value: unknown): value is string | number {
+  return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
 }

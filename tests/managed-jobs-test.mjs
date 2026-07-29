@@ -519,6 +519,12 @@ try {
 }
 
 function testTerminalPersistenceBoundary() {
+  const terminalStates = new Set(["failed"]);
+  assert(!isSettledTerminalJob({ status: "failed", artifact_cleanup_pending: true }, terminalStates),
+    "terminal cleanup checkpoint was mistaken for fully settled job state");
+  assert(isSettledTerminalJob({ status: "failed", artifact_cleanup_pending: false }, terminalStates),
+    "cleanup-confirmed terminal job was not treated as settled");
+
   const status = { job_id: `job_${"P".repeat(24)}`, name: "persistence boundary", status: "running" };
   const result = {
     job_id: status.job_id, name: status.name, status: "failed", steps: [], finally_steps: [],
@@ -592,7 +598,7 @@ async function waitForJob(manager, jobId, terminal = null, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = manager.read({ job_id: jobId });
-    if (terminalStates.has(value.status)) return value;
+    if (isSettledTerminalJob(value, terminalStates)) return value;
     await delay(50);
   }
   const dir = join(jobRoot, jobId);
@@ -601,6 +607,10 @@ async function waitForJob(manager, jobId, terminal = null, timeoutMs = 20_000) {
     try { diagnostics[name] = await readFile(join(dir, name), "utf8"); } catch {}
   }
   throw new Error(`timed out waiting for managed job ${jobId}: ${JSON.stringify(diagnostics)}`);
+}
+
+function isSettledTerminalJob(value, terminalStates) {
+  return terminalStates.has(value.status) && value.artifact_cleanup_pending !== true;
 }
 
 async function waitForPidExit(pid, timeoutMs) {

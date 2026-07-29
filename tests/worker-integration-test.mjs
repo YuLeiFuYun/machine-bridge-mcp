@@ -10,6 +10,7 @@ import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceI
 import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
 import { accountRoleToolNames } from "../src/worker/access.ts";
 import { workspaceTools } from "../src/worker/tool-catalog.ts";
+import { runOfficialMcpConformance } from "../scripts/official-mcp-conformance.mjs";
 
 let daemonInstanceSequence = 0;
 
@@ -61,8 +62,15 @@ try {
   assert(publicMetadata.response.status === 200, "public MCP metadata failed");
   assert(!("tools" in publicMetadata.body), "public MCP metadata exposed potential local tools");
   assert(!("instructions" in publicMetadata.body), "public MCP metadata exposed operational instructions");
-  assert(publicMetadata.body.protocolVersions?.includes("2025-11-25"), "public MCP metadata omitted supported versions");
+  assert(publicMetadata.body.protocolVersion === "2026-07-28", "public MCP metadata omitted the primary modern version");
+  assert(publicMetadata.body.protocolVersions?.includes("2026-07-28")
+    && publicMetadata.body.protocolVersions?.includes("2025-11-25"), "public MCP metadata omitted dual-era versions");
+  assert(publicMetadata.body.protocolEras?.modern?.includes("2026-07-28")
+    && publicMetadata.body.protocolEras?.legacy?.includes("2025-11-25"), "public MCP metadata did not separate protocol eras");
   assert(publicMetadata.body.transport?.type === "streamable-http", "public MCP metadata did not advertise Streamable HTTP");
+  assert(publicMetadata.body.transport?.modern?.protocolSessions === false
+    && publicMetadata.body.transport?.modern?.resumableSse === false,
+  "public MCP metadata retained legacy session or resumption semantics for modern clients");
   const authorizationMetadata = await fetchJson(`${base}/.well-known/oauth-authorization-server/mcp`);
   assert(authorizationMetadata.response.status === 200, "OAuth authorization-server discovery failed");
   assert(authorizationMetadata.body.grant_types_supported?.includes("refresh_token"), "OAuth metadata omitted refresh-token support");
@@ -111,6 +119,15 @@ try {
   const opaqueOrigin = await stableFetch(`${base}/healthz`, { headers: { origin: "null" } });
   assert(opaqueOrigin.status === 200, "an opaque-origin actual request was rejected before normal routing");
   assert(opaqueOrigin.headers.get("access-control-allow-origin") === null, "an opaque origin received CORS response access");
+  for (const origin of ["https://example.com", "null"]) {
+    const rejectedMcpOrigin = await stableFetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { origin, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "server/discover", params: {} }),
+    });
+    assert(rejectedMcpOrigin.status === 403, `invalid MCP Origin was not rejected before authentication: ${origin}`);
+    assert((await rejectedMcpOrigin.json()).error === "origin_not_allowed", `invalid MCP Origin returned the wrong error: ${origin}`);
+  }
   const opaqueAuthorization = await stableFetch(`${base}/oauth/authorize`, {
     method: "POST",
     headers: {
@@ -432,6 +449,26 @@ try {
   });
   assert(familyRefreshAfterRetry.response.status === 200, "concurrent refresh recovery incorrectly revoked the token family");
   let ownerAccessToken = familyRefreshAfterRetry.body.access_token;
+  const conformanceCheckout = String(process.env.MBM_OFFICIAL_CONFORMANCE_CHECKOUT || "").trim();
+  const conformanceScenarios = String(process.env.MBM_OFFICIAL_CONFORMANCE_SCENARIOS || "").split(",").map((value) => value.trim()).filter(Boolean);
+  if (conformanceCheckout && conformanceScenarios.length > 0) {
+    for (const scenario of conformanceScenarios) {
+      const conformance = await runOfficialMcpConformance({
+        checkout: conformanceCheckout,
+        upstream: `${base}/mcp`,
+        accessToken: ownerAccessToken,
+        scenario,
+        specVersion: "2026-07-28",
+        timeoutMs: Number(process.env.MBM_OFFICIAL_CONFORMANCE_TIMEOUT_MS || 60_000),
+        verbose: process.env.MBM_OFFICIAL_CONFORMANCE_VERBOSE === "1",
+        expectedFailures: path.join(packageRoot, "tests", "mcp-conformance-baseline.yml"),
+      });
+      logs = appendBounded(logs, `\n--- official conformance ${scenario} ---\n${conformance.stdout}\n${conformance.stderr}`);
+      if (conformance.code !== 0 && process.env.MBM_OFFICIAL_CONFORMANCE_ALLOW_FAILURE !== "1") {
+        throw new Error(`official MCP conformance scenario failed: ${scenario}\n${conformance.stdout}\n${conformance.stderr}`);
+      }
+    }
+  }
   const retainedFamilyAccess = await stableFetch(`${base}/mcp`, {
     method: "POST",
     headers: {
@@ -441,6 +478,71 @@ try {
     body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "concurrent-refresh", version: "1" } } }),
   });
   assert(retainedFamilyAccess.status === 200, "concurrent refresh retry invalidated the replacement access token");
+
+  const modernDiscovery = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: modernMcpHeaders(ownerAccessToken, "server/discover"),
+    body: JSON.stringify(modernRequest(9000, "server/discover", {})),
+  });
+  assert(modernDiscovery.response.status === 200, `modern server/discover failed: ${modernDiscovery.response.status}`);
+  assert(modernDiscovery.body.result?.resultType === "complete"
+    && JSON.stringify(modernDiscovery.body.result?.supportedVersions) === JSON.stringify(["2026-07-28"]),
+  "modern discovery omitted resultType or advertised a legacy per-request retry version");
+  assert(modernDiscovery.body.result?.cacheScope === "public"
+    && modernDiscovery.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
+  "modern discovery omitted cache or server identity metadata");
+  assert(modernDiscovery.response.headers.get("mcp-session-id") === null, "modern discovery minted a protocol session");
+
+  const spoofedModernCancelHeaders = modernMcpHeaders(ownerAccessToken, "tools/list");
+  spoofedModernCancelHeaders["x-machine-bridge-internal-mcp-stream-mode"] = "modern-cancel";
+  spoofedModernCancelHeaders["x-machine-bridge-internal-mcp-stream-id"] = `stream_${"S".repeat(43)}`;
+  const spoofedModernCancel = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: spoofedModernCancelHeaders,
+    body: JSON.stringify(modernRequest(90001, "tools/list", {})),
+  });
+  assert(spoofedModernCancel.response.status === 200
+    && Array.isArray(spoofedModernCancel.body.result?.tools),
+  "public internal modern-cancel headers reached the Durable Object control path");
+
+  const modernMissingMethodHeaders = modernMcpHeaders(ownerAccessToken, "server/discover");
+  delete modernMissingMethodHeaders["Mcp-Method"];
+  const modernMissingMethod = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: modernMissingMethodHeaders,
+    body: JSON.stringify(modernRequest(9001, "server/discover", {})),
+  });
+  assert(modernMissingMethod.response.status === 400 && modernMissingMethod.body.error?.code === -32020,
+    "modern request missing Mcp-Method did not fail with HeaderMismatch");
+
+  const unsupportedModern = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: modernMcpHeaders(ownerAccessToken, "tools/list", "", "1900-01-01"),
+    body: JSON.stringify(modernRequest(9002, "tools/list", {}, "1900-01-01")),
+  });
+  assert(unsupportedModern.response.status === 400 && unsupportedModern.body.error?.code === -32022,
+    "modern unsupported version did not use the protocol-defined error");
+  assert(JSON.stringify(unsupportedModern.body.error?.data?.supported) === JSON.stringify(["2026-07-28"]),
+    "modern unsupported-version error advertised a legacy retry version");
+
+  const modernGet = await stableFetch(`${base}/mcp`, {
+    method: "GET",
+    headers: { authorization: `Bearer ${ownerAccessToken}`, "MCP-Protocol-Version": "2026-07-28" },
+  });
+  assert(modernGet.status === 405 && modernGet.headers.get("allow") === "POST", "modern MCP GET was not rejected");
+
+  const modernToolsWithoutDaemon = await modernCall(base, ownerAccessToken, 9003, "tools/list", {});
+  assert(modernToolsWithoutDaemon.response.status === 200
+    && modernToolsWithoutDaemon.body.result?.resultType === "complete"
+    && modernToolsWithoutDaemon.body.result?.cacheScope === "private",
+  "modern tools/list omitted complete/private cache semantics");
+  const modernUnavailable = await modernCall(base, ownerAccessToken, 9004, "tools/call", {
+    name: "list_dir", arguments: { path: "." },
+  });
+  assert(modernUnavailable.body.result?.resultType === "complete"
+    && modernUnavailable.body.result?.isError === true
+    && modernUnavailable.body.result?.structuredContent?.error?.code === "unavailable",
+  "modern tool call without a daemon did not fail closed inside a complete tool result");
 
   const reviewerRegistration = await registerTestClient({ base, redirectUri, name: "Reviewer Integration Client" });
   const reviewerCredentials = await issueAccountToken({
@@ -505,7 +607,7 @@ try {
     }),
   });
   assert(initialized.response.status === 200, `authenticated initialize failed: ${initialized.response.status}`);
-  assert(initialized.body.result?.protocolVersion === "2025-11-25", "initialize did not negotiate the latest supported protocol");
+  assert(initialized.body.result?.protocolVersion === "2025-11-25", "legacy initialize did not negotiate the supported compatibility protocol");
   assert(initialized.body.result?.serverInfo?.version === pkg.version, "initialize returned the wrong Worker version");
   assert(initialized.body.result?.capabilities?.tools, "initialize omitted tools capability");
   assert(initialized.body.result.capabilities.tools.listChanged === false, "stable tool catalog did not declare listChanged=false");
@@ -675,6 +777,122 @@ try {
   assert(!statusAfterHello.daemon?.tools?.includes("exec_command"), "agent policy did not filter shell execution");
   assert(!statusAfterHello.daemon?.tools?.includes("read_file"), "replaced daemon tools remained active");
 
+  const modernAgentTools = await modernCall(base, ownerAccessToken, 9100, "tools/list", {});
+  assert(modernAgentTools.response.status === 200
+    && modernAgentTools.body.result?.resultType === "complete"
+    && modernAgentTools.body.result?.tools?.some((tool) => tool.name === "run_process"),
+  "modern tools/list did not expose the authenticated stable catalog");
+
+  const modernRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const modernToolPromise = modernCall(base, ownerAccessToken, 9101, "tools/call", {
+    name: "list_dir", arguments: { path: "." },
+  });
+  const modernRelay = await modernRelayPromise;
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: modernRelay.id, ok: true, result: { modern: true } }));
+  const modernTool = await modernToolPromise;
+  assert(modernTool.response.status === 200
+    && modernTool.body.result?.resultType === "complete"
+    && modernTool.body.result?.structuredContent?.modern === true
+    && modernTool.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
+  "modern tools/call lost resultType, structured content, or server identity");
+  assert(modernTool.response.headers.get("mcp-session-id") === null, "modern tool call minted a legacy session");
+
+  const malformedMessages = captureWsMessageTypes(candidateDaemon);
+  const malformedModernTool = await modernCall(base, ownerAccessToken, 9107, "tools/call", {
+    name: "list_dir", arguments: { path: ".", unexpected: "must-not-dispatch" },
+  });
+  assert(malformedModernTool.body.error?.code === -32602
+    && malformedModernTool.body.error?.data?.validation_issues?.[0]?.instancePath === "/unexpected",
+  "modern malformed tool arguments were not returned as Invalid params");
+  assert(!malformedMessages.stop().includes("tool_call"), "modern malformed tool arguments reached the daemon");
+  const unknownMessages = captureWsMessageTypes(candidateDaemon);
+  const unknownModernTool = await modernCall(base, ownerAccessToken, 9108, "tools/call", {
+    name: "missing_tool", arguments: {},
+  });
+  assert(unknownModernTool.body.error?.code === -32602, "modern unknown tool was not returned as Invalid params");
+  assert(!unknownMessages.stop().includes("tool_call"), "modern unknown tool reached the daemon");
+
+  const mismatchMessages = captureWsMessageTypes(candidateDaemon);
+  const mismatchedName = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: modernMcpHeaders(ownerAccessToken, "tools/call", "read_file"),
+    body: JSON.stringify(modernRequest(9102, "tools/call", { name: "list_dir", arguments: { path: "." } })),
+  });
+  assert(mismatchedName.response.status === 400 && mismatchedName.body.error?.code === -32020,
+    "modern Mcp-Name/body mismatch was accepted");
+  assert(!mismatchMessages.stop().includes("tool_call"), "header mismatch reached the daemon");
+
+  const modernInitialize = await modernCall(base, ownerAccessToken, 9109, "initialize", {});
+  assert(modernInitialize.response.status === 404 && modernInitialize.body.error?.code === -32601,
+    "modern HTTP initialize entered the legacy adapter");
+
+  const removedPing = await modernCall(base, ownerAccessToken, 9103, "ping", {});
+  assert(removedPing.response.status === 404 && removedPing.body.error?.code === -32601,
+    "modern HTTP retained removed ping semantics");
+
+  const invalidSubscription = await modernCall(base, ownerAccessToken, 9111, "subscriptions/listen", {});
+  assert(invalidSubscription.response.status === 400 && invalidSubscription.body.error?.code === -32602,
+    "modern HTTP accepted a missing subscription filter");
+
+  const subscriptionResponse = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: modernMcpHeaders(ownerAccessToken, "subscriptions/listen"),
+    body: JSON.stringify(modernRequest(9104, "subscriptions/listen", {
+      notifications: { toolsListChanged: true },
+    })),
+  });
+  const subscriptionText = await subscriptionResponse.text();
+  const subscriptionMessages = subscriptionText.split(/\r?\n/)
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)));
+  assert(subscriptionResponse.status === 200
+    && subscriptionResponse.headers.get("content-type")?.startsWith("text/event-stream")
+    && subscriptionResponse.headers.get("x-accel-buffering") === "no",
+  "modern subscriptions/listen did not use a non-buffered SSE response");
+  assert(!subscriptionText.split(/\r?\n/).some((line) => line.startsWith("id:")),
+    "modern subscription emitted a legacy resumable event id");
+  assert(subscriptionMessages[0]?.method === "notifications/subscriptions/acknowledged"
+    && Object.keys(subscriptionMessages[0]?.params?.notifications || {}).length === 0,
+  "modern subscription acknowledged an unsupported notification type");
+  assert(subscriptionMessages[1]?.id === 9104
+    && subscriptionMessages[1]?.result?.resultType === "complete",
+  "modern subscription did not terminate with a complete result");
+
+  const modernNotification = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: modernMcpHeaders(ownerAccessToken, "notifications/cancelled"),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: {
+        _meta: modernRequest(0, "unused", {}).params._meta,
+        requestId: 9105,
+      },
+    }),
+  });
+  assert(modernNotification.response.status === 404 && modernNotification.body.error?.code === -32601,
+    "modern HTTP accepted a stdio-only cancellation notification");
+
+  const duplicateRelaySequence = waitForWsMessageSequence(candidateDaemon, ["tool_call", "tool_call"], 10_000);
+  const duplicateModernA = modernCall(base, ownerAccessToken, 9110, "tools/call", {
+    name: "list_dir", arguments: { path: "." },
+  });
+  const duplicateModernB = modernCall(base, ownerAccessToken, 9110, "tools/call", {
+    name: "list_dir", arguments: { path: "." },
+  });
+  const [duplicateRelayA, duplicateRelayB] = await duplicateRelaySequence;
+  assert(duplicateRelayA.id !== duplicateRelayB.id,
+    "modern HTTP requests sharing a JSON-RPC id reused an internal daemon call id");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: duplicateRelayA.id, ok: true, result: { request: "a" } }));
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: duplicateRelayB.id, ok: true, result: { request: "b" } }));
+  const [duplicateResultA, duplicateResultB] = await Promise.all([duplicateModernA, duplicateModernB]);
+  const duplicateValues = [
+    duplicateResultA.body.result?.structuredContent?.request,
+    duplicateResultB.body.result?.structuredContent?.request,
+  ].sort();
+  assert(JSON.stringify(duplicateValues) === JSON.stringify(["a", "b"]),
+    "stateless modern HTTP calls with the same request id conflicted or crossed results");
+
   const remoteAgentTools = await callToolsList(base, ownerAccessToken, 2501);
   const remoteRunProcess = remoteAgentTools.find((tool) => tool.name === "run_process");
   assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 85
@@ -686,10 +904,10 @@ try {
   });
   assert(!overLimitMessages.stop().includes("tool_call"),
     "over-limit JSON tool call reached the daemon before rejection");
-  assert(overLimit.result?.isError === true, "over-limit foreground call was not rejected");
-  assert(overLimit.result?.structuredContent?.error?.details?.side_effects_started === false
-    && overLimit.result?.structuredContent?.error?.details?.maximum_foreground_timeout_seconds === 85,
-  "over-limit foreground rejection omitted the pre-dispatch safety contract");
+  assert(overLimit.error?.code === -32602
+    && overLimit.error?.data?.side_effects_started === false
+    && overLimit.error?.data?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "maximum"),
+  "over-limit foreground rejection omitted its pre-dispatch schema contract");
 
   const malformedTimeoutMessages = captureWsMessageTypes(candidateDaemon);
   const malformedTimeout = await callTool(base, ownerAccessToken, primarySession, 25021, "run_process", {
@@ -697,10 +915,25 @@ try {
   });
   assert(!malformedTimeoutMessages.stop().includes("tool_call"),
     "malformed JSON foreground timeout reached the daemon before rejection");
-  assert(malformedTimeout.result?.isError === true
-    && malformedTimeout.result?.structuredContent?.error?.details?.side_effects_started === false
-    && malformedTimeout.result?.structuredContent?.error?.details?.minimum_foreground_timeout_seconds === 1,
-  "malformed foreground timeout omitted the strict pre-dispatch contract");
+  assert(malformedTimeout.error?.code === -32602
+    && malformedTimeout.error?.data?.side_effects_started === false
+    && malformedTimeout.error?.data?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "type"),
+  "malformed foreground timeout omitted its pre-dispatch schema contract");
+
+  const missingNameMessages = captureWsMessageTypes(candidateDaemon);
+  const missingName = await callTool(base, ownerAccessToken, primarySession, 25022, "", {});
+  assert(!missingNameMessages.stop().includes("tool_call")
+    && missingName.error?.code === -32602
+    && missingName.error?.message === "tools/call requires a tool name",
+  "legacy tools/call without a name escaped protocol validation");
+
+  const nonObjectArgumentsMessages = captureWsMessageTypes(candidateDaemon);
+  const nonObjectArguments = await callTool(base, ownerAccessToken, primarySession, 25023, "list_dir", []);
+  assert(!nonObjectArgumentsMessages.stop().includes("tool_call")
+    && nonObjectArguments.error?.code === -32602
+    && nonObjectArguments.error?.data?.side_effects_started === false
+    && nonObjectArguments.error?.data?.validation_issues?.some((issue) => issue.instancePath === "" && issue.keyword === "type"),
+  "legacy tools/call silently coerced non-object arguments");
 
   const overLimitStreamMessages = captureWsMessageTypes(candidateDaemon);
   const overLimitStreamResponse = await stableFetch(`${base}/mcp`, {
@@ -714,18 +947,16 @@ try {
       params: { name: "run_process", arguments: { argv: ["must-not-stream-run"], timeout_seconds: 120 } },
     }),
   });
-  assert(overLimitStreamResponse.status === 200
-    && overLimitStreamResponse.headers.get("content-type")?.startsWith("text/event-stream"),
-  "over-limit streamed call did not settle through the resumable MCP path");
-  const overLimitStreamReader = overLimitStreamResponse.body.getReader();
-  const overLimitInitial = await readSseInitialEvent(overLimitStreamReader);
-  const overLimitStream = await readSseJsonRpcResponse(overLimitStreamReader, overLimitInitial.text);
+  const overLimitStream = await overLimitStreamResponse.json();
+  assert(overLimitStreamResponse.status === 400
+    && overLimitStreamResponse.headers.get("content-type")?.startsWith("application/json"),
+  "invalid streamed tool call allocated a resumable stream before schema validation");
   assert(!overLimitStreamMessages.stop().includes("tool_call"),
     "over-limit streamed tool call reached the daemon before rejection");
-  assert(overLimitStream.message.result?.isError === true
-    && overLimitStream.message.result?.structuredContent?.error?.details?.side_effects_started === false
-    && overLimitStream.message.result?.structuredContent?.error?.details?.maximum_foreground_timeout_seconds === 85,
-  "over-limit streamed call omitted the pre-dispatch no-side-effect error");
+  assert(overLimitStream.error?.code === -32602
+    && overLimitStream.error?.data?.side_effects_started === false
+    && overLimitStream.error?.data?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "maximum"),
+  "invalid streamed call omitted its pre-dispatch schema contract");
 
   const streamedRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const streamedResponsePromise = stableFetch(`${base}/mcp`, {
@@ -1009,6 +1240,7 @@ try {
   assert(reviewerTools.some((tool) => tool.name === "list_dir"), "reviewer could not access a read-only daemon tool");
   assert(!reviewerTools.some((tool) => tool.name === "run_process"), "reviewer was shown a process-execution tool");
 
+  const reviewerDeniedMessages = captureWsMessageTypes(candidateDaemon);
   const reviewerDenied = await fetchJson(`${base}/mcp`, {
     method: "POST",
     headers: {
@@ -1018,8 +1250,10 @@ try {
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 271, method: "tools/call", params: { name: "run_process", arguments: { argv: ["true"] } } }),
   });
-  assert(reviewerDenied.body.result?.isError === true, "reviewer process execution was not rejected");
-  assert(JSON.stringify(reviewerDenied.body.result).includes("not allowed for this account role"), "reviewer denial returned the wrong reason");
+  assert(!reviewerDeniedMessages.stop().includes("tool_call"), "reviewer process execution reached the daemon");
+  assert(reviewerDenied.body.error?.code === -32602
+    && reviewerDenied.body.error?.message === "Unknown tool",
+  "reviewer process execution was not rejected at the role-filtered protocol boundary");
 
   const reviewerReadPromise = fetchJson(`${base}/mcp`, {
     method: "POST",
@@ -1494,6 +1728,57 @@ function mcpHeaders(accessToken, sessionId = "") {
     "mcp-protocol-version": "2025-11-25",
     ...(sessionId ? { "mcp-session-id": sessionId } : {}),
   };
+}
+
+function modernMcpHeaders(accessToken, method, name = "", version = "2026-07-28") {
+  return {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    authorization: `Bearer ${accessToken}`,
+    "MCP-Protocol-Version": version,
+    "Mcp-Method": method,
+    ...(name ? { "Mcp-Name": encodeMcpHeaderValue(name) } : {}),
+  };
+}
+
+function modernRequest(id, method, params, version = "2026-07-28") {
+  return {
+    jsonrpc: "2.0",
+    id,
+    method,
+    params: {
+      ...params,
+      _meta: {
+        "io.modelcontextprotocol/protocolVersion": version,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": { name: "worker-modern-integration", version: "1" },
+      },
+    },
+  };
+}
+
+async function modernCall(origin, accessToken, id, method, params) {
+  const name = method === "tools/call" ? String(params.name || "") : "";
+  const response = await stableFetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: modernMcpHeaders(accessToken, method, name),
+    body: JSON.stringify(modernRequest(id, method, params)),
+  });
+  const text = await response.text();
+  if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
+    const messages = text.split(/\r?\n/).filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)));
+    return { response, body: messages.at(-1) ?? {}, text };
+  }
+  let body;
+  try { body = JSON.parse(text); } catch { body = { unparsed: text }; }
+  return { response, body, text };
+}
+
+function encodeMcpHeaderValue(value) {
+  const text = String(value);
+  const plain = text === text.trim() && /^[\x20-\x7e]*$/.test(text) && !(text.startsWith("=?base64?") && text.endsWith("?="));
+  return plain ? text : `=?base64?${Buffer.from(text, "utf8").toString("base64")}?=`;
 }
 
 function toolCallRequest(origin, accessToken, sessionId, id, name, argumentsValue) {

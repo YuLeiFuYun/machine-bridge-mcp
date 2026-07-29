@@ -1,5 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { PendingCallRegistrationError, PendingCallRegistry } from "./pending-calls.ts";
 import { PendingAdmissionGate } from "./pending-admission.ts";
@@ -13,8 +12,11 @@ import {
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
-import { mcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
+import { legacyMcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
+import { LegacyMcpDispatcher } from "./mcp-legacy-dispatch.ts";
+import { inspectWorkerToolCall } from "./mcp-tool-call-input.ts";
 import { acceptsEventStream } from "./mcp-stream.ts";
+import { ModernMcpController } from "./mcp-modern-controller.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { handleMcpResumptionRequest } from "./mcp-resumption-http.ts";
 import {
@@ -30,44 +32,39 @@ import { WorkerObservability } from "./observability.ts";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access.ts";
-import { OAuthController, type AuthorizedToken, type OAuthControllerEnv } from "./oauth-controller.ts";
+import { OAuthController, type AuthorizedToken } from "./oauth-controller.ts";
 import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority.ts";
-import { serverInfoTool, workspaceTools } from "./tool-catalog.ts";
+import { serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./tool-catalog.ts";
+import { detectHttpMcpEra, McpHttpContractError, validateModernHttpRequest } from "./mcp-http-contract.ts";
 import { randomToken } from "./oauth-state.ts";
 import {
-  HttpError, applyCors, baseUrl, corsPreflight, json, methodNotAllowed,
+  HttpError, applyCors, baseUrl, corsPreflight, json, mcpOriginRejection, methodNotAllowed,
   parseJsonRequest, workerErrorClass,
 } from "./http.ts";
 import { authorizationServerMetadata } from "./worker-metadata.ts";
+import { workerBodyLimitBytes, type BridgeEnv } from "./worker-runtime-config.ts";
 import {
-  asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
-  sessionInstructionText, textToolResult, validateProtocolVersionHeader, type JsonRpcRequest,
+  MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_LEGACY_PROTOCOL_VERSIONS,
+  MCP_MODERN_PROTOCOL_VERSIONS, MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS,
+  SERVER_NAME, mcpServerInfo,
+} from "./worker-mcp-config.ts";
+import {
+  MCP_LEGACY_PROTOCOL_VERSION, MCP_MODERN_PROTOCOL_VERSION,
+} from "../shared/mcp-protocol.mjs";
+import {
+  asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError,
+  validateProtocolVersionHeader, type JsonRpcRequest,
 } from "./mcp-jsonrpc.ts";
 import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
 
-const SERVER_NAME = String(serverMetadata.name);
-const SERVER_VERSION = "3.0.0-beta.24";
-const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
-const MCP_SUPPORTED_PROTOCOL_VERSIONS = serverMetadata.supportedProtocolVersions.map((value) => String(value));
-const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
-const MAX_BODY_BYTES = 16 * 1024 * 1024;
+const SERVER_VERSION = "3.0.0-beta.25";
+const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
-
-interface BridgeEnv extends OAuthControllerEnv {
-  BRIDGE: DurableObjectNamespace<BridgeRoom>;
-  DAEMON_DEVICE_PUBLIC_KEY: string;
-  OAUTH_TOKEN_VERSION: string;
-  MBM_WORKER_MAX_BODY_BYTES?: string;
-  MBM_ALLOWED_ORIGINS?: string;
-  STATEFUL_RATE_LIMITER: RateLimit;
-}
-
-const MCP_INSTRUCTIONS = serverMetadata.instructions.map((value) => String(value)).join("\n");
 
 export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS);
@@ -78,6 +75,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly resumption: McpResumptionStore;
   private readonly durableCalls: DurableStreamCallCoordinator;
   private readonly pendingAdmission = new PendingAdmissionGate();
+  private readonly modernMcp: ModernMcpController;
+  private readonly legacyMcp: LegacyMcpDispatcher;
 
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env);
@@ -99,14 +98,41 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       this.observability,
       MAX_PENDING_CALLS,
     );
+    this.modernMcp = new ModernMcpController({
+      capabilities: MCP_SERVER_CAPABILITIES,
+      serverInfo: MCP_SERVER_INFO,
+      instructions: MCP_INSTRUCTIONS,
+      supportedVersions: MCP_MODERN_PROTOCOL_VERSIONS,
+      discoveryTtlMs: MCP_DISCOVERY_TTL_MS,
+      toolListTtlMs: MCP_TOOL_LIST_TTL_MS,
+      tools: (authorized) => this.allTools(authorized.role),
+      recordError: (code) => this.observability.recordError(code),
+      cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
+      callTool: ({ name, args, base, authorized, signal, requestKey }) => this.callTool(
+        name, args, base, authorized, requestKey, signal,
+      ),
+    });
+    this.legacyMcp = new LegacyMcpDispatcher({
+      defaultVersion: MCP_LEGACY_PROTOCOL_VERSION,
+      supportedVersions: MCP_LEGACY_PROTOCOL_VERSIONS,
+      serverInfo: MCP_SERVER_INFO,
+      instructions: MCP_INSTRUCTIONS,
+      daemonToolEnabled: (name) => this.daemonToolEnabled(name),
+      callDaemonTool: (name, args, authorized) => this.callDaemonTool(name, args, authorized),
+      recordError: (code) => this.observability.recordError(code),
+      cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
+      tools: (authorized) => this.allTools(authorized.role),
+      callTool: ({ name, args, base, authorized, requestKey }) => this.callTool(
+        name, args, base, authorized, requestKey,
+      ),
+    });
   }
-
   async fetch(request: Request): Promise<Response> {
     await this.expireOverdueCalls();
     const base = baseUrl(request);
     const extraOrigins = this.env.MBM_ALLOWED_ORIGINS ?? "";
     let response: Response;
-    if (request.method === "OPTIONS" && request.headers.has("Origin")) response = corsPreflight(request, base, extraOrigins);
+    if (request.method === "OPTIONS" && request.headers.has("Origin")) response = corsPreflight(request, base, extraOrigins, workerToolParameterHeaders);
     else response = applyCors(await this.handleRequest(request, base), request, base, extraOrigins);
     this.observability.requestFinished(response.status);
     return response;
@@ -369,23 +395,31 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     await this.scheduleRuntimeAlarm();
   }
   private async handleMcp(request: Request, base: string): Promise<Response> {
+    const originRejection = mcpOriginRejection(request, base, this.env.MBM_ALLOWED_ORIGINS ?? "");
+    if (originRejection) return originRejection;
+    const headerVersion = request.headers.get("MCP-Protocol-Version")?.trim() ?? "";
     if (request.method !== "GET" && request.method !== "POST") {
-      return new Response(request.method === "HEAD" ? null : JSON.stringify({ error: "mcp endpoint expects GET or POST" }), {
+      return new Response(request.method === "HEAD" ? null : JSON.stringify({ error: "mcp endpoint expects POST, or legacy GET" }), {
         status: 405,
         headers: { "content-type": "application/json; charset=utf-8", "allow": "GET, POST", "cache-control": "no-store" },
       });
+    }
+    if (request.method === "GET" && headerVersion === MCP_MODERN_PROTOCOL_VERSION) {
+      return methodNotAllowed("POST");
     }
 
     const proxyMode = mcpStreamProxyMode(request);
     const subscribed = await handleMcpStreamSubscribeRequest(request, this.streamChannel, this.resumption);
     if (subscribed) return subscribed;
+    const modernControl = await this.modernMcp.handleControl(request, proxyMode);
+    if (modernControl) return modernControl;
 
     const access = await authorizeMcpRequest({
       request,
       base,
       oauth: this.oauth,
       storage: this.ctx.storage,
-      bodyLimitBytes: this.bodyLimitBytes(),
+      bodyLimitBytes: workerBodyLimitBytes(this.env.MBM_WORKER_MAX_BODY_BYTES),
     });
     if (access.response) return access.response;
     if (request.method === "GET") {
@@ -394,153 +428,118 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         request,
         authorized: access.authorized,
         identityKey: this.oauth.identityKey(),
-        supportedVersions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
+        supportedVersions: MCP_LEGACY_PROTOCOL_VERSIONS,
         resumption: this.resumption,
       });
     }
 
-    const body = await parseJsonRequest(request, this.bodyLimitBytes());
-    if (isJsonRpcResponse(body)) return new Response(null, { status: 202 });
+    const body = await parseJsonRequest(request, workerBodyLimitBytes(this.env.MBM_WORKER_MAX_BODY_BYTES));
+    if (isJsonRpcResponse(body)) {
+      return headerVersion === MCP_MODERN_PROTOCOL_VERSION
+        ? json(rpcError(null, -32600, "Clients must not send JSON-RPC responses"), 400)
+        : new Response(null, { status: 202 });
+    }
     if (!isJsonRpcRequest(body)) return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
-    const protocolError = validateProtocolVersionHeader(request, body, MCP_SUPPORTED_PROTOCOL_VERSIONS);
-    if (protocolError) return json(protocolError, 400);
 
+    if (detectHttpMcpEra(request, body) === "modern") {
+      try {
+        const context = validateModernHttpRequest({ request, body, tools: this.allTools(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }> });
+        return await this.modernMcp.handleRequest({
+          request, body, base, authorized: access.authorized,
+          protocolVersion: context.version, proxyMode,
+        });
+      } catch (error) {
+        if (error instanceof McpHttpContractError) {
+          return json(rpcError(body.id, error.code, error.message, error.data), error.status);
+        }
+        throw error;
+      }
+    }
+
+    const protocolError = validateProtocolVersionHeader(request, body, MCP_LEGACY_PROTOCOL_VERSIONS);
+    if (protocolError) return json(protocolError, 400);
     const session = await resolveMcpSession(request, body.method, this.oauth.identityKey(), access.authorized.tokenKey);
     if (session.kind === "invalid") return json(rpcError(body.id, -32001, "MCP session not found"), 404);
     const sessionId = session.kind === "active" ? session.sessionId : "";
 
     if (body.method === "tools/call" && acceptsEventStream(request)) {
-      if (proxyMode !== "prepare") return json(rpcError(body.id, -32603, "MCP stream proxy is unavailable"), 500);
-      if (body.id === undefined || body.id === null) return json(rpcError(null, -32600, "tools/call requires a non-null request id"), 400);
-      const requestId = body.id;
-      const streamId = randomToken("stream");
-      try {
-        await this.resumption.begin({
-          streamId,
-          tokenKey: access.authorized.tokenKey,
-          sessionId,
-          requestId,
-        });
-      } catch (error) {
-        if (error instanceof McpStreamLimitError) {
-          return json(rpcError(requestId, -32004, error.message), 429);
-        }
-        this.observability.event("error", "mcp.stream.begin.failed", { error_class: workerErrorClass(error) });
-        return json(rpcError(requestId, -32603, "Resumable stream storage is unavailable"), 503);
-      }
-
-      const params = asObject(body.params);
-      const name = requiredString(params, "name");
-      const args = asObject(params.arguments);
-      try {
-        if (name === "server_info") {
-          await persistImmediateStreamOutcome({
-            resumption: this.resumption, observability: this.observability, streamId, requestId,
-            outcome: { ok: true, value: await this.serverInfoResult(base, access.authorized) },
-          });
-        } else {
-          if (!workspaceTools.some((tool) => tool.name === name)) throw new Error(`unknown tool: ${name}`);
-          if (!accountRoleAllowsTool(access.authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
-          this.reclaimStaleDaemonSockets();
-          const socket = this.daemonRegistry.readySockets()[0];
-          if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
-          const attachment = this.daemonRegistry.readyAttachment(socket);
-          const daemonInstanceId = attachment?.instanceId ?? "";
-          const connectionId = attachment?.connectionId ?? "";
-          if (!daemonInstanceId || !connectionId) throw new WorkerToolError("unavailable", "local daemon connection is missing its relay identity", true);
-          if (!attachment?.tools?.includes(name)) throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
-          await this.pendingAdmission.run(() => startEventDrivenStreamCall({
-            resumption: this.resumption, observability: this.observability,
-            streamId, requestId, clientRequestKey: mcpClientRequestKey(access.authorized.tokenKey, sessionId, requestId),
-            tool: name, arguments: args, socket, daemonInstanceId, connectionId, timeoutMs: daemonToolTimeoutMs(name, args),
-            transientActiveCount: this.pending.size, maximumPendingCalls: MAX_PENDING_CALLS,
-            authorization: {
-              account_id: access.authorized.accountId, account_version: access.authorized.accountVersion,
-              client_id: access.authorized.clientId, family_id: access.authorized.familyId, role: access.authorized.role,
-            },
-            transform: name === "project_overview" ? {
-              kind: "project_overview", account_id: access.authorized.accountId,
-              account_version: access.authorized.accountVersion, role: access.authorized.role,
-            } : undefined,
-            onSendFailure: () => this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed"),
-          }));
-          await this.scheduleRuntimeAlarm();
-        }
-      } catch (error) {
-        await persistImmediateStreamOutcome({
-          resumption: this.resumption, observability: this.observability, streamId, requestId,
-          outcome: { ok: false, error: error instanceof Error ? error : new Error("streamed tool call failed") },
-        });
-      }
-      return mcpStreamDescriptorResponse("initial", streamId);
+      return await this.handleLegacyStreamedToolCall(body, base, access.authorized, sessionId, proxyMode);
     }
-
-    const response = await this.dispatchJsonRpc(body, base, access.authorized, sessionId);
+    const response = await this.legacyMcp.dispatch(body, base, access.authorized, sessionId);
     if (response === null) return new Response(null, { status: 202 });
     return session.kind === "initialize" ? json(response, 200, { "mcp-session-id": session.sessionId }) : json(response);
   }
 
-  private async dispatchJsonRpc(
-    request: JsonRpcRequest,
+  private async handleLegacyStreamedToolCall(
+    body: JsonRpcRequest,
     base: string,
     authorized: AuthorizedToken,
     sessionId: string,
-  ): Promise<Record<string, unknown> | null> {
-    if (request.method === "initialize") {
-      const requested = asObject(request.params).protocolVersion;
-      const protocolVersion = typeof requested === "string" && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested as typeof MCP_SUPPORTED_PROTOCOL_VERSIONS[number])
-        ? requested
-        : MCP_PROTOCOL_VERSION;
-      let bootstrap = null;
-      if (this.daemonToolEnabled("session_bootstrap")) {
-        try {
-          bootstrap = await this.callDaemonTool("session_bootstrap", { path: "." }, authorized);
-        } catch {
-          // Initialization remains usable without optional local instructions, but the degradation is observable.
-          this.observability.recordError("session_bootstrap_failed");
-        }
+    proxyMode: ReturnType<typeof mcpStreamProxyMode>,
+  ): Promise<Response> {
+    if (proxyMode !== "prepare") return json(rpcError(body.id, -32603, "MCP stream proxy is unavailable"), 500);
+    if (body.id === undefined || body.id === null) return json(rpcError(null, -32600, "tools/call requires a non-null request id"), 400);
+    const requestId = body.id;
+    const inspected = inspectWorkerToolCall(body.params, this.allTools(authorized.role));
+    if (!inspected.ok) {
+      const message = inspected.reason === "missing_name" ? "tools/call requires a tool name"
+        : inspected.reason === "unknown_tool" ? "Unknown tool"
+          : "Tool arguments do not match the input schema";
+      return json(rpcError(requestId, -32602, message, inspected.issues ? { side_effects_started: false, validation_issues: [...inspected.issues] } : undefined), 400);
+    }
+    const { name, args } = inspected;
+    const streamId = randomToken("stream");
+    try {
+      await this.resumption.begin({ streamId, tokenKey: authorized.tokenKey, sessionId, requestId });
+    } catch (error) {
+      if (error instanceof McpStreamLimitError) return json(rpcError(requestId, -32004, error.message), 429);
+      this.observability.event("error", "mcp.stream.begin.failed", { error_class: workerErrorClass(error) });
+      return json(rpcError(requestId, -32603, "Resumable stream storage is unavailable"), 503);
+    }
+
+    try {
+      if (name === "server_info") {
+        await persistImmediateStreamOutcome({
+          resumption: this.resumption, observability: this.observability, streamId, requestId,
+          outcome: { ok: true, value: await this.serverInfoResult(base, authorized) },
+        });
+      } else {
+        if (!workspaceTools.some((tool) => tool.name === name)) throw new Error("unknown tool");
+        if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
+        this.reclaimStaleDaemonSockets();
+        const socket = this.daemonRegistry.readySockets()[0];
+        if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
+        const attachment = this.daemonRegistry.readyAttachment(socket);
+        const daemonInstanceId = attachment?.instanceId ?? "";
+        const connectionId = attachment?.connectionId ?? "";
+        if (!daemonInstanceId || !connectionId) throw new WorkerToolError("unavailable", "local daemon connection is missing its relay identity", true);
+        if (!attachment?.tools?.includes(name)) throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
+        await this.pendingAdmission.run(() => startEventDrivenStreamCall({
+          resumption: this.resumption, observability: this.observability,
+          streamId, requestId, clientRequestKey: legacyMcpClientRequestKey(authorized.tokenKey, sessionId, requestId),
+          tool: name, arguments: args, socket, daemonInstanceId, connectionId, timeoutMs: daemonToolTimeoutMs(name, args),
+          transientActiveCount: this.pending.size, maximumPendingCalls: MAX_PENDING_CALLS,
+          authorization: {
+            account_id: authorized.accountId, account_version: authorized.accountVersion,
+            client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
+          },
+          transform: name === "project_overview" ? {
+            kind: "project_overview", account_id: authorized.accountId,
+            account_version: authorized.accountVersion, role: authorized.role,
+          } : undefined,
+          onSendFailure: () => this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed"),
+        }));
+        await this.scheduleRuntimeAlarm();
       }
-      const localInstructions = sessionInstructionText(bootstrap);
-      return rpcResult(request.id, {
-        protocolVersion,
-        capabilities: { tools: { listChanged: false }, logging: {} },
-        serverInfo: {
-          name: SERVER_NAME,
-          title: "Machine Bridge MCP",
-          version: SERVER_VERSION,
-          description: "Workspace-scoped local coding tools over authenticated remote relay.",
-        },
-        instructions: localInstructions ? `${MCP_INSTRUCTIONS}\n\n--- LOCAL SESSION INSTRUCTIONS ---\n${localInstructions}` : MCP_INSTRUCTIONS,
+    } catch (error) {
+      await persistImmediateStreamOutcome({
+        resumption: this.resumption, observability: this.observability, streamId, requestId,
+        outcome: { ok: false, error: error instanceof Error ? error : new Error("streamed tool call failed") },
       });
     }
-    if (request.method === "notifications/initialized") return null;
-    if (request.method === "notifications/cancelled") {
-      await this.cancelClientRequest(mcpClientRequestKey(authorized.tokenKey, sessionId, asObject(request.params).requestId));
-      return null;
-    }
-    if (request.method === "logging/setLevel") return rpcResult(request.id, {});
-    if (request.method === "ping") return rpcResult(request.id, {});
-    if (request.method === "tools/list") return rpcResult(request.id, { tools: this.allTools(authorized.role) });
-    if (request.method === "tools/call") {
-      if (request.id === undefined || request.id === null) return rpcError(null, -32600, "tools/call requires a non-null request id");
-      const params = asObject(request.params);
-      const name = requiredString(params, "name");
-      const args = asObject(params.arguments);
-      try {
-        const result = await this.callTool(
-          name,
-          args,
-          base,
-          authorized,
-          mcpClientRequestKey(authorized.tokenKey, sessionId, request.id),
-        );
-        return rpcResult(request.id, textToolResult(result));
-      } catch (error) {
-        return rpcResult(request.id, textToolResult({ error: publicWorkerToolError(error) }, true));
-      }
-    }
-    return rpcError(request.id, -32601, `Method not found: ${request.method}`);
+    return mcpStreamDescriptorResponse("initial", streamId);
   }
+
   private async serverInfoResult(base: string, authorized: AuthorizedToken): Promise<Record<string, unknown>> {
     const { daemon, effectiveTools, advertisedTools, authorization } = this.authorityContext(authorized);
     return buildServerInfoResult({
@@ -550,27 +549,45 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       daemonRegistry: this.daemonRegistry, observability: this.observability,
     });
   }
+  private assertWorkerToolArguments(name: string, args: unknown): void {
+    const validation = validateWorkerToolArguments(name, args);
+    if (!validation.known) throw new WorkerToolError("not_found", "unknown tool");
+    if (!validation.valid) {
+      try { daemonToolTimeoutMs(name, asObject(args)); }
+      catch (error) { if (error instanceof WorkerToolError) throw error; }
+      throw new WorkerToolError(
+        "invalid_request",
+        "tool arguments do not match the input schema",
+        false,
+        { tool: name, validation_issues: [...validation.issues] },
+      );
+    }
+  }
+
   private async callTool(
     name: string,
     args: Record<string, unknown>,
     base: string,
     authorized: AuthorizedToken,
     requestKey?: string,
+    signal?: AbortSignal,
   ): Promise<unknown> {
+    this.assertWorkerToolArguments(name, args);
     if (name === "server_info") return this.serverInfoResult(base, authorized);
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
-      const result = await this.callDaemonTool(name, args, authorized, requestKey);
+      const result = await this.callDaemonTool(name, args, authorized, requestKey, signal);
       return name === "project_overview" ? decorateProjectOverview(result, { accountId: authorized.accountId,
         accountVersion: authorized.accountVersion, role: authorized.role }) : result;
     }
-    throw new Error(`unknown tool: ${name}`);
+    throw new Error("unknown tool");
   }
   private async callDaemonTool(
     name: string,
     args: Record<string, unknown>,
     authorized: AuthorizedToken,
     requestKey?: string,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     this.reclaimStaleDaemonSockets();
     const socket = this.daemonRegistry.readySockets()[0];
@@ -596,6 +613,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           tool: name,
           timeoutMs,
           onTimeout: (record) => this.daemonCallTimeout(record, name),
+          signal,
+          onAbort: (record) => this.daemonCallCancellation(record),
         });
       });
     } catch (error) {
@@ -633,6 +652,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private daemonCallTimeout(record: import("./pending-call-contract.ts").PendingCallRecord, name: string): Error {
     if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
     return new WorkerToolError("timeout", `daemon tool timed out: ${name}`, true);
+  }
+  private daemonCallCancellation(record: import("./pending-call-contract.ts").PendingCallRecord): Error {
+    if (record.socket) sendWebSocketQuietly(record.socket, { type: "cancel_call", id: record.id });
+    return new WorkerToolError("cancelled", "tool call cancelled when its HTTP response stream closed");
   }
 
   private async cancelClientRequest(requestKey?: string): Promise<void> {
@@ -813,11 +836,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     };
   }
 
-  private bodyLimitBytes(): number {
-    const parsed = Number.parseInt(this.env.MBM_WORKER_MAX_BODY_BYTES ?? "", 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_BODY_BYTES;
-    return Math.min(parsed, MAX_BODY_BYTES);
-  }
 }
 
 export default {

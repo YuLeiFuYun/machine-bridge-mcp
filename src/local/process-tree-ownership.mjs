@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 
-const PROCESS_SNAPSHOT_TIMEOUT_MS = 3000;
+export const DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS = 3000;
 /** @typedef {import("./process-tree-ownership-types.d.ts").ChildProcessIdentity} ChildProcessIdentity */
 /** @typedef {import("./process-tree-ownership-types.d.ts").ProcessGroupEntry} ProcessGroupEntry */
 /** @typedef {import("./process-tree-ownership-types.d.ts").ProcessOwnershipMember} ProcessOwnershipMember */
@@ -69,9 +69,9 @@ function defaultSpawnSyncProcess(/** @type {string} */ command, /** @type {strin
   const result = spawnSync(command, args, /** @type {import("node:child_process").SpawnSyncOptionsWithStringEncoding} */ (/** @type {unknown} */ (options)));
   return { error: result.error, status: result.status, stdout: result.stdout };
 }
-function createSnapshotBudget(/** @type {ProcessOwnershipOptions} */ options) { const total = boundedPositive(options.ownershipCheckBudgetMs, PROCESS_SNAPSHOT_TIMEOUT_MS); const deadline = createMonotonicDeadline(total, options.monotonicNow); let unallocated = total; return { take(/** @type {number} */ slots) { const remaining = Math.min(unallocated, Math.floor(deadline.remainingMs())); if (remaining < 1) return 0; const value = Math.max(1, Math.min(PROCESS_SNAPSHOT_TIMEOUT_MS, Math.floor(remaining / Math.max(1, slots)))); unallocated -= value; return value; } }; }
-function snapshotTimeout(/** @type {ProcessOwnershipOptions} */ options) { return boundedPositive(options.processSnapshotTimeoutMs, PROCESS_SNAPSHOT_TIMEOUT_MS); }
-function boundedPositive(/** @type {unknown} */ value, /** @type {number} */ fallback) { const parsed = Number(value); return Number.isFinite(parsed) && parsed >= 1 ? Math.min(PROCESS_SNAPSHOT_TIMEOUT_MS, Math.floor(parsed)) : fallback; }
+function createSnapshotBudget(/** @type {ProcessOwnershipOptions} */ options) { const total = boundedPositive(options.ownershipCheckBudgetMs, DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS); const deadline = createMonotonicDeadline(total, options.monotonicNow); let unallocated = total; return { take(/** @type {number} */ slots) { const remaining = Math.min(unallocated, Math.floor(deadline.remainingMs())); if (remaining < 1) return 0; const value = Math.max(1, Math.min(DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, Math.floor(remaining / Math.max(1, slots)))); unallocated -= value; return value; } }; }
+function snapshotTimeout(/** @type {ProcessOwnershipOptions} */ options) { return boundedPositive(options.processSnapshotTimeoutMs, DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS); }
+function boundedPositive(/** @type {unknown} */ value, /** @type {number} */ fallback) { const parsed = Number(value); return Number.isFinite(parsed) && parsed >= 1 ? Math.min(DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, Math.floor(parsed)) : fallback; }
 function parseProcessRow(/** @type {unknown} */ line) { const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(String(line || "")); if (!match) return null; const pid = positivePid(match[1]); const pgid = positivePid(match[2]); const startedAt = Date.parse(match[3]); return pid && pgid && Number.isFinite(startedAt) ? { pid, pgid, startedAt } : null; }
 function isProcessGroupEntry(/** @type {ProcessGroupEntry | null} */ value) { return value !== null; }
 function sameProcessIdentity(/** @type {ProcessOwnershipMember} */ left, /** @type {ProcessOwnershipMember} */ right) { return left.pid === right.pid && typeof left.startedAt === "number" && Number.isFinite(left.startedAt) && typeof right.startedAt === "number" && Number.isFinite(right.startedAt) && left.startedAt === right.startedAt; }

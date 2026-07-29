@@ -1,6 +1,14 @@
 import { performance } from "node:perf_hooks";
-import { errorCode, normalizeBridgeError } from "./errors.mjs";
+import catalog from "../shared/tool-catalog.json" with { type: "json" };
+import { compileToolArgumentValidators } from "../shared/tool-argument-validation.mjs";
+import { BridgeError, errorCode, normalizeBridgeError } from "./errors.mjs";
 import { normalizeToolResult } from "./tool-result-boundary.mjs";
+
+const TOOL_ARGUMENTS = compileToolArgumentValidators(catalog);
+
+export function validateToolArguments(tool, value) {
+  return TOOL_ARGUMENTS.validate(tool, value);
+}
 
 export class ToolExecutor {
   constructor(options = {}) {
@@ -18,11 +26,12 @@ export class ToolExecutor {
       lifecycleMiddleware(this.callRegistry),
       observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs),
       authorizeMiddleware(this.policyGate, this.accountAccessGate, this.operationAuthorizer),
+      validateArgumentsMiddleware(),
     ], invokeHandler(this.handlers));
   }
 
   execute(tool, args = {}, request = {}) {
-    return this.pipeline({ tool: String(tool || ""), args: isRecord(args) ? args : {}, request });
+    return this.pipeline({ tool: String(tool || ""), args, request });
   }
 }
 
@@ -43,6 +52,19 @@ function authorizeMiddleware(policyGate, accountAccessGate, operationAuthorizer)
       if (decision) operation.context.operationAuthorization = decision;
     } else {
       operation.context.authority = accountAccessGate.authority({}, policyGate.policy, "local");
+    }
+    return next(operation);
+  };
+}
+
+function validateArgumentsMiddleware() {
+  return async (operation, next) => {
+    const result = TOOL_ARGUMENTS.validate(operation.tool, operation.args);
+    if (!result.known) throw new BridgeError("not_found", `unknown tool: ${operation.tool}`);
+    if (!result.valid) {
+      throw new BridgeError("invalid_request", `tool arguments do not match the input schema: ${operation.tool}`, {
+        details: { tool: operation.tool, validation_issues: result.issues },
+      });
     }
     return next(operation);
   };
@@ -137,8 +159,4 @@ function safeByteLength(value) {
 
 function shortCallId(value) {
   return String(value || "").slice(0, 20);
-}
-
-function isRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

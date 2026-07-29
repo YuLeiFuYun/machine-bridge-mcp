@@ -1,5 +1,6 @@
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 import { projectMcpResult } from "../shared/result-projection.mjs";
+import { MCP_LEGACY_PROTOCOL_VERSION, resultForProtocol } from "../shared/mcp-protocol.mjs";
 export {
   DEFAULT_POLICY_PROFILE,
   DEFAULT_POLICY_REVISION,
@@ -27,13 +28,13 @@ export const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(serverMetadata.supportedProtocolVersions.map((value) => String(value)));
 export const MCP_INSTRUCTIONS = Object.freeze(serverMetadata.instructions.map((value) => String(value))).join("\n");
 
-export function toolResult(value, isError = false) {
+export function toolResult(value, isError = false, protocolVersion = MCP_LEGACY_PROTOCOL_VERSION, serverInfo) {
   const special = specialMcpResult(value);
-  if (special) return { ...special, isError };
+  if (special) return resultForProtocol(protocolVersion, { ...special, isError }, { serverInfo });
   const projection = projectMcpResult(value);
   const result = { content: [{ type: "text", text: projection.text }], isError };
-  if (projection.structuredContent) result.structuredContent = projection.structuredContent;
-  return result;
+  if (projection.hasStructuredContent) result.structuredContent = structuredClone(projection.structuredContent);
+  return resultForProtocol(protocolVersion, result, { serverInfo });
 }
 
 export function rpcResult(id, result) {
@@ -51,7 +52,7 @@ function specialMcpResult(value) {
   const special = value && typeof value === "object" && !Array.isArray(value) ? value.$mcp : null;
   if (!special || typeof special !== "object" || !Array.isArray(special.content)) return null;
   const result = { content: structuredClone(special.content) };
-  if (special.structuredContent && typeof special.structuredContent === "object" && !Array.isArray(special.structuredContent)) {
+  if (Object.prototype.hasOwnProperty.call(special, "structuredContent")) {
     result.structuredContent = structuredClone(special.structuredContent);
   }
   return result;

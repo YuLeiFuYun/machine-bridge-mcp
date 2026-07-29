@@ -4,6 +4,7 @@ import path, { join } from "node:path";
 import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/runtime.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
 import { delegatedProcessIsolationStatus } from "../src/local/delegated-process-sandbox.mjs";
+import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_GRACE_MS } from "../src/local/process-tree.mjs";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 
 export async function runtimeSelfTest() {
@@ -380,6 +381,9 @@ export async function runtimeSelfTest() {
     if (!/^[a-f0-9]{64}$/.test(routing.last_task_resolution?.task_fingerprint || "") || "task" in (routing.last_task_resolution || {}) || "task_sha256" in (routing.last_task_resolution || {})) {
       throw new Error("capability routing telemetry exposed raw task content or omitted its runtime-keyed fingerprint");
     }
+    if (!routing.last_task_resolution?.primary_route || !["low", "medium", "high"].includes(routing.last_task_resolution?.routing_ambiguity)) {
+      throw new Error("capability routing telemetry omitted the privacy-safe primary route or ambiguity class");
+    }
     const diagnostics = await restricted.diagnoseRuntime();
     if (!diagnostics.request_reached_local_runtime || !diagnostics.checks.some(check => check.layer === "local-process-spawn" && check.ok)) {
       throw new Error("runtime diagnostics did not prove local process execution");
@@ -416,7 +420,7 @@ export async function runtimeSelfTest() {
       // deadline bounded, but long enough to exercise post-start tree cleanup.
       await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 2000), "command timed out");
       const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 5000)).trim());
-      const detachedDeadline = Date.now() + 5000;
+      const detachedDeadline = Date.now() + DEFAULT_PROCESS_TERMINATION_GRACE_MS + DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS + 2000;
       while (isProcessAlive(detachedDescendantPid) && Date.now() < detachedDeadline) {
         await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });
       }

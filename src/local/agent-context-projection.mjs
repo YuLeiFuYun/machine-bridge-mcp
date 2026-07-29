@@ -36,6 +36,9 @@ import { createHash } from "node:crypto";
  */
 /**
  * @typedef {object} ProjectionState
+ * @property {string} target
+ * @property {string} targetDir
+ * @property {string} scopeRoot
  * @property {string[]} configFiles
  * @property {InstructionItem | null} builtinInstructions
  * @property {InstructionItem | null} automaticProjectContext
@@ -47,16 +50,32 @@ import { createHash } from "node:crypto";
 /** @param {ProjectionState} state @param {SkillSummary[]} skills */
 export function capabilityFingerprint(state, skills) {
   return sha256(JSON.stringify({
-    configs: state.configFiles,
+    target: state.target,
+    target_dir: state.targetDir,
+    scope_root: state.scopeRoot,
+    configs: [...state.configFiles],
     instructions: [
-      state.builtinInstructions?.sha256 || "",
-      state.automaticProjectContext?.sha256 || "",
-      state.modelInstructions?.sha256 || "",
-      ...state.instructions.map((item) => item.sha256),
+      instructionFingerprintItem(state.builtinInstructions),
+      instructionFingerprintItem(state.automaticProjectContext),
+      instructionFingerprintItem(state.modelInstructions),
+      ...state.instructions.map(instructionFingerprintItem),
     ],
-    skills: skills.map((skill) => [skill.id, skill.sha256]),
-    commands: [...state.commands.values()].map((command) => [command.name, command.argv]),
+    skills: skills
+      .map((skill) => [skill.id, skill.name, skill.entrypoint, skill.sourceRoot, skill.sha256])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+    commands: [...state.commands.values()]
+      .map((command) => [
+        command.name, command.description, command.argv, command.cwd, command.timeoutSeconds,
+        command.allowExtraArgs, command.source, command.sourceType || "", command.script || "",
+      ])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
   }));
+}
+
+/** @param {InstructionItem | null | undefined} item */
+function instructionFingerprintItem(item) {
+  if (!item) return null;
+  return [item.source || "", item.path || "", item.scope, item.sha256, item.precedence, item.bytes];
 }
 
 /** @param {SkillSummary} skill @param {DisplayPath} displayPath */

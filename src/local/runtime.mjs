@@ -547,7 +547,7 @@ export class LocalRuntime {
       agentContextManager: this.agentContextManager,
       appAutomationManager: this.appAutomationManager,
       capabilityObserver: this.capabilityObserver,
-      policy: this.policy,
+      policy: this.effectivePolicy(context),
     }, args, context);
   }
 
@@ -556,7 +556,7 @@ export class LocalRuntime {
       agentContextManager: this.agentContextManager,
       appAutomationManager: this.appAutomationManager,
       capabilityObserver: this.capabilityObserver,
-      policy: this.policy,
+      policy: this.effectivePolicy(context),
     }, args, context);
   }
 

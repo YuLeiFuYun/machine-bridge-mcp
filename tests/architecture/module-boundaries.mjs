@@ -69,6 +69,7 @@ const boundaryModules = new Set([
   "loopback-health.mjs",
   "cli-local-admin.mjs",
   "capability-ranking.mjs",
+  "execution-routing.mjs",
   "managed-job-plan.mjs",
   "numbers.mjs",
   "project-metadata.mjs",
@@ -163,6 +164,7 @@ const lineLimits = Object.freeze({
   "src/local/default-instructions.mjs": 280,
   "src/local/project-package.mjs": 240,
   "src/local/capability-ranking.mjs": 150,
+  "src/local/execution-routing.mjs": 300,
   "src/local/managed-jobs.mjs": 700,
   "src/local/managed-job-lock.mjs": 140,
   "src/local/managed-job-projection.mjs": 100,
@@ -206,7 +208,9 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-pending-call-storage.ts": 40,
   "src/worker/mcp-pending-call-inspection.ts": 50,
   "src/worker/mcp-stream.ts": 160,
-  "src/worker/mcp-stream-proxy.ts": 180,
+  "src/worker/mcp-stream-proxy.ts": 120,
+  "src/worker/mcp-modern-proxy.ts": 130,
+  "src/worker/mcp-stream-proxy-contract.ts": 100,
   "src/worker/mcp-stream-subscription.ts": 130,
   "src/worker/mcp-stream-channel.ts": 140,
   "src/worker/worker-static-routes.ts": 90,
@@ -286,6 +290,13 @@ if (!workspaceFileSource.includes("patch transaction failed and recovery was inc
     || !workspaceFileSource.includes("Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed")) {
   throw new Error("patch transaction failures or committed-artifact cleanup errors can be silently swallowed");
 }
+const executionRoutingSource = readFileSync(join(localRoot, "execution-routing.mjs"), "utf8");
+if (executionRoutingSource.includes("toolsForPolicy")) {
+  throw new Error("execution routing deep-copies the complete tool schema catalog instead of reading bounded metadata");
+}
+for (const required of ["toolNamesForPolicy", "toolDefinition", "advisory_only", "general escape hatch", "schema_version: 1"]) {
+  if (!executionRoutingSource.includes(required)) throw new Error(`execution routing lost a policy or contract boundary: ${required}`);
+}
 const runtimeBoundarySource = readFileSync(join(localRoot, "runtime.mjs"), "utf8");
 for (const forbidden of [
   "spawn(", "parsePatchEnvelope", "applyUpdateHunks", "workspaceShellCommand(",
@@ -322,10 +333,30 @@ for (const module of ["worker-static-routes", "worker-edge-guard", "worker-edge-
 }
 const mcpStreamProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy.ts"), "utf8");
 for (const required of [
-  "proxyMcpEventStream", "handleMcpStreamSubscribeRequest", "sanitizeBridgeRequest", "MCP_STREAM_PROXY_MODE_HEADER",
-  "streamJsonRpcResponse", "resumeJsonRpcResponse", "subscribeTerminalMessage", "Upgrade", "waitUntil",
+  "proxyMcpEventStream", "handleMcpStreamSubscribeRequest", "proxyModernMcpStream",
+  "streamJsonRpcResponse", "resumeJsonRpcResponse", "subscribeTerminalMessage", "waitUntil",
 ]) {
-  if (!mcpStreamProxyBoundary.includes(required)) throw new Error(`outer MCP stream proxy lost transport ownership or boundary hardening: ${required}`);
+  if (!mcpStreamProxyBoundary.includes(required)) throw new Error(`outer MCP stream proxy lost era routing or legacy recovery ownership: ${required}`);
+}
+const mcpStreamProxyContractBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy-contract.ts"), "utf8");
+for (const required of [
+  "sanitizeBridgeRequest", "MCP_STREAM_PROXY_MODE_HEADER", "MCP_STREAM_PROXY_ID_HEADER",
+  "mcpStreamDescriptorResponse", "STREAM_ID_PATTERN", "Upgrade", "withProxyHeaders",
+]) {
+  if (!mcpStreamProxyContractBoundary.includes(required)) throw new Error(`MCP stream proxy contract lost boundary hardening: ${required}`);
+}
+const mcpModernProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-modern-proxy.ts"), "utf8");
+for (const required of [
+  "modern-direct", "modern-cancel", "request.signal", "waitUntil", "streamHeartbeatMs",
+]) {
+  if (!mcpModernProxyBoundary.includes(required)) throw new Error(`modern MCP proxy lost non-resumable stream or cancellation behavior: ${required}`);
+}
+for (const forbidden of ["modern-prepare", "modern-subscribe", "ModernMcpTransientRegistry", "mcpStreamDescriptorResponse"]) {
+  if (mcpModernProxyBoundary.includes(forbidden)) throw new Error(`modern MCP proxy regained cross-event delivery state: ${forbidden}`);
+}
+const mcpModernControllerBoundary = readFileSync(join(root, "src", "worker", "mcp-modern-controller.ts"), "utf8");
+for (const forbidden of ["ModernMcpTransientRegistry", "modern-prepare", "modern-subscribe", "mcpStreamDescriptorResponse"]) {
+  if (mcpModernControllerBoundary.includes(forbidden)) throw new Error(`modern MCP controller regained cross-event delivery state: ${forbidden}`);
 }
 const mcpStreamChannelBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-channel.ts"), "utf8");
 for (const required of ["acceptWebSocket", "getWebSockets", "serializeAttachment", "pollMessage", "streamSubscriberOpened"]) {
