@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.25",
+  "version": "3.0.0-beta.26",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -172,7 +172,8 @@
     "mcp:conformance": "node scripts/official-mcp-conformance.mjs",
     "mcp:conformance:test": "node tests/official-mcp-conformance-test.mjs",
     "sbom-check:test": "node tests/sbom-check-test.mjs",
-    "sbom:test": "node scripts/sbom-check.mjs"
+    "sbom:test": "node scripts/sbom-check.mjs",
+    "release-publication-guard:test": "node tests/release-publication-guard-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",

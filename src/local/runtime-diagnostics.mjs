@@ -5,6 +5,8 @@ import { classifyOperationalError } from "./log.mjs";
 import { readBoundedFile } from "./workspace-file-service.mjs";
 import { systemNetworkRouteCheck } from "./system-network-route.mjs";
 
+export const RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS = 30_000;
+
 export async function diagnoseRuntime({
   policy,
   runtimeDir,
@@ -63,7 +65,7 @@ export async function diagnoseRuntime({
     const direct = await runProcess(
       process.execPath,
       ["-e", "process.stdout.write('ok')"],
-      5000,
+      RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS,
       true,
       1024,
       context,
@@ -79,7 +81,7 @@ export async function diagnoseRuntime({
   }
 
   if (policy.execMode === "shell") {
-    const result = await probeShell(context)
+    const result = await probeShell(context, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS)
       .catch((error) => ({ code: 127, error_class: classifyOperationalError(error) }));
     checks.push({
       layer: "local-shell",

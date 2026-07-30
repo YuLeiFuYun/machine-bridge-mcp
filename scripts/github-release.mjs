@@ -15,14 +15,14 @@ import { tagSyncError } from "./release-state.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
 import { verifyCurrentStableSoak } from "./release-soak.mjs";
+import { assertOwnerTerminalPublication, withGithubPublicationLock } from "./release-publication-guard.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);
 
 function fail(message) {
-  console.error(`release error: ${message}`);
-  process.exit(1);
+  throw new Error(String(message || "release failed"));
 }
 
 function run(command, args, options = {}) {
@@ -304,8 +304,8 @@ function publishCurrent({ prereleaseMode = false } = {}) {
   const parsedVersion = parseReleaseVersion(pkg.version);
   if (prereleaseMode !== parsedVersion.prerelease) {
     fail(parsedVersion.prerelease
-      ? "prerelease versions must use npm run prerelease:release"
-      : "stable versions must use npm run release");
+      ? "prerelease versions must use npm run prerelease:release -- --owner-terminal-confirm"
+      : "stable versions must use npm run release -- --owner-terminal-confirm");
   }
   if (!parsedVersion.prerelease && requiresSoakForStable(pkg.version)) assertStableSoak();
   const tag = `v${pkg.version}`;
@@ -429,16 +429,22 @@ function backfillMissingReleases() {
 }
 
 const mode = process.argv[2] ?? "--check";
-if (mode === "--check") {
-  ensureClean();
-  fetchRemote();
-  assertCoreSync({ requireReleaseAsset: true });
-} else if (mode === "--publish") {
-  publishCurrent({ prereleaseMode: false });
-} else if (mode === "--publish-prerelease") {
-  publishCurrent({ prereleaseMode: true });
-} else if (mode === "--backfill") {
-  backfillMissingReleases();
-} else {
-  fail("usage: node scripts/github-release.mjs [--check|--publish|--publish-prerelease|--backfill]");
+try {
+  if (mode === "--check") {
+    ensureClean();
+    fetchRemote();
+    assertCoreSync({ requireReleaseAsset: true });
+  } else if (mode === "--publish" || mode === "--publish-prerelease" || mode === "--backfill") {
+    assertOwnerTerminalPublication();
+    await withGithubPublicationLock(root, async () => {
+      if (mode === "--publish") publishCurrent({ prereleaseMode: false });
+      else if (mode === "--publish-prerelease") publishCurrent({ prereleaseMode: true });
+      else backfillMissingReleases();
+    });
+  } else {
+    fail("usage: node scripts/github-release.mjs [--check|--publish|--publish-prerelease|--backfill] [--owner-terminal-confirm]");
+  }
+} catch (error) {
+  console.error(`release error: ${String(error?.message || error)}`);
+  process.exitCode = 1;
 }

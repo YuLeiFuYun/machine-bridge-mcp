@@ -5,6 +5,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CRITICAL_SCRIPT_FILES = new Set(["scripts/release-publication-guard.mjs"]);
 const coverageDir = mkdtempSync(resolve(tmpdir(), "machine-bridge-coverage-"));
 const tests = [
   "tests/policy-test.mjs",
@@ -24,6 +25,7 @@ const tests = [
   "tests/service-platform-test.mjs",
   "tests/process-lock-test.mjs",
   "tests/runtime-activation-test.mjs",
+  "tests/release-publication-guard-test.mjs",
   "tests/local-self-test.mjs",
   "tests/runtime-self-test.mjs",
   "tests/numbers-test.mjs",
@@ -100,6 +102,7 @@ try {
     "src/local/service-runtime.mjs": [100, 80],
     "src/local/windows-service-convergence.mjs": [100, 95],
     "src/local/runtime-activation.mjs": [90, 70],
+    "scripts/release-publication-guard.mjs": [100, 80],
     "src/local/child-process-settlement.mjs": [100, 85],
     "src/local/cli-options.mjs": [65, 35],
     "src/local/cli-policy.mjs": [70, 35],
@@ -129,6 +132,7 @@ try {
     "src/local/managed-jobs.mjs": [85, 50],
     "src/local/managed-job-projection.mjs": [90, 60],
     "src/local/managed-job-storage.mjs": [75, 50],
+    "src/local/managed-job-runner-claim.mjs": [90, 60],
     "src/local/managed-job-runner.mjs": [80, 50],
     "src/local/browser-bridge.mjs": [80, 55],
     "src/local/browser-request-registry.mjs": [95, 35],
@@ -200,7 +204,7 @@ function collectCoverage(directory) {
       const repositoryRelative = relative(root, absolute);
       if (!repositoryRelative || repositoryRelative === ".." || repositoryRelative.startsWith(`..${sep}`) || isAbsolute(repositoryRelative)) continue;
       const file = repositoryRelative.split(sep).join("/");
-      if (!file.startsWith("src/")) continue;
+      if (!file.startsWith("src/") && !CRITICAL_SCRIPT_FILES.has(file)) continue;
       let entry = scripts.get(file);
       if (!entry) {
         entry = { functions: new Map(), blocks: new Map() };

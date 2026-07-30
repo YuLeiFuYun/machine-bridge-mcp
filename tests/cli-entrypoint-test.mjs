@@ -88,11 +88,14 @@ try {
     const topLevel = run([inherited]);
     assert(topLevel.status === 2 && topLevel.stderr.includes("Unknown command"), `prototype-shaped command ${inherited} bypassed command validation`);
     const resourceAction = run(["resource", inherited]);
-    assert(resourceAction.status !== 0 && resourceAction.stderr.includes("Unknown resource action"), `prototype-shaped resource action ${inherited} bypassed action validation`);
+    assert(resourceAction.status !== 0 && resourceAction.stderr.includes("Unknown resource action"),
+      `prototype-shaped resource action ${inherited} bypassed action validation: ${describeRun(resourceAction)}`);
     const browserAction = run(["browser", inherited]);
-    assert(browserAction.status !== 0 && browserAction.stderr.includes("Unknown browser action"), `prototype-shaped browser action ${inherited} bypassed action validation`);
+    assert(browserAction.status !== 0 && browserAction.stderr.includes("Unknown browser action"),
+      `prototype-shaped browser action ${inherited} bypassed action validation: ${describeRun(browserAction)}`);
     const serviceAction = run(["service", inherited]);
-    assert(serviceAction.status !== 0 && serviceAction.stderr.includes("Unknown service action"), `prototype-shaped service action ${inherited} bypassed action validation`);
+    assert(serviceAction.status !== 0 && serviceAction.stderr.includes("Unknown service action"),
+      `prototype-shaped service action ${inherited} bypassed action validation: ${describeRun(serviceAction)}`);
   }
 } finally {
   rmSync(stateRoot, { recursive: true, force: true });
@@ -142,6 +145,16 @@ function run(args) {
     env: process.env,
     encoding: "utf8",
     windowsHide: true,
+  });
+}
+
+function describeRun(result) {
+  return JSON.stringify({
+    status: result.status,
+    signal: result.signal,
+    error: result.error ? String(result.error?.message || result.error) : null,
+    stdout: String(result.stdout || "").slice(-1024),
+    stderr: String(result.stderr || "").slice(-1024),
   });
 }
 

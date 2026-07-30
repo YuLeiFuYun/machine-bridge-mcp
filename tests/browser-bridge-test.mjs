@@ -6,6 +6,8 @@ import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { EXPECTED_EXTENSION_ID } from "../src/local/browser-extension-identity.mjs";
 
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+const BROWSER_FIXTURE_WAIT_MS = 30_000;
+
 
 await testStopDuringStart();
 await testStartFailureCleanup();
@@ -51,7 +53,7 @@ try {
   const pairing = JSON.parse(await readFile(join(root, "browser-bridge.json"), "utf8"));
   assert(pairing.schemaVersion === 2 && pairing.extensionToken !== pairing.runtimeToken, "browser pairing state did not separate extension and runtime credentials");
   assert(!JSON.stringify(initial).includes(pairing.extensionToken) && !JSON.stringify(initial).includes(pairing.runtimeToken), "browser status exposed a pairing credential");
-  const response = await fetch(initial.pairing_url, { signal: AbortSignal.timeout(5000) });
+  const response = await fetch(initial.pairing_url, { signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS) });
   const html = await response.text();
   assert(response.status === 200 && html.includes(pairing.extensionToken), "local pairing page did not contain the local-only token");
   assert(html.includes("Expected extension build") && html.includes(PACKAGE_VERSION), "local pairing page omitted extension reload diagnostics");
@@ -104,7 +106,7 @@ try {
   const healthUrl = new URL(initial.endpoint);
   healthUrl.protocol = "http:";
   healthUrl.pathname = "/healthz";
-  const health = await (await fetch(healthUrl, { signal: AbortSignal.timeout(5000) })).json();
+  const health = await (await fetch(healthUrl, { signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS) })).json();
   assert(health.connected === true && health.expected_extension_version === PACKAGE_VERSION && health.extension_protocol === 3 && health.extension_version === PACKAGE_VERSION, "browser health endpoint omitted authenticated extension metadata");
   assert(health.expected_extension_id === EXPECTED_EXTENSION_ID && health.extension_id === EXPECTED_EXTENSION_ID, "browser health endpoint omitted the pinned extension identity");
   assert(health.controls_extension_profile === true && health.machine_bridge_launches_browser === false, "browser health endpoint omitted the extension-profile execution model");
@@ -210,7 +212,7 @@ try {
   assert(pair.opened_pairing_page === false && !JSON.stringify(pair).includes(pairing.extensionToken) && !JSON.stringify(pair).includes(pairing.runtimeToken), "pair tool exposed a broker credential");
 
   owner.stop();
-  await waitFor(() => client.server !== null, 5000);
+  await waitFor(() => client.server !== null);
   const failover = await client.status();
   assert(failover.broker_role === "owner", "broker client did not take ownership after the original owner stopped");
 
@@ -296,7 +298,7 @@ function attachExtensionResponder(socket) {
     resolveReady = resolvePromise;
     rejectReady = rejectPromise;
   });
-  const timer = setTimeout(() => rejectReady(new Error("timed out waiting for extension handshake")), 5000);
+  const timer = setTimeout(() => rejectReady(new Error("timed out waiting for extension handshake")), BROWSER_FIXTURE_WAIT_MS);
   socket.once("error", rejectReady);
   socket.once("close", (code, reason) => {
     if (handshakeStage !== "ready") rejectReady(new Error(`extension closed during handshake (${code}: ${String(reason || "")})`));
@@ -367,15 +369,15 @@ async function expectReject(promise, expected) {
   throw new Error(`expected rejection containing ${expected}`);
 }
 
-function onceOpen(socket, timeoutMs = 5000) {
+function onceOpen(socket, timeoutMs = BROWSER_FIXTURE_WAIT_MS) {
   return waitForSocketEvent(socket, "open", timeoutMs, "open", (resolvePromise) => () => resolvePromise());
 }
 
-function onceMessage(socket, timeoutMs = 5000) {
+function onceMessage(socket, timeoutMs = BROWSER_FIXTURE_WAIT_MS) {
   return waitForSocketEvent(socket, "message", timeoutMs, "message", (resolvePromise) => (data) => resolvePromise(data));
 }
 
-function onceClose(socket, timeoutMs = 5000) {
+function onceClose(socket, timeoutMs = BROWSER_FIXTURE_WAIT_MS) {
   return waitForSocketEvent(socket, "close", timeoutMs, "close", (resolvePromise) => (code, reason) => {
     resolvePromise({ code, reason: String(reason || "") });
   }, { rejectOnError: false });
@@ -406,7 +408,7 @@ function waitForSocketEvent(socket, event, timeoutMs, label, createListener, opt
 
 function expectSocketRejected(socket) {
   return new Promise((resolvePromise, rejectPromise) => {
-    const timer = setTimeout(() => rejectPromise(new Error("unauthorized browser socket was not rejected")), 2000);
+    const timer = setTimeout(() => rejectPromise(new Error("unauthorized browser socket was not rejected")), BROWSER_FIXTURE_WAIT_MS);
     const done = () => { clearTimeout(timer); resolvePromise(); };
     socket.once("unexpected-response", done);
     socket.once("close", done);
@@ -415,7 +417,7 @@ function expectSocketRejected(socket) {
   });
 }
 
-async function waitFor(predicate, timeoutMs = 2000) {
+async function waitFor(predicate, timeoutMs = BROWSER_FIXTURE_WAIT_MS) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;

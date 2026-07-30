@@ -14,19 +14,38 @@ import { daemonArgs, launchdPlist, launchdServiceTarget, normalizeServiceCommand
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
 import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensureWorkerSecrets, ensureWorkspaceDirectory, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
-await runtimeSelfTest();
-await stateSelfTest();
-await daemonTakeoverSelfTest();
-await activeDaemonPolicyMutationSelfTest();
-await clientConfigDefaultSelfTest();
-await resourceCliSelfTest();
-await cliSelfTest();
-await logSelfTest();
-await serviceSelfTest();
-await ciBootstrapSelfTest();
-await shellSelfTest();
-await workerSourceSelfTest();
+const CLI_FIXTURE_TIMEOUT_MS = 60_000;
+const MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS = 120_000;
+const UNINSTRUMENTED_JOB_CLI_ENV = Object.freeze({ ...process.env, NODE_V8_COVERAGE: "" });
+const CLI_FIXTURE_WAIT_ATTEMPTS = 2_400;
+const DAEMON_FIXTURE_TIMEOUT_MS = 30_000;
+const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 60;
+const MANAGED_JOB_MARKER_SCRIPT = "if (process.env.NODE_V8_COVERAGE) process.exit(9); require('node:fs').writeFileSync(process.argv[1], process.argv[2])";
+const SHELL_TREE_TIMEOUT_MS = 30_000;
+const SHELL_TREE_READY_MS = 25_000;
+const SHELL_TREE_EXIT_WAIT_MS = 30_000;
+
+await runSelfTestPhase("runtime", runtimeSelfTest);
+await runSelfTestPhase("state", stateSelfTest);
+await runSelfTestPhase("daemon takeover", daemonTakeoverSelfTest);
+await runSelfTestPhase("active daemon policy mutation", activeDaemonPolicyMutationSelfTest);
+await runSelfTestPhase("client config default", clientConfigDefaultSelfTest);
+await runSelfTestPhase("resource CLI", resourceCliSelfTest);
+await runSelfTestPhase("CLI", cliSelfTest);
+await runSelfTestPhase("logging", logSelfTest);
+await runSelfTestPhase("service", serviceSelfTest);
+await runSelfTestPhase("CI bootstrap", ciBootstrapSelfTest);
+await runSelfTestPhase("shell", shellSelfTest);
+await runSelfTestPhase("Worker source", workerSourceSelfTest);
 console.log("local daemon/state/cli/log/service/worker self-test ok");
+
+async function runSelfTestPhase(name, callback) {
+  try {
+    await callback();
+  } catch (error) {
+    throw new Error(`local self-test phase failed (${name}): ${String(error?.message || error)}`, { cause: error });
+  }
+}
 
 async function stateSelfTest() {
   const defaultWorkspaceHome = await mkdtemp(join(tmpdir(), "mbm-default-workspace-home-"));
@@ -301,6 +320,7 @@ async function daemonTakeoverSelfTest() {
   const stateModuleUrl = new URL("../src/local/state.mjs", import.meta.url).href;
   await writeFile(fixture, `import { acquireDaemonLock, loadState } from ${JSON.stringify(stateModuleUrl)};
 const args = process.argv.slice(2);
+if (process.env.NODE_V8_COVERAGE) { process.stderr.write("daemon fixture inherited NODE_V8_COVERAGE"); process.exit(8); }
 const value = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; };
 const workspace = value("--workspace") || process.env.MBM_FIXTURE_WORKSPACE;
 const stateRoot = value("--state-dir") || process.env.MBM_FIXTURE_STATE_ROOT;
@@ -344,7 +364,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     const messages = [];
     const foregroundLock = await acquireDaemonLockWithTakeover(state, {
       takeOverServiceOwner: true,
-      timeoutMs: 5_000,
+      timeoutMs: DAEMON_FIXTURE_TIMEOUT_MS,
       pollMs: 10,
       ownerMetadata: { mode: "foreground", version: "0.11.1" },
       logger: { info(message) { messages.push(message); }, warn(message) { messages.push(message); } },
@@ -370,7 +390,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     if (!workspaceDaemonOwnsPlatformAutostart(implicitService)) {
       throw new Error("verified implicit workspace service was not authorized for platform takeover");
     }
-    const implicitStop = await stopWorkspaceServiceDaemon(state, { timeoutMs: 5_000, pollMs: 10 });
+    const implicitStop = await stopWorkspaceServiceDaemon(state, { timeoutMs: DAEMON_FIXTURE_TIMEOUT_MS, pollMs: 10 });
     if (!implicitStop.ok || implicitStop.reason !== "stopped" || !implicitStop.verified_service_daemon) {
       throw new Error("implicit daemon-only recovery process could not be stopped safely");
     }
@@ -408,7 +428,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only", "--ignore-term"]);
     const stopMessages = [];
     const stopResult = await stopWorkspaceServiceDaemon(state, {
-      timeoutMs: 5_000,
+      timeoutMs: DAEMON_FIXTURE_TIMEOUT_MS,
       forceAfterMs: 20,
       pollMs: 5,
       logger: { info(message) { stopMessages.push(message); }, warn(message) { stopMessages.push(message); } },
@@ -436,7 +456,7 @@ async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [],
   const fixtureEnv = { ...process.env };
   // The fixture models daemon ownership, not coverage. Inheriting V8 coverage
   // delays process teardown and makes the lock-handoff assertion platform-timing dependent.
-  delete fixtureEnv.NODE_V8_COVERAGE;
+  fixtureEnv.NODE_V8_COVERAGE = "";
   if (options.implicitIdentity) {
     fixtureEnv.MBM_FIXTURE_WORKSPACE = workspace;
     fixtureEnv.MBM_FIXTURE_STATE_ROOT = stateRoot;
@@ -456,7 +476,7 @@ async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [],
   child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-4096); });
   await new Promise((resolvePromise, rejectPromise) => {
     let stdout = "";
-    const timeout = setTimeout(() => rejectPromise(new Error(`daemon fixture did not become ready: ${stderr}`)), 5000);
+    const timeout = setTimeout(() => rejectPromise(new Error(`daemon fixture did not become ready: ${stderr}`)), DAEMON_FIXTURE_TIMEOUT_MS);
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
       if (stdout.includes("ready\n")) {
@@ -513,7 +533,7 @@ async function activeDaemonPolicyMutationSelfTest() {
       ], {
         cwd: workspace,
         encoding: "utf8",
-        timeout: 10_000,
+        timeout: CLI_FIXTURE_TIMEOUT_MS,
         killSignal: "SIGKILL",
       });
       if (idempotentServiceStart.error) throw idempotentServiceStart.error;
@@ -532,7 +552,7 @@ async function activeDaemonPolicyMutationSelfTest() {
       ], {
         cwd: workspace,
         encoding: "utf8",
-        timeout: 10_000,
+        timeout: CLI_FIXTURE_TIMEOUT_MS,
         killSignal: "SIGKILL",
       });
       if (child.error) throw child.error;
@@ -573,7 +593,7 @@ async function clientConfigDefaultSelfTest() {
     ], {
       cwd: workspace,
       encoding: "utf8",
-      timeout: 10_000,
+      timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     if (child.error) throw child.error;
@@ -599,7 +619,7 @@ async function resourceCliSelfTest() {
   const entry = fileURLToPath(new URL("../bin/machine-mcp.mjs", import.meta.url));
   try {
     const added = spawnSync(process.execPath, [entry, "resource", "add", "test-key", resourceFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     if (added.error) throw added.error;
@@ -610,7 +630,7 @@ async function resourceCliSelfTest() {
     }
 
     const status = spawnSync(process.execPath, [entry, "status", "--workspace", workspace, "--state-dir", stateRoot], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     if (status.error) throw status.error;
@@ -621,7 +641,7 @@ async function resourceCliSelfTest() {
 
     const generatedKeyPath = join(workspace, "generated-operator-key");
     const generated = spawnSync(process.execPath, [entry, "resource", "generate-ssh-key", "generated-key", generatedKeyPath, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 30_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     if (generated.error) throw generated.error;
@@ -633,7 +653,7 @@ async function resourceCliSelfTest() {
     if (!(await stat(generatedKeyPath)).isFile() || !(await stat(`${generatedKeyPath}.pub`)).isFile()) throw new Error("SSH key pair was not created");
     if (process.platform !== "win32" && ((await stat(generatedKeyPath)).mode & 0o777) !== 0o600) throw new Error("generated private key mode is not 0600");
     const generatedAgain = spawnSync(process.execPath, [entry, "resource", "generate-ssh-key", "generated-key", generatedKeyPath, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 30_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     if (generatedAgain.status !== 0 || JSON.parse(generatedAgain.stdout).created !== false) throw new Error("SSH key resource generation is not idempotent");
@@ -649,7 +669,7 @@ async function resourceCliSelfTest() {
     if (manager.listResources().count !== 2) throw new Error("daemon-style resource reload did not read updated state");
 
     const listed = spawnSync(process.execPath, [entry, "resource", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     if (listed.status !== 0) throw new Error(`resource list failed: ${listed.stderr || listed.stdout}`);
@@ -658,7 +678,7 @@ async function resourceCliSelfTest() {
       throw new Error("resource list omitted an alias or exposed contents/paths by default");
     }
     const listedWithPaths = spawnSync(process.execPath, [entry, "resource", "list", "--show-paths", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     const listedWithPathsJson = JSON.parse(listedWithPaths.stdout);
@@ -667,7 +687,7 @@ async function resourceCliSelfTest() {
     }
 
     const checked = spawnSync(process.execPath, [entry, "resource", "check", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     const checkedJson = JSON.parse(checked.stdout);
@@ -676,7 +696,8 @@ async function resourceCliSelfTest() {
     }
 
     const jobs = spawnSync(process.execPath, [entry, "job", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
+      env: UNINSTRUMENTED_JOB_CLI_ENV,
       killSignal: "SIGKILL",
     });
     if (jobs.status !== 0 || !Array.isArray(JSON.parse(jobs.stdout).jobs)) throw new Error("local job list fallback failed");
@@ -684,20 +705,24 @@ async function resourceCliSelfTest() {
     const approvedMarker = join(workspace, "approved-by-cli.txt");
     const stagedForCli = manager.stage({
       name: "CLI approval",
-      steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'cli-approved')", approvedMarker], env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: 10 }],
+      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, approvedMarker, "cli-approved"], env: { NODE_V8_COVERAGE: "" }, env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     });
     const inspectedPlan = spawnSync(process.execPath, [entry, "job", "inspect", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
+      env: UNINSTRUMENTED_JOB_CLI_ENV,
       killSignal: "SIGKILL",
     });
-    if (inspectedPlan.status !== 0) throw new Error(`local job inspect failed: ${inspectedPlan.stderr || inspectedPlan.stdout}`);
+    if (inspectedPlan.status !== 0) {
+      throw new Error(`local job inspect failed: ${spawnSyncDiagnostics(inspectedPlan)}`);
+    }
     const inspectionJson = JSON.parse(inspectedPlan.stdout);
     const reviewedResource = inspectionJson.review_plan?.resources?.["test-key"];
     if (!inspectionJson.review_plan || !reviewedResource || "path" in reviewedResource || "sha256" in reviewedResource || JSON.stringify(inspectionJson).includes(resourceFile)) {
       throw new Error("local plan inspection omitted the plan or exposed a resource source path/hash");
     }
     const removedApproval = spawnSync(process.execPath, [entry, "job", "approve", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json", "--yes"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
+      env: UNINSTRUMENTED_JOB_CLI_ENV,
       killSignal: "SIGKILL",
     });
     if (removedApproval.status === 0 || !String(removedApproval.stderr).includes("Unknown job action")) {
@@ -707,10 +732,10 @@ async function resourceCliSelfTest() {
 
     const trustedStarted = manager.start({
       name: "Trusted direct start",
-      steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'trusted-start')", approvedMarker], env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: 10 }],
+      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, approvedMarker, "trusted-start"], env: { NODE_V8_COVERAGE: "" }, env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     });
     if (trustedStarted.status !== "queued") throw new Error("trusted direct managed-job start was not queued");
-    for (let attempt = 0; attempt < 200; attempt += 1) {
+    for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
       if (await existsForSelfTest(approvedMarker)) break;
       await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
@@ -720,13 +745,14 @@ async function resourceCliSelfTest() {
     const planFile = join(workspace, "managed-plan.json");
     await writeFile(planFile, JSON.stringify({
       name: "local CLI fallback",
-      steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'submitted')", submittedMarker], timeout_seconds: 10 }],
+      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, submittedMarker, "submitted"], env: { NODE_V8_COVERAGE: "" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     }), "utf8");
     if (process.platform !== "win32") {
       const linkedPlan = join(workspace, "linked-plan.json");
       await symlink(planFile, linkedPlan);
       const linked = spawnSync(process.execPath, [entry, "job", "submit", linkedPlan, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-        encoding: "utf8", timeout: 10_000,
+        encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
+      env: UNINSTRUMENTED_JOB_CLI_ENV,
         killSignal: "SIGKILL",
       });
       if (linked.status === 0 || !String(linked.stderr).includes("must not be a symbolic link")) {
@@ -734,16 +760,18 @@ async function resourceCliSelfTest() {
       }
     }
     const submitted = spawnSync(process.execPath, [entry, "job", "submit", planFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
+      env: UNINSTRUMENTED_JOB_CLI_ENV,
       killSignal: "SIGKILL",
     });
     if (submitted.status !== 0) throw new Error(`local job submit failed: ${submitted.stderr || submitted.stdout}`);
     const submittedId = JSON.parse(submitted.stdout).job_id;
     let submittedStatus = "";
     const submittedTerminal = new Set(["succeeded", "failed", "cancelled", "runner_failed", "runner_launch_failed", "recovery_failed", "recovery_exhausted", "succeeded_cleanup_failed", "failed_cleanup_failed", "cancelled_cleanup_failed"]);
-    for (let attempt = 0; attempt < 200; attempt += 1) {
+    for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
       const read = spawnSync(process.execPath, [entry, "job", "read", submittedId, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-        encoding: "utf8", timeout: 10_000,
+        encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
+      env: UNINSTRUMENTED_JOB_CLI_ENV,
         killSignal: "SIGKILL",
       });
       if (read.status !== 0) throw new Error(`local job read failed: ${read.stderr || read.stdout}`);
@@ -765,27 +793,27 @@ async function resourceCliSelfTest() {
       name: "block uninstall while active",
       steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},30000)"], timeout_seconds: 60 }],
     });
-    for (let attempt = 0; attempt < 200; attempt += 1) {
+    for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
       const value = manager.read({ job_id: activeJob.job_id });
       if (value.status === "running") break;
       await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
     const uninstallBlocked = spawnSync(process.execPath, [entry, "uninstall", "--state-dir", stateRoot, "--keep-worker", "--yes"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     if (uninstallBlocked.status === 0 || !String(uninstallBlocked.stderr).includes("managed jobs are active")) {
       throw new Error(`uninstall did not refuse an active managed job: ${uninstallBlocked.stderr || uninstallBlocked.stdout}`);
     }
     manager.cancel({ job_id: activeJob.job_id });
-    for (let attempt = 0; attempt < 400; attempt += 1) {
+    for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
       const value = manager.read({ job_id: activeJob.job_id });
       if (!["queued", "running", "cleaning", "interrupted"].includes(value.status)) break;
       await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
 
     const removed = spawnSync(process.execPath, [entry, "resource", "remove", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-      encoding: "utf8", timeout: 10_000,
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
     if (removed.status !== 0 || JSON.parse(removed.stdout).removed !== true) throw new Error("resource remove failed");
@@ -1217,19 +1245,19 @@ async function shellSelfTest() {
     const treeExecution = runExecutable(process.execPath, ["-e", treeScript, childPidFile], {
       capture: true,
       allowFailure: true,
-      timeoutMs: 5000,
+      timeoutMs: SHELL_TREE_TIMEOUT_MS,
     });
     let treeResult;
     let descendantPid;
     try {
-      descendantPid = await waitForPidFile(childPidFile, 4000);
+      descendantPid = await waitForPidFile(childPidFile, SHELL_TREE_READY_MS);
       treeResult = await treeExecution;
     } catch (error) {
       await treeExecution.catch(() => {});
       throw error;
     }
     if (treeResult.code !== 124) throw new Error("shell process-tree timeout did not report timeout");
-    const exited = await waitForPidExit(descendantPid, 8000);
+    const exited = await waitForPidExit(descendantPid, SHELL_TREE_EXIT_WAIT_MS);
     if (!exited) throw new Error("shell timeout left a descendant process running");
   } finally {
     await rm(treeRoot, { recursive: true, force: true });
@@ -1337,6 +1365,16 @@ async function waitForPidExit(pid, timeoutMs) {
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
   }
   try { process.kill(pid, 0); return false; } catch { return true; }
+}
+
+function spawnSyncDiagnostics(result) {
+  return JSON.stringify({
+    status: result.status ?? null,
+    signal: result.signal ?? null,
+    error: result.error ? { name: result.error.name, code: result.error.code ?? null, message: result.error.message } : null,
+    stdout: String(result.stdout || "").slice(0, 2048),
+    stderr: String(result.stderr || "").slice(0, 2048),
+  });
 }
 
 async function existsForSelfTest(file) {

@@ -5,12 +5,12 @@ const other = "b".repeat(40);
 
 assert(
   tagSyncError({ scope: "local", tag: "v1.2.3", head, commit: null })
-    === "local tag v1.2.3 is missing; run npm run release before npm publish",
+    === "local tag v1.2.3 is missing; run the applicable owner-terminal GitHub release command with --owner-terminal-confirm before npm publish",
   "missing local tag did not produce the release-order guidance",
 );
 assert(
   tagSyncError({ scope: "remote", tag: "v1.2.3", head, commit: null })
-    === "remote tag v1.2.3 is missing; run npm run release before npm publish",
+    === "remote tag v1.2.3 is missing; run the applicable owner-terminal GitHub release command with --owner-terminal-confirm before npm publish",
   "missing remote tag did not identify the remote scope",
 );
 assert(

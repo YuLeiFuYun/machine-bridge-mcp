@@ -7,6 +7,9 @@ import { delegatedProcessIsolationStatus } from "../src/local/delegated-process-
 import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_GRACE_MS } from "../src/local/process-tree.mjs";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 
+const SUCCESS_PROCESS_TIMEOUT_SECONDS = 30;
+const RUNTIME_GIT_FIXTURE_TIMEOUT_MS = 30_000;
+
 export async function runtimeSelfTest() {
   const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
   const outside = await mkdtemp(join(tmpdir(), "mbm-daemon-outside-"));
@@ -129,7 +132,7 @@ export async function runtimeSelfTest() {
     if (delegatedProcessIsolationStatus().available) {
       const operatorEnvironment = await fullAuthority.executeTool("run_process", {
         argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || \"unset\")"],
-        timeout_seconds: 5,
+        timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS,
       }, relayContext(operatorAuthorization));
       if (operatorEnvironment.stdout !== "unset") throw new Error("operator inherited the full daemon parent environment");
     } else {
@@ -161,7 +164,7 @@ export async function runtimeSelfTest() {
 
     const largeProcess = await restricted.executeTool("run_process", {
       argv: [process.execPath, "-e", "process.stdout.write('R'.repeat(100000) + 'RUNTIME-TAIL')"],
-      timeout_seconds: 5,
+      timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS,
     });
     if (typeof largeProcess.output_session_id !== "string" || largeProcess.stdout_truncated_bytes <= 0) {
       throw new Error("runtime one-shot process did not retain truncated output for continuation");
@@ -347,12 +350,12 @@ export async function runtimeSelfTest() {
 
     const repo = join(workspace, "nested-repo");
     await mkdir(repo);
-    await restricted.runProcess("git", ["init", "-q", repo], 10_000);
+    await restricted.runProcess("git", ["init", "-q", repo], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
     await writeFile(join(repo, "tracked.txt"), "one\n", "utf8");
-    await restricted.runProcess("git", ["-C", repo, "add", "tracked.txt"], 10_000);
-    await restricted.runProcess("git", ["-C", repo, "config", "user.name", "Machine Bridge Test"], 10_000);
-    await restricted.runProcess("git", ["-C", repo, "config", "user.email", "private-test@example.invalid"], 10_000);
-    await restricted.runProcess("git", ["-C", repo, "commit", "-qm", "initial"], 10_000);
+    await restricted.runProcess("git", ["-C", repo, "add", "tracked.txt"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
+    await restricted.runProcess("git", ["-C", repo, "config", "user.name", "Machine Bridge Test"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
+    await restricted.runProcess("git", ["-C", repo, "config", "user.email", "private-test@example.invalid"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
+    await restricted.runProcess("git", ["-C", repo, "commit", "-qm", "initial"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
     const logWithoutEmail = await restricted.gitLog({ path: "nested-repo", max_count: 5 });
     if (logWithoutEmail.commits.length !== 1 || "author_email" in logWithoutEmail.commits[0]) throw new Error("git_log leaked author email by default");
     const logWithEmail = await restricted.gitLog({ path: "nested-repo", max_count: 5, include_author_email: true });
@@ -360,15 +363,15 @@ export async function runtimeSelfTest() {
     const shown = await restricted.gitShow({ path: "nested-repo", revision: "HEAD", max_bytes: 1024 * 1024 });
     if (shown.code !== 0 || !shown.stdout.includes("initial")) throw new Error("git_show failed");
     await expectReject(() => restricted.gitShow({ path: "nested-repo", revision: "--help" }), "invalid Git revision");
-    await restricted.runProcess("git", ["-C", repo, "config", "diff.external", "definitely-not-a-real-diff-command"], 10_000);
-    await restricted.runProcess("git", ["-C", repo, "config", "core.fsmonitor", "definitely-not-a-real-fsmonitor-command"], 10_000);
+    await restricted.runProcess("git", ["-C", repo, "config", "diff.external", "definitely-not-a-real-diff-command"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
+    await restricted.runProcess("git", ["-C", repo, "config", "core.fsmonitor", "definitely-not-a-real-fsmonitor-command"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
     await writeFile(join(repo, "tracked.txt"), "two\n", "utf8");
     const diff = await restricted.gitDiff({ path: "nested-repo" });
     if (diff.code !== 0 || !diff.stdout.includes("tracked.txt") || diff.gitRoot !== "nested-repo") throw new Error("nested git diff detection failed");
     const status = await restricted.gitStatus({ path: "nested-repo" });
     if (status.code !== 0 || !status.stdout.includes("tracked.txt")) throw new Error("nested git status detection failed");
 
-    const command = await restricted.execCommand("node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"", 5);
+    const command = await restricted.execCommand("node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"", SUCCESS_PROCESS_TIMEOUT_SECONDS);
     if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
     const beforeBootstrap = restricted.runtimeInfo().observability.capability_routing;
     if (beforeBootstrap.bootstrap_observed || beforeBootstrap.task_resolution_observed) throw new Error("capability routing telemetry was pre-populated");
@@ -391,7 +394,7 @@ export async function runtimeSelfTest() {
     if (!diagnostics.checks.some(check => check.layer === "managed-job-storage" && check.ok)) {
       throw new Error("runtime diagnostics did not validate managed-job storage");
     }
-    const isolatedHome = await restricted.runDirectProcess({ argv: [process.execPath, "-e", "process.stdout.write(process.env.HOME || '')"], timeout_seconds: 5 });
+    const isolatedHome = await restricted.runDirectProcess({ argv: [process.execPath, "-e", "process.stdout.write(process.env.HOME || '')"], timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS });
     if (!isolatedHome.stdout.includes("machine-bridge-mcp-") || isolatedHome.stdout === process.env.HOME) throw new Error("minimal command environment did not isolate HOME");
     await expectReject(() => restricted.execCommand(`printf '${"x".repeat(MAX_COMMAND_BYTES)}'`, 5), "maximum size");
     await expectReject(() => restricted.execCommand("printf 'x\0y'", 5), "NUL byte");

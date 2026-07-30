@@ -135,10 +135,18 @@ npm run github:push
 
 Create/update the pull request, satisfy required checks, squash-merge, fetch, and fast-forward local `main`.
 
-Create the annotated prerelease tag, GitHub Prerelease, and exact tarball asset:
+The repository owner creates the annotated prerelease tag, GitHub Prerelease, and exact tarball asset from a real interactive terminal:
 
 ```sh
-npm run prerelease:release
+npm run prerelease:release -- --owner-terminal-confirm
+```
+
+The flag is necessary but not sufficient: stdin, stdout, and stderr must all be TTYs. MCP calls, managed jobs, CI, redirected sessions, and other ordinary background automation fail before fetch, full verification, tag creation, or remote mutation. One common-Git-dir owner-only publication lock serializes tag/Release writes across the main checkout and linked worktrees. This ceremony prevents accidental and standard non-interactive publication; it is not an authentication boundary against arbitrary code already executing as the same OS user, which can emulate a terminal. Adversarial separation requires an external user-presence or isolated release environment.
+
+Historical GitHub Release backfill is governed by the same boundary and must be run by the owner from a real interactive terminal:
+
+```sh
+npm run release:backfill -- --owner-terminal-confirm
 ```
 
 Publish npm through the repository-controlled channel command:
@@ -211,14 +219,14 @@ The owner activates the exact stable candidate with the same persistent command:
 npm run release:candidate:activate -- --allow-worker-deploy
 ```
 
-The coding agent verifies the live stable candidate and records its exact acceptance. Then commit, push with `npm run github:push`, merge, and run:
+The coding agent verifies the live stable candidate and records its exact acceptance. Then commit, push with `npm run github:push`, and merge. The repository owner runs the following from a real interactive terminal:
 
 ```sh
-npm run release
+npm run release -- --owner-terminal-confirm
 npm run stable:publish
 ```
 
-`npm run release` creates the final annotated tag and GitHub Release only after the soak record, promotion digest, exact candidate acceptance, exact `origin/main`, and all required push-triggered checks pass. `stable:publish` always uses `latest` and repeats the same gates.
+`npm run release -- --owner-terminal-confirm` creates the final annotated tag and GitHub Release only after the soak record, promotion digest, exact candidate acceptance, exact `origin/main`, and all required push-triggered checks pass. `stable:publish` always uses `latest` and repeats the same gates.
 
 ## Rollback and recovery
 

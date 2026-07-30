@@ -209,6 +209,8 @@ An explicit candidate device-authentication rejection permits one same-name rede
 
 ### External governance and publication
 
+GitHub tag/Release publication requires an explicit confirmation flag, TTY-backed stdin/stdout/stderr, and one process-identity lock shared through the common Git directory. This blocks the supported MCP, managed-job, CI, redirected, and ordinary background paths and prevents concurrent publication from separate linked worktrees. It is a workflow and accountability boundary, not cryptographic user-presence authentication: arbitrary code already executing as the same OS user can allocate a pseudo-terminal and invoke the same command. A protected release environment, hardware-backed user presence, or a separately isolated principal is required when adversarial same-user separation is part of the threat model.
+
 Code cannot create a second independent reviewer, npm OIDC trust relationship, protected publication environment, Apple Developer identity, or external certification. These remain explicit operational requirements.
 
 ## Validation map
@@ -222,7 +224,7 @@ Regression suites cover:
 - delegated sandbox behavior and fail-closed platform detection;
 - process/session cleanup, generated-key rollback including cleanup failure, managed-job lifecycle and recovery, state locks, atomic persistence, and destructive removal;
 - browser pairing, version/capability handshake, broker routing, independent concurrency limits, public-error redaction, sensitive input, and navigation controls;
-- audit-chain integrity, privacy redaction, package contents, installation, release impact, dependency integrity, CodeQL, and Scorecard findings;
+- audit-chain integrity, privacy redaction, package contents, installation, release impact, dependency integrity, CodeQL, Scorecard findings, and GitHub publication guard/lock behavior;
 - malformed, over-limit, concurrent, replayed, stale, and fault-injected inputs.
 
 See [TESTING.md](TESTING.md) for the test inventory and [AUDIT.md](AUDIT.md) for historical findings and residual limitations.

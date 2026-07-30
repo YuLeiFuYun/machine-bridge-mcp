@@ -7,6 +7,7 @@
  *   schedule?: (callback: () => void, delay: number) => unknown,
  *   clearSchedule?: (timer: unknown) => void,
  *   fallbackMs?: unknown,
+ *   readExitState?: () => { code?: number | null, signal?: string | null },
  * }} ChildProcessSettlementOptions
  */
 
@@ -52,7 +53,10 @@ export function createChildProcessSettlement(options = {}) {
       timer = null;
       timerSet = false;
       options.onFallback?.();
-      settle(code, signal, "exit_fallback");
+      const observed = safeExitState(options.readExitState);
+      const settledCode = typeof observed.code === "number" && Number.isInteger(observed.code) ? observed.code : code;
+      const settledSignal = observed.signal || signal;
+      settle(settledCode, settledSignal, "exit_fallback");
     }, delay);
     return true;
   }
@@ -77,4 +81,23 @@ function boundedDelay(value) {
     throw new TypeError("child settlement fallback must be between 0 and 10000 milliseconds");
   }
   return Math.floor(parsed);
+}
+export function childExitedBeforeTimeout({ exitCode = null, signalCode = null, processState = "unknown" } = {}) {
+  return Number.isInteger(exitCode) || Boolean(signalCode) || processState === "zombie";
+}
+
+/** @param {ChildProcessSettlementOptions["readExitState"]} reader @returns {{ code: number | null, signal: string | null }} */
+function safeExitState(reader) {
+  if (typeof reader !== "function") return { code: null, signal: null };
+  try {
+    const value = reader();
+    const code = value?.code;
+    const signal = value?.signal;
+    return {
+      code: typeof code === "number" && Number.isInteger(code) ? code : null,
+      signal: typeof signal === "string" && signal ? signal : null,
+    };
+  } catch {
+    return { code: null, signal: null };
+  }
 }

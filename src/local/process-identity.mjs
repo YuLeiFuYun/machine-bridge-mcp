@@ -34,6 +34,16 @@ export function processStartTimeMs(pid) {
   return result.ok ? parseTime(result.stdout) : null;
 }
 
+export function processState(pid) {
+  const parsed = normalizePid(pid);
+  if (!parsed || process.platform === "win32") return "unknown";
+  const result = runBounded("ps", ["-p", String(parsed), "-o", "state="]);
+  if (!result.ok) return "unknown";
+  const state = result.stdout.trim().charAt(0).toUpperCase();
+  if (state === "Z") return "zombie";
+  return state ? "running" : "unknown";
+}
+
 export function processCommandLine(pid) {
   const parsed = normalizePid(pid);
   if (!parsed) return "";

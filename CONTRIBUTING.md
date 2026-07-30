@@ -44,12 +44,12 @@ Repository-only infrastructure changes, such as a `.github/` workflow update, do
 6. after the owner runs it, verify the Worker, candidate relay, verified service daemon, exact version, representative behavior, and relevant failure paths through Machine Bridge;
 7. only after observed success, record exact candidate acceptance;
 8. commit and push only with `npm run github:push`, then complete review and required checks;
-9. create the GitHub Prerelease with `npm run prerelease:release`;
+9. the repository owner creates the GitHub Prerelease from a real interactive terminal with `npm run prerelease:release -- --owner-terminal-confirm`;
 10. the release operator runs `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy`;
 11. use the published prerelease for at least seven days for a major, three days for a minor, or one day for a patch;
 12. every blocking defect increments the prerelease number and restarts the interval;
 13. after explicit owner confirmation, record the soak result; stable promotion must pass `npm run release:soak:verify` and preserve the functional promotion digest;
-14. activate and observe the exact stable candidate, repeat acceptance and review, then run `npm run release`; the owner separately runs `npm run stable:publish`.
+14. activate and observe the exact stable candidate, repeat acceptance and review, then have the repository owner run `npm run release -- --owner-terminal-confirm` from a real interactive terminal; the owner separately runs `npm run stable:publish`.
 
 Automated checks do not authorize candidate acceptance or soak success. The agent observes the live candidate; the owner reports the real soak outcome. Release evidence contains bounded release metadata only and no private user content.
 
