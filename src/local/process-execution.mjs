@@ -78,9 +78,9 @@ export class ProcessExecutionService {
     return publicProcessToolResult({ name: command.name, cwd: this.displayPath(cwd, context), timeout_seconds: timeoutSeconds, ...result });
   }
 
-  async probeShell(context = {}) {
+  async probeShell(context = {}, timeoutMs = 5_000) {
     const shell = workspaceShellCommand(process.platform === "win32" ? "cd" : "pwd");
-    return this.run(shell.cmd, shell.args, 5000, true, 64 * 1024, context);
+    return this.run(shell.cmd, shell.args, timeoutMs, true, 64 * 1024, context);
   }
 
   async runFixedInternal(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace) {

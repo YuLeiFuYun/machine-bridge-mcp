@@ -2,7 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-reporting.mjs";
-import { diagnoseRuntime } from "../src/local/runtime-diagnostics.mjs";
+import { GitService, GIT_METADATA_TIMEOUT_MS } from "../src/local/git-service.mjs";
+import { diagnoseRuntime, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/local/runtime-diagnostics.mjs";
 import { classifySystemRouteInterface, inspectSystemNetworkRoute, systemNetworkRouteCheck } from "../src/local/system-network-route.mjs";
 import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-capabilities.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
@@ -11,6 +12,7 @@ import { RuntimeResourceService } from "../src/local/runtime-resource-service.mj
 
 await testRuntimeReporting();
 await testRuntimeDiagnostics();
+await testGitServiceMetadataTimeout();
 await testRuntimeCapabilities();
 await testRuntimeResourceService();
 await testPathInspectionFailures();
@@ -109,13 +111,21 @@ async function testRuntimeDiagnostics() {
         { name: "missing", available: false, error_class: "not_found" },
       ] }),
     };
+    let diagnosticProcessTimeoutMs = 0;
+    let diagnosticShellTimeoutMs = 0;
     const shell = await diagnoseRuntime({
       policy: policyProfile("full"),
       runtimeDir,
       workspace: runtimeDir,
-      runProcess: async () => ({ code: 0, stdout: "ok", stderr: "" }),
+      runProcess: async (_command, _args, timeoutMs) => {
+        diagnosticProcessTimeoutMs = timeoutMs;
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
       runFixedInternal: async () => ({ code: 0, stdout: "   interface: utun4\n", stderr: "" }),
-      probeShell: async () => ({ code: 0, stdout: "", stderr: "" }),
+      probeShell: async (_context, timeoutMs) => {
+        diagnosticShellTimeoutMs = timeoutMs;
+        return { code: 0, stdout: "", stderr: "" };
+      },
       managedJobManager,
       relayStatus: () => ({
         ready: true, network_route: "system-network-stack", network_route_scope: "application-proxy-selection-only",
@@ -126,6 +136,9 @@ async function testRuntimeDiagnostics() {
     });
     assert(shell.request_reached_local_runtime === true, "runtime diagnostic lost local reachability evidence");
     assert(shell.checks.some((check) => check.layer === "local-shell" && check.ok), "shell diagnostic was not executed");
+    assert(diagnosticProcessTimeoutMs === RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS
+      && diagnosticShellTimeoutMs === RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS,
+    "runtime diagnostic probes did not use the scheduler-tolerant bounded timeout");
     const relayCheck = shell.checks.find((check) => check.layer === "remote-relay");
     assert(relayCheck?.ok === true && relayCheck.outage_count === 2 && relayCheck.network_route === "system-network-stack", "relay diagnostic history was omitted");
     const routeCheck = shell.checks.find((check) => check.layer === "system-network-route");
@@ -228,6 +241,29 @@ async function testRuntimeDiagnostics() {
     "unknown and non-standard route interfaces were not bounded to coarse classes");
   } finally {
     await rm(runtimeDir, { recursive: true, force: true });
+  }
+}
+
+async function testGitServiceMetadataTimeout() {
+  const root = await mkdtemp(join(tmpdir(), "mbm-git-metadata-timeout-"));
+  try {
+    let observedTimeoutMs = 0;
+    const service = new GitService({
+      resolveExistingPath: async () => root,
+      displayPath: (value) => value,
+      runInternalProcess: async (_command, _args, timeoutMs) => {
+        observedTimeoutMs = timeoutMs;
+        return { code: 128, stdout: "", stderr: "not a repository" };
+      },
+      gitExecutable: () => "/usr/bin/git",
+      maximumBytes: 1024 * 1024,
+    });
+    const result = await service.context(root);
+    assert(result.ok === false, "Git metadata fixture unexpectedly found a repository");
+    assert(observedTimeoutMs === GIT_METADATA_TIMEOUT_MS && GIT_METADATA_TIMEOUT_MS === 30_000,
+      "Git repository metadata probe did not use the bounded scheduler-tolerant timeout");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 }
 

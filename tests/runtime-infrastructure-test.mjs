@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +9,8 @@ import { BridgeError, errorCode, publicError, remoteBridgeError } from "../src/l
 import { CallRegistry } from "../src/local/call-registry.mjs";
 import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
-import { createChildProcessSettlement } from "../src/local/child-process-settlement.mjs";
+import { childExitedBeforeTimeout, createChildProcessSettlement } from "../src/local/child-process-settlement.mjs";
+import { processState } from "../src/local/process-identity.mjs";
 import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
 import { executionGuardrailsSnapshot } from "../src/local/execution-limits.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
@@ -23,6 +24,8 @@ import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
 import { startAutostartLogMaintenance } from "../src/local/autostart-log-maintenance.mjs";
+
+const PROCESS_FIXTURE_TIMEOUT_MS = 30_000;
 
 await testCallRegistry();
 await testToolExecutor();
@@ -43,7 +46,7 @@ testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
 testProcessTreeSupervisor();
-testChildProcessSettlement();
+await testChildProcessSettlement();
 testHardSpawnSyncTimeout();
 testExecutionGuardrails();
 testErrors();
@@ -498,7 +501,7 @@ async function testProcessExecutionNoShell() {
   });
   try {
     const payload = `$(touch ${marker}); echo injected`;
-    const result = await service.run(process.execPath, ["-e", "process.stdout.write(process.argv[1])", payload], 10_000, false, 1024);
+    const result = await service.run(process.execPath, ["-e", "process.stdout.write(process.argv[1])", payload], PROCESS_FIXTURE_TIMEOUT_MS, false, 1024);
     assert(result.stdout === payload, "direct process execution changed an argv value through shell interpretation");
     assert(!existsSync(marker), "direct process execution evaluated shell syntax from argv");
     assert(tracker.snapshot().active_processes === 0, "direct process execution leaked process tracking state");
@@ -779,7 +782,7 @@ function testProcessTreeSupervisor() {
   assert(groupSignals[0].pid === -child.pid && groupSignals[0].signal === "SIGTERM", "POSIX termination did not target the child process group");
 }
 
-function testChildProcessSettlement() {
+async function testChildProcessSettlement() {
   const direct = [];
   const closeGuard = createChildProcessSettlement({ onSettle: (...args) => direct.push(args) });
   assert(closeGuard.onClose(0, null) && !closeGuard.onExit(0, null), "direct child close did not settle exactly once");
@@ -801,6 +804,44 @@ function testChildProcessSettlement() {
   assert(fallbackCount === 1 && fallback.length === 1 && fallback[0][0] === 7
     && fallback[0][1] === "SIGTERM" && fallback[0][2] === "exit_fallback",
   "child exit fallback did not preserve terminal identity");
+
+  scheduled = null;
+  const refreshed = [];
+  let refreshedState = { code: null, signal: null };
+  const refreshGuard = createChildProcessSettlement({
+    schedule(callback) { scheduled = { callback }; return "refresh-timer"; },
+    readExitState() { return refreshedState; },
+    onSettle: (...args) => refreshed.push(args),
+  });
+  refreshGuard.onExit(null, null);
+  refreshedState = { code: 0, signal: null };
+  scheduled.callback();
+  assert(refreshed.length === 1 && refreshed[0][0] === 0 && refreshed[0][2] === "exit_fallback",
+    "child exit fallback did not refresh a delayed terminal code");
+
+  assert(childExitedBeforeTimeout({ processState: "zombie" }), "zombie child was not recognized as already exited");
+  assert(childExitedBeforeTimeout({ exitCode: 0 }), "known child exit code was not recognized before timeout");
+  assert(!childExitedBeforeTimeout({ processState: "running" }), "running child bypassed timeout termination");
+
+  if (process.platform !== "win32") {
+    const marker = join(tmpdir(), `mbm-zombie-child-${process.pid}`);
+    const child = spawn(process.execPath, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ok')`], {
+      stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+    });
+    child.stdin.end();
+    const terminal = new Promise((resolvePromise) => { child.once("close", resolvePromise); });
+    const deadline = Date.now() + PROCESS_FIXTURE_TIMEOUT_MS;
+    let observed = "unknown";
+    while (Date.now() < deadline) {
+      if (existsSync(marker)) observed = processState(child.pid);
+      if (observed === "zombie") break;
+    }
+    assert(observed === "zombie", `completed child was not observable as zombie before event drain: ${observed}`);
+    assert(childExitedBeforeTimeout({ exitCode: child.exitCode, signalCode: child.signalCode, processState: observed }),
+      "zombie child would have been misclassified as timed out");
+    await terminal;
+    rmSync(marker, { force: true });
+  }
 
   scheduled = null;
   const raced = [];

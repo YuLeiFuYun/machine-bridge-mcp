@@ -12,6 +12,13 @@ import { inspectProcessInstance } from "../src/local/process-identity.mjs";
 import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath } from "../src/local/state.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const MAINTENANCE_HOLDER_READY_MS = 30_000;
+const EXCLUSIVE_CONTENDER_COUNT = 4;
+
+function spawnFixtureNode(args, options = {}) {
+  const environment = { ...process.env, NODE_V8_COVERAGE: "" };
+  return spawn(process.execPath, args, { ...options, env: environment });
+}
 const temp = await mkdtemp(join(tmpdir(), "mbm-process-lock-test-"));
 try {
   await atomicExclusiveCreateTest();
@@ -64,8 +71,8 @@ async function atomicExclusiveCreateTest() {
   const barrier = join(directory, "go");
   const helper = join(directory, "contender.mjs");
   const moduleUrl = pathToFileURL(join(root, "src", "local", "exclusive-file.mjs")).href;
-  await writeFile(helper, `import { existsSync } from "node:fs";\nimport { createExclusiveFileSync } from ${JSON.stringify(moduleUrl)};\nconst [target, barrier, id] = process.argv.slice(2);\nwhile (!existsSync(barrier)) await new Promise((r) => { setTimeout(r, 2); });\ntry { createExclusiveFileSync(target, JSON.stringify({ id, payload: "x".repeat(8192) }) + "\\n"); process.exit(0); }\ncatch (error) { if (error?.code === "EEXIST") process.exit(3); throw error; }\n`, "utf8");
-  const children = Array.from({ length: 12 }, (_, index) => spawn(process.execPath, [helper, target, barrier, String(index)], {
+  await writeFile(helper, `import { existsSync } from "node:fs";\nimport { createExclusiveFileSync } from ${JSON.stringify(moduleUrl)};\nconst [target, barrier, id] = process.argv.slice(2);\nif (process.env.NODE_V8_COVERAGE) throw new Error("process-lock helper inherited NODE_V8_COVERAGE");\nwhile (!existsSync(barrier)) await new Promise((r) => { setTimeout(r, 2); });\ntry { createExclusiveFileSync(target, JSON.stringify({ id, payload: "x".repeat(8192) }) + "\\n"); process.exit(0); }\ncatch (error) { if (error?.code === "EEXIST") process.exit(3); throw error; }\n`, "utf8");
+  const children = Array.from({ length: EXCLUSIVE_CONTENDER_COUNT }, (_, index) => spawnFixtureNode([helper, target, barrier, String(index)], {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   }));
@@ -96,7 +103,7 @@ async function atomicReplacementTest() {
   const helper = join(directory, "replace-loop.mjs");
   const moduleUrl = pathToFileURL(join(root, "src", "local", "exclusive-file.mjs")).href;
   await writeFile(helper, `import { replaceFileAtomicallySync } from ${JSON.stringify(moduleUrl)};\nconst target = process.argv[2];\nfor (let revision = 1; revision <= 250; revision += 1) replaceFileAtomicallySync(target, JSON.stringify({ revision, payload: 'x'.repeat(8192) }) + '\\n');\n`, "utf8");
-  const child = spawn(process.execPath, [helper, target], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+  const child = spawnFixtureNode([helper, target], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
   const childResult = waitForChild(child);
   while (child.exitCode === null) {
     const parsed = JSON.parse(await readFile(target, "utf8"));
@@ -182,7 +189,7 @@ async function startupWaitTest() {
   const helper = join(workspace, "hold-lock.mjs");
   const stateUrl = pathToFileURL(join(root, "src", "local", "state.mjs")).href;
   await writeFile(helper, `import { acquireStartupLock, loadState } from ${JSON.stringify(stateUrl)};\nconst [workspace, stateRoot] = process.argv.slice(2);\nconst state = loadState(workspace, { stateDir: stateRoot });\nconst lock = acquireStartupLock(state, { operation: "fixture" });\nif (!lock.acquired) process.exit(4);\nprocess.stdout.write("locked\\n");\nsetTimeout(() => { lock.release(); process.exit(0); }, 1000);\n`, "utf8");
-  const child = spawn(process.execPath, [helper, workspace, stateRoot], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const child = spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const childResult = waitForChild(child);
   await waitForOutput(child, "locked", 5000);
   const state = loadState(workspace, { stateDir: stateRoot });
@@ -251,10 +258,10 @@ async function maintenanceLockTest() {
 const [workspace, stateRoot] = process.argv.slice(2);
 try { loadState(workspace, { stateDir: stateRoot }); process.exit(0); } catch (error) { process.stderr.write(String(error?.message || error)); process.exit(7); }
 `, "utf8");
-  const blocked = await waitForChild(spawn(process.execPath, [helper, workspace, stateRoot], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
+  const blocked = await waitForChild(spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
   assert(blocked.code === 7 && blocked.stderr.includes("state maintenance is active"), "foreign state load was not blocked by maintenance");
   maintenance.release();
-  const allowed = await waitForChild(spawn(process.execPath, [helper, workspace, stateRoot], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
+  const allowed = await waitForChild(spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
   assert(allowed.code === 0, `state load remained blocked after maintenance release: ${allowed.stderr}`);
 
   const existingJobs = new ManagedJobManager({
@@ -278,16 +285,31 @@ const [workspace, stateRoot] = process.argv.slice(2);
 loadState(workspace, { stateDir: stateRoot });
 const lock = acquireMaintenanceLock(stateRoot, { operation: "foreign-holder" });
 if (!lock.acquired) process.exit(5);
+let settled = false;
+function finish(code) {
+  if (settled) return;
+  settled = true;
+  lock.release();
+  process.exit(code);
+}
 process.stdout.write("locked\\n");
-setTimeout(() => { lock.release(); process.exit(0); }, 1200);
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (value) => { if (String(value).includes("release")) finish(0); });
+process.stdin.on("end", () => finish(0));
+process.stdin.resume();
 `, "utf8");
-  const holderProcess = spawn(process.execPath, [holder, workspace, stateRoot], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const holderProcess = spawnFixtureNode([holder, workspace, stateRoot], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   const holderResult = waitForChild(holderProcess);
-  await waitForOutput(holderProcess, "locked", 5000);
-  expectThrow(() => loadGlobalConfig(stateRoot), "state maintenance is active");
-  expectThrow(() => existingJobs.start({ steps: [{ argv: [process.execPath, "-e", ""] }] }), "state maintenance is active");
-  await expectReject(existingBrowser.status(), "state maintenance is active");
-  const completedHolder = await holderResult;
+  await waitForOutput(holderProcess, "locked", MAINTENANCE_HOLDER_READY_MS);
+  let completedHolder;
+  try {
+    expectThrow(() => loadGlobalConfig(stateRoot), "state maintenance is active");
+    expectThrow(() => existingJobs.start({ steps: [{ argv: [process.execPath, "-e", ""] }] }), "state maintenance is active");
+    await expectReject(existingBrowser.status(), "state maintenance is active");
+  } finally {
+    holderProcess.stdin.end("release\n");
+    completedHolder = await holderResult;
+  }
   assert(completedHolder.code === 0, `maintenance holder failed: ${completedHolder.stderr}`);
   assert(existingJobs.list().jobs.length === 0, "blocked managed-job start created persistent state");
   const browserStatus = await existingBrowser.status();

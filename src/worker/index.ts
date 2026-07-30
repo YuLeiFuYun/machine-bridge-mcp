@@ -60,7 +60,7 @@ import {
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
 
-const SERVER_VERSION = "3.0.0-beta.25";
+const SERVER_VERSION = "3.0.0-beta.26";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;

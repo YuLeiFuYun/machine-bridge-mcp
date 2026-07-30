@@ -32,7 +32,7 @@ for (const task of ["coverage:test", "browser-bridge:test", "package:test", "sbo
 for (const task of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
   assert(PLATFORM_ONLY_CHECK_TASKS.includes(task), `cross-platform behavior task is not platform-only: ${task}`);
 }
-for (const task of ["architecture:test", "lint", "typecheck", "syntax", "policy:test", "runtime-infrastructure:test", "service-restart:test", "browser-identity:test", "check-runner:test", "release-channel:test", "release-soak:test", "runtime-activation:test", "sbom-check:test"]) {
+for (const task of ["architecture:test", "lint", "typecheck", "syntax", "policy:test", "runtime-infrastructure:test", "service-restart:test", "browser-identity:test", "check-runner:test", "release-channel:test", "release-soak:test", "runtime-activation:test", "release-publication-guard:test", "sbom-check:test"]) {
   assert(FAST_CHECK_TASKS.includes(task), `fast plan omits required development gate: ${task}`);
 }
 assert.equal(scripts.check, "npm run check:full");

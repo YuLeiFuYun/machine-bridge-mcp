@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { closeSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,10 +7,12 @@ import { inspectProcessInstance } from "./process-identity.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { ownerOnlyFile } from "./state.mjs";
 import { openPrivateAppendFile, readBoundedFile, trimDiagnosticFile } from "./managed-job-storage.mjs";
+import { publishProvisionalRunnerClaim } from "./managed-job-runner-claim.mjs";
 
 const RUNNER_PATH = fileURLToPath(new URL("./job-runner.mjs", import.meta.url));
 
 export function launchRunner(dir, recover = false, recoveryToken = "", options = {}) {
+  const launchToken = randomBytes(16).toString("hex");
   const args = [RUNNER_PATH, "--job-dir", dir];
   if (recover) args.push("--recover");
   const stdoutFile = join(dir, "runner.out.log");
@@ -28,7 +31,7 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
       stdio: ["ignore", stdoutFd, stderrFd],
       windowsHide: true,
       shell: false,
-      env: managedRunnerEnvironment({ fullEnv: options.fullEnv === true, recoveryToken, source: options.env || process.env }),
+      env: managedRunnerEnvironment({ fullEnv: options.fullEnv === true, recoveryToken, launchToken, source: options.env || process.env }),
     });
   } finally {
     if (stdoutFd !== undefined) closeSync(stdoutFd);
@@ -46,6 +49,12 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
   });
   const pid = Number(child.pid);
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("managed job runner did not receive a process id");
+  try {
+    publishProvisionalRunnerClaim(dir, pid, launchToken);
+  } catch (error) {
+    try { child.kill?.("SIGKILL"); } catch {}
+    throw error;
+  }
   child.unref();
   return pid;
 }
@@ -72,7 +81,7 @@ function readRunnerOwner(dir, fallback = {}) {
   }
 }
 
-export function managedRunnerEnvironment({ fullEnv = false, recoveryToken = "", source = process.env } = {}) {
+export function managedRunnerEnvironment({ fullEnv = false, recoveryToken = "", launchToken = "", source = process.env } = {}) {
   const env = fullEnv ? { ...source } : {};
   if (!fullEnv) {
     for (const key of ["PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP"]) {
@@ -81,5 +90,7 @@ export function managedRunnerEnvironment({ fullEnv = false, recoveryToken = "", 
   }
   if (recoveryToken) env.MBM_RECOVERY_LOCK_TOKEN = recoveryToken;
   else delete env.MBM_RECOVERY_LOCK_TOKEN;
+  if (launchToken) env.MBM_RUNNER_LAUNCH_TOKEN = launchToken;
+  else delete env.MBM_RUNNER_LAUNCH_TOKEN;
   return env;
 }

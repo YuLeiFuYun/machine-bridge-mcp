@@ -11,9 +11,9 @@ Unless the user explicitly narrows or expands the task, a coding agent may:
 - create local branches and commits;
 - generate the exact candidate with `npm run release:candidate`;
 - after explicit owner authorization and owner execution of the printed activation command, verify the live candidate through Machine Bridge and record acceptance;
-- push only with `npm run github:push`, manage the pull request through local `git`/`gh`, and complete the reviewed source release according to the mandatory prerelease/soak state machine.
+- push only with `npm run github:push`, manage the pull request through local `git`/`gh`, and prepare verified source-release metadata according to the mandatory prerelease/soak state machine; creating a Git tag or GitHub Release remains an owner-terminal action.
 
-This is standing authorization for implementation, local validation, observed candidate verification, acceptance recording, pull-request completion, and source-release metadata. It is not standing authorization for npm publication, global installation, Worker/service mutation, credential rotation, or destructive live-data changes.
+This is standing authorization for implementation, local validation, observed candidate verification, acceptance recording, pull-request completion, and source-release metadata. It is not standing authorization for Git tag/GitHub Release publication, npm publication, global installation, Worker/service mutation, credential rotation, or destructive live-data changes.
 
 GitHub-only infrastructure changes whose npm package bytes are unchanged do not require a synthetic package version or runtime acceptance. They still require review and applicable checks.
 
@@ -33,14 +33,14 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
   This is a live activation command, not a per-operation authorization prompt. It updates the same-name Worker, verifies candidate relay readiness, replaces the login daemon, verifies background handoff, and exits while the service remains active.
 - The coding agent then verifies Worker version/hash, remote health, relay readiness, connected daemon/service identity, representative functionality, relevant failure paths, and log/privacy behavior through Machine Bridge.
 - Only after observed live verification may the agent run `npm run release:accept`.
-- The accepted prerelease is reviewed and merged, then released with `npm run prerelease:release`.
+- The accepted prerelease is reviewed and merged; the owner then creates its Git tag and GitHub Prerelease from a real interactive terminal with `npm run prerelease:release -- --owner-terminal-confirm`.
 - npm prerelease publication is an explicit owner/release-operator action using `npm run prerelease:publish`.
 - The owner installs and activates the published prerelease with `npm run prerelease:install -- --allow-worker-deploy`; only this registry-verified activation starts formal soak.
 - Minimum soak is seven days for a major release, three days for a minor release, and one day for a patch release.
 - Every blocking defect requires a new prerelease number and restarts the complete soak interval.
 - The owner must explicitly report that the soak completed without blocking issues before the agent records `release-soak/v<stable>.json`.
 - Stable promotion may change only normalized release metadata. `promotion_content_sha256` must match the soaked prerelease; any functional packaged-byte change requires a new prerelease and new soak.
-- The exact stable candidate is activated and observed again before `npm run release` and the explicit `npm run stable:publish` action.
+- The exact stable candidate is activated and observed again before the owner's interactive `npm run release -- --owner-terminal-confirm` action and the explicit `npm run stable:publish` action.
 
 This workflow is a hard repository contract, not a conversational preference. Do not replace it with direct stable publication, an unobserved process, a transient foreground-only candidate, or an external signing prerequisite that is not part of this self-hosted flow.
 
@@ -65,9 +65,10 @@ Do not perform these merely because code or a version changed:
 - directly deploy or remove a Cloudflare Worker;
 - rotate credentials or device roots;
 - replace the live daemon/service outside the exact owner-executed activation workflow;
+- create or push a version tag, GitHub Release, or GitHub Prerelease;
 - mutate live user data or perform disruptive repository operations.
 
-The coding agent prepares and prints the exact command. The owner runs live activation/publication commands unless the user explicitly directs otherwise in the active conversation.
+The coding agent prepares and prints the exact command. The owner runs live activation and every GitHub/npm publication command from the required local terminal. Conversational authorization cannot substitute for the command's explicit flag and real TTY boundary.
 
 ## Validation expectations
 
@@ -88,7 +89,7 @@ The coding agent prepares and prints the exact command. The owner runs live acti
 4. After the owner runs it, verify the live candidate through Machine Bridge.
 5. Record exact candidate acceptance, commit, and push only through `npm run github:push`.
 6. Complete the pull request and exact-commit checks.
-7. Run `npm run prerelease:release`.
+7. The owner runs `npm run prerelease:release -- --owner-terminal-confirm` from a real interactive terminal.
 8. The owner runs `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy`.
 9. Wait for real use. Do not assume successful soak; the owner reports the outcome.
 10. After explicit successful soak feedback, record the exact `prerelease:soak:accept` phrase.
@@ -100,7 +101,7 @@ The coding agent prepares and prints the exact command. The owner runs live acti
 3. Present the same persistent candidate activation command to the owner.
 4. Verify the live stable candidate and record exact acceptance.
 5. Push/review/merge through the guarded flow.
-6. Run `npm run release` only after soak and exact-commit gates pass.
+6. The owner runs `npm run release -- --owner-terminal-confirm` from a real interactive terminal only after soak and exact-commit gates pass.
 7. The owner explicitly runs `npm run stable:publish`.
 
 The complete procedure and rollback boundaries are in [docs/RELEASING.md](docs/RELEASING.md).

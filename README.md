@@ -261,8 +261,9 @@ npm run release:candidate:activate -- --allow-worker-deploy
 # redeploy the same Worker once with the unchanged selected identity; it never rotates credentials.
 # The login service is accepted only after a committed machine owner and the matching daemon
 # publish the post-authentication, post-relay-probe readiness checkpoint.
-# After the coding agent verifies the live Worker/daemon and records acceptance:
-npm run prerelease:release
+# After the coding agent verifies the live Worker/daemon and records acceptance,
+# the owner runs this from a real interactive terminal:
+npm run prerelease:release -- --owner-terminal-confirm
 # Explicit owner registry and live-install steps:
 npm run prerelease:publish
 npm run prerelease:install -- --allow-worker-deploy
@@ -270,7 +271,7 @@ npm run prerelease:install -- --allow-worker-deploy
 
 Formal soak begins only after the exact published prerelease is installed and activated. Minimum soak is seven days for a major release, three days for a minor release, and one day for a patch. Every blocking fix creates a new prerelease and restarts the clock.
 
-Stable promotion must retain the soaked package's functional digest. After the owner reports successful soak, the agent records the soak result, prepares and verifies the stable candidate, and only then completes `npm run release`; npm stable publication is the separate explicit `npm run stable:publish` operation.
+Stable promotion must retain the soaked package's functional digest. After the owner reports successful soak, the agent records the soak result and prepares and verifies the stable candidate. The owner then creates the final GitHub tag and Release from a real interactive terminal with `npm run release -- --owner-terminal-confirm`; npm stable publication is the separate explicit `npm run stable:publish` operation.
 
 See [docs/RELEASING.md](docs/RELEASING.md).
 

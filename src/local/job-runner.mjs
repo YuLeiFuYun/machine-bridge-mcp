@@ -4,13 +4,15 @@ import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs
 import { basename, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { executionEnv } from "./shell.mjs";
-import { createChildProcessSettlement } from "./child-process-settlement.mjs";
+import { childExitedBeforeTimeout, createChildProcessSettlement } from "./child-process-settlement.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
-import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
-import { currentProcessStartTimeMs } from "./process-identity.mjs";
+import { currentProcessStartTimeMs, processState } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { persistManagedJobTerminal } from "./managed-job-terminal.mjs";
+import { sanitizeLogText } from "./log.mjs";
+import { confirmRunnerClaim } from "./managed-job-runner-claim.mjs";
 
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
 const TEMP_TOKEN = /\{\{temp:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -28,7 +30,9 @@ const jobDir = resolve(jobDirInput);
 if (!JOB_ID.test(basename(jobDir))) throw new Error("--job-dir must name a managed job directory");
 const recover = options.recover === true;
 const recoveryLockToken = typeof process.env.MBM_RECOVERY_LOCK_TOKEN === "string" ? process.env.MBM_RECOVERY_LOCK_TOKEN : "";
+const launchToken = typeof process.env.MBM_RUNNER_LAUNCH_TOKEN === "string" ? process.env.MBM_RUNNER_LAUNCH_TOKEN : "";
 delete process.env.MBM_RECOVERY_LOCK_TOKEN;
+delete process.env.MBM_RUNNER_LAUNCH_TOKEN;
 const planFile = join(jobDir, "plan.json");
 const statusFile = join(jobDir, "status.json");
 const resultFile = join(jobDir, "result.json");
@@ -58,7 +62,9 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
 const initial = readJson(statusFile, MAX_STATUS_BYTES);
 assertLaunchState(initial);
 try {
-  createExclusiveFileSync(runnerPidFile, `${JSON.stringify({ pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT })}\n`, { mode: 0o600 });
+  await confirmRunnerClaim({
+    file: runnerPidFile, pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT, launchToken,
+  });
   if (recover) await releaseRecoveryClaim();
   const plan = readJson(planFile, 1024 * 1024);
   assertPlanIntegrity(plan, initial);
@@ -67,6 +73,7 @@ try {
   recordFatalRunnerError(error);
   process.exitCode = 1;
 }
+
 
 async function releaseRecoveryClaim() {
   if (!/^[a-f0-9]{32}$/.test(recoveryLockToken)) throw new Error("recovery runner is missing its ownership token");
@@ -178,6 +185,9 @@ function assertPlanIntegrity(plan, status) {
 
 function recordFatalRunnerError(error) {
   const now = new Date().toISOString();
+  try {
+    process.stderr.write(`managed job runner fatal: error_class=${classifyError(error)} message=${sanitizeLogText(error?.message || error, 512)}\n`);
+  } catch {}
   let status = {};
   try { status = readJson(statusFile, MAX_STATUS_BYTES); } catch {}
   const finalStatus = recover ? "recovery_failed" : "runner_failed";
@@ -287,6 +297,14 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
     let closed = false;
     let killTimer = null;
     const timer = setTimeout(() => {
+      if (childExitedBeforeTimeout({
+        exitCode: child.exitCode,
+        signalCode: child.signalCode,
+        processState: processState(child.pid),
+      })) {
+        settlement.onExit(child.exitCode, child.signalCode);
+        return;
+      }
       timedOut = true;
       killTimer = terminateProcessTreeWithEscalation(child);
     }, timeoutMs);
@@ -310,6 +328,7 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
       stderrTruncated += next.truncated;
     });
     const settlement = createChildProcessSettlement({
+      readExitState: () => ({ code: child.exitCode, signal: child.signalCode }),
       onFallback() {
         for (const stream of [child.stdin, child.stdout, child.stderr]) {
           try { stream?.destroy?.(); } catch {}

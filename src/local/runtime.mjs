@@ -530,7 +530,7 @@ export class LocalRuntime {
       workspace: this.workspace,
       runProcess: (...args) => this.runProcess(...args),
       runFixedInternal: (...args) => this.processExecutionService.runFixedInternal(...args),
-      probeShell: (callContext) => this.processExecutionService.probeShell(callContext),
+      probeShell: (callContext, timeoutMs) => this.processExecutionService.probeShell(callContext, timeoutMs),
       managedJobManager: this.managedJobManager,
       relayStatus: () => this.relay?.status?.() || null,
       throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),

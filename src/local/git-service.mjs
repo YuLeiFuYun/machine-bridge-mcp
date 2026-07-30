@@ -3,6 +3,8 @@ import { dirname, isAbsolute, relative, sep } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { clampInteger } from "./numbers.mjs";
 
+export const GIT_METADATA_TIMEOUT_MS = 30_000;
+
 export class GitService {
   constructor({ resolveExistingPath, displayPath, runInternalProcess, gitExecutable, maximumBytes }) {
     this.resolveExistingPath = resolveExistingPath;
@@ -64,7 +66,7 @@ export class GitService {
     const target = await this.resolveExistingPath(inputPath, context);
     const info = await stat(target);
     const cwd = info.isDirectory() ? target : dirname(target);
-    const result = await this.runInternalProcess(this.gitExecutable(), ["-c", "core.fsmonitor=false", "-C", cwd, "rev-parse", "--show-toplevel"], 10_000, true, 512 * 1024, context);
+    const result = await this.runInternalProcess(this.gitExecutable(), ["-c", "core.fsmonitor=false", "-C", cwd, "rev-parse", "--show-toplevel"], GIT_METADATA_TIMEOUT_MS, true, 512 * 1024, context);
     if (result.code !== 0) return { ok: false, result, target };
     const root = result.stdout.trim();
     const repoRelative = relative(root, target);
