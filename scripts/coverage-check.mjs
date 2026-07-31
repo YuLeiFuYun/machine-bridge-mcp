@@ -110,6 +110,7 @@ try {
     "src/local/service-restart-handoff.mjs": [100, 60],
     "src/local/service-owner.mjs": [100, 85],
     "src/local/service-runtime.mjs": [100, 80],
+    "src/local/service-runtime-convergence.mjs": [100, 80],
     "src/local/windows-service-convergence.mjs": [100, 95],
     "src/local/runtime-activation.mjs": [90, 70],
     "scripts/release-publication-guard.mjs": [100, 80],

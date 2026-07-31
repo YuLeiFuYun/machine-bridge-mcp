@@ -86,7 +86,7 @@ The suite includes:
 - prototype-shaped command, action, role, profile, form-field, keyboard, and resource names proving that inherited object properties are never interpreted as dispatch or authority; current-schema malformed OAuth roles are repaired to disabled reviewer accounts with credential revocation;
 - canonical Worker deployment URL extraction proving unrelated `/mcp`, `/healthz`, path-bearing, and wrong-name URLs cannot be persisted as upload evidence;
 - byte-exact UTF-8 DOM-source truncation across emoji and Chinese partial-code-point boundaries, including equality between the reported byte count and the encoded returned source;
-- independently injected service CLI status/install/start/stop/uninstall/remove paths, including provider failure, no selected workspace, no deployed Worker, aliases, and default output/exit adapters;
+- independently injected service CLI status/install/start/stop/restart/uninstall/remove paths, including provider failure, no selected workspace, no deployed Worker, aliases, default output/exit adapters, active restart provider invocation, old-PID rejection, and replacement-readiness evidence;
 - CLI parsing, policy profiles, and client configuration boundaries;
 - installed-package zero-argument startup with an isolated HOME/state/workspace and a service-manager trap, proving the smoke test reaches the controlled Wrangler boundary without querying, stopping, or replacing the operator's machine-global launchd/systemd/Scheduled Task service;
 - live stdio MCP initialization with session instructions, capability resolution, discovery, calls, rich content, sessions, cancellation, managed-job acceptance, and a detached job/finally phase that survives stdio shutdown;

@@ -202,6 +202,7 @@ const lineLimits = Object.freeze({
   "src/local/service-environment.mjs": 140,
   "src/local/service-owner.mjs": 150,
   "src/local/service-runtime.mjs": 150,
+  "src/local/service-runtime-convergence.mjs": 80,
   "src/local/windows-service.mjs": 220,
   "src/local/windows-service-convergence.mjs": 60,
   "src/local/windows-launcher.mjs": 90,

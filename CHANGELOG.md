@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0-beta.28 - 2026-07-31
+
+### Verified service restart semantics
+
+- Fix `service restart` returning `already_running` without invoking launchd, systemd, or Task Scheduler. Start remains idempotent, while restart now always reaches the provider when the committed service is active.
+- Require an active-service restart to return explicit provider restart evidence and to converge on a replacement daemon PID before reporting success. A still-ready pre-restart daemon is now `daemon_replacement_not_observed`, not successful convergence.
+- Extract service daemon convergence into a focused module and add regressions for provider invocation, old-PID rejection, replacement readiness, and missing restart evidence.
+
 ## 3.0.0-beta.27 - 2026-07-31
 
 ### Control-plane resilience under host I/O pressure
