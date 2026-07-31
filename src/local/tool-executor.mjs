@@ -3,6 +3,8 @@ import catalog from "../shared/tool-catalog.json" with { type: "json" };
 import { compileToolArgumentValidators } from "../shared/tool-argument-validation.mjs";
 import { BridgeError, errorCode, normalizeBridgeError } from "./errors.mjs";
 import { normalizeToolResult } from "./tool-result-boundary.mjs";
+import { createSecurityAuditFailureReporter } from "./security-audit-warning.mjs";
+import { enqueueSecurityAudit } from "./security-audit-dispatch.mjs";
 
 const TOOL_ARGUMENTS = compileToolArgumentValidators(catalog);
 
@@ -91,6 +93,7 @@ function lifecycleMiddleware(callRegistry) {
 }
 
 function observabilityMiddleware(observability, securityAudit, logger, safeMessage, slowMs) {
+  const auditFailureReporter = createSecurityAuditFailureReporter(logger);
   return async (operation, next) => {
     const started = performance.now();
     observability.start(operation.tool);
@@ -105,7 +108,7 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       const durationMs = performance.now() - started;
       const slow = durationMs >= slowMs;
       observability.finish(operation.tool, { status: "completed", durationMs, slow });
-      await recordSecurityAudit(securityAudit, operation, { outcome: "completed", durationMs, outputBytes: normalizedResult.bytes });
+      enqueueSecurityAudit(securityAudit, operation, { outcome: "completed", durationMs, outputBytes: normalizedResult.bytes }, auditFailureReporter);
       logger.event?.("debug", slow ? "tool.call.slow" : "tool.call.completed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin, duration_ms: durationMs,
         authority_role: operation.context.authority?.principal?.role || "local",
@@ -118,7 +121,7 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       const code = errorCode(normalized);
       const status = code === "cancelled" ? "cancelled" : code === "timeout" ? "timeout" : "failed";
       observability.finish(operation.tool, { status, durationMs, errorCode: code, slow: durationMs >= slowMs });
-      await recordSecurityAudit(securityAudit, operation, { outcome: status, durationMs, errorCode: code });
+      enqueueSecurityAudit(securityAudit, operation, { outcome: status, durationMs, errorCode: code }, auditFailureReporter);
       logger.event?.("debug", "tool.call.failed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin,
         duration_ms: durationMs, error_code: code, retryable: normalized.retryable,
@@ -138,24 +141,6 @@ function invokeHandler(handlers) {
   };
 }
 
-
-async function recordSecurityAudit(securityAudit, operation, outcome) {
-  if (!securityAudit?.record || operation.context.origin !== "relay") return;
-  const decision = operation.context.operationAuthorization || {};
-  const recorded = await securityAudit.record({
-    ...outcome,
-    tool: operation.tool,
-    riskCategory: decision.category || "ordinary operation",
-    targetHash: decision.targetHash || "",
-    principal: operation.context.authority?.principal || {},
-    inputBytes: safeByteLength(operation.args),
-  });
-  if (!recorded) operation.context.auditWarning = "security_audit_unavailable";
-}
-
-function safeByteLength(value) {
-  try { return Buffer.byteLength(JSON.stringify(value)); } catch { return 0; }
-}
 
 function shortCallId(value) {
   return String(value || "").slice(0, 20);

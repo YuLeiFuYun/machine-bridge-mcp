@@ -44,6 +44,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "policy-docs:check",
   "tool-docs:check",
   "runtime-infrastructure:test",
+  "control-plane-resilience:test",
   "runtime-boundaries:test",
   "runtime-handlers:test",
   "cli-entrypoint:test",

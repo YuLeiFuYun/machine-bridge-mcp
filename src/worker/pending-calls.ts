@@ -1,5 +1,7 @@
+import { toolCallAdmission, toolCallCapacityConfig, type ToolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
 import type { PendingCallOutcome, PendingCallRecord, PendingCallSettlement, RegisterPendingCall } from "./pending-call-contract.ts";
 import { PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
+import { pendingRegistrySnapshot } from "./pending-call-capacity.ts";
 
 export class PendingCallRegistrationError extends Error {
   readonly code: "conflict" | "limit_exceeded";
@@ -12,14 +14,19 @@ export class PendingCallRegistrationError extends Error {
   }
 }
 
+type PendingCallRegistryOptions = PendingCallDeadlineOptions & {
+  reservedCapacity?: number;
+  reservedTools?: Iterable<string>;
+};
+
 export class PendingCallRegistry {
-  private readonly maximum: number;
+  private readonly capacity: ToolCallCapacityConfig;
   private readonly byId = new Map<string, PendingCallRecord>();
   private readonly byRequestKey = new Map<string, string>();
   private readonly deadlines: PendingCallDeadlines;
 
-  constructor(maximum: number, options: PendingCallDeadlineOptions = {}) {
-    this.maximum = maximum;
+  constructor(maximum: number, options: PendingCallRegistryOptions = {}) {
+    this.capacity = toolCallCapacityConfig(maximum, options.reservedCapacity, options.reservedTools);
     this.deadlines = new PendingCallDeadlines(options);
   }
   get size(): number { return this.byId.size; }
@@ -94,21 +101,19 @@ export class PendingCallRegistry {
     return rebound;
   }
 
-  snapshot(): { active: number; detached: number; request_keys: number; maximum: number; oldest_ms: number; by_tool: Record<string, number> } {
-    const now = this.deadlines.now();
-    const byTool = Object.create(null) as Record<string, number>;
-    let detached = 0;
-    let oldestMs = 0;
-    for (const record of this.byId.values()) {
-      byTool[record.tool] = (byTool[record.tool] || 0) + 1;
-      detached += Number(!record.socket);
-      oldestMs = Math.max(oldestMs, now - record.startedAt);
-    }
-    return { active: this.byId.size, detached, request_keys: this.byRequestKey.size, maximum: this.maximum, oldest_ms: oldestMs, by_tool: byTool };
+  snapshot() {
+    return pendingRegistrySnapshot(this.byId.values(), this.byRequestKey.size, this.deadlines.now(), this.capacity);
   }
 
   private assertCanRegister(input: RegisterPendingCall): void {
-    if (this.byId.size >= this.maximum) throw new PendingCallRegistrationError("limit_exceeded", "too many concurrent daemon tool calls", true);
+    const snapshot = this.snapshot();
+    const decision = toolCallAdmission({ active: snapshot.active, byTool: snapshot.by_tool }, this.capacity, input.tool);
+    if (!decision.allowed) {
+      const message = decision.reason === "ordinary_capacity"
+        ? `ordinary daemon-call capacity reached (${decision.ordinaryMaximum}); control-plane capacity is reserved for diagnosis and recovery`
+        : "too many concurrent daemon tool calls";
+      throw new PendingCallRegistrationError("limit_exceeded", message, true);
+    }
     if (this.byId.has(input.id)) throw new PendingCallRegistrationError("conflict", "duplicate internal daemon call id");
     if (input.clientRequestKey && this.byRequestKey.has(input.clientRequestKey)) {
       throw new PendingCallRegistrationError("conflict", "duplicate in-flight JSON-RPC request id within this MCP session");

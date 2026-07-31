@@ -1,10 +1,10 @@
 import WebSocket from "ws";
 import { classifyOperationalError } from "./log.mjs";
 import { proxyAgentForWebSocket } from "./network-proxy.mjs";
+import { RelayHeartbeatMonitor } from "./relay-heartbeat.mjs";
 import {
   APPLICATION_PROXY_ROUTE_SCOPE, relayOutageFields, relayRecoveryFields, relayStatusSnapshot,
 } from "./relay-diagnostics.mjs";
-
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 75_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
@@ -15,7 +15,6 @@ const DEFAULT_OUTAGE_WARN_REPEAT_MS = 60_000;
 const DEFAULT_OUTAGE_WARN_MAX_REPEAT_MS = 15 * 60_000;
 const MAX_CLOSE_REASON_CHARS = 128;
 const MAX_PROTOCOL_ERROR_CODE_CHARS = 64;
-
 const DEFAULT_SCHEDULER = Object.freeze({
   setTimeout: (callback, delay) => setTimeout(callback, delay),
   clearTimeout: (timer) => clearTimeout(timer),
@@ -67,7 +66,6 @@ export class RelayConnection {
     this.reconnectAttempt = 0;
     this.reconnectTimer = null;
     this.connectTimer = null;
-    this.heartbeatTimer = null;
     this.handshakeTimer = null;
     this.readinessTimer = null;
     this.outageWarnTimer = null;
@@ -91,6 +89,28 @@ export class RelayConnection {
     this.connectedOnceReject = null;
     this.sessionGeneration = 0;
     this.activeSessionId = 0;
+    this.heartbeat = new RelayHeartbeatMonitor({
+      intervalMs: this.heartbeatIntervalMs,
+      timeoutMs: this.heartbeatTimeoutMs,
+      stallThresholdMs: options.heartbeatStallThresholdMs,
+      recoveryGraceMs: options.heartbeatRecoveryGraceMs,
+      scheduler: this.scheduler,
+      now: this.now,
+      logger: this.logger,
+      isActive: () => !this.closed && this.authenticated && this.isSocketOpen(this.socket),
+      lastInboundAt: () => this.lastInboundAt,
+      sendHeartbeat: (now) => this.sendOnSocket(this.socket, { type: "heartbeat", ts: now }),
+      onTimeout: ({ silentForMs, eventLoopLagMs }) => {
+        const socket = this.socket;
+        if (!socket) return;
+        this.logger.debug?.("remote relay heartbeat timed out", {
+          silent_for_ms: silentForMs,
+          event_loop_lag_ms: eventLoopLagMs,
+        });
+        this.pendingCloseCategory = "relay_heartbeat_timeout";
+        terminateSocket(socket);
+      },
+    });
   }
 
   status() {
@@ -118,7 +138,7 @@ export class RelayConnection {
     this.ready = false;
     this.readinessProbeDelivered = false;
     this.activeSessionId = 0;
-    this.clearTimer("heartbeatTimer", "clearInterval");
+    this.heartbeat.stop();
     this.clearTimer("connectTimer", "clearTimeout");
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.clearTimer("readinessTimer", "clearTimeout");
@@ -191,7 +211,7 @@ export class RelayConnection {
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.connectedAt = this.now();
     this.lastInboundAt = this.connectedAt;
-    this.startHeartbeat();
+    this.heartbeat.start();
     this.clearTimer("readinessTimer", "clearTimeout");
     this.readinessTimer = this.scheduler.setTimeout(() => {
       if (this.socket !== socket || this.closed || this.ready) return;
@@ -335,6 +355,7 @@ export class RelayConnection {
     socket.on("message", (data) => {
       if (this.socket !== socket || this.closed) return;
       this.lastInboundAt = this.now();
+      this.heartbeat.observeInbound();
       // Bind results to the generation that received this message.
       const relayContext = {
         sessionId: this.activeSessionId,
@@ -360,8 +381,8 @@ export class RelayConnection {
       this.ready = false;
       this.readinessProbeDelivered = false;
       this.activeSessionId = 0;
+      this.heartbeat.stop();
       this.clearTimer("connectTimer", "clearTimeout");
-      this.clearTimer("heartbeatTimer", "clearInterval");
       this.clearTimer("handshakeTimer", "clearTimeout");
       this.clearTimer("readinessTimer", "clearTimeout");
       const reasonText = sanitizeCloseReason(reason);
@@ -430,9 +451,9 @@ export class RelayConnection {
     this.ready = false;
     this.readinessProbeDelivered = false;
     this.activeSessionId = 0;
+    this.heartbeat.stop();
     this.socket = null;
     this.clearTimer("connectTimer", "clearTimeout");
-    this.clearTimer("heartbeatTimer", "clearInterval");
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.clearTimer("readinessTimer", "clearTimeout");
     this.clearTimer("reconnectTimer", "clearTimeout");
@@ -498,23 +519,6 @@ export class RelayConnection {
       terminateSocket(socket);
       return false;
     }
-  }
-
-  startHeartbeat() {
-    this.clearTimer("heartbeatTimer", "clearInterval");
-    this.heartbeatTimer = this.scheduler.setInterval(() => {
-      const socket = this.socket;
-      if (this.closed || !this.authenticated || !this.isSocketOpen(socket)) return;
-      const silentForMs = Math.max(0, this.now() - this.lastInboundAt);
-      if (silentForMs >= this.heartbeatTimeoutMs) {
-        this.logger.debug?.("remote relay heartbeat timed out", { silent_for_ms: silentForMs });
-        this.pendingCloseCategory = "relay_heartbeat_timeout";
-        terminateSocket(socket);
-        return;
-      }
-      this.sendOnSocket(socket, { type: "heartbeat", ts: this.now() });
-    }, this.heartbeatIntervalMs);
-    this.heartbeatTimer?.unref?.();
   }
 
   recordOutage(category) {

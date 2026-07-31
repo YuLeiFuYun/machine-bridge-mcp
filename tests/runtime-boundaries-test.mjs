@@ -132,9 +132,22 @@ async function testRuntimeDiagnostics() {
         outage_active: false, outage_count: 2, last_close_category: "relay_transport_error", last_close_code: 1006,
         last_transport_error_class: "network_error", last_ready_duration_ms: 5000, next_reconnect_in_ms: 0,
       }),
+      controlPlaneState: {
+        lifecycle: { state: "running", operational: true },
+        inFlightCalls: { active: 14, ordinary_capacity: 14, reserved_capacity: 2 },
+        processes: { active_processes: 1, draining_calls: 1 },
+        executionGuardrails: { tool_calls: { maximum_concurrent: 16 } },
+        securityAudit: { healthy: true, worker_ready: true, queue_depth: 0 },
+      },
       throwIfCancelled() {},
     });
     assert(shell.request_reached_local_runtime === true, "runtime diagnostic lost local reachability evidence");
+    assert(shell.runtime.lifecycle.state === "running"
+      && shell.runtime.processes.draining_calls === 1
+      && shell.runtime.execution_guardrails.tool_calls.maximum_concurrent === 16
+      && shell.runtime.security_audit.worker_ready === true
+      && shell.observability.in_flight_calls.reserved_capacity === 2,
+    "runtime diagnostic omitted privacy-safe control-plane state");
     assert(shell.checks.some((check) => check.layer === "local-shell" && check.ok), "shell diagnostic was not executed");
     assert(diagnosticProcessTimeoutMs === RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS
       && diagnosticShellTimeoutMs === RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS,

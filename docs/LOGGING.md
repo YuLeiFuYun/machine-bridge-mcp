@@ -12,7 +12,7 @@ Logs should answer:
 4. Is an infrastructure, protocol, deployment, or local service problem requiring action?
 5. When debug logging is explicitly enabled, which bounded implementation event should be correlated?
 
-Logs are not a command history or content transcript. The local security audit provides a bounded SHA-256 hash chain over coarse operation metadata without recording command text, paths, contents, form values, or output. It detects local alteration but is not a remote immutable ledger and is not a substitute for OS isolation.
+Logs are not a command history or content transcript. The local security audit provides a bounded SHA-256 hash chain over coarse operation metadata without recording command text, paths, contents, form values, or output. Audit inputs are projected to an allowlist before crossing to a dedicated Worker thread; chain verification, batching, atomic replacement, and `fsync` never delay tool-result delivery on the daemon event loop. Remote `diagnose_runtime.runtime.security_audit` reports worker readiness, queue depth/capacity, dropped records, retained entries, and chain health; local stdio exposes the same snapshot as `server_info.security_audit`. Before the Worker reports readiness, health is explicitly `audit_initializing`; the daemon thread does not synchronously read the chain. The queue is not a write-ahead log: a process or operating-system crash before persistence can lose queued events, and `dropped_records` counts only failures observed during the current process lifetime. The chain detects local alteration but is not a remote immutable ledger and is not a substitute for OS isolation.
 
 ## Levels
 
@@ -62,7 +62,8 @@ Brief network interruptions are expected on laptop network changes, Worker deplo
 - recovery after a visible outage produces one information summary with a human-readable duration and attempt count; exact seconds and error classes remain debug-only;
 - a verified replacement is a distinct warning and permanently stops the older daemon;
 - failure to receive `hello_ack` within the handshake deadline, or `ready_ack` within the independent end-to-end readiness deadline, terminates the candidate socket and retries;
-- lack of inbound heartbeat activity terminates a half-open socket and reconnects.
+- lack of inbound heartbeat activity terminates a half-open socket and reconnects;
+- a late local heartbeat tick is classified as `runtime.event_loop.stall`, sends a fresh probe, and defers disconnect for a bounded recovery interval instead of being mislabeled as immediate remote failure.
 
 A WebSocket close code such as `1006` means the transport ended without a normal close handshake. It is useful for debug diagnosis but not useful as the default user message. It is not evidence that the daemon process restarted. Worker `daemon_transport_error` / `daemon_liveness_timeout` messages and their 1012 close frames are likewise retryable connection conditions, not upgrade instructions. Only an unknown/incompatible Worker error, authentication failure, or identity/version mismatch may produce the fatal protocol/configuration log and daemon exit. Default logs therefore describe the affected layer, duration, classification, and recovery behavior rather than printing raw close envelopes.
 
@@ -86,7 +87,7 @@ The layered repository check runner follows the same noise rule. Green child-tas
 
 A completed local result is normally sent on the ready relay connection. If that daemon WebSocket disappears, the runtime may queue the bounded result envelope during the shared two-minute same-daemon reconnect window; this relay-layer queue is independent of the public MCP protocol era. Debug output records only a shortened call ID and queue/reconnect counts. After the same daemon process completes readiness, replay emits one recovery event; a different process cannot inherit the result. For modern MCP `2026-07-28`, closing the public HTTP response stream cancels that request through a random internal capability; the control request contains no Authorization or DPoP header, and the capability is not logged. For legacy MCP `2025-11-25`, disposing the public response does not cancel the session-bound operation because the host may recover it with `Last-Event-ID`; explicit legacy cancellation suppresses eventual delivery. Tool arguments, mirrored header values, validation values, and result content are never logged.
 
-Debug per-tool fields may include tool name, duration, coarse outcome class, and a shortened random call identifier. The identifier is for correlating adjacent local events and is not a stable audit identifier. Authorization failures expose a random approval ID, scope, and expiry to the caller; daemon logs still omit normalized targets and request arguments.
+Debug per-tool fields may include tool name, duration, coarse outcome class, and a shortened random call identifier. The identifier is for correlating adjacent local events and is not a stable audit identifier. Authorization failures return a stable denial code and bounded guidance; the current runtime never creates approval IDs or temporary elevation leases. Daemon logs still omit normalized targets and request arguments.
 
 ## Data that is never logged
 
@@ -122,6 +123,9 @@ This is defense in depth, not content classification. Unknown, split, transforme
 
 ## Structured lifecycle events
 
+
+Security-audit enqueue/persistence failures are warning-level operational faults, but repeated failures are rate-limited per event class. The first warning is emitted immediately; duplicates within one minute are suppressed, and the next emitted warning reports the suppressed count. Warning fields contain only the tool name and a coarse error class, never the rejected audit payload or principal identifiers.
+
 The local execution middleware emits bounded events such as `tool.call.started`, `tool.call.completed`, `tool.call.failed`, `tool.call.slow`, and `tool.call.cancel_requested`. Stable fields include a shortened call ID, tool name, origin, duration, error code, and retryability. The Worker emits JSON events for HTTP failures and daemon socket errors. Structured values still pass through field-name and value redaction; JSON format is not permission to log arguments or results.
 
 `server_info` is the operational metrics surface. Local metrics include lifecycle state, active and maximum calls, oldest-call age, active-process ownership, per-tool duration buckets, and error-code counts. Worker metrics include HTTP status classes, pending internal/request-key indexes, per-tool outcomes, daemon candidate/authenticated/ready/disconnected event counts, current authenticated/probing/ready socket counts, and protocol-error counts. Metrics contain counts and bounded identifiers, not request arguments or result contents.
@@ -145,7 +149,7 @@ Each managed job has owner-only runner diagnostic logs. Child-step output is ret
 
 `network_route` describes only Machine Bridge's application-level proxy decision. `system-network-stack` does **not** mean a direct physical path: an operating-system VPN, TUN, packet tunnel, DNS interceptor, or endpoint-security product may still carry the connection. `network_route_scope` therefore remains `application-proxy-selection-only`.
 
-During an outage, `server_info.runtime.relay` and `diagnose_runtime` expose bounded operational fields: outage count/start/duration, last close category/code, coarse transport error class, last disconnect/ready time, prior ready duration, and next retry timing. On macOS, `diagnose_runtime` may also return a coarse default-route class and `operating_system_interception` boolean. That diagnostic is returned on demand and is not promoted to default logs; interface names, IP addresses, DNS answers, proxy endpoints/credentials, Worker endpoints, tool arguments, and results remain absent. `relay.outage.active` and `relay.outage.recovered` carry the existing safe relay fields.
+During an outage, remote `diagnose_runtime.runtime.relay` and local stdio `server_info.runtime.relay` expose bounded operational fields: outage count/start/duration, last close category/code, coarse transport error class, last disconnect/ready time, prior ready duration, and next retry timing. On macOS, `diagnose_runtime` may also return a coarse default-route class and `operating_system_interception` boolean. That diagnostic is returned on demand and is not promoted to default logs; interface names, IP addresses, DNS answers, proxy endpoints/credentials, Worker endpoints, tool arguments, and results remain absent. `relay.outage.active` and `relay.outage.recovered` carry the existing safe relay fields.
 
 Schema 4 is strict NDJSON. Before daemon startup, both active log files are opened as owner-only regular single-link files. A schema change clears both only after validation and commits the marker only after the transition succeeds. A symlink, multiple-hard-link inode, permission error, or marker-write failure blocks startup rather than mixing formats or repeatedly erasing evidence.
 

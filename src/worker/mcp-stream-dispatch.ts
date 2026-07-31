@@ -32,8 +32,9 @@ type StartStreamCallInput = {
   connectionId: string;
   timeoutMs: number;
   authorization: StreamCallAuthorization;
-  transientActiveCount: number;
+  transientSnapshot: { active: number; by_tool: Record<string, number> };
   maximumPendingCalls: number;
+  reservedPendingCalls?: number;
   transform?: PendingStreamTransform;
   onSendFailure: () => void | Promise<void>;
 };
@@ -111,8 +112,9 @@ export async function startEventDrivenStreamCall(input: StartStreamCallInput): P
       tool: input.tool,
       timeoutMs: input.timeoutMs,
       transform: input.transform,
-      transientActiveCount: input.transientActiveCount,
+      transientSnapshot: input.transientSnapshot,
       maximumPendingCalls: input.maximumPendingCalls,
+      reservedPendingCalls: input.reservedPendingCalls,
     });
   } catch (error) {
     if (error instanceof McpPendingCallLimitError) {

@@ -29,8 +29,8 @@ export interface ProcessSnapshotResult {
 
 export interface ProcessOwnershipOptions {
   platform?: string;
-  listProcessGroups?: (options: ProcessOwnershipOptions, pid: number, timeoutMs: number) => ProcessGroupEntry[];
-  spawnSyncProcess?: (command: string, args: string[], options: Record<string, unknown>) => ProcessSnapshotResult;
+  listProcessGroups?: (options: ProcessOwnershipOptions, pid: number, timeoutMs: number) => ProcessGroupEntry[] | Promise<ProcessGroupEntry[]>;
+  execFileProcess?: (command: string, args: string[], options: Record<string, unknown>) => ProcessSnapshotResult | Promise<ProcessSnapshotResult>;
   ownershipCheckBudgetMs?: unknown;
   processSnapshotTimeoutMs?: unknown;
   monotonicNow?: () => number;

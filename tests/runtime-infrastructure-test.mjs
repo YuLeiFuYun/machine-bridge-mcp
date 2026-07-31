@@ -24,6 +24,7 @@ import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
 import { startAutostartLogMaintenance } from "../src/local/autostart-log-maintenance.mjs";
+import { createSecurityAuditFailureReporter } from "../src/local/security-audit-warning.mjs";
 
 const PROCESS_FIXTURE_TIMEOUT_MS = 30_000;
 
@@ -45,10 +46,11 @@ await testFixedInternalProcessBoundary();
 testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
 testProcessTracker();
-testProcessTreeSupervisor();
+await testProcessTreeSupervisor();
 await testChildProcessSettlement();
 testHardSpawnSyncTimeout();
 testExecutionGuardrails();
+testSecurityAuditWarningRateLimit();
 testErrors();
 testWorkspaceShellSelection();
 testBoundedOutput();
@@ -81,6 +83,19 @@ async function testCallRegistry() {
   assert(cancelled.at(-1)?.reason === "relay disconnected", "relay origin cancellation lost its reason");
   registry.finish("two");
   assert(registry.snapshot().active === 0, "finished calls leaked from registry");
+
+  const defaultCapacity = new CallRegistry();
+  assert(defaultCapacity.snapshot().maximum === 16,
+    "default local call capacity drifted from the sixteen-call runtime contract");
+
+  const reserved = new CallRegistry({ maximum: 3, reserved: 1, reservedTools: ["diagnose_runtime"] });
+  reserved.open({ callId: "ordinary-one", tool: "exec_command" });
+  reserved.open({ callId: "ordinary-two", tool: "read_file" });
+  expectBridgeError(() => reserved.open({ callId: "ordinary-three", tool: "git_status" }), "limit_exceeded");
+  reserved.open({ callId: "control", tool: "diagnose_runtime" });
+  assert(reserved.snapshot().active_reserved === 1 && reserved.snapshot().ordinary_capacity === 2,
+    "control-plane reservation did not preserve diagnostic capacity");
+
   registry.open({ callId: "stop-one", tool: "read_file" });
   registry.open({ callId: "stop-two", tool: "git_status" });
   registry.cancelAll("runtime stopped");
@@ -132,6 +147,30 @@ async function testToolExecutor() {
   assert(snapshot.errors.execution_failed === 1 && snapshot.errors.policy_denied === 1 && snapshot.errors.authorization_denied === 1, "tool metrics lost stable error codes");
   assert(events.some((event) => event.name === "tool.call.started") && events.some((event) => event.name === "tool.call.failed"), "structured lifecycle events were not emitted");
   assert(registry.snapshot().active === 0, "tool executor leaked call lifecycle state");
+
+  let releaseAudit;
+  let auditQueued = 0;
+  const auditPending = new Promise((resolvePromise) => { releaseAudit = resolvePromise; });
+  const nonBlockingAuditExecutor = new ToolExecutor({
+    handlers: { read_file: async () => "audit-independent-result" },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, category: "ordinary operation", targetHash: "" }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    securityAudit: { record() { auditQueued += 1; return auditPending; } },
+    logger: { event(level, name, fields) { events.push({ level, name, fields }); } },
+  });
+  const auditIndependentResult = await Promise.race([
+    nonBlockingAuditExecutor.execute("read_file", { path: "fixture.txt" }, {
+      callId: "audit-independent", origin: "relay", authorization: { role: "owner" },
+    }),
+    new Promise((_, reject) => { setTimeout(() => reject(new Error("tool result waited for security-audit persistence")), 100); }),
+  ]);
+  assert(auditIndependentResult === "audit-independent-result" && auditQueued === 1,
+    "security audit was not queued independently from result delivery");
+  releaseAudit(true);
+  await Promise.resolve();
 
   const order = [];
   const pipeline = composeMiddleware([
@@ -630,7 +669,11 @@ function testProcessTracker() {
 
   tracker.releaseCall("call");
   tracker.releaseCall("");
-  assert(tracker.snapshot().active_processes === 3 && tracker.snapshot().calls_with_processes === 0, "call completion terminated or leaked call ownership");
+  assert(tracker.snapshot().active_processes === 3
+    && tracker.snapshot().calls_with_processes === 0
+    && tracker.snapshot().draining_calls === 1
+    && tracker.snapshot().draining_processes === 2,
+  "call completion lost draining process ownership");
   tracker.untrack(first);
   tracker.untrack(second);
   tracker.untrack(unowned);
@@ -652,6 +695,8 @@ function testProcessTracker() {
   assert(scheduledCount === 1, "process tracker scheduled duplicate escalation timers");
   timerTracker.untrack(timedChild);
   assert(clearedTimers.length === 0, "process tracker cancelled descendant escalation when the parent closed");
+  assert(timerTracker.snapshot().termination_escalations_pending === 1,
+    "process tracker hid a pending descendant escalation after parent close");
   terminationSettled();
   timerTracker.track(timedChild, "timed-again");
   timerTracker.terminateCall("timed-again");
@@ -661,23 +706,26 @@ function testProcessTracker() {
 }
 
 
-function testProcessTreeSupervisor() {
+async function testProcessTreeSupervisor() {
   const signals = [];
   let scheduled = null;
   let escalated = false;
   const child = { pid: 4242, kill(signal) { signals.push(["child", signal]); return true; } };
+  const ordering = [];
   const timer = terminateProcessTreeWithEscalation(child, {
     graceMs: 25,
-    captureOwnership: () => ({ synthetic: true }),
+    captureOwnership: () => { ordering.push("capture-started"); return { synthetic: true }; },
     isTerminationTargetOwned: () => true,
-    terminate(_child, signal) { signals.push(["tree", signal]); },
+    terminate(_child, signal) { ordering.push(signal); signals.push(["tree", signal]); },
     setTimeout(callback, delay) { scheduled = { callback, delay }; return "termination-timer"; },
     onEscalated() { escalated = true; },
   });
   assert(timer === "termination-timer", "process-tree escalation did not return the scheduler handle");
+  assert(ordering.slice(0, 2).join(",") === "capture-started,SIGTERM",
+    "process ownership capture did not start before graceful termination");
   assert(signals.length === 1 && signals[0][1] === "SIGTERM", "process-tree escalation did not begin gracefully");
   assert(scheduled?.delay === 25, "process-tree escalation lost the configured grace period");
-  scheduled.callback();
+  await scheduled.callback();
   assert(signals.length === 2 && signals[1][1] === "SIGKILL" && escalated, "process-tree escalation did not force termination after the grace period");
 
   let exitedCallback = null;
@@ -690,8 +738,35 @@ function testProcessTreeSupervisor() {
     setTimeout(callback) { exitedCallback = callback; return "exited-timer"; },
   });
   exitedChild.exitCode = 0;
-  exitedCallback();
+  await exitedCallback();
   assert(exitedSignals === 0, "process-tree escalation signalled a child after it had exited");
+
+  let failedCallback = null;
+  let failedSettled = 0;
+  let failedKills = 0;
+  terminateProcessTreeWithEscalation({ pid: 4444 }, {
+    captureOwnership: () => ({ synthetic: true }),
+    isTerminationTargetOwned() { throw new Error("synthetic ownership failure"); },
+    terminate(_child, signal) { if (signal === "SIGKILL") failedKills += 1; },
+    setTimeout(callback) { failedCallback = callback; return "failed-timer"; },
+    onTerminationSettled() { failedSettled += 1; throw new Error("synthetic settlement callback failure"); },
+  });
+  await failedCallback();
+  assert(failedKills === 0 && failedSettled === 1,
+    "process-tree supervision did not fail closed and settle after an ownership-check exception");
+
+  let signalFailureCallback = null;
+  let signalFailureSettled = 0;
+  terminateProcessTreeWithEscalation({ pid: 4545 }, {
+    captureOwnership: () => ({ synthetic: true }),
+    isTerminationTargetOwned: () => true,
+    terminate(_child, signal) { if (signal === "SIGKILL") throw new Error("synthetic signal failure"); },
+    setTimeout(callback) { signalFailureCallback = callback; return "signal-failure-timer"; },
+    onTerminationSettled() { signalFailureSettled += 1; },
+  });
+  await signalFailureCallback();
+  assert(signalFailureSettled === 1,
+    "process-tree supervision lost settlement after a forced-signal exception");
 
   const taskkillCalls = [];
   const killer = new EventEmitter();
@@ -713,10 +788,14 @@ function testProcessTreeSupervisor() {
     { pid: 4243, pgid: 4242, startedAt: Date.parse("2026-07-22T00:00:01Z") },
   ];
   const darwinQueries = [];
-  const darwinOwnership = captureProcessTreeOwnership(child, {
+  const darwinCommands = [];
+  const darwinEnvironments = [];
+  const darwinOwnership = await captureProcessTreeOwnership(child, {
     platform: "darwin",
-    spawnSyncProcess(_command, args) {
+    execFileProcess(command, args, processOptions) {
+      darwinCommands.push(command);
       darwinQueries.push(args);
+      darwinEnvironments.push(processOptions.env);
       return { status: 0, stdout: " 4242  4242 Tue Jul 22 00:00:00 2026\n 4243  4242 Tue Jul 22 00:00:01 2026\n" };
     },
   });
@@ -724,23 +803,27 @@ function testProcessTreeSupervisor() {
     && darwinQueries[0]?.[0] === "-g" && darwinQueries[0]?.[1] === "4242"
     && !darwinQueries[0]?.includes("-axo"),
   "macOS process ownership capture scanned the full process table instead of the target process group");
+  assert(darwinCommands[0] === "ps"
+    && Object.keys(darwinEnvironments[0]).sort().join(",") === "LANG,LC_ALL,PATH"
+    && darwinEnvironments[0].PATH === "/usr/bin:/bin",
+  "process ownership snapshot did not use a fixed minimal command environment");
 
-  const ownership = captureProcessTreeOwnership(child, { platform: "linux", listProcessGroups: () => snapshotRows });
+  const ownership = await captureProcessTreeOwnership(child, { platform: "linux", listProcessGroups: () => snapshotRows });
   assert(ownership.members.length === 2, "process group snapshot omitted a descendant");
-  assert(processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [snapshotRows[1]] }), "surviving original descendant did not preserve process-group ownership");
-  assert(!processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [{ pid: 4243, pgid: 4242, startedAt: Date.parse("2026-07-22T00:01:00Z") }] }), "PID-reused process group was accepted for escalation");
-  assert(!processTreeOwnershipStillCurrent({ platform: "linux", pid: 4242, members: [] }, { ...child, exitCode: 0 }, { listProcessGroups: () => [] }), "empty ownership snapshot ignored parent exit");
-  assert(!processTreeOwnershipStillCurrent({ platform: "linux", pid: 4242, members: [] }, child, { listProcessGroups: () => snapshotRows }), "empty ownership snapshot authorized forced termination without process identity");
-  assert(!processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, {
+  assert(await processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [snapshotRows[1]] }), "surviving original descendant did not preserve process-group ownership");
+  assert(!await processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, { listProcessGroups: () => [{ pid: 4243, pgid: 4242, startedAt: Date.parse("2026-07-22T00:01:00Z") }] }), "PID-reused process group was accepted for escalation");
+  assert(!await processTreeOwnershipStillCurrent({ platform: "linux", pid: 4242, members: [] }, { ...child, exitCode: 0 }, { listProcessGroups: () => [] }), "empty ownership snapshot ignored parent exit");
+  assert(!await processTreeOwnershipStillCurrent({ platform: "linux", pid: 4242, members: [] }, child, { listProcessGroups: () => snapshotRows }), "empty ownership snapshot authorized forced termination without process identity");
+  assert(!await processTreeOwnershipStillCurrent(ownership, { ...child, exitCode: 0 }, {
     listProcessGroups: () => [{ ...snapshotRows[0], startedAt: snapshotRows[0].startedAt + 1000 }],
   }), "adjacent-second PID reuse was accepted as the captured process identity");
-  const refreshed = refreshProcessTreeOwnership(
+  const refreshed = await refreshProcessTreeOwnership(
     { platform: "linux", pid: 4242, members: [snapshotRows[0]] },
     { listProcessGroups: () => snapshotRows },
   );
   assert(refreshed.members.length === 2, "post-SIGTERM ownership refresh did not capture a surviving descendant");
   let ownershipQueries = 0;
-  assert(processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
+  assert(await processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
     listProcessGroups(_options, pid) {
       ownershipQueries += 1;
       return pid === 4243 ? [snapshotRows[1]] : [];
@@ -750,10 +833,10 @@ function testProcessTreeSupervisor() {
 
   const boundedTimeouts = [];
   const boundedKillSignals = [];
-  assert(!processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
+  assert(!await processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
     ownershipCheckBudgetMs: 90,
     monotonicNow: () => 0,
-    spawnSyncProcess(_command, _args, processOptions) {
+    execFileProcess(_command, _args, processOptions) {
       boundedTimeouts.push(processOptions.timeout);
       boundedKillSignals.push(processOptions.killSignal);
       return { status: 1, stdout: "" };
@@ -763,14 +846,14 @@ function testProcessTreeSupervisor() {
     && boundedTimeouts.reduce((sum, value) => sum + value, 0) <= 90,
   `targeted ownership fallback exceeded its global budget: ${boundedTimeouts.join(",")}`);
   assert(boundedKillSignals.every((value) => value === "SIGKILL"),
-    "bounded process snapshots used a soft timeout signal that can leave spawnSync blocked");
+    "bounded process snapshots did not request hard asynchronous termination");
 
   let expiredSnapshotCalls = 0;
   let clockSample = 0;
-  assert(!processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
+  assert(!await processTreeOwnershipStillCurrent(refreshed, { ...child, exitCode: 0 }, {
     ownershipCheckBudgetMs: 1,
     monotonicNow: () => clockSample++ === 0 ? 0 : 2,
-    spawnSyncProcess() { expiredSnapshotCalls += 1; return { status: 0, stdout: "" }; },
+    execFileProcess() { expiredSnapshotCalls += 1; return { status: 0, stdout: "" }; },
   }), "expired process ownership budget was treated as current ownership");
   assert(expiredSnapshotCalls === 0, "expired process ownership budget invoked an unbounded timeout-zero process snapshot");
 
@@ -875,9 +958,30 @@ function testHardSpawnSyncTimeout() {
   assert(elapsed < 1500, `hard synchronous timeout remained blocked for ${elapsed} ms`);
 }
 
+function testSecurityAuditWarningRateLimit() {
+  let now = 1000;
+  const events = [];
+  const reporter = createSecurityAuditFailureReporter({
+    event(level, event, fields, message) { events.push({ level, event, fields, message }); },
+  }, { now: () => now, intervalMs: 100 });
+  assert(reporter.report("security.audit.persist.failed", { tool: "read_file" }, "failed"),
+    "first security-audit warning was suppressed");
+  assert(!reporter.report("security.audit.persist.failed", { tool: "git_status" }, "failed"),
+    "duplicate security-audit warning was not suppressed");
+  now += 100;
+  assert(reporter.report("security.audit.persist.failed", { tool: "server_info" }, "failed"),
+    "security-audit warning did not resume after its interval");
+  assert(events.length === 2 && events[1].fields.suppressed === 1,
+    "security-audit warning did not report its suppressed duplicate count");
+}
+
 function testExecutionGuardrails() {
   const guardrails = executionGuardrailsSnapshot();
-  assert(guardrails.tool_calls.maximum_concurrent === 16, "tool-call concurrency limit is not reported from the shared contract");
+  assert(guardrails.tool_calls.maximum_concurrent === 16
+    && guardrails.tool_calls.ordinary_capacity === 14
+    && guardrails.tool_calls.reserved_control_capacity === 2
+    && guardrails.tool_calls.reserved_control_tools.join(",") === "diagnose_runtime,list_roots",
+  "tool-call concurrency or bounded control-plane reservation drifted from the shared contract");
   assert(guardrails.process_sessions.maximum_concurrent === 8, "process-session limit is not reported from the shared contract");
   assert(guardrails.one_shot_processes.process_tree_termination === "sigterm-then-sigkill", "process cleanup contract is not observable");
   assert(guardrails.operating_system_enforcement.cpu_quota === "not-enforced"

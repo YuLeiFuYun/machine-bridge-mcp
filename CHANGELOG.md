@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.0.0-beta.27 - 2026-07-31
+
+### Control-plane resilience under host I/O pressure
+
+- Remove synchronous process-table inspection from foreground timeout and cancellation paths. Process-group identity capture, post-`SIGTERM` refresh, and pre-`SIGKILL` PID/start-time revalidation now use bounded asynchronous `ps` execution with a fixed minimal `PATH`/locale environment, while ambiguous ownership still fails closed. Windows taskkill fallback is idempotent across an `error`/nonzero-`exit` race.
+- Preserve process ownership after a tool result has timed out or been cancelled. Runtime status now distinguishes active calls from draining calls, terminating processes, and pending escalation checks instead of implying that a returned timeout means all operating-system work has stopped.
+- Extend `diagnose_runtime` with privacy-safe local lifecycle, call-capacity, draining-process, execution-guardrail, relay-heartbeat, and audit-health snapshots so remote operators can observe the repaired control plane; local stdio `server_info` retains the equivalent detailed runtime view.
+- Reserve control-plane capacity at both relay layers: two of thirty-two Worker pending-call slots and two of sixteen local runtime slots are restricted to bounded diagnosis/recovery tools. Ordinary transient and durable-stream work share the same admission contract and cannot consume those slots.
+- Split relay heartbeat policy from WebSocket transport. The daemon measures local event-loop lag, reports bounded `runtime.event_loop.stall` warnings, sends a fresh heartbeat, and grants a short recovery interval before classifying remote silence. A locally stalled daemon no longer immediately destroys a healthy relay socket and amplifies one slow operation into a reconnect outage.
+- Move security-audit startup verification, hash-chain updates, atomic replacement, and `fsync` into a dedicated Worker thread; construction now reports `audit_initializing` without synchronously reading persistent state, and stale post-failure Worker events cannot overwrite the original failure class. Tool results no longer wait for audit disk persistence; events are privacy-projected before transfer, batched, queue-bounded, cross-process serialized, and exposed through health/queue/drop diagnostics. Persistent audit failures emit rate-limited warnings with suppressed-count reporting rather than one warning per tool call.
+- Reduce audit Worker message amplification by acknowledging each persisted batch once instead of sending one duplicate snapshot per record. The existing bounded SHA-256 chain, owner-only state, tamper detection, and prohibition on command text, paths, values, and results remain intact.
+- Add the fast-plan `control-plane-resilience:test` gate and deterministic regressions for local event-loop stalls versus genuine relay silence, capture-before-signal ordering, asynchronous process-tree supervision, draining-process visibility, end-to-end Worker/local reserved control capacity, non-blocking audit dispatch, audit warning suppression, batch persistence, and privacy-safe audit projection.
+- Refactor heartbeat, call-capacity, process signaling/supervision/snapshotting, and audit dispatch/storage/warnings into focused modules. Architecture line budgets and import-direction checks were retained rather than relaxed.
+
 ## 3.0.0-beta.26 - 2026-07-29
 
 ### Explicit GitHub publication ownership

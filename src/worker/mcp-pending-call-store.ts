@@ -9,6 +9,7 @@ import {
   type StreamIndexEntry,
   type StreamRecord,
 } from "./mcp-resumption-records.ts";
+import { toolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
 import type { PendingStreamCall, PendingStreamTransform } from "./mcp-pending-call-records.ts";
 import {
   extendAttachedCallExpiry,
@@ -17,10 +18,10 @@ import {
 } from "./mcp-pending-call-expiry.ts";
 import { requiredPendingCallRecord } from "./mcp-pending-call-storage.ts";
 import {
-  activePendingCallCount,
   pendingCallSnapshot,
   type PendingStreamCallSnapshot,
 } from "./mcp-pending-call-inspection.ts";
+import { CONTROL_PLANE_TOOL_NAMES, pendingCallAdmission } from "./pending-call-capacity.ts";
 
 type PendingCallStorage = Pick<DurableObjectStorage, "get" | "put" | "transaction">;
 type CompleteStream = (
@@ -36,8 +37,8 @@ export type PendingStreamCallView = PendingStreamCall & {
 };
 
 export class McpPendingCallLimitError extends Error {
-  constructor() {
-    super("too many concurrent daemon tool calls");
+  constructor(message = "too many concurrent daemon tool calls") {
+    super(message);
     this.name = "McpPendingCallLimitError";
   }
 }
@@ -84,8 +85,9 @@ export class McpPendingCallStore {
     tool: string;
     timeoutMs: number;
     transform?: PendingStreamTransform;
-    transientActiveCount?: number;
+    transientSnapshot?: { active: number; by_tool: Record<string, number> };
     maximumPendingCalls?: number;
+    reservedPendingCalls?: number;
   }): Promise<void> {
     const now = this.now();
     const timeoutMs = positiveDelay(input.timeoutMs);
@@ -104,9 +106,14 @@ export class McpPendingCallStore {
     };
     await this.storage.transaction(async (transaction) => {
       const index = readIndex(await transaction.get<unknown>(STREAM_INDEX_KEY));
-      const activeCalls = index.entries.filter((entry) => entry.call).length;
-      if (activeCalls + Math.max(0, Math.floor(input.transientActiveCount ?? 0)) >= maximum) {
-        throw new McpPendingCallLimitError();
+      const durable = pendingCallSnapshot(index.entries, now, maximum);
+      const transient = input.transientSnapshot ?? { active: 0, by_tool: Object.create(null) as Record<string, number> };
+      const capacity = toolCallCapacityConfig(maximum, input.reservedPendingCalls, CONTROL_PLANE_TOOL_NAMES);
+      const decision = pendingCallAdmission(transient, durable, input.tool, capacity);
+      if (!decision.allowed) {
+        throw new McpPendingCallLimitError(decision.reason === "ordinary_capacity"
+          ? `ordinary daemon-call capacity reached (${decision.ordinaryMaximum}); control-plane capacity is reserved for diagnosis and recovery`
+          : undefined);
       }
       if (index.entries.some((entry) => entry.call?.call_id === input.callId)) {
         throw new McpPendingCallConflictError("duplicate internal daemon call id");
@@ -133,10 +140,6 @@ export class McpPendingCallStore {
     });
     this.onRowsWritten(2);
     this.activateStream(input.streamId);
-  }
-
-  async activeCount(): Promise<number> {
-    return activePendingCallCount(readIndex(await this.storage.get<unknown>(STREAM_INDEX_KEY)).entries);
   }
 
   async get(callId: string): Promise<PendingStreamCallView | undefined> {

@@ -105,6 +105,7 @@ class TestWebSocket {
 await testMcpSessions();
 await testRequestKeyReuse();
 await testRegistrationFailures();
+await testPendingControlCapacity();
 await testTerminalPaths();
 await testReconnectRebinding();
 await testDetachedTimeoutPause();
@@ -195,6 +196,41 @@ async function testRegistrationFailures() {
   }), "limit_exceeded", true);
   await limitRegistry.resolve("first", socket, { ok: true });
   await first;
+}
+
+async function testPendingControlCapacity() {
+  const socket = {};
+  const registry = new PendingCallRegistry(4, {
+    reservedCapacity: 1,
+    reservedTools: ["diagnose_runtime", "list_roots"],
+  });
+  const pending = [];
+  for (let index = 0; index < 3; index += 1) {
+    pending.push(registry.register({
+      id: `ordinary-${index}`, tool: "read_file", socket, timeoutMs: 10_000,
+      onTimeout: () => new Error("timeout"),
+    }));
+  }
+  expectRegistrationError(() => registry.register({
+    id: "ordinary-overflow", tool: "git_status", socket, timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  }), "limit_exceeded", true);
+  const control = registry.register({
+    id: "control", tool: "diagnose_runtime", socket, timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  });
+  const snapshot = registry.snapshot();
+  assert(snapshot.active === 4 && snapshot.active_ordinary === 3 && snapshot.active_reserved === 1,
+    "pending registry did not preserve its control-plane slot");
+  assert(snapshot.ordinary_capacity === 3 && snapshot.reserved_capacity === 1,
+    "pending registry exposed the wrong capacity contract");
+  expectRegistrationError(() => registry.register({
+    id: "total-overflow", tool: "list_roots", socket, timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  }), "limit_exceeded", true);
+  for (let index = 0; index < 3; index += 1) await registry.resolve(`ordinary-${index}`, socket, index);
+  await registry.resolve("control", socket, true);
+  await Promise.all([...pending, control]);
 }
 
 async function testTerminalPaths() {
@@ -482,7 +518,7 @@ async function testEventDrivenStreamDispatch() {
     resumption, observability, streamId: STREAM_TEST_ID, requestId: 44,
     clientRequestKey: "session:44", tool: "list_dir", arguments: { path: "." },
     socket, daemonInstanceId: "daemon_stream_event_1234", connectionId: `connection_${"A".repeat(43)}`,
-    timeoutMs: 10_000, transientActiveCount: 0, maximumPendingCalls: 2,
+    timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 2,
     authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
     onSendFailure() {},
   });
@@ -505,7 +541,7 @@ async function testEventDrivenStreamDispatch() {
     resumption: reconnectStore, observability, streamId: STREAM_RESUMED_ID, requestId: 45,
     clientRequestKey: "session:45", tool: "list_dir", arguments: { path: "." },
     socket: reconnectSocket, daemonInstanceId: "daemon_stream_reconnect_1234", connectionId: firstConnection,
-    timeoutMs: 10_000, transientActiveCount: 0, maximumPendingCalls: 2,
+    timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 2,
     authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
     onSendFailure() {},
   });
@@ -553,7 +589,7 @@ async function testStreamDispatchFailureBoundaries() {
     resumption: sendStore, observability, streamId: STREAM_TEST_ID, requestId: 55,
     tool: "list_dir", arguments: {}, socket: { send() { throw new Error("closed"); } },
     daemonInstanceId: "daemon_send_fail_123456", connectionId: `connection_${"D".repeat(43)}`,
-    timeoutMs: 10_000, transientActiveCount: 0, maximumPendingCalls: 1,
+    timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
     authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
     onSendFailure() { sendFailureHandled = true; },
   });
@@ -572,16 +608,43 @@ async function testStreamDispatchFailureBoundaries() {
   await expectRejectType(startEventDrivenStreamCall({
     resumption: limitStore, observability, streamId: STREAM_RESUMED_ID, requestId: 57,
     tool: "list_dir", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_full_123456789",
-    connectionId: `connection_${"F".repeat(43)}`, timeoutMs: 10_000, transientActiveCount: 0, maximumPendingCalls: 1,
+    connectionId: `connection_${"F".repeat(43)}`, timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
     authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
     onSendFailure() {},
   }), WorkerToolError);
+
+  const reservedStorage = new MemoryStorage();
+  const reservedStore = new McpResumptionStore(reservedStorage);
+  await reservedStore.begin({ streamId: STREAM_TEST_ID, tokenKey: "token", sessionId: "session", requestId: 59 });
+  await expectRejectType(startEventDrivenStreamCall({
+    resumption: reservedStore, observability, streamId: STREAM_TEST_ID, requestId: 59,
+    tool: "read_file", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_reserved_ordinary",
+    connectionId: `connection_${"H".repeat(43)}`, timeoutMs: 10_000,
+    transientSnapshot: { active: 2, by_tool: { exec_command: 1, read_file: 1 } },
+    maximumPendingCalls: 3, reservedPendingCalls: 1,
+    authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onSendFailure() {},
+  }), WorkerToolError);
+  const reservedSocket = { send(value) { this.message = JSON.parse(value); } };
+  await startEventDrivenStreamCall({
+    resumption: reservedStore, observability, streamId: STREAM_TEST_ID, requestId: 59,
+    tool: "diagnose_runtime", arguments: {}, socket: reservedSocket, daemonInstanceId: "daemon_reserved_control",
+    connectionId: `connection_${"I".repeat(43)}`, timeoutMs: 10_000,
+    transientSnapshot: { active: 2, by_tool: { exec_command: 1, read_file: 1 } },
+    maximumPendingCalls: 3, reservedPendingCalls: 1,
+    authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
+    onSendFailure() {},
+  });
+  assert(reservedSocket.message?.tool === "diagnose_runtime",
+    "mixed transient/durable admission did not preserve the control-plane slot");
+  await reservedStore.calls.complete(reservedSocket.message.id, `connection_${"I".repeat(43)}`,
+    streamTerminalMessage(59, { ok: true, value: { ready: true } }));
 
   const plainRegistrationFailure = { calls: { async activate() { throw new RangeError("synthetic registration failure"); } } };
   await expectRejectType(startEventDrivenStreamCall({
     resumption: plainRegistrationFailure, observability, streamId: STREAM_DISCONNECTED_ID, requestId: 58,
     tool: "list_dir", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_plain_fail_1234",
-    connectionId: `connection_${"G".repeat(43)}`, timeoutMs: 10_000, transientActiveCount: 0, maximumPendingCalls: 1,
+    connectionId: `connection_${"G".repeat(43)}`, timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
     authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
     onSendFailure() {},
   }), RangeError);
@@ -593,11 +656,13 @@ async function testStreamDispatchFailureBoundaries() {
     serverName: "machine-bridge-mcp", serverVersion: "test", base: "https://example.test", oauth: { issuer: "https://example.test" },
     authorization: { account: { role: "owner" }, summary: "summary" }, daemon: { tool_count: 2 },
     effectiveTools: ["server_info", "list_dir"], advertisedTools: ["server_info", "list_dir", "read_file"],
-    pendingSnapshot: { active: 0, detached: 0, request_keys: 0, maximum: 32, oldest_ms: 0, by_tool: {} },
+    pendingSnapshot: { active: 31, detached: 0, request_keys: 0, maximum: 32, ordinary_capacity: 30, reserved_capacity: 2, active_ordinary: 30, active_reserved: 1, oldest_ms: 0, by_tool: { read_file: 30, diagnose_runtime: 1 } },
     daemonRegistry, observability: new WorkerObservability(),
   });
   assert(info.worker.sockets_live.authenticated === 4 && info.worker.daemon_candidates === 1
-    && info.tool_delivery.effective_account_tool_count === 2 && info.tool_delivery.relay_advertised_tool_count === 3,
+    && info.tool_delivery.effective_account_tool_count === 2 && info.tool_delivery.relay_advertised_tool_count === 3
+    && info.worker.pending_calls.ordinary_capacity === 30
+    && info.worker.pending_calls.active_reserved === 1,
   "server_info builder lost socket, catalog, or effective-tool diagnostics");
 }
 
