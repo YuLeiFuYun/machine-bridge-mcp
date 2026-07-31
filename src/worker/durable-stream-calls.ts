@@ -1,9 +1,11 @@
+import { toolCallCapacityConfig, type ToolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
 import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import { publicWorkerToolError, WorkerToolError } from "./errors.ts";
 import { workerErrorClass } from "./http.ts";
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import type { McpPendingCallStore, PendingStreamCallView } from "./mcp-pending-call-store.ts";
 import { streamTerminalMessage } from "./mcp-stream-dispatch.ts";
+import { CONTROL_PLANE_TOOL_NAMES, combinedPendingCapacity } from "./pending-call-capacity.ts";
 import { transformDurableStreamOutcome } from "./durable-stream-result.ts";
 import type { WorkerObservability } from "./observability.ts";
 import { sendWebSocketQuietly } from "./websocket-protocol.ts";
@@ -21,30 +23,30 @@ export class DurableStreamCallCoordinator {
   private readonly daemonRegistry: DaemonSocketRegistry;
   private readonly observability: WorkerObservability;
   private readonly maximumPendingCalls: number;
+  private readonly capacity: ToolCallCapacityConfig;
 
   constructor(
     calls: McpPendingCallStore,
     daemonRegistry: DaemonSocketRegistry,
     observability: WorkerObservability,
     maximumPendingCalls: number,
+    reservedPendingCalls = 0,
   ) {
     this.calls = calls;
     this.daemonRegistry = daemonRegistry;
     this.observability = observability;
     this.maximumPendingCalls = maximumPendingCalls;
+    this.capacity = toolCallCapacityConfig(maximumPendingCalls, reservedPendingCalls, CONTROL_PLANE_TOOL_NAMES);
   }
 
   async snapshot(transient: TransientPendingSnapshot): Promise<Record<string, unknown>> {
     const durable = await this.calls.snapshot(this.maximumPendingCalls);
-    const byTool = Object.assign(Object.create(null) as Record<string, number>, transient.by_tool);
-    for (const [tool, count] of Object.entries(durable.by_tool)) byTool[tool] = (byTool[tool] ?? 0) + count;
+    const combined = combinedPendingCapacity(transient, durable, this.capacity);
     return {
-      active: transient.active + durable.active,
+      ...combined,
       detached: transient.detached + durable.detached,
       request_keys: transient.request_keys + durable.request_keys,
-      maximum: this.maximumPendingCalls,
       oldest_ms: Math.max(transient.oldest_ms, durable.oldest_ms),
-      by_tool: byTool,
       transient: transient.active,
       durable_streams: durable.active,
     };

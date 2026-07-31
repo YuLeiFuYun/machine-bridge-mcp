@@ -25,7 +25,8 @@ Support boundaries are defined in [SUPPORT.md](SUPPORT.md). Repository participa
 - bounded file, patch, Git, process, diagnostic, application, browser, and managed-job tools;
 - account roles whose authority is intersected with the connected daemon policy;
 - root-certified ephemeral daemon sessions, trusted OAuth client binding, refresh-family ownership, and non-escalatable account roles;
-- structured, privacy-conscious lifecycle events and stable error codes;
+- structured, privacy-conscious lifecycle events, a worker-thread-isolated tamper-evident audit chain, and stable error codes;
+- control-plane resilience through end-to-end reserved diagnostic capacity, event-loop-aware relay liveness, and explicit draining-process accounting;
 - fail-closed state, lock, release, package, and supply-chain checks.
 
 The remote Worker authenticates and relays requests. It cannot directly read local files or start local processes. Local-user authority remains in the daemon process.
@@ -187,7 +188,7 @@ Machine Bridge does not launch or identify a separate browser profile. It contro
 
 ## Durable work and local resources
 
-Remote foreground process, shell, browser, and application calls are bounded to 85 seconds. Keep mutations and validation in independently terminal calls. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
+Remote foreground process, shell, browser, and application calls are bounded to 85 seconds. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; inspect `diagnose_runtime.runtime.processes` remotely (or `server_info.runtime.processes` over local stdio) when a heavy filesystem or process operation is still draining. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
 
 Credentials and files can be registered by alias without returning their contents through MCP:
 

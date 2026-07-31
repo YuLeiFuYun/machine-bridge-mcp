@@ -4,9 +4,8 @@ import { join } from "node:path";
 import { classifyOperationalError } from "./log.mjs";
 import { readBoundedFile } from "./workspace-file-service.mjs";
 import { systemNetworkRouteCheck } from "./system-network-route.mjs";
-
+import { diagnosticControlPlaneState } from "./runtime-diagnostic-state.mjs";
 export const RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS = 30_000;
-
 export async function diagnoseRuntime({
   policy,
   runtimeDir,
@@ -16,6 +15,7 @@ export async function diagnoseRuntime({
   probeShell,
   managedJobManager,
   relayStatus = () => null,
+  controlPlaneState = {},
   throwIfCancelled,
 }, context = {}) {
   throwIfCancelled(context);
@@ -28,7 +28,6 @@ export async function diagnoseRuntime({
     ok: policy.execMode === "direct" || policy.execMode === "shell",
     detail: `profile=${policy.profile}; exec_mode=${policy.execMode}; unrestricted_paths=${policy.unrestrictedPaths}`,
   }];
-
   const relay = typeof relayStatus === "function" ? relayStatus() : null;
   checks.push(relay ? {
     layer: "remote-relay",
@@ -43,7 +42,7 @@ export async function diagnoseRuntime({
     last_disconnected_at: relay.last_disconnected_at || null,
     last_ready_at: relay.last_ready_at || null,
     last_ready_duration_ms: Number(relay.last_ready_duration_ms) || 0,
-    next_reconnect_in_ms: Number(relay.next_reconnect_in_ms) || 0,
+    next_reconnect_in_ms: Number(relay.next_reconnect_in_ms) || 0, heartbeat: relay.heartbeat || null,
   } : {
     layer: "remote-relay", ok: false, skipped: true, transport: "stdio-or-local",
   });
@@ -113,6 +112,7 @@ export async function diagnoseRuntime({
       managed_job_accepted_then_later_tools_blocked: "job continues independently; inspect with local CLI or a later read_job call",
     },
     policy,
+    ...diagnosticControlPlaneState(controlPlaneState, relay),
     checks,
     ok: checks.filter((check) => !check.skipped).every((check) => check.ok),
   };

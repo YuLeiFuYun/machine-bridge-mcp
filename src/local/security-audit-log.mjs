@@ -1,204 +1,195 @@
-import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import path from "node:path";
-import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { withOwnerStateLock } from "./owner-state-lock.mjs";
+import { Worker } from "node:worker_threads";
+import {
+  auditFilePath,
+  unhealthyAuditSnapshot,
+} from "./security-audit-storage.mjs";
 
-const SCHEMA_VERSION = 1;
-const MAX_EVENTS = 4096;
-const MAX_BYTES = 4 * 1024 * 1024;
-const HASH_PATTERN = /^[a-f0-9]{64}$/;
+const MAX_PENDING_RECORDS = 1024;
+const CLOSE_TIMEOUT_MS = 5000;
 
 export class SecurityAuditLog {
-  constructor({ root = "", now = Date.now } = {}) {
-    this.root = root ? path.resolve(root) : "";
-    this.file = this.root ? path.join(this.root, "security-audit.json") : "";
+  constructor({ root = "", now = Date.now, WorkerClass = Worker } = {}) {
+    this.root = root ? String(root) : "";
+    this.file = this.root ? auditFilePath(this.root) : "";
     this.now = typeof now === "function" ? now : Date.now;
-    this.queue = Promise.resolve();
-    this.lastError = "";
-    if (this.file && existsSync(this.file)) {
-      try { this.readVerifiedState(); } catch (error) { this.lastError = errorClass(error); }
+    this.worker = null;
+    this.workerReady = false;
+    this.closed = false;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.droppedRecords = 0;
+    this.cachedSnapshot = this.file ? initializingSnapshot() : disabledSnapshot();
+    if (!this.file) return;
+    try {
+      const worker = new WorkerClass(new URL("./security-audit-worker.mjs", import.meta.url), {
+        workerData: { root: this.root },
+      });
+      this.worker = worker;
+      worker.on("message", (message) => { if (this.worker === worker) this.handleMessage(message); });
+      worker.on("error", (error) => { if (this.worker === worker) this.handleWorkerFailure(error); });
+      worker.on("exit", (code) => {
+        if (this.worker === worker && !this.closed) {
+          this.handleWorkerFailure(Object.assign(new Error("security audit worker exited"), {
+            code: code === 0 ? "audit_worker_unexpected_exit" : "audit_worker_exit",
+          }));
+        }
+      });
+    } catch (error) {
+      this.cachedSnapshot = unhealthyAuditSnapshot(error);
     }
   }
 
   record(input = {}) {
-    if (!this.file) return Promise.resolve(false);
-    const operation = async () => {
+    if (!this.file || this.closed || !this.worker) return Promise.resolve(false);
+    if (this.pending.size >= MAX_PENDING_RECORDS) {
+      this.droppedRecords += 1;
+      this.cachedSnapshot = { ...this.cachedSnapshot, healthy: false, last_error_class: "audit_queue_full" };
+      return Promise.resolve(false);
+    }
+    const id = this.nextId++;
+    return new Promise((resolvePromise) => {
+      this.pending.set(id, { resolve: resolvePromise, kind: "record" });
       try {
-        return await withOwnerStateLock(this.root, async () => {
-          const state = this.readVerifiedState();
-          const event = buildEvent(input, state, this.now());
-          state.events.push(event);
-          while (state.events.length > MAX_EVENTS) {
-            const removed = state.events.shift();
-            state.anchor = removed.hash;
-          }
-          writeState(this.file, state);
-          this.lastError = "";
-          return true;
-        }, {
-          purpose: "security-audit", fileName: "security-audit.lock", label: "security audit",
-        });
+        this.worker.postMessage({ type: "record", id, input: projectAuditInput(input), nowMs: Number(this.now()) });
       } catch (error) {
-        this.lastError = errorClass(error);
-        return false;
+        this.pending.delete(id);
+        this.droppedRecords += 1;
+        this.cachedSnapshot = unhealthyAuditSnapshot(error);
+        resolvePromise(false);
       }
-    };
-    const result = this.queue.then(operation, operation);
-    this.queue = result.then(() => undefined, () => undefined);
-    return result;
+    });
+  }
+
+  flush() {
+    return this.barrier("flush");
+  }
+
+  async close({ timeoutMs = CLOSE_TIMEOUT_MS } = {}) {
+    if (this.closed) return true;
+    this.closed = true;
+    if (!this.worker) return false;
+    const worker = this.worker;
+    const closing = this.barrier("close", true);
+    let timer;
+    try {
+      return await Promise.race([
+        closing,
+        new Promise((resolvePromise) => {
+          timer = setTimeout(() => resolvePromise(false), Math.max(1, Number(timeoutMs) || CLOSE_TIMEOUT_MS));
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      await worker.terminate().catch(() => {});
+      if (this.worker === worker) this.worker = null;
+      this.failPending(false);
+    }
   }
 
   snapshot() {
-    if (!this.file) return { enabled: false, healthy: true, retained: 0, maximum: MAX_EVENTS };
-    try {
-      const state = this.readVerifiedState();
-      return {
-        enabled: true,
-        healthy: !this.lastError,
-        retained: state.events.length,
-        maximum: MAX_EVENTS,
-        last_event_at: state.events.at(-1)?.timestamp || null,
-        last_error_class: this.lastError || null,
-        content_logged: false,
-        chain_verified: true,
-      };
-    } catch (error) {
-      return {
-        enabled: true,
-        healthy: false,
-        retained: 0,
-        maximum: MAX_EVENTS,
-        last_event_at: null,
-        last_error_class: errorClass(error),
-        content_logged: false,
-        chain_verified: false,
-      };
-    }
+    return {
+      ...this.cachedSnapshot,
+      persistence: this.file ? "worker-thread-batched-atomic" : "disabled",
+      worker_ready: this.workerReady,
+      queue_depth: [...this.pending.values()].filter((entry) => entry.kind === "record").length,
+      queue_capacity: MAX_PENDING_RECORDS,
+      dropped_records: this.droppedRecords,
+    };
   }
 
-  readVerifiedState() {
-    if (!existsSync(this.file)) return emptyState();
-    const raw = readBoundedRegularFileSync(this.file, MAX_BYTES, "security audit state");
-    let state;
-    try { state = JSON.parse(raw.toString("utf8")); } catch (error) {
-      throw new Error("security audit state is not valid JSON", { cause: error });
-    }
-    validateState(state);
-    let previous = state.anchor;
-    for (const event of state.events) {
-      if (event.previous_hash !== previous || event.hash !== eventHash(event)) {
-        throw new Error("security audit hash chain verification failed");
+  barrier(type, allowClosed = false) {
+    if (!this.worker || (this.closed && !allowClosed)) return Promise.resolve(false);
+    const id = this.nextId++;
+    return new Promise((resolvePromise) => {
+      this.pending.set(id, { resolve: resolvePromise, kind: type });
+      try { this.worker.postMessage({ type, id }); }
+      catch {
+        this.pending.delete(id);
+        resolvePromise(false);
       }
-      previous = event.hash;
+    });
+  }
+
+  handleMessage(message) {
+    if (message?.snapshot) this.cachedSnapshot = message.snapshot;
+    if (message?.type === "ready") {
+      this.workerReady = message.snapshot?.healthy === true;
+      return;
     }
-    return state;
+    if (message?.type === "record_batch_result" && Array.isArray(message.ids)) {
+      for (const rawId of message.ids) {
+        const id = Number(rawId);
+        const pending = this.pending.get(id);
+        if (!pending) continue;
+        this.pending.delete(id);
+        if (message.recorded !== true) this.droppedRecords += 1;
+        pending.resolve(message.recorded === true);
+      }
+      return;
+    }
+    const id = Number(message?.id);
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    if (message.type === "flushed" || message.type === "closed") pending.resolve(true);
+  }
+
+  handleWorkerFailure(error) {
+    this.workerReady = false;
+    this.cachedSnapshot = unhealthyAuditSnapshot(error);
+    this.droppedRecords += [...this.pending.values()].filter((entry) => entry.kind === "record").length;
+    const worker = this.worker;
+    this.worker = null;
+    this.failPending(false);
+    if (!this.closed) void worker?.terminate?.().catch?.(() => {});
+  }
+
+  failPending(value) {
+    for (const pending of this.pending.values()) pending.resolve(value);
+    this.pending.clear();
   }
 }
 
-function buildEvent(input, state, nowMs) {
-  const timestamp = new Date(Number(nowMs)).toISOString();
-  if (!Number.isFinite(Date.parse(timestamp))) throw new Error("security audit timestamp is invalid");
-  const principal = input.principal && typeof input.principal === "object" ? input.principal : {};
-  const event = {
-    sequence: state.next_sequence,
-    timestamp,
-    outcome: boundedToken(input.outcome, "unknown"),
-    tool: boundedToken(input.tool, "unknown"),
-    risk_category: boundedText(input.riskCategory, "ordinary operation", 160),
-    target_hash: HASH_PATTERN.test(String(input.targetHash || "")) ? String(input.targetHash) : null,
-    account_ref: principal.accountId ? privateReference(state.identity_salt, principal.accountId) : null,
-    client_ref: principal.clientId ? privateReference(state.identity_salt, principal.clientId) : null,
-    family_ref: principal.familyId ? privateReference(state.identity_salt, principal.familyId) : null,
-    account_version: Number.isSafeInteger(principal.accountVersion) ? principal.accountVersion : null,
-    role: boundedToken(principal.role, principal.kind === "local" ? "local" : "unknown"),
-    duration_ms: boundedNumber(input.durationMs),
-    input_bytes: boundedNumber(input.inputBytes),
-    output_bytes: boundedNumber(input.outputBytes),
-    error_code: input.errorCode ? boundedToken(input.errorCode, "unknown") : null,
-    previous_hash: state.events.at(-1)?.hash || state.anchor,
-  };
-  const completed = { ...event, hash: eventHash(event) };
-  state.next_sequence += 1;
-  return completed;
-}
-
-function emptyState() {
+function initializingSnapshot() {
   return {
-    schemaVersion: SCHEMA_VERSION,
-    identity_salt: randomBytes(32).toString("hex"),
-    anchor: randomBytes(32).toString("hex"),
-    next_sequence: 1,
-    events: [],
+    enabled: true, healthy: false, retained: 0, maximum: 4096,
+    last_event_at: null, last_error_class: "audit_initializing",
+    content_logged: false, chain_verified: false,
   };
 }
 
-function validateState(state) {
-  if (!plainRecord(state) || state.schemaVersion !== SCHEMA_VERSION) throw new Error("security audit state schema is invalid");
-  if (!HASH_PATTERN.test(state.identity_salt) || !HASH_PATTERN.test(state.anchor)) throw new Error("security audit state identity is invalid");
-  if (!Number.isSafeInteger(state.next_sequence) || state.next_sequence < 1) throw new Error("security audit sequence is invalid");
-  if (!Array.isArray(state.events) || state.events.length > MAX_EVENTS || !state.events.every(validEvent)) {
-    throw new Error("security audit events are invalid");
-  }
-  if (state.events.length && state.next_sequence <= state.events.at(-1).sequence) throw new Error("security audit sequence did not advance");
+function disabledSnapshot() {
+  return {
+    enabled: false,
+    healthy: true,
+    retained: 0,
+    maximum: 4096,
+    last_event_at: null,
+    last_error_class: null,
+    content_logged: false,
+    chain_verified: true,
+  };
 }
 
-function validEvent(event) {
-  return plainRecord(event)
-    && Number.isSafeInteger(event.sequence)
-    && event.sequence > 0
-    && Number.isFinite(Date.parse(String(event.timestamp || "")))
-    && typeof event.outcome === "string"
-    && typeof event.tool === "string"
-    && typeof event.risk_category === "string"
-    && (event.target_hash === null || HASH_PATTERN.test(event.target_hash))
-    && ["account_ref", "client_ref", "family_ref"].every((key) => event[key] === null || HASH_PATTERN.test(event[key]))
-    && (event.account_version === null || Number.isSafeInteger(event.account_version))
-    && typeof event.role === "string"
-    && Number.isFinite(event.duration_ms)
-    && Number.isFinite(event.input_bytes)
-    && Number.isFinite(event.output_bytes)
-    && (event.error_code === null || typeof event.error_code === "string")
-    && HASH_PATTERN.test(event.previous_hash)
-    && HASH_PATTERN.test(event.hash);
-}
-
-function eventHash(event) {
-  const value = { ...event };
-  delete value.hash;
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function privateReference(salt, value) {
-  return createHash("sha256").update(salt).update("\0").update(String(value)).digest("hex");
-}
-
-function writeState(file, state) {
-  ensureOwnerOnlyDirectorySync(path.dirname(file));
-  const content = `${JSON.stringify(state)}\n`;
-  if (Buffer.byteLength(content) > MAX_BYTES) throw new Error("security audit state exceeds its size limit");
-  replaceFileAtomicallySync(file, content, { mode: 0o600 });
-}
-
-function boundedToken(value, fallback) {
-  const text = String(value || fallback).replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 128);
-  return text || fallback;
-}
-
-function boundedText(value, fallback, maximum) {
-  return String(value || fallback).replace(/[\r\n\t\u0000-\u001f\u007f]/g, " ").trim().slice(0, maximum) || fallback;
-}
-
-function boundedNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 ? Math.min(Math.floor(number), Number.MAX_SAFE_INTEGER) : 0;
-}
-
-function errorClass(error) {
-  return String(error?.code || error?.name || "audit_error").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
-}
-
-function plainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+function projectAuditInput(input) {
+  const principal = input?.principal && typeof input.principal === "object" ? input.principal : {};
+  return {
+    outcome: input?.outcome,
+    tool: input?.tool,
+    riskCategory: input?.riskCategory,
+    targetHash: input?.targetHash,
+    durationMs: input?.durationMs,
+    inputBytes: input?.inputBytes,
+    outputBytes: input?.outputBytes,
+    errorCode: input?.errorCode,
+    principal: {
+      kind: principal.kind,
+      accountId: principal.accountId,
+      accountVersion: principal.accountVersion,
+      clientId: principal.clientId,
+      familyId: principal.familyId,
+      role: principal.role,
+    },
+  };
 }

@@ -247,6 +247,11 @@ try {
   send({ jsonrpc: "2.0", id: 602, method: "tools/call", params: { name: "diagnose_runtime", arguments: {} } });
   const diagnostics = await responseFor(602, 10_000);
   assert(diagnostics.result?.structuredContent?.request_reached_local_runtime === true, "runtime diagnostic did not prove daemon reachability");
+  assert(diagnostics.result?.structuredContent?.runtime?.processes?.active_processes >= 0
+    && diagnostics.result?.structuredContent?.runtime?.execution_guardrails?.tool_calls?.reserved_control_capacity === 2
+    && typeof diagnostics.result?.structuredContent?.runtime?.security_audit?.worker_ready === "boolean"
+    && diagnostics.result?.structuredContent?.observability?.in_flight_calls?.reserved_capacity === 2,
+  "runtime diagnostic omitted wired control-plane state");
   assert(diagnostics.result?.structuredContent?.checks?.some((check) => check.layer === "local-process-spawn" && check.ok), "runtime diagnostic did not validate local process spawning");
   send({ jsonrpc: "2.0", id: 603, method: "tools/call", params: { name: "list_local_resources", arguments: {} } });
   const localResources = await responseFor(603);

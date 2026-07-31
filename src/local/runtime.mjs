@@ -4,7 +4,7 @@ import { realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { isRelayReadyContext } from "./relay-connection.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
-import { MAX_CONCURRENT_TOOL_CALLS } from "./execution-limits.mjs";
+import { CONTROL_PLANE_TOOL_NAMES, MAX_CONCURRENT_TOOL_CALLS, RESERVED_CONTROL_TOOL_CALLS, executionGuardrailsSnapshot } from "./execution-limits.mjs";
 export { MAX_COMMAND_BYTES } from "./process-contract.mjs";
 import { normalizePolicy, PolicyGate, toolNamesForPolicy } from "./tools.mjs";
 import { publicError } from "./errors.mjs";
@@ -71,6 +71,8 @@ export class LocalRuntime {
     this.relayResumeSessionId = 0;
     this.callRegistry = new CallRegistry({
       maximum: MAX_CONCURRENT_TOOL_CALLS,
+      reserved: RESERVED_CONTROL_TOOL_CALLS,
+      reservedTools: CONTROL_PLANE_TOOL_NAMES,
       onCancel: (record) => {
         this.processSessionManager?.notifyCancellation();
         this.browserBridgeManager?.cancelCall(record.id);
@@ -271,6 +273,7 @@ export class LocalRuntime {
       this.callRegistry.cancelAll("runtime stopped");
       this.terminateActiveProcesses("SIGKILL");
       this.processSessionManager.clear();
+      void this.securityAudit.close();
       this.browserBridgeManager?.stop();
       rmSync(this.runtimeDir, { recursive: true, force: true });
     } finally {
@@ -533,6 +536,13 @@ export class LocalRuntime {
       probeShell: (callContext, timeoutMs) => this.processExecutionService.probeShell(callContext, timeoutMs),
       managedJobManager: this.managedJobManager,
       relayStatus: () => this.relay?.status?.() || null,
+      controlPlaneState: {
+        lifecycle: this.lifecycle.snapshot(),
+        inFlightCalls: this.callRegistry.snapshot(),
+        processes: this.processTracker.snapshot(),
+        executionGuardrails: executionGuardrailsSnapshot(),
+        securityAudit: this.securityAudit.snapshot(),
+      },
       throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
     }, context);
   }

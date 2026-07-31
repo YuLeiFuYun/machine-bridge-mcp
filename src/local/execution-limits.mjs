@@ -1,4 +1,8 @@
+import { CONTROL_PLANE_TOOL_NAMES } from "../shared/tool-call-capacity.mjs";
+
+export { CONTROL_PLANE_TOOL_NAMES };
 export const MAX_CONCURRENT_TOOL_CALLS = 16;
+export const RESERVED_CONTROL_TOOL_CALLS = 2;
 export const MAX_PROCESS_SESSIONS = 8;
 export const MIN_PROCESS_TIMEOUT_SECONDS = 1;
 export const MAX_PROCESS_TIMEOUT_SECONDS = 600;
@@ -13,6 +17,9 @@ export function executionGuardrailsSnapshot() {
   return {
     tool_calls: {
       maximum_concurrent: MAX_CONCURRENT_TOOL_CALLS,
+      ordinary_capacity: MAX_CONCURRENT_TOOL_CALLS - RESERVED_CONTROL_TOOL_CALLS,
+      reserved_control_capacity: RESERVED_CONTROL_TOOL_CALLS,
+      reserved_control_tools: [...CONTROL_PLANE_TOOL_NAMES],
     },
     one_shot_processes: {
       timeout_seconds: { minimum: MIN_PROCESS_TIMEOUT_SECONDS, maximum: MAX_PROCESS_TIMEOUT_SECONDS },

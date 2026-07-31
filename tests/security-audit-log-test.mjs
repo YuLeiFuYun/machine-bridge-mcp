@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -35,8 +36,12 @@ try {
     errorCode: "execution_failed",
   }), "second security audit event was not recorded");
 
+  assert(await audit.flush(), "security audit flush barrier did not complete");
   const snapshot = audit.snapshot();
-  assert(snapshot.enabled && snapshot.healthy && snapshot.chain_verified && snapshot.retained === 2, "security audit snapshot did not verify its chain");
+  assert(snapshot.enabled && snapshot.healthy && snapshot.chain_verified && snapshot.retained === 2,
+    "security audit snapshot did not verify its chain");
+  assert(snapshot.persistence === "worker-thread-batched-atomic" && snapshot.queue_depth === 0,
+    "security audit did not expose its non-blocking persistence contract");
   const file = path.join(root, "security-audit.json");
   const state = JSON.parse(readFileSync(file, "utf8"));
   assert(!JSON.stringify(state).includes(principal.accountId), "security audit persisted the raw account id");
@@ -54,13 +59,91 @@ try {
   const concurrentState = JSON.parse(readFileSync(file, "utf8"));
   assert(concurrentState.events.length === 22, "cross-instance security audit writes lost events");
   assert(concurrentState.events.every((event, index) => event.sequence === index + 1), "cross-instance security audit sequence is not continuous");
-  assert(new SecurityAuditLog({ root, now: () => now }).snapshot().chain_verified, "cross-instance security audit chain did not verify");
+  const verifier = new SecurityAuditLog({ root, now: () => now });
+  assert(await verifier.flush() && verifier.snapshot().chain_verified,
+    "cross-instance security audit chain did not verify after its worker barrier");
+  assert(await Promise.all([audit.close(), concurrentA.close(), concurrentB.close(), verifier.close()]).then((values) => values.every(Boolean)),
+    "security audit workers did not flush and close cleanly");
 
   concurrentState.events[0].tool = "tampered";
   writeFileSync(file, `${JSON.stringify(concurrentState)}\n`, { mode: 0o600 });
   const tampered = new SecurityAuditLog({ root, now: () => now });
-  assert(tampered.snapshot().healthy === false && tampered.snapshot().chain_verified === false, "security audit tampering was not detected");
+  assert(await tampered.flush() && tampered.snapshot().healthy === false
+    && tampered.snapshot().chain_verified === false
+    && tampered.snapshot().last_error_class !== "audit_initializing",
+  "security audit tampering was not detected by the worker");
   assert(await tampered.record({ outcome: "completed", tool: "server_info" }) === false, "tampered audit state was silently overwritten");
+  await tampered.close();
+
+  const disabled = new SecurityAuditLog();
+  assert(disabled.snapshot().enabled === false && disabled.snapshot().persistence === "disabled",
+    "disabled security audit reported an active persistence backend");
+  assert(await disabled.record({ tool: "ignored" }) === false && await disabled.flush() === false,
+    "disabled security audit accepted work");
+  assert(await disabled.close() === false, "disabled security audit claimed a worker shutdown");
+
+  const deferredRoot = mkdtempSync(path.join(tmpdir(), "mbm-security-audit-deferred-init-"));
+  try {
+    writeFileSync(path.join(deferredRoot, "security-audit.json"), "{invalid-json\n", { mode: 0o600 });
+    class DeferredWorker extends EventEmitter {
+      static last = null;
+      constructor() { super(); DeferredWorker.last = this; }
+      postMessage() {}
+      terminate() { return Promise.resolve(0); }
+    }
+    const deferred = new SecurityAuditLog({ root: deferredRoot, WorkerClass: DeferredWorker });
+    assert(deferred.snapshot().last_error_class === "audit_initializing"
+      && deferred.snapshot().chain_verified === false,
+    "security audit constructor synchronously read or verified persistent state");
+    DeferredWorker.last.emit("error", Object.assign(new Error("deferred worker stopped"), { code: "worker_stopped" }));
+    assert(await deferred.close() === false, "failed deferred audit worker claimed a clean close");
+  } finally {
+    rmSync(deferredRoot, { recursive: true, force: true });
+  }
+
+  const constructorFailureRoot = mkdtempSync(path.join(tmpdir(), "mbm-security-audit-worker-failure-"));
+  try {
+    class ThrowingWorker {
+      constructor() { throw Object.assign(new Error("synthetic worker construction failure"), { code: "worker_unavailable" }); }
+    }
+    const unavailable = new SecurityAuditLog({ root: constructorFailureRoot, WorkerClass: ThrowingWorker });
+    assert(unavailable.snapshot().healthy === false
+      && unavailable.snapshot().last_error_class === "worker_unavailable",
+    "security audit worker construction failure was not exposed");
+    assert(await unavailable.record({ tool: "ignored" }) === false && await unavailable.close() === false,
+      "unavailable security audit accepted work or claimed shutdown");
+  } finally {
+    rmSync(constructorFailureRoot, { recursive: true, force: true });
+  }
+
+  const overflowRoot = mkdtempSync(path.join(tmpdir(), "mbm-security-audit-overflow-"));
+  try {
+    class SilentWorker extends EventEmitter {
+      static last = null;
+      constructor() { super(); SilentWorker.last = this; }
+      postMessage() {}
+      terminate() { return Promise.resolve(0); }
+    }
+    const saturated = new SecurityAuditLog({ root: overflowRoot, WorkerClass: SilentWorker });
+    const pending = Array.from({ length: 1024 }, (_, index) => saturated.record({ tool: `queued_${index}` }));
+    assert(await saturated.record({ tool: "overflow" }) === false,
+      "security audit accepted work beyond its queue capacity");
+    assert(saturated.snapshot().dropped_records === 1
+      && saturated.snapshot().last_error_class === "audit_queue_full",
+    "security audit queue overflow was not observable");
+    SilentWorker.last.emit("error", Object.assign(new Error("synthetic worker failure"), { code: "worker_failed" }));
+    SilentWorker.last.emit("exit", 1);
+    assert((await Promise.all(pending)).every((value) => value === false),
+      "security audit worker failure did not release pending callers");
+    assert(saturated.snapshot().healthy === false
+      && saturated.snapshot().last_error_class === "worker_failed"
+      && saturated.snapshot().dropped_records === 1025,
+    "security audit asynchronous worker failure or dropped-record accounting was not exposed");
+    assert(await saturated.close({ timeoutMs: 1 }) === false,
+      "failed security audit worker unexpectedly claimed a clean shutdown");
+  } finally {
+    rmSync(overflowRoot, { recursive: true, force: true });
+  }
 
   console.log("security audit log test ok");
 } finally {

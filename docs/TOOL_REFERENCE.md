@@ -2211,7 +2211,7 @@ Terminate a live server-managed process tree with graceful or forced termination
 
 **Diagnose runtime layers**
 
-Run fixed, non-user-controlled local probes to distinguish MCP policy, local filesystem, process-spawn, shell, managed-job storage, and registered-resource failures. A successful response proves the request reached the local daemon; it cannot diagnose a host refusal that blocks the tool call itself.
+Run fixed, non-user-controlled local probes and return privacy-safe control-plane state (call capacity, draining processes, execution guardrails, relay liveness, and audit health) to distinguish MCP policy, local filesystem, process-spawn, shell, managed-job storage, and registered-resource failures. A successful response proves the request reached the local daemon; it cannot diagnose a host refusal that blocks the tool call itself.
 
 | Contract field | Value |
 |---|---|

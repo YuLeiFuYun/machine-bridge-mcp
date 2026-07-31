@@ -9,10 +9,6 @@ export type PendingStreamCallSnapshot = {
   by_tool: Record<string, number>;
 };
 
-export function activePendingCallCount(entries: StreamIndexEntry[]): number {
-  return entries.filter((entry) => entry.call).length;
-}
-
 export function pendingCallSnapshot(
   entries: StreamIndexEntry[],
   now: number,

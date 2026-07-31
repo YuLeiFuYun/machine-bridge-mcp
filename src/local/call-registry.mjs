@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { BridgeError } from "./errors.mjs";
+import { assertCallCapacity, callCapacityConfig, callCapacitySnapshot } from "./call-capacity.mjs";
 
 /** @typedef {ReturnType<typeof setTimeout>} TimerHandle */
 /**
@@ -20,6 +21,8 @@ import { BridgeError } from "./errors.mjs";
 /**
  * @typedef {{
  *   maximum?: unknown,
+ *   reserved?: unknown,
+ *   reservedTools?: Iterable<string>,
  *   now?: () => number,
  *   scheduler?: {setTimeout: typeof setTimeout, clearTimeout: typeof clearTimeout},
  *   onCancel?: (record: CallRecord) => void,
@@ -34,7 +37,8 @@ import { BridgeError } from "./errors.mjs";
 export class CallRegistry {
   /** @param {CallRegistryOptions} [options] */
   constructor(options = {}) {
-    this.maximum = positiveInteger(options.maximum, 16);
+    this.capacity = callCapacityConfig(options.maximum, options.reserved, options.reservedTools);
+    this.maximum = this.capacity.maximum;
     this.now = typeof options.now === "function" ? options.now : () => performance.now();
     this.scheduler = options.scheduler || { setTimeout, clearTimeout };
     this.onCancel = typeof options.onCancel === "function" ? options.onCancel : () => {};
@@ -46,17 +50,16 @@ export class CallRegistry {
   /** @param {OpenCallInput} [input] */
   open({ callId = "", tool = "", origin = "local", timeoutMs = 0 } = {}) {
     const id = String(callId || `call_${randomBytes(16).toString("hex")}`);
+    const toolName = String(tool || "");
     if (this.calls.has(id)) throw new BridgeError("conflict", "duplicate in-flight call id");
-    if (this.calls.size >= this.maximum) {
-      throw new BridgeError("limit_exceeded", `too many concurrent tool calls (${this.maximum})`, { retryable: true });
-    }
+    assertCallCapacity(this.calls, this.capacity, toolName);
     const controller = new AbortController();
     const startedAt = this.now();
     const timeout = positiveInteger(timeoutMs, 0);
     /** @type {CallRecord} */
     const record = {
       id,
-      tool: String(tool || ""),
+      tool: toolName,
       origin: String(origin || "local"),
       startedAt,
       deadlineAt: timeout ? startedAt + timeout : null,
@@ -159,7 +162,7 @@ export class CallRegistry {
     }
     return {
       active: this.calls.size,
-      maximum: this.maximum,
+      ...callCapacitySnapshot(this.calls, this.capacity),
       by_origin: byOrigin,
       oldest_ms: oldestMs,
     };

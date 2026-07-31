@@ -24,6 +24,7 @@ export function relayStatusSnapshot(state, now = Date.now()) {
     next_reconnect_at: isoTimestamp(state.nextReconnectAt),
     next_reconnect_in_ms: state.nextReconnectAt > 0 ? Math.max(0, state.nextReconnectAt - current) : 0,
     session_generation: state.sessionGeneration,
+    heartbeat: state.heartbeat?.snapshot(current) || null,
   };
 }
 

@@ -297,6 +297,34 @@ async function ownedServiceRuntimeTest() {
   });
   assert.equal(already.already_running, true);
 
+  let restartMutations = 0;
+  const restartDaemons = [readyDaemon, readyDaemon, { ...readyDaemon, pid: 56 }];
+  const restarted = await restartOwnedServiceRuntime({
+    owner, loadState: () => ({}), inspectDaemon: () => restartDaemons.shift() || { ...readyDaemon, pid: 56 },
+    readProvider: async () => ({ active: true, provider: "test" }),
+    mutateProvider: async () => { restartMutations += 1; return { ok: true, active: true, provider: "test", restarted: true }; },
+    stopProvider: async () => { throw new Error("verified restart unexpectedly stopped the provider"); },
+    attempts: 3, sleep: async () => {},
+  });
+  assert.equal(restartMutations, 1, "ready owned service restart skipped its provider mutation");
+  assert.equal(restarted.ok, true);
+  assert.equal(restarted.daemon.pid, 56);
+  assert.equal(restarted.readiness_attempts, 2, "restart accepted the pre-restart daemon identity");
+
+  const noRestartEvidence = await restartOwnedServiceRuntime({
+    owner, loadState: () => ({}), inspectDaemon: () => readyDaemon,
+    readProvider: async () => ({ active: true, provider: "test" }),
+    mutateProvider: async () => ({ ok: true, active: true, provider: "test", restarted: false }),
+  });
+  assert.equal(noRestartEvidence.ok, false);
+  assert.equal(noRestartEvidence.reason, "restart_not_verified");
+
+  const replacementMissing = await waitForOwnedServiceDaemon({
+    inspectDaemon: () => readyDaemon, replacementPid: 55, attempts: 2, sleep: async () => {},
+  });
+  assert.equal(replacementMissing.ok, false);
+  assert.equal(replacementMissing.reason, "daemon_replacement_not_observed");
+
   const restartFailed = await restartOwnedServiceRuntime({
     owner, loadState: () => ({}), inspectDaemon: () => ({ alive: false }),
     readProvider: async () => ({ active: false, provider: "test" }),

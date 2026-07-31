@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { PendingCallRegistrationError, PendingCallRegistry } from "./pending-calls.ts";
+import { MAX_PENDING_CALLS, RESERVED_CONTROL_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission } from "./pending-call-capacity.ts";
 import { PendingAdmissionGate } from "./pending-admission.ts";
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import {
@@ -60,14 +61,13 @@ import {
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
 
-const SERVER_VERSION = "3.0.0-beta.26";
+const SERVER_VERSION = "3.0.0-beta.28";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
-const MAX_PENDING_CALLS = 32;
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
 
 export class BridgeRoom extends DurableObject<BridgeEnv> {
-  private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS);
+  private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS);
   private readonly observability = new WorkerObservability();
   private readonly oauth: OAuthController;
   private readonly daemonRegistry: DaemonSocketRegistry;
@@ -97,6 +97,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       this.daemonRegistry,
       this.observability,
       MAX_PENDING_CALLS,
+      RESERVED_CONTROL_PENDING_CALLS,
     );
     this.modernMcp = new ModernMcpController({
       capabilities: MCP_SERVER_CAPABILITIES,
@@ -518,7 +519,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           resumption: this.resumption, observability: this.observability,
           streamId, requestId, clientRequestKey: legacyMcpClientRequestKey(authorized.tokenKey, sessionId, requestId),
           tool: name, arguments: args, socket, daemonInstanceId, connectionId, timeoutMs: daemonToolTimeoutMs(name, args),
-          transientActiveCount: this.pending.size, maximumPendingCalls: MAX_PENDING_CALLS,
+          transientSnapshot: this.pending.snapshot(), maximumPendingCalls: MAX_PENDING_CALLS,
+          reservedPendingCalls: RESERVED_CONTROL_PENDING_CALLS,
           authorization: {
             account_id: authorized.accountId, account_version: authorized.accountVersion,
             client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
@@ -601,10 +603,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     let result!: Promise<unknown>;
     try {
       await this.pendingAdmission.run(async () => {
-        const durableActive = await this.resumption.calls.activeCount();
-        if (this.pending.size + durableActive >= MAX_PENDING_CALLS) {
-          throw new WorkerToolError("limit_exceeded", "too many concurrent daemon tool calls", true);
-        }
+        assertWorkerPendingCallAdmission(this.pending.snapshot(), await this.resumption.calls.snapshot(MAX_PENDING_CALLS), name);
         result = this.pending.register({
           id,
           socket,

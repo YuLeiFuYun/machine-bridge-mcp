@@ -75,6 +75,19 @@ class ManualScheduler {
     return id;
   }
 
+  stall(milliseconds) {
+    this.now += milliseconds;
+    const due = [...this.tasks.entries()]
+      .filter(([, task]) => task.at <= this.now)
+      .sort((left, right) => left[1].at - right[1].at || left[0] - right[0]);
+    for (const [id, task] of due) {
+      if (!this.tasks.has(id)) continue;
+      if (task.interval > 0) task.at = this.now + task.interval;
+      else this.tasks.delete(id);
+      task.callback();
+    }
+  }
+
   advance(milliseconds) {
     const target = this.now + milliseconds;
     while (true) {
@@ -250,6 +263,46 @@ completeRelayReadiness(heartbeatConnection, "test");
 heartbeatScheduler.advance(10);
 assert(heartbeatSockets[0].terminated, "silent relay connection was not terminated after heartbeat timeout");
 heartbeatConnection.stop();
+
+const stalledHeartbeatScheduler = new ManualScheduler();
+const stalledHeartbeatSockets = [];
+const stalledHeartbeatEvents = [];
+const stalledHeartbeatConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  logger: captureLogger(stalledHeartbeatEvents),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      stalledHeartbeatSockets.push(this);
+    }
+  },
+  scheduler: stalledHeartbeatScheduler,
+  now: () => stalledHeartbeatScheduler.now,
+  reconnectDelay: () => 100,
+  heartbeatIntervalMs: 5,
+  heartbeatTimeoutMs: 10,
+  heartbeatStallThresholdMs: 5,
+  heartbeatRecoveryGraceMs: 10,
+  handshakeTimeoutMs: 20,
+  outageWarnAfterMs: 100,
+});
+stalledHeartbeatConnection.start();
+stalledHeartbeatSockets[0].open();
+stalledHeartbeatConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(stalledHeartbeatConnection, "test");
+stalledHeartbeatScheduler.stall(20);
+assert(!stalledHeartbeatSockets[0].terminated, "local event-loop stall was misclassified as remote relay failure");
+assert(stalledHeartbeatConnection.status().heartbeat.event_loop_stall_count === 1
+  && stalledHeartbeatConnection.status().heartbeat.recovery_active,
+"local event-loop stall was not exposed through relay diagnostics");
+assert(stalledHeartbeatEvents.some((event) => event.level === "warn"
+  && event.fields?.event === "runtime.event_loop.stall"
+  && event.fields?.relay_disconnect_deferred === true),
+"local event-loop stall did not emit a structured recovery warning");
+stalledHeartbeatSockets[0].emit("message", Buffer.from(JSON.stringify({ type: "pong" })));
+stalledHeartbeatScheduler.advance(5);
+assert(!stalledHeartbeatSockets[0].terminated, "fresh inbound traffic did not clear heartbeat recovery grace");
+stalledHeartbeatConnection.stop();
 
 const readinessScheduler = new ManualScheduler();
 const readinessSockets = [];
