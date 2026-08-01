@@ -1,22 +1,21 @@
 import { parentPort, workerData } from "node:worker_threads";
 import {
   auditErrorClass,
-  auditSnapshotFromState,
-  readVerifiedAuditState,
-  recordAuditBatch,
+  createAuditStorageSession,
   unhealthyAuditSnapshot,
 } from "./security-audit-storage.mjs";
 
 const root = String(workerData?.root || "");
 const MAX_BATCH = 128;
 const BATCH_DELAY_MS = 5;
+const storage = createAuditStorageSession(root);
 const pending = [];
 let timer = null;
 let draining = false;
 let closeRequested = false;
 
 try {
-  parentPort.postMessage({ type: "ready", snapshot: auditSnapshotFromState(readVerifiedAuditState(root)) });
+  parentPort.postMessage({ type: "ready", snapshot: storage.snapshot() });
 } catch (error) {
   parentPort.postMessage({ type: "ready", snapshot: unhealthyAuditSnapshot(error) });
 }
@@ -63,7 +62,7 @@ async function drain() {
       }
       if (records.length > 0) {
         try {
-          const snapshot = await recordAuditBatch(root, records.map(({ input, nowMs }) => ({ input, nowMs })));
+          const snapshot = await storage.recordBatch(records.map(({ input, nowMs }) => ({ input, nowMs })));
           parentPort.postMessage({
             type: "record_batch_result", ids: records.map((item) => item.id), recorded: true, snapshot,
           });

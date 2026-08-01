@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-beta.29 - 2026-08-01
+
+### Bounded security-audit throughput and retention
+
+- Reuse one verified security-audit state inside the dedicated audit worker instead of rereading, reparsing, and rehashing the complete retained chain for every batch. The cache is invalidated by file identity, size, modification time, or metadata-change time, so another process or external alteration still forces full verification before a write.
+- Bound retention by both 4,096 events and 4 MiB. Oversized-but-valid event histories now evict the oldest events, advance the chain anchor, and remain verifiable instead of permanently failing before the advertised event limit. Runtime diagnostics expose the byte ceiling explicitly.
+- Fix an owner-state-lock race where a contender observed `EEXIST` just before the holder released the lock and then misclassified the now-missing file as malformed. Missing, invalid, and valid-owner states are now distinct, preserving fail-closed handling for actual corruption while allowing normal retry.
+- Add regressions for cached-state tamper invalidation, byte-driven retention, cross-worker sequence preservation, and the lock release/acquire window. Keep audit state construction in a focused module rather than raising the existing architecture budget.
+- Mark Worker observability counters as current-isolate metrics and state explicitly that durable calls can cross isolate lifetimes, so completed/failed counts are not misread as algebraically closed process-lifetime totals.
+
 ## 3.0.0-beta.28 - 2026-07-31
 
 ### Verified service restart semantics

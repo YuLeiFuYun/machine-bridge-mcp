@@ -1,5 +1,7 @@
 import { Worker } from "node:worker_threads";
 import {
+  SECURITY_AUDIT_MAX_BYTES,
+  SECURITY_AUDIT_MAX_EVENTS,
   auditFilePath,
   unhealthyAuditSnapshot,
 } from "./security-audit-storage.mjs";
@@ -153,7 +155,7 @@ export class SecurityAuditLog {
 
 function initializingSnapshot() {
   return {
-    enabled: true, healthy: false, retained: 0, maximum: 4096,
+    enabled: true, healthy: false, retained: 0, maximum: SECURITY_AUDIT_MAX_EVENTS, maximum_bytes: SECURITY_AUDIT_MAX_BYTES,
     last_event_at: null, last_error_class: "audit_initializing",
     content_logged: false, chain_verified: false,
   };
@@ -164,7 +166,8 @@ function disabledSnapshot() {
     enabled: false,
     healthy: true,
     retained: 0,
-    maximum: 4096,
+    maximum: SECURITY_AUDIT_MAX_EVENTS,
+    maximum_bytes: SECURITY_AUDIT_MAX_BYTES,
     last_event_at: null,
     last_error_class: null,
     content_logged: false,

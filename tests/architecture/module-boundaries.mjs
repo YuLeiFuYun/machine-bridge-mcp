@@ -161,6 +161,7 @@ const lineLimits = Object.freeze({
   "src/local/tool-executor.mjs": 180,
   "src/local/security-audit-log.mjs": 220,
   "src/local/security-audit-storage.mjs": 230,
+  "src/local/security-audit-state.mjs": 180,
   "src/local/security-audit-worker.mjs": 110,
   "src/local/security-audit-dispatch.mjs": 60,
   "src/local/security-audit-warning.mjs": 60,

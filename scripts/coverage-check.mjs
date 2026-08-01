@@ -78,6 +78,7 @@ try {
     "src/local/security-audit-dispatch.mjs": [100, 70],
     "src/local/security-audit-warning.mjs": [100, 75],
     "src/local/security-audit-storage.mjs": [85, 60],
+    "src/local/security-audit-state.mjs": [90, 65],
     "src/local/delegated-process-sandbox.mjs": [80, 45],
     "src/shared/device-session-auth.mjs": [100, null],
     "src/shared/mcp-protocol.mjs": [90, 70],

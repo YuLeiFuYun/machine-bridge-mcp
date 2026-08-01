@@ -1521,6 +1521,10 @@ function testWorkerObservability() {
   metrics.runtimeAlarmMutation("set");
   metrics.runtimeAlarmMutation("noop");
   const snapshot = metrics.snapshot();
+  assert(snapshot.metric_scope.lifecycle === "current_worker_isolate"
+    && snapshot.metric_scope.durable_calls_may_cross_isolates === true
+    && snapshot.metric_scope.counters_may_not_balance === true,
+  "Worker metrics do not disclose their isolate-local time domain");
   assert(snapshot.requests.total === 3 && snapshot.requests.client_error === 1 && snapshot.requests.server_error === 1, "Worker request metrics are incomplete");
   assert(snapshot.calls.started === 2 && snapshot.calls.completed === 1 && snapshot.calls.failed === 1, "Worker call metrics are incomplete");
   assert(snapshot.calls.unmatched_results === 1, "Worker unmatched-result metric was not retained");
