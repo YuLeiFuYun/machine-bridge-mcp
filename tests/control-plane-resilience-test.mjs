@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { enqueueSecurityAudit } from "../src/local/security-audit-dispatch.mjs";
 import {
+  SECURITY_AUDIT_MAX_BYTES,
   SECURITY_AUDIT_MAX_EVENTS,
   auditErrorClass,
   auditSnapshotFromState,
+  createAuditStorageSession,
   readVerifiedAuditState,
   recordAuditBatch,
   unhealthyAuditSnapshot,
@@ -156,6 +158,55 @@ async function testAuditStorageBoundaries() {
     "audit retention did not advance its anchor and preserve the bounded chain");
   } finally {
     rmSync(trimRoot, { recursive: true, force: true });
+  }
+
+  const cacheRoot = mkdtempSync(path.join(tmpdir(), "mbm-audit-storage-cache-"));
+  try {
+    const session = createAuditStorageSession(cacheRoot);
+    await session.recordBatch([{
+      nowMs: Date.UTC(2026, 6, 31, 10, 0, 0), input: { outcome: "completed", tool: "cached" },
+    }]);
+    const file = path.join(cacheRoot, "security-audit.json");
+    const tampered = JSON.parse(readFileSync(file, "utf8"));
+    tampered.events[0].tool = "altered";
+    writeFileSync(file, `${JSON.stringify(tampered)}\n`, { mode: 0o600 });
+    await expectReject(() => session.recordBatch([{
+      nowMs: Date.UTC(2026, 6, 31, 10, 0, 1), input: { outcome: "completed", tool: "must-not-overwrite" },
+    }]), "hash chain verification failed");
+    assert(JSON.parse(readFileSync(file, "utf8")).events.length === 1,
+      "cached audit session overwrote externally altered state");
+  } finally {
+    rmSync(cacheRoot, { recursive: true, force: true });
+  }
+
+  const byteTrimRoot = mkdtempSync(path.join(tmpdir(), "mbm-audit-storage-byte-trim-"));
+  try {
+    const token = "x".repeat(128);
+    const records = Array.from({ length: SECURITY_AUDIT_MAX_EVENTS }, (_, index) => ({
+      nowMs: Date.UTC(2026, 6, 31, 11, 0, 0) + index,
+      input: {
+        outcome: token, tool: token, riskCategory: "r".repeat(160), targetHash: "a".repeat(64),
+        principal: {
+          kind: "account", accountId: token, clientId: token, familyId: token,
+          accountVersion: Number.MAX_SAFE_INTEGER, role: token,
+        },
+        durationMs: Number.MAX_SAFE_INTEGER, inputBytes: Number.MAX_SAFE_INTEGER,
+        outputBytes: Number.MAX_SAFE_INTEGER, errorCode: token,
+      },
+    }));
+    const snapshot = await recordAuditBatch(byteTrimRoot, records);
+    const file = path.join(byteTrimRoot, "security-audit.json");
+    const state = readVerifiedAuditState(byteTrimRoot);
+    assert(readFileSync(file).byteLength <= SECURITY_AUDIT_MAX_BYTES
+      && snapshot.maximum_bytes === SECURITY_AUDIT_MAX_BYTES
+      && snapshot.retained === state.events.length
+      && snapshot.retained > 0
+      && snapshot.retained < SECURITY_AUDIT_MAX_EVENTS
+      && state.events[0].sequence > 1
+      && state.next_sequence === SECURITY_AUDIT_MAX_EVENTS + 1,
+    "audit byte retention did not evict old events while preserving a verifiable chain");
+  } finally {
+    rmSync(byteTrimRoot, { recursive: true, force: true });
   }
 }
 

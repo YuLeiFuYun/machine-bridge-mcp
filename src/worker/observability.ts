@@ -88,6 +88,11 @@ export class WorkerObservability {
   snapshot(): Record<string, unknown> {
     return {
       uptime_ms: Math.max(0, performance.now() - this.startedAt),
+      metric_scope: {
+        lifecycle: "current_worker_isolate",
+        durable_calls_may_cross_isolates: true,
+        counters_may_not_balance: true,
+      },
       requests: { ...this.requests },
       calls: { ...this.calls },
       sockets: { ...this.sockets },

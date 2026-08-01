@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
@@ -32,8 +31,12 @@ export async function withOwnerStateLock(root, callback, options = {}) {
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      const existing = readLockOwner(lockPath, purpose);
-      if (!existing) throw new Error(`${label} lock is malformed; inspect the owner-only state directory`);
+      const inspected = readLockOwner(lockPath, purpose);
+      if (inspected.kind === "missing") continue;
+      if (inspected.kind === "invalid") {
+        throw new Error(`${label} lock is malformed; inspect the owner-only state directory`);
+      }
+      const existing = inspected.owner;
       const identity = inspectProcessInstance(existing, { maxAgeMs });
       if (identity.reclaimable) {
         if (removeOwnedJsonFileSync(lockPath, { token: existing.token, purpose }, { maxBytes: MAX_LOCK_BYTES })) continue;
@@ -71,16 +74,19 @@ function lockOwner(purpose) {
 }
 
 function readLockOwner(file, purpose) {
-  if (!existsSync(file)) return null;
   let parsed;
-  try { parsed = JSON.parse(readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock").toString("utf8")); } catch { return null; }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  if (!Number.isInteger(parsed.pid) || parsed.pid <= 0) return null;
-  if (!/^[a-f0-9]{32}$/.test(String(parsed.token || ""))) return null;
-  if (parsed.purpose !== purpose) return null;
-  if (!Number.isFinite(Date.parse(String(parsed.startedAt || "")))) return null;
-  if (!Number.isFinite(Date.parse(String(parsed.processStartedAt || "")))) return null;
-  return parsed;
+  try {
+    parsed = JSON.parse(readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock").toString("utf8"));
+  } catch (error) {
+    return error?.code === "ENOENT" ? { kind: "missing" } : { kind: "invalid" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "invalid" };
+  if (!Number.isInteger(parsed.pid) || parsed.pid <= 0) return { kind: "invalid" };
+  if (!/^[a-f0-9]{32}$/.test(String(parsed.token || ""))) return { kind: "invalid" };
+  if (parsed.purpose !== purpose) return { kind: "invalid" };
+  if (!Number.isFinite(Date.parse(String(parsed.startedAt || "")))) return { kind: "invalid" };
+  if (!Number.isFinite(Date.parse(String(parsed.processStartedAt || "")))) return { kind: "invalid" };
+  return { kind: "owner", owner: parsed };
 }
 
 function boundedIdentifier(value, fallback) {
