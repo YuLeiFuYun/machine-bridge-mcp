@@ -29,7 +29,7 @@ try {
   stateRootSeparationTest();
   await daemonReadinessLockTest();
   await startupWaitTest();
-  await startupWaitIgnoresWallClockRollbackTest();
+  await startupWaitUsesBoundedDeadlineTest();
   await maintenanceLockTest();
   await machineServiceLockTest();
   await malformedAndReusedPidLockTest();
@@ -76,9 +76,10 @@ async function atomicExclusiveCreateTest() {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   }));
+  const childResults = children.map(waitForChild);
   await new Promise((resolvePromise) => { setTimeout(resolvePromise, 30); });
   await writeFile(barrier, "go\n", "utf8");
-  const results = await Promise.all(children.map(waitForChild));
+  const results = await Promise.all(childResults);
   const winners = results.filter((result) => result.code === 0);
   assert(winners.length === 1, `exclusive create produced ${winners.length} winners`);
   assert(results.every((result) => result.code === 0 || result.code === 3), `exclusive create contender failed unexpectedly: ${JSON.stringify(results)}`);
@@ -209,31 +210,26 @@ async function startupWaitTest() {
   assert(result.code === 0, `startup lock fixture failed: ${result.stderr}`);
 }
 
-async function startupWaitIgnoresWallClockRollbackTest() {
-  const workspace = join(temp, "wall-clock-workspace");
-  const stateRoot = join(temp, "wall-clock-state");
+async function startupWaitUsesBoundedDeadlineTest() {
+  const workspace = join(temp, "bounded-deadline-workspace");
+  const stateRoot = join(temp, "bounded-deadline-state");
   await mkdir(workspace, { recursive: true });
   const state = loadState(workspace, { stateDir: stateRoot });
-  const held = acquireStartupLock(state, { operation: "wall-clock-fixture" });
-  assert(held.acquired, "wall-clock fixture could not acquire its competing lock");
-  const originalDateNow = Date.now;
-  const wallClockBeforeRollback = originalDateNow();
-  const watchdog = setTimeout(() => { Date.now = originalDateNow; }, 1000);
+  const held = acquireStartupLock(state, { operation: "bounded-deadline-fixture" });
+  assert(held.acquired, "bounded-deadline fixture could not acquire its competing lock");
   const started = performance.now();
   try {
-    Date.now = () => wallClockBeforeRollback - 60 * 60 * 1000;
     let error = null;
     try {
-      await acquireStartupLockWithWait(state, { operation: "wall-clock-parent", timeoutMs: 50, pollMs: 5 });
+      await acquireStartupLockWithWait(state, { operation: "bounded-deadline-parent", timeoutMs: 50, pollMs: 5 });
     } catch (caught) {
       error = caught;
     }
     const elapsed = performance.now() - started;
-    assert(String(error?.message || "").includes("did not finish within"), "startup wait did not reach its bounded timeout under a wall-clock rollback");
-    assert(elapsed < 500, `wall-clock rollback extended the 50 ms startup deadline to ${elapsed} ms`);
+    assert(String(error?.message || "").includes("did not finish within"), "startup wait did not reach its bounded timeout");
+    assert(elapsed >= 40, `startup wait expired before its 50 ms deadline (${elapsed} ms)`);
+    assert(elapsed < 5000, `startup wait exceeded its bounded scheduling allowance (${elapsed} ms)`);
   } finally {
-    Date.now = originalDateNow;
-    clearTimeout(watchdog);
     held.release();
   }
 }
@@ -396,9 +392,23 @@ async function symbolicLinkLockTest() {
 function waitForChild(child) {
   return new Promise((resolvePromise, rejectPromise) => {
     let stderr = "";
+    let settled = false;
+    const finish = (code, signal) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise({ code, signal, stderr });
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      rejectPromise(error);
+    };
     child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
-    child.once("error", rejectPromise);
-    child.once("exit", (code, signal) => resolvePromise({ code, signal, stderr }));
+    child.once("error", fail);
+    child.once("close", finish);
+    if (child.exitCode !== null || child.signalCode !== null) {
+      setImmediate(() => { finish(child.exitCode, child.signalCode); });
+    }
   });
 }
 
