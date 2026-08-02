@@ -13,19 +13,17 @@ import {
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
-import { legacyMcpClientRequestKey, resolveMcpSession } from "./mcp-session.ts";
+import { resolveMcpSession } from "./mcp-session.ts";
 import { LegacyMcpDispatcher } from "./mcp-legacy-dispatch.ts";
-import { inspectWorkerToolCall } from "./mcp-tool-call-input.ts";
 import { acceptsEventStream } from "./mcp-stream.ts";
 import { ModernMcpController } from "./mcp-modern-controller.ts";
+import { prepareLegacyStreamedToolCall, type LegacyWorkspaceStreamCallInput } from "./mcp-legacy-stream-prepare.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { handleMcpResumptionRequest } from "./mcp-resumption-http.ts";
-import {
-  handleMcpStreamSubscribeRequest, mcpStreamDescriptorResponse, mcpStreamProxyMode,
-} from "./mcp-stream-proxy.ts";
-import { McpResumptionStore, McpStreamLimitError } from "./mcp-resumption.ts";
+import { handleMcpStreamSubscribeRequest, mcpStreamProxyMode, mcpStreamProxyRetryId } from "./mcp-stream-proxy.ts";
+import { McpResumptionStore } from "./mcp-resumption.ts";
 import { McpStreamChannel } from "./mcp-stream-channel.ts";
-import { buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall } from "./mcp-stream-dispatch.ts";
+import { buildServerInfoResult, startEventDrivenStreamCall } from "./mcp-stream-dispatch.ts";
 import { DurableStreamCallCoordinator } from "./durable-stream-calls.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
 import { daemonToolTimeoutMs } from "./tool-timeout.ts";
@@ -61,7 +59,7 @@ import {
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
 
-const SERVER_VERSION = "3.0.0-beta.29";
+const SERVER_VERSION = "3.0.0-beta.30";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
@@ -421,6 +419,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       oauth: this.oauth,
       storage: this.ctx.storage,
       bodyLimitBytes: workerBodyLimitBytes(this.env.MBM_WORKER_MAX_BODY_BYTES),
+      internalDpopRetryId: proxyMode === "prepare" ? mcpStreamProxyRetryId(request) : "",
     });
     if (access.response) return access.response;
     if (request.method === "GET") {
@@ -478,68 +477,69 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     sessionId: string,
     proxyMode: ReturnType<typeof mcpStreamProxyMode>,
   ): Promise<Response> {
-    if (proxyMode !== "prepare") return json(rpcError(body.id, -32603, "MCP stream proxy is unavailable"), 500);
-    if (body.id === undefined || body.id === null) return json(rpcError(null, -32600, "tools/call requires a non-null request id"), 400);
-    const requestId = body.id;
-    const inspected = inspectWorkerToolCall(body.params, this.allTools(authorized.role));
-    if (!inspected.ok) {
-      const message = inspected.reason === "missing_name" ? "tools/call requires a tool name"
-        : inspected.reason === "unknown_tool" ? "Unknown tool"
-          : "Tool arguments do not match the input schema";
-      return json(rpcError(requestId, -32602, message, inspected.issues ? { side_effects_started: false, validation_issues: [...inspected.issues] } : undefined), 400);
-    }
-    const { name, args } = inspected;
-    const streamId = randomToken("stream");
-    try {
-      await this.resumption.begin({ streamId, tokenKey: authorized.tokenKey, sessionId, requestId });
-    } catch (error) {
-      if (error instanceof McpStreamLimitError) return json(rpcError(requestId, -32004, error.message), 429);
-      this.observability.event("error", "mcp.stream.begin.failed", { error_class: workerErrorClass(error) });
-      return json(rpcError(requestId, -32603, "Resumable stream storage is unavailable"), 503);
-    }
+    return prepareLegacyStreamedToolCall(
+      { body, authorized, sessionId, proxyMode },
+      {
+        advertisedTools: this.allTools(authorized.role),
+        resumption: this.resumption,
+        observability: this.observability,
+        admission: this.pendingAdmission,
+        serverInfo: () => this.serverInfoResult(base, authorized),
+        dispatchWorkspaceCall: (input) => this.dispatchLegacyWorkspaceStreamCall(input),
+      },
+    );
+  }
 
-    try {
-      if (name === "server_info") {
-        await persistImmediateStreamOutcome({
-          resumption: this.resumption, observability: this.observability, streamId, requestId,
-          outcome: { ok: true, value: await this.serverInfoResult(base, authorized) },
-        });
-      } else {
-        if (!workspaceTools.some((tool) => tool.name === name)) throw new Error("unknown tool");
-        if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
-        this.reclaimStaleDaemonSockets();
-        const socket = this.daemonRegistry.readySockets()[0];
-        if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
-        const attachment = this.daemonRegistry.readyAttachment(socket);
-        const daemonInstanceId = attachment?.instanceId ?? "";
-        const connectionId = attachment?.connectionId ?? "";
-        if (!daemonInstanceId || !connectionId) throw new WorkerToolError("unavailable", "local daemon connection is missing its relay identity", true);
-        if (!attachment?.tools?.includes(name)) throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
-        await this.pendingAdmission.run(() => startEventDrivenStreamCall({
-          resumption: this.resumption, observability: this.observability,
-          streamId, requestId, clientRequestKey: legacyMcpClientRequestKey(authorized.tokenKey, sessionId, requestId),
-          tool: name, arguments: args, socket, daemonInstanceId, connectionId, timeoutMs: daemonToolTimeoutMs(name, args),
-          transientSnapshot: this.pending.snapshot(), maximumPendingCalls: MAX_PENDING_CALLS,
-          reservedPendingCalls: RESERVED_CONTROL_PENDING_CALLS,
-          authorization: {
-            account_id: authorized.accountId, account_version: authorized.accountVersion,
-            client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
-          },
-          transform: name === "project_overview" ? {
-            kind: "project_overview", account_id: authorized.accountId,
-            account_version: authorized.accountVersion, role: authorized.role,
-          } : undefined,
-          onSendFailure: () => this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed"),
-        }));
-        await this.scheduleRuntimeAlarm();
-      }
-    } catch (error) {
-      await persistImmediateStreamOutcome({
-        resumption: this.resumption, observability: this.observability, streamId, requestId,
-        outcome: { ok: false, error: error instanceof Error ? error : new Error("streamed tool call failed") },
-      });
+  private async dispatchLegacyWorkspaceStreamCall(input: LegacyWorkspaceStreamCallInput): Promise<void> {
+    const { name, args, authorized } = input;
+    if (!workspaceTools.some((tool) => tool.name === name)) throw new Error("unknown tool");
+    if (!accountRoleAllowsTool(authorized.role, name)) {
+      throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
     }
-    return mcpStreamDescriptorResponse("initial", streamId);
+    this.reclaimStaleDaemonSockets();
+    const socket = this.daemonRegistry.readySockets()[0];
+    if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
+    const attachment = this.daemonRegistry.readyAttachment(socket);
+    const daemonInstanceId = attachment?.instanceId ?? "";
+    const connectionId = attachment?.connectionId ?? "";
+    if (!daemonInstanceId || !connectionId) {
+      throw new WorkerToolError("unavailable", "local daemon connection is missing its relay identity", true);
+    }
+    if (!attachment?.tools?.includes(name)) {
+      throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
+    }
+    await startEventDrivenStreamCall({
+      resumption: this.resumption,
+      observability: this.observability,
+      streamId: input.streamId,
+      requestId: input.requestId,
+      clientRequestKey: input.requestKey,
+      requestFingerprint: input.requestKey ? input.requestFingerprint : undefined,
+      tool: name,
+      arguments: args,
+      socket,
+      daemonInstanceId,
+      connectionId,
+      timeoutMs: daemonToolTimeoutMs(name, args),
+      transientSnapshot: this.pending.snapshot(),
+      maximumPendingCalls: MAX_PENDING_CALLS,
+      reservedPendingCalls: RESERVED_CONTROL_PENDING_CALLS,
+      authorization: {
+        account_id: authorized.accountId,
+        account_version: authorized.accountVersion,
+        client_id: authorized.clientId,
+        family_id: authorized.familyId,
+        role: authorized.role,
+      },
+      transform: name === "project_overview" ? {
+        kind: "project_overview",
+        account_id: authorized.accountId,
+        account_version: authorized.accountVersion,
+        role: authorized.role,
+      } : undefined,
+      onSendFailure: () => this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed"),
+    });
+    await this.scheduleRuntimeAlarm();
   }
 
   private async serverInfoResult(base: string, authorized: AuthorizedToken): Promise<Record<string, unknown>> {

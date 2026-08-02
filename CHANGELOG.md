@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-beta.30 - 2026-08-02
+
+### Resumable MCP delivery under transient interruption
+
+- Make the advertised and executed foreground timeout contract match the enforced Worker ceiling: configurable foreground tools now declare a maximum of 85 seconds and default to 30 or 60 seconds. Relay execution uses those same defaults when the argument is omitted, and a registered-command manifest cannot silently extend a relay call beyond 85 seconds; owner-local registered commands may retain their explicit local manifest budget. Longer remote work must use process sessions or managed jobs, eliminating host-generated or locally inherited 120–600 second work that outlived its Worker response.
+- Stop legacy recovery subscribers from replacing one another. Up to four concurrent subscribers may observe the same persisted terminal result; excess subscribers receive a bounded retryable response, and terminal fan-out closes every subscriber cleanly.
+- Extend internal terminal-subscription recovery from a sub-second retry burst to a bounded multi-second backoff. Cancelling a public SSE reader now releases only its internal delivery subscription while the durable legacy operation remains resumable through `Last-Event-ID`. DPoP-protected prepare retries use one outer-Worker-generated opaque retry ID: the first attempt atomically consumes the proof and binds it, and only the same internal request may reuse that proof for at most four authorization attempts; another request remains a replay failure.
+- Make repeated signed-session legacy `tools/call` delivery idempotent throughout the bounded two-minute recovery window. OAuth token, signed MCP session, typed request ID, tool name, and a canonical SHA-256 argument fingerprint bind the stream before daemon dispatch; an identical retry reattaches to the active or terminal stream, while changed arguments are rejected instead of duplicating side effects. Sessionless legacy POSTs never retry an ambiguous prepare.
+- Add regressions for concurrent subscriber fan-out and limits, delivery-subscription cleanup, canonical request fingerprints, persisted retry identity, the unified foreground timeout catalog, and effective relay timeout alignment for shell, direct-process, and registered-command execution. Clarify that a macOS sleep interval may legitimately surface as an event-loop-stall warning without implying daemon failure.
+
 ## 3.0.0-beta.29 - 2026-08-01
 
 ### Bounded security-audit throughput and retention

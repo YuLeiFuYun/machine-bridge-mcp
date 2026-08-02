@@ -232,7 +232,7 @@ Discover installed local applications and launchers without reading their docume
 
 **Open local application**
 
-Open a named local application, optionally with a document or URL target, using the operating system launcher.
+Open a named local application, optionally with a document or URL target, using the operating system launcher. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -265,7 +265,7 @@ Open a named local application, optionally with a document or URL target, using 
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     }
   },
@@ -279,7 +279,7 @@ Open a named local application, optionally with a document or URL target, using 
 
 **Inspect local application UI**
 
-Inspect a bounded macOS Accessibility tree for a running application. Requires local Accessibility permission and never executes arbitrary AppleScript supplied by the caller.
+Inspect a bounded macOS Accessibility tree for a running application. Requires local Accessibility permission and never executes arbitrary AppleScript supplied by the caller. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -325,7 +325,7 @@ Inspect a bounded macOS Accessibility tree for a running application. Requires l
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     }
   },
@@ -339,7 +339,7 @@ Inspect a bounded macOS Accessibility tree for a running application. Requires l
 
 **Operate local application UI**
 
-Perform a structured macOS Accessibility action on a matched UI element. Text can be supplied through a registered local resource so secret values do not enter MCP arguments.
+Perform a structured macOS Accessibility action on a matched UI element. Text can be supplied through a registered local resource so secret values do not enter MCP arguments. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -429,7 +429,7 @@ Perform a structured macOS Accessibility action on a matched UI element. Text ca
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     }
   },
@@ -496,7 +496,7 @@ Open the local pairing page and return the packaged unpacked-extension path for 
 
 **List browser tabs**
 
-Read the tab inventory from the paired existing Chromium profile without creating, activating, or closing a tab. Use browser_manage_tabs for tab mutations.
+Read the tab inventory from the paired existing Chromium profile without creating, activating, or closing a tab. Use browser_manage_tabs for tab mutations. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -524,7 +524,7 @@ Read the tab inventory from the paired existing Chromium profile without creatin
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     }
   }
@@ -535,7 +535,7 @@ Read the tab inventory from the paired existing Chromium profile without creatin
 
 **Manage browser tabs**
 
-Create, activate, or close tabs in the paired existing Chromium profile. Use browser_list_tabs when only a read-only tab inventory is needed.
+Create, activate, or close tabs in the paired existing Chromium profile. Use browser_list_tabs when only a read-only tab inventory is needed. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -577,7 +577,7 @@ Create, activate, or close tabs in the paired existing Chromium profile. Use bro
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     }
   },
@@ -591,7 +591,7 @@ Create, activate, or close tabs in the paired existing Chromium profile. Use bro
 
 **Read browser page source**
 
-Read bounded raw serialized DOM HTML from the active or selected tab when source markup is required. Use browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames.
+Read bounded raw serialized DOM HTML from the active or selected tab when source markup is required. Use browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -621,7 +621,7 @@ Read bounded raw serialized DOM HTML from the active or selected tab when source
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     },
     "frame_id": {
@@ -640,7 +640,7 @@ Read bounded raw serialized DOM HTML from the active or selected tab when source
 
 **Inspect browser page**
 
-Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames.
+Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -674,7 +674,7 @@ Inspect a bounded semantic/actionability snapshot with reusable element refs for
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     },
     "frame_id": {
@@ -693,7 +693,7 @@ Inspect a bounded semantic/actionability snapshot with reusable element refs for
 
 **Wait for browser state**
 
-Wait until all supplied URL, load, text, and element-state conditions are satisfied in an existing browser tab.
+Wait until all supplied URL, load, text, and element-state conditions are satisfied in an existing browser tab. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -794,7 +794,7 @@ Wait until all supplied URL, load, text, and element-state conditions are satisf
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     }
   }
@@ -805,7 +805,7 @@ Wait until all supplied URL, load, text, and element-state conditions are satisf
 
 **Operate browser page**
 
-Perform one structured navigation or page action in the user's existing browser tab without arbitrary JavaScript. Automatic trusted-input fallback occurs only before any DevTools Input command starts; ambiguous post-dispatch failures require inspection before retry.
+Perform one structured navigation or page action in the user's existing browser tab without arbitrary JavaScript. Automatic trusted-input fallback occurs only before any DevTools Input command starts; ambiguous post-dispatch failures require inspection before retry. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -919,7 +919,7 @@ Perform one structured navigation or page action in the user's existing browser 
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     },
     "frame_id": {
@@ -953,7 +953,7 @@ Perform one structured navigation or page action in the user's existing browser 
 
 **Fill complex browser form**
 
-Fill multiple fields and optionally submit a complex form. Sensitive values can come from registered local resources; errors identify possible earlier mutations without returning field values.
+Fill multiple fields and optionally submit a complex form. Sensitive values can come from registered local resources; errors identify possible earlier mutations without returning field values. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -1115,7 +1115,7 @@ Fill multiple fields and optionally submit a complex form. Sensitive values can 
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 180,
+      "maximum": 85,
       "default": 60
     },
     "frame_id": {
@@ -1139,7 +1139,7 @@ Fill multiple fields and optionally submit a complex form. Sensitive values can 
 
 **Capture browser screenshot**
 
-Capture the visible area of the active or selected tab from the paired existing browser profile, restore the previous active tab when safe, avoid focusing another window, and return native MCP image content.
+Capture the visible area of the active or selected tab from the paired existing browser profile, restore the previous active tab when safe, avoid focusing another window, and return native MCP image content. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -1177,7 +1177,7 @@ Capture the visible area of the active or selected tab from the paired existing 
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 120,
+      "maximum": 85,
       "default": 30
     }
   }
@@ -1188,7 +1188,7 @@ Capture the visible area of the active or selected tab from the paired existing 
 
 **Upload browser files**
 
-Populate a browser file input from registered local resource files without returning file contents through MCP results.
+Populate a browser file input from registered local resource files without returning file contents through MCP results. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -1280,7 +1280,7 @@ Populate a browser file input from registered local resource files without retur
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 180,
+      "maximum": 85,
       "default": 60
     },
     "frame_id": {
@@ -1461,7 +1461,7 @@ List effective direct-argv commands from project manifests and safe automatic pa
 
 **Run registered local command**
 
-Prefer this when the repository already defines the desired operation as a registered command or package script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation; use exec_command for ad hoc pipelines or run_process for an unregistered executable argv. Large output is retained for read_process.
+Prefer this when the repository already defines the desired operation as a registered command or package script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation; use exec_command for ad hoc pipelines or run_process for an unregistered executable argv. Large output is retained for read_process. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -1499,7 +1499,8 @@ Prefer this when the repository already defines the desired operation as a regis
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 600
+      "maximum": 85,
+      "default": 60
     }
   },
   "required": [
@@ -1994,7 +1995,7 @@ Return bounded metadata and patch output for one revision without running reposi
 
 **Run process directly**
 
-Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Large output is retained for read_process.
+Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Large output is retained for read_process. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -2025,8 +2026,8 @@ Run an explicit executable plus argv when no shell syntax is needed and no regis
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 600,
-      "default": 120
+      "maximum": 85,
+      "default": 60
     }
   },
   "required": [
@@ -2802,7 +2803,7 @@ Request cancellation of a detached managed job. The runner terminates the active
 
 **Execute shell command**
 
-Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Large output is retained for read_process.
+Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Large output is retained for read_process. Foreground execution is limited to 85 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -2826,8 +2827,8 @@ Run Bash-compatible shell composition in the workspace: pipelines, redirection, 
     "timeout_seconds": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 600,
-      "default": 120
+      "maximum": 85,
+      "default": 60
     }
   },
   "required": [

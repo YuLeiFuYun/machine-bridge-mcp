@@ -15,6 +15,7 @@ type StreamResponseOptions = {
   streamId: string;
   scheduler?: StreamScheduler;
   keepAlive?: (promise: Promise<void>) => void;
+  onCancel?: (reason: unknown) => void;
 };
 
 export function acceptsEventStream(request: Pick<Request, "headers">): boolean {
@@ -96,12 +97,13 @@ function createEventStream(
         () => close(),
       );
     },
-    cancel() {
+    cancel(reason) {
       writable = false;
       if (interval !== undefined) scheduler.clearInterval(interval);
       interval = undefined;
-      // Streamable HTTP disconnect is not cancellation. The operation remains
-      // alive through keepAlive and can only be cancelled by MCP notification.
+      // Public delivery cancellation releases only the internal subscription.
+      // The daemon operation remains durable and can be resumed by Last-Event-ID.
+      try { options.onCancel?.(reason); } catch { /* Delivery cleanup is best effort. */ }
     },
   });
 

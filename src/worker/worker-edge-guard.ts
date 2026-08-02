@@ -1,11 +1,20 @@
 import { applyCors, baseUrl, json } from "./http.ts";
 import { createThrottledEdgeLogger } from "./worker-edge-log.ts";
+import { globalStatefulRateLimitKey, statefulRateLimitKey } from "./worker-rate-limit-key.ts";
+export { statefulRateLimitKey } from "./worker-rate-limit-key.ts";
 
 type RateLimiter = { limit(input: { key: string }): Promise<{ success: boolean }> };
 const logLimiterFailure = createThrottledEdgeLogger();
 
+export async function admitGlobalStatefulRequest(request: Request, limiter: RateLimiter, extraOrigins = ""): Promise<Response | null> {
+  return admitRateLimit(request, limiter, globalStatefulRateLimitKey(request), extraOrigins);
+}
+
 export async function admitStatefulRequest(request: Request, limiter: RateLimiter, extraOrigins = ""): Promise<Response | null> {
-  const key = `stateful:${new URL(request.url).host.toLowerCase()}`;
+  return admitRateLimit(request, limiter, await statefulRateLimitKey(request), extraOrigins);
+}
+
+async function admitRateLimit(request: Request, limiter: RateLimiter, key: string, extraOrigins: string): Promise<Response | null> {
   let result: { success: boolean };
   try {
     result = await limiter.limit({ key });

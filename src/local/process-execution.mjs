@@ -7,15 +7,13 @@ import { MAX_COMMAND_BYTES, validateArgv } from "./process-contract.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { BridgeError } from "./errors.mjs";
 import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
-import { clampInteger } from "./numbers.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
+import { processForegroundTimeoutSeconds, registeredCommandTimeoutSeconds } from "./process-foreground-timeout.mjs";
 import { processFailureMessage, publicProcessToolResult } from "./process-result-projection.mjs";
 import {
   DEFAULT_PROCESS_OUTPUT_BYTES,
   MAX_PROCESS_SESSION_OUTPUT_BYTES,
   MAX_PROCESS_STDIN_BYTES,
-  MAX_PROCESS_TIMEOUT_SECONDS,
-  MIN_PROCESS_TIMEOUT_SECONDS,
   PROCESS_SESSION_RETENTION_MS,
   PUBLIC_PROCESS_INLINE_OUTPUT_BYTES,
 } from "./execution-limits.mjs";
@@ -56,9 +54,9 @@ export class ProcessExecutionService {
     const argv = validateArgv(args.argv);
     const cwd = await this.resolveExistingPath(args.cwd || ".", context);
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "cwd is not a directory");
+    const timeoutSeconds = processForegroundTimeoutSeconds("run_process", args.timeout_seconds, context);
     const result = await this.runPublic(
-      argv[0], argv.slice(1),
-      clampInteger(args.timeout_seconds, 120, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS) * 1000,
+      argv[0], argv.slice(1), timeoutSeconds * 1000,
       context, cwd,
     );
     return publicProcessToolResult(result);
@@ -70,10 +68,7 @@ export class ProcessExecutionService {
     const argv = validateArgv(command.argv);
     const cwd = await this.resolveExistingPath(command.cwd, context);
     if (!(await stat(cwd)).isDirectory()) throw new BridgeError("invalid_request", "registered command cwd is not a directory");
-    const requested = args.timeout_seconds === undefined
-      ? command.timeoutSeconds
-      : clampInteger(args.timeout_seconds, command.timeoutSeconds, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS);
-    const timeoutSeconds = Math.min(requested, command.timeoutSeconds);
+    const timeoutSeconds = registeredCommandTimeoutSeconds(args, command, context);
     const result = await this.runPublic(argv[0], argv.slice(1), timeoutSeconds * 1000, context, cwd);
     return publicProcessToolResult({ name: command.name, cwd: this.displayPath(cwd, context), timeout_seconds: timeoutSeconds, ...result });
   }
@@ -95,7 +90,7 @@ export class ProcessExecutionService {
     const shell = workspaceShellCommand(command);
     const result = await this.runPublic(
       shell.cmd, shell.args,
-      clampInteger(timeoutSeconds, 120, MIN_PROCESS_TIMEOUT_SECONDS, MAX_PROCESS_TIMEOUT_SECONDS) * 1000,
+      processForegroundTimeoutSeconds("exec_command", timeoutSeconds, context) * 1000,
       context, this.workspace,
     );
     return publicProcessToolResult(result);

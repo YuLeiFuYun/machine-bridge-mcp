@@ -83,6 +83,12 @@ Legacy MCP `2025-11-25` clients may continue to initialize and use the signed-se
 
 The tool catalog is now enforced as bounded JSON Schema 2020-12 at both Worker and local runtime boundaries. Clients that previously sent unknown fields, wrong scalar types, fractional integer values, or out-of-range values will receive `-32602` before side effects rather than handler-specific fallback behavior. Fix the request; do not retry unchanged.
 
+## Version 3.0.0-beta.30 interruption-recovery change
+
+Beta.30 changes the advertised foreground timeout schema, relay execution defaults, legacy stream-delivery behavior, pending-call record shape, and Worker rate-limit bindings. Upgrade Worker and daemon/CLI metadata together through the exact candidate activation flow. Configurable synchronous tools now advertise 1–85 seconds on every MCP surface, and relay execution uses the same 30- or 60-second default and 85-second ceiling even when a registered-command manifest is longer. Owner-local registered commands retain their explicit manifest budget; remote work that can exceed the interactive boundary must use `start_process`/`read_process` or managed jobs.
+
+The Worker adds `STATEFUL_GLOBAL_RATE_LIMITER` at 1,200 requests per 60 seconds while retaining `STATEFUL_RATE_LIMITER` at 120 requests per 60 seconds for per-subject isolation. Existing persisted legacy pending calls without a request fingerprint remain readable and may be resumed by matching tool name during the bounded upgrade window. New calls persist the fingerprint. Multiple recovery subscribers no longer replace each other; up to four may coexist and receive the terminal event.
+
 ## Version 3.0.0-beta.24 candidate-activation convergence
 
 Beta.23 is blocked and must not be accepted, published, or promoted. Owner-machine activation proved that a Worker could report the expected version and pass health verification while rejecting the candidate daemon before WebSocket admission because the active device-authentication material had not converged. The failed transaction then restarted an older service definition that could not authenticate to the already advanced Worker.
@@ -95,7 +101,7 @@ No state-schema, OAuth-store, browser-pairing, resource, or managed-job migratio
 
 ## Version 3.0.0-beta.23 foreground-contract change
 
-Beta.23 requires coordinated Worker and daemon/CLI metadata convergence. The Worker-specific `tools/list` schema narrows configurable foreground timeouts to 85 seconds while preserving each tool’s 30- or 60-second default and rejects larger values before daemon dispatch. Local/stdio callers retain the 1–600 second schema. Work that can exceed the remote foreground boundary must use process sessions, managed jobs, or independently terminal mutation/validation calls.
+Beta.23 requires coordinated Worker and daemon/CLI metadata convergence. The Worker-specific `tools/list` schema narrows configurable foreground timeouts to 85 seconds while preserving each tool’s 30- or 60-second default and rejects larger values before daemon dispatch. Beta.30 later supersedes the local/remote schema split and makes all advertised synchronous foreground surfaces use the 85-second ceiling. Work that can exceed the remote foreground boundary must use process sessions, managed jobs, or independently terminal mutation/validation calls.
 
 `machine-mcp doctor` and `diagnose_runtime` also gain a macOS-only coarse default-route check. A `tunnel-or-vpn` result is evidence that an operating-system packet tunnel carries the route; it does not identify a failing node and is not authority to modify third-party VPN settings. Upgrade through the normal exact-version candidate flow and reload the packaged extension because its `version_name` is synchronized with the package.
 

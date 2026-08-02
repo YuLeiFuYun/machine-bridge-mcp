@@ -10,6 +10,7 @@ export type PendingStreamCall = {
   daemon_instance_id: string;
   connection_id: string;
   client_request_key?: string;
+  request_fingerprint?: string;
   tool: string;
   state: "attached" | "detached";
   started_at: number;
@@ -44,6 +45,9 @@ export function validPendingStreamCall(value: unknown): value is PendingStreamCa
       && call.client_request_key.length > 0
       && call.client_request_key.length <= 1024
     ))
+    && (call.request_fingerprint === undefined || (
+      typeof call.request_fingerprint === "string" && /^[a-f0-9]{64}$/.test(call.request_fingerprint)
+    ))
     && typeof call.tool === "string" && call.tool.length > 0 && call.tool.length <= 128
     && (call.state === "attached" || call.state === "detached")
     && Number.isSafeInteger(call.started_at) && call.started_at! >= 0
@@ -55,4 +59,17 @@ export function validPendingStreamCall(value: unknown): value is PendingStreamCa
     ))
     && (call.state === "attached" ? call.reconnect_deadline_at === undefined : call.reconnect_deadline_at !== undefined)
     && validTransform;
+}
+
+export function pendingCallIdentityConflict(
+  record: Readonly<{ client_request_key?: string; request_fingerprint?: string; tool?: string }>,
+  input: Readonly<{ clientRequestKey?: string; requestFingerprint?: string; tool: string }>,
+): string | undefined {
+  if (input.clientRequestKey && record.client_request_key && record.client_request_key !== input.clientRequestKey) {
+    return "resumable MCP request key changed before activation";
+  }
+  if (input.requestFingerprint && record.request_fingerprint && record.request_fingerprint !== input.requestFingerprint) {
+    return "resumable MCP request fingerprint changed before activation";
+  }
+  return record.tool && record.tool !== input.tool ? "resumable MCP tool changed before activation" : undefined;
 }

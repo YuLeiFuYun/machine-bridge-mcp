@@ -9,14 +9,13 @@ import {
   storedMessage,
   streamKey,
   validRecord,
-  validateStreamIdentity,
   workerRestartMessage,
   type JsonRpcMessage,
   type StreamIndex,
-  type StreamRecord,
 } from "./mcp-resumption-records.ts";
 import { McpPendingCallStore } from "./mcp-pending-call-store.ts";
 import { freeCompletedStreamSlots, pruneExpiredStreams } from "./mcp-resumption-index.ts";
+import { findStreamByRequestKey, pendingStreamRecord, type BeginStreamInput, type StreamRequestIdentity } from "./mcp-resumption-request-index.ts";
 import { resumptionLimits, type McpResumptionOptions } from "./mcp-resumption-config.ts";
 export type { JsonRpcMessage } from "./mcp-resumption-records.ts";
 
@@ -75,24 +74,9 @@ export class McpResumptionStore {
     );
   }
 
-  async begin(input: {
-    streamId: string;
-    tokenKey: string;
-    sessionId: string;
-    requestId: string | number;
-  }): Promise<void> {
-    validateStreamIdentity(input.streamId, input.tokenKey, input.sessionId, input.requestId);
+  async begin(input: BeginStreamInput): Promise<void> {
     const now = this.now();
-    const record: StreamRecord = {
-      schema_version: 1,
-      stream_id: input.streamId,
-      token_key: input.tokenKey,
-      session_id: input.sessionId,
-      request_id: input.requestId,
-      status: "pending",
-      created_at: now,
-      expires_at: now + this.pendingRetentionMs,
-    };
+    const record = pendingStreamRecord(input, now, this.pendingRetentionMs);
     const removedStreamIds = await this.storage.transaction(async (transaction) => {
       const index = readIndex(await transaction.get<unknown>(STREAM_INDEX_KEY));
       const pruned = await pruneExpiredStreams(transaction, index.entries, now);
@@ -105,6 +89,10 @@ export class McpResumptionStore {
     });
     this.onRowsWritten(2 + removedStreamIds.length);
     for (const removedStreamId of removedStreamIds) this.clearMemory(removedStreamId);
+  }
+
+  async findByRequestKey(requestKey: string): Promise<StreamRequestIdentity | undefined> {
+    return findStreamByRequestKey(this.storage, requestKey);
   }
 
   activate(streamId: string): void {
@@ -148,7 +136,10 @@ export class McpResumptionStore {
       await this.remove(event.streamId);
       return { kind: "expired" };
     }
-    if (event.sequence >= 1) return { kind: "complete", streamId: event.streamId };
+    if (event.sequence >= 1) {
+      await this.remove(event.streamId);
+      return { kind: "complete", streamId: event.streamId };
+    }
     if (record.status === "ready" || this.transientReady.has(event.streamId) || record.call || this.active.has(event.streamId)) {
       return { kind: "message", streamId: event.streamId };
     }

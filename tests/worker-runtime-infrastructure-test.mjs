@@ -10,19 +10,22 @@ import { McpResumptionStore } from "../src/worker/mcp-resumption.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
 import { acceptsEventStream, resumeJsonRpcResponse, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
 import {
-  MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER,
+  MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER, MCP_STREAM_PROXY_RETRY_HEADER,
   handleMcpStreamSubscribeRequest, mcpStreamDescriptorResponse, mcpStreamProxyId, mcpStreamProxyMode,
-  proxyMcpEventStream, sanitizeBridgeRequest,
+  mcpStreamProxyRetryId, proxyMcpEventStream, sanitizeBridgeRequest,
 } from "../src/worker/mcp-stream-proxy.ts";
 import { McpStreamChannel } from "../src/worker/mcp-stream-channel.ts";
+import { subscribeTerminalMessage } from "../src/worker/mcp-stream-subscription.ts";
 import { modernJsonRpcResponseStream } from "../src/worker/mcp-modern-stream.ts";
+import { prepareLegacyStreamedToolCall } from "../src/worker/mcp-legacy-stream-prepare.ts";
 import { respondWithoutDurableObject } from "../src/worker/worker-static-routes.ts";
 import { createThrottledEdgeLogger } from "../src/worker/worker-edge-log.ts";
 import {
-  admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
-  outerWorkerErrorClass, workerGatewayErrorResponse,
+  admitGlobalStatefulRequest, admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
+  outerWorkerErrorClass, statefulRateLimitKey, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
 import { daemonToolTimeoutMs, remoteForegroundDefaultSeconds, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
+import { workerToolRequestFingerprint } from "../src/worker/mcp-request-fingerprint.ts";
 import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
@@ -114,6 +117,7 @@ await testRuntimeAlarmCoordinator();
 await testTimeoutCallbackFailure();
 await testPendingAdmissionGate();
 await testEventDrivenStreamDispatch();
+await testLegacyStreamPreparationIdentity();
 await testStreamDispatchFailureBoundaries();
 await testDurableSettlementPersistenceFailure();
 await testAbortSignalCleanup();
@@ -516,12 +520,16 @@ async function testEventDrivenStreamDispatch() {
   await resumption.begin({ streamId: STREAM_TEST_ID, tokenKey: "token", sessionId: "session", requestId: 44 });
   await startEventDrivenStreamCall({
     resumption, observability, streamId: STREAM_TEST_ID, requestId: 44,
-    clientRequestKey: "session:44", tool: "list_dir", arguments: { path: "." },
+    clientRequestKey: "session:44", requestFingerprint: await workerToolRequestFingerprint("list_dir", { path: "." }),
+    tool: "list_dir", arguments: { path: "." },
     socket, daemonInstanceId: "daemon_stream_event_1234", connectionId: `connection_${"A".repeat(43)}`,
     timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 2,
     authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
     onSendFailure() {},
   });
+  const persistedRequest = await resumption.calls.getByRequestKey("session:44");
+  assert(persistedRequest?.request_fingerprint === await workerToolRequestFingerprint("list_dir", { path: "." }),
+    "stream initiation did not persist its request fingerprint");
   const snapshot = await resumption.calls.snapshot(2);
   assert(snapshot.active === 1 && snapshot.request_keys === 1, "stream initiation did not persist its pending call");
   assert(sent.length === 1 && sent[0].type === "tool_call" && sent[0].tool === "list_dir", "stream dispatch sent the wrong daemon envelope");
@@ -552,6 +560,136 @@ async function testEventDrivenStreamDispatch() {
     streamTerminalMessage(45, { ok: true, value: { stale: true } }))), "stale connection settled a rebound stream call");
   assert(await reconnectStore.calls.complete(reconnectSocket.message.id, secondConnection,
     streamTerminalMessage(45, { ok: true, value: { resumed: true } })), "rebound stream call did not complete");
+}
+
+async function testLegacyStreamPreparationIdentity() {
+  const storage = new MemoryStorage();
+  const resumption = new McpResumptionStore(storage);
+  const observability = new WorkerObservability();
+  const admission = new PendingAdmissionGate();
+  const authorized = {
+    tokenKey: "token-prepare-retry",
+    accountId: "acct_prepare_retry",
+    accountVersion: 1,
+    clientId: "mcp_client_prepare_retry_1234567890123456789012345678901234567890123",
+    familyId: "mcp_family_prepare_retry_1234567890123456789012345678901234567890123",
+    dpopJkt: "synthetic",
+    role: "owner",
+  };
+  const requestId = 404;
+  const sessionId = "mcp_prepare_retry_session";
+  const body = {
+    jsonrpc: "2.0",
+    id: requestId,
+    method: "tools/call",
+    params: { name: "list_files", arguments: { path: ".", max_files: 10 } },
+  };
+  let dispatches = 0;
+  const dependencies = {
+    advertisedTools: workspaceTools,
+    resumption,
+    observability,
+    admission,
+    async serverInfo() { return { name: "synthetic" }; },
+    async dispatchWorkspaceCall(input) {
+      dispatches += 1;
+      await resumption.calls.activate({
+        streamId: input.streamId,
+        callId: `call_${"I".repeat(43)}`,
+        daemonInstanceId: "daemon_prepare_retry_123456",
+        connectionId: `connection_${"J".repeat(43)}`,
+        clientRequestKey: input.requestKey,
+        requestFingerprint: input.requestFingerprint,
+        tool: input.name,
+        timeoutMs: 10_000,
+      });
+    },
+  };
+
+  const initial = await prepareLegacyStreamedToolCall(
+    { body, authorized, sessionId, proxyMode: "prepare" }, dependencies,
+  );
+  const initialDescriptor = await initial.json();
+  assert(initialDescriptor.kind === "initial" && dispatches === 1,
+    `initial legacy preparation did not dispatch exactly once: ${JSON.stringify({ status: initial.status, initialDescriptor, dispatches })}`);
+
+  const repeated = await prepareLegacyStreamedToolCall(
+    { body: structuredClone(body), authorized, sessionId, proxyMode: "prepare" }, dependencies,
+  );
+  const repeatedDescriptor = await repeated.json();
+  assert(repeatedDescriptor.kind === "resume" && repeatedDescriptor.stream_id === initialDescriptor.stream_id
+    && dispatches === 1, "identical legacy retry did not reattach without duplicate dispatch");
+
+  const reordered = structuredClone(body);
+  reordered.params.arguments = { max_files: 10, path: "." };
+  const reorderedResponse = await prepareLegacyStreamedToolCall(
+    { body: reordered, authorized, sessionId, proxyMode: "prepare" }, dependencies,
+  );
+  assert((await reorderedResponse.json()).kind === "resume" && dispatches === 1,
+    "canonical argument ordering did not preserve legacy retry identity");
+
+  const changed = structuredClone(body);
+  changed.params.arguments.path = "..";
+  const conflict = await prepareLegacyStreamedToolCall(
+    { body: changed, authorized, sessionId, proxyMode: "prepare" }, dependencies,
+  );
+  const conflictBody = await conflict.json();
+  assert(conflict.status === 409 && conflictBody.error?.data?.side_effects_started === true && dispatches === 1,
+    "changed legacy retry arguments duplicated work or lost the conflict marker");
+
+  await resumption.complete(initialDescriptor.stream_id, { jsonrpc: "2.0", id: requestId, result: { completed: true } });
+  const acknowledged = await resumption.resume({
+    lastEventId: `${initialDescriptor.stream_id}:1`,
+    tokenKey: authorized.tokenKey,
+    sessionId,
+  });
+  assert(acknowledged.kind === "complete", "terminal acknowledgement did not retire the idempotency stream");
+  const reusedAfterAck = await prepareLegacyStreamedToolCall(
+    { body: structuredClone(body), authorized, sessionId, proxyMode: "prepare" }, dependencies,
+  );
+  const reusedAfterAckDescriptor = await reusedAfterAck.json();
+  assert(reusedAfterAckDescriptor.kind === "initial" && reusedAfterAckDescriptor.stream_id !== initialDescriptor.stream_id
+    && dispatches === 2, "acknowledged request id could not start intentional new work");
+
+  const sessionlessBody = structuredClone(body);
+  sessionlessBody.id = 4041;
+  const sessionlessFirst = await prepareLegacyStreamedToolCall(
+    { body: sessionlessBody, authorized, sessionId: "", proxyMode: "prepare" }, dependencies,
+  );
+  const sessionlessFirstDescriptor = await sessionlessFirst.json();
+  const sessionlessSecond = await prepareLegacyStreamedToolCall(
+    { body: structuredClone(sessionlessBody), authorized, sessionId: "", proxyMode: "prepare" }, dependencies,
+  );
+  const sessionlessSecondDescriptor = await sessionlessSecond.json();
+  assert(sessionlessFirstDescriptor.kind === "initial" && sessionlessSecondDescriptor.kind === "initial"
+    && sessionlessFirstDescriptor.stream_id !== sessionlessSecondDescriptor.stream_id
+    && dispatches === 4,
+  "sessionless legacy streams were rejected or incorrectly given signed-session idempotency");
+
+  const failedBody = structuredClone(body);
+  failedBody.id = 405;
+  let failedDispatches = 0;
+  const failingDependencies = {
+    ...dependencies,
+    async dispatchWorkspaceCall() {
+      failedDispatches += 1;
+      throw new WorkerToolError("unavailable", "synthetic pre-dispatch failure", true);
+    },
+  };
+  const failedInitial = await prepareLegacyStreamedToolCall(
+    { body: failedBody, authorized, sessionId, proxyMode: "prepare" }, failingDependencies,
+  );
+  const failedDescriptor = await failedInitial.json();
+  const failedTerminal = await resumption.pollMessage(failedDescriptor.stream_id);
+  assert(failedDescriptor.kind === "initial" && failedDispatches === 1
+    && failedTerminal.kind === "message" && failedTerminal.message.result?.isError === true,
+  "pre-activation failure was not persisted as a resumable terminal result");
+  const failedRetry = await prepareLegacyStreamedToolCall(
+    { body: structuredClone(failedBody), authorized, sessionId, proxyMode: "prepare" }, failingDependencies,
+  );
+  const failedRetryDescriptor = await failedRetry.json();
+  assert(failedRetryDescriptor.kind === "resume" && failedRetryDescriptor.stream_id === failedDescriptor.stream_id
+    && failedDispatches === 1, "terminal pre-activation failure was duplicated instead of reattached");
 }
 
 async function testStreamDispatchFailureBoundaries() {
@@ -740,14 +878,17 @@ async function testMcpStreamResponse() {
   let resolveDisconnected;
   const disconnectedResult = new Promise((resolve) => { resolveDisconnected = resolve; });
   let disconnectedCompletion = null;
+  let deliveryCancelled = false;
   const disconnected = streamJsonRpcResponse(disconnectedResult, {
     streamId: STREAM_DISCONNECTED_ID,
     scheduler: { setInterval() { return 2; }, clearInterval() {} },
     keepAlive(promise) { disconnectedCompletion = promise; },
+    onCancel() { deliveryCancelled = true; },
   });
   const disconnectedReader = disconnected.body.getReader();
   await disconnectedReader.read();
   await disconnectedReader.cancel();
+  assert(deliveryCancelled, "public stream cancellation did not release its delivery subscription");
   resolveDisconnected({ jsonrpc: "2.0", id: 8, result: { ok: true } });
   await disconnectedCompletion;
 
@@ -766,8 +907,9 @@ async function testMcpStreamResponse() {
 async function testMcpStreamChannel() {
   const context = new TestWebSocketContext();
   const metrics = {
-    opened: 0, replaced: 0, pushes: 0, recipients: 0, protocolErrors: 0,
-    streamSubscriberOpened(replaced) { this.opened += 1; this.replaced += replaced; },
+    opened: 0, coexisting: 0, rejected: 0, pushes: 0, recipients: 0, protocolErrors: 0,
+    streamSubscriberOpened(existing) { this.opened += 1; this.coexisting += existing; },
+    streamSubscriberRejected() { this.rejected += 1; },
     streamTerminalDelivered(recipients) { this.pushes += 1; this.recipients += recipients; },
     streamSubscriberProtocolError() { this.protocolErrors += 1; },
   };
@@ -805,22 +947,29 @@ async function testMcpStreamChannel() {
   assert(pairs[0][1].closeCode === 1000, "terminal subscriber did not close cleanly");
   assert(metrics.pushes === 1 && metrics.recipients === 1, "terminal push metrics were incorrect");
 
-  const firstReplacement = await channel.subscribe(
+  const concurrentServers = [];
+  for (let index = 0; index < 4; index += 1) {
+    const subscribed = await channel.subscribe(
+      upgrade,
+      STREAM_RESUMED_ID,
+      sequencePollStore([{ kind: "pending" }, { kind: "pending" }]),
+    );
+    concurrentServers.push(pairs.at(-1)[1]);
+    assert(subscribed.status === 101, "concurrent resumable subscriber did not upgrade");
+  }
+  assert(concurrentServers.every((socket) => socket.readyState === 1), "resume subscribers replaced each other");
+  const limited = await channel.subscribe(
     upgrade,
     STREAM_RESUMED_ID,
     sequencePollStore([{ kind: "pending" }, { kind: "pending" }]),
   );
-  const firstServer = pairs.at(-1)[1];
-  assert(firstReplacement.status === 101, "first resumable subscriber did not upgrade");
-  const secondReplacement = await channel.subscribe(
-    upgrade,
-    STREAM_RESUMED_ID,
-    sequencePollStore([{ kind: "pending" }, { kind: "pending" }]),
-  );
-  assert(secondReplacement.status === 101 && firstServer.closeCode === 1012, "new resume did not replace the stale subscriber");
-  assert(metrics.replaced === 1, "subscriber replacement was not observable");
+  assert(limited.status === 429 && metrics.rejected === 1, "subscriber limit was not enforced or observable");
+  channel.publish(STREAM_RESUMED_ID, { jsonrpc: "2.0", id: 22, result: { multicast: true } });
+  assert(concurrentServers.every((socket) => JSON.parse(socket.sent[0]).result.multicast === true && socket.closeCode === 1000),
+    "terminal result was not multicast to every concurrent resume subscriber");
+  assert(metrics.coexisting === 6, "coexisting subscriber metric did not capture bounded fan-out");
 
-  const raceMessage = { jsonrpc: "2.0", id: 22, result: { raced: true } };
+  const raceMessage = { jsonrpc: "2.0", id: 23, result: { raced: true } };
   const raced = await channel.subscribe(
     upgrade,
     STREAM_DISCONNECTED_ID,
@@ -860,9 +1009,11 @@ async function testMcpStreamProxy() {
     headers: {
       accept: "application/json, text/event-stream",
       "content-type": "application/json",
+      "Mcp-Session-Id": "signed-session-fixture",
       origin: "https://chatgpt.com",
       [MCP_STREAM_PROXY_MODE_HEADER]: "subscribe",
       [MCP_STREAM_PROXY_ID_HEADER]: STREAM_COMPLETE_ID,
+      [MCP_STREAM_PROXY_RETRY_HEADER]: `retry_${"f".repeat(43)}`,
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "list_dir", arguments: {} } }),
   });
@@ -873,10 +1024,17 @@ async function testMcpStreamProxy() {
   assert(response.headers.get("access-control-allow-origin") === "https://chatgpt.com", "outer Worker SSE response lost CORS");
   assert(calls[0].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "prepare", "public proxy mode header was not replaced");
   assert(calls[0].headers.get(MCP_STREAM_PROXY_ID_HEADER) === null, "public internal stream id reached BridgeRoom");
+  const internalRetryId = calls[0].headers.get(MCP_STREAM_PROXY_RETRY_HEADER);
+  assert(/^retry_[A-Za-z0-9_-]{43}$/.test(internalRetryId ?? "")
+    && internalRetryId !== `retry_${"f".repeat(43)}`,
+  "public internal retry id was not replaced by a fresh outer-Worker value");
   assert(calls.length === 2, "stream startup exceeded its fixed two-request Durable Object budget");
   assert(calls[1].headers.get(MCP_STREAM_PROXY_MODE_HEADER) === "subscribe", "outer Worker did not open the internal terminal subscription");
   assert(calls[1].headers.get(MCP_STREAM_PROXY_ID_HEADER) === STREAM_TEST_ID, "internal subscription lost the stream id");
+  assert(calls[1].headers.get(MCP_STREAM_PROXY_RETRY_HEADER) === null,
+    "prepare-only DPoP retry identity leaked into terminal subscription");
   assert(calls[1].headers.get("Upgrade")?.toLowerCase() === "websocket", "internal subscription was not a WebSocket upgrade");
+  await waitUntil(() => subscriptionSocket.accepted);
   assert(subscriptionSocket.accepted, "outer Worker did not accept the subscription WebSocket");
   assert(keptAlive.length === 1, "one terminal operation was registered with waitUntil more than once");
 
@@ -893,9 +1051,13 @@ async function testMcpStreamProxy() {
 
   const spoofed = new Request("https://example.test/healthz", { headers: {
     [MCP_STREAM_PROXY_MODE_HEADER]: "subscribe", [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID,
+    [MCP_STREAM_PROXY_RETRY_HEADER]: `retry_${"g".repeat(43)}`,
   } });
   const sanitized = sanitizeBridgeRequest(spoofed);
-  assert(!sanitized.headers.has(MCP_STREAM_PROXY_MODE_HEADER) && !sanitized.headers.has(MCP_STREAM_PROXY_ID_HEADER), "public internal stream headers were not stripped");
+  assert(!sanitized.headers.has(MCP_STREAM_PROXY_MODE_HEADER)
+    && !sanitized.headers.has(MCP_STREAM_PROXY_ID_HEADER)
+    && !sanitized.headers.has(MCP_STREAM_PROXY_RETRY_HEADER),
+  "public internal stream headers were not stripped");
 
   const completeBridge = { async fetch() { return mcpStreamDescriptorResponse("complete", STREAM_COMPLETE_ID); } };
   const completed = await proxyMcpEventStream({
@@ -941,6 +1103,54 @@ async function testMcpStreamProxy() {
   assert(resumedProxyText.startsWith(": resumed\n\n") && resumedProxyText.includes(`${STREAM_RESUMED_ID}:1`), "resume descriptor did not create an outer resumed stream");
   assert(resumeBridge.calls === 2, "immediate resumed result exceeded its fixed request budget");
 
+  const delayedDirectBridge = {
+    calls: 0,
+    async fetch() {
+      this.calls += 1;
+      if (this.calls === 1) return new Response("busy", { status: 503 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 111, result: { delayed_direct: true } }), {
+        headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  const delayedDirect = await subscribeTerminalMessage(
+    delayedDirectBridge,
+    () => new Request("https://example.test/mcp"),
+    [0, 1],
+  );
+  assert(delayedDirect.result?.delayed_direct === true && delayedDirectBridge.calls === 2,
+    "signal-free subscription backoff did not retry a transient response and return terminal JSON-RPC");
+
+  const delayedAbortController = new AbortController();
+  const delayedAbort = subscribeTerminalMessage(
+    { async fetch() { return new Response("busy", { status: 503 }); } },
+    (signal) => new Request("https://example.test/mcp", { signal }),
+    [0, 50],
+    delayedAbortController.signal,
+  );
+  setTimeout(() => delayedAbortController.abort(), 5);
+  await expectReject(delayedAbort, "subscription cancelled");
+
+  const delayedSignalController = new AbortController();
+  const delayedSignalBridge = {
+    calls: 0,
+    async fetch() {
+      this.calls += 1;
+      if (this.calls === 1) return new Response("busy", { status: 503 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 112, result: { delayed_signal: true } }), {
+        headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  const delayedSignal = await subscribeTerminalMessage(
+    delayedSignalBridge,
+    (signal) => new Request("https://example.test/mcp", { signal }),
+    [0, 5],
+    delayedSignalController.signal,
+  );
+  assert(delayedSignal.result?.delayed_signal === true && delayedSignalBridge.calls === 2,
+    "signal-bound subscription backoff did not resolve its timer and return terminal JSON-RPC");
+
   const channelStub = {
     calls: 0,
     async subscribe(_request, streamId, resumption) {
@@ -969,6 +1179,12 @@ async function testMcpStreamProxy() {
   assert(mcpStreamProxyMode(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_MODE_HEADER]: "poll" } })) === "", "obsolete internal poll mode was accepted");
   assert(mcpStreamProxyId(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_ID_HEADER]: STREAM_TEST_ID } })) === STREAM_TEST_ID, "valid internal stream id was rejected");
   assert(mcpStreamProxyId(new Request("https://example.test", { headers: { [MCP_STREAM_PROXY_ID_HEADER]: "bad" } })) === "", "invalid internal stream id was accepted");
+  assert(mcpStreamProxyRetryId(new Request("https://example.test", {
+    headers: { [MCP_STREAM_PROXY_RETRY_HEADER]: `retry_${"h".repeat(43)}` },
+  })) === `retry_${"h".repeat(43)}`, "valid internal retry id was rejected");
+  assert(mcpStreamProxyRetryId(new Request("https://example.test", {
+    headers: { [MCP_STREAM_PROXY_RETRY_HEADER]: "bad" },
+  })) === "", "invalid internal retry id was accepted");
   expectThrow(() => mcpStreamDescriptorResponse("initial", "stream_short"), "invalid MCP stream descriptor id");
 
   await expectReject(proxyMcpEventStream({
@@ -976,6 +1192,147 @@ async function testMcpStreamProxy() {
     bridge: { async fetch() { return new Response(JSON.stringify({ kind: "invalid", stream_id: STREAM_TEST_ID }), { headers: { "x-machine-bridge-mcp-stream-descriptor": "1" } }); } },
     extraOrigins: "", ctx: { waitUntil() {} },
   }), "descriptor is invalid");
+
+  const retryPrepareSocket = new TestWebSocket();
+  const retryPrepareBridge = {
+    calls: 0,
+    bodies: [],
+    retryIds: [],
+    async fetch(request) {
+      this.calls += 1;
+      const mode = request.headers.get(MCP_STREAM_PROXY_MODE_HEADER);
+      if (mode === "prepare") {
+        this.bodies.push(await request.clone().text());
+        this.retryIds.push(request.headers.get(MCP_STREAM_PROXY_RETRY_HEADER));
+        if (this.calls === 1) throw new Error("synthetic lost prepare response");
+        return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      }
+      if (mode === "subscribe") return { status: 101, webSocket: retryPrepareSocket };
+      throw new Error(`unexpected retry prepare mode: ${mode}`);
+    },
+  };
+  const retriedPrepare = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", {
+      method: "POST",
+      headers: { accept: "application/json, text/event-stream", "content-type": "application/json", "Mcp-Session-Id": "signed-session-fixture" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 101, method: "tools/call", params: { name: "list_dir", arguments: {} } }),
+    }),
+    bridge: retryPrepareBridge,
+    extraOrigins: "",
+    ctx: { waitUntil() {} },
+    prepareRetryDelaysMs: [0, 0],
+  });
+  await waitUntil(() => retryPrepareSocket.accepted);
+  retryPrepareSocket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 101, result: { reattached: true } }) });
+  assert((await retriedPrepare.text()).includes('"reattached":true') && retryPrepareBridge.calls === 3,
+    "lost prepare response did not retry and reattach through the existing stream");
+  assert(retryPrepareBridge.bodies.length === 2 && retryPrepareBridge.bodies[0] === retryPrepareBridge.bodies[1],
+    "prepare retry did not preserve the exact JSON-RPC request body");
+  assert(retryPrepareBridge.retryIds?.length === 2
+    && retryPrepareBridge.retryIds[0] === retryPrepareBridge.retryIds[1]
+    && /^retry_[A-Za-z0-9_-]{43}$/.test(retryPrepareBridge.retryIds[0]),
+  "prepare retries did not share one opaque internal DPoP retry identity");
+
+  const sessionlessPrepareBridge = {
+    calls: 0,
+    retryId: "unset",
+    async fetch(request) {
+      this.calls += 1;
+      this.retryId = request.headers.get(MCP_STREAM_PROXY_RETRY_HEADER);
+      throw new Error("synthetic ambiguous sessionless prepare failure");
+    },
+  };
+  await expectReject(proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", {
+      method: "POST",
+      headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1011, method: "tools/call", params: { name: "list_dir", arguments: {} } }),
+    }),
+    bridge: sessionlessPrepareBridge,
+    extraOrigins: "",
+    ctx: { waitUntil() {} },
+    prepareRetryDelaysMs: [0, 0, 0],
+  }), "synthetic ambiguous sessionless prepare failure");
+  assert(sessionlessPrepareBridge.calls === 1 && sessionlessPrepareBridge.retryId === null,
+    "sessionless legacy POST retried or received an internal replay allowance");
+
+  const timedPrepareSocket = new TestWebSocket();
+  const timedPrepareBridge = {
+    calls: 0,
+    async fetch(request) {
+      this.calls += 1;
+      const mode = request.headers.get(MCP_STREAM_PROXY_MODE_HEADER);
+      if (mode === "prepare" && this.calls === 1) {
+        return new Promise((_, reject) => {
+          request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true });
+        });
+      }
+      if (mode === "prepare") return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      if (mode === "subscribe") return { status: 101, webSocket: timedPrepareSocket };
+      throw new Error(`unexpected timed prepare mode: ${mode}`);
+    },
+  };
+  const timedPrepare = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", {
+      method: "POST",
+      headers: { accept: "application/json, text/event-stream", "content-type": "application/json", "Mcp-Session-Id": "signed-session-fixture" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 102, method: "tools/call", params: { name: "list_dir", arguments: {} } }),
+    }),
+    bridge: timedPrepareBridge,
+    extraOrigins: "",
+    ctx: { waitUntil() {} },
+    prepareRetryDelaysMs: [0, 0],
+    prepareAttemptTimeoutMs: 5,
+  });
+  await waitUntil(() => timedPrepareSocket.accepted);
+  timedPrepareSocket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 102, result: { timed_retry: true } }) });
+  assert((await timedPrepare.text()).includes('"timed_retry":true') && timedPrepareBridge.calls === 3,
+    "timed-out prepare attempt did not retry through the resumable identity");
+
+  const timedSubscribeSocket = new TestWebSocket();
+  const timedSubscribeBridge = {
+    calls: 0,
+    async fetch(request) {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      if (this.calls === 2) {
+        return new Promise((_, reject) => {
+          request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true });
+        });
+      }
+      return { status: 101, webSocket: timedSubscribeSocket };
+    },
+  };
+  const timedSubscribe = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET", headers: { accept: "text/event-stream" } }),
+    bridge: timedSubscribeBridge,
+    extraOrigins: "",
+    ctx: { waitUntil() {} },
+    subscribeRetryDelaysMs: [0, 0],
+    subscribeAttemptTimeoutMs: 5,
+  });
+  await waitUntil(() => timedSubscribeSocket.accepted);
+  timedSubscribeSocket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 103, result: { subscribed_after_timeout: true } }) });
+  assert((await timedSubscribe.text()).includes('"subscribed_after_timeout":true') && timedSubscribeBridge.calls === 3,
+    "timed-out subscription upgrade did not retry before terminal delivery");
+
+  const invalidImmediateBridge = {
+    calls: 0,
+    async fetch() {
+      this.calls += 1;
+      if (this.calls === 1) return mcpStreamDescriptorResponse("resume", STREAM_RESUMED_ID);
+      return new Response(JSON.stringify({ not_jsonrpc: true }), { headers: { "content-type": "application/json" } });
+    },
+  };
+  const invalidImmediate = await proxyMcpEventStream({
+    request: new Request("https://example.test/mcp", { method: "GET", headers: { accept: "text/event-stream" } }),
+    bridge: invalidImmediateBridge,
+    extraOrigins: "",
+    ctx: { waitUntil() {} },
+    subscribeRetryDelaysMs: [0, 0, 0],
+  });
+  assert((await invalidImmediate.text()).startsWith(": resumed\n\n") && invalidImmediateBridge.calls === 2,
+    "invalid immediate terminal JSON was retried instead of failing closed once");
 
   const failedBridge = {
     calls: 0,
@@ -1749,8 +2106,35 @@ async function testWorkerStaticRoutes() {
       `${method} ${path} consumed rate-limit or Durable Object capacity before method rejection`);
   }
 
-  const allowed = await admitStatefulRequest(new Request("https://example.test/mcp"), { async limit() { return { success: true }; } });
-  assert(allowed === null, "stateful rate limiter rejected an admitted request");
+  let observedGlobalKey = "";
+  const globallyAllowed = await admitGlobalStatefulRequest(new Request("https://example.test/mcp"), {
+    async limit({ key }) { observedGlobalKey = key; return { success: true }; },
+  });
+  assert(globallyAllowed === null && observedGlobalKey === "stateful:global:mcp:example.test",
+    "global stateful rate limiter lost its route and Worker scope");
+  const firstAuthenticatedKey = await statefulRateLimitKey(new Request("https://example.test/mcp", {
+    headers: { authorization: "Bearer synthetic-secret-one" },
+  }));
+  const repeatedAuthenticatedKey = await statefulRateLimitKey(new Request("https://example.test/mcp", {
+    headers: { authorization: "Bearer synthetic-secret-one" },
+  }));
+  const secondAuthenticatedKey = await statefulRateLimitKey(new Request("https://example.test/mcp", {
+    headers: { authorization: "Bearer synthetic-secret-two" },
+  }));
+  assert(firstAuthenticatedKey === repeatedAuthenticatedKey && firstAuthenticatedKey !== secondAuthenticatedKey,
+    "stateful rate-limit identity was not stable and isolated per credential");
+  assert(!firstAuthenticatedKey.includes("synthetic-secret"), "stateful rate-limit key exposed credential material");
+  const oauthNetworkKey = await statefulRateLimitKey(new Request("https://example.test/oauth/token", {
+    headers: { "cf-connecting-ip": "192.0.2.10" },
+  }));
+  assert(oauthNetworkKey.startsWith("stateful:oauth:network:") && !oauthNetworkKey.includes("192.0.2.10"),
+    "anonymous stateful rate-limit key exposed or mis-scoped the network identity");
+  let observedRateLimitKey = "";
+  const allowed = await admitStatefulRequest(new Request("https://example.test/mcp", {
+    headers: { authorization: "Bearer synthetic-secret-one" },
+  }), { async limit({ key }) { observedRateLimitKey = key; return { success: true }; } });
+  assert(allowed === null && observedRateLimitKey === firstAuthenticatedKey,
+    "stateful rate limiter rejected an admitted request or used the wrong subject bucket");
   const limited = await admitStatefulRequest(new Request("https://example.test/mcp"), { async limit() { return { success: false }; } });
   assert(limited?.status === 429 && limited.headers.get("retry-after") === "60", "stateful rate limiter lost its retry contract");
   const limiterFailure = await admitStatefulRequest(new Request("https://example.test/mcp"), { async limit() { throw new Error("synthetic limiter outage"); } });

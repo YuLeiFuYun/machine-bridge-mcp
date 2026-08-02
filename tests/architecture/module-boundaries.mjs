@@ -142,6 +142,7 @@ const lineLimits = Object.freeze({
   "src/worker/oauth-tokens.ts": 260,
   "src/local/bounded-output.mjs": 80,
   "src/local/process-execution.mjs": 285,
+  "src/local/process-foreground-timeout.mjs": 60,
   "src/local/process-output-stream.mjs": 110,
   "src/local/process-result-projection.mjs": 60,
   "src/local/process-sessions.mjs": 340,
@@ -216,13 +217,19 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-resumption.ts": 240,
   "src/worker/mcp-resumption-records.ts": 200,
   "src/worker/mcp-resumption-index.ts": 60,
+  "src/worker/mcp-resumption-request-index.ts": 80,
   "src/worker/mcp-pending-call-store.ts": 300,
   "src/worker/mcp-pending-call-records.ts": 80,
   "src/worker/mcp-pending-call-expiry.ts": 40,
   "src/worker/mcp-pending-call-storage.ts": 40,
   "src/worker/mcp-pending-call-inspection.ts": 50,
   "src/worker/mcp-stream.ts": 160,
+  "src/worker/mcp-legacy-stream-prepare.ts": 180,
+  "src/worker/mcp-request-fingerprint.ts": 60,
   "src/worker/mcp-stream-proxy.ts": 120,
+  "src/worker/mcp-stream-attempt.ts": 60,
+  "src/worker/mcp-stream-prepare-retry.ts": 60,
+  "src/worker/mcp-stream-terminal-socket.ts": 80,
   "src/worker/mcp-modern-proxy.ts": 130,
   "src/worker/mcp-stream-proxy-contract.ts": 100,
   "src/worker/mcp-stream-subscription.ts": 130,
@@ -230,6 +237,7 @@ const lineLimits = Object.freeze({
   "src/worker/worker-static-routes.ts": 90,
   "src/worker/worker-metadata.ts": 80,
   "src/worker/worker-edge-guard.ts": 100,
+  "src/worker/worker-rate-limit-key.ts": 50,
   "src/worker/worker-edge-log.ts": 80,
   "src/worker/oauth-token-issuance.ts": 120,
   "src/worker/oauth-token-derivation.ts": 70,
@@ -338,7 +346,7 @@ for (const duplicate of [
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
   "observability", "mcp-session", "mcp-access", "mcp-resumption-http", "mcp-resumption",
-  "mcp-stream", "mcp-stream-proxy", "mcp-stream-channel", "mcp-stream-dispatch", "durable-stream-calls",
+  "mcp-stream", "mcp-stream-proxy", "mcp-stream-channel", "mcp-stream-dispatch", "mcp-legacy-stream-prepare", "durable-stream-calls",
   "worker-entry", "tool-timeout", "daemon-liveness", "daemon-sockets",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
@@ -389,6 +397,31 @@ for (const forbidden of [
 ]) {
   if (workerIndexBoundary.includes(forbidden)) throw new Error(`stream initiation regained a cross-event terminal promise: ${forbidden}`);
 }
+const legacyStreamPrepareBoundary = readFileSync(join(root, "src", "worker", "mcp-legacy-stream-prepare.ts"), "utf8");
+for (const required of ["workerToolRequestFingerprint", "findByRequestKey", 'kind: "resume"', 'kind: "conflict"', "dispatchWorkspaceCall"]) {
+  if (!legacyStreamPrepareBoundary.includes(required)) throw new Error(`legacy stream preparation lost retry identity or dispatch boundary: ${required}`);
+}
+for (const forbidden of ["readySockets", "invalidateDaemonSocket", "scheduleRuntimeAlarm"]) {
+  if (legacyStreamPrepareBoundary.includes(forbidden)) throw new Error(`legacy stream preparation crossed into daemon lifecycle ownership: ${forbidden}`);
+}
+const streamProxyContractBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy-contract.ts"), "utf8");
+for (const required of ["MCP_STREAM_PROXY_RETRY_HEADER", "headers.delete(MCP_STREAM_PROXY_RETRY_HEADER)", "mcpStreamProxyRetryId"]) {
+  if (!streamProxyContractBoundary.includes(required)) throw new Error(`MCP internal retry header lost spoofing boundary: ${required}`);
+}
+const dpopRetryBoundary = readFileSync(join(root, "src", "worker", "dpop.ts"), "utf8");
+for (const required of ["consumeDpopProofForInternalRetry", "DPOP_RETRY_BINDINGS_KEY", "MAX_DPOP_INTERNAL_RETRY_USES", "boundedNoncePresent", "storage.transaction"]) {
+  if (!dpopRetryBoundary.includes(required)) throw new Error(`DPoP internal retry binding lost replay isolation: ${required}`);
+}
+
+const streamPrepareRetryBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-prepare-retry.ts"), "utf8");
+for (const required of ["request.clone", "boundedStreamAttempt", "response.body?.cancel", "request.signal"]) {
+  if (!streamPrepareRetryBoundary.includes(required)) throw new Error(`stream prepare retry lost bounded replay behavior: ${required}`);
+}
+const rateLimitKeyBoundary = readFileSync(join(root, "src", "worker", "worker-rate-limit-key.ts"), "utf8");
+for (const required of ["SHA-256", "authorization", "cf-connecting-ip", "globalStatefulRateLimitKey"]) {
+  if (!rateLimitKeyBoundary.includes(required)) throw new Error(`stateful rate-limit identity lost isolation or privacy: ${required}`);
+}
+
 const mcpStreamDispatchBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-dispatch.ts"), "utf8");
 for (const required of [
   "startEventDrivenStreamCall", "resumption.calls.activate", "resumption.calls.complete", "persistImmediateStreamOutcome",

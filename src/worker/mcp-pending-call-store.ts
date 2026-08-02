@@ -10,7 +10,11 @@ import {
   type StreamRecord,
 } from "./mcp-resumption-records.ts";
 import { toolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
-import type { PendingStreamCall, PendingStreamTransform } from "./mcp-pending-call-records.ts";
+import {
+  pendingCallIdentityConflict,
+  type PendingStreamCall,
+  type PendingStreamTransform,
+} from "./mcp-pending-call-records.ts";
 import {
   extendAttachedCallExpiry,
   extendDetachedCallExpiry,
@@ -82,6 +86,7 @@ export class McpPendingCallStore {
     daemonInstanceId: string;
     connectionId: string;
     clientRequestKey?: string;
+    requestFingerprint?: string;
     tool: string;
     timeoutMs: number;
     transform?: PendingStreamTransform;
@@ -97,6 +102,7 @@ export class McpPendingCallStore {
       daemon_instance_id: input.daemonInstanceId,
       connection_id: input.connectionId,
       ...(input.clientRequestKey ? { client_request_key: input.clientRequestKey } : {}),
+      ...(input.requestFingerprint ? { request_fingerprint: input.requestFingerprint } : {}),
       tool: input.tool,
       state: "attached",
       started_at: now,
@@ -118,7 +124,8 @@ export class McpPendingCallStore {
       if (index.entries.some((entry) => entry.call?.call_id === input.callId)) {
         throw new McpPendingCallConflictError("duplicate internal daemon call id");
       }
-      if (input.clientRequestKey && index.entries.some((entry) => entry.call?.client_request_key === input.clientRequestKey)) {
+      if (input.clientRequestKey && index.entries.some((entry) => entry.stream_id !== input.streamId
+        && (entry.client_request_key ?? entry.call?.client_request_key) === input.clientRequestKey)) {
         throw new McpPendingCallConflictError("duplicate in-flight JSON-RPC request id within this MCP session");
       }
       const record = await transaction.get<unknown>(streamKey(input.streamId));
@@ -126,6 +133,8 @@ export class McpPendingCallStore {
         throw new Error("resumable MCP stream record is unavailable for activation");
       }
       if (record.call) throw new McpPendingCallConflictError("resumable MCP stream already has an active daemon call");
+      const identityConflict = pendingCallIdentityConflict(record, input);
+      if (identityConflict) throw new McpPendingCallConflictError(identityConflict);
       const updated: StreamRecord = {
         ...record,
         expires_at: extendAttachedCallExpiry(record.expires_at, call.operation_deadline_at, this.terminalRetentionMs),
@@ -150,7 +159,9 @@ export class McpPendingCallStore {
 
   async getByRequestKey(requestKey: string): Promise<PendingStreamCallView | undefined> {
     const index = readIndex(await this.storage.get<unknown>(STREAM_INDEX_KEY));
-    const entry = index.entries.find((candidate) => candidate.call?.client_request_key === requestKey);
+    const entry = index.entries.find((candidate) => (
+      candidate.client_request_key ?? candidate.call?.client_request_key
+    ) === requestKey && candidate.call);
     return entry ? this.callView(entry) : undefined;
   }
 

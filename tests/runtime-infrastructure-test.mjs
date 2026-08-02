@@ -42,6 +42,7 @@ testRuntimeConvenienceMethods();
 testRelayReconnectDelivery();
 testAutostartLogMaintenance();
 await testProcessExecutionNoShell();
+await testForegroundTimeoutAlignment();
 await testFixedInternalProcessBoundary();
 testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
@@ -544,6 +545,47 @@ async function testProcessExecutionNoShell() {
     assert(result.stdout === payload, "direct process execution changed an argv value through shell interpretation");
     assert(!existsSync(marker), "direct process execution evaluated shell syntax from argv");
     assert(tracker.snapshot().active_processes === 0, "direct process execution leaked process tracking state");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+
+async function testForegroundTimeoutAlignment() {
+  const temp = mkdtempSync(join(tmpdir(), "mbm-foreground-timeout-"));
+  const observed = [];
+  const service = new ProcessExecutionService({
+    workspace: temp,
+    policy: { minimalEnv: false },
+    policyGate: { assert() {} },
+    runtimeDir: temp,
+    processTracker: new ProcessTracker(),
+    resolveExistingPath: async () => temp,
+    resolveLocalCommand: async () => ({
+      name: "long-command",
+      argv: [process.execPath, "-e", ""],
+      cwd: temp,
+      timeoutSeconds: 600,
+    }),
+    displayPath: (value) => value,
+    throwIfCancelled() {},
+  });
+  service.runPublic = async (_cmd, _args, timeoutMs, context) => {
+    observed.push({ timeoutMs, origin: context.origin || "local" });
+    return { code: 0, stdout: "", stderr: "", stdout_truncated_bytes: 0, stderr_truncated_bytes: 0 };
+  };
+  try {
+    await service.runDirect({ argv: [process.execPath] }, { origin: "relay" });
+    await service.runShell("printf ok", undefined, { origin: "relay" });
+    const remoteRegistered = await service.runRegistered({}, { origin: "relay" });
+    const remoteExplicit = await service.runRegistered({ timeout_seconds: 85 }, { origin: "relay" });
+    const localRegistered = await service.runRegistered({}, { origin: "local" });
+    assert(observed[0].timeoutMs === 60_000 && observed[1].timeoutMs === 60_000,
+      "relay process and shell defaults drifted from the Worker sixty-second budget");
+    assert(remoteRegistered.timeout_seconds === 60 && remoteExplicit.timeout_seconds === 85,
+      "relay registered-command timeout did not honor the shared default and ceiling");
+    assert(localRegistered.timeout_seconds === 600,
+      "local registered-command execution lost the owner manifest timeout");
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

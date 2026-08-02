@@ -1,6 +1,8 @@
 import { McpResumptionStore, McpStreamLimitError, parseStreamEventId, streamEventId } from "../src/worker/mcp-resumption.ts";
 import { resumptionLimits } from "../src/worker/mcp-resumption-config.ts";
+import { pendingStreamRecord } from "../src/worker/mcp-resumption-request-index.ts";
 import { pendingCallSnapshot } from "../src/worker/mcp-pending-call-inspection.ts";
+import { workerToolRequestFingerprint } from "../src/worker/mcp-request-fingerprint.ts";
 import {
   messageSha256,
   readIndex,
@@ -11,6 +13,12 @@ import {
 } from "../src/worker/mcp-resumption-records.ts";
 
 async function testEventIdentifiers() {
+  assert(await workerToolRequestFingerprint("list_dir", { path: ".", max_files: 10 })
+    === await workerToolRequestFingerprint("list_dir", { max_files: 10, path: "." }),
+  "request fingerprint depended on object key order");
+  assert(await workerToolRequestFingerprint("list_dir", { path: "." })
+    !== await workerToolRequestFingerprint("list_dir", { path: ".." }),
+  "request fingerprint did not distinguish changed arguments");
   const streamId = validStreamId("A");
   assert(streamEventId(streamId, 0) === `${streamId}:0`, "initial event id was malformed");
   assert(streamEventId(streamId, 1) === `${streamId}:1`, "terminal event id was malformed");
@@ -42,6 +50,17 @@ async function testRecordValidationAndLimits() {
     request_id: 1,
   };
   assert(validRecord(pending), "valid pending record was rejected");
+  const identity = {
+    client_request_key: "opaque-request-key",
+    request_fingerprint: "a".repeat(64),
+    tool: "list_files",
+  };
+  assert(validRecord({ ...pending, ...identity }), "valid stream request identity was rejected");
+  assert(!validRecord({ ...pending, client_request_key: identity.client_request_key }),
+    "partial stream request identity was accepted");
+  assert(!validRecord({ ...pending, ...identity, request_fingerprint: "short" }),
+    "malformed stream request fingerprint was accepted");
+  assert(!validRecord({ ...pending, request_id: "r".repeat(257) }), "oversized JSON-RPC request id was accepted");
   assert(!validRecord({ ...pending, message_json: "{}" }), "pending record accepted terminal content");
   assert(!validRecord({ ...pending, status: "ready" }), "ready record without integrity metadata was accepted");
   const validCall = {
@@ -55,6 +74,26 @@ async function testRecordValidationAndLimits() {
     remaining_timeout_ms: 9,
   };
   assert(validRecord({ ...pending, call: validCall }), "valid persisted pending-call metadata was rejected");
+  assert(validRecord({
+    ...pending,
+    ...identity,
+    call: { ...validCall, client_request_key: identity.client_request_key, request_fingerprint: identity.request_fingerprint, tool: identity.tool },
+  }), "matching stream/call request identity was rejected");
+  assert(!validRecord({
+    ...pending,
+    ...identity,
+    call: { ...validCall, client_request_key: "different-key", request_fingerprint: identity.request_fingerprint, tool: identity.tool },
+  }), "mismatched stream/call request key was accepted");
+  assert(!validRecord({
+    ...pending,
+    ...identity,
+    call: { ...validCall, client_request_key: identity.client_request_key, request_fingerprint: "c".repeat(64), tool: identity.tool },
+  }), "mismatched stream/call request fingerprint was accepted");
+  assert(!validRecord({
+    ...pending,
+    ...identity,
+    call: { ...validCall, client_request_key: identity.client_request_key, request_fingerprint: identity.request_fingerprint, tool: "read_file" },
+  }), "mismatched stream/call tool was accepted");
   for (const call of [
     { ...validCall, call_id: "call_short" },
     { ...validCall, state: "attached", reconnect_deadline_at: 20 },
@@ -70,9 +109,37 @@ async function testRecordValidationAndLimits() {
     [streamId, "", "session", 1],
     [streamId, "token", "s".repeat(257), 1],
     [streamId, "token", "session", null],
+    [streamId, "token", "session", "r".repeat(257)],
   ]) {
     await expectReject(Promise.resolve().then(() => validateStreamIdentity(...input)), Error);
   }
+
+  const validIdentityRecord = pendingStreamRecord({
+    streamId,
+    tokenKey: "token",
+    sessionId: "session",
+    requestId: 1,
+    clientRequestKey: "opaque-request-key",
+    requestFingerprint: "b".repeat(64),
+    tool: "list_files",
+  }, 1, 100);
+  assert(validRecord(validIdentityRecord), "pending stream constructor produced an invalid identity record");
+  await expectReject(Promise.resolve().then(() => pendingStreamRecord({
+    streamId,
+    tokenKey: "token",
+    sessionId: "session",
+    requestId: 1,
+    clientRequestKey: "opaque-request-key",
+  }, 1, 100)), Error);
+  await expectReject(Promise.resolve().then(() => pendingStreamRecord({
+    streamId,
+    tokenKey: "token",
+    sessionId: "session",
+    requestId: 1,
+    clientRequestKey: "opaque-request-key",
+    requestFingerprint: "short",
+    tool: "list_files",
+  }, 1, 100)), Error);
 
   const invalidJson = "{";
   const corruptRecord = {
@@ -110,12 +177,14 @@ async function testCompletedResultResumption() {
   const storedPoll = await store.pollMessage(streamId);
   assert(storedPoll.kind === "message" && storedPoll.message.result.ok === true, "trusted internal poll lost the stored terminal result");
 
-  const complete = await store.resume({ lastEventId: `${streamId}:1`, tokenKey: "token-owner", sessionId: "session-owner" });
-  assert(complete.kind === "complete", "terminal event was replayed after the client acknowledged it");
   const wrongToken = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-other", sessionId: "session-owner" });
   assert(wrongToken.kind === "not_found", "another OAuth token could discover a resumable stream");
   const wrongSession = await store.resume({ lastEventId: `${streamId}:0`, tokenKey: "token-owner", sessionId: "session-other" });
   assert(wrongSession.kind === "not_found", "another MCP session could discover a resumable stream");
+
+  const complete = await store.resume({ lastEventId: `${streamId}:1`, tokenKey: "token-owner", sessionId: "session-owner" });
+  assert(complete.kind === "complete", "terminal event was replayed after the client acknowledged it");
+  assert((await store.pollMessage(streamId)).kind === "not_found", "acknowledged terminal stream was retained unnecessarily");
 }
 
 
@@ -207,13 +276,23 @@ async function testPersistentCallRecovery() {
   const firstConnectionId = `connection_${"A".repeat(43)}`;
   const secondConnectionId = `connection_${"B".repeat(43)}`;
   const first = new McpResumptionStore(storage, { now: () => now });
-  await first.begin({ streamId, tokenKey: "token-persistent", sessionId: "session-persistent", requestId: 70 });
+  const persistentFingerprint = await workerToolRequestFingerprint("exec_command", { command: "printf ok" });
+  await first.begin({
+    streamId,
+    tokenKey: "token-persistent",
+    sessionId: "session-persistent",
+    requestId: 70,
+    clientRequestKey: "session-persistent:70",
+    requestFingerprint: persistentFingerprint,
+    tool: "exec_command",
+  });
   await first.calls.activate({
     streamId,
     callId,
     daemonInstanceId,
     connectionId: firstConnectionId,
     clientRequestKey: "session-persistent:70",
+    requestFingerprint: persistentFingerprint,
     tool: "exec_command",
     timeoutMs: 500,
   });
@@ -222,8 +301,16 @@ async function testPersistentCallRecovery() {
   assert((await restarted.pollMessage(streamId)).kind === "pending", "Worker restart orphaned a persisted active stream call");
   assert((await restarted.calls.snapshot()).active === 1, "persisted call was absent from the restarted pending snapshot");
   assert((await restarted.calls.get(callId))?.streamId === streamId, "persisted call id could not be recovered");
-  assert((await restarted.calls.getByRequestKey("session-persistent:70"))?.call_id === callId,
+  const recoveredStreamIdentity = await restarted.findByRequestKey("session-persistent:70");
+  assert(recoveredStreamIdentity?.streamId === streamId
+    && recoveredStreamIdentity.requestFingerprint === persistentFingerprint
+    && recoveredStreamIdentity.tool === "exec_command",
+  "persisted stream request identity could not be recovered before terminal delivery");
+  const recoveredByRequest = await restarted.calls.getByRequestKey("session-persistent:70");
+  assert(recoveredByRequest?.call_id === callId,
     "persisted client request key could not be recovered");
+  assert(recoveredByRequest?.request_fingerprint === await workerToolRequestFingerprint("exec_command", { command: "printf ok" }),
+    "persisted request fingerprint could not be recovered");
   assert(await restarted.calls.nextDeadlineDelayMs() === 500, "persisted operation deadline was not recoverable");
 
   now += 100;

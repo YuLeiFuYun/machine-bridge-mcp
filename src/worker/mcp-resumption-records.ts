@@ -7,6 +7,9 @@ export type StreamIndexEntry = {
   status: StreamStatus;
   created_at: number;
   expires_at: number;
+  client_request_key?: string;
+  request_fingerprint?: string;
+  tool?: string;
   call?: PendingStreamCall;
 };
 export type StreamIndex = { schema_version: 1; entries: StreamIndexEntry[] };
@@ -23,6 +26,7 @@ export const STREAM_INDEX_KEY = "mcp-stream-index";
 const STREAM_KEY_PREFIX = "mcp-stream:";
 const STREAM_ID_PATTERN = /^stream_[A-Za-z0-9_-]{43}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const MAX_REQUEST_ID_LENGTH = 256;
 const DEFAULT_MAXIMUM_STREAMS = relayContract.maximumResumableStreams;
 const DEFAULT_MAXIMUM_MESSAGE_BYTES = relayContract.maximumResumableMessageBytes;
 
@@ -53,6 +57,7 @@ export function validRecord(value: unknown): value is StreamRecord {
   if (record.schema_version !== 1
       || typeof record.token_key !== "string" || !record.token_key || record.token_key.length > 256
       || typeof record.session_id !== "string" || record.session_id.length > 256
+      || (typeof record.request_id === "string" && record.request_id.length > MAX_REQUEST_ID_LENGTH)
       || (typeof record.request_id !== "string" && (typeof record.request_id !== "number" || !Number.isFinite(record.request_id)))) {
     return false;
   }
@@ -70,6 +75,9 @@ export function indexEntry(record: StreamRecord): StreamIndexEntry {
     status: record.status,
     created_at: record.created_at,
     expires_at: record.expires_at,
+    ...(record.client_request_key ? { client_request_key: record.client_request_key } : {}),
+    ...(record.request_fingerprint ? { request_fingerprint: record.request_fingerprint } : {}),
+    ...(record.tool ? { tool: record.tool } : {}),
     ...(record.call ? { call: structuredClone(record.call) } : {}),
   };
 }
@@ -83,7 +91,8 @@ export function validateStreamIdentity(
   if (!isStreamId(streamId)) throw new Error("invalid MCP stream id");
   if (!tokenKey || tokenKey.length > 256) throw new Error("invalid MCP token binding");
   if (sessionId.length > 256) throw new Error("invalid MCP session binding");
-  if (typeof requestId !== "string" && (typeof requestId !== "number" || !Number.isFinite(requestId))) {
+  if ((typeof requestId === "string" && requestId.length > MAX_REQUEST_ID_LENGTH)
+      || (typeof requestId !== "string" && (typeof requestId !== "number" || !Number.isFinite(requestId)))) {
     throw new Error("invalid MCP request id");
   }
 }
@@ -156,7 +165,22 @@ function validIndexEntry(value: unknown): value is StreamIndexEntry {
     && (entry.status === "pending" || entry.status === "ready")
     && Number.isSafeInteger(entry.created_at) && Number.isSafeInteger(entry.expires_at)
     && entry.expires_at! > entry.created_at!
-    && (entry.call === undefined || (entry.status === "pending" && validPendingStreamCall(entry.call)));
+    && (entry.client_request_key === undefined || (
+      typeof entry.client_request_key === "string" && entry.client_request_key.length > 0 && entry.client_request_key.length <= 1024
+    ))
+    && (entry.request_fingerprint === undefined || (
+      typeof entry.request_fingerprint === "string" && SHA256_PATTERN.test(entry.request_fingerprint)
+    ))
+    && (entry.tool === undefined || (typeof entry.tool === "string" && entry.tool.length > 0 && entry.tool.length <= 128))
+    && ((entry.client_request_key === undefined && entry.request_fingerprint === undefined && entry.tool === undefined)
+      || (entry.client_request_key !== undefined && entry.request_fingerprint !== undefined && entry.tool !== undefined))
+    && (entry.call === undefined || (
+      entry.status === "pending"
+      && validPendingStreamCall(entry.call)
+      && (entry.client_request_key === undefined || entry.call.client_request_key === entry.client_request_key)
+      && (entry.request_fingerprint === undefined || entry.call.request_fingerprint === entry.request_fingerprint)
+      && (entry.tool === undefined || entry.call.tool === entry.tool)
+    ));
 }
 
 function storedIntegrityMessage(requestId: string | number): Record<string, unknown> {

@@ -25,6 +25,7 @@ type StartStreamCallInput = {
   streamId: string;
   requestId: string | number;
   clientRequestKey?: string;
+  requestFingerprint?: string;
   tool: string;
   arguments: Record<string, unknown>;
   socket: WebSocket;
@@ -109,6 +110,7 @@ export async function startEventDrivenStreamCall(input: StartStreamCallInput): P
       daemonInstanceId: input.daemonInstanceId,
       connectionId: input.connectionId,
       clientRequestKey: input.clientRequestKey,
+      requestFingerprint: input.requestFingerprint,
       tool: input.tool,
       timeoutMs: input.timeoutMs,
       transform: input.transform,

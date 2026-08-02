@@ -252,7 +252,7 @@ description: 审查部署流程并验证发布配置。
       path: "packages/example",
       name: "echo-args",
       args: ["one;two", "three"],
-      timeout_seconds: 99,
+      timeout_seconds: 85,
     });
     assert(command.timeout_seconds === 7, "caller increased a registered command beyond its manifest timeout");
     assert(command.stdout.endsWith("\none;two|three"), "run_local_command used shell parsing or lost caller arguments");
