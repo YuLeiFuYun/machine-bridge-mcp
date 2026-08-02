@@ -171,7 +171,7 @@ Use a narrower profile, separate OS account, container, or VM when prompts, repo
 
 ### Public Worker endpoint and quota guards
 
-The default public endpoint remains the automatically provisioned `workers.dev` origin so ordinary users need no DNS zone or custom domain. The in-Worker Rate Limiting binding is deliberately a Durable Object burst guard, not an authentication boundary or an exact global quota accountant. It runs after a Worker invocation begins, is scoped by Cloudflare location, and currently uses one deployment-wide stateful bucket per location. A concentrated source can therefore cause a temporary localized denial for other clients sharing that location, while distributed traffic can still consume the account-wide Workers request allowance. Binding failure is fail-open to avoid turning a quota helper into an account outage. Operators who already control an external edge may add pre-Worker filtering independently, but the public package does not require or assume a private domain.
+The default public endpoint remains the automatically provisioned `workers.dev` origin so ordinary users need no DNS zone or custom domain. The in-Worker Rate Limiting bindings are deliberately Durable Object burst guards, not authentication boundaries or exact global quota accountants. They run after a Worker invocation begins and are scoped by Cloudflare location. A high-capacity route/Worker bucket bounds aggregate stateful pressure, while a lower route/subject bucket isolates a presented credential or an anonymous network identity through an internal truncated SHA-256 key. Raw credentials and addresses are not logged or returned by diagnostics; the network-address hash is a bucketing mechanism, not cryptographic anonymization of low-entropy IP space. Random invalid credentials cannot bypass the aggregate bucket. Distributed traffic can still consume the account-wide Workers request allowance, and a sufficiently concentrated source can exhaust its own local subject bucket. Binding failure is fail-open to avoid turning a quota helper into an account outage. Operators who already control an external edge may add pre-Worker filtering independently, but the public package does not require or assume a private domain.
 
 ### Bearer clients
 
@@ -217,7 +217,7 @@ Code cannot create a second independent reviewer, npm OIDC trust relationship, p
 
 Regression suites cover:
 
-- account roles, trusted clients, account-version revocation, refresh-family rotation/replay, DPoP proofs, and non-escalatable effective authority;
+- account roles, trusted clients, account-version revocation, refresh-family rotation/replay, DPoP proofs, and non-escalatable effective authority; Transparent legacy prepare retry does not weaken that replay boundary: a trusted outer Worker creates an unguessable internal retry ID, public copies of the internal header are stripped, and the Durable Object accepts the consumed proof again only for the same atomically stored ID, a live primary nonce, and a maximum of four uses. The identifier is scoped to one public request and is not returned to the client.
 - root-certified ephemeral sessions, preflight nonce replay, daemon challenge binding, readiness, reconnect, and candidate replacement;
 - signed account administration, client revocation, bounded strict-JSON administration responses, and removal of the long-lived administration secret;
 - control-plane path denial, path canonicalization, symlink handling, sensitive/persistence targets, and object ownership;

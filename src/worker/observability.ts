@@ -9,7 +9,7 @@ export class WorkerObservability {
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
   private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
   private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
-  private readonly streamTransport = { subscribers_opened: 0, subscribers_replaced: 0, terminal_pushes: 0, terminal_recipients: 0, protocol_errors: 0 };
+  private readonly streamTransport = { subscribers_opened: 0, subscribers_coexisting: 0, subscriber_limit_rejections: 0, terminal_pushes: 0, terminal_recipients: 0, protocol_errors: 0 };
   private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
   private readonly durableBudget = { stream_rows_written_estimate: 0, alarm_sets: 0, alarm_deletes: 0, alarm_noops: 0 };
   private readonly errors = new Map<string, number>();
@@ -56,9 +56,14 @@ export class WorkerObservability {
     this.incrementError(code || "protocol_error");
   }
 
-  streamSubscriberOpened(replaced: number): void {
+  streamSubscriberOpened(existing: number): void {
     this.streamTransport.subscribers_opened += 1;
-    this.streamTransport.subscribers_replaced += Math.max(0, Math.floor(replaced));
+    this.streamTransport.subscribers_coexisting += Math.max(0, Math.floor(existing));
+  }
+
+  streamSubscriberRejected(): void {
+    this.streamTransport.subscriber_limit_rejections += 1;
+    this.incrementError("stream_subscriber_limit");
   }
 
   streamTerminalDelivered(recipients: number): void {

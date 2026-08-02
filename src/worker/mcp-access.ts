@@ -1,5 +1,5 @@
 import type { OAuthController, AuthorizedToken } from "./oauth-controller.ts";
-import { consumeDpopProof, verifyDpopProof } from "./dpop.ts";
+import { consumeDpopProof, consumeDpopProofForInternalRetry, verifyDpopProof } from "./dpop.ts";
 import { discardRequestBody, oauthAccessToken } from "./http.ts";
 
 export type McpAccessResult =
@@ -12,6 +12,7 @@ export async function authorizeMcpRequest(input: {
   oauth: OAuthController;
   storage: DurableObjectStorage;
   bodyLimitBytes: number;
+  internalDpopRetryId?: string;
 }): Promise<McpAccessResult> {
   const access = oauthAccessToken(input.request);
   const authorized = await input.oauth.verifyAccessToken(access.token, input.base);
@@ -24,7 +25,9 @@ export async function authorizeMcpRequest(input: {
       accessToken: access.token,
       expectedJkt: authorized.dpopJkt,
     }) : null;
-    dpopValid = Boolean(proof && await consumeDpopProof(input.storage, proof));
+    dpopValid = Boolean(proof && (input.internalDpopRetryId
+      ? await consumeDpopProofForInternalRetry(input.storage, proof, input.internalDpopRetryId)
+      : await consumeDpopProof(input.storage, proof)));
   } else if (authorized && access.scheme !== "bearer") {
     dpopValid = false;
   }

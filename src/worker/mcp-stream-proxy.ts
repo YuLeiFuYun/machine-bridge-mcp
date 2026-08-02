@@ -9,12 +9,15 @@ import {
   stripInternalResponseHeaders, withProxyHeaders,
   type BridgeFetcher, type StreamExecutionContext,
 } from "./mcp-stream-proxy-contract.ts";
+import { DEFAULT_PREPARE_RETRY_DELAYS_MS, fetchPreparedStreamResponse } from "./mcp-stream-prepare-retry.ts";
+import { randomToken } from "./oauth-state.ts";
 
 export {
-  MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER,
-  mcpStreamDescriptorResponse, mcpStreamProxyId, mcpStreamProxyMode, sanitizeBridgeRequest,
+  MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER, MCP_STREAM_PROXY_RETRY_HEADER,
+  mcpStreamDescriptorResponse, mcpStreamProxyId, mcpStreamProxyMode, mcpStreamProxyRetryId, sanitizeBridgeRequest,
 } from "./mcp-stream-proxy-contract.ts";
 export type { StreamProxyMode } from "./mcp-stream-proxy-contract.ts";
+
 
 export async function proxyMcpEventStream(input: {
   request: Request;
@@ -22,6 +25,9 @@ export async function proxyMcpEventStream(input: {
   extraOrigins: string;
   ctx: StreamExecutionContext;
   subscribeRetryDelaysMs?: readonly number[];
+  prepareRetryDelaysMs?: readonly number[];
+  prepareAttemptTimeoutMs?: number;
+  subscribeAttemptTimeoutMs?: number;
 }): Promise<Response | null> {
   const url = new URL(input.request.url);
   if (url.pathname !== "/mcp") return null;
@@ -31,7 +37,16 @@ export async function proxyMcpEventStream(input: {
   const eligible = input.request.method === "GET"
     || (input.request.method === "POST" && acceptsEventStream(input.request));
   if (!eligible) return null;
-  const prepared = await input.bridge.fetch(withProxyHeaders(input.request, "prepare"));
+  const requestedPrepareDelays = input.prepareRetryDelaysMs ?? DEFAULT_PREPARE_RETRY_DELAYS_MS;
+  const prepareRetryDelays = legacyPrepareRetryAllowed(input.request) ? requestedPrepareDelays : requestedPrepareDelays.slice(0, 1);
+  const retryId = prepareRetryDelays.length > 1 ? randomToken("retry") : "";
+  const prepared = await fetchPreparedStreamResponse(
+    input.bridge,
+    input.request,
+    prepareRetryDelays,
+    input.prepareAttemptTimeoutMs,
+    retryId,
+  );
   if (prepared.headers.get(MCP_STREAM_DESCRIPTOR_HEADER) !== "1") return stripInternalResponseHeaders(prepared);
   const descriptor = await readDescriptor(prepared);
   if (descriptor.kind === "complete") {
@@ -43,19 +58,33 @@ export async function proxyMcpEventStream(input: {
     );
   }
 
+  const subscription = new AbortController();
   const terminal = subscribeTerminalMessage(
     input.bridge,
-    () => withProxyHeaders(new Request(input.request.url, { method: "GET" }), "subscribe", descriptor.stream_id),
+    (signal) => withProxyHeaders(
+      new Request(input.request.url, { method: "GET" }),
+      "subscribe",
+      descriptor.stream_id,
+      signal,
+    ),
     input.subscribeRetryDelaysMs ?? DEFAULT_SUBSCRIBE_RETRY_DELAYS_MS,
+    subscription.signal,
+    input.subscribeAttemptTimeoutMs,
   );
   const options = {
     streamId: descriptor.stream_id,
     keepAlive: (promise: Promise<void>) => input.ctx.waitUntil(promise),
+    onCancel: (reason: unknown) => subscription.abort(reason),
   };
   const response = descriptor.kind === "initial"
     ? streamJsonRpcResponse(terminal, options)
     : resumeJsonRpcResponse(terminal, options);
   return applyCors(response, input.request, baseUrl(input.request), input.extraOrigins);
+}
+
+function legacyPrepareRetryAllowed(request: Request): boolean {
+  if (request.method === "GET") return true;
+  return request.method === "POST" && Boolean(request.headers.get("Mcp-Session-Id")?.trim());
 }
 
 export async function handleMcpStreamSubscribeRequest(

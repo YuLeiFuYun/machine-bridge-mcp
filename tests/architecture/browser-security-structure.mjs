@@ -54,9 +54,12 @@ const workerHttpSource = readFileSync(join(root, "src", "worker", "http.ts"), "u
 const workerStaticRoutesSource = readFileSync(join(root, "src", "worker", "worker-static-routes.ts"), "utf8");
 const oauthBrowserNavigationSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
+const sharedForegroundTimeoutSource = readFileSync(join(root, "src", "shared", "foreground-timeout.mjs"), "utf8");
 
-if (!workerToolTimeoutSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"') || !workerToolTimeoutSource.includes('"browser_screenshot", "browser_upload_files"')) {
-  throw new Error("Worker timeout classification omits browser_upload_files");
+if (!workerToolTimeoutSource.includes('from "../shared/foreground-timeout.mjs"')
+    || !sharedForegroundTimeoutSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"')
+    || !sharedForegroundTimeoutSource.includes('"browser_screenshot", "browser_upload_files"')) {
+  throw new Error("shared foreground timeout classification omits browser_upload_files or lost Worker ownership");
 }
 for (const origin of ["https://chatgpt.com", "https://chat.openai.com", "https://grok.com", "https://x.com"]) {
   if (!workerHttpSource.includes(`"${origin}"`)) throw new Error(`Worker built-in browser origins omit ${origin}`);

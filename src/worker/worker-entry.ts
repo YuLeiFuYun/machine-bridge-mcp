@@ -5,7 +5,7 @@ import {
 import { respondWithoutDurableObject } from "./worker-static-routes.ts";
 import { createThrottledEdgeLogger } from "./worker-edge-log.ts";
 import {
-  admitStatefulRequest,
+  admitGlobalStatefulRequest, admitStatefulRequest,
   durableObjectQuotaResponse,
   isDurableObjectQuotaError,
   outerWorkerErrorClass,
@@ -17,6 +17,7 @@ type OuterBridgeNamespace = { getByName(name: string): OuterBridgeStub };
 
 export interface OuterWorkerEnv {
   BRIDGE: OuterBridgeNamespace;
+  STATEFUL_GLOBAL_RATE_LIMITER: RateLimit;
   STATEFUL_RATE_LIMITER: RateLimit;
   MBM_ALLOWED_ORIGINS?: string;
 }
@@ -34,6 +35,8 @@ export async function handleOuterWorkerFetch(
   if (staticResponse) return staticResponse;
 
   try {
+    const globallyLimited = await admitGlobalStatefulRequest(request, env.STATEFUL_GLOBAL_RATE_LIMITER, extraOrigins);
+    if (globallyLimited) return globallyLimited;
     const limited = await admitStatefulRequest(request, env.STATEFUL_RATE_LIMITER, extraOrigins);
     if (limited) return limited;
     const stub = env.BRIDGE.getByName("default");

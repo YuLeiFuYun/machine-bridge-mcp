@@ -8,6 +8,11 @@
   "preview_urls": false,
   "ratelimits": [
     {
+      "name": "STATEFUL_GLOBAL_RATE_LIMITER",
+      "namespace_id": "4301702",
+      "simple": { "limit": 1200, "period": 60 }
+    },
+    {
       "name": "STATEFUL_RATE_LIMITER",
       "namespace_id": "4301701",
       "simple": { "limit": 120, "period": 60 }

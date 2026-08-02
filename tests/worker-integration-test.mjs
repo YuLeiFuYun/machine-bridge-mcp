@@ -1173,6 +1173,26 @@ try {
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: sessionlessSecondRelay.id, ok: true, result: { request: "two" } }));
   await Promise.all([sessionlessFirst, sessionlessSecond]);
 
+  const sessionlessStreamRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const sessionlessStreamResponse = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...mcpHeaders(ownerAccessToken),
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 8812, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  });
+  const sessionlessStreamRelay = await sessionlessStreamRelayPromise;
+  assert(sessionlessStreamResponse.status === 200
+    && sessionlessStreamResponse.headers.get("content-type")?.startsWith("text/event-stream"),
+  "sessionless legacy SSE call was rejected by partial idempotency state");
+  const sessionlessStreamReader = sessionlessStreamResponse.body.getReader();
+  const sessionlessStreamInitial = await readSseInitialEvent(sessionlessStreamReader);
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: sessionlessStreamRelay.id, ok: true, result: { sessionless_stream: true } }));
+  const sessionlessStreamEnvelope = await readSseJsonRpcResponse(sessionlessStreamReader, sessionlessStreamInitial.text);
+  assert(sessionlessStreamEnvelope.message.result?.structuredContent?.sessionless_stream === true,
+    "sessionless legacy SSE call lost its terminal result");
+
   const cancelFirstRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const cancelFirstCall = toolCallRequest(base, ownerAccessToken, primarySession, 882, "list_dir", { path: "." });
   const cancelFirstRelay = await cancelFirstRelayPromise;
@@ -1193,12 +1213,81 @@ try {
   assert(cancelSecondResult.body.result?.structuredContent?.window === "still-running", "cancelling one MCP session interrupted another session");
 
   const duplicateRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const duplicateOriginal = toolCallRequest(base, ownerAccessToken, primarySession, 883, "list_dir", { path: "." });
+  const duplicateOriginalResponsePromise = stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 883, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  });
   const duplicateRelay = await duplicateRelayPromise;
-  const duplicateRequest = await toolCallRequest(base, ownerAccessToken, primarySession, 883, "list_dir", { path: "." });
-  assert(duplicateRequest.body.result?.isError === true && JSON.stringify(duplicateRequest.body.result).includes("MCP session"), "same-session duplicate request id was not rejected precisely");
+  const duplicateOriginalResponse = await duplicateOriginalResponsePromise;
+  assert(duplicateOriginalResponse.status === 200, "original idempotency stream did not open");
+  const duplicateOriginalReader = duplicateOriginalResponse.body.getReader();
+  const duplicateOriginalInitial = await readSseInitialEvent(duplicateOriginalReader);
+
+  const changedDuplicateResponse = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 883, method: "tools/call", params: { name: "list_dir", arguments: { path: ".." } } }),
+  });
+  const changedDuplicateBody = await changedDuplicateResponse.json();
+  assert(changedDuplicateResponse.status === 409
+    && changedDuplicateBody.error?.data?.side_effects_started === true,
+  `same-session streamed request id with changed arguments did not fail as an ambiguous-side-effect conflict: ${JSON.stringify({
+    status: changedDuplicateResponse.status,
+    body: changedDuplicateBody,
+  })}`);
+
+  const duplicateBaseline = await callServerInfo(base, ownerAccessToken, 8840);
+  const baselineCoexisting = duplicateBaseline.worker?.observability?.stream_transport?.subscribers_coexisting ?? 0;
+  const duplicateRetryResponse = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...mcpHeaders(ownerAccessToken, primarySession),
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 883, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  });
+  assert(duplicateRetryResponse.status === 200, "identical legacy retry did not reopen the result stream");
+  const duplicateRetryReader = duplicateRetryResponse.body.getReader();
+  const duplicateRetryInitial = await readSseInitialEvent(duplicateRetryReader);
+  assert(duplicateRetryInitial.text.startsWith(": resumed"), "identical legacy retry did not return a resumed stream");
+
+  let duplicateStatus = duplicateBaseline;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    duplicateStatus = await callServerInfo(base, ownerAccessToken, 8841 + attempt);
+    if ((duplicateStatus.worker?.observability?.stream_transport?.subscribers_coexisting ?? 0) > baselineCoexisting) break;
+    await sleep(25);
+  }
+  assert((duplicateStatus.worker?.observability?.stream_transport?.subscribers_coexisting ?? 0) > baselineCoexisting,
+    "identical legacy retry did not attach a second terminal subscriber");
+  assert(duplicateStatus.worker?.pending_calls?.active === 1,
+    "identical legacy retry dispatched a duplicate daemon operation");
+
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: duplicateRelay.id, ok: true, result: { original: true } }));
-  assert((await duplicateOriginal).body.result?.structuredContent?.original === true, "same-session duplicate corrupted the original call");
+  const [duplicateOriginalEnvelope, duplicateRetryEnvelope] = await Promise.all([
+    readSseJsonRpcResponse(duplicateOriginalReader, duplicateOriginalInitial.text),
+    readSseJsonRpcResponse(duplicateRetryReader, duplicateRetryInitial.text),
+  ]);
+  assert(duplicateOriginalEnvelope.message.result?.structuredContent?.original === true
+    && duplicateRetryEnvelope.message.result?.structuredContent?.original === true,
+  "same-session identical retry did not share the original terminal result");
+
+  const bufferedDuplicateRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const bufferedDuplicateOriginal = toolCallRequest(base, ownerAccessToken, primarySession, 885, "list_dir", { path: "." });
+  const bufferedDuplicateRelay = await bufferedDuplicateRelayPromise;
+  const bufferedDuplicateRequest = await toolCallRequest(base, ownerAccessToken, primarySession, 885, "list_dir", { path: "." });
+  assert(bufferedDuplicateRequest.body.result?.isError === true
+    && JSON.stringify(bufferedDuplicateRequest.body.result).includes("MCP session"),
+  "JSON-only legacy duplicate request id lost its in-flight conflict contract");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: bufferedDuplicateRelay.id, ok: true, result: { buffered_original: true } }));
+  assert((await bufferedDuplicateOriginal).body.result?.structuredContent?.buffered_original === true,
+    "JSON-only duplicate conflict corrupted the original call");
 
   const initializedWithDaemonPromise = fetchJson(`${base}/mcp`, {
     method: "POST",

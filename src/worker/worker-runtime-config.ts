@@ -9,6 +9,7 @@ export interface BridgeEnv extends OAuthControllerEnv {
   OAUTH_TOKEN_VERSION: string;
   MBM_WORKER_MAX_BODY_BYTES?: string;
   MBM_ALLOWED_ORIGINS?: string;
+  STATEFUL_GLOBAL_RATE_LIMITER: RateLimit;
   STATEFUL_RATE_LIMITER: RateLimit;
 }
 

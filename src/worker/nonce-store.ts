@@ -24,6 +24,23 @@ export async function consumeBoundedNonce(
   return consume(storage);
 }
 
+export async function boundedNoncePresent(
+  storage: Pick<NonceStorage, "get">,
+  options: {
+    key: string;
+    nonce: string;
+    now: number;
+    noncePattern: RegExp;
+  },
+): Promise<boolean> {
+  if (!/^[a-z][a-z0-9-]{1,127}$/.test(options.key)
+      || !options.noncePattern.test(options.nonce)
+      || !Number.isSafeInteger(options.now) || options.now <= 0) return false;
+  const raw = await storage.get<unknown>(options.key);
+  if (!validNonceRecord(raw, options.noncePattern)) return false;
+  return Number((raw as Record<string, number>)[options.nonce] ?? 0) > options.now;
+}
+
 async function consumeInStorage(
   storage: NonceStorage,
   options: {
