@@ -5,7 +5,8 @@ import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 import { assertSoakEligiblePrerelease } from "./release-channel.mjs";
 
-export const ACTIVATION_SCHEMA_VERSION = 1;
+export const ACTIVATION_SCHEMA_VERSION = 2;
+const LEGACY_ACTIVATION_SCHEMA_VERSION = 1;
 const MAX_ACTIVATION_BYTES = 64 * 1024;
 const SOURCES = new Set(["local-candidate", "npm-prerelease"]);
 
@@ -33,7 +34,10 @@ export function readPrereleaseActivation(version, stateRoot = defaultStateRoot()
 
 export function validatePrereleaseActivation(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("prerelease activation record must be an object");
-  if (value.schema_version !== ACTIVATION_SCHEMA_VERSION) throw new Error("unsupported prerelease activation schema");
+  const schemaVersion = value.schema_version;
+  if (![LEGACY_ACTIVATION_SCHEMA_VERSION, ACTIVATION_SCHEMA_VERSION].includes(schemaVersion)) {
+    throw new Error("unsupported prerelease activation schema");
+  }
   const parsed = assertSoakEligiblePrerelease(value.package_version);
   if (value.package_name !== "machine-bridge-mcp") throw new Error("prerelease activation package name is invalid");
   if (!SOURCES.has(value.source)) throw new Error("prerelease activation source is invalid");
@@ -51,14 +55,21 @@ export function validatePrereleaseActivation(value) {
   if (workspaceHash && !/^[0-9a-f]{24}$/.test(workspaceHash)) throw new Error("prerelease activation workspace hash is invalid");
   const runtimeEntry = String(value.runtime_entry || "");
   if (runtimeEntry && !isAbsolute(runtimeEntry)) throw new Error("prerelease activation runtime entry must be absolute");
-  let previous;
-  if (value.previous !== undefined) {
-    if (!value.previous || typeof value.previous !== "object" || Array.isArray(value.previous)) throw new Error("prerelease activation previous runtime is invalid");
-    const previousVersion = String(value.previous.version || "");
-    const previousEntry = String(value.previous.entry || "");
-    if (!previousVersion || !previousEntry || !isAbsolute(previousEntry)) throw new Error("prerelease activation previous runtime is invalid");
-    previous = { version: previousVersion, entry: previousEntry };
+  const hasLegacyBaseline = value.previous !== undefined;
+  const hasGlobalBaseline = value.global_package_rollback_baseline !== undefined;
+  if (hasLegacyBaseline && hasGlobalBaseline) {
+    throw new Error("prerelease activation rollback baseline is ambiguous");
   }
+  if (schemaVersion === LEGACY_ACTIVATION_SCHEMA_VERSION && hasGlobalBaseline) {
+    throw new Error("legacy prerelease activation cannot use the global package rollback baseline field");
+  }
+  if (schemaVersion === ACTIVATION_SCHEMA_VERSION && hasLegacyBaseline) {
+    throw new Error("current prerelease activation cannot use the legacy previous field");
+  }
+  const baselineInput = hasGlobalBaseline ? value.global_package_rollback_baseline : value.previous;
+  const globalPackageRollbackBaseline = baselineInput === undefined
+    ? undefined
+    : validateGlobalPackageRollbackBaseline(baselineInput);
   return Object.freeze({
     schema_version: ACTIVATION_SCHEMA_VERSION,
     package_name: value.package_name,
@@ -74,6 +85,18 @@ export function validatePrereleaseActivation(value) {
     } : {}),
     ...(workspaceHash ? { workspace_hash: workspaceHash } : {}),
     ...(runtimeEntry ? { runtime_entry: runtimeEntry } : {}),
-    ...(previous ? { previous } : {}),
+    ...(globalPackageRollbackBaseline ? { global_package_rollback_baseline: globalPackageRollbackBaseline } : {}),
   });
+}
+
+function validateGlobalPackageRollbackBaseline(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("prerelease activation global package rollback baseline is invalid");
+  }
+  const version = String(value.version || "");
+  const entry = String(value.entry || "");
+  if (!version || !entry || !isAbsolute(entry)) {
+    throw new Error("prerelease activation global package rollback baseline is invalid");
+  }
+  return Object.freeze({ version, entry });
 }

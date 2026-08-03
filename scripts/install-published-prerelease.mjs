@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultStateRoot, expandHome } from "../src/local/state.mjs";
-import { writePrereleaseActivation } from "./prerelease-activation.mjs";
+import { ACTIVATION_SCHEMA_VERSION, writePrereleaseActivation } from "./prerelease-activation.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { readPublishedNpmPrerelease } from "./published-release.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
@@ -61,7 +61,7 @@ try {
     throw new Error("published prerelease activation did not converge on the exact registry version");
   }
   const recordPath = writePrereleaseActivation({
-    schema_version: 1,
+    schema_version: ACTIVATION_SCHEMA_VERSION,
     package_name: pkg.name,
     package_version: prerelease.raw,
     source: "npm-prerelease",
@@ -73,7 +73,7 @@ try {
     npm_dist_tag: prerelease.npmTag,
     workspace_hash: workspaceHash(activation.workspace),
     runtime_entry: installed.entry,
-    ...(previousInstallation ? { previous: previousInstallation } : {}),
+    ...(previousInstallation ? { global_package_rollback_baseline: previousInstallation } : {}),
   }, stateRoot);
 
   console.log(`Published prerelease activated: ${prerelease.raw}`);

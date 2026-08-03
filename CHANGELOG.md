@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0-beta.33 - 2026-08-03
+
+### Clarify prerelease rollback evidence
+
+- Upgrade prerelease activation records to schema 2 and replace the ambiguous `previous` field with `global_package_rollback_baseline`. The field now states exactly what activation records retain: the globally installed npm package version and entrypoint available for operator-directed disaster recovery, not the service runtime active immediately before activation.
+- Keep schema 1 activation records readable without rewriting historical evidence. Legacy `previous` values are normalized in memory to the schema 2 field, while mixed-version fields, duplicate baseline fields, relative entrypoints, and malformed baselines fail closed.
+- Keep transaction-scoped service recovery separate. `runtime-activation` continues to capture and verify the actual pre-handoff service version and entrypoint during activation; the persistent activation record no longer invites those two recovery concepts to be conflated.
+- Make both local-candidate and published-prerelease writers consume the shared activation schema constant, add disk-level migration and rejection regressions, and enforce the field distinction in architecture and release documentation gates.
+
 ## 3.0.0-beta.32 - 2026-08-03
 
 ### Typed file mutation failures
