@@ -1114,8 +1114,27 @@ try {
   await handoverPreviousClosed;
   const handoverStatus = await callServerInfo(base, ownerAccessToken, 87990);
   assert(handoverStatus.worker?.pending_calls?.active === 1 && handoverStatus.worker?.pending_calls?.detached === 0, "verified socket handover left the transferred call detached");
+  const handoverResultAck = waitForWsMessage(candidateDaemon, "tool_result_ack");
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: handoverRelay.id, ok: true, result: { handover: true } }));
+  assert((await handoverResultAck).id === handoverRelay.id, "transferred call result was not acknowledged");
   assert((await handoverCall).body.result?.structuredContent?.handover === true, "transferred call did not complete on the verified replacement socket");
+
+  const duplicateResultBaseline = await callServerInfo(base, ownerAccessToken, 87991);
+  const baselineOwnerMissing = duplicateResultBaseline.worker?.observability?.terminal_results?.owner_missing_acknowledged ?? 0;
+  const baselineStaleRejected = duplicateResultBaseline.worker?.observability?.terminal_results?.stale_connection_rejected ?? 0;
+  const duplicateResultAck = waitForWsMessage(candidateDaemon, "tool_result_ack");
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: handoverRelay.id, ok: true, result: { handover: true } }));
+  assert((await duplicateResultAck).id === handoverRelay.id, "duplicate terminal result was not acknowledged");
+  let duplicateResultStatus = duplicateResultBaseline;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    duplicateResultStatus = await callServerInfo(base, ownerAccessToken, 87992 + attempt);
+    if ((duplicateResultStatus.worker?.observability?.terminal_results?.owner_missing_acknowledged ?? 0) > baselineOwnerMissing) break;
+    await sleep(25);
+  }
+  assert((duplicateResultStatus.worker?.observability?.terminal_results?.owner_missing_acknowledged ?? 0) === baselineOwnerMissing + 1,
+    "duplicate terminal result was not classified as owner-missing and acknowledged");
+  assert((duplicateResultStatus.worker?.observability?.terminal_results?.stale_connection_rejected ?? 0) === baselineStaleRejected,
+    "duplicate terminal result was misclassified as a stale-connection rejection");
 
   const reconnectRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const reconnectCall = toolCallRequest(base, ownerAccessToken, primarySession, 8801, "list_dir", { path: "." });

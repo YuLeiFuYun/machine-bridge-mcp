@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0-beta.34 - 2026-08-03
+
+### Classify daemon terminal-result dispositions
+
+- Replace the ambiguous Worker `unmatched_results` interpretation with an explicit `terminal_results` disposition matrix. Successful transient and durable settlements are counted separately from owner-missing results that are acknowledged to terminate normal at-least-once replay and stale-connection results that are rejected without acknowledgement.
+- Retain `calls.unmatched_results` as a compatibility aggregate of `owner_missing_acknowledged` and `stale_connection_rejected`, and mark that scope machine-readably. Operators no longer need to treat a harmless duplicate after cancellation, timeout, reconnect, deployment, or lost acknowledgement as evidence of a connection-identity defect.
+- Centralize the settlement-to-acknowledgement decision and test all four outcomes. A deployed Worker integration regression completes a real call, consumes its acknowledgement, resends the identical result, proves a second acknowledgement, and verifies that only `owner_missing_acknowledged` increases.
+- Update architecture and operations contracts so stale ownership is diagnosed from `stale_connection_rejected`, while sustained owner-missing growth is investigated as acknowledgement loss or bounded lifecycle overlap rather than automatically classified as protocol corruption.
+
 ## 3.0.0-beta.33 - 2026-08-03
 
 ### Clarify prerelease rollback evidence

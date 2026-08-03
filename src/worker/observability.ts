@@ -4,10 +4,38 @@ const MAX_ERROR_CODES = 64;
 const MAX_TOOLS = 128;
 const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|secret|token|verifier|private[_-]?key)/i;
 
+export type DaemonTerminalResultDisposition =
+  | "transient_committed"
+  | "durable_committed"
+  | "owner_missing_acknowledged"
+  | "stale_connection_rejected";
+
+export type DurableTerminalResultSettlement = "committed" | "missing" | "stale";
+
+export function daemonTerminalResultDecision(
+  transientMatched: boolean,
+  durableSettlement?: DurableTerminalResultSettlement,
+): { matched: boolean; acknowledge: boolean; disposition: DaemonTerminalResultDisposition } {
+  if (transientMatched) {
+    return { matched: true, acknowledge: true, disposition: "transient_committed" };
+  }
+  if (durableSettlement === "committed") {
+    return { matched: true, acknowledge: true, disposition: "durable_committed" };
+  }
+  if (durableSettlement === "missing") {
+    return { matched: false, acknowledge: true, disposition: "owner_missing_acknowledged" };
+  }
+  return { matched: false, acknowledge: false, disposition: "stale_connection_rejected" };
+}
+
 export class WorkerObservability {
   private readonly startedAt = performance.now();
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
   private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
+  private readonly terminalResults = {
+    transient_committed: 0, durable_committed: 0,
+    owner_missing_acknowledged: 0, stale_connection_rejected: 0,
+  };
   private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
   private readonly streamTransport = {
     subscribers_opened: 0, subscribers_coexisting: 0, subscriber_limit_rejections: 0,
@@ -50,7 +78,12 @@ export class WorkerObservability {
     this.incrementError(code);
   }
 
-  unmatchedResult(): void { this.calls.unmatched_results += 1; }
+  daemonTerminalResult(disposition: DaemonTerminalResultDisposition): void {
+    this.terminalResults[disposition] += 1;
+    if (disposition === "owner_missing_acknowledged" || disposition === "stale_connection_rejected") {
+      this.calls.unmatched_results += 1;
+    }
+  }
   recordError(code: string): void { this.incrementError(code); }
 
   socketCandidate(): void { this.sockets.candidates += 1; }
@@ -114,9 +147,11 @@ export class WorkerObservability {
         lifecycle: "current_worker_isolate",
         durable_calls_may_cross_isolates: true,
         counters_may_not_balance: true,
+        unmatched_results_is_legacy_aggregate: true,
       },
       requests: { ...this.requests },
       calls: { ...this.calls },
+      terminal_results: { ...this.terminalResults },
       sockets: { ...this.sockets },
       stream_transport: { ...this.streamTransport },
       oauth_refresh: { ...this.oauthRefresh },

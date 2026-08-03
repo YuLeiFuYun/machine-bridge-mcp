@@ -27,7 +27,7 @@ import { buildServerInfoResult, startEventDrivenStreamCall } from "./mcp-stream-
 import { DurableStreamCallCoordinator } from "./durable-stream-calls.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
 import { daemonToolTimeoutBudget } from "./tool-timeout.ts";
-import { WorkerObservability } from "./observability.ts";
+import { daemonTerminalResultDecision, WorkerObservability } from "./observability.ts";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access.ts";
@@ -59,7 +59,7 @@ import {
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
 
-const SERVER_VERSION = "3.0.0-beta.33";
+const SERVER_VERSION = "3.0.0-beta.34";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
@@ -362,18 +362,16 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const outcome: PendingCallOutcome = body.ok === false
       ? { ok: false, error: daemonToolError(body.error) }
       : { ok: true, value: body.result };
-    let matched = outcome.ok
+    const transientMatched = outcome.ok
       ? await this.pending.resolve(body.id, ws, outcome.value)
       : await this.pending.reject(body.id, outcome.error, ws);
-    let acknowledge = Boolean(matched);
-    if (!matched && socketAttachment.connectionId) {
-      const settlement = await this.durableCalls.settle(body.id, socketAttachment.connectionId, outcome);
-      matched = settlement === "committed";
-      acknowledge = settlement !== "stale";
-    }
-    if (acknowledge) trySendWebSocket(ws, { type: "tool_result_ack", id: body.id });
-    if (!matched) this.observability.unmatchedResult();
-    else await this.scheduleRuntimeAlarm();
+    const durableSettlement = !transientMatched && socketAttachment.connectionId
+      ? await this.durableCalls.settle(body.id, socketAttachment.connectionId, outcome)
+      : undefined;
+    const decision = daemonTerminalResultDecision(transientMatched, durableSettlement);
+    if (decision.acknowledge) trySendWebSocket(ws, { type: "tool_result_ack", id: body.id });
+    this.observability.daemonTerminalResult(decision.disposition);
+    if (decision.matched) await this.scheduleRuntimeAlarm();
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {

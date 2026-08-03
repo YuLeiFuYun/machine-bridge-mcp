@@ -30,7 +30,7 @@ import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
-import { WorkerObservability } from "../src/worker/observability.ts";
+import { daemonTerminalResultDecision, WorkerObservability } from "../src/worker/observability.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { corsPreflight, searchParamsObject } from "../src/worker/http.ts";
 import {
@@ -1894,6 +1894,25 @@ function testWorkerErrors() {
 }
 
 function testWorkerObservability() {
+  const assertDecision = (actual, expected, message) => assert(
+    JSON.stringify(actual) === JSON.stringify(expected),
+    `${message}: ${JSON.stringify(actual)}`,
+  );
+  assertDecision(daemonTerminalResultDecision(true), {
+    matched: true, acknowledge: true, disposition: "transient_committed",
+  }, "transient result decision changed");
+  assertDecision(daemonTerminalResultDecision(false, "committed"), {
+    matched: true, acknowledge: true, disposition: "durable_committed",
+  }, "durable result decision changed");
+  assertDecision(daemonTerminalResultDecision(false, "missing"), {
+    matched: false, acknowledge: true, disposition: "owner_missing_acknowledged",
+  }, "owner-missing result decision changed");
+  assertDecision(daemonTerminalResultDecision(false, "stale"), {
+    matched: false, acknowledge: false, disposition: "stale_connection_rejected",
+  }, "stale result decision changed");
+  assertDecision(daemonTerminalResultDecision(false), {
+    matched: false, acknowledge: false, disposition: "stale_connection_rejected",
+  }, "result without a verified connection was not rejected");
   const metrics = new WorkerObservability();
   metrics.requestFinished(200);
   metrics.requestFinished(403);
@@ -1902,7 +1921,10 @@ function testWorkerObservability() {
   metrics.callFinished("read_file");
   metrics.callStarted("write_file");
   metrics.callFinished("write_file", "policy_denied");
-  metrics.unmatchedResult();
+  metrics.daemonTerminalResult("transient_committed");
+  metrics.daemonTerminalResult("durable_committed");
+  metrics.daemonTerminalResult("owner_missing_acknowledged");
+  metrics.daemonTerminalResult("stale_connection_rejected");
   metrics.recordError("session_bootstrap_failed");
   metrics.socketCandidate();
   metrics.socketAuthenticated();
@@ -1921,11 +1943,17 @@ function testWorkerObservability() {
   const snapshot = metrics.snapshot();
   assert(snapshot.metric_scope.lifecycle === "current_worker_isolate"
     && snapshot.metric_scope.durable_calls_may_cross_isolates === true
-    && snapshot.metric_scope.counters_may_not_balance === true,
-  "Worker metrics do not disclose their isolate-local time domain");
+    && snapshot.metric_scope.counters_may_not_balance === true
+    && snapshot.metric_scope.unmatched_results_is_legacy_aggregate === true,
+  "Worker metrics do not disclose their isolate-local time domain or compatibility aggregate");
   assert(snapshot.requests.total === 3 && snapshot.requests.client_error === 1 && snapshot.requests.server_error === 1, "Worker request metrics are incomplete");
   assert(snapshot.calls.started === 2 && snapshot.calls.completed === 1 && snapshot.calls.failed === 1, "Worker call metrics are incomplete");
-  assert(snapshot.calls.unmatched_results === 1, "Worker unmatched-result metric was not retained");
+  assert(snapshot.calls.unmatched_results === 2, "Worker unmatched-result compatibility aggregate was not retained");
+  assert(snapshot.terminal_results.transient_committed === 1
+    && snapshot.terminal_results.durable_committed === 1
+    && snapshot.terminal_results.owner_missing_acknowledged === 1
+    && snapshot.terminal_results.stale_connection_rejected === 1,
+  "Worker terminal-result dispositions were not retained independently");
   assert(snapshot.errors.policy_denied === 1 && snapshot.errors.protocol_error === 1
     && snapshot.errors.session_bootstrap_failed === 1, "Worker error-code metrics are incomplete");
   assert(snapshot.tools.read_file.completed === 1 && snapshot.tools.write_file.failed === 1, "Worker per-tool metrics are incomplete");
