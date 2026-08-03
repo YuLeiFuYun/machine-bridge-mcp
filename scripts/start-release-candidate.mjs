@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { defaultStateRoot, expandHome, selectedWorkspace } from "../src/local/state.mjs";
 import { ensureOwnerOnlyDirectorySync } from "../src/local/secure-file.mjs";
 import { createCandidateRuntimePrefix, pruneInactiveCandidateRuntimes } from "./candidate-runtime-store.mjs";
-import { writePrereleaseActivation } from "./prerelease-activation.mjs";
+import { ACTIVATION_SCHEMA_VERSION, writePrereleaseActivation } from "./prerelease-activation.mjs";
 import { verifyTarball } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { discoverForegroundDaemonRecovery } from "./foreground-daemon-recovery.mjs";
@@ -151,7 +151,7 @@ function activatePersistentCandidate({ manifest, installedPackage, installPrefix
   let recordPath = "";
   if (releaseVersion.prerelease) {
     recordPath = writePrereleaseActivation({
-      schema_version: 1,
+      schema_version: ACTIVATION_SCHEMA_VERSION,
       package_name: manifest.package_name,
       package_version: manifest.package_version,
       source: "local-candidate",
@@ -161,7 +161,7 @@ function activatePersistentCandidate({ manifest, installedPackage, installPrefix
       activated_at: new Date().toISOString(),
       workspace_hash: workspaceHash(activation.workspace),
       runtime_entry: cli,
-      ...(previous ? { previous } : {}),
+      ...(previous ? { global_package_rollback_baseline: previous } : {}),
     }, stateRoot);
   }
   const removedRuntimes = pruneInactiveCandidateRuntimes({ stateRoot, activePrefix: installPrefix });
@@ -169,7 +169,7 @@ function activatePersistentCandidate({ manifest, installedPackage, installPrefix
   if (recordPath) console.log(`Activation record: ${recordPath}`);
   if (removedRuntimes.length) console.log(`Removed ${removedRuntimes.length} inactive candidate runtime(s).`);
   console.log("The Worker and login daemon now run the exact candidate. The terminal may close; the coding agent should verify the live deployment through Machine Bridge.");
-  if (previous?.version) console.log(`Rollback baseline retained: globally installed ${previous.version}.`);
+  if (previous?.version) console.log(`Global package rollback baseline retained: ${previous.version}.`);
 }
 
 

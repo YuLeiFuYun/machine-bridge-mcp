@@ -313,6 +313,10 @@ if (!workspaceFileSource.includes("patch transaction failed and recovery was inc
     || !workspaceFileSource.includes("Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed")) {
   throw new Error("patch transaction failures or committed-artifact cleanup errors can be silently swallowed");
 }
+const patchUpdateCalls = workspaceFileSource.match(/applyUpdateHunks\([^\n]+\)/g) || [];
+if (patchUpdateCalls.length !== 1 || patchUpdateCalls[0] !== "applyUpdateHunks(original, operation.hunks)") {
+  throw new Error("workspace patch updates pass arguments outside the applyUpdateHunks contract");
+}
 const executionRoutingSource = readFileSync(join(localRoot, "execution-routing.mjs"), "utf8");
 if (executionRoutingSource.includes("toolsForPolicy")) {
   throw new Error("execution routing deep-copies the complete tool schema catalog instead of reading bounded metadata");

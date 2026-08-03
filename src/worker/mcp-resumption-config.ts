@@ -15,7 +15,9 @@ export function resumptionLimits(options: McpResumptionOptions = {}): {
   maximumMessageBytes: number;
 } {
   const maximumRetentionMs = relayContract.streamResumeRetentionMs;
-  const maximumPendingRetentionMs = relayContract.maximumRelayToolTimeoutMs + maximumRetentionMs;
+  const maximumSettlementTimeoutMs = relayContract.maximumInteractiveExecutionTimeoutMs
+    + relayContract.workerSettlementOverheadMs;
+  const maximumPendingRetentionMs = maximumSettlementTimeoutMs + maximumRetentionMs;
   const retentionMs = Math.min(
     maximumRetentionMs,
     positiveInteger(options.retentionMs, maximumRetentionMs),

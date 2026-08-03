@@ -24,13 +24,13 @@ import {
   admitGlobalStatefulRequest, admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
   outerWorkerErrorClass, statefulRateLimitKey, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
-import { daemonToolTimeoutMs, remoteForegroundDefaultSeconds, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
+import { daemonToolTimeoutBudget, remoteForegroundDefaultSeconds, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
 import { workerToolRequestFingerprint } from "../src/worker/mcp-request-fingerprint.ts";
 import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
-import { WorkerObservability } from "../src/worker/observability.ts";
+import { daemonTerminalResultDecision, WorkerObservability } from "../src/worker/observability.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { corsPreflight, searchParamsObject } from "../src/worker/http.ts";
 import {
@@ -523,7 +523,7 @@ async function testEventDrivenStreamDispatch() {
     clientRequestKey: "session:44", requestFingerprint: await workerToolRequestFingerprint("list_dir", { path: "." }),
     tool: "list_dir", arguments: { path: "." },
     socket, daemonInstanceId: "daemon_stream_event_1234", connectionId: `connection_${"A".repeat(43)}`,
-    timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 2,
+    executionTimeoutMs: 8_000, settlementTimeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 2,
     authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
     onSendFailure() {},
   });
@@ -532,7 +532,9 @@ async function testEventDrivenStreamDispatch() {
     "stream initiation did not persist its request fingerprint");
   const snapshot = await resumption.calls.snapshot(2);
   assert(snapshot.active === 1 && snapshot.request_keys === 1, "stream initiation did not persist its pending call");
-  assert(sent.length === 1 && sent[0].type === "tool_call" && sent[0].tool === "list_dir", "stream dispatch sent the wrong daemon envelope");
+  assert(sent.length === 1 && sent[0].type === "tool_call" && sent[0].tool === "list_dir"
+    && sent[0].timeout_ms === 8_000,
+  "stream dispatch did not preserve a separate daemon execution deadline");
   assert(await resumption.calls.complete(sent[0].id, `connection_${"A".repeat(43)}`,
     streamTerminalMessage(44, { ok: true, value: { entries: ["ok"] } })), "persisted stream call did not complete");
   const ready = await resumption.pollMessage(STREAM_TEST_ID);
@@ -549,7 +551,7 @@ async function testEventDrivenStreamDispatch() {
     resumption: reconnectStore, observability, streamId: STREAM_RESUMED_ID, requestId: 45,
     clientRequestKey: "session:45", tool: "list_dir", arguments: { path: "." },
     socket: reconnectSocket, daemonInstanceId: "daemon_stream_reconnect_1234", connectionId: firstConnection,
-    timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 2,
+    executionTimeoutMs: 8_000, settlementTimeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 2,
     authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
     onSendFailure() {},
   });
@@ -727,7 +729,7 @@ async function testStreamDispatchFailureBoundaries() {
     resumption: sendStore, observability, streamId: STREAM_TEST_ID, requestId: 55,
     tool: "list_dir", arguments: {}, socket: { send() { throw new Error("closed"); } },
     daemonInstanceId: "daemon_send_fail_123456", connectionId: `connection_${"D".repeat(43)}`,
-    timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
+    executionTimeoutMs: 8_000, settlementTimeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
     authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
     onSendFailure() { sendFailureHandled = true; },
   });
@@ -746,7 +748,7 @@ async function testStreamDispatchFailureBoundaries() {
   await expectRejectType(startEventDrivenStreamCall({
     resumption: limitStore, observability, streamId: STREAM_RESUMED_ID, requestId: 57,
     tool: "list_dir", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_full_123456789",
-    connectionId: `connection_${"F".repeat(43)}`, timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
+    connectionId: `connection_${"F".repeat(43)}`, executionTimeoutMs: 8_000, settlementTimeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
     authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
     onSendFailure() {},
   }), WorkerToolError);
@@ -757,7 +759,7 @@ async function testStreamDispatchFailureBoundaries() {
   await expectRejectType(startEventDrivenStreamCall({
     resumption: reservedStore, observability, streamId: STREAM_TEST_ID, requestId: 59,
     tool: "read_file", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_reserved_ordinary",
-    connectionId: `connection_${"H".repeat(43)}`, timeoutMs: 10_000,
+    connectionId: `connection_${"H".repeat(43)}`, executionTimeoutMs: 8_000, settlementTimeoutMs: 10_000,
     transientSnapshot: { active: 2, by_tool: { exec_command: 1, read_file: 1 } },
     maximumPendingCalls: 3, reservedPendingCalls: 1,
     authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
@@ -767,7 +769,7 @@ async function testStreamDispatchFailureBoundaries() {
   await startEventDrivenStreamCall({
     resumption: reservedStore, observability, streamId: STREAM_TEST_ID, requestId: 59,
     tool: "diagnose_runtime", arguments: {}, socket: reservedSocket, daemonInstanceId: "daemon_reserved_control",
-    connectionId: `connection_${"I".repeat(43)}`, timeoutMs: 10_000,
+    connectionId: `connection_${"I".repeat(43)}`, executionTimeoutMs: 8_000, settlementTimeoutMs: 10_000,
     transientSnapshot: { active: 2, by_tool: { exec_command: 1, read_file: 1 } },
     maximumPendingCalls: 3, reservedPendingCalls: 1,
     authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
@@ -782,7 +784,7 @@ async function testStreamDispatchFailureBoundaries() {
   await expectRejectType(startEventDrivenStreamCall({
     resumption: plainRegistrationFailure, observability, streamId: STREAM_DISCONNECTED_ID, requestId: 58,
     tool: "list_dir", arguments: {}, socket: { send() {} }, daemonInstanceId: "daemon_plain_fail_1234",
-    connectionId: `connection_${"G".repeat(43)}`, timeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
+    connectionId: `connection_${"G".repeat(43)}`, executionTimeoutMs: 8_000, settlementTimeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 1,
     authorization: { account_id: "acct", account_version: 1, client_id: "client", family_id: "family", role: "owner" },
     onSendFailure() {},
   }), RangeError);
@@ -800,8 +802,12 @@ async function testStreamDispatchFailureBoundaries() {
   assert(info.worker.sockets_live.authenticated === 4 && info.worker.daemon_candidates === 1
     && info.tool_delivery.effective_account_tool_count === 2 && info.tool_delivery.relay_advertised_tool_count === 3
     && info.worker.pending_calls.ordinary_capacity === 30
-    && info.worker.pending_calls.active_reserved === 1,
-  "server_info builder lost socket, catalog, or effective-tool diagnostics");
+    && info.worker.pending_calls.active_reserved === 1
+    && info.tool_delivery.remote_foreground_execution_max_ms === 60_000
+    && info.tool_delivery.worker_settlement_overhead_ms === 5_000
+    && info.tool_delivery.daemon_execution_and_worker_settlement_deadlines_separate === true
+    && info.tool_delivery.host_terminal_receipt_observable === false,
+  "server_info builder lost socket, catalog, timeout, or delivery-scope diagnostics");
 }
 
 
@@ -907,10 +913,16 @@ async function testMcpStreamResponse() {
 async function testMcpStreamChannel() {
   const context = new TestWebSocketContext();
   const metrics = {
-    opened: 0, coexisting: 0, rejected: 0, pushes: 0, recipients: 0, protocolErrors: 0,
+    opened: 0, coexisting: 0, rejected: 0, publications: 0, liveDeliveries: 0,
+    storageResponses: 0, storageRaceDeliveries: 0, storageRaceFailures: 0, protocolErrors: 0,
     streamSubscriberOpened(existing) { this.opened += 1; this.coexisting += existing; },
     streamSubscriberRejected() { this.rejected += 1; },
-    streamTerminalDelivered(recipients) { this.pushes += 1; this.recipients += recipients; },
+    streamTerminalPublished(recipients) { this.publications += 1; this.liveDeliveries += recipients; },
+    streamTerminalStorageResponse() { this.storageResponses += 1; },
+    streamTerminalStorageRaceDelivery(delivered) {
+      if (delivered) this.storageRaceDeliveries += 1;
+      else this.storageRaceFailures += 1;
+    },
     streamSubscriberProtocolError() { this.protocolErrors += 1; },
   };
   const pairs = [];
@@ -931,7 +943,8 @@ async function testMcpStreamChannel() {
     async pollMessage() { return { kind: "message", message: readyMessage }; },
   });
   assert(ready.status === 200 && (await ready.json()).result.ready === true, "ready stream unnecessarily opened a subscriber");
-  assert(context.sockets.length === 0, "ready stream leaked a subscriber socket");
+  assert(context.sockets.length === 0 && metrics.storageResponses === 1,
+    "ready stream leaked a subscriber socket or was misclassified as a live publication");
 
   const missing = await channel.subscribe(upgrade, STREAM_COMPLETE_ID, {
     async pollMessage() { return { kind: "not_found" }; },
@@ -945,7 +958,7 @@ async function testMcpStreamChannel() {
   channel.publish(STREAM_TEST_ID, { jsonrpc: "2.0", id: 21, result: { pushed: true } });
   assert(JSON.parse(pairs[0][1].sent[0]).result.pushed === true, "terminal push was not delivered to the subscriber");
   assert(pairs[0][1].closeCode === 1000, "terminal subscriber did not close cleanly");
-  assert(metrics.pushes === 1 && metrics.recipients === 1, "terminal push metrics were incorrect");
+  assert(metrics.publications === 1 && metrics.liveDeliveries === 1, "terminal publication metrics were incorrect");
 
   const concurrentServers = [];
   for (let index = 0; index < 4; index += 1) {
@@ -976,7 +989,9 @@ async function testMcpStreamChannel() {
     sequencePollStore([{ kind: "pending" }, { kind: "message", message: raceMessage }]),
   );
   const raceServer = pairs.at(-1)[1];
-  assert(raced.status === 101 && JSON.parse(raceServer.sent[0]).result.raced === true, "completion between lookup and upgrade was lost");
+  assert(raced.status === 101 && JSON.parse(raceServer.sent[0]).result.raced === true
+    && metrics.storageRaceDeliveries === 1 && metrics.storageRaceFailures === 0,
+  "completion between lookup and upgrade was lost or misclassified");
 
   const protocolSocket = new TestWebSocket();
   protocolSocket.serializeAttachment({ role: "mcp_stream_subscriber", streamId: STREAM_TEST_ID });
@@ -1707,30 +1722,41 @@ function testRelayTimeoutContract() {
   assert(relayContract.streamResumeRetentionMs === 120_000, "resumable result retention drifted from the bounded recovery window");
   assert(relayContract.maximumResumableStreams === 64, "resumable stream capacity drifted from the bounded Worker contract");
   assert(relayContract.maximumResumableMessageBytes === 1_500_000, "resumable message storage exceeded the Durable Object row budget");
-  assert(daemonToolTimeoutMs("session_bootstrap", {}) === 10_000, "bootstrap timeout incorrectly inherited the reconnect budget");
-  assert(daemonToolTimeoutMs("read_file", {}) === 60_000, "ordinary tool timeout was extended without a disconnect");
-  assert(relayContract.maximumInteractiveExecutionTimeoutMs === 85_000, "interactive relay deadline lost its host-safe bound");
-  assert(REMOTE_FOREGROUND_TIMEOUT_SECONDS === 85, "remote foreground schema limit drifted from the relay execution budget");
-  assert(daemonToolTimeoutMs("exec_command", {}) === 65_000, "remote configurable tool default lost its delivery margin");
-  assert(daemonToolTimeoutMs("exec_command", { timeout_seconds: 85 }) === 90_000, "maximum accepted foreground timeout lost its delivery margin");
-  for (const requested of [86, 120, 600]) {
+  assert(relayContract.workerSettlementOverheadMs === 5_000
+    && !("toolCallOverheadMs" in relayContract),
+  "Worker settlement overhead retained its ambiguous execution-budget name");
+  const bootstrapBudget = daemonToolTimeoutBudget("session_bootstrap", {});
+  assert(bootstrapBudget.executionTimeoutMs === 10_000 && bootstrapBudget.settlementTimeoutMs === 15_000,
+    "bootstrap execution and settlement deadlines were not separated");
+  const ordinaryBudget = daemonToolTimeoutBudget("read_file", {});
+  assert(ordinaryBudget.executionTimeoutMs === 60_000 && ordinaryBudget.settlementTimeoutMs === 65_000,
+    "ordinary tool execution consumed its Worker settlement margin");
+  assert(relayContract.maximumInteractiveExecutionTimeoutMs === 60_000, "interactive relay deadline lost its host-delivery margin");
+  assert(REMOTE_FOREGROUND_TIMEOUT_SECONDS === 60, "remote foreground schema limit drifted from the relay execution budget");
+  const defaultExecBudget = daemonToolTimeoutBudget("exec_command", {});
+  assert(defaultExecBudget.executionTimeoutMs === 60_000 && defaultExecBudget.settlementTimeoutMs === 65_000,
+    "remote configurable tool default lost its delivery margin");
+  const maximumExecBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 60 });
+  assert(maximumExecBudget.executionTimeoutMs === 60_000 && maximumExecBudget.settlementTimeoutMs === 65_000,
+    "maximum accepted foreground timeout did not reserve settlement time");
+  for (const requested of [61, 85, 120, 600]) {
     let rejected;
-    try { daemonToolTimeoutMs("exec_command", { timeout_seconds: requested }); }
+    try { daemonToolTimeoutBudget("exec_command", { timeout_seconds: requested }); }
     catch (error) { rejected = error; }
     assert(rejected instanceof WorkerToolError && rejected.code === "invalid_request" && rejected.retryable === false,
       `remote foreground timeout ${requested} was not rejected before dispatch`);
-    assert(rejected.details?.side_effects_started === false && rejected.details?.maximum_foreground_timeout_seconds === 85,
+    assert(rejected.details?.side_effects_started === false && rejected.details?.maximum_foreground_timeout_seconds === 60,
       `remote foreground timeout ${requested} omitted the no-side-effect contract`);
   }
   for (const requested of [0, -1, 1.5, "60", null, {}, Number.NaN]) {
     let rejected;
-    try { daemonToolTimeoutMs("exec_command", { timeout_seconds: requested }); }
+    try { daemonToolTimeoutBudget("exec_command", { timeout_seconds: requested }); }
     catch (error) { rejected = error; }
     assert(rejected instanceof WorkerToolError && rejected.code === "invalid_request" && rejected.retryable === false,
       `malformed remote foreground timeout ${String(requested)} was not rejected before dispatch`);
     assert(rejected.details?.side_effects_started === false
       && rejected.details?.minimum_foreground_timeout_seconds === 1
-      && rejected.details?.maximum_foreground_timeout_seconds === 85,
+      && rejected.details?.maximum_foreground_timeout_seconds === 60,
     `malformed remote foreground timeout ${String(requested)} omitted its strict pre-dispatch bounds`);
   }
   const validArguments = validateWorkerToolArguments("read_file", { path: "fixture.txt" });
@@ -1745,10 +1771,12 @@ function testRelayTimeoutContract() {
   for (const tool of configurableRemoteTools) {
     const timeout = tool.inputSchema.properties.timeout_seconds;
     const expectedDefault = remoteForegroundDefaultSeconds(tool.name);
-    assert(timeout.maximum === 85 && timeout.default === expectedDefault,
+    assert(timeout.maximum === 60 && timeout.default === expectedDefault,
       `remote ${tool.name} schema drifted from its hosted timeout contract`);
-    assert(daemonToolTimeoutMs(tool.name, {}) === expectedDefault * 1000 + 5000,
-      `remote ${tool.name} runtime default differs from tools/list`);
+    const budget = daemonToolTimeoutBudget(tool.name, {});
+    assert(budget.executionTimeoutMs === expectedDefault * 1000
+      && budget.settlementTimeoutMs === expectedDefault * 1000 + relayContract.workerSettlementOverheadMs,
+    `remote ${tool.name} runtime default did not preserve a distinct settlement margin`);
   }
   const remoteExec = workspaceTools.find((tool) => tool.name === "exec_command");
   assert(String(remoteExec?.description || "").includes("managed jobs"),
@@ -1849,6 +1877,14 @@ function testWorkerErrors() {
   const publicValue = publicWorkerToolError(structured);
   assert(publicValue.code === "limit_exceeded" && publicValue.message === "busy", "Worker public error lost stable fields");
   assert(publicValue.details?.process?.output_session_id === "proc_worker_detail_123456789012", "Worker error adapter lost safe process continuation details");
+  const fileConflict = publicWorkerToolError(daemonToolError({
+    code: "conflict", message: "file exists and create_only=true", retryable: false,
+    details: { reason: "already_exists" },
+  }));
+  assert(fileConflict.code === "conflict"
+    && fileConflict.retryable === false
+    && fileConflict.details?.reason === "already_exists",
+  "Worker error adapter lost the typed file-conflict contract");
   const unknown = daemonToolError({ code: "caller_defined_code", message: "unsupported" });
   assert(unknown.code === "execution_failed", "Worker accepted an unregistered daemon error code");
   const directUnknown = new WorkerToolError("future_custom_code", "unsupported");
@@ -1858,6 +1894,25 @@ function testWorkerErrors() {
 }
 
 function testWorkerObservability() {
+  const assertDecision = (actual, expected, message) => assert(
+    JSON.stringify(actual) === JSON.stringify(expected),
+    `${message}: ${JSON.stringify(actual)}`,
+  );
+  assertDecision(daemonTerminalResultDecision(true), {
+    matched: true, acknowledge: true, disposition: "transient_committed",
+  }, "transient result decision changed");
+  assertDecision(daemonTerminalResultDecision(false, "committed"), {
+    matched: true, acknowledge: true, disposition: "durable_committed",
+  }, "durable result decision changed");
+  assertDecision(daemonTerminalResultDecision(false, "missing"), {
+    matched: false, acknowledge: true, disposition: "owner_missing_acknowledged",
+  }, "owner-missing result decision changed");
+  assertDecision(daemonTerminalResultDecision(false, "stale"), {
+    matched: false, acknowledge: false, disposition: "stale_connection_rejected",
+  }, "stale result decision changed");
+  assertDecision(daemonTerminalResultDecision(false), {
+    matched: false, acknowledge: false, disposition: "stale_connection_rejected",
+  }, "result without a verified connection was not rejected");
   const metrics = new WorkerObservability();
   metrics.requestFinished(200);
   metrics.requestFinished(403);
@@ -1866,7 +1921,10 @@ function testWorkerObservability() {
   metrics.callFinished("read_file");
   metrics.callStarted("write_file");
   metrics.callFinished("write_file", "policy_denied");
-  metrics.unmatchedResult();
+  metrics.daemonTerminalResult("transient_committed");
+  metrics.daemonTerminalResult("durable_committed");
+  metrics.daemonTerminalResult("owner_missing_acknowledged");
+  metrics.daemonTerminalResult("stale_connection_rejected");
   metrics.recordError("session_bootstrap_failed");
   metrics.socketCandidate();
   metrics.socketAuthenticated();
@@ -1874,22 +1932,40 @@ function testWorkerObservability() {
   metrics.socketProtocolError("protocol_error");
   metrics.oauthRefreshEvent("rotated");
   metrics.oauthRefreshEvent("retry_issued");
+  metrics.streamTerminalPublished(0);
+  metrics.streamTerminalPublished(2);
+  metrics.streamTerminalStorageResponse();
+  metrics.streamTerminalStorageRaceDelivery(true);
+  metrics.streamTerminalStorageRaceDelivery(false);
   metrics.streamStorageRowsWritten(4);
   metrics.runtimeAlarmMutation("set");
   metrics.runtimeAlarmMutation("noop");
   const snapshot = metrics.snapshot();
   assert(snapshot.metric_scope.lifecycle === "current_worker_isolate"
     && snapshot.metric_scope.durable_calls_may_cross_isolates === true
-    && snapshot.metric_scope.counters_may_not_balance === true,
-  "Worker metrics do not disclose their isolate-local time domain");
+    && snapshot.metric_scope.counters_may_not_balance === true
+    && snapshot.metric_scope.unmatched_results_is_legacy_aggregate === true,
+  "Worker metrics do not disclose their isolate-local time domain or compatibility aggregate");
   assert(snapshot.requests.total === 3 && snapshot.requests.client_error === 1 && snapshot.requests.server_error === 1, "Worker request metrics are incomplete");
   assert(snapshot.calls.started === 2 && snapshot.calls.completed === 1 && snapshot.calls.failed === 1, "Worker call metrics are incomplete");
-  assert(snapshot.calls.unmatched_results === 1, "Worker unmatched-result metric was not retained");
+  assert(snapshot.calls.unmatched_results === 2, "Worker unmatched-result compatibility aggregate was not retained");
+  assert(snapshot.terminal_results.transient_committed === 1
+    && snapshot.terminal_results.durable_committed === 1
+    && snapshot.terminal_results.owner_missing_acknowledged === 1
+    && snapshot.terminal_results.stale_connection_rejected === 1,
+  "Worker terminal-result dispositions were not retained independently");
   assert(snapshot.errors.policy_denied === 1 && snapshot.errors.protocol_error === 1
     && snapshot.errors.session_bootstrap_failed === 1, "Worker error-code metrics are incomplete");
   assert(snapshot.tools.read_file.completed === 1 && snapshot.tools.write_file.failed === 1, "Worker per-tool metrics are incomplete");
   assert(snapshot.sockets.candidates === 1 && snapshot.sockets.authenticated === 1 && snapshot.sockets.disconnected === 1, "Worker socket metrics are incomplete");
   assert(snapshot.oauth_refresh.rotated === 1 && snapshot.oauth_refresh.retry_issued === 1, "OAuth refresh metrics are incomplete");
+  assert(snapshot.stream_transport.legacy_internal_terminal_publications === 2
+    && snapshot.stream_transport.legacy_internal_live_subscriber_sends === 2
+    && snapshot.stream_transport.legacy_internal_publications_without_live_subscriber === 1
+    && snapshot.stream_transport.legacy_internal_storage_responses === 1
+    && snapshot.stream_transport.legacy_internal_storage_race_sends === 1
+    && snapshot.stream_transport.legacy_internal_storage_race_send_failures === 1,
+  "Worker stream metrics conflate publication, storage response, or internal delivery races");
   assert(snapshot.durable_budget.stream_rows_written_estimate === 4 && snapshot.durable_budget.alarm_sets === 1
     && snapshot.durable_budget.alarm_noops === 1, "Durable Object budget metrics are incomplete");
 

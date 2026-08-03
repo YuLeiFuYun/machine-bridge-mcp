@@ -181,6 +181,18 @@ if (!candidateStartSource.includes("persistentActivationSpawnOptions")
   throw new Error("candidate startup must hard-bound npm installation without externally killing the activation transaction");
 }
 const publishedPrereleaseInstallSource = readFileSync(join(root, "scripts", "install-published-prerelease.mjs"), "utf8");
+const prereleaseActivationSource = readFileSync(join(root, "scripts", "prerelease-activation.mjs"), "utf8");
+for (const required of ["ACTIVATION_SCHEMA_VERSION = 2", "LEGACY_ACTIVATION_SCHEMA_VERSION = 1", "global_package_rollback_baseline", "rollback baseline is ambiguous"]) {
+  if (!prereleaseActivationSource.includes(required)) throw new Error(`prerelease activation schema lost explicit rollback-baseline semantics: ${required}`);
+}
+for (const [label, source] of [["candidate", candidateStartSource], ["published prerelease", publishedPrereleaseInstallSource]]) {
+  for (const required of ["ACTIVATION_SCHEMA_VERSION", "global_package_rollback_baseline"]) {
+    if (!source.includes(required)) throw new Error(`${label} activation writer lost the current explicit rollback-baseline contract: ${required}`);
+  }
+  if (source.includes("{ previous:") || source.includes("{ previous }")) {
+    throw new Error(`${label} activation writer restored the ambiguous legacy previous field`);
+  }
+}
 if (!publishedPrereleaseInstallSource.includes("persistentActivationSpawnOptions")
     || (publishedPrereleaseInstallSource.match(/killSignal: "SIGKILL"/g) || []).length !== 1) {
   throw new Error("published prerelease installation must hard-bound npm without externally killing the activation transaction");

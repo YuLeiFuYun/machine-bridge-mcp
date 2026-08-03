@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { link, lstat, mkdir, open, opendir, rename, rm, stat } from "node:fs/promises";
 import path, { basename, dirname, join, resolve } from "node:path";
+import { BridgeError } from "./errors.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
 import { clampInteger } from "./numbers.mjs";
@@ -68,7 +69,7 @@ export class WorkspaceFileService {
     const root = await this.resolveExistingPath(inputPath, context);
     const info = await stat(root);
     if (info.isFile()) return { path: this.displayPath(root, context), files: [this.displayPath(root, context)], truncated: false };
-    if (!info.isDirectory()) throw new Error("path is not a file or directory");
+    if (!info.isDirectory()) throw new BridgeError("invalid_request", "path is not a file or directory", { details: { reason: "unsupported_path_type" } });
     const files = [];
     let resultBytes = 0;
     const walkResult = await this.walk(root, async full => {
@@ -88,7 +89,7 @@ export class WorkspaceFileService {
       args = { path: args, max_bytes: typeof context === "number" ? context : undefined };
       context = {};
     }
-    if (!args.path) throw new Error("path is required");
+    if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
     const full = await this.resolveExistingPath(args.path, context);
     this.throwIfCancelled(context);
     const { buffer, info } = await readBoundedFile(full, MAX_WRITE_BYTES, "readable text file");
@@ -102,14 +103,14 @@ export class WorkspaceFileService {
     }
     const totalLines = lineStarts.length;
     const endLine = args.end_line === undefined ? totalLines : clampInteger(args.end_line, totalLines, 1, Number.MAX_SAFE_INTEGER);
-    if (endLine < startLine) throw new Error("end_line must be greater than or equal to start_line");
-    if (startLine > totalLines) throw new Error(`start_line exceeds total lines (${startLine} > ${totalLines})`);
+    if (endLine < startLine) throw new BridgeError("invalid_request", "end_line must be greater than or equal to start_line", { details: { reason: "invalid_line_range" } });
+    if (startLine > totalLines) throw new BridgeError("invalid_request", `start_line exceeds total lines (${startLine} > ${totalLines})`, { details: { reason: "line_out_of_range", total_lines: totalLines } });
     const selectedEnd = Math.min(endLine, totalLines);
     const selectedStartOffset = lineStarts[startLine - 1];
     const selectedEndOffset = selectedEnd < totalLines ? lineStarts[selectedEnd] : content.length;
     const selected = content.slice(selectedStartOffset, selectedEndOffset);
     const selectedBytes = Buffer.byteLength(selected);
-    if (selectedBytes > maxBytes) throw new Error(`selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`);
+    if (selectedBytes > maxBytes) throw new BridgeError("limit_exceeded", `selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`, { details: { reason: "read_limit", selected_bytes: selectedBytes, maximum_bytes: maxBytes } });
     return {
       path: this.displayPath(full, context),
       size: info.size,
@@ -123,13 +124,13 @@ export class WorkspaceFileService {
   }
 
   async viewImage(args, context = {}) {
-    if (!args.path) throw new Error("path is required");
+    if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
     const full = await this.resolveExistingPath(args.path, context);
     this.throwIfCancelled(context);
     const { buffer, info } = await readBoundedFile(full, MAX_IMAGE_BYTES, "image");
     this.throwIfCancelled(context);
     const mimeType = detectImageMime(buffer);
-    if (!mimeType) throw new Error("unsupported image format; expected PNG, JPEG, GIF, or WebP");
+    if (!mimeType) throw new BridgeError("invalid_request", "unsupported image format; expected PNG, JPEG, GIF, or WebP", { details: { reason: "unsupported_image_format" } });
     return {
       $mcp: {
         content: [{ type: "image", data: buffer.toString("base64"), mimeType }],
@@ -147,19 +148,19 @@ export class WorkspaceFileService {
     return this.withMutationLock(async () => {
       this.throwIfCancelled(context);
       this.policyGate.assert("write_file");
-      if (!args.path) throw new Error("path is required");
+      if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
       const content = String(args.content ?? "");
       const bytes = Buffer.byteLength(content);
-      if (bytes > MAX_WRITE_BYTES) throw new Error(`content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
+      if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
       const full = await this.resolveWritePath(args.path, context);
       const existing = await pathEntryIfExists(full);
-      if (existing?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
-      if (args.create_only && existing) throw new Error("file exists and create_only=true");
-      if (existing && !existing.isFile()) throw new Error("path is not a regular file");
+      if (existing?.isSymbolicLink()) throw new BridgeError("conflict", "refusing to overwrite a symbolic link", { details: { reason: "symbolic_link" } });
+      if (args.create_only && existing) throw new BridgeError("conflict", "file exists and create_only=true", { details: { reason: "already_exists" } });
+      if (existing && !existing.isFile()) throw new BridgeError("conflict", "path is not a regular file", { details: { reason: "unsupported_target_type" } });
       if (args.expected_sha256) {
-        if (!existing) throw new Error("expected_sha256 requires an existing file");
+        if (!existing) throw new BridgeError("conflict", "expected_sha256 requires an existing file", { details: { reason: "precondition_target_missing" } });
         const current = await readUtf8File(full);
-        if (sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new Error("expected_sha256 mismatch");
+        if (sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new BridgeError("conflict", "expected_sha256 mismatch", { details: { reason: "hash_mismatch" } });
       }
       this.throwIfCancelled(context);
       await atomicWriteText(full, content, existing, {
@@ -174,21 +175,21 @@ export class WorkspaceFileService {
     return this.withMutationLock(async () => {
       this.throwIfCancelled(context);
       this.policyGate.assert("edit_file");
-      if (!args.path) throw new Error("path is required");
+      if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
       const oldText = String(args.old_text ?? "");
       const newText = String(args.new_text ?? "");
-      if (!oldText) throw new Error("old_text must not be empty");
+      if (!oldText) throw new BridgeError("invalid_request", "old_text must not be empty", { details: { reason: "empty_old_text" } });
       const full = await this.resolveExistingPath(args.path, context);
       const info = await lstat(full);
-      if (!info.isFile() || info.isSymbolicLink()) throw new Error("path is not a regular non-symbolic-link file");
+      if (!info.isFile() || info.isSymbolicLink()) throw new BridgeError("conflict", "path is not a regular non-symbolic-link file", { details: { reason: "unsupported_target_type" } });
       const current = await readUtf8File(full);
-      if (args.expected_sha256 && sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new Error("expected_sha256 mismatch");
+      if (args.expected_sha256 && sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new BridgeError("conflict", "expected_sha256 mismatch", { details: { reason: "hash_mismatch" } });
       const occurrences = countOccurrences(current, oldText);
-      if (occurrences === 0) throw new Error("old_text was not found");
-      if (!args.replace_all && occurrences !== 1) throw new Error(`old_text occurs ${occurrences} times; provide a unique fragment or set replace_all=true`);
+      if (occurrences === 0) throw new BridgeError("not_found", "old_text was not found", { details: { reason: "text_not_found" } });
+      if (!args.replace_all && occurrences !== 1) throw new BridgeError("conflict", `old_text occurs ${occurrences} times; provide a unique fragment or set replace_all=true`, { details: { reason: "text_ambiguous", occurrences } });
       const updated = args.replace_all ? current.split(oldText).join(newText) : current.replace(oldText, newText);
       const bytes = Buffer.byteLength(updated);
-      if (bytes > MAX_WRITE_BYTES) throw new Error(`edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`);
+      if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
       this.throwIfCancelled(context);
       await atomicWriteText(full, updated, info, { expectedHash: sha256(current) });
       return { ok: true, path: this.displayPath(full, context), replacements: args.replace_all ? occurrences : 1, sha256: sha256(updated), bytes };
@@ -200,31 +201,31 @@ export class WorkspaceFileService {
       this.throwIfCancelled(context);
       this.policyGate.assert("apply_patch");
       const patchText = String(args.patch ?? "");
-      if (!patchText) throw new Error("patch is required");
-      if (Buffer.byteLength(patchText) > MAX_WRITE_BYTES) throw new Error("patch exceeds maximum size");
+      if (!patchText) throw new BridgeError("invalid_request", "patch is required", { details: { reason: "missing_patch" } });
+      if (Buffer.byteLength(patchText) > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", "patch exceeds maximum size", { details: { reason: "patch_limit", maximum_bytes: MAX_WRITE_BYTES } });
       const parsed = parsePatchEnvelope(patchText);
       const prepared = [];
       for (const operation of parsed) {
         this.throwIfCancelled(context);
         if (operation.kind === "add") {
           const target = await this.resolveWritePath(operation.path, context);
-          if (await pathEntryIfExists(target)) throw new Error(`add target already exists: ${operation.path}`);
-          assertTextSize(operation.content, operation.path);
+          if (await pathEntryIfExists(target)) throw new BridgeError("conflict", "add target already exists", { details: { reason: "already_exists", operation: "add" } });
+          assertTextSize(operation.content);
           prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
           continue;
         }
         const source = await this.resolveExistingPath(operation.path, context);
         const sourceInfo = await lstat(source);
-        if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error(`patch source is not a regular file: ${operation.path}`);
+        if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new BridgeError("conflict", "patch source is not a regular file", { details: { reason: "unsupported_source_type" } });
         const original = await readUtf8File(source);
         if (operation.kind === "delete") {
           prepared.push({ kind: "delete", source, target: null, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
           continue;
         }
-        const content = applyUpdateHunks(original, operation.hunks, operation.path);
-        assertTextSize(content, operation.path);
+        const content = applyUpdateHunks(original, operation.hunks);
+        assertTextSize(content);
         const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo, context) : source;
-        if (target !== source && await pathEntryIfExists(target)) throw new Error(`move target already exists: ${operation.moveTo}`);
+        if (target !== source && await pathEntryIfExists(target)) throw new BridgeError("conflict", "move target already exists", { details: { reason: "already_exists", operation: "move" } });
         prepared.push({ kind: operation.moveTo ? "move" : "update", source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
       }
       assertNoResolvedPatchCollisions(prepared);
@@ -245,7 +246,7 @@ export class WorkspaceFileService {
 
   async searchText(args, context = {}) {
     const query = String(args.query || "");
-    if (!query) throw new Error("query is required");
+    if (!query) throw new BridgeError("invalid_request", "query is required", { details: { reason: "missing_query" } });
     const root = await this.resolveExistingPath(args.path || ".", context);
     const max = clampInteger(args.max_matches, 100, 1, 1000);
     const maxFiles = clampInteger(args.max_files, 10000, 1, 100000);
@@ -256,7 +257,7 @@ export class WorkspaceFileService {
       await this.searchOneFile(root, query, matches, max, context);
       return { query, root: this.displayPath(root, context), matches, visited_files: 1, truncated: matches.length >= max };
     }
-    if (!rootInfo.isDirectory()) throw new Error("path is not a file or directory");
+    if (!rootInfo.isDirectory()) throw new BridgeError("invalid_request", "path is not a file or directory", { details: { reason: "unsupported_path_type" } });
     const walkResult = await this.walk(root, async full => {
       this.throwIfCancelled(context);
       if (matches.length >= max || visitedFiles >= maxFiles) return false;
@@ -318,9 +319,9 @@ export async function readBoundedFile(filePath, maxBytes, label) {
   const handle = await open(filePath, flags);
   try {
     const info = await handle.stat();
-    if (!info.isFile()) throw new Error(`${label} is not a regular file`);
-    if (Number(info.nlink) > 1) throw new Error(`refusing to read ${label} with multiple hard links`);
-    if (info.size > maxBytes) throw new Error(`${label} exceeds maximum size (${info.size} > ${maxBytes})`);
+    if (!info.isFile()) throw new BridgeError("invalid_request", `${label} is not a regular file`, { details: { reason: "unsupported_path_type" } });
+    if (Number(info.nlink) > 1) throw new BridgeError("permission_denied", `refusing to read ${label} with multiple hard links`, { details: { reason: "multiple_hard_links" } });
+    if (info.size > maxBytes) throw new BridgeError("limit_exceeded", `${label} exceeds maximum size (${info.size} > ${maxBytes})`, { details: { reason: "read_limit", size: info.size, maximum_bytes: maxBytes } });
     const buffer = Buffer.alloc(info.size);
     let offset = 0;
     while (offset < buffer.length) {
@@ -344,7 +345,7 @@ function isSkippableSearchFileError(error) {
 
 function decodeUtf8(buffer) {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
-    throw new Error("file is not valid UTF-8 text");
+    throw new BridgeError("invalid_request", "file is not valid UTF-8 text", { details: { reason: "invalid_utf8" } });
   }
 }
 
@@ -366,7 +367,7 @@ async function writeFlushedText(filePath, content, mode) {
   try { await handle.close(); } catch (error) { failure ||= error; }
   if (failure) {
     try { await rm(filePath, { force: true }); } catch {
-      throw new Error("staged file write failed and cleanup was incomplete; inspect the destination directory before retrying", { cause: failure });
+      throw new BridgeError("internal_error", "staged file write failed and cleanup was incomplete", { cause: failure, expose: false });
     }
     throw failure;
   }
@@ -380,10 +381,10 @@ async function atomicWriteText(full, content, existing = null, options = {}) {
     if (options.expectedHash) {
       let current;
       try { current = await readUtf8File(full); } catch (error) {
-        if (error?.code === "ENOENT") throw new Error("file changed before atomic commit", { cause: error });
+        if (error?.code === "ENOENT") throw new BridgeError("conflict", "file changed before atomic commit", { cause: error, details: { reason: "precondition_target_missing" } });
         throw error;
       }
-      if (sha256(current) !== options.expectedHash) throw new Error("file changed before atomic commit");
+      if (sha256(current) !== options.expectedHash) throw new BridgeError("conflict", "file changed before atomic commit", { details: { reason: "hash_mismatch" } });
     }
     if (options.createOnly) {
       await link(temp, full);
@@ -406,7 +407,7 @@ function assertNoResolvedPatchCollisions(operations) {
     for (const full of paths) {
       const key = process.platform === "win32" ? String(full).toLowerCase() : String(full);
       const previous = owners.get(key);
-      if (previous && previous !== operation) throw new Error(`patch operations resolve to the same path: ${full}`);
+      if (previous && previous !== operation) throw new BridgeError("conflict", "patch operations resolve to the same path", { details: { reason: "resolved_path_collision" } });
       owners.set(key, operation);
     }
   }
@@ -429,10 +430,10 @@ export async function commitPatchTransaction(operations, options = {}) {
     for (const operation of operations) {
       if (operation.source) {
         const current = await readUtf8File(operation.source);
-        if (sha256(current) !== operation.originalHash) throw new Error(`patch source changed during apply: ${operation.source}`);
+        if (sha256(current) !== operation.originalHash) throw new BridgeError("conflict", "patch source changed during apply", { details: { reason: "hash_mismatch" } });
       }
       if (operation.kind === "add" || operation.kind === "move") {
-        if (await pathEntryIfExists(operation.target)) throw new Error(`patch target appeared during apply: ${operation.target}`);
+        if (await pathEntryIfExists(operation.target)) throw new BridgeError("conflict", "patch target appeared during apply", { details: { reason: "target_appeared" } });
       }
     }
 
@@ -462,7 +463,7 @@ export async function commitPatchTransaction(operations, options = {}) {
     }
     recoveryFailures.push(...await removePatchArtifacts(staged.map((item) => item.temp), remove));
     if (recoveryFailures.length) {
-      throw new Error(`patch transaction failed and recovery was incomplete (${recoveryFailures.length} recovery operation(s) failed); inspect the workspace before retrying`, { cause: error });
+      throw new BridgeError("internal_error", "patch transaction failed and recovery was incomplete", { cause: error, expose: false });
     }
     throw error;
   }
@@ -486,9 +487,9 @@ async function removePatchArtifacts(paths, remove) {
   return failures;
 }
 
-function assertTextSize(content, label) {
+function assertTextSize(content) {
   const bytes = Buffer.byteLength(content);
-  if (bytes > MAX_WRITE_BYTES) throw new Error(`patched file exceeds maximum size for ${label} (${bytes} > ${MAX_WRITE_BYTES})`);
+  if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `patched file exceeds maximum size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
 }
 
 function countOccurrences(content, needle) {

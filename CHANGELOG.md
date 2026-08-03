@@ -1,5 +1,49 @@
 # Changelog
 
+## 3.0.0-beta.35 - 2026-08-03
+
+### Enforce the patch-helper call contract
+
+- Remove the obsolete third argument from the workspace patch call after beta.32 intentionally removed path data from `applyUpdateHunks` errors. The extra argument had no runtime effect but violated the helper contract and was rejected by the zero-unaccepted-findings CodeQL gate.
+- Add an architecture source-contract regression requiring the single workspace call to match the two-argument helper signature, so local verification catches the mismatch before remote CodeQL.
+
+## 3.0.0-beta.34 - 2026-08-03
+
+### Classify daemon terminal-result dispositions
+
+- Replace the ambiguous Worker `unmatched_results` interpretation with an explicit `terminal_results` disposition matrix. Successful transient and durable settlements are counted separately from owner-missing results that are acknowledged to terminate normal at-least-once replay and stale-connection results that are rejected without acknowledgement.
+- Retain `calls.unmatched_results` as a compatibility aggregate of `owner_missing_acknowledged` and `stale_connection_rejected`, and mark that scope machine-readably. Operators no longer need to treat a harmless duplicate after cancellation, timeout, reconnect, deployment, or lost acknowledgement as evidence of a connection-identity defect.
+- Centralize the settlement-to-acknowledgement decision and test all four outcomes. A deployed Worker integration regression completes a real call, consumes its acknowledgement, resends the identical result, proves a second acknowledgement, and verifies that only `owner_missing_acknowledged` increases.
+- Update architecture and operations contracts so stale ownership is diagnosed from `stale_connection_rejected`, while sustained owner-missing growth is investigated as acknowledgement loss or bounded lifecycle overlap rather than automatically classified as protocol corruption.
+
+## 3.0.0-beta.33 - 2026-08-03
+
+### Clarify prerelease rollback evidence
+
+- Upgrade prerelease activation records to schema 2 and replace the ambiguous `previous` field with `global_package_rollback_baseline`. The field now states exactly what activation records retain: the globally installed npm package version and entrypoint available for operator-directed disaster recovery, not the service runtime active immediately before activation.
+- Keep schema 1 activation records readable without rewriting historical evidence. Legacy `previous` values are normalized in memory to the schema 2 field, while mixed-version fields, duplicate baseline fields, relative entrypoints, and malformed baselines fail closed.
+- Keep transaction-scoped service recovery separate. `runtime-activation` continues to capture and verify the actual pre-handoff service version and entrypoint during activation; the persistent activation record no longer invites those two recovery concepts to be conflated.
+- Make both local-candidate and published-prerelease writers consume the shared activation schema constant, add disk-level migration and rejection regressions, and enforce the field distinction in architecture and release documentation gates.
+
+## 3.0.0-beta.32 - 2026-08-03
+
+### Typed file mutation failures
+
+- Replace ordinary exceptions in workspace file, patch, and remote path-boundary operations with the existing stable `BridgeError` contract. `write_file`, `edit_file`, and `apply_patch` now preserve actionable error codes and bounded `details.reason` values through local execution, stdio MCP, daemon WebSocket transport, Worker adaptation, and public MCP tool results instead of collapsing expected state failures to `execution_failed`.
+- Classify create-only collisions, optimistic SHA-256 mismatches, targets that appear during commit, unsupported target types, symbolic-link destinations, duplicate patch paths, and stale or ambiguous patch contexts as `conflict`. Missing edit text is `not_found`; malformed patch envelopes, invalid text/image inputs, and invalid line ranges are `invalid_request`; bounded read/write violations are `limit_exceeded`; hard-link read denial is `permission_denied`; workspace escape is `path_boundary`.
+- Keep sensitive and irrecoverable failures fail-closed. Error details contain only bounded reason tokens, counts, limits, and hunk/line indexes, never paths, file contents, old/new text, or expected/actual hashes. Incomplete staged-write cleanup and incomplete patch rollback remain non-exposed `internal_error` results while retaining their causes locally.
+- Add direct runtime, atomic fault-injection, Worker-adapter, and live stdio regressions proving stable code/reason propagation, no overwrite after create-only or stale-precondition failure, transactional rollback, and absence of absolute paths in public error objects. Update tool discovery descriptions, generated reference, architecture, testing, and client guidance.
+
+## 3.0.0-beta.31 - 2026-08-03
+
+### Preserve host delivery margin for synchronous tools
+
+- Reduce the remote synchronous foreground ceiling from 85 to 60 seconds. The previous 85-second execution allowance plus five seconds of Worker settlement could consume roughly 90 seconds before terminal handling completed; live evidence showed a temporally aligned 83.5-second command complete locally after the ChatGPT task had already ended with a message-send timeout. Defaults remain 30 or 60 seconds, owner-local commands retain their local budget, and longer remote work continues through process sessions or managed jobs.
+- Separate the daemon execution deadline from the Worker settlement deadline. A second review found that the first beta.31 candidate sent the 65-second settlement deadline to the daemon as its local execution deadline, so the claimed five-second margin was not real for tools governed only by the relay envelope. The daemon now receives at most 60 seconds, while the Worker records a settlement deadline five seconds later for result acceptance, persistence, acknowledgement, and terminal settlement. Admission and transport latency may consume part of that internal interval, so it is not an external host guarantee.
+- Replace the ambiguous zero-recipient counter with explicit Worker-internal transport metrics for terminal publication, live internal-subscriber sends, storage responses, and the completion-between-lookup-and-subscription race. These metrics do not assert public SSE consumption or host receipt; `server_info.tool_delivery.host_terminal_receipt_observable=false` makes that boundary machine-readable without logging call IDs, arguments, or results.
+- Reduce the unactivated legacy-stream retention ceiling from the obsolete 730-second local-envelope-derived value to 185 seconds: the 65-second maximum hosted settlement deadline plus the 120-second terminal replay window. Activated calls still extend their records across the actual operation/reconnect state machine; abandoned prepare records no longer occupy the bounded 64-stream capacity for more than the hosted contract requires.
+- Update the executable tool catalog, client guidance, generated reference, timeout regressions, and upgrade documentation. Existing MCP hosts may retain an older cached tool schema until they rediscover or reconnect; Worker validation remains authoritative and rejects oversized requests before dispatch.
+
 ## 3.0.0-beta.30 - 2026-08-02
 
 ### Resumable MCP delivery under transient interruption

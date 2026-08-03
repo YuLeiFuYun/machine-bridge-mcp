@@ -4,12 +4,46 @@ const MAX_ERROR_CODES = 64;
 const MAX_TOOLS = 128;
 const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|secret|token|verifier|private[_-]?key)/i;
 
+export type DaemonTerminalResultDisposition =
+  | "transient_committed"
+  | "durable_committed"
+  | "owner_missing_acknowledged"
+  | "stale_connection_rejected";
+
+export type DurableTerminalResultSettlement = "committed" | "missing" | "stale";
+
+export function daemonTerminalResultDecision(
+  transientMatched: boolean,
+  durableSettlement?: DurableTerminalResultSettlement,
+): { matched: boolean; acknowledge: boolean; disposition: DaemonTerminalResultDisposition } {
+  if (transientMatched) {
+    return { matched: true, acknowledge: true, disposition: "transient_committed" };
+  }
+  if (durableSettlement === "committed") {
+    return { matched: true, acknowledge: true, disposition: "durable_committed" };
+  }
+  if (durableSettlement === "missing") {
+    return { matched: false, acknowledge: true, disposition: "owner_missing_acknowledged" };
+  }
+  return { matched: false, acknowledge: false, disposition: "stale_connection_rejected" };
+}
+
 export class WorkerObservability {
   private readonly startedAt = performance.now();
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
   private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
+  private readonly terminalResults = {
+    transient_committed: 0, durable_committed: 0,
+    owner_missing_acknowledged: 0, stale_connection_rejected: 0,
+  };
   private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
-  private readonly streamTransport = { subscribers_opened: 0, subscribers_coexisting: 0, subscriber_limit_rejections: 0, terminal_pushes: 0, terminal_recipients: 0, protocol_errors: 0 };
+  private readonly streamTransport = {
+    subscribers_opened: 0, subscribers_coexisting: 0, subscriber_limit_rejections: 0,
+    legacy_internal_terminal_publications: 0, legacy_internal_live_subscriber_sends: 0,
+    legacy_internal_publications_without_live_subscriber: 0, legacy_internal_storage_responses: 0,
+    legacy_internal_storage_race_sends: 0, legacy_internal_storage_race_send_failures: 0,
+    protocol_errors: 0,
+  };
   private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
   private readonly durableBudget = { stream_rows_written_estimate: 0, alarm_sets: 0, alarm_deletes: 0, alarm_noops: 0 };
   private readonly errors = new Map<string, number>();
@@ -44,7 +78,12 @@ export class WorkerObservability {
     this.incrementError(code);
   }
 
-  unmatchedResult(): void { this.calls.unmatched_results += 1; }
+  daemonTerminalResult(disposition: DaemonTerminalResultDisposition): void {
+    this.terminalResults[disposition] += 1;
+    if (disposition === "owner_missing_acknowledged" || disposition === "stale_connection_rejected") {
+      this.calls.unmatched_results += 1;
+    }
+  }
   recordError(code: string): void { this.incrementError(code); }
 
   socketCandidate(): void { this.sockets.candidates += 1; }
@@ -66,9 +105,20 @@ export class WorkerObservability {
     this.incrementError("stream_subscriber_limit");
   }
 
-  streamTerminalDelivered(recipients: number): void {
-    this.streamTransport.terminal_pushes += 1;
-    this.streamTransport.terminal_recipients += Math.max(0, Math.floor(recipients));
+  streamTerminalPublished(recipients: number): void {
+    const delivered = Math.max(0, Math.floor(recipients));
+    this.streamTransport.legacy_internal_terminal_publications += 1;
+    this.streamTransport.legacy_internal_live_subscriber_sends += delivered;
+    if (delivered === 0) this.streamTransport.legacy_internal_publications_without_live_subscriber += 1;
+  }
+
+  streamTerminalStorageResponse(): void {
+    this.streamTransport.legacy_internal_storage_responses += 1;
+  }
+
+  streamTerminalStorageRaceDelivery(delivered: boolean): void {
+    if (delivered) this.streamTransport.legacy_internal_storage_race_sends += 1;
+    else this.streamTransport.legacy_internal_storage_race_send_failures += 1;
   }
 
   streamSubscriberProtocolError(): void {
@@ -97,9 +147,11 @@ export class WorkerObservability {
         lifecycle: "current_worker_isolate",
         durable_calls_may_cross_isolates: true,
         counters_may_not_balance: true,
+        unmatched_results_is_legacy_aggregate: true,
       },
       requests: { ...this.requests },
       calls: { ...this.calls },
+      terminal_results: { ...this.terminalResults },
       sockets: { ...this.sockets },
       stream_transport: { ...this.streamTransport },
       oauth_refresh: { ...this.oauthRefresh },

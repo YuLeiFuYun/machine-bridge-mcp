@@ -31,6 +31,8 @@ Support boundaries are defined in [SUPPORT.md](SUPPORT.md). Repository participa
 
 The remote Worker authenticates and relays requests. It cannot directly read local files or start local processes. Local-user authority remains in the daemon process.
 
+Expected file-state failures are machine-readable. File mutations return stable codes such as `conflict`, `not_found`, `invalid_request`, and `limit_exceeded`, with bounded `details.reason` tokens where useful. Conflict responses should trigger a fresh read and reconciliation rather than a blind retry; public errors do not include file contents, compared hashes, or hidden paths.
+
 ```text
 Hosted MCP client
   -> HTTPS + OAuth 2.1 / PKCE
@@ -169,7 +171,7 @@ The shared source of truth is `src/shared/policy-contract.json`. The generated m
 
 For remote calls, `server_info.authorization.effective_policy` and `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
 
-`tools/list` is a stable discovery catalog for the authenticated account role. A brief relay interruption does not withdraw tool definitions or require a tools-list-changed notification. Discovery is not authority: every `tools/call` is still intersected with the current end-to-end-ready daemon policy and tool ceiling, and fails retryably with `unavailable` when no daemon is ready. `server_info.tool_delivery` distinguishes the stable advertised catalog from the currently effective daemon/account intersection. The remote catalog also narrows configurable foreground timeouts to 85 seconds while preserving each tool’s 30- or 60-second default; larger requests fail before daemon dispatch instead of being silently truncated after side effects may have begun.
+`tools/list` is a stable discovery catalog for the authenticated account role. A brief relay interruption does not withdraw tool definitions or require a tools-list-changed notification. Discovery is not authority: every `tools/call` is still intersected with the current end-to-end-ready daemon policy and tool ceiling, and fails retryably with `unavailable` when no daemon is ready. `server_info.tool_delivery` distinguishes the stable advertised catalog from the currently effective daemon/account intersection. The remote catalog also narrows configurable foreground timeouts to 60 seconds while preserving each tool’s 30- or 60-second default; larger requests fail before daemon dispatch instead of being silently truncated after side effects may have begun.
 
 `full` is the daemon capability ceiling. An authenticated owner may exercise it without per-operation approval IDs. Delegated reviewer, editor, and operator accounts remain inside immutable role ceilings; out-of-role operations are denied rather than converted into a temporary elevation workflow. Process sessions, retained output, and managed jobs are additionally bound to account, client, and refresh-token family. See [local authorization](docs/LOCAL_AUTHORIZATION.md).
 
@@ -188,7 +190,7 @@ Machine Bridge does not launch or identify a separate browser profile. It contro
 
 ## Durable work and local resources
 
-Remote foreground process, shell, browser, and application calls are bounded to 85 seconds. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; inspect `diagnose_runtime.runtime.processes` remotely (or `server_info.runtime.processes` over local stdio) when a heavy filesystem or process operation is still draining. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
+Remote foreground process, shell, browser, and application calls are bounded to 60 seconds of daemon execution. The Worker retains separate settlement ownership for five additional seconds, but neither that margin nor its internal stream metrics prove that an external MCP host consumed the terminal frame. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; inspect `diagnose_runtime.runtime.processes` remotely (or `server_info.runtime.processes` over local stdio) when a heavy filesystem or process operation is still draining. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
 
 Credentials and files can be registered by alias without returning their contents through MCP:
 

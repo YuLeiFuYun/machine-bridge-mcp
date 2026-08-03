@@ -165,7 +165,7 @@ From the exact accepted source checkout, the owner runs:
 npm run prerelease:install -- --allow-worker-deploy
 ```
 
-This command verifies that the npm registry tarball SHA-1/SHA-512 and dist-tag match the locally accepted candidate, installs that exact published version globally, updates the Worker and login daemon, verifies both versions, and writes an owner-only `npm-prerelease` activation record. The formal soak clock starts from this activation record, not from a local unpublished candidate.
+This command verifies that the npm registry tarball SHA-1/SHA-512 and dist-tag match the locally accepted candidate, installs that exact published version globally, updates the Worker and login daemon, verifies both versions, and writes an owner-only `npm-prerelease` activation record. Schema 2 names any retained fallback explicitly as `global_package_rollback_baseline`: it identifies the globally installed npm package and entrypoint available for operator-directed disaster recovery, not the service runtime that was active immediately before activation. The activation transaction captures and verifies that previous service identity separately while the handoff is in progress. Schema 1 records using the legacy `previous` field remain readable and are normalized in memory without rewriting historical evidence. The formal soak clock starts from this activation record, not from a local unpublished candidate.
 
 Use the prerelease normally. Exercise the changed areas under real workloads. A crash, authorization anomaly, data-loss risk, repeated relay failure, incorrect service lifecycle, significant compatibility regression, or security/privacy defect is blocking.
 

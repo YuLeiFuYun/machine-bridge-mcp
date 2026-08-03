@@ -48,6 +48,7 @@ const appAutomationSource = readFileSync(join(root, "src", "local", "app-automat
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const workerWebSocketProtocolSource = readFileSync(join(root, "src", "worker", "websocket-protocol.ts"), "utf8");
+const workerObservabilitySource = readFileSync(join(root, "src", "worker", "observability.ts"), "utf8");
 const workerOAuthControllerSource = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
 const workerOAuthPageSource = readFileSync(join(root, "src", "worker", "oauth-authorization-page.ts"), "utf8");
 const workerHttpSource = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
@@ -138,6 +139,18 @@ for (const [name, source] of [
 ]) {
   if (/catch\s*(?:\([^)]*\))?\s*\{\s*\}/.test(source)) throw new Error(`${name} contains an unexplained empty catch`);
 }
+for (const required of [
+  "transient_committed", "durable_committed", "owner_missing_acknowledged", "stale_connection_rejected",
+  "unmatched_results_is_legacy_aggregate",
+]) {
+  if (!workerObservabilitySource.includes(required)) throw new Error(`Worker terminal-result observability lost disposition: ${required}`);
+}
+if (!workerSource.includes("daemonTerminalResultDecision(transientMatched, durableSettlement)")
+    || !workerSource.includes("if (decision.acknowledge)")
+    || !workerSource.includes("this.observability.daemonTerminalResult(decision.disposition)")) {
+  throw new Error("Worker result handling no longer separates acknowledged owner-missing replay from rejected stale connections");
+}
+
 if (!workerSource.includes('from "./websocket-protocol.ts"')
     || !workerWebSocketProtocolSource.includes("function sendWebSocketQuietly")
     || !workerWebSocketProtocolSource.includes("function closeWebSocketQuietly")) {

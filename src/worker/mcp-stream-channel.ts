@@ -1,5 +1,6 @@
 import { json } from "./http.ts";
 import type { JsonRpcMessage, McpResumptionStore } from "./mcp-resumption.ts";
+import type { WorkerObservability } from "./observability.ts";
 import { isStreamId } from "./mcp-resumption-records.ts";
 import { closeWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
 
@@ -8,12 +9,10 @@ const SUBSCRIBER_TAG_PREFIX = "mcp-stream:";
 const MAX_SUBSCRIBERS_PER_STREAM = 4;
 
 type StreamChannelContext = Pick<DurableObjectState, "acceptWebSocket" | "getWebSockets">;
-type StreamChannelObservability = {
-  streamSubscriberOpened(existing: number): void;
-  streamSubscriberRejected(): void;
-  streamTerminalDelivered(recipients: number): void;
-  streamSubscriberProtocolError(): void;
-};
+type StreamChannelObservability = Pick<WorkerObservability,
+  "streamSubscriberOpened" | "streamSubscriberRejected" | "streamTerminalPublished"
+  | "streamTerminalStorageResponse" | "streamTerminalStorageRaceDelivery" | "streamSubscriberProtocolError"
+>;
 type WebSocketPairFactory = () => [WebSocket, WebSocket];
 type UpgradeResponseFactory = (client: WebSocket) => Response;
 type StreamSubscriberAttachment = { role: typeof SUBSCRIBER_ROLE; streamId: string };
@@ -25,12 +24,9 @@ export class McpStreamChannel {
   private readonly createUpgradeResponse: UpgradeResponseFactory;
   private subscriberAdmission: Promise<void> = Promise.resolve();
 
-  constructor(
-    context: StreamChannelContext,
-    observability: StreamChannelObservability,
+  constructor(context: StreamChannelContext, observability: StreamChannelObservability,
     createPair: WebSocketPairFactory = defaultWebSocketPair,
-    createUpgradeResponse: UpgradeResponseFactory = defaultUpgradeResponse,
-  ) {
+    createUpgradeResponse: UpgradeResponseFactory = defaultUpgradeResponse) {
     this.context = context;
     this.observability = observability;
     this.createPair = createPair;
@@ -43,7 +39,10 @@ export class McpStreamChannel {
     }
 
     const initial = await resumption.pollMessage(streamId);
-    if (initial.kind === "message") return json(initial.message);
+    if (initial.kind === "message") {
+      this.observability.streamTerminalStorageResponse();
+      return json(initial.message);
+    }
     if (initial.kind === "not_found") return json({ error: "stream_not_found" }, 404);
 
     return await this.withSubscriberAdmission(async () => {
@@ -63,7 +62,9 @@ export class McpStreamChannel {
         // Recheck after registration. Completion may race between the first storage
         // read and acceptWebSocket(); either publish() or this read delivers it.
         const current = await resumption.pollMessage(streamId);
-        if (current.kind === "message") this.sendTerminal(server, current.message);
+        if (current.kind === "message") {
+          this.observability.streamTerminalStorageRaceDelivery(this.sendTerminal(server, current.message));
+        }
         else if (current.kind === "not_found") closeWebSocketQuietly(server, 1008, "stream unavailable");
       } catch (error) {
         closeWebSocketQuietly(server, 1011, "stream lookup failed");
@@ -81,7 +82,7 @@ export class McpStreamChannel {
     for (const socket of sockets) {
       if (this.sendTerminal(socket, message)) delivered += 1;
     }
-    this.observability.streamTerminalDelivered(delivered);
+    this.observability.streamTerminalPublished(delivered);
   }
 
   isSubscriber(socket: WebSocket): boolean {
@@ -112,7 +113,6 @@ export class McpStreamChannel {
     closeWebSocketQuietly(socket, sent ? 1000 : 1011, sent ? "stream complete" : "stream delivery failed");
     return sent;
   }
-
 }
 
 function subscriberAttachment(socket: WebSocket): StreamSubscriberAttachment | null {
