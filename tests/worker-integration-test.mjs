@@ -895,7 +895,7 @@ try {
 
   const remoteAgentTools = await callToolsList(base, ownerAccessToken, 2501);
   const remoteRunProcess = remoteAgentTools.find((tool) => tool.name === "run_process");
-  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 85
+  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 60
     && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 60,
   "remote tools/list advertised a foreground timeout beyond the hosted delivery boundary");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
@@ -1401,7 +1401,8 @@ try {
     body: JSON.stringify({ jsonrpc: "2.0", id: 75, method: "tools/call", params: { name: "run_process", arguments: { argv: ["never-runs"], timeout_seconds: 1 } } }),
   });
   const timedRelay = await waitForWsMessage(candidateDaemon, "tool_call");
-  assert(timedRelay.tool === "run_process", "Worker did not relay timeout test call");
+  assert(timedRelay.tool === "run_process" && timedRelay.timeout_ms === 1_000,
+    "Worker did not relay the execution deadline independently from its settlement margin");
   const relayTimeoutCancel = await waitForWsMessage(candidateDaemon, "cancel_call", 10_000);
   assert(relayTimeoutCancel.id === timedRelay.id, "Worker timeout cancellation targeted the wrong daemon call");
   const relayTimeoutResult = await relayTimeoutCall;

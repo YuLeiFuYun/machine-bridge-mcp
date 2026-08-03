@@ -9,7 +9,13 @@ export class WorkerObservability {
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
   private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
   private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
-  private readonly streamTransport = { subscribers_opened: 0, subscribers_coexisting: 0, subscriber_limit_rejections: 0, terminal_pushes: 0, terminal_recipients: 0, protocol_errors: 0 };
+  private readonly streamTransport = {
+    subscribers_opened: 0, subscribers_coexisting: 0, subscriber_limit_rejections: 0,
+    legacy_internal_terminal_publications: 0, legacy_internal_live_subscriber_sends: 0,
+    legacy_internal_publications_without_live_subscriber: 0, legacy_internal_storage_responses: 0,
+    legacy_internal_storage_race_sends: 0, legacy_internal_storage_race_send_failures: 0,
+    protocol_errors: 0,
+  };
   private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
   private readonly durableBudget = { stream_rows_written_estimate: 0, alarm_sets: 0, alarm_deletes: 0, alarm_noops: 0 };
   private readonly errors = new Map<string, number>();
@@ -66,9 +72,20 @@ export class WorkerObservability {
     this.incrementError("stream_subscriber_limit");
   }
 
-  streamTerminalDelivered(recipients: number): void {
-    this.streamTransport.terminal_pushes += 1;
-    this.streamTransport.terminal_recipients += Math.max(0, Math.floor(recipients));
+  streamTerminalPublished(recipients: number): void {
+    const delivered = Math.max(0, Math.floor(recipients));
+    this.streamTransport.legacy_internal_terminal_publications += 1;
+    this.streamTransport.legacy_internal_live_subscriber_sends += delivered;
+    if (delivered === 0) this.streamTransport.legacy_internal_publications_without_live_subscriber += 1;
+  }
+
+  streamTerminalStorageResponse(): void {
+    this.streamTransport.legacy_internal_storage_responses += 1;
+  }
+
+  streamTerminalStorageRaceDelivery(delivered: boolean): void {
+    if (delivered) this.streamTransport.legacy_internal_storage_race_sends += 1;
+    else this.streamTransport.legacy_internal_storage_race_send_failures += 1;
   }
 
   streamSubscriberProtocolError(): void {

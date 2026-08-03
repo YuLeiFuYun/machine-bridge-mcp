@@ -160,7 +160,7 @@ async function testRecordValidationAndLimits() {
     maximumMessageBytes: 9_999_999,
   });
   assert(limits.retentionMs === 120_000, "terminal retention exceeded the shared hard ceiling");
-  assert(limits.pendingRetentionMs === 730_000, "pending retention exceeded the execution plus replay hard ceiling");
+  assert(limits.pendingRetentionMs === 185_000, "pending retention exceeded the hosted settlement plus replay hard ceiling");
   assert(limits.maximumStreams === 64 && limits.maximumMessageBytes === 1_500_000, "configured limits exceeded the shared hard ceilings");
 }
 

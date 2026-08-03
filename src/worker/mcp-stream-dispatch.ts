@@ -1,3 +1,4 @@
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import type { JsonRpcMessage, McpResumptionStore } from "./mcp-resumption.ts";
 import {
@@ -31,7 +32,8 @@ type StartStreamCallInput = {
   socket: WebSocket;
   daemonInstanceId: string;
   connectionId: string;
-  timeoutMs: number;
+  executionTimeoutMs: number;
+  settlementTimeoutMs: number;
   authorization: StreamCallAuthorization;
   transientSnapshot: { active: number; by_tool: Record<string, number> };
   maximumPendingCalls: number;
@@ -97,6 +99,11 @@ export function buildServerInfoResult(input: {
       effective_scope: "live_daemon_and_account_intersection_before_host_filtering",
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
+      remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
+      worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
+      daemon_execution_and_worker_settlement_deadlines_separate: true,
+      host_terminal_receipt_observable: false,
+      internal_stream_metrics_scope: "legacy resumable Worker-internal storage and subscription transport only",
     },
   };
 }
@@ -112,7 +119,7 @@ export async function startEventDrivenStreamCall(input: StartStreamCallInput): P
       clientRequestKey: input.clientRequestKey,
       requestFingerprint: input.requestFingerprint,
       tool: input.tool,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: input.settlementTimeoutMs,
       transform: input.transform,
       transientSnapshot: input.transientSnapshot,
       maximumPendingCalls: input.maximumPendingCalls,
@@ -134,7 +141,7 @@ export async function startEventDrivenStreamCall(input: StartStreamCallInput): P
       id: callId,
       tool: input.tool,
       arguments: input.arguments,
-      timeout_ms: input.timeoutMs,
+      timeout_ms: input.executionTimeoutMs,
       authorization: input.authorization,
     }));
   } catch {

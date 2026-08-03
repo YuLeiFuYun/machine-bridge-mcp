@@ -12,13 +12,26 @@ export {
   REMOTE_FOREGROUND_TIMEOUT_SECONDS,
 } from "../shared/foreground-timeout.mjs";
 
-export function daemonToolTimeoutMs(name: string, args: Record<string, unknown>): number {
+export type DaemonToolTimeoutBudget = Readonly<{
+  executionTimeoutMs: number;
+  settlementTimeoutMs: number;
+}>;
+
+export function daemonToolTimeoutBudget(name: string, args: Record<string, unknown>): DaemonToolTimeoutBudget {
+  const executionTimeoutMs = toolExecutionTimeoutMs(name, args);
+  const settlementTimeoutMs = Math.min(
+    executionTimeoutMs + relayContract.workerSettlementOverheadMs,
+    relayContract.maximumRelayToolTimeoutMs,
+  );
+  return Object.freeze({ executionTimeoutMs, settlementTimeoutMs });
+}
+
+function toolExecutionTimeoutMs(name: string, args: Record<string, unknown>): number {
   if (name === "session_bootstrap") return 10_000;
   if (!isConfigurableForegroundTool(name)) return 60_000;
 
   const seconds = remoteForegroundSeconds(name, args.timeout_seconds);
-  const executionMs = Math.min(seconds * 1000, relayContract.maximumExecutionTimeoutMs);
-  return Math.min(executionMs + relayContract.toolCallOverheadMs, relayContract.maximumRelayToolTimeoutMs);
+  return Math.min(seconds * 1000, relayContract.maximumExecutionTimeoutMs);
 }
 
 function remoteForegroundSeconds(name: string, value: unknown): number {

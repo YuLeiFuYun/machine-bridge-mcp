@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-beta.31 - 2026-08-03
+
+### Preserve host delivery margin for synchronous tools
+
+- Reduce the remote synchronous foreground ceiling from 85 to 60 seconds. The previous 85-second execution allowance plus five seconds of Worker settlement could consume roughly 90 seconds before terminal handling completed; live evidence showed a temporally aligned 83.5-second command complete locally after the ChatGPT task had already ended with a message-send timeout. Defaults remain 30 or 60 seconds, owner-local commands retain their local budget, and longer remote work continues through process sessions or managed jobs.
+- Separate the daemon execution deadline from the Worker settlement deadline. A second review found that the first beta.31 candidate sent the 65-second settlement deadline to the daemon as its local execution deadline, so the claimed five-second margin was not real for tools governed only by the relay envelope. The daemon now receives at most 60 seconds, while the Worker records a settlement deadline five seconds later for result acceptance, persistence, acknowledgement, and terminal settlement. Admission and transport latency may consume part of that internal interval, so it is not an external host guarantee.
+- Replace the ambiguous zero-recipient counter with explicit Worker-internal transport metrics for terminal publication, live internal-subscriber sends, storage responses, and the completion-between-lookup-and-subscription race. These metrics do not assert public SSE consumption or host receipt; `server_info.tool_delivery.host_terminal_receipt_observable=false` makes that boundary machine-readable without logging call IDs, arguments, or results.
+- Reduce the unactivated legacy-stream retention ceiling from the obsolete 730-second local-envelope-derived value to 185 seconds: the 65-second maximum hosted settlement deadline plus the 120-second terminal replay window. Activated calls still extend their records across the actual operation/reconnect state machine; abandoned prepare records no longer occupy the bounded 64-stream capacity for more than the hosted contract requires.
+- Update the executable tool catalog, client guidance, generated reference, timeout regressions, and upgrade documentation. Existing MCP hosts may retain an older cached tool schema until they rediscover or reconnect; Worker validation remains authoritative and rejects oversized requests before dispatch.
+
 ## 3.0.0-beta.30 - 2026-08-02
 
 ### Resumable MCP delivery under transient interruption

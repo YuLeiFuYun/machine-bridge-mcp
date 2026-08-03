@@ -26,7 +26,7 @@ import { McpStreamChannel } from "./mcp-stream-channel.ts";
 import { buildServerInfoResult, startEventDrivenStreamCall } from "./mcp-stream-dispatch.ts";
 import { DurableStreamCallCoordinator } from "./durable-stream-calls.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
-import { daemonToolTimeoutMs } from "./tool-timeout.ts";
+import { daemonToolTimeoutBudget } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
@@ -59,11 +59,10 @@ import {
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
 
-const SERVER_VERSION = "3.0.0-beta.30";
+const SERVER_VERSION = "3.0.0-beta.31";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
-
 export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS);
   private readonly observability = new WorkerObservability();
@@ -508,6 +507,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!attachment?.tools?.includes(name)) {
       throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
     }
+    const timeoutBudget = daemonToolTimeoutBudget(name, args);
     await startEventDrivenStreamCall({
       resumption: this.resumption,
       observability: this.observability,
@@ -520,7 +520,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       socket,
       daemonInstanceId,
       connectionId,
-      timeoutMs: daemonToolTimeoutMs(name, args),
+      executionTimeoutMs: timeoutBudget.executionTimeoutMs,
+      settlementTimeoutMs: timeoutBudget.settlementTimeoutMs,
       transientSnapshot: this.pending.snapshot(),
       maximumPendingCalls: MAX_PENDING_CALLS,
       reservedPendingCalls: RESERVED_CONTROL_PENDING_CALLS,
@@ -555,7 +556,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const validation = validateWorkerToolArguments(name, args);
     if (!validation.known) throw new WorkerToolError("not_found", "unknown tool");
     if (!validation.valid) {
-      try { daemonToolTimeoutMs(name, asObject(args)); }
+      try { daemonToolTimeoutBudget(name, asObject(args)); }
       catch (error) { if (error instanceof WorkerToolError) throw error; }
       throw new WorkerToolError(
         "invalid_request",
@@ -599,7 +600,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!daemonInstanceId) throw new WorkerToolError("unavailable", "local daemon connection is missing its instance identity", true);
     if (!daemonAttachment?.tools?.includes(name)) throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
     const id = randomToken("call");
-    const timeoutMs = daemonToolTimeoutMs(name, args);
+    const timeoutBudget = daemonToolTimeoutBudget(name, args);
     let result!: Promise<unknown>;
     try {
       await this.pendingAdmission.run(async () => {
@@ -610,7 +611,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           daemonInstanceId,
           clientRequestKey: requestKey,
           tool: name,
-          timeoutMs,
+          timeoutMs: timeoutBudget.settlementTimeoutMs,
           onTimeout: (record) => this.daemonCallTimeout(record, name),
           signal,
           onAbort: (record) => this.daemonCallCancellation(record),
@@ -626,7 +627,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     this.observability.callStarted(name);
     try {
       socket.send(JSON.stringify({
-          type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutMs,
+          type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutBudget.executionTimeoutMs,
           authorization: {
             account_id: authorized.accountId,
             account_version: authorized.accountVersion,
