@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0-beta.35 - 2026-08-03
+
+### Enforce the patch-helper call contract
+
+- Remove the obsolete third argument from the workspace patch call after beta.32 intentionally removed path data from `applyUpdateHunks` errors. The extra argument had no runtime effect but violated the helper contract and was rejected by the zero-unaccepted-findings CodeQL gate.
+- Add an architecture source-contract regression requiring the single workspace call to match the two-argument helper signature, so local verification catches the mismatch before remote CodeQL.
+
 ## 3.0.0-beta.34 - 2026-08-03
 
 ### Classify daemon terminal-result dispositions

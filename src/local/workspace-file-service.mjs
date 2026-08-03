@@ -222,7 +222,7 @@ export class WorkspaceFileService {
           prepared.push({ kind: "delete", source, target: null, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
           continue;
         }
-        const content = applyUpdateHunks(original, operation.hunks, operation.path);
+        const content = applyUpdateHunks(original, operation.hunks);
         assertTextSize(content);
         const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo, context) : source;
         if (target !== source && await pathEntryIfExists(target)) throw new BridgeError("conflict", "move target already exists", { details: { reason: "already_exists", operation: "move" } });
