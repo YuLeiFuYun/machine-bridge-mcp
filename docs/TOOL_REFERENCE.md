@@ -1677,7 +1677,7 @@ Read a bounded PNG, JPEG, GIF, or WebP image from the workspace and return nativ
 
 **Write text file**
 
-Atomically write a UTF-8 file up to 5 MiB. Supports create-only and optimistic SHA-256 checks; symbolic-link destinations are rejected.
+Atomically write a UTF-8 file up to 5 MiB. Supports create-only and optimistic SHA-256 checks; expected state failures return typed conflict reasons without exposing file content or hashes.
 
 | Contract field | Value |
 |---|---|
@@ -1720,7 +1720,7 @@ Atomically write a UTF-8 file up to 5 MiB. Supports create-only and optimistic S
 
 **Edit text file**
 
-Atomically replace an exact text fragment in one UTF-8 file. By default the old text must occur exactly once.
+Atomically replace an exact text fragment in one UTF-8 file. Missing text returns not_found; ambiguous text, stale SHA-256 preconditions, and unsupported targets return typed conflicts.
 
 | Contract field | Value |
 |---|---|
@@ -1768,7 +1768,7 @@ Atomically replace an exact text fragment in one UTF-8 file. By default the old 
 
 **Apply structured patch**
 
-Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete file operations. All paths are prevalidated and mutations are serialized.
+Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional.
 
 | Contract field | Value |
 |---|---|

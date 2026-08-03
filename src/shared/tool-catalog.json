@@ -1410,7 +1410,7 @@
   {
     "name": "write_file",
     "title": "Write text file",
-    "description": "Atomically write a UTF-8 file up to 5 MiB. Supports create-only and optimistic SHA-256 checks; symbolic-link destinations are rejected.",
+    "description": "Atomically write a UTF-8 file up to 5 MiB. Supports create-only and optimistic SHA-256 checks; expected state failures return typed conflict reasons without exposing file content or hashes.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,
@@ -1446,7 +1446,7 @@
   {
     "name": "edit_file",
     "title": "Edit text file",
-    "description": "Atomically replace an exact text fragment in one UTF-8 file. By default the old text must occur exactly once.",
+    "description": "Atomically replace an exact text fragment in one UTF-8 file. Missing text returns not_found; ambiguous text, stale SHA-256 preconditions, and unsupported targets return typed conflicts.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,
@@ -1487,7 +1487,7 @@
   {
     "name": "apply_patch",
     "title": "Apply structured patch",
-    "description": "Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete file operations. All paths are prevalidated and mutations are serialized.",
+    "description": "Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,

@@ -92,7 +92,19 @@ try {
       if (from.includes(".mbm-backup-")) throw new Error("simulated rollback failure");
       return rename(from, to);
     },
-  }), "recovery was incomplete");
+  }), "recovery was incomplete", "internal_error", false);
+
+  const staleTarget = join(root, "stale-source.txt");
+  await writeFile(staleTarget, "current", { encoding: "utf8", mode: 0o600 });
+  await expectAsyncThrow(() => commitPatchTransaction([{
+    kind: "update",
+    source: staleTarget,
+    target: staleTarget,
+    content: "new",
+    originalHash: sha256("stale"),
+    mode: 0o600,
+  }]), "source changed", "conflict", true, "hash_mismatch");
+  assert(await readFile(staleTarget, "utf8") === "current", "stale patch precondition modified the source file");
 
   console.log("atomic file replacement and patch recovery test ok");
 } finally {
@@ -111,10 +123,13 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function expectAsyncThrow(callback, pattern) {
+async function expectAsyncThrow(callback, pattern, code = "", expose = undefined, reason = "") {
   try { await callback(); } catch (error) {
-    if (String(error?.message || error).includes(pattern)) return;
-    throw error;
+    if (!String(error?.message || error).includes(pattern)) throw error;
+    if (code && error?.code !== code) throw new Error(`expected ${code}, received ${error?.code || "untyped"}`);
+    if (expose !== undefined && error?.expose !== expose) throw new Error(`expected expose=${expose}, received ${error?.expose}`);
+    if (reason && error?.details?.reason !== reason) throw new Error(`expected reason ${reason}, received ${error?.details?.reason || "missing"}`);
+    return error;
   }
   throw new Error(`expected async throw containing: ${pattern}`);
 }

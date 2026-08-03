@@ -239,8 +239,8 @@ export async function runtimeSelfTest() {
       throw new Error("remote daemon omitted debug-only failure telemetry");
     }
 
-    await expectReject(() => restricted.readFile(join(outside, "outside.txt"), 1024), "outside the configured workspace");
-    await expectReject(() => restricted.readFile(path.relative(workspace, join(outside, "outside.txt")), 1024), "outside the configured workspace");
+    await expectReject(() => restricted.readFile(join(outside, "outside.txt"), 1024), "outside the configured workspace", "path_boundary", "outside_workspace");
+    await expectReject(() => restricted.readFile(path.relative(workspace, join(outside, "outside.txt")), 1024), "outside the configured workspace", "path_boundary", "outside_workspace");
 
     const outsideFile = await unrestricted.readFile(join(outside, "outside.txt"), 1024);
     if (!outsideFile.content.includes("outside-needle")) throw new Error("unrestricted absolute read failed");
@@ -254,7 +254,7 @@ export async function runtimeSelfTest() {
     try {
       await symlink(outside, linkPath, "dir");
       await expectReject(() => restricted.readFile(join(linkPath, "outside.txt"), 1024), "outside the configured workspace");
-      await expectReject(() => restricted.writeFile({ path: linkPath, content: "replace" }), "symbolic link");
+      await expectReject(() => restricted.writeFile({ path: linkPath, content: "replace" }), "symbolic link", "conflict", "symbolic_link");
       const canonicalUnrestrictedTarget = await unrestricted.resolveWritePath(join(linkPath, "new-through-link.txt"));
       if (canonicalUnrestrictedTarget !== join(await realpath(outside), "new-through-link.txt")) {
         throw new Error(`unrestricted write path did not canonicalize a symbolic-link ancestor: ${canonicalUnrestrictedTarget}`);
@@ -268,8 +268,8 @@ export async function runtimeSelfTest() {
     try {
       const outsideHardLinkContent = await readFile(join(outside, "outside.txt"), "utf8");
       await link(join(outside, "outside.txt"), hardLinkPath);
-      await expectReject(() => restricted.readFile(hardLinkPath, 1024), "multiple hard links");
-      await expectReject(() => restricted.editFile({ path: hardLinkPath, old_text: "outside", new_text: "changed" }), "multiple hard links");
+      await expectReject(() => restricted.readFile(hardLinkPath, 1024), "multiple hard links", "permission_denied", "multiple_hard_links");
+      await expectReject(() => restricted.editFile({ path: hardLinkPath, old_text: "outside", new_text: "changed" }), "multiple hard links", "permission_denied", "multiple_hard_links");
       const hardLinkSearch = await restricted.searchText({ path: hardLinkPath, query: "outside-needle" });
       if (hardLinkSearch.matches.length !== 0) throw new Error("search_text disclosed content through a hard link");
       await restricted.writeFile({ path: hardLinkPath, content: "detached-from-hardlink" });
@@ -281,8 +281,9 @@ export async function runtimeSelfTest() {
 
     const written = await restricted.writeFile({ path: "nested/written.txt", content: "written", create_only: true });
     if (written.bytes !== 7) throw new Error("write_file byte count is incorrect");
-    await expectReject(() => restricted.writeFile({ path: "nested/written.txt", content: "again", create_only: true }), "file exists");
-    await expectReject(() => restricted.writeFile({ path: "nested/written.txt", content: "again", expected_sha256: "bad" }), "expected_sha256 mismatch");
+    await expectReject(() => restricted.writeFile({ path: "nested/written.txt", content: "again", create_only: true }), "file exists", "conflict", "already_exists");
+    await expectReject(() => restricted.writeFile({ path: "nested/written.txt", content: "again", expected_sha256: "bad" }), "expected_sha256 mismatch", "conflict", "hash_mismatch");
+    await expectReject(() => restricted.writeFile({ path: "nested/missing.txt", content: "again", expected_sha256: sha256("missing") }), "requires an existing file", "conflict", "precondition_target_missing");
     await restricted.writeFile({ path: "nested/written.txt", content: "updated\nsecond\nthird\n", expected_sha256: sha256("written") });
     const slice = await restricted.readFile({ path: "nested/written.txt", start_line: 2, end_line: 3, max_bytes: 1024 });
     if (slice.content !== "second\nthird\n" || slice.start_line !== 2 || slice.total_lines !== 3) throw new Error("read_file line range failed");
@@ -293,6 +294,9 @@ export async function runtimeSelfTest() {
     if (crlfWhole.content !== crlfText || crlfWhole.sha256 !== sha256(crlfWhole.content) || crlfSlice.content !== "second\r\n") {
       throw new Error("read_file normalized CRLF content or returned a hash for different text");
     }
+    await expectReject(() => restricted.editFile({ path: "nested/written.txt", old_text: "missing", new_text: "replacement" }), "old_text was not found", "not_found", "text_not_found");
+    await restricted.writeFile({ path: "nested/ambiguous.txt", content: "same\nsame\n", create_only: true });
+    await expectReject(() => restricted.editFile({ path: "nested/ambiguous.txt", old_text: "same", new_text: "changed" }), "occurs 2 times", "conflict", "text_ambiguous");
     const edited = await restricted.editFile({ path: "nested/written.txt", old_text: "second", new_text: "SECOND", expected_sha256: slice.sha256 });
     if (edited.replacements !== 1 || !(await readFile(join(workspace, "nested/written.txt"), "utf8")).includes("SECOND")) throw new Error("edit_file failed");
     const patch = await restricted.applyPatch({ patch: `*** Begin Patch
@@ -308,6 +312,7 @@ export async function runtimeSelfTest() {
     if (!patch.ok || await readFile(join(workspace, "nested/added.txt"), "utf8") !== "added\n") throw new Error("apply_patch add/update failed");
     if (!(await readFile(join(workspace, "nested/written.txt"), "utf8")).includes("second-again")) throw new Error("apply_patch update failed");
     const beforeFailedPatch = await readFile(join(workspace, "nested/written.txt"), "utf8");
+    await expectReject(() => restricted.applyPatch({ patch: "not a patch" }), "must start", "invalid_request", "missing_begin_marker");
     await expectReject(() => restricted.applyPatch({ patch: `*** Begin Patch
 *** Update File: nested/written.txt
 @@
@@ -317,14 +322,14 @@ export async function runtimeSelfTest() {
 *** Update File: nested/added.txt
 @@
  missing-context
-*** End Patch` }), "context not found");
+*** End Patch` }), "did not match", "conflict", "context_not_found");
     if (await readFile(join(workspace, "nested/written.txt"), "utf8") !== beforeFailedPatch) throw new Error("failed patch partially committed");
     await expectReject(() => restricted.applyPatch({ patch: `*** Begin Patch
 *** Add File: nested/collision.txt
 +one
 *** Add File: nested/../nested/collision.txt
 +two
-*** End Patch` }), "same path");
+*** End Patch` }), "same path", "conflict", "resolved_path_collision");
     if (await lstat(join(workspace, "nested/collision.txt")).catch(() => null)) throw new Error("canonical patch collision created a file");
     const moved = await restricted.applyPatch({ patch: `*** Begin Patch
 *** Update File: nested/added.txt
@@ -338,10 +343,10 @@ export async function runtimeSelfTest() {
 *** Delete File: nested/moved.txt
 *** End Patch` });
     if (await lstat(join(workspace, "nested/moved.txt")).catch(() => null)) throw new Error("apply_patch delete failed");
-    await expectReject(() => restricted.writeFile({ path: "too-large.txt", content: "x".repeat(MAX_WRITE_BYTES + 1) }), "maximum write size");
+    await expectReject(() => restricted.writeFile({ path: "too-large.txt", content: "x".repeat(MAX_WRITE_BYTES + 1) }), "maximum write size", "limit_exceeded", "write_limit");
 
     await writeFile(join(workspace, "invalid.bin"), Buffer.from([0xff, 0xfe]));
-    await expectReject(() => restricted.readFile("invalid.bin", 1024), "not valid UTF-8");
+    await expectReject(() => restricted.readFile("invalid.bin", 1024), "not valid UTF-8", "invalid_request", "invalid_utf8");
     const binarySearch = await restricted.searchText({ path: workspace, query: "needle", max_files: 100, max_matches: 10 });
     if (!binarySearch.matches.some(match => match.path.endsWith("visible.txt"))) throw new Error("search_text missed UTF-8 file");
 
@@ -498,12 +503,14 @@ function isProcessAlive(pid) {
   }
 }
 
-async function expectReject(callback, pattern) {
+async function expectReject(callback, pattern, code = "", reason = "") {
   try {
     await callback();
   } catch (error) {
-    if (String(error?.message || error).includes(pattern)) return;
-    throw error;
+    if (!String(error?.message || error).includes(pattern)) throw error;
+    if (code && error?.code !== code) throw new Error(`expected error code ${code}, received ${error?.code || "untyped"}`);
+    if (reason && error?.details?.reason !== reason) throw new Error(`expected error reason ${reason}, received ${error?.details?.reason || "missing"}`);
+    return error;
   }
   throw new Error(`expected rejection containing: ${pattern}`);
 }

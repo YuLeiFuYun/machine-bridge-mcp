@@ -31,6 +31,8 @@ Support boundaries are defined in [SUPPORT.md](SUPPORT.md). Repository participa
 
 The remote Worker authenticates and relays requests. It cannot directly read local files or start local processes. Local-user authority remains in the daemon process.
 
+Expected file-state failures are machine-readable. File mutations return stable codes such as `conflict`, `not_found`, `invalid_request`, and `limit_exceeded`, with bounded `details.reason` tokens where useful. Conflict responses should trigger a fresh read and reconciliation rather than a blind retry; public errors do not include file contents, compared hashes, or hidden paths.
+
 ```text
 Hosted MCP client
   -> HTTPS + OAuth 2.1 / PKCE

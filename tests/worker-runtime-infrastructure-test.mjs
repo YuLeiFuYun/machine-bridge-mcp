@@ -1877,6 +1877,14 @@ function testWorkerErrors() {
   const publicValue = publicWorkerToolError(structured);
   assert(publicValue.code === "limit_exceeded" && publicValue.message === "busy", "Worker public error lost stable fields");
   assert(publicValue.details?.process?.output_session_id === "proc_worker_detail_123456789012", "Worker error adapter lost safe process continuation details");
+  const fileConflict = publicWorkerToolError(daemonToolError({
+    code: "conflict", message: "file exists and create_only=true", retryable: false,
+    details: { reason: "already_exists" },
+  }));
+  assert(fileConflict.code === "conflict"
+    && fileConflict.retryable === false
+    && fileConflict.details?.reason === "already_exists",
+  "Worker error adapter lost the typed file-conflict contract");
   const unknown = daemonToolError({ code: "caller_defined_code", message: "unsupported" });
   assert(unknown.code === "execution_failed", "Worker accepted an unregistered daemon error code");
   const directUnknown = new WorkerToolError("future_custom_code", "unsupported");

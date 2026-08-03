@@ -2,6 +2,7 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { BridgeError } from "./errors.mjs";
 
 /**
  * @typedef {object} RuntimeRedactionOptions
@@ -28,7 +29,7 @@ export function stateRootFromProfileStatePath(statePath) {
 export function assertContainedPath(root, target) {
   const rel = relative(root, target);
   if (rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel))) return;
-  throw new Error("path is outside the configured workspace; restart with --unrestricted-paths to allow it");
+  throw new BridgeError("path_boundary", "path is outside the configured workspace; restart with --unrestricted-paths to allow it", { details: { reason: "outside_workspace" } });
 }
 
 export function createRuntimeDir() {

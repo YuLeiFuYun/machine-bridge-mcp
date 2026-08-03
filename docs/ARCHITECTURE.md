@@ -29,7 +29,7 @@ A canonical workspace receives an independent profile, Worker name, secret set, 
 
 `LocalRuntime` is the transport-independent local tool orchestrator. It owns the shared authorization/execution pipeline, manager construction, mutation serialization, cancellation, and the narrow delegation surface used by stdio and relay transports. Domain behavior remains in focused services:
 
-- `workspace-file-service.mjs` and `git-service.mjs` own canonical filesystem/Git operations;
+- `workspace-file-service.mjs` and `git-service.mjs` own canonical filesystem/Git operations; file and patch state failures use stable `BridgeError` codes with privacy-bounded reason tokens, while incomplete rollback/cleanup remains a non-exposed internal failure;
 - `process-contract.mjs` owns argv shape/size validation; `process-tree-signal.mjs`, `process-tree-supervisor.mjs`, `process-tree-snapshot.mjs`, and `process-tree-ownership.mjs` separate cross-platform signaling, asynchronous escalation, bounded process-group observation, and PID/start-time ownership; `process-execution.mjs` and `process-sessions.mjs` own one-shot and interactive execution; and `process-tracker.mjs` retains active and draining process ownership until close;
 - `shared/tool-call-capacity.mjs` defines the control-tool set and generic admission algebra; local `call-capacity.mjs` and Worker `pending-call-capacity.ts` apply it independently, while `runtime-reporting.mjs` builds privacy-aware runtime and project snapshots;
 - `runtime-diagnostics.mjs` owns fixed local probes and their stable interpretation, while `runtime-diagnostic-state.mjs` projects privacy-safe control-plane state for remote diagnosis;

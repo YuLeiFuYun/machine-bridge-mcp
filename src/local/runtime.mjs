@@ -7,7 +7,7 @@ import { ProcessSessionManager } from "./process-sessions.mjs";
 import { CONTROL_PLANE_TOOL_NAMES, MAX_CONCURRENT_TOOL_CALLS, RESERVED_CONTROL_TOOL_CALLS, executionGuardrailsSnapshot } from "./execution-limits.mjs";
 export { MAX_COMMAND_BYTES } from "./process-contract.mjs";
 import { normalizePolicy, PolicyGate, toolNamesForPolicy } from "./tools.mjs";
-import { publicError } from "./errors.mjs";
+import { BridgeError, publicError } from "./errors.mjs";
 import { ProcessTracker } from "./process-tracker.mjs";
 import { CallRegistry } from "./call-registry.mjs";
 import { RuntimeObservability } from "./observability.mjs";
@@ -596,7 +596,7 @@ export class LocalRuntime {
 
   resolvePath(inputPath = ".") {
     const raw = String(inputPath || ".");
-    if (raw.includes("\0")) throw new Error("path contains a NUL byte");
+    if (raw.includes("\0")) throw new BridgeError("invalid_request", "path contains a NUL byte", { details: { reason: "nul_byte" } });
     return isAbsolute(raw) ? resolve(raw) : resolve(this.workspaceInput, raw);
   }
 
@@ -626,7 +626,7 @@ export class LocalRuntime {
   async resolveWritePath(inputPath = ".", context = {}) {
     const candidate = this.resolvePath(inputPath);
     const candidateInfo = await pathEntryIfExists(candidate);
-    if (candidateInfo?.isSymbolicLink()) throw new Error("refusing to overwrite a symbolic link");
+    if (candidateInfo?.isSymbolicLink()) throw new BridgeError("conflict", "refusing to overwrite a symbolic link", { details: { reason: "symbolic_link" } });
     let ancestor = candidate;
     while (!(await pathEntryIfExists(ancestor))) {
       const parent = dirname(ancestor);

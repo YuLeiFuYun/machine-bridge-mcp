@@ -196,6 +196,25 @@ try {
   assert(image.result?.structuredContent?.path === join(canonicalWorkspace, "pixel.png"), "view_image did not use the default full profile's canonical absolute path output");
   assert(!JSON.stringify(image.result).includes("$mcp"), "internal rich-result envelope leaked to the client");
 
+  send({ jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "write_file", arguments: { path: "sample.txt", content: "must-not-overwrite", create_only: true } } });
+  const createConflict = await responseFor(32);
+  const createConflictError = createConflict.result?.structuredContent?.error;
+  assert(createConflict.result?.isError === true
+    && createConflictError?.code === "conflict"
+    && createConflictError?.retryable === false
+    && createConflictError?.details?.reason === "already_exists"
+    && !JSON.stringify(createConflictError).includes(canonicalWorkspace),
+  "write_file create-only conflict lost its stable private error contract");
+  assert(await readFile(join(workspace, "sample.txt"), "utf8") === "one\ntwo\nthree\n", "create-only conflict overwrote the existing file");
+
+  send({ jsonrpc: "2.0", id: 33, method: "tools/call", params: { name: "edit_file", arguments: { path: "sample.txt", old_text: "missing-text", new_text: "replacement" } } });
+  const missingEditText = await responseFor(33);
+  const missingEditError = missingEditText.result?.structuredContent?.error;
+  assert(missingEditText.result?.isError === true
+    && missingEditError?.code === "not_found"
+    && missingEditError?.details?.reason === "text_not_found",
+  "edit_file missing text lost its stable error contract");
+
   send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "edit_file", arguments: { path: "sample.txt", old_text: "two", new_text: "TWO" } } });
   const edited = await responseFor(4);
   assert(edited.result?.structuredContent?.replacements === 1, "edit_file failed");

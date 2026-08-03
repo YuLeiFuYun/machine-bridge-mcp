@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.0-beta.32 - 2026-08-03
+
+### Typed file mutation failures
+
+- Replace ordinary exceptions in workspace file, patch, and remote path-boundary operations with the existing stable `BridgeError` contract. `write_file`, `edit_file`, and `apply_patch` now preserve actionable error codes and bounded `details.reason` values through local execution, stdio MCP, daemon WebSocket transport, Worker adaptation, and public MCP tool results instead of collapsing expected state failures to `execution_failed`.
+- Classify create-only collisions, optimistic SHA-256 mismatches, targets that appear during commit, unsupported target types, symbolic-link destinations, duplicate patch paths, and stale or ambiguous patch contexts as `conflict`. Missing edit text is `not_found`; malformed patch envelopes, invalid text/image inputs, and invalid line ranges are `invalid_request`; bounded read/write violations are `limit_exceeded`; hard-link read denial is `permission_denied`; workspace escape is `path_boundary`.
+- Keep sensitive and irrecoverable failures fail-closed. Error details contain only bounded reason tokens, counts, limits, and hunk/line indexes, never paths, file contents, old/new text, or expected/actual hashes. Incomplete staged-write cleanup and incomplete patch rollback remain non-exposed `internal_error` results while retaining their causes locally.
+- Add direct runtime, atomic fault-injection, Worker-adapter, and live stdio regressions proving stable code/reason propagation, no overwrite after create-only or stale-precondition failure, transactional rollback, and absence of absolute paths in public error objects. Update tool discovery descriptions, generated reference, architecture, testing, and client guidance.
+
 ## 3.0.0-beta.31 - 2026-08-03
 
 ### Preserve host delivery margin for synchronous tools
