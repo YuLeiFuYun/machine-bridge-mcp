@@ -26,6 +26,7 @@ import { loadServiceEnvironment } from "./service-environment.mjs";
 import { createDeviceSessionForRoot, deviceRootProviderStatus, ensurePreferredDeviceRoot } from "./device-root-provider.mjs";
 import { convergeRemoteConfiguration } from "./remote-configuration.mjs";
 import { workerHealth } from "./worker-health.mjs";
+import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "./doctor-reporting.mjs";
 export { workerHealthUserReason } from "./worker-health.mjs";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
 import {
@@ -593,16 +594,11 @@ async function doctorCommand(args) {
   } finally {
     diagnosticRuntime.stop();
   }
-  for (const check of runtimeDiagnostics.checks) {
-    checks.push({
-      name: `runtime:${check.layer}`,
-      ok: check.skipped === true || check.ok === true,
-      detail: check.skipped ? `skipped (${check.error_class || "not applicable"})` : check.ok ? "ok" : check.error_class || "failed",
-    });
-  }
+  for (const check of runtimeDiagnostics.checks) checks.push(doctorRuntimeCheckProjection(check));
   console.log(JSON.stringify({
     ok: checks.every(check => check.ok),
     checks,
+    diagnosticScope: DOCTOR_RUNTIME_SCOPE,
     runtimeDiagnostics,
     state: redactState(state),
   }, null, 2));

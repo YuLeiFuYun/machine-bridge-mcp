@@ -1,5 +1,6 @@
 import { sanitizeDaemonChallengeAttachment } from "./daemon-auth.ts";
 import type { DaemonRole } from "./daemon-liveness.ts";
+import { sanitizeDaemonRelayDiagnostics, type DaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
 import { sanitizeMetadataText } from "./http.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools, type DaemonPolicy } from "./policy.ts";
 
@@ -12,6 +13,7 @@ export interface DaemonAttachment {
   connectionId?: string;
   policy?: DaemonPolicy;
   tools?: string[];
+  relayDiagnostics?: DaemonRelayDiagnostics;
   authChallenge?: string;
   authIssuedAt?: number;
   authExpiresAt?: number;
@@ -35,6 +37,7 @@ export function sanitizeDaemonAttachment(value: unknown): DaemonAttachment | und
     connectionId: sanitizeConnectionId(candidate.connectionId),
     policy,
     tools: sanitizeDaemonTools(candidate.tools, policy),
+    relayDiagnostics: sanitizeDaemonRelayDiagnostics(candidate.relayDiagnostics),
     ...sanitizeDaemonChallengeAttachment(candidate as Record<string, unknown>),
   };
 }

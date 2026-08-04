@@ -11,6 +11,7 @@ import {
   isFreshDaemonCandidate,
 } from "./daemon-liveness.ts";
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import { sanitizeDaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
 import { resolveMcpSession } from "./mcp-session.ts";
@@ -42,6 +43,7 @@ import {
 } from "./http.ts";
 import { authorizationServerMetadata } from "./worker-metadata.ts";
 import { workerBodyLimitBytes, type BridgeEnv } from "./worker-runtime-config.ts";
+import { retainWorkerTask } from "./worker-task-lifetime.ts";
 import {
   MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_LEGACY_PROTOCOL_VERSIONS,
   MCP_MODERN_PROTOCOL_VERSIONS, MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS,
@@ -58,8 +60,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-
-const SERVER_VERSION = "3.0.0-beta.35";
+const SERVER_VERSION = "3.0.0-beta.37";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
@@ -271,15 +272,16 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         connectionId,
         policy: daemonPolicy,
         tools: sanitizeDaemonTools(body.tools, daemonPolicy),
+        relayDiagnostics: sanitizeDaemonRelayDiagnostics(body.relay_diagnostics),
       });
       this.observability.socketAuthenticated();
       try {
         ws.send(JSON.stringify({ type: "hello_ack", server: SERVER_NAME, version: SERVER_VERSION }));
         ws.send(JSON.stringify({ type: "relay_probe", id: probeId }));
       } catch {
-        this.daemonRegistry.expire(ws);
-        closeWebSocketQuietly(ws, 1011, "daemon readiness probe failed");
-        await this.scheduleRuntimeAlarm();
+        await this.invalidateDaemonSocket(
+          ws, "daemon readiness probe failed", "daemon readiness probe failed", "daemon_transport_error",
+        );
         return;
       }
       await this.scheduleRuntimeAlarm();
@@ -340,9 +342,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       this.observability.socketReady();
       for (const previous of previousSockets) {
-        await this.detachDaemonSocketCalls(previous, "daemon connection replaced after verified handover");
-        this.daemonRegistry.expire(previous);
+        const cleanup = this.cleanupDaemonSocket(previous, "daemon connection replaced after verified handover");
         closeWebSocketQuietly(previous, 1012, "replaced by verified daemon");
+        if (cleanup) await cleanup.task;
       }
       await this.scheduleRuntimeAlarm();
       return;
@@ -376,19 +378,20 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   async webSocketClose(ws: WebSocket): Promise<void> {
     if (this.streamChannel.isSubscriber(ws)) return;
-    await this.cleanupDaemonSocket(ws, "daemon disconnected");
+    const cleanup = this.cleanupDaemonSocket(ws, "daemon disconnected");
+    if (cleanup) { await cleanup.task; await this.scheduleRuntimeAlarm(); }
   }
-
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     if (this.streamChannel.isSubscriber(ws)) return;
-    this.observability.event("warn", "daemon.websocket.error", { error_class: workerErrorClass(error) });
-    await this.cleanupDaemonSocket(ws, "daemon transport error");
+    const cleanup = this.cleanupDaemonSocket(ws, "daemon transport error");
+    if (!cleanup) return;
+    if (cleanup.first) this.observability.event("warn", "daemon.websocket.error", { error_class: workerErrorClass(error) });
+    await cleanup.task; await this.scheduleRuntimeAlarm();
   }
-
-  private async cleanupDaemonSocket(ws: WebSocket, message: string): Promise<void> {
-    this.observability.socketDisconnected();
-    await this.detachDaemonSocketCalls(ws, message);
-    await this.scheduleRuntimeAlarm();
+  private cleanupDaemonSocket(ws: WebSocket, message: string) {
+    const cleanup = this.daemonRegistry.beginCleanup(ws, (attachment) => this.detachDaemonSocketCalls(ws, message, attachment));
+    if (cleanup?.first) this.observability.socketDisconnected();
+    return cleanup;
   }
   private async handleMcp(request: Request, base: string): Promise<Response> {
     const originRejection = mcpOriginRejection(request, base, this.env.MBM_ALLOWED_ORIGINS ?? "");
@@ -707,9 +710,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       },
     });
     if (!welcomed) {
-      this.daemonRegistry.expire(server);
-      closeWebSocketQuietly(server, 1011, "daemon welcome failed");
-      await this.scheduleRuntimeAlarm();
+      await this.invalidateDaemonSocket(server, "daemon welcome failed", "daemon welcome failed", "daemon_transport_error");
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -746,22 +747,19 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!this.daemonRegistry.touch(ws)) return;
     await this.scheduleRuntimeAlarm();
   }
-
   private async invalidateDaemonSocket(
-    ws: WebSocket,
-    message: string,
-    closeReason: string,
-    errorCode = "daemon_liveness_timeout",
+    ws: WebSocket, message: string, closeReason: string,
+    errorCode = "daemon_liveness_timeout", scheduleAlarm = true,
   ): Promise<void> {
-    const cleanup = this.detachDaemonSocketCalls(ws, message);
-    this.daemonRegistry.expire(ws);
+    const cleanup = this.cleanupDaemonSocket(ws, message);
     sendWebSocketQuietly(ws, { type: "error", error: errorCode });
     closeWebSocketQuietly(ws, daemonErrorCloseCode(errorCode), closeReason);
-    await cleanup;
+    if (cleanup) { await cleanup.task; if (scheduleAlarm) await this.scheduleRuntimeAlarm(); }
   }
 
-  private async detachDaemonSocketCalls(ws: WebSocket, message: string): Promise<number> {
-    const attachment = this.daemonRegistry.attachment(ws);
+  private async detachDaemonSocketCalls(
+    ws: WebSocket, message: string, attachment = this.daemonRegistry.attachment(ws),
+  ): Promise<number> {
     if (!attachment?.instanceId || !attachment.connectionId) {
       return await this.pending.rejectSocket(ws, () => new WorkerToolError("unavailable", message, true));
     }
@@ -778,7 +776,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     for (const socket of this.daemonRegistry.readyRoleSockets()) {
       const deadline = daemonLivenessDeadlineMs(this.daemonRegistry.readyAttachment(socket));
       if (Number.isFinite(deadline) && deadline > now) continue;
-      void this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
+      retainWorkerTask(this.ctx,
+        this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout"),
+        (error) => this.observability.event("error", "daemon.socket.cleanup.failed",
+          { error_class: workerErrorClass(error) }));
     }
   }
 
@@ -803,7 +804,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       expireDurableCall: (call: import("./mcp-pending-call-store.ts").PendingStreamCallView) => this.durableCalls.expire(call),
       daemonRegistry: this.daemonRegistry,
       invalidateDaemonSocket: (socket: WebSocket, message: string, closeReason: string, errorCode?: string) =>
-        this.invalidateDaemonSocket(socket, message, closeReason, errorCode),
+        this.invalidateDaemonSocket(socket, message, closeReason, errorCode, false),
       onScheduleError: (error: unknown) => this.observability.event(
         "error", "runtime.alarm.schedule.failed", { error_class: workerErrorClass(error) },
       ),
@@ -831,6 +832,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       ...base,
       policy: attachment?.policy ?? null,
       tools,
+      relay_transport: attachment?.relayDiagnostics ?? null,
     };
   }
 

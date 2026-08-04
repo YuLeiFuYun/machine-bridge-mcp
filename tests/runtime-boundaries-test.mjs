@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-reporting.mjs";
 import { GitService, GIT_METADATA_TIMEOUT_MS } from "../src/local/git-service.mjs";
 import { diagnoseRuntime, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/local/runtime-diagnostics.mjs";
+import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "../src/local/doctor-reporting.mjs";
 import { classifySystemRouteInterface, inspectSystemNetworkRoute, systemNetworkRouteCheck } from "../src/local/system-network-route.mjs";
 import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-capabilities.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
@@ -12,6 +13,7 @@ import { RuntimeResourceService } from "../src/local/runtime-resource-service.mj
 
 await testRuntimeReporting();
 await testRuntimeDiagnostics();
+testDoctorReportingScope();
 await testGitServiceMetadataTimeout();
 await testRuntimeCapabilities();
 await testRuntimeResourceService();
@@ -255,6 +257,17 @@ async function testRuntimeDiagnostics() {
   } finally {
     await rm(runtimeDir, { recursive: true, force: true });
   }
+}
+
+function testDoctorReportingScope() {
+  const skipped = doctorRuntimeCheckProjection({ layer: "remote-relay", skipped: true, error_class: "not applicable" });
+  assert(skipped.ok === true && skipped.applicable === false
+    && skipped.detail.includes("not inspected")
+    && skipped.detail.includes("server_info.daemon.relay_transport"),
+  "doctor reporting still presents the running relay as an inspected healthy check");
+  assert(DOCTOR_RUNTIME_SCOPE.running_service_process_inspected === false
+    && DOCTOR_RUNTIME_SCOPE.remote_relay_inspected === false,
+  "doctor reporting scope falsely claims service relay inspection");
 }
 
 async function testGitServiceMetadataTimeout() {

@@ -1,5 +1,11 @@
 # Upgrading
 
+## 3.0.0-beta.37 relay recovery
+
+Beta.37 supersedes the locally prepared but never activated beta.36 candidate. Do not activate the beta.36 tarball: its promotion digest is stale after the second-order relay fixes. Beta.37 is a coordinated Worker and daemon update. Older components ignore or omit the optional relay diagnostic field, but exact convergence is required for idempotent cleanup, socket-generation-bound authentication, close-category precedence, and post-detach alarm recomputation.
+
+After owner-authorized candidate activation, verify matching package/Worker/service versions, one verified login daemon, readiness recovery across a forced brief socket interruption, zero stale pending calls, and a bounded `server_info.daemon.relay_transport` summary whose `outage_active` field is false on the ready socket. `machine-mcp doctor` must explicitly report that it did not inspect the running service relay. Do not infer that a VPN/TUN product caused a disconnect solely from the coarse `system-network-stack` route class.
+
 ## Supported upgrade contract
 
 Machine Bridge supports direct upgrade from the immediately preceding published release. Obsolete transport, state, lock, browser-extension, and authorization implementations are not retained as hidden compatibility paths.

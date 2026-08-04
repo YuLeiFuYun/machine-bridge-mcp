@@ -381,6 +381,71 @@ errorScheduler.advance(5);
 assert(errorSockets.length === 2, "relay transport error did not schedule a reconnect");
 errorConnection.stop();
 
+{
+  const classifiedScheduler = new ManualScheduler();
+  const classifiedSockets = [];
+  const classifiedConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) {
+        super(url, options);
+        classifiedSockets.push(this);
+      }
+      terminate() { this.terminated = true; }
+    },
+    scheduler: classifiedScheduler,
+    now: () => classifiedScheduler.now,
+    reconnectDelay: () => 5,
+  });
+  const classifiedReady = classifiedConnection.start();
+  classifiedSockets[0].open();
+  classifiedConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(classifiedConnection, "test");
+  await classifiedReady;
+  const classifiedSession = classifiedConnection.currentSessionId();
+  assert(classifiedConnection.interrupt("relay_readiness_timeout"), "classified interruption was not initiated");
+  classifiedConnection.handleServerError({ type: "error", error: "daemon_liveness_timeout" });
+  classifiedSockets[0].send = () => { throw new Error("late send failure"); };
+  assert(classifiedConnection.sendForSession({ type: "tool_result", id: "late-send" }, classifiedSession).reason === "send_failed",
+    "late send failure did not enter the bounded send-failure path");
+  classifiedSockets[0].fail(Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }));
+  classifiedSockets[0].remoteClose(1006, "");
+  assert(classifiedConnection.status().last_close_category === "relay_readiness_timeout",
+    "a later close signal overwrote the first specific relay close category");
+  classifiedConnection.stop();
+}
+
+{
+  const durationScheduler = new ManualScheduler();
+  const durationSockets = [];
+  const durationConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) { super(url, options); durationSockets.push(this); }
+    },
+    scheduler: durationScheduler,
+    now: () => durationScheduler.now,
+    reconnectDelay: () => 5,
+    handshakeTimeoutMs: 10,
+  });
+  const durationReady = durationConnection.start();
+  durationSockets[0].open();
+  durationConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(durationConnection, "test");
+  await durationReady;
+  durationScheduler.advance(100);
+  durationSockets[0].remoteClose(1006, "");
+  const healthyDuration = durationConnection.status().last_ready_duration_ms;
+  durationScheduler.advance(5);
+  durationSockets[1].open();
+  durationScheduler.advance(10);
+  assert(durationConnection.status().last_ready_duration_ms === healthyDuration && healthyDuration === 100,
+    "failed reconnect attempt erased the previous healthy ready duration");
+  durationConnection.stop();
+}
+
 const deliveryScheduler = new ManualScheduler();
 const deliverySockets = [];
 const deliveryConnection = new RelayConnection({
@@ -627,6 +692,42 @@ assert(policyDisconnectCount === 1, `policy close invoked disconnect cleanup ${p
 policyScheduler.advance(100_000);
 assert(policySockets.length === 1, "policy close entered the reconnect loop");
 policyConnection.stop();
+
+{
+  const staleProofScheduler = new ManualScheduler();
+  const staleProofSockets = [];
+  let rejectStaleProof;
+  let staleProofFatal = false;
+  const staleProof = new Promise((_resolve, reject) => { rejectStaleProof = reject; });
+  const staleProofConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) {
+        super(url, options);
+        staleProofSockets.push(this);
+      }
+    },
+    scheduler: staleProofScheduler,
+    now: () => staleProofScheduler.now,
+    reconnectDelay: () => 5,
+    helloMessage: () => staleProof,
+    onFatal: () => { staleProofFatal = true; },
+  });
+  void staleProofConnection.start().catch(() => {});
+  staleProofSockets[0].open();
+  staleProofConnection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "test" });
+  staleProofSockets[0].remoteClose(1006, "");
+  staleProofScheduler.advance(5);
+  assert(staleProofSockets.length === 2, "stale authentication proof setup did not reconnect");
+  staleProofSockets[1].open();
+  rejectStaleProof(new Error("old proof failed after reconnect"));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert(!staleProofFatal && staleProofConnection.status().closed === false && !staleProofSockets[1].terminated,
+    "an old socket authentication failure terminated the replacement connection");
+  staleProofConnection.stop();
+}
 
 {
   const helloSendScheduler = new ManualScheduler();

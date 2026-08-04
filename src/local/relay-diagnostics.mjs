@@ -1,5 +1,11 @@
 export const APPLICATION_PROXY_ROUTE_SCOPE = "application-proxy-selection-only";
 
+export function preferredRelayCloseCategory(current, next) {
+  const existing = String(current || "");
+  const candidate = String(next || "relay_transport_error");
+  return !existing || existing === "relay_transport_error" ? candidate : existing;
+}
+
 export function relayStatusSnapshot(state, now = Date.now()) {
   const current = Number(now) || 0;
   return {
@@ -12,6 +18,7 @@ export function relayStatusSnapshot(state, now = Date.now()) {
     reconnect_attempt: state.reconnectAttempt,
     outage_active: state.outageStartedAt > 0,
     outage_count: state.outageCount,
+    outage_attempts: state.outageAttempts,
     outage_started_at: isoTimestamp(state.outageStartedAt),
     outage_duration_ms: state.outageStartedAt > 0 ? Math.max(0, current - state.outageStartedAt) : 0,
     last_close_category: state.outageCount > 0 ? state.lastCloseCategory : null,

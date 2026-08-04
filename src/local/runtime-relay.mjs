@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { RelayConnection } from "./relay-connection.mjs";
+import { relayHandshakeDiagnostics } from "./relay-peer-diagnostics.mjs";
 import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
 import { MCP_SUPPORTED_PROTOCOL_VERSIONS, SERVER_NAME } from "./tools.mjs";
 import { normalizeAccountRole } from "./account-access.mjs";
@@ -18,17 +19,15 @@ export function createRuntimeRelayConnection(runtime, { workerUrl, deviceIdentit
     expectedServer: SERVER_NAME,
     expectedVersion: String(expectedVersion || ""),
     connectionHeaders: () => createDaemonPreflightHeaders(
-      sessionIdentity,
-      workerUrl,
-      SERVER_NAME,
-      String(expectedVersion || ""),
+      sessionIdentity, workerUrl, SERVER_NAME, String(expectedVersion || ""),
     ),
-    helloMessage: async (welcome) => ({
+    helloMessage: async (welcome, relayStatus) => ({
       type: "hello",
       instance_id: runtime.relayInstanceId,
       tools: runtime.tools(),
       policy: runtime.policy,
       protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
+      relay_diagnostics: relayHandshakeDiagnostics(relayStatus),
       authentication: await createDaemonAuthentication(sessionIdentity, welcome, runtime.relayInstanceId),
     }),
     onMessage: (data, relayContext) => handleRelayData(runtime, data, relayContext),
