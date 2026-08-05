@@ -1,5 +1,37 @@
 # Changelog
 
+## 3.0.0-beta.38 - 2026-08-05
+
+### Keep relay liveness acknowledgement off durable storage paths
+
+- Send the Worker `pong` immediately after the authenticated socket attachment is refreshed, before any Durable Object alarm read or write. A slow alarm/storage operation can no longer delay heartbeat acknowledgement and make an otherwise healthy connection appear silent.
+- Make daemon activity refresh scheduling-explicit. Heartbeats perform one alarm schedule after `pong`, and terminal tool results coalesce liveness and pending-call deadline updates into exactly one schedule instead of the previous implicit-plus-explicit pair.
+- Isolate the complete event-time alarm scheduling path, not only the final alarm write. Durable deadline reads, invalid-socket cleanup, or diagnostic callback failures now become bounded observability events instead of aborting a registered call before dispatch or rejecting a WebSocket message event. The actual Durable Object `alarm()` handler remains failure-propagating so the platform can retry it.
+- Add architecture regressions that require `pong` to precede alarm scheduling, forbid socket-touch helpers from acquiring hidden alarm ownership, and require one terminal-result alarm schedule.
+- Record the live beta.37 incident boundary: the same launchd daemon (PID unchanged, `runs=1`) recovered a `1006 connection_interrupted` episode in 2.631 seconds on its first attempt. macOS changed the `utun5` link-quality classification from good to poor four seconds before the close while the default route remained inside the Karing system-extension tunnel. This is strong temporal correlation with OS Wi-Fi/TUN path degradation, not proof that Karing, a selected proxy node, Cloudflare, or any specific upstream component caused the close.
+
+## 3.0.0-beta.37 - 2026-08-04
+
+### Close second-order relay recovery races
+
+- Bind asynchronous daemon-authentication proof failures to the WebSocket generation that requested them. A rejected proof from an already closed socket can no longer terminate a replacement connection that is currently connecting or ready.
+- Apply explicit close-category precedence. The first specific connect, handshake, readiness, heartbeat, or Worker recovery cause survives later specific or generic close signals; only an empty or generic transport category may be upgraded.
+- Separate socket cleanup from alarm ownership. Runtime-alarm invalidation no longer recursively schedules another alarm, and the final alarm deadline is recomputed after detach/rebind state changes so reconnect grace cannot inherit a stale pre-detach deadline.
+- Close invalidated sockets before awaiting durable cleanup. Concurrent `error`/`close` callbacks share one cleanup Promise; successful cleanup remains terminal, while a transient failure is retried once in-event and releases its slot for a later callback without duplicating disconnected metrics or warning logs. Welcome, readiness-probe, replacement, liveness, send-failure, error, and close paths preserve the intended close reason even when storage cleanup fails.
+- Mark the authenticated relay diagnostic snapshot as recovered when a probing socket becomes ready, extend outage duration through the actual readiness instant, canonicalize timestamps, and accept only stable coarse transport error classes. Failed reconnect attempts no longer erase the duration of the preceding healthy ready interval. A healthy `server_info.daemon.relay_transport` no longer reports the preceding reconnect as currently active or exposes arbitrary daemon metadata.
+- Add fault-directed regressions for stale authentication promises, competing specific close causes, send-failure precedence, post-invalidation deadline recomputation, cleanup deduplication/retry, previous-ready-duration retention, ready-state diagnostic projection, and the scheduling-free cleanup architecture contract. Beta.36 was prepared but not activated; beta.37 supersedes that local candidate.
+
+## 3.0.0-beta.36 - 2026-08-04
+
+### Preserve and expose relay-disconnect evidence
+
+- Preserve a specific connect, handshake, readiness, or heartbeat timeout classification when a later generic WebSocket error arrives before the close event. The late error can still terminate the socket, but it no longer erases the causal category used for recovery diagnosis.
+- Make Worker daemon-socket cleanup idempotent. Error, close, candidate timeout, readiness timeout, liveness timeout, verified replacement, and send-failure paths converge on one expiry, pending-call detach, disconnected metric, and runtime-alarm transition, preventing duplicate Durable Object work when one socket emits both error and close. Synchronous stale-socket reclamation now retains its asynchronous cleanup with Durable Object `waitUntil` and converts storage failures into one bounded observability event instead of an unhandled rejection.
+- Add a schema-versioned, privacy-bounded relay diagnostic summary to the authenticated daemon hello. The Worker sanitizes and preserves the immediately preceding reconnect episode in the daemon attachment and exposes it as authenticated `server_info.daemon.relay_transport`; endpoints, interface names, DNS data, arguments, and results remain excluded.
+- Make `machine-mcp doctor` report its diagnostic scope explicitly. Doctor uses an isolated local runtime and does not inspect the running service process or its remote relay, so a green doctor result can no longer be mistaken for service WebSocket health.
+- Add deterministic regressions for late-error classification, diagnostic bounding/projection, idempotent socket expiry, unified stale-candidate invalidation, retained asynchronous cleanup, authenticated server-info projection, and doctor scope.
+- Pin the transitive `brace-expansion` and `undici` packages to fixed same-major releases through root overrides. The release audit discovered high-severity advisories in ESLint/Wrangler dependency paths; `npm audit fix --force` proposed an unrelated Wrangler downgrade, so beta.36 keeps the tested Wrangler/Miniflare versions while selecting `brace-expansion` 5.0.9 and `undici` 7.29.0.
+
 ## 3.0.0-beta.35 - 2026-08-03
 
 ### Enforce the patch-helper call contract

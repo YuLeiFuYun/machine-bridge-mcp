@@ -1,5 +1,16 @@
 # Repository automation contract
 
+## Tool-selection hard gate
+
+For this repository, every hosted GitHub control plane is out of scope even when the ChatGPT host, tool registry, or connector catalog exposes one. Before any GitHub-related tool discovery, schema loading, read, or mutation, use Machine Bridge to load this repository contract and keep all GitHub activity on the owner's machine.
+
+- Do not call, discover, list, load, or invoke a hosted GitHub connector, ChatGPT GitHub plugin, browser-side GitHub integration, or equivalent remote tool.
+- Use only local `git`, `gh`, and `gh api` executed through Machine Bridge.
+- This gate applies before connector/tool discovery, not only before the eventual GitHub mutation.
+- If Machine Bridge or the local authenticated GitHub CLI is unavailable, stop and report the boundary. Availability of a hosted connector is not a fallback.
+
+A violation must be treated as a process defect: verify whether any remote effect occurred using local `gh`, record the correction in the current task, and continue only through the local control plane.
+
 Read [docs/ENGINEERING.md](docs/ENGINEERING.md), [docs/PROJECT_STANDARDS.md](docs/PROJECT_STANDARDS.md), and [CONTRIBUTING.md](CONTRIBUTING.md) before changing this repository.
 
 ## Default scope

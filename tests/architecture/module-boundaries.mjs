@@ -401,6 +401,31 @@ for (const forbidden of [
 ]) {
   if (workerIndexBoundary.includes(forbidden)) throw new Error(`stream initiation regained a cross-event terminal promise: ${forbidden}`);
 }
+if (!workerIndexBoundary.includes("this.invalidateDaemonSocket(socket, message, closeReason, errorCode, false)")) {
+  throw new Error("runtime alarm invalidation regained recursive alarm scheduling");
+}
+const daemonCleanupBoundary = /private cleanupDaemonSocket[\s\S]*?private async handleMcp/.exec(workerIndexBoundary)?.[0] || "";
+if (!daemonCleanupBoundary.includes("beginCleanup") || daemonCleanupBoundary.includes("scheduleRuntimeAlarm")) {
+  throw new Error("daemon socket cleanup must remain idempotent and scheduling-free");
+}
+const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?private cleanupDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";
+if (daemonWebSocketErrorBoundary.indexOf("const cleanup = this.cleanupDaemonSocket")
+  > daemonWebSocketErrorBoundary.indexOf('daemon.websocket.error')) {
+  throw new Error("daemon WebSocket error logging occurs before cleanup ownership is claimed");
+}
+const daemonHeartbeatBoundary = /if \(body\.type === "heartbeat"[\s\S]*?if \(socketAttachment\.role === "probing"\)/.exec(workerIndexBoundary)?.[0] || "";
+if (daemonHeartbeatBoundary.indexOf("trySendWebSocket") < 0
+    || daemonHeartbeatBoundary.indexOf("trySendWebSocket") > daemonHeartbeatBoundary.indexOf("scheduleRuntimeAlarm")) {
+  throw new Error("daemon heartbeat acknowledgement is delayed behind alarm scheduling");
+}
+const daemonTouchBoundary = /private touchDaemonSocket[\s\S]*?private async invalidateDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";
+if (daemonTouchBoundary.includes("scheduleRuntimeAlarm")) {
+  throw new Error("daemon activity touch regained implicit alarm scheduling");
+}
+const daemonResultBoundary = /const outcome: PendingCallOutcome[\s\S]*?async webSocketClose/.exec(workerIndexBoundary)?.[0] || "";
+if ((daemonResultBoundary.match(/scheduleRuntimeAlarm/g) || []).length !== 1) {
+  throw new Error("daemon terminal result must coalesce liveness and pending-call alarm scheduling");
+}
 const legacyStreamPrepareBoundary = readFileSync(join(root, "src", "worker", "mcp-legacy-stream-prepare.ts"), "utf8");
 for (const required of ["workerToolRequestFingerprint", "findByRequestKey", 'kind: "resume"', 'kind: "conflict"', "dispatchWorkspaceCall"]) {
   if (!legacyStreamPrepareBoundary.includes(required)) throw new Error(`legacy stream preparation lost retry identity or dispatch boundary: ${required}`);

@@ -21,6 +21,7 @@ import { workspaceShellCommand } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
 import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/runtime-relay.mjs";
+import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
 import { startAutostartLogMaintenance } from "../src/local/autostart-log-maintenance.mjs";
@@ -38,6 +39,7 @@ await testRelayReadinessStateGuards();
 testRelayCancellationSuppression();
 testRelayResumeReconciliation();
 testRelayToolTimeoutNormalization();
+testRelayHandshakeDiagnostics();
 testRuntimeConvenienceMethods();
 testRelayReconnectDelivery();
 testAutostartLogMaintenance();
@@ -372,6 +374,32 @@ function testRelayResumeReconciliation() {
     { sessionId: 18, authenticated: true, ready: false },
   );
   assert(violation === "resume_calls_required", "ready_ack without resume_calls was accepted");
+}
+
+function testRelayHandshakeDiagnostics() {
+  const diagnostics = relayHandshakeDiagnostics({
+    network_route: "system-network-stack",
+    outage_count: 4,
+    outage_active: true,
+    outage_started_at: "2026-08-04T11:36:20.000Z",
+    outage_duration_ms: 9000,
+    outage_attempts: 2,
+    last_close_category: "relay_heartbeat_timeout",
+    last_close_code: 1006,
+    last_transport_error_class: "ECONNRESET",
+    last_disconnected_at: "2026-08-04T11:36:20.000Z",
+    last_ready_duration_ms: 123456,
+  });
+  assert(diagnostics.schema_version === 1
+    && diagnostics.network_route === "system-network-stack"
+    && diagnostics.outage_count === 4
+    && diagnostics.outage_attempts === 2
+    && diagnostics.last_close_category === "relay_heartbeat_timeout"
+    && diagnostics.previous_ready_duration_ms === 123456,
+  "relay handshake diagnostics lost bounded outage evidence");
+  const bounded = relayHandshakeDiagnostics({ outage_count: -1, outage_duration_ms: Number.POSITIVE_INFINITY });
+  assert(bounded.outage_count === 0 && bounded.outage_duration_ms === 0,
+    "relay handshake diagnostics accepted invalid numeric fields");
 }
 
 function testRelayToolTimeoutNormalization() {

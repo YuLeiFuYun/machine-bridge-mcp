@@ -30,6 +30,6 @@ export async function writeEarliestRuntimeAlarm(input: {
     await input.storage.setAlarm(target);
     input.onMutation?.("set");
   } catch (error) {
-    input.onError(error);
+    try { input.onError(error); } catch {}
   }
 }

@@ -2,6 +2,7 @@ import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
 import { PendingAdmissionGate } from "../src/worker/pending-admission.ts";
 import { DurableStreamCallCoordinator } from "../src/worker/durable-stream-calls.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
+import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
 import {
   buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall, streamTerminalMessage,
@@ -32,6 +33,7 @@ import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
 import { daemonTerminalResultDecision, WorkerObservability } from "../src/worker/observability.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
+import { retainWorkerTask } from "../src/worker/worker-task-lifetime.ts";
 import { corsPreflight, searchParamsObject } from "../src/worker/http.ts";
 import {
   asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
@@ -125,7 +127,9 @@ await testMcpStreamResponse();
 await testMcpStreamChannel();
 await testMcpStreamProxy();
 await testModernDirectStreamCancellation();
-testDaemonSocketIsolation();
+await testDaemonSocketIsolation();
+testDaemonRelayDiagnostics();
+await testWorkerTaskLifetime();
 testWorkerRuntimeConfig();
 testRelayTimeoutContract();
 testWorkerPolicyParity();
@@ -438,6 +442,68 @@ async function testRuntimeAlarmCoordinator() {
   };
   await scheduleRuntimeAlarm(failingContext, 3000);
   assert(scheduleErrors === 1, "runtime alarm scheduling failure was not reported through the bounded callback");
+
+  const deadlineReadFailureContext = {
+    ...context,
+    durableCalls: { async nextDeadlineDelayMs() { throw new Error("synthetic durable deadline read failure"); } },
+  };
+  await scheduleRuntimeAlarm(deadlineReadFailureContext, 3100);
+  assert(scheduleErrors === 2, "durable deadline read failure escaped event-time alarm isolation");
+
+  const staleCandidate = {};
+  const candidateInvalidations = [];
+  const candidateContext = {
+    ...context,
+    storage: {
+      async getAlarm() { return null; },
+      async setAlarm() {},
+      async deleteAlarm() {},
+    },
+    pending: { async expireDue() { return 0; }, nextDeadlineDelayMs() { return Number.POSITIVE_INFINITY; } },
+    daemonRegistry: {
+      candidateSockets() { return [staleCandidate]; },
+      attachment() { return { role: "candidate", connectedAt: "2026-08-04T00:00:00.000Z" }; },
+      probingSockets() { return []; },
+      readyRoleSockets() { return []; },
+    },
+    async invalidateDaemonSocket(socket, message, closeReason, errorCode) {
+      candidateInvalidations.push({ socket, message, closeReason, errorCode });
+    },
+  };
+  await processRuntimeAlarm(candidateContext, Date.parse("2026-08-04T00:01:00.000Z"));
+  assert(candidateInvalidations.length === 1
+    && candidateInvalidations[0].socket === staleCandidate
+    && candidateInvalidations[0].errorCode === "daemon_hello_timeout",
+  "stale daemon candidate bypassed the unified socket invalidation path");
+
+  let changedPendingDelay = 1000;
+  let changedAlarm = null;
+  const invalidTimestampCandidate = {};
+  const changedDeadlineContext = {
+    ...context,
+    storage: {
+      async getAlarm() { return null; },
+      async setAlarm(value) { changedAlarm = Number(value); },
+      async deleteAlarm() { changedAlarm = null; },
+    },
+    pending: {
+      async expireDue() { return 0; },
+      nextDeadlineDelayMs() { return changedPendingDelay; },
+    },
+    daemonRegistry: {
+      candidateSockets() { return [invalidTimestampCandidate]; },
+      attachment() { return { role: "candidate", connectedAt: "invalid" }; },
+      probingSockets() { return []; },
+      readyRoleSockets() { return []; },
+    },
+    async invalidateDaemonSocket(socket) {
+      assert(socket === invalidTimestampCandidate, "runtime alarm invalidated the wrong candidate");
+      changedPendingDelay = 25;
+    },
+  };
+  await scheduleRuntimeAlarm(changedDeadlineContext, 5000);
+  assert(changedAlarm === 5025,
+    "runtime alarm did not recompute pending deadlines after socket invalidation changed call ownership");
 
   let durableExpired = 0;
   let durableDelay = 40;
@@ -794,7 +860,8 @@ async function testStreamDispatchFailureBoundaries() {
   };
   const info = buildServerInfoResult({
     serverName: "machine-bridge-mcp", serverVersion: "test", base: "https://example.test", oauth: { issuer: "https://example.test" },
-    authorization: { account: { role: "owner" }, summary: "summary" }, daemon: { tool_count: 2 },
+    authorization: { account: { role: "owner" }, summary: "summary" },
+    daemon: { tool_count: 2, relay_transport: { schema_version: 1, outage_count: 3 } },
     effectiveTools: ["server_info", "list_dir"], advertisedTools: ["server_info", "list_dir", "read_file"],
     pendingSnapshot: { active: 31, detached: 0, request_keys: 0, maximum: 32, ordinary_capacity: 30, reserved_capacity: 2, active_ordinary: 30, active_reserved: 1, oldest_ms: 0, by_tool: { read_file: 30, diagnose_runtime: 1 } },
     daemonRegistry, observability: new WorkerObservability(),
@@ -806,7 +873,8 @@ async function testStreamDispatchFailureBoundaries() {
     && info.tool_delivery.remote_foreground_execution_max_ms === 60_000
     && info.tool_delivery.worker_settlement_overhead_ms === 5_000
     && info.tool_delivery.daemon_execution_and_worker_settlement_deadlines_separate === true
-    && info.tool_delivery.host_terminal_receipt_observable === false,
+    && info.tool_delivery.host_terminal_receipt_observable === false
+    && info.daemon.relay_transport.outage_count === 3,
   "server_info builder lost socket, catalog, timeout, or delivery-scope diagnostics");
 }
 
@@ -1668,7 +1736,7 @@ async function testModernDirectStreamCancellation() {
   "modern response stream did not surface a privacy-safe terminal internal error");
 }
 
-function testDaemonSocketIsolation() {
+async function testDaemonSocketIsolation() {
   const candidate = new TestWebSocket();
   candidate.serializeAttachment({ role: "candidate", connectedAt: new Date().toISOString() });
   const subscriber = new TestWebSocket();
@@ -1676,6 +1744,60 @@ function testDaemonSocketIsolation() {
   const registry = new DaemonSocketRegistry({ getWebSockets: () => [candidate, subscriber] });
   const sockets = registry.nonReadySockets();
   assert(sockets.length === 1 && sockets[0] === candidate, "daemon candidate cleanup captured a non-daemon stream subscriber");
+  const expired = registry.expire(candidate);
+  assert(expired?.role === "candidate" && registry.attachment(candidate)?.role === "expired",
+    "daemon socket expiry did not return and preserve the original attachment identity");
+  assert(registry.expire(candidate) === undefined, "daemon socket expiry was not idempotent");
+
+  const probing = new TestWebSocket();
+  probing.serializeAttachment({
+    role: "probing", connectedAt: "2026-08-04T11:36:29.000Z", lastSeenAt: "2026-08-04T11:36:29.000Z",
+    probeId: "probe_ready_projection", instanceId: "daemon_ready_projection_123456",
+    connectionId: `connection_${"R".repeat(43)}`,
+    policy: { profile: "full", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+    tools: ["list_roots"],
+    relayDiagnostics: {
+      schema_version: 1, network_route: "system-network-stack", outage_count: 1, outage_active: true,
+      outage_started_at: "2026-08-04T11:36:20.000Z", outage_duration_ms: 9000, outage_attempts: 2,
+      last_close_category: "relay_transport_error", last_close_code: 1006,
+      last_transport_error_class: "network_error", last_disconnected_at: "2026-08-04T11:36:20.000Z",
+      previous_ready_duration_ms: 123456,
+    },
+  });
+  const readyRegistry = new DaemonSocketRegistry({ getWebSockets: () => [probing] });
+  const promoted = readyRegistry.promote(probing, "2026-08-04T11:36:30.000Z");
+  assert(promoted?.role === "daemon"
+    && promoted.relayDiagnostics?.outage_active === false
+    && promoted.relayDiagnostics.outage_duration_ms === 10_000,
+  "ready socket promotion retained a reconnect-in-progress or pre-readiness diagnostic duration");
+
+  const cleanupSocket = new TestWebSocket();
+  cleanupSocket.serializeAttachment({
+    role: "daemon", connectedAt: "2026-08-04T11:36:29.000Z", lastSeenAt: "2026-08-04T11:36:30.000Z",
+    instanceId: "daemon_cleanup_retry_123456", connectionId: `connection_${"C".repeat(43)}`,
+  });
+  const cleanupRegistry = new DaemonSocketRegistry({ getWebSockets: () => [cleanupSocket] });
+  let rejectCleanup;
+  let cleanupCalls = 0;
+  const cleanupFailure = new Promise((_resolve, reject) => { rejectCleanup = reject; });
+  const firstCleanup = cleanupRegistry.beginCleanup(cleanupSocket, async () => {
+    cleanupCalls += 1;
+    await cleanupFailure;
+  });
+  const duplicateCleanup = cleanupRegistry.beginCleanup(cleanupSocket, async () => { cleanupCalls += 100; });
+  assert(firstCleanup?.first === true && duplicateCleanup?.first === false
+    && firstCleanup.task === duplicateCleanup.task,
+  "concurrent daemon cleanup did not share one ownership task");
+  await Promise.resolve();
+  rejectCleanup(new Error("synthetic durable detach failure"));
+  await expectReject(firstCleanup.task, "synthetic durable detach failure");
+  const retryCleanup = cleanupRegistry.beginCleanup(cleanupSocket, async () => { cleanupCalls += 1; });
+  assert(retryCleanup?.first === false, "failed daemon cleanup retry duplicated the disconnected transition");
+  await retryCleanup.task;
+  const settledCleanup = cleanupRegistry.beginCleanup(cleanupSocket, async () => { cleanupCalls += 100; });
+  await settledCleanup.task;
+  assert(cleanupCalls === 3 && settledCleanup.first === false,
+    "daemon cleanup failure was not retryable or successful cleanup ran more than once");
 }
 
 async function testAbortSignalCleanup() {
@@ -1707,6 +1829,64 @@ async function testAbortSignalCleanup() {
   });
   await expectReject(rejectedImmediately, "already cancelled");
   assert(registry.snapshot().active === 0, "already-aborted request entered the pending registry");
+}
+
+function testDaemonRelayDiagnostics() {
+  const diagnostics = sanitizeDaemonRelayDiagnostics({
+    schema_version: 1,
+    network_route: "system-network-stack",
+    outage_count: 8,
+    outage_active: true,
+    outage_started_at: "2026-08-04T11:36:20.000Z",
+    outage_duration_ms: 9000,
+    outage_attempts: 2,
+    last_close_category: "relay_heartbeat_timeout",
+    last_close_code: 1006,
+    last_transport_error_class: "network_error",
+    last_disconnected_at: "2026-08-04T11:36:20.000Z",
+    previous_ready_duration_ms: 123456,
+  });
+  assert(diagnostics?.outage_count === 8
+    && diagnostics.outage_attempts === 2
+    && diagnostics.last_close_category === "relay_heartbeat_timeout"
+    && diagnostics.last_close_code === 1006
+    && diagnostics.last_transport_error_class === "network_error"
+    && diagnostics.outage_started_at === "2026-08-04T11:36:20.000Z",
+  "Worker relay diagnostics sanitizer lost valid bounded evidence");
+  const readyDiagnostics = relayDiagnosticsAfterReady(diagnostics);
+  assert(readyDiagnostics?.outage_active === false && readyDiagnostics.outage_duration_ms === 9000,
+    "ready daemon diagnostics still reported the preceding reconnect as active");
+  const rejected = sanitizeDaemonRelayDiagnostics({ schema_version: 2, outage_count: 1 });
+  assert(rejected === undefined, "Worker relay diagnostics accepted an unknown schema");
+  const bounded = sanitizeDaemonRelayDiagnostics({
+    schema_version: 1, network_route: "private-route", outage_count: -1, outage_duration_ms: Number.POSITIVE_INFINITY,
+    last_close_category: "private-category", last_close_code: 99999, last_transport_error_class: "x".repeat(200),
+  });
+  assert(bounded?.network_route === "unresolved"
+    && bounded.outage_count === 0
+    && bounded.outage_duration_ms === 0
+    && bounded.last_close_category === null
+    && bounded.last_close_code === null
+    && bounded.last_transport_error_class === null,
+  "Worker relay diagnostics sanitizer did not reject untrusted daemon metadata");
+}
+
+async function testWorkerTaskLifetime() {
+  const retained = [];
+  const errors = [];
+  const context = { waitUntil(promise) { retained.push(promise); } };
+  const task = retainWorkerTask(context, Promise.reject(new Error("synthetic cleanup failure")), (error) => {
+    errors.push(String(error?.message || error));
+  });
+  await task;
+  assert(retained.length === 1 && retained[0] === task
+    && errors[0] === "synthetic cleanup failure",
+  "Worker task lifetime did not retain and classify an asynchronous cleanup rejection");
+  const callbackFailure = retainWorkerTask(context, Promise.reject(new Error("primary")), () => {
+    throw new Error("secondary");
+  });
+  await callbackFailure;
+  assert(retained.length === 2, "Worker task lifetime lost a retained cleanup after diagnostic callback failure");
 }
 
 function testWorkerRuntimeConfig() {
