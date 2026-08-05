@@ -443,6 +443,13 @@ async function testRuntimeAlarmCoordinator() {
   await scheduleRuntimeAlarm(failingContext, 3000);
   assert(scheduleErrors === 1, "runtime alarm scheduling failure was not reported through the bounded callback");
 
+  const deadlineReadFailureContext = {
+    ...context,
+    durableCalls: { async nextDeadlineDelayMs() { throw new Error("synthetic durable deadline read failure"); } },
+  };
+  await scheduleRuntimeAlarm(deadlineReadFailureContext, 3100);
+  assert(scheduleErrors === 2, "durable deadline read failure escaped event-time alarm isolation");
+
   const staleCandidate = {};
   const candidateInvalidations = [];
   const candidateContext = {

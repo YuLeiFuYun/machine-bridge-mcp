@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-beta.38 - 2026-08-05
+
+### Keep relay liveness acknowledgement off durable storage paths
+
+- Send the Worker `pong` immediately after the authenticated socket attachment is refreshed, before any Durable Object alarm read or write. A slow alarm/storage operation can no longer delay heartbeat acknowledgement and make an otherwise healthy connection appear silent.
+- Make daemon activity refresh scheduling-explicit. Heartbeats perform one alarm schedule after `pong`, and terminal tool results coalesce liveness and pending-call deadline updates into exactly one schedule instead of the previous implicit-plus-explicit pair.
+- Isolate the complete event-time alarm scheduling path, not only the final alarm write. Durable deadline reads, invalid-socket cleanup, or diagnostic callback failures now become bounded observability events instead of aborting a registered call before dispatch or rejecting a WebSocket message event. The actual Durable Object `alarm()` handler remains failure-propagating so the platform can retry it.
+- Add architecture regressions that require `pong` to precede alarm scheduling, forbid socket-touch helpers from acquiring hidden alarm ownership, and require one terminal-result alarm schedule.
+- Record the live beta.37 incident boundary: the same launchd daemon (PID unchanged, `runs=1`) recovered a `1006 connection_interrupted` episode in 2.631 seconds on its first attempt. macOS changed the `utun5` link-quality classification from good to poor four seconds before the close while the default route remained inside the Karing system-extension tunnel. This is strong temporal correlation with OS Wi-Fi/TUN path degradation, not proof that Karing, a selected proxy node, Cloudflare, or any specific upstream component caused the close.
+
 ## 3.0.0-beta.37 - 2026-08-04
 
 ### Close second-order relay recovery races

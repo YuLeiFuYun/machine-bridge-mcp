@@ -1,5 +1,11 @@
 # Upgrading
 
+## 3.0.0-beta.38 heartbeat ordering
+
+Beta.38 is a coordinated Worker and daemon update over the currently activated beta.37 candidate. It does not claim to eliminate TCP/WebSocket interruptions caused by Wi-Fi, VPN/TUN, proxy, edge, or upstream changes. It removes Worker-side amplification paths by sending `pong` before Durable Object alarm I/O, coalescing terminal-result deadline scheduling, and preventing event-time deadline/storage failures from aborting dispatch or WebSocket handling. Keep beta.37 active until an exact beta.38 candidate has completed local verification and owner-machine activation.
+
+After activation, verify exact Worker/daemon/service convergence, one ready daemon, `daemon.relay_transport.outage_active=false`, zero detached calls after the two-minute grace, and successful representative file and shell operations. A forced or naturally occurring brief interruption should recover without daemon PID or launchd run-count change. Interruptions shorter than ten seconds are expected to be absent from warning-level service logs; use authenticated `server_info.daemon.relay_transport` for their close category, code, timing, and attempt count.
+
 ## 3.0.0-beta.37 relay recovery
 
 Beta.37 supersedes the locally prepared but never activated beta.36 candidate. Do not activate the beta.36 tarball: its promotion digest is stale after the second-order relay fixes. Beta.37 is a coordinated Worker and daemon update. Older components ignore or omit the optional relay diagnostic field, but exact convergence is required for idempotent cleanup, socket-generation-bound authentication, close-category precedence, and post-detach alarm recomputation.

@@ -60,7 +60,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.37";
+const SERVER_VERSION = "3.0.0-beta.38";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
@@ -294,10 +294,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
 
     if (body.type === "heartbeat" || body.type === "ping") {
-      await this.touchDaemonSocket(ws);
+      if (!this.touchDaemonSocket(ws)) return;
       if (!trySendWebSocket(ws, { type: "pong", ts: body.ts ?? Date.now() })) {
         await this.invalidateDaemonSocket(ws, "failed to acknowledge daemon heartbeat", "daemon pong failed", "daemon_transport_error");
+        return;
       }
+      await this.scheduleRuntimeAlarm();
       return;
     }
 
@@ -360,7 +362,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return;
     }
 
-    await this.touchDaemonSocket(ws);
+    if (!this.touchDaemonSocket(ws)) return;
     const outcome: PendingCallOutcome = body.ok === false
       ? { ok: false, error: daemonToolError(body.error) }
       : { ok: true, value: body.result };
@@ -373,7 +375,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const decision = daemonTerminalResultDecision(transientMatched, durableSettlement);
     if (decision.acknowledge) trySendWebSocket(ws, { type: "tool_result_ack", id: body.id });
     this.observability.daemonTerminalResult(decision.disposition);
-    if (decision.matched) await this.scheduleRuntimeAlarm();
+    await this.scheduleRuntimeAlarm();
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
@@ -743,10 +745,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return new Set(attachment.tools);
   }
 
-  private async touchDaemonSocket(ws: WebSocket): Promise<void> {
-    if (!this.daemonRegistry.touch(ws)) return;
-    await this.scheduleRuntimeAlarm();
-  }
+  private touchDaemonSocket(ws: WebSocket): boolean { return Boolean(this.daemonRegistry.touch(ws)); }
   private async invalidateDaemonSocket(
     ws: WebSocket, message: string, closeReason: string,
     errorCode = "daemon_liveness_timeout", scheduleAlarm = true,
