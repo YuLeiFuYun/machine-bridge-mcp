@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { packageRoot } from "./state.mjs";
+import { ensureWranglerToolchain } from "./wrangler-toolchain.mjs";
 import { BoundedOutput } from "./bounded-output.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 
@@ -97,18 +98,41 @@ function capturedResult(code, stdout, stderr, extraStderr = "") {
 }
 
 export function wranglerCommand(options = {}) {
-  const root = path.resolve(String(options.packageRoot || packageRoot));
+  const root = realpathSync(path.resolve(String(options.packageRoot || packageRoot)));
   const node = path.resolve(String(options.node || process.execPath));
   const script = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
-  if (!existsSync(script)) throw new Error(`Wrangler JavaScript entrypoint is missing: ${script}`);
-  return { cmd: node, argsPrefix: [script] };
+  let info;
+  try { info = lstatSync(script); }
+  catch (error) {
+    if (error?.code === "ENOENT") throw new Error(`Wrangler JavaScript entrypoint is missing: ${script}`, { cause: error });
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isFile() || Number(info.nlink) !== 1 || (process.platform !== "win32" && (Number(info.mode) & 0o022) !== 0)) {
+    throw new Error("Wrangler JavaScript entrypoint must be a private real regular file");
+  }
+  const canonical = realpathSync(script);
+  const relative = path.relative(root, canonical);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Wrangler JavaScript entrypoint escapes the private toolchain root");
+  }
+  return { cmd: node, argsPrefix: [canonical] };
 }
 
 export async function runWrangler(args, options = {}) {
-  const wrangler = wranglerCommand();
+  const toolchainRoot = await ensureWranglerToolchain({
+    stateRoot: options.stateRoot,
+    packageRoot: options.packageRoot || packageRoot,
+    npmCli: options.npmCli,
+    env: options.env || process.env,
+    runCommand: options.runCommand || runExecutable,
+    auditMaxAgeMs: options.auditMaxAgeMs,
+    hardenedNpm: options.hardenedNpm,
+  });
+  const wrangler = wranglerCommand({ packageRoot: toolchainRoot, node: options.node });
   const operation = String(args[0] || "");
   const timeoutMs = options.timeoutMs ?? (operation === "login" || operation === "deploy" ? 10 * 60 * 1000 : 2 * 60 * 1000);
-  return runExecutable(wrangler.cmd, [...wrangler.argsPrefix, ...args], { cwd: packageRoot, timeoutMs, ...options });
+  const { stateRoot: _stateRoot, packageRoot: _packageRoot, npmCli: _npmCli, runCommand: _runCommand, auditMaxAgeMs: _auditMaxAgeMs, hardenedNpm: _hardenedNpm, node: _node, ...executionOptions } = options;
+  return runExecutable(wrangler.cmd, [...wrangler.argsPrefix, ...args], { cwd: packageRoot, timeoutMs, ...executionOptions });
 }
 
 export function workspaceShellCommand(command) {

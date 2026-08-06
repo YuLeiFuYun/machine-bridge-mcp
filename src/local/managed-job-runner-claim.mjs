@@ -1,8 +1,8 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { ownerOnlyFile } from "./state.mjs";
+import { inspectPathIfPresentSync } from "./secure-file.mjs";
 import { readBoundedFile } from "./managed-job-storage.mjs";
 
 const RUNNER_CLAIM_BYTES = 1024;
@@ -21,7 +21,7 @@ export function publishProvisionalRunnerClaim(dir, pid, launchToken) {
   ownerOnlyFile(file);
 }
 
-export async function confirmRunnerClaim({ file, pid, processStartedAt, launchToken }) {
+export async function confirmRunnerClaim({ file, pid, processStartedAt, launchToken, inspectPath = inspectPathIfPresentSync }) {
   const exact = { pid, startedAt: new Date().toISOString(), processStartedAt };
   if (!launchToken) {
     createExclusiveFileSync(file, `${JSON.stringify(exact)}\n`, { mode: 0o600 });
@@ -30,7 +30,7 @@ export async function confirmRunnerClaim({ file, pid, processStartedAt, launchTo
   if (!/^[a-f0-9]{32}$/.test(launchToken)) throw new Error("runner launch token is invalid");
   const deadline = createMonotonicDeadline(RUNNER_CLAIM_WAIT_MS);
   while (!deadline.expired()) {
-    if (!existsSync(file)) {
+    if (!inspectPath(file, "managed job runner claim")) {
       await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
       continue;
     }
@@ -48,7 +48,6 @@ export async function confirmRunnerClaim({ file, pid, processStartedAt, launchTo
 }
 
 function readRunnerClaim(file, message) {
-  try { return JSON.parse(readBoundedFile(file, RUNNER_CLAIM_BYTES).toString("utf8")); } catch {
-    throw new Error(message);
-  }
+  try { return JSON.parse(readBoundedFile(file, RUNNER_CLAIM_BYTES).toString("utf8")); }
+  catch (error) { throw new Error(message, { cause: error }); }
 }

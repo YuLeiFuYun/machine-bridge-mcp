@@ -29,6 +29,8 @@ assert.deepEqual(blocked.pullRequestBlockers.map((item) => item.number), [51, 52
 const invocations = [];
 const result = assertGitHubBacklogReady({
   cwd: "/repo",
+  git: "git",
+  gh: "gh",
   run(command, args, cwd) {
     invocations.push({ command, args, cwd });
     if (command === "git" && args[0] === "branch") return { status: 0, stdout: "fix/current\n" };
@@ -43,6 +45,8 @@ assert(invocations.every((item) => item.cwd === "/repo"), "backlog gate escaped 
 
 assert.throws(() => assertGitHubBacklogReady({
   branch: "fix/current",
+  git: "git",
+  gh: "gh",
   run(command, args) {
     if (command === "git") return { status: 0, stdout: "no closing references" };
     if (args.at(-1).includes("/issues?")) return { status: 0, stdout: '[[{"number":48,"title":"unhandled issue"}]]' };

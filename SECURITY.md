@@ -46,6 +46,12 @@ Trusted components are:
 
 The Worker authenticates and filters remote requests. The local runtime owns filesystem, process, browser, application, resource, and job authority. Stdio bypasses the Worker and relies on local process and configuration trust.
 
+The repository Workflow Policy Gate independently validates the complete GitHub workflow set: approved triggers, least-privilege permissions, bounded jobs, workflow/ref concurrency, immutable reviewed Actions, disabled checkout credentials, and safe event-data handling. Release creation requires its successful push run for the exact commit.
+
+The final published consumer tree is audited separately from the source workspace. Deployment-only Wrangler/Miniflare packages are installed from a package-owned lock into an owner-only private toolchain, not shipped as runtime dependencies. Before use, that toolchain must match exact patched versions, pass a zero-vulnerability audit, and pass registry-signature verification. Installation and release mutation use a separately integrity-pinned hardened npm CLI rather than the ambient global npm bundle. Critical npm commands remove inherited execution modes case-insensitively and explicitly disable dry-run/workspace behavior. GitHub and npm publication upload private staged copies of the exact accepted tarball; after every irreversible command, bounded remote reconciliation requires GitHub REST SHA-256 or npm version/SHA-1/SRI/dist-tag evidence before success is reported. An unresolved outcome is explicitly ambiguous and must not be blindly retried. Release Git/gh operations use trusted absolute executables outside workspace/state/home roots and retain bounded network deadlines. Private toolchain reconstruction is limited to positively identified integrity corruption; permission, I/O, quota, memory, retry, stale-handle, storage, and timeout failures preserve existing state and fail closed. A root npm override in the source checkout is not considered consumer security evidence.
+
+Candidate activation treats Worker deployment and local service replacement as separate evidence boundaries. Authorization is checked before candidate downloads or installation, rollback evidence is captured before temporary npm disposal, and inactive runtime cleanup may touch only canonical real directories contained below the state root. One explicit current-version device-authentication rejection permits one same-name, unchanged-identity repair deployment and bounded fresh-session convergence; other ambiguous failures do not authorize a repeated remote write. Worker deployment fingerprints use length-framed normalized paths and bounded no-follow file reads; missing, inaccessible, symlinked, hard-linked, special, or changing source paths stop before deployment. After the Worker advances, compatible-service recovery is successful only when the exact service daemon completes authenticated relay readiness and matches the Worker. Provider-active state alone is insufficient, and incomplete compensation preserves both the primary failure and recovery error.
+
 ## Effective remote authority
 
 Remote authority is an intersection:
@@ -119,7 +125,7 @@ The prompt frequency is therefore:
 
 The packaged Swift source and ad-hoc build are development/protocol fixtures. The production validator deliberately rejects them because ad-hoc code has no provisioning-profile-validated data-protection Keychain access group.
 
-The broker path, signing identifier, Team ID, and capability are revalidated before use, but those checks cannot distinguish a malicious replacement signed by the same trusted Apple team and identifier. Install production brokers in a root-owned or otherwise daemon-user-non-writable location and protect the signing identity and update channel.
+The optional source-built development broker is cached only when a versioned marker matches both source and compiled-binary SHA-256 and the executable remains regular, single-link, owner-only, and executable. The broker path, signing identifier, Team ID, and capability are revalidated before use, but those checks cannot distinguish a malicious replacement signed by the same trusted Apple team and identifier. Install production brokers in a root-owned or otherwise daemon-user-non-writable location and protect the signing identity and update channel.
 
 ## Account administration
 
@@ -206,7 +212,7 @@ Registered resources store canonical paths and bounded metadata, not file conten
 
 At job acceptance, referenced resources are reopened, bounded, hashed, and copied into a private runtime area. Changed or unavailable resources fail closed. Environment injection may be visible to same-user process inspection; private file-path substitution or stdin is generally safer.
 
-Managed jobs are durability, not sandboxing. Only `owner` may create remote persistent plans. Long-lived jobs bind to account, account version, OAuth client, and refresh family.
+Managed jobs are durability, not sandboxing. Only `owner` may create remote persistent plans. Long-lived jobs bind to account, account version, OAuth client, and refresh family. Job directories must remain canonical real children of the owner-only job root. Cancellation markers are atomically replaced owner-only timestamp files; unreadable, malformed, symlinked, or hard-linked markers fail closed instead of being treated as no cancellation.
 
 `stage_job` is non-executing and cannot be promoted by a terminal approval command. `machine-mcp job approve` was removed. Execution requires trusted `start_job` authority or an explicit local `machine-mcp job submit PLAN.json` action.
 

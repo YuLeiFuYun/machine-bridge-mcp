@@ -34,3 +34,29 @@ export function persistentCandidateFailureMessage(output, { cli, stateRoot, prev
     ...recovery,
   ].join("\n");
 }
+
+export function validateActivationRecoveryPayload(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("persistent activation result is invalid");
+  }
+  const recovered = value.activation_recovered;
+  if (typeof recovered !== "boolean") {
+    throw new Error("persistent activation recovery flag is missing or invalid");
+  }
+  const reason = value.activation_recovery_reason;
+  const detail = value.activation_recovery_detail;
+  if (!recovered) {
+    if (![null, undefined, ""].includes(reason) || ![null, undefined, ""].includes(detail)) {
+      throw new Error("persistent activation recovery metadata is inconsistent");
+    }
+    return Object.freeze({ recovered: false, reason: "", detail: "" });
+  }
+  if (!/^[a-z0-9_]{1,80}$/.test(String(reason || ""))) {
+    throw new Error("persistent activation recovery reason is invalid");
+  }
+  const text = String(detail || "");
+  if (!text || text.length > 600 || /[\r\n\t]/.test(text)) {
+    throw new Error("persistent activation recovery detail is invalid");
+  }
+  return Object.freeze({ recovered: true, reason: String(reason), detail: text });
+}

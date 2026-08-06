@@ -73,6 +73,11 @@ async function testLegacyPairingMigration() {
     assert.equal(persisted.extensionToken, legacyToken);
     assert.equal(persisted.runtimeToken, first.runtimeToken);
     assert.equal(Object.hasOwn(persisted, "token"), false);
+    await assert.rejects(() => loadOrCreatePairing(root, {
+      inspectPathIfPresentSync() {
+        throw Object.assign(new Error("synthetic pairing storage failure"), { code: "EIO" });
+      },
+    }), /synthetic pairing storage failure/);
     await assert.rejects(() => savePairing(root, { schemaVersion: 2, extensionToken: legacyToken, runtimeToken: legacyToken, port: 39393 }), /invalid/);
     await assert.rejects(() => savePairing(root, { schemaVersion: 2, extensionToken: legacyToken, runtimeToken: "r".repeat(43), port: 80 }), /invalid/);
   } finally {

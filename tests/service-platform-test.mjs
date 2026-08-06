@@ -138,6 +138,14 @@ async function serviceOwnerTransactionTest() {
       assert.match(loadOwnerFailure({ controlRoot }), new RegExp(expected));
     }
     writeFileSync(ownerFile, `${JSON.stringify(valid)}\n`, { mode: 0o600 });
+    const ownerStorageFailure = {
+      controlRoot,
+      inspectPathIfPresentSync() {
+        throw Object.assign(new Error("synthetic service owner storage failure"), { code: "EIO" });
+      },
+    };
+    assert.throws(() => loadServiceOwner(ownerStorageFailure), /synthetic service owner storage failure/);
+    assert.throws(() => beginServiceOwnerUpdate({ workspace, stateRoot, entryScript, version: "3.0.0-test.failure" }, ownerStorageFailure), /synthetic service owner storage failure/);
 
     const stale = beginServiceOwnerUpdate({ workspace, stateRoot, entryScript, version: "3.0.0-test.4" }, { controlRoot });
     const replacement = beginServiceOwnerUpdate({ workspace, stateRoot, entryScript, version: "3.0.0-test.5" }, { controlRoot });

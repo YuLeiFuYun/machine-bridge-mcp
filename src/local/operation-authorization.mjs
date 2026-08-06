@@ -1,10 +1,9 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { OPERATION_APPROVAL_SCOPES, classifyOperation } from "./operation-risk.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { withOperationStateLock } from "./operation-state-lock.mjs";
-import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { ensureOwnerOnlyDirectorySync, inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 
 const SCHEMA_VERSION = 2;
 const MAX_STATE_BYTES = 256 * 1024;
@@ -136,8 +135,10 @@ function currentLeases(root, now) {
 
 function readLeaseState(root) {
   const file = leasePath(root);
-  if (!existsSync(file)) return emptyLeaseState();
-  const raw = readBoundedRegularFileSync(file, MAX_STATE_BYTES, "operation approval state");
+  const info = inspectPathIfPresentSync(file, "operation approval state");
+  if (!info) return emptyLeaseState();
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error("operation approval state must be a regular file and not a symbolic link");
+  const raw = readBoundedRegularFileSync(file, MAX_STATE_BYTES, "operation approval state", { verifyPathIdentity: true, rejectMultipleLinks: true });
   let parsed;
   try { parsed = JSON.parse(raw.toString("utf8")); } catch (error) {
     throw new Error("operation approval state is not valid JSON", { cause: error });

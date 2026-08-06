@@ -80,6 +80,7 @@ jobs:
       - name: Verify interactive candidate acceptance
         run: npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs
       - run: npm run install:test
+      - run: npm run consumer-security:test
       - run: npm audit --audit-level=high
       - run: npm audit --omit=dev --audit-level=high
       - run: npm audit signatures

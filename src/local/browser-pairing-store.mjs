@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { acquireMaintenanceLock, assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 
@@ -11,11 +10,14 @@ const PAIRING_FILE = "browser-bridge.json";
 const PAIRING_SCHEMA_VERSION = 2;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,100}$/;
 
-export async function loadOrCreatePairing(stateRoot) {
+export async function loadOrCreatePairing(stateRoot, options = {}) {
   if (!stateRoot) return newPairing(DEFAULT_BROWSER_PORT);
   ensureOwnerOnlyDir(stateRoot);
   const file = join(stateRoot, PAIRING_FILE);
-  if (existsSync(file)) {
+  const inspect = options.inspectPathIfPresentSync || inspectPathIfPresentSync;
+  const existing = inspect(file, "browser pairing state");
+  if (existing) {
+    if (existing.isSymbolicLink() || !existing.isFile()) throw new Error("browser pairing state must be a regular file and not a symbolic link");
     const current = readPairing(file);
     if (!current.legacy) { assertStateMaintenanceAvailable(stateRoot); return current.value; }
     return migrateLegacyPairing(stateRoot, file);
@@ -69,7 +71,7 @@ async function acquirePairingMigrationLock(stateRoot) {
 function readPairing(file) {
   ownerOnlyFile(file);
   let parsed;
-  try { parsed = JSON.parse(readBoundedRegularFileSync(file, 64 * 1024).toString("utf8")); }
+  try { parsed = JSON.parse(readBoundedRegularFileSync(file, 64 * 1024, "browser pairing state", { verifyPathIdentity: true, rejectMultipleLinks: true }).toString("utf8")); }
   catch { throw new Error("browser pairing state is not valid bounded JSON"); }
   if (parsed?.schemaVersion === PAIRING_SCHEMA_VERSION) return { legacy: false, value: normalizePairing(parsed) };
   if (TOKEN_PATTERN.test(String(parsed?.token || "")) && validPort(parsed?.port)) {

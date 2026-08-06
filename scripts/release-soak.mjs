@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -19,23 +19,29 @@ import {
   requiresSoakForStable,
 } from "./release-channel.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { readGithubPrerelease, readPublishedNpmPrerelease } from "./published-release.mjs";
+import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
+import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
 
 export const SOAK_SCHEMA_VERSION = 1;
 const MAX_SOAK_RECORD_BYTES = 64 * 1024;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`release soak failed: ${releaseDiagnostic(error?.message || error, 1400)}`);
+    process.exitCode = 1;
+  });
+}
+
+async function main() {
   const mode = process.argv[2] || "--verify";
-  try {
-    if (mode === "--record") recordCurrentPrereleaseSoak(root, { confirmation: argumentValue("--confirm"), stateRoot: argumentValue("--state-dir") || undefined });
-    else if (mode === "--verify") verifyCurrentStableSoak(root);
-    else if (mode === "--status") printStatus(root);
-    else throw new Error("usage: node scripts/release-soak.mjs [--record --confirm TEXT [--state-dir DIR]|--verify|--status]");
-  } catch (error) {
-    console.error(`release soak failed: ${error?.message || error}`);
-    process.exit(1);
-  }
+  if (mode === "--record") {
+    await recordCurrentPrereleaseSoak(root, { confirmation: argumentValue("--confirm"), stateRoot: argumentValue("--state-dir") || undefined });
+  } else if (mode === "--verify") verifyCurrentStableSoak(root);
+  else if (mode === "--status") printStatus(root);
+  else throw new Error("usage: node scripts/release-soak.mjs [--record --confirm TEXT [--state-dir DIR]|--verify|--status]");
 }
 
 export function soakRecordPath(repositoryRoot, stableVersion) {
@@ -44,7 +50,7 @@ export function soakRecordPath(repositoryRoot, stableVersion) {
   return join(repositoryRoot, "release-soak", `v${stable.raw}.json`);
 }
 
-export function recordCurrentPrereleaseSoak(repositoryRoot, options = {}) {
+export async function recordCurrentPrereleaseSoak(repositoryRoot, options = {}) {
   const pkg = readPackage(repositoryRoot);
   const prerelease = assertSoakEligiblePrerelease(pkg.version);
   const acceptance = verifyCurrentReleaseAcceptance(repositoryRoot);
@@ -71,7 +77,7 @@ export function recordCurrentPrereleaseSoak(repositoryRoot, options = {}) {
   const expected = soakConfirmationPhrase(pkg.name, prerelease.raw, requiredSeconds);
   if (options.confirmation !== expected) throw new Error(`soak confirmation must exactly match: ${expected}`);
 
-  const published = options.published || readPublishedNpmPrerelease(pkg.name, prerelease.raw, prerelease.npmTag);
+  const published = options.published || await readPublishedWithHardenedNpm(pkg.name, prerelease);
   if (
     published.version !== prerelease.raw
     || published.integrity !== acceptance.metadata.integrity
@@ -81,7 +87,9 @@ export function recordCurrentPrereleaseSoak(repositoryRoot, options = {}) {
   ) {
     throw new Error("published npm prerelease metadata does not match the accepted and activated package");
   }
-  const github = options.github || readGithubPrerelease(prerelease.raw);
+  const github = options.github || readGithubPrerelease(prerelease.raw, {
+    expectedArtifactSha256: acceptance.artifactSha256,
+  });
   if (github.tag !== `v${prerelease.raw}` || github.isPrerelease !== true) {
     throw new Error("GitHub prerelease is missing or not marked as a prerelease");
   }
@@ -114,14 +122,46 @@ export function recordCurrentPrereleaseSoak(repositoryRoot, options = {}) {
   return record;
 }
 
+async function readPublishedWithHardenedNpm(packageName, prerelease) {
+  const session = await createHardenedNpmSession();
+  let result = null;
+  let primaryError = null;
+  try {
+    result = readPublishedNpmPrerelease(packageName, prerelease.raw, prerelease.npmTag, {
+      npmCli: session.cli,
+      env: process.env,
+    });
+  } catch (error) {
+    primaryError = error;
+  }
+  let cleanupError = null;
+  try { session.dispose(); } catch (error) { cleanupError = error; }
+  if (primaryError && cleanupError) {
+    throw new AggregateError([primaryError, cleanupError], "npm prerelease verification failed and hardened npm cleanup was incomplete");
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw cleanupError;
+  return result;
+}
+
 export function verifyCurrentStableSoak(repositoryRoot, options = {}) {
   const pkg = readPackage(repositoryRoot);
   if (!requiresSoakForStable(pkg.version)) return { required: false, version: pkg.version };
   const file = soakRecordPath(repositoryRoot, pkg.version);
-  if (!existsSync(file)) throw new Error(`stable release soak record is missing: ${file}`);
+  const readRecord = options.readBoundedRegularFileSync || readBoundedRegularFileSync;
+  let bytes;
+  try {
+    bytes = readRecord(file, MAX_SOAK_RECORD_BYTES, "release soak record", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new Error(`stable release soak record is missing: ${file}`, { cause: error });
+    throw new Error("release soak record is unavailable", { cause: error });
+  }
   let parsed;
-  try { parsed = JSON.parse(readBoundedRegularFileSync(file, MAX_SOAK_RECORD_BYTES, "release soak record", { verifyPathIdentity: true }).toString("utf8")); }
-  catch (error) { throw new Error(`release soak record is unavailable or invalid: ${error.message}`); }
+  try { parsed = JSON.parse(bytes.toString("utf8")); }
+  catch (error) { throw new Error("release soak record is invalid", { cause: error }); }
   const promotionDigest = computePromotionContentDigest(repositoryRoot, options);
   const record = validateSoakRecord(parsed, { stableVersion: pkg.version, promotionDigest });
   return { required: true, version: pkg.version, record, promotionDigest };
@@ -194,7 +234,8 @@ export function soakConfirmationPhrase(name, prereleaseVersion, requiredSeconds)
 
 function latestStableTag(repositoryRoot, targetBaseVersion) {
   const target = parseReleaseVersion(targetBaseVersion);
-  const result = run("git", ["tag", "--list", "v*"], { cwd: repositoryRoot });
+  const git = resolveTrustedGitExecutable({ workspace: repositoryRoot });
+  const result = run(git, ["tag", "--list", "v*"], { cwd: repositoryRoot });
   const versions = result.stdout.split(/\r?\n/).map((tag) => tag.trim().replace(/^v/, "")).filter(Boolean)
     .map((value) => { try { return parseReleaseVersion(value); } catch { return null; } })
     .filter((value) => value && !value.prerelease && compareReleaseVersions(value, target) < 0)
@@ -223,9 +264,15 @@ function readPackage(repositoryRoot) {
 }
 
 function run(file, args, options = {}) {
-  const result = spawnSync(file, args, { cwd: options.cwd || root, encoding: "utf8", env: process.env, windowsHide: true });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${file} ${args[0] || ""} failed: ${String(result.stderr || result.stdout).trim()}`);
+  const result = spawnSync(file, args, {
+    cwd: options.cwd || root,
+    encoding: "utf8",
+    env: process.env,
+    timeout: 30_000,
+    killSignal: "SIGKILL",
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure(file, args, result));
   return result;
 }
 

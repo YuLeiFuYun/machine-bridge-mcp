@@ -29,7 +29,7 @@ for (const file of graph.keys()) visitModule(file, []);
 
 const adapterModules = new Set([
   "cli.mjs", "cli-service.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs",
-  "service-restart-handoff.mjs", "service-restart-scheduler.mjs", "windows-service.mjs", "windows-service-convergence.mjs", "relay-connection.mjs", "runtime-relay.mjs", "worker-deployment.mjs",
+  "service-restart-handoff.mjs", "service-restart-scheduler.mjs", "windows-service.mjs", "windows-service-convergence.mjs", "relay-connection.mjs", "runtime-relay.mjs", "worker-deployment.mjs", "hardened-npm.mjs", "hardened-npm-download.mjs", "hardened-npm-extract.mjs", "hardened-npm-verification.mjs", "wrangler-toolchain.mjs", "wrangler-toolchain-verification.mjs",
 ]);
 const boundaryModules = new Set([
   "agent-context.mjs",
@@ -72,6 +72,7 @@ const boundaryModules = new Set([
   "execution-routing.mjs",
   "managed-job-plan.mjs",
   "numbers.mjs",
+  "private-toolchain-integrity.mjs",
   "project-metadata.mjs",
   "records.mjs",
   "state-inventory.mjs",
@@ -101,6 +102,8 @@ const boundaryModules = new Set([
   "managed-job-projection.mjs",
   "managed-job-storage.mjs",
   "managed-job-runner.mjs",
+  "managed-job-cancellation.mjs",
+  "managed-job-directory.mjs",
 ]);
 for (const name of boundaryModules) {
   const file = join(localRoot, name);
@@ -184,6 +187,8 @@ const lineLimits = Object.freeze({
   "src/local/managed-job-projection.mjs": 100,
   "src/local/managed-job-storage.mjs": 130,
   "src/local/managed-job-runner.mjs": 100,
+  "src/local/managed-job-cancellation.mjs": 80,
+  "src/local/managed-job-directory.mjs": 80,
   "src/local/managed-job-plan.mjs": 300,
   "src/local/numbers.mjs": 30,
   "src/local/project-metadata.mjs": 80,
@@ -191,6 +196,14 @@ const lineLimits = Object.freeze({
   "src/local/state-inventory.mjs": 170,
   "src/local/worker-health.mjs": 280,
   "src/local/worker-deployment.mjs": 220,
+  "src/local/hardened-npm.mjs": 230,
+  "src/local/hardened-npm-download.mjs": 110,
+  "src/local/hardened-npm-extract.mjs": 50,
+  "src/local/hardened-npm-verification.mjs": 110,
+  "src/local/npm-environment.mjs": 40,
+  "src/local/private-toolchain-integrity.mjs": 70,
+  "src/local/wrangler-toolchain.mjs": 230,
+  "src/local/wrangler-toolchain-verification.mjs": 140,
   "src/local/browser-bridge.mjs": 560,
   "src/local/browser-request-registry.mjs": 100,
   "src/local/browser-bridge-http.mjs": 80,

@@ -6,7 +6,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const roots = ["bin", "src/local", "scripts", "tests", "browser-extension"];
+const roots = ["bin", "src/local", "scripts", "tests", "browser-extension", ".github/scripts"];
 const files = roots.flatMap((entry) => collect(join(root, entry)))
   .filter((file) => [".js", ".mjs"].includes(extname(file)))
   .sort();

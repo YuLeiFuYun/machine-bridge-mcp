@@ -1,4 +1,6 @@
 import {
+  copyFileSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -25,6 +27,7 @@ import {
   verifyTarball,
 } from "../scripts/release-acceptance.mjs";
 import { computePromotionContentDigest } from "../scripts/promotion-digest.mjs";
+import { resolveAcceptedCandidateTarball, stageAcceptedCandidateTarball } from "../scripts/accepted-candidate-tarball.mjs";
 import {
   canonicalPackageDigest,
   verifyPortableAcceptance,
@@ -45,6 +48,17 @@ try {
   assert(acceptanceConfirmationForVersion("3.0.0-beta.1") === PERSISTENT_OWNER_ACTIVATED_CONFIRMATION, "v3 acceptance did not require owner activation plus agent verification");
 
   const metadata = packProject(root, output);
+  const inheritedDryRunOutput = join(root, "inherited-dry-run-output");
+  mkdirSync(inheritedDryRunOutput, { recursive: true });
+  const previousDryRun = process.env.npm_config_dry_run;
+  process.env.npm_config_dry_run = "true";
+  try {
+    const inheritedDryRunMetadata = packProject(root, inheritedDryRunOutput);
+    assert(inheritedDryRunMetadata.shasum === metadata.shasum, "nested npm pack inherited the outer dry-run flag");
+  } finally {
+    if (previousDryRun === undefined) delete process.env.npm_config_dry_run;
+    else process.env.npm_config_dry_run = previousDryRun;
+  }
   const portablePack = packFixtureMetadata();
   const record = {
     schema_version: ACCEPTANCE_SCHEMA_VERSION,
@@ -69,6 +83,35 @@ try {
 
   const verified = verifyCurrentReleaseAcceptance(root);
   assert(verified.required && verified.metadata.shasum === metadata.shasum, "current package did not match its local acceptance record");
+  const candidateDirectory = join(root, ".release-candidate");
+  mkdirSync(candidateDirectory);
+  copyFileSync(join(output, metadata.filename), join(candidateDirectory, metadata.filename));
+  const candidateManifest = {
+    schema_version: ACCEPTANCE_SCHEMA_VERSION,
+    result: "pending",
+    ...metadata,
+    promotion_content_sha256: record.promotion_content_sha256,
+    prepared_at: "2026-07-18T11:00:00.000Z",
+  };
+  const candidateManifestPath = join(candidateDirectory, "manifest.json");
+  writeFileSync(candidateManifestPath, `${JSON.stringify(candidateManifest, null, 2)}\n`);
+  const acceptedCandidate = resolveAcceptedCandidateTarball(root, verified);
+  assert(acceptedCandidate.path === join(candidateDirectory, metadata.filename),
+    "accepted candidate tarball did not resolve to the exact local artifact");
+  const stagedCandidate = stageAcceptedCandidateTarball(root, verified, { tempRoot: root });
+  assert(stagedCandidate.path !== acceptedCandidate.path
+    && readFileSync(stagedCandidate.path).equals(readFileSync(acceptedCandidate.path)),
+  "accepted candidate staging did not preserve the exact verified bytes");
+  stagedCandidate.dispose();
+  writeFileSync(candidateManifestPath, `${JSON.stringify({ ...candidateManifest, shasum: "f".repeat(40) }, null, 2)}\n`);
+  expectThrow(() => resolveAcceptedCandidateTarball(root, verified), "shasum does not match");
+  writeFileSync(candidateManifestPath, `${JSON.stringify(candidateManifest, null, 2)}\n`);
+  if (process.platform !== "win32") {
+    const hardlink = join(candidateDirectory, "candidate-hardlink.tgz");
+    linkSync(join(candidateDirectory, metadata.filename), hardlink);
+    expectThrow(() => resolveAcceptedCandidateTarball(root, verified), "tarball is not a regular file");
+    unlinkSync(hardlink);
+  }
   if (process.platform !== "win32") {
     const realRecordPath = `${recordPath}.real`;
     renameSync(recordPath, realRecordPath);
@@ -134,7 +177,7 @@ try {
 
 function writePackage(version) {
   writeFileSync(join(root, "package.json"), `${JSON.stringify({
-    name: "release-acceptance-fixture",
+    name: "machine-bridge-mcp",
     version,
     type: "module",
     files: ["index.js"],

@@ -9,6 +9,7 @@ import {
 import { allToolNames, normalizePolicy, toolsForPolicy } from "../src/local/policy.mjs";
 import { MAX_COMMAND_BYTES, validateArgv } from "../src/local/process-contract.mjs";
 import { runExecutable } from "../src/local/shell.mjs";
+import { resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "../src/local/managed-job-directory.mjs";
 
 fc.assert(fc.property(
   fc.uint8Array({ maxLength: 1024 }),
@@ -84,7 +85,29 @@ try {
   rmSync(temp, { recursive: true, force: true });
 }
 
-console.log("security property tests ok (fast-check browser protocol, policy, argv, executable boundary)");
+const managedJobInfo = { isSymbolicLink: () => false, isDirectory: () => true, dev: 1, ino: 1 };
+const managedJobOutsideInfo = { ...managedJobInfo, ino: 2 };
+expectThrow(() => resolveManagedJobRootIfPresent("/tmp/jobs", {
+  inspectPath: () => managedJobInfo,
+  realpathSync: () => "/tmp/outside",
+  lstatSync: (target) => target === "/tmp/jobs" ? managedJobInfo : managedJobOutsideInfo,
+}), "canonical target does not match");
+const managedJobId = `job_${"A".repeat(24)}`;
+const unsafeManagedJobBefore = { ...managedJobInfo, dev: 2 ** 54, ino: 2 ** 54 };
+const unsafeManagedJobAfter = { ...managedJobInfo, dev: (2 ** 54) + 4, ino: (2 ** 54) + 8 };
+expectThrow(() => resolveManagedJobDirectory("/tmp/jobs", managedJobId, {
+  inspectPath: () => unsafeManagedJobBefore,
+  realpathSync: (value) => value,
+  lstatSync: () => unsafeManagedJobAfter,
+}), "identity changed during inspection");
+const bigintManagedJobInfo = { ...managedJobInfo, dev: 7n, ino: 11n };
+assert(resolveManagedJobDirectory("/tmp/jobs", managedJobId, {
+  inspectPath: () => bigintManagedJobInfo,
+  realpathSync: (value) => value,
+  lstatSync: () => bigintManagedJobInfo,
+}) === `/tmp/jobs/${managedJobId}`, "managed job resolver rejected comparable bigint identity metadata");
+
+console.log("security property tests ok (fast-check browser protocol, policy, argv, executable and managed-job boundaries)");
 
 function expectThrow(callback, pattern) {
   try { callback(); } catch (error) {

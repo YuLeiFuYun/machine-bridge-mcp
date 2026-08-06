@@ -5,6 +5,21 @@ import { FAST_CHECK_TASKS, FULL_CHECK_TASKS, PLATFORM_CHECK_TASKS } from "../../
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
+const cliActivateSource = readFileSync(join(root, "src", "local", "cli-activate.mjs"), "utf8");
+const runtimeActivationSource = readFileSync(join(root, "src", "local", "runtime-activation.mjs"), "utf8");
+for (const required of [
+  "recovery?.candidateServiceStarted && candidateRelayVerified && recoverablePostReadySettlement(error)",
+  "RECOVERABLE_POST_READY_CODES",
+  "activationRecovered: true",
+  "recoveryReason: activationRecoveryReason(error)",
+  "recoveryDetail: activationRecoveryDetail(error)",
+  "if (settlement?.ok === true) return settlement",
+]) {
+  if (!runtimeActivationSource.includes(required)) throw new Error(`runtime activation lost verified recovered-success boundary: ${required}`);
+}
+for (const required of ["activation_recovered", "activation_recovery_reason", "activation_recovery_detail", "verified candidate-service recovery"]) {
+  if (!cliActivateSource.includes(required)) throw new Error(`candidate activation CLI lost recovered-result visibility: ${required}`);
+}
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
@@ -20,6 +35,22 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
       throw new Error(`${field} must pin ${name} to one exact semantic version, received ${version}`);
     }
   }
+}
+if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.115.0") {
+  throw new Error("Wrangler must remain outside the published production dependency graph and exact in development");
+}
+if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?.version !== ">=26.0.0"
+    || packageJson.devEngines?.runtime?.onFail !== "warn") {
+  throw new Error("Node 26 runtime enforcement or metadata-only Dependabot compatibility drifted");
+}
+const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
+const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
+if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.115.0"
+    || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.3"
+    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.115.0"
+    || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.0"
+    || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.3") {
+  throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
 }
 const patchedSharpVersion = "0.35.3";
 if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
@@ -75,7 +106,7 @@ if (packageJson.scripts?.["capability-ranking:test"] !== "node tests/capability-
 if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
   throw new Error("package syntax check is not using the dynamic repository scanner");
 }
-if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local scripts tests browser-extension") {
+if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local scripts tests browser-extension .github/scripts") {
   throw new Error("production/test undefined-identifier lint gate is missing or drifted");
 }
 if (packageJson.scripts?.["lint:test"] !== "node tests/lint-gate-test.mjs") {
@@ -87,7 +118,7 @@ if (packageJson.scripts?.check !== "npm run check:full"
     || packageJson.scripts?.["check:full"] !== "node scripts/run-checks.mjs full") {
   throw new Error("layered fast/full verification entrypoints are missing or drifted");
 }
-for (const required of ["runtime-boundaries:test", "worker-oauth-controller:test", "shell:test", "lint:test", "lint", "deadline:test", "release-channel:test", "release-candidate-manifest:test", "release-soak:test", "runtime-activation:test", "release-publication-guard:test"]) {
+for (const required of ["runtime-boundaries:test", "worker-oauth-controller:test", "shell:test", "lint:test", "lint", "deadline:test", "release-channel:test", "release-candidate-manifest:test", "release-soak:test", "runtime-activation:test", "release-publication-guard:test", "npm-environment:test", "hardened-npm:test", "consumer-package-security:test", "wrangler-toolchain:test"]) {
   if (!FAST_CHECK_TASKS.includes(required)) throw new Error(`fast check plan omits required task: ${required}`);
 }
 for (const required of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
@@ -123,6 +154,18 @@ for (const [name, command] of Object.entries({
 })) {
   if (packageJson.scripts?.[name] !== command) throw new Error(`release channel command is missing or drifted: ${name}`);
 }
+const releaseSoakSource = readFileSync(join(root, "scripts", "release-soak.mjs"), "utf8");
+for (const required of ["createHardenedNpmSession", "readPublishedWithHardenedNpm", "session.dispose()", "await recordCurrentPrereleaseSoak", "expectedArtifactSha256: acceptance.artifactSha256"]) {
+  if (!releaseSoakSource.includes(required)) throw new Error(`release soak registry verification lost hardened npm boundary: ${required}`);
+}
+if (packageJson.scripts?.prepack !== "npm run version:check && npm run privacy:check && npm run release-impact:check") {
+  throw new Error("prepack must remain a non-mutating version/privacy/release-impact verification only");
+}
+for (const lifecycle of ["prepare", "postpack", "prepublish", "publish", "postpublish"]) {
+  if (Object.hasOwn(packageJson.scripts || {}, lifecycle)) {
+    throw new Error(`package lifecycle ${lifecycle} is incompatible with exact accepted-tarball publication`);
+  }
+}
 if (packageJson.scripts?.["release:candidate"] !== "npm run check && node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses the complete suite");
 if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-release-candidate.mjs") throw new Error("isolated candidate startup command is missing");
 const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.mjs"), "utf8");
@@ -138,8 +181,45 @@ if (!checkEntrypointSource.includes("runVerificationPlan")
   throw new Error("cross-platform check runner no longer invokes the pinned npm CLI through Node");
 }
 const localAcceptanceSource = readFileSync(join(root, "scripts", "local-release-acceptance.mjs"), "utf8");
-for (const required of ["GIT_INDEX_FILE", 'git", ["read-tree", "HEAD"]', 'git", ["add", "--all"', "--print-digest", "package_content_sha256"]) {
+for (const required of ["GIT_INDEX_FILE", "resolveTrustedGitExecutable", "createHardenedNpmSession", "runWithHardenedNpm", "packProject(root, candidateDirectory, { npmCli", "verifyCurrentReleaseAcceptance(root, { npmCli", 'git, ["read-tree", "HEAD"]', 'git, ["add", "--all"', "--print-digest", "package_content_sha256"]) {
   if (!localAcceptanceSource.includes(required)) throw new Error(`local acceptance recorder lost portable digest boundary: ${required}`);
+}
+const workerDeploymentSource = readFileSync(join(root, "src", "local", "worker-deployment.mjs"), "utf8");
+const workerFingerprintSource = readFileSync(join(root, "src", "local", "worker-deployment-fingerprint.mjs"), "utf8");
+if (!workerDeploymentSource.includes('export { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs"')) {
+  throw new Error("Worker deployment state machine lost its dedicated fingerprint boundary");
+}
+for (const required of ["mbm-worker-deploy-v5", "addFingerprintField", "source.files.length", 'replaceAll(path.sep, "/")', "readBoundedRegularFileSync", "rejectMultipleLinks: true", "lstatSync", "realpathSync", "requireRealDeploymentRoot", "collectRequiredHashPath", "must not be a symbolic link", "required source is missing"]) {
+  if (!workerFingerprintSource.includes(required)) throw new Error(`Worker deployment fingerprint lost fail-closed v5 boundary: ${required}`);
+}
+const workerFingerprintTraversal = workerFingerprintSource.slice(
+  workerFingerprintSource.indexOf("function workerDeployHashFiles"),
+);
+if (/\bexistsSync\(target\)/.test(workerFingerprintTraversal) || /(?<!l)statSync\(target\)/.test(workerFingerprintTraversal)) {
+  throw new Error("Worker deployment fingerprint regained existence-probe or symlink-following traversal");
+}
+const oauthBrowserTestSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
+for (const required of [
+  'detached: process.platform !== "win32"',
+  'process.kill(-browser.pid, signal)',
+  'signalBrowserTree(browser, "SIGTERM")',
+  'signalBrowserTree(browser, "SIGKILL")',
+  'spawnSync("taskkill"',
+  "closeHttpServer",
+  "closeAllConnections",
+  "removeBrowserProfile",
+  "OAuth browser navigation failed and browser cleanup was incomplete",
+]) {
+  if (!oauthBrowserTestSource.includes(required)) {
+    throw new Error(`OAuth browser regression lost bounded process-tree cleanup boundary: ${required}`);
+  }
+}
+const publicationGuardSource = readFileSync(join(root, "scripts", "release-publication-guard.mjs"), "utf8");
+if (!publicationGuardSource.includes("resolveTrustedGitExecutable") || publicationGuardSource.includes('spawnSync("git"')) {
+  throw new Error("release publication lock regained PATH-resolved Git metadata lookup");
+}
+if (!releaseSoakSource.includes("resolveTrustedGitExecutable") || releaseSoakSource.includes('run("git"')) {
+  throw new Error("release soak evidence regained PATH-resolved Git tag lookup");
 }
 if (packageJson.scripts?.release !== "node scripts/github-release.mjs --publish") throw new Error("source release command is missing");
 if (packageJson.scripts?.["release:publish"] !== packageJson.scripts?.release) throw new Error("legacy release:publish alias drifted from npm run release");
@@ -150,6 +230,44 @@ const githubReleaseSource = readFileSync(join(root, "scripts", "github-release.m
 const githubPublicationGuardSource = readFileSync(join(root, "scripts", "release-publication-guard.mjs"), "utf8");
 for (const required of ["assertOwnerTerminalPublication", "withGithubPublicationLock", "--owner-terminal-confirm"]) {
   if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost owner-publication boundary: ${required}`);
+}
+for (const required of [
+  "stageAcceptedCandidateTarball", "candidate.path", "artifactSha256",
+  "createHardenedNpmSession", "runNpmScript", "nestedNpmEnvironment",
+  "githubReleaseByTagEndpoint", "waitForGithubReleaseAsset", 'gh, ["api"',
+  "GitHub release bytes were verified", "mutationError", "remote-state reconciliation",
+  "waitForPublishedReleaseState", "defaultReleaseStateWait", "404 Not Found",
+  "GitHub REST release metadata is invalid",
+]) {
+  if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost exact accepted-asset boundary: ${required}`);
+}
+if (githubReleaseSource.includes("packReleaseAsset") || githubReleaseSource.includes('["pack", "--silent"')) {
+  throw new Error("GitHub release publication regressed to repacking the source directory");
+}
+if (githubReleaseSource.includes('run("npm", ["run"')) {
+  throw new Error("GitHub release publication regained PATH-resolved ambient npm execution");
+}
+for (const [label, source] of [["release", githubReleaseSource], ["push", readFileSync(join(root, "scripts", "github-push.mjs"), "utf8")], ["backlog", readFileSync(join(root, "scripts", "github-backlog.mjs"), "utf8")]]) {
+  for (const required of ["resolveTrustedGitExecutable", "resolveTrustedGithubCli"]) {
+    if (!source.includes(required)) throw new Error(`GitHub ${label} helper lost trusted executable resolution: ${required}`);
+  }
+  if (/\b(?:run|output|runNetwork|outputNetwork)\(\s*["'](?:git|gh)["']/.test(source)) {
+    throw new Error(`GitHub ${label} helper regained PATH-resolved git/gh execution`);
+  }
+}
+const githubCandidateStage = githubReleaseSource.indexOf("stageAcceptedCandidateTarball(root, acceptance)");
+const githubRemoteTagRead = githubReleaseSource.indexOf("remoteTagCommit(tag)", githubCandidateStage);
+const githubReleaseUpload = githubReleaseSource.indexOf("ensureRelease(tag, pkg.version, candidate.path", githubCandidateStage);
+const githubAssetVerification = githubReleaseSource.indexOf("releaseAssetInfo(tag, acceptance.metadata.filename, acceptance.artifactSha256)", githubCandidateStage);
+if ([githubCandidateStage, githubRemoteTagRead, githubReleaseUpload, githubAssetVerification].some((value) => value < 0)
+    || githubCandidateStage > githubRemoteTagRead
+    || githubRemoteTagRead > githubReleaseUpload
+    || githubReleaseUpload > githubAssetVerification) {
+  throw new Error("GitHub publication no longer stages accepted bytes before remote mutation and verifies the uploaded asset digest");
+}
+const githubAssetSource = readFileSync(join(root, "scripts", "github-release-asset.mjs"), "utf8");
+for (const required of ["tag_name", "matches.length !== 1", "sha256:", "expectedSha256", "asset.digest", "waitForGithubReleaseAsset", "defaultAssetWait"]) {
+  if (!githubAssetSource.includes(required)) throw new Error(`GitHub release asset verifier lost required boundary: ${required}`);
 }
 for (const required of ["interactive owner terminal", "withOwnerStateLock", "--git-common-dir", "github-publication", "github-publication.lock"]) {
   if (!githubPublicationGuardSource.includes(required)) throw new Error(`GitHub publication guard lost required boundary: ${required}`);
@@ -162,31 +280,131 @@ if (publicationGuardCall < 0 || publicationLockCall < 0 || prereleasePublishCall
   throw new Error("GitHub publication no longer verifies owner terminal presence and acquires its lock before remote mutation");
 }
 const githubBacklogPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
-if (!githubBacklogPushSource.includes("assertGitHubBacklogReady") || !githubBacklogPushSource.includes('git", ["fetch", "origin", "main", "--prune"]')) {
+if (!githubBacklogPushSource.includes("assertGitHubBacklogReady") || !githubBacklogPushSource.includes('runNetwork(git, ["fetch", "origin", "main", "--prune"]')) {
   throw new Error("guarded GitHub push lost the issue/PR backlog boundary");
 }
+for (const required of ["createHardenedNpmSession", "verifyCurrentReleaseAcceptance(root, { npmCli: npmSession.cli", "verifyCurrentStableSoak(root, { npmCli: npmSession.cli", "runNetwork(git", "runBacklogCommand", "npmSession.dispose()"]) {
+  if (!githubBacklogPushSource.includes(required)) throw new Error(`guarded GitHub push lost hardened/network boundary: ${required}`);
+}
+const pushAcceptance = githubBacklogPushSource.indexOf("verifyCurrentReleaseAcceptance(root");
+const pushNpmDispose = githubBacklogPushSource.indexOf("npmSession.dispose()");
+const pushRemoteMutation = githubBacklogPushSource.indexOf('runNetwork(git, ["push"');
+if ([pushAcceptance, pushNpmDispose, pushRemoteMutation].some((value) => value < 0)
+    || pushAcceptance > pushNpmDispose || pushNpmDispose > pushRemoteMutation) {
+  throw new Error("guarded GitHub push no longer verifies accepted bytes through hardened npm and disposes it before remote mutation");
+}
 const candidateStartSource = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
-for (const required of ["verifyTarball", ".release-candidate", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", '"activate"', 'stdio: "inherit"']) {
+for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"']) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
 }
 const candidateSourceGuard = candidateStartSource.indexOf("assertCandidateMatchesCurrentSource(manifest");
 const candidateTarballVerification = candidateStartSource.indexOf("verifyTarball(tarball, manifest)");
+const candidateAuthorization = candidateStartSource.indexOf("if (!installOnly && !allowWorkerDeploy)");
+const candidatePersistentRuntime = candidateStartSource.indexOf("const persistentActivation = activateService && !installOnly");
+const candidateHardenedNpm = candidateStartSource.indexOf("npmSession = await createHardenedNpmSession()");
 const candidateInstall = candidateStartSource.indexOf('"install",');
-if (candidateSourceGuard < 0 || candidateTarballVerification < 0 || candidateInstall < 0
-    || candidateSourceGuard > candidateTarballVerification || candidateSourceGuard > candidateInstall) {
-  throw new Error("candidate startup no longer rejects stale source before tarball verification or installation");
+if (candidateSourceGuard < 0 || candidateTarballVerification < 0 || candidateAuthorization < 0 || candidatePersistentRuntime < 0 || candidateHardenedNpm < 0 || candidateInstall < 0
+    || candidateSourceGuard > candidateTarballVerification
+    || candidateTarballVerification > candidateAuthorization
+    || candidateAuthorization > candidateHardenedNpm
+    || candidatePersistentRuntime > candidateHardenedNpm
+    || candidateHardenedNpm > candidateInstall) {
+  throw new Error("candidate startup no longer rejects stale source and tarball bytes before hardened npm network/setup and installation");
 }
 if (!candidateStartSource.includes("persistentActivationSpawnOptions")
     || (candidateStartSource.match(/killSignal: "SIGKILL"/g) || []).length !== 1) {
   throw new Error("candidate startup must hard-bound npm installation without externally killing the activation transaction");
 }
+const candidateBaselineRead = candidateStartSource.indexOf("const previousInstallation = persistentActivation");
+const candidateNpmDispose = candidateStartSource.indexOf("disposeNpmSession();");
+const candidateActivationCall = candidateStartSource.indexOf("activatePersistentCandidate({");
+const candidateRuntimePrune = candidateStartSource.indexOf("removedRuntimes = pruneInactiveCandidateRuntimes");
+const candidateActivationRecord = candidateStartSource.indexOf("recordPath = writePrereleaseActivation");
+if ([candidateBaselineRead, candidateNpmDispose, candidateActivationCall, candidateRuntimePrune, candidateActivationRecord].some((value) => value < 0)
+    || candidateBaselineRead > candidateNpmDispose
+    || candidateNpmDispose > candidateActivationCall
+    || candidateRuntimePrune > candidateActivationRecord) {
+  throw new Error("candidate activation no longer reads rollback evidence before hardened npm disposal or completes blocking runtime cleanup before writing activation evidence");
+}
+const npmPublishSource = readFileSync(join(root, "scripts", "publish-npm.mjs"), "utf8");
+for (const required of [
+  "verifyCurrentReleaseAcceptance", "stageAcceptedCandidateTarball", "prepublishOnly",
+  "candidate.path", "--ignore-scripts=true", "--if-present=false", '"--tag", parsed.npmTag', "validateNpmPublishDryRun",
+  '"--dry-run=true"', "disposePublicationResources", "readPublishedNpmPrereleaseIfPresent",
+  "waitForPublishedCandidate", "alreadyPublished", "publication outcome is ambiguous",
+]) {
+  if (!npmPublishSource.includes(required)) throw new Error(`npm publication lost exact accepted-tarball boundary: ${required}`);
+}
+const prepublicationStage = npmPublishSource.indexOf('"prepublishOnly"');
+const publishDryRunStage = npmPublishSource.indexOf('"npm publish dry-run"');
+const publishDryRunValidation = npmPublishSource.indexOf("validateNpmPublishDryRun(preflight.stdout");
+const exactPublishStage = npmPublishSource.lastIndexOf("publishArgs[0], candidate.path");
+if ([prepublicationStage, publishDryRunStage, publishDryRunValidation, exactPublishStage].some((value) => value < 0)
+    || prepublicationStage > publishDryRunStage
+    || publishDryRunStage > publishDryRunValidation
+    || publishDryRunValidation > exactPublishStage) {
+  throw new Error("npm publication no longer verifies gates and npm dry-run identity before publishing the staged accepted tarball");
+}
+if (npmPublishSource.includes("[npmCli, ...publishArgs") || npmPublishSource.includes("npm publish from source")) {
+  throw new Error("npm publication regressed to repacking the source directory");
+}
+const npmGlobalPrefixSource = readFileSync(join(root, "scripts", "npm-global-prefix.mjs"), "utf8");
+for (const required of ["prefix", "--global", "--json=false", "--parseable=false", "nestedNpmEnvironment", "isAbsolute(prefix)"]) {
+  if (!npmGlobalPrefixSource.includes(required)) throw new Error(`npm global prefix resolution lost required boundary: ${required}`);
+}
+if (!npmGlobalPrefixSource.includes("releaseCommandFailure") || npmGlobalPrefixSource.includes("result.stderr || result.stdout")) {
+  throw new Error("npm global prefix failures again expose raw process output");
+}
+const hardenedNpmSessionSource = readFileSync(join(root, "scripts", "hardened-npm-session.mjs"), "utf8");
+const candidateStartSourceForSettlement = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
+const publishedInstallSource = readFileSync(join(root, "scripts", "install-published-prerelease.mjs"), "utf8");
+if (!hardenedNpmSessionSource.includes("export function settleHardenedNpmSession")
+    || !candidateStartSourceForSettlement.includes("settleHardenedNpmSession(")
+    || !publishedInstallSource.includes("settleHardenedNpmSession(")
+    || candidateStartSourceForSettlement.includes("new AggregateError([primaryError, cleanupError]")
+    || publishedInstallSource.includes("new AggregateError([primaryError, cleanupError]")) {
+  throw new Error("hardened npm session settlement is no longer centralized across owner activation entrypoints");
+}
+const acceptedCandidateSource = readFileSync(join(root, "scripts", "accepted-candidate-tarball.mjs"), "utf8");
+for (const required of [
+  "rejectMultipleLinks: true", "verifyTarball", "mkdtempSync", 'mode: 0o600',
+  "accepted candidate staging failed and temporary cleanup was incomplete",
+]) {
+  if (!acceptedCandidateSource.includes(required)) throw new Error(`accepted candidate staging lost required boundary: ${required}`);
+}
 const publishedPrereleaseInstallSource = readFileSync(join(root, "scripts", "install-published-prerelease.mjs"), "utf8");
+for (const required of ["createHardenedNpmSession", "resolveNpmGlobalPrefix", "readGithubPrerelease", "expectedArtifactSha256: acceptance.artifactSha256", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--include=prod", "validateActivationRecoveryPayload", "globalInstallAttempted", "globalInstallCompleted", "may have changed the installed package"]) {
+  if (!publishedPrereleaseInstallSource.includes(required)) throw new Error(`published prerelease installation lost hardened activation boundary: ${required}`);
+}
+const publishedAcceptanceCheck = publishedPrereleaseInstallSource.indexOf("verifyCurrentReleaseAcceptance(root");
+const publishedDigestCheck = publishedPrereleaseInstallSource.indexOf("computePromotionContentDigest(root");
+const publishedGithubAssetCheck = publishedPrereleaseInstallSource.indexOf("readGithubPrerelease(prerelease.raw");
+const publishedHardenedNpm = publishedPrereleaseInstallSource.indexOf("npmSession = await createHardenedNpmSession()");
+const publishedRegistryRead = publishedPrereleaseInstallSource.indexOf("readPublishedNpmPrerelease(");
+const publishedInstallAttempted = publishedPrereleaseInstallSource.indexOf("globalInstallAttempted = true");
+const publishedInstallCall = publishedPrereleaseInstallSource.indexOf('"install", "--dry-run=false"');
+const publishedInstallCompleted = publishedPrereleaseInstallSource.indexOf("globalInstallCompleted = true");
+if ([publishedInstallAttempted, publishedInstallCall, publishedInstallCompleted].some((value) => value < 0)
+    || publishedInstallAttempted > publishedInstallCall || publishedInstallCall > publishedInstallCompleted) {
+  throw new Error("published prerelease installation no longer marks ambiguous global mutation before and after npm install");
+}
+if ([publishedAcceptanceCheck, publishedDigestCheck, publishedGithubAssetCheck, publishedHardenedNpm, publishedRegistryRead].some((value) => value < 0)
+    || publishedAcceptanceCheck > publishedGithubAssetCheck
+    || publishedDigestCheck > publishedGithubAssetCheck
+    || publishedGithubAssetCheck > publishedHardenedNpm
+    || publishedHardenedNpm > publishedRegistryRead) {
+  throw new Error("published prerelease activation no longer validates local acceptance, source, and GitHub asset bytes before npm registry installation");
+}
+const publishedReleaseSource = readFileSync(join(root, "scripts", "published-release.mjs"), "utf8");
+for (const required of ["githubReleaseByTagEndpoint", "normalizeGithubReleaseAsset", "expectedArtifactSha256", 'assetRun(["api"', "verifiedAsset.size !== normalized.asset.size", "readPublishedNpmPrereleaseIfPresent", "npm_version_not_found"]) {
+  if (!publishedReleaseSource.includes(required)) throw new Error(`published release verification lost GitHub asset digest boundary: ${required}`);
+}
 const prereleaseActivationSource = readFileSync(join(root, "scripts", "prerelease-activation.mjs"), "utf8");
 for (const required of ["ACTIVATION_SCHEMA_VERSION = 2", "LEGACY_ACTIVATION_SCHEMA_VERSION = 1", "global_package_rollback_baseline", "rollback baseline is ambiguous"]) {
   if (!prereleaseActivationSource.includes(required)) throw new Error(`prerelease activation schema lost explicit rollback-baseline semantics: ${required}`);
 }
 for (const [label, source] of [["candidate", candidateStartSource], ["published prerelease", publishedPrereleaseInstallSource]]) {
-  for (const required of ["ACTIVATION_SCHEMA_VERSION", "global_package_rollback_baseline"]) {
+  for (const required of ["ACTIVATION_SCHEMA_VERSION", "global_package_rollback_baseline", "activation_recovery_detail"]) {
     if (!source.includes(required)) throw new Error(`${label} activation writer lost the current explicit rollback-baseline contract: ${required}`);
   }
   if (source.includes("{ previous:") || source.includes("{ previous }")) {
@@ -199,6 +417,7 @@ if (!publishedPrereleaseInstallSource.includes("persistentActivationSpawnOptions
 }
 const persistentActivationProcessSource = readFileSync(join(root, "scripts", "persistent-activation-process.mjs"), "utf8");
 if (!persistentActivationProcessSource.includes("transactional cleanup")
+    || !persistentActivationProcessSource.includes("validateActivationRecoveryPayload")
     || /timeout\s*:|killSignal\s*:/.test(persistentActivationProcessSource)) {
   throw new Error("persistent activation subprocess regained an outer timeout that can bypass compensation");
 }
@@ -212,7 +431,7 @@ if (!candidateStartSource.includes("discoverForegroundDaemonRecovery")
 }
 
 const candidateRuntimeStoreSource = readFileSync(join(root, "scripts", "candidate-runtime-store.mjs"), "utf8");
-for (const required of ["release-channels", "runtimes", "withFileTypes", "entry.isDirectory()", "RUNTIME_DIRECTORY_PATTERN", "active candidate runtime is outside"]) {
+for (const required of ["release-channels", "runtimes", "withFileTypes", "entry.isDirectory()", "RUNTIME_DIRECTORY_PATTERN", "active candidate runtime is outside", "must be a real directory", "requireSameDirectory"]) {
   if (!candidateRuntimeStoreSource.includes(required)) throw new Error(`candidate runtime store lost required boundary: ${required}`);
 }
 if (!FULL_CHECK_TASKS.includes("release:acceptance:test")) throw new Error("complete check omits local release acceptance regression coverage");
@@ -224,12 +443,120 @@ if (packageJson.scripts?.["sbom:test"] !== "node scripts/sbom-check.mjs"
     || !FULL_CHECK_TASKS.includes("sbom:test") || !FAST_CHECK_TASKS.includes("sbom-check:test")) {
   throw new Error("SBOM generation or validation is missing from the release gates");
 }
+if (packageJson.scripts?.["consumer-security:test"] !== "node scripts/consumer-package-security.mjs"
+    || packageJson.scripts?.["release:check"] !== "npm run consumer-security:test && node scripts/github-release.mjs --check") {
+  throw new Error("consumer package security is missing from release verification");
+}
+const consumerSecuritySource = readFileSync(join(root, "scripts", "consumer-package-security.mjs"), "utf8");
+for (const required of ["prepareHardenedNpm", "result = await verifyConsumerTarball", "canonicalConsumerTarballPath", "realpathSync(consumer)", "accepted-package.tgz", "readBoundedRegularFileSync", "--dry-run=false", "--workspaces=false", "--omit=dev", "--audit-level=low", "signatures", "--sbom-format", "cyclonedx", "dependencyByReference.size !== references.size", "wrangler", "miniflare", "vulnerableUndici", "nestedNpmEnvironment"]) {
+  if (!consumerSecuritySource.includes(required)) throw new Error(`consumer package security gate lost required boundary: ${required}`);
+}
+if (consumerSecuritySource.includes('"--omit=optional"')) throw new Error("consumer package security no longer models an ordinary optional-dependency installation");
+const toolchainSource = readFileSync(join(root, "src", "local", "wrangler-toolchain.mjs"), "utf8");
+const toolchainVerificationSource = readFileSync(join(root, "src", "local", "wrangler-toolchain-verification.mjs"), "utf8");
+for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "7.29.0", "0.35.3"]) {
+  if (!toolchainSource.includes(required)) throw new Error(`private Wrangler toolchain lost required boundary: ${required}`);
+}
+for (const required of ["TOOLCHAIN_MARKER", "MAX_TREE_NODES", "throwOperationalOrIntegrity", "privateToolchainIntegrityError"]) {
+  if (!toolchainVerificationSource.includes(required)) throw new Error(`private Wrangler verification lost required boundary: ${required}`);
+}
 const sbomCheckSource = readFileSync(join(root, "scripts", "sbom-check.mjs"), "utf8");
-for (const required of ["npm_execpath", "--sbom-format", "cyclonedx", "CycloneDX 1.5", "SIGKILL", "MAX_SBOM_BYTES"]) {
+for (const required of ["npm_execpath", "--workspaces=false", "--sbom-format", "cyclonedx", "CycloneDX 1.5", "dependencyByReference.size !== references.size", "SIGKILL", "MAX_SBOM_BYTES"]) {
   if (!sbomCheckSource.includes(required)) throw new Error(`SBOM validation lost required boundary: ${required}`);
+}
+if (!readFileSync(join(root, "scripts", "syntax-check.mjs"), "utf8").includes('".github/scripts"')
+    || !packageJson.scripts?.lint?.includes(".github/scripts")
+    || !readFileSync(join(root, "eslint.config.mjs"), "utf8").includes('".github/scripts/**/*.{js,mjs}"')) {
+  throw new Error("GitHub workflow control scripts are missing from syntax or lint gates");
+}
+const secureFileSource = readFileSync(join(root, "src", "local", "secure-file.mjs"), "utf8");
+if (!secureFileSource.includes("inspectPathIfPresentSync") || !secureFileSource.includes('error?.code === "ENOENT"')) {
+  throw new Error("shared present-path inspection no longer distinguishes only ENOENT as absence");
+}
+for (const [label, file] of [
+  ["browser pairing", "src/local/browser-pairing-store.mjs"],
+  ["service environment", "src/local/service-environment.mjs"],
+  ["service owner", "src/local/service-owner.mjs"],
+  ["global configuration", "src/local/state.mjs"],
+  ["legacy approval state", "src/local/operation-authorization.mjs"],
+]) {
+  const source = readFileSync(join(root, file), "utf8");
+  if (!source.includes("inspectPathIfPresentSync")) throw new Error(`${label} lost fail-closed path inspection`);
+  if (/existsSync/.test(source) && file !== "src/local/state.mjs") throw new Error(`${label} regained existsSync absence classification`);
+}
+const managedJobSource = readFileSync(join(root, "src", "local", "managed-jobs.mjs"), "utf8");
+const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
+const managedJobClaimSource = readFileSync(join(root, "src", "local", "managed-job-runner-claim.mjs"), "utf8");
+const managedJobCancellationSource = readFileSync(join(root, "src", "local", "managed-job-cancellation.mjs"), "utf8");
+const managedJobDirectorySource = readFileSync(join(root, "src", "local", "managed-job-directory.mjs"), "utf8");
+for (const required of ["writeManagedJobCancellation", "resolveManagedJobDirectory", "resolveManagedJobRootIfPresent"]) {
+  if (!managedJobSource.includes(required)) throw new Error(`managed job manager lost secure boundary: ${required}`);
+}
+if (managedJobRunnerSource.includes("existsSync(cancelFile)")
+    || !managedJobRunnerSource.includes("managedJobCancellationRequested(cancelFile)")) {
+  throw new Error("managed job runner again treats cancellation inspection failure as absence");
+}
+if (managedJobClaimSource.includes("existsSync") || !managedJobClaimSource.includes("inspectPathIfPresentSync")) {
+  throw new Error("managed job runner claim again treats inspection failure as absence");
+}
+for (const required of ["replaceFileAtomicallySync", "verifyPathIdentity: true", "rejectMultipleLinks: true", "managed job cancellation marker is invalid"]) {
+  if (!managedJobCancellationSource.includes(required)) throw new Error(`managed job cancellation boundary lost: ${required}`);
+}
+for (const required of ["MANAGED_JOB_ID", "requireContained", "identity changed during inspection", "inspectPathIfPresentSync"]) {
+  if (!managedJobDirectorySource.includes(required)) throw new Error(`managed job directory boundary lost: ${required}`);
+}
+if (packageJson.scripts?.["managed-job-boundary:test"] !== "node tests/managed-job-boundary-test.mjs"
+    || !FAST_CHECK_TASKS.includes("managed-job-boundary:test")) {
+  throw new Error("managed job filesystem fault injection is missing from the fast gate");
+}
+
+for (const [label, file] of [
+  ["prerelease activation", "scripts/prerelease-activation.mjs"],
+  ["release soak", "scripts/release-soak.mjs"],
+  ["official conformance", "scripts/official-mcp-conformance.mjs"],
+]) {
+  const source = readFileSync(join(root, file), "utf8");
+  if (!source.includes('error?.code === "ENOENT"') || source.includes("existsSync")) {
+    throw new Error(`${label} no longer treats only ENOENT as missing evidence`);
+  }
+}
+const githubReleaseDiagnosticSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
+if (!githubReleaseDiagnosticSource.includes("releaseCommandFailure(command, args, result")
+    || githubReleaseDiagnosticSource.includes('args.join(" ")')) {
+  throw new Error("GitHub release errors again expose complete command arguments");
+}
+const releaseDiagnosticSource = readFileSync(join(root, "scripts", "release-diagnostic.mjs"), "utf8");
+for (const required of ["sanitizePortableLogText", "releaseCommandFailure", "releaseCommandLabel", "HOME_PATHS"]) {
+  if (!releaseDiagnosticSource.includes(required)) throw new Error(`release diagnostic redaction lost required boundary: ${required}`);
+}
+if (packageJson.scripts?.["release-diagnostic:test"] !== "node tests/release-diagnostic-test.mjs"
+    || !FAST_CHECK_TASKS.includes("release-diagnostic:test")) {
+  throw new Error("release diagnostic redaction test is missing from local gates");
+}
+const workflowPolicySource = readFileSync(join(root, ".github", "scripts", "workflow-policy.mjs"), "utf8");
+const workflowPolicyRulesSource = readFileSync(join(root, ".github", "scripts", "workflow-policy-rules.mjs"), "utf8");
+const workflowPolicyContractSource = readFileSync(join(root, ".github", "scripts", "workflow-policy-contract.mjs"), "utf8");
+const workflowPolicyWorkflow = readFileSync(join(root, ".github", "workflows", "workflow-policy.yml"), "utf8");
+for (const required of ["verifyWorkflowPolicy", "readBoundedRegularFileSync", "workflow-policy-rules.mjs", "workflow-policy-contract.mjs"]) {
+  if (!workflowPolicySource.includes(required)) throw new Error(`workflow policy filesystem verifier lost required boundary: ${required}`);
+}
+for (const required of ["ALLOWED_ACTIONS", "ALLOWED_WRITE_PERMISSIONS", "pull_request_target", "persist-credentials", "github.event", "dynamic, malformed, or unpinned"]) {
+  if (!workflowPolicyRulesSource.includes(required)) throw new Error(`workflow policy rules lost required boundary: ${required}`);
+}
+for (const required of ["REQUIRED_WORKFLOWS", "workflow-policy.yml", "requireRunCommand", "requireActionInput", "stripYamlComment", "sarif-security-gate.mjs"]) {
+  if (!workflowPolicyContractSource.includes(required)) throw new Error(`workflow policy contract lost required boundary: ${required}`);
+}
+for (const required of ["name: Workflow Policy Gate", "node .github/scripts/workflow-policy.mjs", "node tests/workflow-policy-test.mjs", "timeout-minutes: 5"]) {
+  if (!workflowPolicyWorkflow.includes(required)) throw new Error(`workflow policy GitHub workflow lost required boundary: ${required}`);
+}
+if (packageJson.scripts?.["workflow-policy:check"] !== "node .github/scripts/workflow-policy.mjs"
+    || packageJson.scripts?.["workflow-policy:test"] !== "node tests/workflow-policy-test.mjs"
+    || !FAST_CHECK_TASKS.includes("workflow-policy:test")) {
+  throw new Error("workflow policy verification is missing from local development gates");
 }
 const ciSource = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
 if (!ciSource.includes("npm run privacy:history")) throw new Error("CI package audit no longer scans reachable Git history");
+if ((ciSource.match(/npm run consumer-security:test/g) || []).length !== 1) throw new Error("CI package audit no longer verifies the final consumer artifact exactly once");
 if (!ciSource.includes("npm run check:platform") || !ciSource.includes("npm run check:full")
     || !ciSource.includes("os: [macos-latest, windows-latest]") || !ciSource.includes("runs-on: ubuntu-latest")) {
   throw new Error("CI no longer separates cross-platform fast checks from the Linux full suite");
@@ -237,15 +564,24 @@ if (!ciSource.includes("npm run check:platform") || !ciSource.includes("npm run 
 const portableAcceptanceCommand = "npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs";
 if ((ciSource.split(portableAcceptanceCommand).length - 1) !== 2) throw new Error("CI no longer verifies portable interactive candidate acceptance in both package paths");
 const portableAcceptanceSource = readFileSync(join(root, ".github", "scripts", "verify-release-acceptance.mjs"), "utf8");
-for (const required of ["canonicalPackageDigest", "package_content_sha256", "promotion_content_sha256", "computePromotionContentDigest", "git", "ls-files", "--stage", "machine-bridge-mcp-package-content-v1"]) {
+for (const required of ["canonicalPackageDigest", "package_content_sha256", "promotion_content_sha256", "computePromotionContentDigest", "resolveTrustedGitExecutable", "ls-files", "--stage", "cat-file", "machine-bridge-mcp-package-content-v1"]) {
   if (!portableAcceptanceSource.includes(required)) throw new Error(`portable release acceptance verifier lost required content: ${required}`);
 }
 if ((ciSource.match(/node scripts\/prepare-pinned-npm\.mjs/g) || []).length !== 3 || ciSource.includes("npm install --global npm@")) {
   throw new Error("CI no longer bootstraps the npm baseline from an integrity-verified immutable tarball");
 }
 const npmBootstrapSource = readFileSync(join(root, "scripts", "prepare-pinned-npm.mjs"), "utf8");
-if (!npmBootstrapSource.includes("npm-12.0.1.tgz") || !npmBootstrapSource.includes("sha512-L5T9i/YAQWQWqTS/") || !npmBootstrapSource.includes('redirect: "error"') || !npmBootstrapSource.includes("readBoundedBody(response, MAX_TARBALL_BYTES)")) {
-  throw new Error("pinned npm bootstrap lost its exact version, bounded download, SHA-512 integrity, or redirect boundary");
+const hardenedNpmSource = readFileSync(join(root, "src", "local", "hardened-npm.mjs"), "utf8");
+const hardenedNpmDownloadSource = readFileSync(join(root, "src", "local", "hardened-npm-download.mjs"), "utf8");
+const hardenedNpmVerificationSource = readFileSync(join(root, "src", "local", "hardened-npm-verification.mjs"), "utf8");
+if (!npmBootstrapSource.includes("prepareHardenedNpm")
+    || !hardenedNpmSource.includes("npm-12.0.1.tgz") || !hardenedNpmSource.includes("sha512-L5T9i/YAQWQWqTS/")
+    || !hardenedNpmSource.includes("undici-6.28.0.tgz") || !hardenedNpmSource.includes("brace-expansion-5.0.9.tgz")
+    || !hardenedNpmDownloadSource.includes("proxyAgentForHttp") || !hardenedNpmDownloadSource.includes("status !== 200")
+    || !hardenedNpmDownloadSource.includes("downloadHardenedNpmArtifact")
+    || !hardenedNpmVerificationSource.includes("throwOperationalOrIntegrity")
+    || !hardenedNpmVerificationSource.includes("HARDENED_NPM_MARKER")) {
+  throw new Error("pinned npm bootstrap lost its hardened exact tarballs, bounded proxy-aware download, SHA-512 integrity, or redirect boundary");
 }
 const sourceWrapper = readFileSync(join(root, "mbm"), "utf8");
 if (!sourceWrapper.includes("npm ci") || /npm install(?:\s|$)/.test(sourceWrapper)) throw new Error("source wrapper no longer installs from the committed lockfile");
@@ -312,6 +648,7 @@ if (!releaseSource.includes('import { requireSuccessfulWorkflowRun } from "./rel
     || !releaseSource.includes(".github/workflows/codeql.yml")
     || !releaseSource.includes(".github/workflows/scorecard.yml")
     || !releaseSource.includes(".github/workflows/governance.yml")
+    || !releaseSource.includes(".github/workflows/workflow-policy.yml")
     || releaseSource.includes('["push", "origin", "HEAD:main"]')
     || !releaseSource.includes("HEAD does not match origin/main; local acceptance must be committed")) {
   throw new Error("GitHub release orchestration lost owner acceptance, exact-commit gates, or the no-main-push boundary");

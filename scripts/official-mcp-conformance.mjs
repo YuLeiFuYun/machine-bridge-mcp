@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -20,7 +22,7 @@ export async function runOfficialMcpConformance(options) {
     const result = await runCommand({
       command: process.execPath,
       args: [
-        npmCli, "start", "--", "server", "--url", `${proxy.origin}/mcp`,
+        npmCli, "start", "--workspaces=false", "--global=false", "--ignore-scripts=false", "--if-present=false", "--prefix", checkout, "--", "server", "--url", `${proxy.origin}/mcp`,
         "--scenario", scenario, "--spec-version", specVersion,
         ...(options.expectedFailures ? ["--expected-failures", String(options.expectedFailures)] : []),
         ...(options.verbose === true ? ["--verbose"] : []),
@@ -138,7 +140,7 @@ function readBoundedBody(request, maximumBytes) {
 async function runCommand({ command, args, cwd, timeoutMs }) {
   const result = await runExecutable(command, args, {
     cwd,
-    env: { ...process.env, NO_COLOR: "1", CI: "1" },
+    env: { ...nestedNpmEnvironment(process.env), NO_COLOR: "1", CI: "1" },
     capture: true,
     allowFailure: true,
     timeoutMs,
@@ -147,31 +149,53 @@ async function runCommand({ command, args, cwd, timeoutMs }) {
   return Object.freeze({ ...result, signal: null });
 }
 
-export function validateConformanceCheckout(value) {
+export function validateConformanceCheckout(value, options = {}) {
+  const inspect = options.lstatSync || lstatSync;
+  const canonicalize = options.realpathSync || realpathSync.native;
+  const readBounded = options.readBoundedRegularFileSync || readBoundedRegularFileSync;
   const requested = resolve(requiredText(value, "conformance checkout"));
-  if (!existsSync(requested)) throw new Error("conformance checkout does not exist");
-  const requestedInfo = lstatSync(requested);
+  const requestedInfo = inspectConformancePath(requested, "conformance checkout", inspect);
+  if (!requestedInfo) throw new Error("conformance checkout does not exist");
   if (requestedInfo.isSymbolicLink() || !requestedInfo.isDirectory()) {
     throw new Error("conformance checkout must be a real directory");
   }
-  const checkout = realpathSync.native(requested);
+  const checkout = canonicalize(requested);
   for (const file of ["package.json", "package-lock.json"]) {
     const path = join(checkout, file);
-    if (!existsSync(path)) throw new Error(`conformance checkout omits ${file}`);
-    const info = lstatSync(path);
+    const info = inspectConformancePath(path, `conformance checkout ${file}`, inspect);
+    if (!info) throw new Error(`conformance checkout omits ${file}`);
     if (info.isSymbolicLink() || !info.isFile()) throw new Error(`conformance checkout ${file} must be a regular file`);
   }
   let packageState;
-  try { packageState = JSON.parse(readFileSync(join(checkout, "package.json"), "utf8")); }
-  catch { throw new Error("conformance checkout package.json is invalid"); }
+  try {
+    packageState = JSON.parse(readBounded(join(checkout, "package.json"), 1024 * 1024, "conformance checkout package.json", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    }).toString("utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error("conformance checkout package.json is invalid", { cause: error });
+    throw error;
+  }
   if (typeof packageState?.scripts?.start !== "string" || !packageState.scripts.start.trim()) {
     throw new Error("conformance checkout omits its start command");
   }
   const nodeModules = join(checkout, "node_modules");
-  if (!existsSync(nodeModules) || !lstatSync(nodeModules).isDirectory()) {
+  const nodeModulesInfo = inspectConformancePath(nodeModules, "conformance checkout node_modules", inspect);
+  if (!nodeModulesInfo) {
     throw new Error("conformance checkout dependencies are not installed; run npm ci --ignore-scripts in the checkout");
   }
+  if (nodeModulesInfo.isSymbolicLink() || !nodeModulesInfo.isDirectory()) {
+    throw new Error("conformance checkout node_modules must be a real directory");
+  }
   return checkout;
+}
+
+function inspectConformancePath(path, label, inspect) {
+  try { return inspect(path); }
+  catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw new Error(`${label} could not be inspected`, { cause: error });
+  }
 }
 
 export function conformanceProxyTarget(requestTarget, upstream) {

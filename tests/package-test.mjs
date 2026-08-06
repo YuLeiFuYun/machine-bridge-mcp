@@ -1,18 +1,20 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const output = mkdtempSync(join(tmpdir(), "mbm-package-test-"));
 try {
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error("package test must run through an npm lifecycle so npm_execpath is available");
-  const result = spawnSync(process.execPath, [npmCli, "pack", "--silent", "--dry-run", "--json", "--pack-destination", output], {
+  const result = spawnSync(process.execPath, [npmCli, "pack", "--workspaces=false", "--global=false", "--prefix", root, "--silent", "--dry-run", "--json", "--pack-destination", output], {
     cwd: root,
     encoding: "utf8",
-    env: process.env,
+    env: nestedNpmEnvironment(process.env),
     windowsHide: true,
   });
   if (result.error) throw result.error;
@@ -31,6 +33,29 @@ try {
   if (!record.files.some((item) => item.path === "docs/ENGINEERING.md")) throw new Error("npm package omitted engineering invariants");
   if (!record.files.some((item) => item.path === "docs/AUDIT.md")) throw new Error("npm package omitted the engineering/security audit record");
   if (!record.files.some((item) => item.path === "src/local/relay-connection.mjs")) throw new Error("npm package omitted the relay lifecycle module");
+  for (const file of [
+    "src/local/hardened-npm.mjs",
+    "src/local/hardened-npm-download.mjs",
+    "src/local/hardened-npm-extract.mjs",
+    "src/local/hardened-npm-verification.mjs",
+    "src/local/npm-environment.mjs",
+    "src/local/private-toolchain-integrity.mjs",
+    "src/local/wrangler-toolchain.mjs",
+    "src/local/wrangler-toolchain-verification.mjs",
+    "src/local/wrangler-toolchain/package.json",
+    "src/local/wrangler-toolchain/package-lock.json",
+    "scripts/accepted-candidate-tarball.mjs",
+    "scripts/consumer-package-security.mjs",
+    "scripts/global-package-installation.mjs",
+    "scripts/hardened-npm-session.mjs",
+    "scripts/npm-global-prefix.mjs",
+    "scripts/release-diagnostic.mjs",
+  ]) {
+    if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);
+  }
+  if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.115.0") {
+    throw new Error("Wrangler must remain a development dependency backed by the packaged private toolchain lock");
+  }
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [
     "runtime-reporting.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs", "execution-routing.mjs",
@@ -53,6 +78,7 @@ try {
   for (const module of [
     "browser-request-registry.mjs", "browser-bridge-http.mjs", "browser-broker-routes.mjs", "browser-broker-server.mjs", "windows-launcher.mjs",
     "managed-job-lock.mjs", "managed-job-projection.mjs", "managed-job-storage.mjs", "managed-job-runner.mjs",
+    "managed-job-cancellation.mjs", "managed-job-directory.mjs",
   ]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted local boundary ${module}`);
   }

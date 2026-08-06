@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 import { normalizePackRecord } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { releaseCommandFailure } from "./release-diagnostic.mjs";
 
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 96 * 1024 * 1024;
@@ -53,6 +55,9 @@ function packageDryRun(root, packageName, npmCli = process.env.npm_execpath) {
   const result = spawnSync(process.execPath, [
     npmCli,
     "pack",
+    "--workspaces=false",
+    "--global=false",
+    "--prefix", root,
     "--ignore-scripts",
     "--silent",
     "--dry-run",
@@ -60,11 +65,13 @@ function packageDryRun(root, packageName, npmCli = process.env.npm_execpath) {
   ], {
     cwd: root,
     encoding: "utf8",
-    env: process.env,
+    env: nestedNpmEnvironment(process.env),
+    timeout: 5 * 60 * 1000,
+    killSignal: "SIGKILL",
+    maxBuffer: 8 * 1024 * 1024,
     windowsHide: true,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`npm pack dry-run failed: ${String(result.stderr || result.stdout).trim()}`);
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure("npm", ["pack"], result));
   let parsed;
   try { parsed = JSON.parse(result.stdout); } catch { throw new Error("npm pack dry-run did not return valid JSON"); }
   const record = normalizePackRecord(parsed, packageName);

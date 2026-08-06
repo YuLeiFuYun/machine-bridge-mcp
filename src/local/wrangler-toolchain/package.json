@@ -1,0 +1,23 @@
+{
+  "name": "machine-bridge-mcp-wrangler-toolchain",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integrity-locked private Wrangler control-plane toolchain for Machine Bridge.",
+  "engines": {
+    "node": ">=26.0.0",
+    "npm": ">=12.0.0"
+  },
+  "dependencies": {
+    "wrangler": "4.115.0"
+  },
+  "overrides": {
+    "sharp": "0.35.3",
+    "undici": "7.29.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "fsevents": false,
+    "sharp@0.35.3": true,
+    "workerd@1.20260722.1": true
+  }
+}

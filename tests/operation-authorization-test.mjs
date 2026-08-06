@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
@@ -155,6 +155,20 @@ try {
   writeFileSync(leaseFile, `${JSON.stringify(validLeaseState)}\n`, { mode: 0o600 });
   assertThrows(() => listOperationApprovals(approvalRoot, now), "malformed persisted lease was accepted");
 
+  if (process.platform !== "win32") {
+    const leaseTarget = path.join(root, "external-operation-leases.json");
+    writeFileSync(leaseTarget, `${JSON.stringify({ schemaVersion: 2, leases: [] })}\n`, { mode: 0o600 });
+    unlinkSync(leaseFile);
+    symlinkSync(leaseTarget, leaseFile);
+    expectThrow(() => listOperationApprovals(approvalRoot, now), "regular file and not a symbolic link");
+    unlinkSync(leaseFile);
+    writeFileSync(leaseFile, `${JSON.stringify({ schemaVersion: 2, leases: [] })}\n`, { mode: 0o600 });
+    const leaseHardLink = path.join(root, "operation-leases-hard-link.json");
+    linkSync(leaseFile, leaseHardLink);
+    expectThrow(() => listOperationApprovals(approvalRoot, now), "multiple hard links");
+    unlinkSync(leaseHardLink);
+  }
+
   console.log("request authority and operation classification test ok");
 } finally {
   rmSync(root, { recursive: true, force: true });
@@ -193,6 +207,14 @@ async function canonicalWritePath(value) {
 async function rejected(callback) {
   try { await callback(); } catch (error) { return error; }
   throw new Error("expected operation to be rejected");
+}
+
+function expectThrow(callback, expected) {
+  try { callback(); } catch (error) {
+    if (String(error?.message || error).includes(expected)) return;
+    throw error;
+  }
+  throw new Error(`expected error containing: ${expected}`);
 }
 
 function assertThrows(callback, message) {

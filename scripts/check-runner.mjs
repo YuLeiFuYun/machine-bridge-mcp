@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 
 const FAILURE_OUTPUT_BYTES_PER_STREAM = 64 * 1024;
 
@@ -44,10 +45,10 @@ function runTask({ task, npmCli, cwd, env, verbose, spawnProcess }) {
     const stderr = verbose ? null : new BoundedOutput(FAILURE_OUTPUT_BYTES_PER_STREAM);
     let child;
     try {
-      child = spawnProcess(process.execPath, [npmCli, "run", "--silent", task], {
+      child = spawnProcess(process.execPath, [npmCli, "run", "--workspaces=false", "--global=false", "--ignore-scripts=false", "--if-present=false", "--prefix", cwd, "--silent", task], {
         cwd,
         env: {
-          ...env,
+          ...nestedNpmEnvironment(env),
           NO_COLOR: env.NO_COLOR || "1",
         },
         stdio: verbose ? "inherit" : ["ignore", "pipe", "pipe"],

@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.38",
+  "version": "3.0.0-beta.44",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -51,7 +51,7 @@
     "check": "npm run check:full",
     "worker:dry-run": "wrangler deploy --dry-run",
     "worker:integration-test": "node tests/worker-integration-test.mjs",
-    "release:check": "node scripts/github-release.mjs --check",
+    "release:check": "npm run consumer-security:test && node scripts/github-release.mjs --check",
     "release:publish": "node scripts/github-release.mjs --publish",
     "release:backfill": "node scripts/github-release.mjs --backfill",
     "stdio:integration-test": "node tests/stdio-integration-test.mjs",
@@ -68,6 +68,7 @@
     "release-impact:test": "node tests/release-impact-test.mjs",
     "privacy:test": "node tests/privacy-test.mjs",
     "network-retry:test": "node tests/network-retry-test.mjs",
+    "release-diagnostic:test": "node tests/release-diagnostic-test.mjs",
     "relay:test": "node tests/relay-connection-test.mjs",
     "install:test": "node tests/install-smoke-test.mjs",
     "secure-file:test": "node tests/secure-file-test.mjs",
@@ -113,7 +114,7 @@
     "account:test": "node tests/account-admin-test.mjs",
     "sarif-security:test": "node tests/sarif-security-gate-test.mjs",
     "security-properties:test": "node tests/security-properties-test.js",
-    "lint": "eslint eslint.config.mjs bin src/local scripts tests browser-extension",
+    "lint": "eslint eslint.config.mjs bin src/local scripts tests browser-extension .github/scripts",
     "lint:test": "node tests/lint-gate-test.mjs",
     "shell:test": "node tests/shell-test.mjs",
     "deadline:test": "node tests/monotonic-deadline-test.mjs",
@@ -174,12 +175,19 @@
     "mcp:conformance:test": "node tests/official-mcp-conformance-test.mjs",
     "sbom-check:test": "node tests/sbom-check-test.mjs",
     "sbom:test": "node scripts/sbom-check.mjs",
-    "release-publication-guard:test": "node tests/release-publication-guard-test.mjs"
+    "release-publication-guard:test": "node tests/release-publication-guard-test.mjs",
+    "consumer-security:test": "node scripts/consumer-package-security.mjs",
+    "consumer-package-security:test": "node tests/consumer-package-security-test.mjs",
+    "wrangler-toolchain:test": "node tests/wrangler-toolchain-test.mjs",
+    "npm-environment:test": "node tests/npm-environment-test.mjs",
+    "hardened-npm:test": "node tests/hardened-npm-test.mjs",
+    "workflow-policy:check": "node .github/scripts/workflow-policy.mjs",
+    "workflow-policy:test": "node tests/workflow-policy-test.mjs",
+    "managed-job-boundary:test": "node tests/managed-job-boundary-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
     "proxy-from-env": "2.1.0",
-    "wrangler": "4.115.0",
     "ws": "8.21.1"
   },
   "devDependencies": {
@@ -187,7 +195,8 @@
     "eslint": "10.8.0",
     "fast-check": "4.9.0",
     "globals": "17.8.0",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "wrangler": "4.115.0"
   },
   "keywords": [
     "mcp",
@@ -226,7 +235,7 @@
     "runtime": {
       "name": "node",
       "version": ">=26.0.0",
-      "onFail": "error"
+      "onFail": "warn"
     },
     "packageManager": {
       "name": "npm",

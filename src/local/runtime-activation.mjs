@@ -17,10 +17,12 @@ export async function activatePersistentRuntime(options = {}) {
   }
   const expectedVersion = requiredExpectedVersion(options.expectedVersion);
   const maximumAttempts = boundedAttempts(options.maximumAttempts ?? 240);
-  const candidateStartAttempts = boundedCandidateStartAttempts(options.candidateStartAttempts ?? 3);
+  const candidateStartAttempts = boundedCandidateStartAttempts(options.candidateStartAttempts ?? 10);
   const candidateRetryWait = optionalFunction(options.candidateRetryWait, "candidateRetryWait", defaultCandidateRetryWait);
   const convergenceWait = optionalFunction(options.wait, "wait", defaultWait);
   const restorePreviousAutostart = optionalFunction(options.restorePreviousAutostart, "restorePreviousAutostart", options.startAutostart);
+  const startRecoveryAutostart = optionalFunction(options.startRecoveryAutostart, "startRecoveryAutostart", options.startAutostart);
+  const inspectCandidateAutostart = optionalFunction(options.inspectCandidateAutostart, "inspectCandidateAutostart", options.inspectDaemon);
   if (options.repairRemoteState !== undefined && typeof options.repairRemoteState !== "function") {
     throw new TypeError("runtime activation repairRemoteState must be a function");
   }
@@ -31,6 +33,7 @@ export async function activatePersistentRuntime(options = {}) {
   let daemonLock = null;
   let candidateRuntime = null;
   let candidateRelayVerified = false;
+  let candidateRecoveryRedeployed = false;
   let remotePrepared = false;
   let autostartInstalled = false;
   let providerStopped = false;
@@ -87,12 +90,16 @@ export async function activatePersistentRuntime(options = {}) {
     });
     candidateRuntime = candidate.runtime;
     candidateRelayVerified = true;
+    candidateRecoveryRedeployed = candidate.repaired;
 
     const installed = await options.installAutostart();
     const terminalError = candidateRuntime.terminalError?.();
     if (terminalError) throw terminalError;
     if (installed?.ok !== true) {
-      throw new Error(`autostart installation failed (${installed?.provider || "unknown"})`);
+      throw activationOperationalError(
+        `autostart installation failed (${installed?.provider || "unknown"})`,
+        "autostart_install_failed",
+      );
     }
     autostartInstalled = true;
 
@@ -104,7 +111,7 @@ export async function activatePersistentRuntime(options = {}) {
     startupReleased = true;
 
     const serviceStart = await options.startAutostart();
-    requireActiveServiceStart(serviceStart, "autostart start");
+    requireActiveServiceStart(serviceStart, "autostart start", "autostart_start_failed");
     serviceStarted = true;
 
     const convergence = await waitForActivatedRuntime({
@@ -124,10 +131,10 @@ export async function activatePersistentRuntime(options = {}) {
       serviceStart,
       convergence,
       candidateRelayVerified,
-      candidateRecoveryRedeployed: candidate.repaired,
+      candidateRecoveryRedeployed,
     };
   } catch (error) {
-    throw await failedActivationError({
+    const settlement = await failedActivationSettlement({
       error,
       candidateRuntime,
       daemonLock,
@@ -139,17 +146,24 @@ export async function activatePersistentRuntime(options = {}) {
       remotePrepared,
       autostartInstalled,
       installAutostart: options.installAutostart,
-      startAutostart: options.startAutostart,
+      startRecoveryAutostart,
       restorePreviousAutostart,
+      inspectCandidateAutostart,
       inspectPreviousAutostart: options.inspectPreviousAutostart,
+      checkWorker: options.checkWorker,
+      expectedVersion,
       previousServiceRuntime,
       restoreWait: convergenceWait,
       restoreMaximumAttempts: options.maximumAttempts,
+      candidateRelayVerified,
+      candidateRecoveryRedeployed,
     });
+    if (settlement?.ok === true) return settlement;
+    throw settlement;
   }
 }
 
-async function failedActivationError({
+async function failedActivationSettlement({
   error,
   candidateRuntime,
   daemonLock,
@@ -161,12 +175,17 @@ async function failedActivationError({
   remotePrepared,
   autostartInstalled,
   installAutostart,
-  startAutostart,
+  startRecoveryAutostart,
   restorePreviousAutostart,
+  inspectCandidateAutostart,
   inspectPreviousAutostart,
+  checkWorker,
+  expectedVersion,
   previousServiceRuntime,
   restoreWait,
   restoreMaximumAttempts,
+  candidateRelayVerified,
+  candidateRecoveryRedeployed,
 }) {
   const cleanupErrors = [];
   try { candidateRuntime?.stop?.(); } catch (failure) { cleanupErrors.push(failure); }
@@ -181,9 +200,12 @@ async function failedActivationError({
     try {
       recovery = await restoreCompatibleProvider({
         installAutostart,
-        startAutostart,
+        startRecoveryAutostart,
         restorePreviousAutostart,
+        inspectCandidateAutostart,
         inspectPreviousAutostart,
+        checkWorker,
+        expectedVersion,
         previousServiceRuntime,
         restoreWait,
         restoreMaximumAttempts,
@@ -197,11 +219,18 @@ async function failedActivationError({
   if (serviceLock) {
     try { serviceLock.release(); } catch (failure) { cleanupErrors.push(failure); }
   }
-  if (cleanupErrors.length) {
-    return new AggregateError(
-      [error, ...cleanupErrors],
-      "persistent runtime activation failed and local cleanup was incomplete; inspect the daemon and service state before retrying",
-    );
+  if (cleanupErrors.length) return activationCleanupFailure(error, cleanupErrors);
+  if (recovery?.candidateServiceStarted && candidateRelayVerified && recoverablePostReadySettlement(error)) {
+    return {
+      ok: true,
+      serviceStart: recovery.serviceStart,
+      convergence: recovery.convergence,
+      candidateRelayVerified: true,
+      candidateRecoveryRedeployed,
+      activationRecovered: true,
+      recoveryReason: activationRecoveryReason(error),
+      recoveryDetail: activationRecoveryDetail(error),
+    };
   }
   if (recovery?.candidateServiceStarted) return activationFailureWithRecovery(error);
   return error;
@@ -273,9 +302,12 @@ function recoverableCandidateStartError(error) {
 
 async function restoreCompatibleProvider({
   installAutostart,
-  startAutostart,
+  startRecoveryAutostart,
   restorePreviousAutostart,
+  inspectCandidateAutostart,
   inspectPreviousAutostart,
+  checkWorker,
+  expectedVersion,
   previousServiceRuntime,
   restoreWait,
   restoreMaximumAttempts,
@@ -294,25 +326,36 @@ async function restoreCompatibleProvider({
     }
   }
   const restored = candidateServiceRequired
-    ? await startAutostart()
+    ? await startRecoveryAutostart()
     : await restorePreviousAutostart();
   const qualifier = candidateServiceRequired ? "compatible candidate" : "previous";
   requireActiveServiceStart(restored, `${qualifier} autostart service recovery`);
-  if (!candidateServiceRequired) {
-    if (!previousServiceRuntime || typeof inspectPreviousAutostart !== "function") {
-      throw new Error("previous autostart service recovery lacks verified runtime identity evidence");
-    }
-    const convergence = await waitForRestoredServiceRuntime({
-      inspectDaemon: () => inspectPreviousAutostart(previousServiceRuntime),
-      expectedVersion: previousServiceRuntime.version,
+  if (candidateServiceRequired) {
+    const convergence = await waitForActivatedRuntime({
+      inspectDaemon: inspectCandidateAutostart,
+      checkWorker,
+      expectedVersion,
       maximumAttempts: restoreMaximumAttempts,
       wait: restoreWait,
     });
     if (!convergence.ok) {
-      throw new Error(`previous autostart service recovery did not converge (${convergence.reason})`);
+      throw new Error(`compatible candidate autostart recovery did not converge (${convergence.reason})`);
     }
+    return { candidateServiceStarted: true, convergence, serviceStart: restored };
   }
-  return { candidateServiceStarted: candidateServiceRequired };
+  if (!previousServiceRuntime || typeof inspectPreviousAutostart !== "function") {
+    throw new Error("previous autostart service recovery lacks verified runtime identity evidence");
+  }
+  const convergence = await waitForRestoredServiceRuntime({
+    inspectDaemon: () => inspectPreviousAutostart(previousServiceRuntime),
+    expectedVersion: previousServiceRuntime.version,
+    maximumAttempts: restoreMaximumAttempts,
+    wait: restoreWait,
+  });
+  if (!convergence.ok) {
+    throw new Error(`previous autostart service recovery did not converge (${convergence.reason})`);
+  }
+  return { candidateServiceStarted: false, convergence };
 }
 
 function validateActivationOwnership(value) {
@@ -357,21 +400,67 @@ function validateProviderStop(result) {
   return result.restore_required;
 }
 
-function requireActiveServiceStart(result, operation) {
+function requireActiveServiceStart(result, operation, code = "") {
   if (result?.ok !== true || result.active !== true) {
-    throw new Error(`${operation} did not reach an active persistent service (${result?.provider || "unknown"})`);
+    const message = `${operation} did not reach an active persistent service (${result?.provider || "unknown"})`;
+    if (code) throw activationOperationalError(message, code);
+    throw new Error(message);
   }
 }
 
+const RECOVERABLE_POST_READY_CODES = new Set([
+  "relay_authentication_failed",
+  "autostart_install_failed",
+  "autostart_start_failed",
+]);
+
+function activationOperationalError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function recoverablePostReadySettlement(error) {
+  return RECOVERABLE_POST_READY_CODES.has(String(error?.code || ""));
+}
+
+function activationRecoveryDetail(error) {
+  return activationErrorMessage(error).replace(/[\r\n\t]+/g, " ").slice(0, 600);
+}
+
 function activationFailureWithRecovery(error) {
-  const message = error instanceof Error && error.message ? error.message : String(error || "activation failed");
-  const recoveredMessage = `${message}; a compatible candidate service was installed and started for automatic recovery`;
+  const message = activationErrorMessage(error);
+  const recoveredMessage = `${message}; a compatible candidate service was installed, started, and verified ready for automatic recovery`;
   const recovered = error instanceof AggregateError
     ? new AggregateError(error.errors, recoveredMessage, { cause: error })
-    : new Error(recoveredMessage, { cause: error });
+    : error instanceof TypeError
+      ? new TypeError(recoveredMessage, { cause: error })
+      : error instanceof RangeError
+        ? new RangeError(recoveredMessage, { cause: error })
+        : new Error(recoveredMessage, { cause: error });
   if (error?.code) recovered.code = error.code;
   recovered.activationRecovery = "candidate_service_started";
   return recovered;
+}
+
+function activationCleanupFailure(error, cleanupErrors) {
+  const details = cleanupErrors.slice(0, 4).map(activationErrorMessage).join("; ");
+  const aggregate = new AggregateError(
+    [error, ...cleanupErrors],
+    `persistent runtime activation failed: ${activationErrorMessage(error)}; local cleanup was incomplete: ${details}`,
+  );
+  aggregate.cleanupIncomplete = true;
+  if (error?.code) aggregate.code = error.code;
+  return aggregate;
+}
+
+function activationErrorMessage(error) {
+  return error instanceof Error && error.message ? error.message : String(error || "activation failed");
+}
+
+function activationRecoveryReason(error) {
+  const code = String(error?.code || "activation_failure");
+  return /^[a-z0-9_]{1,80}$/.test(code) ? code : "activation_failure";
 }
 
 export async function waitForRestoredServiceRuntime({
@@ -471,6 +560,6 @@ function defaultWait(attempt) {
 }
 
 function defaultCandidateRetryWait(attempt) {
-  const delay = Math.min(2_000, 250 * (2 ** Math.max(0, attempt - 1)));
+  const delay = Math.min(15_000, 1_000 * (2 ** Math.max(0, attempt - 1)));
   return new Promise((resolvePromise) => { setTimeout(resolvePromise, delay); });
 }

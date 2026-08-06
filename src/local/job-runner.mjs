@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { executionEnv } from "./shell.mjs";
@@ -10,6 +10,7 @@ import { removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, processState } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { managedJobCancellationRequested } from "./managed-job-cancellation.mjs";
 import { persistManagedJobTerminal } from "./managed-job-terminal.mjs";
 import { sanitizeLogText } from "./log.mjs";
 import { confirmRunnerClaim } from "./managed-job-runner-claim.mjs";
@@ -137,7 +138,14 @@ async function main(plan, initial) {
     }
   }
 
-  const cancelled = mainError instanceof JobCancelledError || existsSync(cancelFile);
+  let cancellationMarker = false;
+  try { cancellationMarker = managedJobCancellationRequested(cancelFile); }
+  catch (error) {
+    mainError = mainError
+      ? new AggregateError([mainError, error], "managed job failed and cancellation state could not be verified")
+      : error;
+  }
+  const cancelled = mainError instanceof JobCancelledError || cancellationMarker;
   let finalStatus;
   if (recover) finalStatus = cleanupError ? "recovery_failed" : "recovered";
   else if (cancelled) finalStatus = cleanupError ? "cancelled_cleanup_failed" : "cancelled";
@@ -524,7 +532,7 @@ function requestCancellation() {
 }
 
 function isCancellationRequested() {
-  return cancelRequested || existsSync(cancelFile);
+  return cancelRequested || managedJobCancellationRequested(cancelFile);
 }
 
 function appendLimited(current, chunk, limit, budget) {

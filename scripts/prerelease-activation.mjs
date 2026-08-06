@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { defaultStateRoot, expandHome } from "../src/local/state.mjs";
 import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
@@ -23,12 +22,22 @@ export function writePrereleaseActivation(record, stateRoot = defaultStateRoot()
   return file;
 }
 
-export function readPrereleaseActivation(version, stateRoot = defaultStateRoot()) {
+export function readPrereleaseActivation(version, stateRoot = defaultStateRoot(), options = {}) {
   const file = prereleaseActivationPath(version, stateRoot);
-  if (!existsSync(file)) throw new Error(`prerelease activation record is missing: ${file}`);
+  const readRecord = options.readBoundedRegularFileSync || readBoundedRegularFileSync;
+  let bytes;
+  try {
+    bytes = readRecord(file, MAX_ACTIVATION_BYTES, "prerelease activation record", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new Error(`prerelease activation record is missing: ${file}`, { cause: error });
+    throw new Error("prerelease activation record is unavailable", { cause: error });
+  }
   let value;
-  try { value = JSON.parse(readBoundedRegularFileSync(file, MAX_ACTIVATION_BYTES, "prerelease activation record", { verifyPathIdentity: true }).toString("utf8")); }
-  catch (error) { throw new Error(`prerelease activation record is unavailable or invalid: ${error.message}`); }
+  try { value = JSON.parse(bytes.toString("utf8")); }
+  catch (error) { throw new Error("prerelease activation record is invalid", { cause: error }); }
   return validatePrereleaseActivation(value);
 }
 
@@ -55,6 +64,7 @@ export function validatePrereleaseActivation(value) {
   if (workspaceHash && !/^[0-9a-f]{24}$/.test(workspaceHash)) throw new Error("prerelease activation workspace hash is invalid");
   const runtimeEntry = String(value.runtime_entry || "");
   if (runtimeEntry && !isAbsolute(runtimeEntry)) throw new Error("prerelease activation runtime entry must be absolute");
+  const activationRecovery = normalizeActivationRecovery(value);
   const hasLegacyBaseline = value.previous !== undefined;
   const hasGlobalBaseline = value.global_package_rollback_baseline !== undefined;
   if (hasLegacyBaseline && hasGlobalBaseline) {
@@ -85,7 +95,32 @@ export function validatePrereleaseActivation(value) {
     } : {}),
     ...(workspaceHash ? { workspace_hash: workspaceHash } : {}),
     ...(runtimeEntry ? { runtime_entry: runtimeEntry } : {}),
+    ...activationRecovery,
     ...(globalPackageRollbackBaseline ? { global_package_rollback_baseline: globalPackageRollbackBaseline } : {}),
+  });
+}
+
+function normalizeActivationRecovery(value) {
+  const recovered = value.activation_recovered === true;
+  if (value.activation_recovered !== undefined && typeof value.activation_recovered !== "boolean") {
+    throw new Error("prerelease activation recovery flag is invalid");
+  }
+  const reason = String(value.activation_recovery_reason || "");
+  const detail = String(value.activation_recovery_detail || "");
+  if (!recovered) {
+    if (reason || detail) throw new Error("prerelease activation recovery metadata requires a recovered activation");
+    return Object.freeze({});
+  }
+  if (!/^[a-z0-9_]{1,80}$/.test(reason)) {
+    throw new Error("prerelease activation recovery reason is invalid");
+  }
+  if (!detail || detail.length > 600 || /[\r\n\t]/.test(detail)) {
+    throw new Error("prerelease activation recovery detail is invalid");
+  }
+  return Object.freeze({
+    activation_recovered: true,
+    activation_recovery_reason: reason,
+    activation_recovery_detail: detail,
   });
 }
 

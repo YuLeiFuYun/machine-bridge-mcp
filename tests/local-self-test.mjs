@@ -1207,8 +1207,14 @@ async function ciBootstrapSelfTest() {
     throw new Error("every CI npm execution job must prepare and verify integrity-pinned npm 12 without a mutable global install");
   }
   const bootstrap = await readFile(new URL("../scripts/prepare-pinned-npm.mjs", import.meta.url), "utf8");
-  if (!bootstrap.includes("npm-12.0.1.tgz") || !bootstrap.includes("sha512-L5T9i/YAQWQWqTS/") || !bootstrap.includes('redirect: "error"') || !bootstrap.includes("readBoundedBody(response, MAX_TARBALL_BYTES)")) {
-    throw new Error("CI npm bootstrap lost its exact tarball, bounded download, SHA-512 integrity, or redirect rejection");
+  const hardenedNpm = await readFile(new URL("../src/local/hardened-npm.mjs", import.meta.url), "utf8");
+  const hardenedNpmDownload = await readFile(new URL("../src/local/hardened-npm-download.mjs", import.meta.url), "utf8");
+  if (!bootstrap.includes("prepareHardenedNpm")
+      || !hardenedNpm.includes("npm-12.0.1.tgz") || !hardenedNpm.includes("sha512-L5T9i/YAQWQWqTS/")
+      || !hardenedNpm.includes("undici-6.28.0.tgz") || !hardenedNpm.includes("brace-expansion-5.0.9.tgz")
+      || !hardenedNpmDownload.includes("proxyAgentForHttp") || !hardenedNpmDownload.includes("status !== 200")
+      || !hardenedNpmDownload.includes("downloadHardenedNpmArtifact")) {
+    throw new Error("CI npm bootstrap lost its hardened exact tarballs, bounded proxy-aware download, SHA-512 integrity, or redirect rejection");
   }
   if (workflow.includes("> sbom.json") || !workflow.includes('> "$RUNNER_TEMP/sbom.json"')) {
     throw new Error("CI SBOM output must stay outside the repository publication surface");
@@ -1216,6 +1222,14 @@ async function ciBootstrapSelfTest() {
   const installSmokeCount = lines.filter((line) => line.includes("npm run install:test")).length;
   if (installSmokeCount !== 2) {
     throw new Error("CI must exercise the documented global installation in package-audit and the cross-platform job");
+  }
+  const consumerSecurityCount = lines.filter((line) => line.includes("npm run consumer-security:test")).length;
+  if (consumerSecurityCount !== 1) {
+    throw new Error("CI package audit must verify the final installed consumer dependency tree exactly once");
+  }
+  const installSmoke = await readFile(new URL("./install-smoke-test.mjs", import.meta.url), "utf8");
+  for (const required of ["prepareHardenedNpm", "verifyConsumerTarball", "ensureWranglerToolchain", '"wrangler", "miniflare"']) {
+    if (!installSmoke.includes(required)) throw new Error(`global install smoke lost consumer/toolchain proof: ${required}`);
   }
   const packageTest = await readFile(new URL("./package-test.mjs", import.meta.url), "utf8");
   if (!packageTest.includes("process.env.npm_execpath") || packageTest.includes('spawnSync(npm')) {

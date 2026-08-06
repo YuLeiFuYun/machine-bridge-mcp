@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
@@ -11,6 +11,8 @@ const BROWSER_STARTUP_TIMEOUT_MS = 60_000;
 const HTTP_PROBE_TIMEOUT_MS = 1_000;
 const CDP_OPEN_TIMEOUT_MS = 10_000;
 const CDP_COMMAND_TIMEOUT_MS = 10_000;
+const BROWSER_TERMINATION_GRACE_MS = 5_000;
+const SERVER_CLOSE_TIMEOUT_MS = 5_000;
 
 const chrome = findChrome();
 if (!chrome) {
@@ -93,7 +95,11 @@ const chromeArgs = [
 ];
 if (process.platform === "linux") chromeArgs.push("--no-sandbox", "--disable-dev-shm-usage");
 chromeArgs.push(blockedAuthorizationUrl);
-const child = spawn(chrome, chromeArgs, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+const child = spawn(chrome, chromeArgs, {
+  stdio: ["ignore", "ignore", "pipe"],
+  detached: process.platform !== "win32",
+  windowsHide: true,
+});
 let chromeStderr = "";
 let childOutcome = null;
 child.stderr.on("data", (chunk) => { chromeStderr = `${chromeStderr}${chunk}`.slice(-16_384); });
@@ -108,6 +114,7 @@ const childClosed = new Promise((resolve) => {
   });
 });
 
+let primaryError = null;
 try {
   const target = await waitForPageTarget(debuggingPort, () => childOutcome);
   const client = await createCdpClient(target.webSocketDebuggerUrl);
@@ -151,28 +158,87 @@ try {
   } finally {
     client.close();
   }
-  console.log("OAuth browser navigation test ok");
 } catch (error) {
-  throw new Error(`${error.message}\nChrome stderr:\n${chromeStderr}`);
-} finally {
-  child.kill("SIGTERM");
-  await Promise.race([childClosed, sleep(5000)]);
-  authorizationServer.close();
-  globalCallbackServer.close();
-  regionalCallbackServer.close();
-  studioCallbackServer.close();
-  let cleanupError = null;
+  primaryError = new Error(`${error.message}
+Chrome stderr:
+${chromeStderr}`, { cause: error });
+}
+
+const cleanupErrors = [];
+try { await terminateBrowserTree(child, childClosed, () => childOutcome); }
+catch (error) { cleanupErrors.push(error); }
+for (const server of [authorizationServer, globalCallbackServer, regionalCallbackServer, studioCallbackServer]) {
+  try { await closeHttpServer(server); }
+  catch (error) { cleanupErrors.push(error); }
+}
+try { await removeBrowserProfile(profile); }
+catch (error) { cleanupErrors.push(error); }
+
+if (primaryError && cleanupErrors.length) {
+  throw new AggregateError([primaryError, ...cleanupErrors], "OAuth browser navigation failed and browser cleanup was incomplete");
+}
+if (primaryError) throw primaryError;
+if (cleanupErrors.length === 1) throw cleanupErrors[0];
+if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "OAuth browser cleanup was incomplete");
+console.log("OAuth browser navigation test ok");
+
+async function terminateBrowserTree(browser, closed, outcome) {
+  if (outcome()) return;
+  signalBrowserTree(browser, "SIGTERM");
+  if (await waitForBrowserClose(closed, outcome, BROWSER_TERMINATION_GRACE_MS)) return;
+  signalBrowserTree(browser, "SIGKILL");
+  if (await waitForBrowserClose(closed, outcome, BROWSER_TERMINATION_GRACE_MS)) return;
+  throw new Error(`Chrome process tree did not exit within ${BROWSER_TERMINATION_GRACE_MS * 2} ms`);
+}
+
+function signalBrowserTree(browser, signal) {
+  if (!browser.pid || browser.exitCode !== null || browser.signalCode !== null) return;
+  if (process.platform === "win32") {
+    if (signal === "SIGKILL") {
+      const result = spawnSync("taskkill", ["/PID", String(browser.pid), "/T", "/F"], {
+        encoding: "utf8",
+        timeout: BROWSER_TERMINATION_GRACE_MS,
+        killSignal: "SIGKILL",
+        windowsHide: true,
+      });
+      if (result.error && result.error.code !== "ENOENT") throw result.error;
+      return;
+    }
+    browser.kill("SIGTERM");
+    return;
+  }
+  try { process.kill(-browser.pid, signal); }
+  catch (error) { if (error?.code !== "ESRCH") throw error; }
+}
+
+async function waitForBrowserClose(closed, outcome, timeoutMs) {
+  if (outcome()) return true;
+  await Promise.race([closed, sleep(timeoutMs)]);
+  return Boolean(outcome());
+}
+
+function closeHttpServer(server) {
+  server.closeAllConnections?.();
+  return Promise.race([
+    new Promise((resolve, reject) => {
+      server.close((error) => error && error.code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve());
+    }),
+    sleep(SERVER_CLOSE_TIMEOUT_MS).then(() => { throw new Error(`HTTP test server did not close within ${SERVER_CLOSE_TIMEOUT_MS} ms`); }),
+  ]);
+}
+
+async function removeBrowserProfile(directory) {
+  let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      await rm(profile, { recursive: true, force: true });
-      cleanupError = null;
-      break;
+      await rm(directory, { recursive: true, force: true });
+      return;
     } catch (error) {
-      cleanupError = error;
+      lastError = error;
       if (attempt < 4) await sleep(100);
     }
   }
-  if (cleanupError) console.error(`browser profile cleanup failed: ${cleanupError.message || cleanupError}`);
+  throw lastError || new Error("browser profile cleanup failed");
 }
 
 function findChrome() {

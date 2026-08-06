@@ -10,7 +10,7 @@ import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createDeviceIdentity } from "./device-identity.mjs";
 import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
-import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { isPlainRecord } from "./records.mjs";
 
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -73,11 +73,14 @@ function configPath(stateRoot = defaultStateRoot()) {
   return path.join(expandHome(stateRoot), "config.json");
 }
 
-export function loadGlobalConfig(stateRoot = defaultStateRoot()) {
+export function loadGlobalConfig(stateRoot = defaultStateRoot(), options = {}) {
   const root = path.resolve(expandHome(stateRoot));
   assertNoForeignMaintenance(root);
   const file = configPath(root);
-  if (!existsSync(file)) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
+  const inspect = options.inspectPathIfPresentSync || inspectPathIfPresentSync;
+  const info = inspect(file, "global configuration file");
+  if (!info) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error("global configuration file must be a regular file and not a symbolic link");
   ownerOnlyFile(file);
   const config = readJsonObjectOrBackup(file, { allowEmptyRecovery: true });
   if (config[CORRUPT_RECOVERY]) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };

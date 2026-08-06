@@ -5,11 +5,13 @@ await testConvergenceWait();
 await testSuccessfulHandoff();
 await testAuthenticationFailureRedeploysOnce();
 await testAuthenticationRecoveryIsBounded();
+await testCompatibleCandidateRecoveryFailureIsObservable();
 await testCandidateStartCleanupFailureAggregation();
 await testForegroundRefusal();
 await testUnownedActiveServiceRefusal();
 await testInstallFailureCleanup();
 await testCandidateFatalDuringInstall();
+await testUnexpectedPostReadyFailureRemainsFatal();
 await testPostDeploymentPreparationFailureUsesCandidateService();
 await testRemotePreparationFailureRestoresService();
 await testOrphanServiceRuntimeRestoresService();
@@ -119,6 +121,8 @@ async function testValidationAndPreflightFailures() {
     ["candidateRetryWait", true, "candidateRetryWait must be a function"],
     ["wait", "later", "wait must be a function"],
     ["repairRemoteState", 42, "repairRemoteState must be a function"],
+    ["startRecoveryAutostart", "later", "startRecoveryAutostart must be a function"],
+    ["inspectCandidateAutostart", true, "inspectCandidateAutostart must be a function"],
   ]) {
     await expectReject(() => activatePersistentRuntime({
       expectedVersion: "3.0.0-beta.1",
@@ -356,14 +360,16 @@ async function testAuthenticationRecoveryIsBounded() {
         };
       },
       installAutostart: async () => { events.push("service:install-candidate"); return { ok: true, active: true, provider: "test" }; },
-      startAutostart: async () => { events.push("service:start-candidate"); return { ok: true, active: true, provider: "test" }; },
+      startAutostart: unexpected,
+      startRecoveryAutostart: async () => { events.push("service:start-candidate"); return { ok: true, active: true, provider: "test" }; },
+      inspectCandidateAutostart: async () => readyCandidateDaemon(),
       inspectDaemon: unexpected,
-      checkWorker: unexpected,
+      checkWorker: async () => readyCandidateWorker(),
     });
   } catch (error) { caught = error; }
   assert(caught?.code === "relay_authentication_failed"
     && caught?.activationRecovery === "candidate_service_started"
-    && caught.message.includes("compatible candidate service was installed and started"),
+    && caught.message.includes("compatible candidate service was installed, started, and verified ready"),
   "bounded authentication failure did not report forward service recovery");
   assert(events.filter((value) => value === "relay:repair").length === 1,
     "bounded authentication recovery repeated the Worker deployment");
@@ -373,6 +379,50 @@ async function testAuthenticationRecoveryIsBounded() {
     "candidate authentication recovery used the wrong retry count");
   assert(events.slice(-4).join(",") === "daemon:release,startup:release,service:install-candidate,service:start-candidate",
     `candidate forward recovery ordering drifted: ${events.join(",")}`);
+}
+
+async function testCompatibleCandidateRecoveryFailureIsObservable() {
+  const events = [];
+  let caught;
+  try {
+    await activatePersistentRuntime({
+      expectedVersion: "3.0.0-beta.1",
+      inspectActivationOwnership: inactiveActivationOwnership,
+      candidateStartAttempts: 1,
+      maximumAttempts: 2,
+      wait: async (attempt) => { events.push(`recovery:wait:${attempt}`); },
+      acquireStartupLock: async () => lock("startup", events),
+      acquireServiceLock: async () => silentServiceLock(),
+      stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false, provider: "test" }),
+      acquireDaemonLock: async () => lock("daemon", events),
+      prepareRemoteState: async () => ({}),
+      createRuntime: () => ({
+        async start() {
+          const error = new Error("cryptographic daemon identity rejected");
+          error.code = "relay_authentication_failed";
+          throw error;
+        },
+        stop() { events.push("runtime:stop"); },
+      }),
+      installAutostart: async () => { events.push("service:install-candidate"); return { ok: true, active: true, provider: "test" }; },
+      startAutostart: unexpected,
+      startRecoveryAutostart: async () => { events.push("service:start-candidate"); return { ok: true, active: true, provider: "test" }; },
+      inspectCandidateAutostart: async () => ({ alive: false, verified_service_daemon: false }),
+      inspectDaemon: unexpected,
+      checkWorker: async () => readyCandidateWorker(),
+    });
+  } catch (error) { caught = error; }
+  assert(caught instanceof AggregateError
+    && caught.cleanupIncomplete === true
+    && caught.code === "relay_authentication_failed"
+    && caught.errors?.[0]?.message.includes("cryptographic daemon identity rejected")
+    && caught.errors?.[1]?.message.includes("compatible candidate autostart recovery did not converge")
+    && caught.errors?.[1]?.message.includes("daemon_not_running")
+    && caught.message.includes("cryptographic daemon identity rejected")
+    && caught.message.includes("daemon_not_running"),
+  "failed compatible-candidate recovery did not preserve the primary authentication error and exact recovery state");
+  assert(events.includes("service:start-candidate") && events.includes("recovery:wait:1"),
+    "failed compatible-candidate recovery did not leave the provider retry path active while checking readiness");
 }
 
 async function testCandidateStartCleanupFailureAggregation() {
@@ -481,30 +531,31 @@ async function testInstallFailureCleanup() {
   const daemon = lock("daemon", events);
   const runtime = { async start() { events.push("runtime:start"); }, stop() { events.push("runtime:stop"); } };
   let installCalls = 0;
-  let caught;
-  try {
-    await activatePersistentRuntime({
-      expectedVersion: "3.0.0-beta.1",
-      inspectActivationOwnership: inactiveActivationOwnership,
-      acquireStartupLock: async () => startup,
-      acquireServiceLock: async () => silentServiceLock(),
-      stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false, provider: "test" }),
-      acquireDaemonLock: async () => daemon,
-      prepareRemoteState: async () => ({}),
-      createRuntime: () => runtime,
-      installAutostart: async () => {
-        installCalls += 1;
-        events.push(`service:install:${installCalls}`);
-        return { ok: installCalls === 2, provider: "test" };
-      },
-      startAutostart: async () => { events.push("service:start-recovery"); return { ok: true, active: true, provider: "test" }; },
-      inspectDaemon: unexpected,
-      checkWorker: unexpected,
-    });
-  } catch (error) { caught = error; }
-  assert(caught?.activationRecovery === "candidate_service_started"
-    && caught.message.includes("autostart installation failed"),
-  "install failure did not preserve the primary error after compatible-service recovery");
+  const result = await activatePersistentRuntime({
+    expectedVersion: "3.0.0-beta.1",
+    inspectActivationOwnership: inactiveActivationOwnership,
+    acquireStartupLock: async () => startup,
+    acquireServiceLock: async () => silentServiceLock(),
+    stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false, provider: "test" }),
+    acquireDaemonLock: async () => daemon,
+    prepareRemoteState: async () => ({}),
+    createRuntime: () => runtime,
+    installAutostart: async () => {
+      installCalls += 1;
+      events.push(`service:install:${installCalls}`);
+      return { ok: installCalls === 2, provider: "test" };
+    },
+    startAutostart: unexpected,
+    startRecoveryAutostart: async () => { events.push("service:start-recovery"); return { ok: true, active: true, provider: "test" }; },
+    inspectCandidateAutostart: async () => readyCandidateDaemon(),
+    inspectDaemon: unexpected,
+    checkWorker: async () => readyCandidateWorker(),
+  });
+  assert(result.ok === true && result.activationRecovered === true
+    && result.recoveryReason === "autostart_install_failed"
+    && result.recoveryDetail.includes("autostart installation failed")
+    && result.candidateRelayVerified === true,
+  "verified candidate installation recovery did not settle as a successful activation");
   assert(JSON.stringify(events) === JSON.stringify([
     "runtime:start",
     "service:install:1",
@@ -527,6 +578,51 @@ async function testCandidateFatalDuringInstall() {
     async start() { events.push("runtime:start"); },
     stop() { events.push("runtime:stop"); },
   };
+  const result = await activatePersistentRuntime({
+    expectedVersion: "3.0.0-beta.1",
+    inspectActivationOwnership: inactiveActivationOwnership,
+    acquireStartupLock: async () => startup,
+    acquireServiceLock: async () => silentServiceLock(),
+    stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false, provider: "test" }),
+    acquireDaemonLock: async () => daemon,
+    prepareRemoteState: async () => ({}),
+    createRuntime: () => runtime,
+    installAutostart: async () => {
+      installCalls += 1;
+      events.push(`service:install:${installCalls}`);
+      if (installCalls === 1) {
+        terminalError = new Error("relay fatal during install");
+        terminalError.code = "relay_authentication_failed";
+      }
+      await Promise.resolve();
+      return { ok: true, active: true, provider: "test" };
+    },
+    startAutostart: unexpected,
+    startRecoveryAutostart: async () => { events.push("service:start-recovery"); return { ok: true, active: true, provider: "test" }; },
+    inspectCandidateAutostart: async () => readyCandidateDaemon(),
+    inspectDaemon: unexpected,
+    checkWorker: async () => readyCandidateWorker(),
+  });
+  assert(result.ok === true && result.activationRecovered === true
+    && result.recoveryReason === "relay_authentication_failed"
+    && result.recoveryDetail === "relay fatal during install"
+    && result.candidateRelayVerified === true,
+  "post-ready candidate authentication failure did not settle through verified service recovery");
+  assert(events.includes("runtime:stop") && events.includes("daemon:release") && events.includes("startup:release")
+    && installCalls === 2 && events.includes("service:install:2") && events.at(-1) === "service:start-recovery",
+  "candidate fatal did not clean up, reinstall, and verify the compatible service");
+}
+
+
+async function testUnexpectedPostReadyFailureRemainsFatal() {
+  const events = [];
+  const startup = lock("startup", events);
+  const daemon = lock("daemon", events);
+  const runtime = {
+    terminalError: () => new TypeError("unexpected candidate invariant failure"),
+    async start() { events.push("runtime:start"); },
+    stop() { events.push("runtime:stop"); },
+  };
   let caught;
   try {
     await activatePersistentRuntime({
@@ -538,24 +634,21 @@ async function testCandidateFatalDuringInstall() {
       acquireDaemonLock: async () => daemon,
       prepareRemoteState: async () => ({}),
       createRuntime: () => runtime,
-      installAutostart: async () => {
-        installCalls += 1;
-        events.push(`service:install:${installCalls}`);
-        if (installCalls === 1) terminalError = new Error("relay fatal during install");
-        await Promise.resolve();
-        return { ok: true, active: true, provider: "test" };
-      },
-      startAutostart: async () => { events.push("service:start-recovery"); return { ok: true, active: true, provider: "test" }; },
+      installAutostart: async () => ({ ok: true, active: true, provider: "test" }),
+      startAutostart: unexpected,
+      startRecoveryAutostart: async () => ({ ok: true, active: true, provider: "test" }),
+      inspectCandidateAutostart: async () => readyCandidateDaemon(),
       inspectDaemon: unexpected,
-      checkWorker: unexpected,
+      checkWorker: async () => readyCandidateWorker(),
     });
   } catch (error) { caught = error; }
-  assert(caught?.activationRecovery === "candidate_service_started"
-    && caught.message.includes("relay fatal during install"),
-  "candidate fatal error was lost during compatible-service recovery");
-  assert(events.includes("runtime:stop") && events.includes("daemon:release") && events.includes("startup:release")
-    && installCalls === 2 && events.at(-1) === "service:start-recovery",
-  "candidate fatal did not clean up and start the compatible service");
+  assert(caught instanceof TypeError
+    && caught.activationRecovery === "candidate_service_started"
+    && caught.message.includes("unexpected candidate invariant failure")
+    && caught.message.includes("verified ready"),
+  "unexpected post-ready programming error was incorrectly converted into activation success");
+  assert(events.includes("runtime:start") && events.includes("runtime:stop"),
+    "unexpected post-ready programming error skipped candidate cleanup");
 }
 
 async function testPostDeploymentPreparationFailureUsesCandidateService() {
@@ -581,9 +674,11 @@ async function testPostDeploymentPreparationFailureUsesCandidateService() {
       },
       createRuntime: unexpected,
       installAutostart: async () => { events.push("service:install-candidate"); return { ok: true, active: true, provider: "test" }; },
-      startAutostart: async () => { events.push("service:start-candidate"); return { ok: true, active: true, provider: "test" }; },
+      startAutostart: unexpected,
+      startRecoveryAutostart: async () => { events.push("service:start-candidate"); return { ok: true, active: true, provider: "test" }; },
+      inspectCandidateAutostart: async () => readyCandidateDaemon(),
       inspectDaemon: unexpected,
-      checkWorker: unexpected,
+      checkWorker: async () => readyCandidateWorker(),
     });
   } catch (error) { caught = error; }
   assert(caught?.activationRecovery === "candidate_service_started"
@@ -701,35 +796,38 @@ async function testServiceFailureAfterVerifiedCandidate() {
   const daemon = lock("daemon", events);
   const runtime = { async start() { events.push("runtime:start"); }, stop() { events.push("runtime:stop"); } };
   let startCalls = 0;
-  let caught;
-  try {
-    await activatePersistentRuntime({
-      expectedVersion: "3.0.0-beta.1",
-      inspectActivationOwnership: inactiveActivationOwnership,
-      acquireStartupLock: async () => startup,
-      acquireServiceLock: async () => silentServiceLock(),
-      stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false, provider: "test" }),
-      acquireDaemonLock: async () => daemon,
-      prepareRemoteState: async () => ({}),
-      createRuntime: () => runtime,
-      installAutostart: async () => ({ ok: true, active: true, provider: "test" }),
-      startAutostart: async () => {
-        startCalls += 1;
-        events.push(`service:start:${startCalls}`);
-        return startCalls === 1
-          ? { ok: true, active: false, provider: "test", reason: "completed_without_persistence" }
-          : { ok: true, active: true, provider: "test" };
-      },
-      inspectDaemon: unexpected,
-      checkWorker: unexpected,
-    });
-  } catch (error) { caught = error; }
-  assert(caught?.activationRecovery === "candidate_service_started"
-    && caught.message.includes("did not reach an active persistent service"),
-  "service-start failure did not preserve the primary error after recovery");
+  const result = await activatePersistentRuntime({
+    expectedVersion: "3.0.0-beta.1",
+    inspectActivationOwnership: inactiveActivationOwnership,
+    acquireStartupLock: async () => startup,
+    acquireServiceLock: async () => silentServiceLock(),
+    stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false, provider: "test" }),
+    acquireDaemonLock: async () => daemon,
+    prepareRemoteState: async () => ({}),
+    createRuntime: () => runtime,
+    installAutostart: async () => ({ ok: true, active: true, provider: "test" }),
+    startAutostart: async () => {
+      startCalls += 1;
+      events.push(`service:start:${startCalls}`);
+      return { ok: true, active: false, provider: "test", reason: "completed_without_persistence" };
+    },
+    startRecoveryAutostart: async () => {
+      events.push("service:start-recovery");
+      return { ok: true, active: true, provider: "test" };
+    },
+    inspectCandidateAutostart: async () => readyCandidateDaemon(),
+    inspectDaemon: unexpected,
+    checkWorker: async () => readyCandidateWorker(),
+  });
+  assert(result.ok === true && result.activationRecovered === true
+    && result.recoveryReason === "autostart_start_failed"
+    && result.recoveryDetail.includes("did not reach an active persistent service")
+    && result.candidateRelayVerified === true,
+  "verified service-handoff recovery did not settle as a successful activation");
   assert(events.indexOf("runtime:start") < events.indexOf("runtime:stop"), "candidate relay was not verified before service handoff failure");
-  assert(events.filter((value) => value === "startup:release").length === 1 && startCalls === 2,
-    "service start failure did not perform one compatible-service recovery start");
+  assert(events.filter((value) => value === "startup:release").length === 1
+    && startCalls === 1 && events.filter((value) => value === "service:start-recovery").length === 1,
+    "service start failure did not separate strict handoff from compatible-service recovery");
 }
 
 async function testServiceLockReleaseFailureAggregation() {
@@ -789,6 +887,20 @@ async function testCleanupFailureAggregation() {
     && caught.message.includes("cleanup was incomplete"),
   "activation cleanup failure did not preserve the primary, runtime-stop, and lock-release errors");
   assert(events.filter((value) => value === "startup:release").length === 1, "cleanup aggregation did not release the startup lock exactly once");
+}
+
+function readyCandidateDaemon(version = "3.0.0-beta.1") {
+  return {
+    alive: true,
+    verified_service_daemon: true,
+    startup_readiness_verified: true,
+    mode: "service",
+    version,
+  };
+}
+
+function readyCandidateWorker(version = "3.0.0-beta.1") {
+  return { ok: true, version };
 }
 
 function lock(name, events) {

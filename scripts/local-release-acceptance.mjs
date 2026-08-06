@@ -24,34 +24,57 @@ import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { validateCandidateManifest } from "./release-candidate-manifest.mjs";
 import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateDirectory = join(root, ".release-candidate");
 const candidateManifestPath = join(candidateDirectory, "manifest.json");
 const mode = process.argv[2] || "--verify";
+const git = resolveTrustedGitExecutable({ workspace: root });
 
 try {
-  if (mode === "--prepare") prepareCandidate();
-  else if (mode === "--record") recordAcceptance();
-  else if (mode === "--verify") verifyAcceptance();
-  else fail("usage: node scripts/local-release-acceptance.mjs [--prepare|--record|--verify]");
+  await runWithHardenedNpm();
 } catch (error) {
   fail(error?.message || error);
 }
 
-function prepareCandidate() {
+async function runWithHardenedNpm() {
+  let session = null;
+  let primaryError = null;
+  try {
+    session = await createHardenedNpmSession();
+    if (mode === "--prepare") prepareCandidate(session.cli);
+    else if (mode === "--record") recordAcceptance(session.cli);
+    else if (mode === "--verify") verifyAcceptance(session.cli);
+    else throw new Error("usage: node scripts/local-release-acceptance.mjs [--prepare|--record|--verify]");
+  } catch (error) {
+    primaryError = error;
+  }
+  let cleanupError = null;
+  try { session?.dispose(); } catch (error) { cleanupError = error; }
+  if (primaryError && cleanupError) {
+    throw new AggregateError([primaryError, cleanupError], "local release acceptance failed and hardened npm cleanup was incomplete");
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw cleanupError;
+}
+
+function prepareCandidate(npmCli) {
   const pkg = readPackage();
   if (!requiresLocalAcceptance(pkg.version)) {
     throw new Error(`local acceptance policy begins at ${pkg.name} 1.2.8; current version is ${pkg.version}`);
   }
-  rmSync(candidateDirectory, { recursive: true, force: true });
+  rmSync(candidateDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   mkdirSync(candidateDirectory, { recursive: true });
-  const metadata = packProject(root, candidateDirectory);
+  const metadata = packProject(root, candidateDirectory, { npmCli, env: process.env });
   const manifest = {
     schema_version: ACCEPTANCE_SCHEMA_VERSION,
     result: "pending",
     ...metadata,
-    promotion_content_sha256: computePromotionContentDigest(root),
+    promotion_content_sha256: computePromotionContentDigest(root, { npmCli }),
     prepared_at: new Date().toISOString(),
   };
   replaceFileAtomicallySync(candidateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
@@ -66,7 +89,7 @@ function prepareCandidate() {
   console.log("Automated tests alone do not authorize acceptance or the first GitHub push.");
 }
 
-function recordAcceptance() {
+function recordAcceptance(npmCli) {
   const pkg = readPackage();
   const supplied = argumentValue("--confirm");
   const expected = confirmationPhrase(pkg.name, pkg.version);
@@ -80,16 +103,16 @@ function recordAcceptance() {
   verifyTarball(join(candidateDirectory, pending.filename), pending);
 
   const verificationDirectory = join(candidateDirectory, "verification");
-  rmSync(verificationDirectory, { recursive: true, force: true });
+  rmSync(verificationDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   mkdirSync(verificationDirectory, { recursive: true });
-  const current = packProject(root, verificationDirectory);
+  const current = packProject(root, verificationDirectory, { npmCli, env: process.env });
   for (const key of ["package_name", "package_version", "filename", "shasum", "integrity"]) {
     if (pending[key] !== current[key]) {
       throw new Error(`source changed after candidate preparation: ${key} no longer matches`);
     }
   }
 
-  const promotionDigest = computePromotionContentDigest(root);
+  const promotionDigest = computePromotionContentDigest(root, { npmCli });
   if (pending.promotion_content_sha256 !== promotionDigest) {
     throw new Error("source changed after candidate preparation: promotion content digest no longer matches");
   }
@@ -104,7 +127,7 @@ function recordAcceptance() {
     shasum: current.shasum,
     integrity: current.integrity,
     accepted_at: new Date().toISOString(),
-    package_content_sha256: computePortablePackageDigest(),
+    package_content_sha256: computePortablePackageDigest(npmCli),
     promotion_content_sha256: promotionDigest,
   };
   verifyAcceptanceRecord(record, current);
@@ -115,8 +138,8 @@ function recordAcceptance() {
   console.log("Commit this record with the candidate. Any packaged-file change invalidates it.");
 }
 
-function verifyAcceptance() {
-  const result = verifyCurrentReleaseAcceptance(root);
+function verifyAcceptance(npmCli) {
+  const result = verifyCurrentReleaseAcceptance(root, { npmCli, env: process.env });
   if (!result.required) {
     console.log(`Local release acceptance is not required for ${result.version}.`);
     return;
@@ -124,18 +147,22 @@ function verifyAcceptance() {
   console.log(`Local release acceptance matches ${result.metadata.filename} (${result.metadata.shasum}).`);
 }
 
-function computePortablePackageDigest() {
-  const npmCli = process.env.npm_execpath;
-  if (!npmCli) throw new Error("portable package digest requires npm_execpath");
+function computePortablePackageDigest(npmCli) {
+  if (!npmCli) throw new Error("portable package digest requires a hardened npm CLI");
   const temporary = mkdtempSync(join(tmpdir(), "mbm-release-index-"));
   const indexPath = join(temporary, "index");
-  const env = { ...process.env, GIT_INDEX_FILE: indexPath };
+  const env = { ...nestedNpmEnvironment(process.env), GIT_INDEX_FILE: indexPath };
+  let digest = "";
+  let primaryError = null;
   try {
-    runChecked("git", ["read-tree", "HEAD"], { env });
-    runChecked("git", ["add", "--all", "--", "."], { env });
+    runChecked(git, ["read-tree", "HEAD"], { env });
+    runChecked(git, ["add", "--all", "--", "."], { env });
     const packed = runChecked(process.execPath, [
       npmCli,
       "pack",
+      "--workspaces=false",
+      "--global=false",
+      "--prefix", root,
       "--ignore-scripts",
       "--silent",
       "--dry-run",
@@ -145,12 +172,20 @@ function computePortablePackageDigest() {
       join(root, ".github", "scripts", "verify-release-acceptance.mjs"),
       "--print-digest",
     ], { env, input: packed.stdout });
-    const digest = verifier.stdout.trim();
+    digest = verifier.stdout.trim();
     if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error("portable package digest output is invalid");
-    return digest;
-  } finally {
-    rmSync(temporary, { recursive: true, force: true });
+  } catch (error) {
+    primaryError = error;
   }
+  let cleanupError = null;
+  try { rmSync(temporary, { recursive: true, force: true }); }
+  catch (error) { cleanupError = error; }
+  if (primaryError && cleanupError) {
+    throw new AggregateError([primaryError, cleanupError], "portable package digest failed and temporary cleanup was incomplete");
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw cleanupError;
+  return digest;
 }
 
 function runChecked(file, args, { env = process.env, input } = {}) {
@@ -159,12 +194,12 @@ function runChecked(file, args, { env = process.env, input } = {}) {
     encoding: "utf8",
     env,
     input,
+    timeout: 5 * 60 * 1000,
+    killSignal: "SIGKILL",
+    maxBuffer: 32 * 1024 * 1024,
     windowsHide: true,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`${file} ${args[0] || ""} failed: ${String(result.stderr || result.stdout).trim()}`);
-  }
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure(file, args, result));
   return result;
 }
 
@@ -192,6 +227,6 @@ function confirmationPhrase(name, version) {
 }
 
 function fail(message) {
-  console.error(`local release acceptance failed: ${message}`);
+  console.error(`local release acceptance failed: ${releaseDiagnostic(message, 1200)}`);
   process.exit(1);
 }

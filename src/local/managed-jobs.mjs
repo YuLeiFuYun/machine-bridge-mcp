@@ -14,12 +14,13 @@ import {
   atomicWriteJson, readBoundedFile, readJson, readRequiredJson, resourceErrorClass, safeReadDir,
 } from "./managed-job-storage.mjs";
 import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
+import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "./managed-job-directory.mjs";
+import { writeManagedJobCancellation } from "./managed-job-cancellation.mjs";
 import {
   isTerminalManagedJobResult, scrubManagedJobArtifacts, terminalStatusFromResult,
 } from "./managed-job-terminal.mjs";
 export { launchRunner } from "./managed-job-runner.mjs";
 
-const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const MAX_JOBS = 50;
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const STAGED_PLAN_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -158,7 +159,7 @@ export class ManagedJobManager {
 
   createJob(args, { launch }, context = {}) {
     this.prune();
-    const retained = safeReadDir(this.jobRoot).filter((entry) => entry.isDirectory() && JOB_ID.test(entry.name)).length;
+    const retained = safeReadDir(this.jobRoot).filter((entry) => entry.isDirectory() && MANAGED_JOB_ID.test(entry.name)).length;
     if (retained >= MAX_JOBS) throw new Error(`managed job limit reached (${MAX_JOBS})`);
     const effectivePolicy = this.policyForContext(context);
     const plan = validatePlan(args, {
@@ -230,7 +231,7 @@ export class ManagedJobManager {
     const limit = clampInteger(args.limit, 20, 1, MAX_JOBS);
     const jobs = [];
     for (const entry of safeReadDir(this.jobRoot)) {
-      if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
+      if (!entry.isDirectory() || !MANAGED_JOB_ID.test(entry.name)) continue;
       const dir = join(this.jobRoot, entry.name);
       try {
         this.reconcileStatus(dir);
@@ -308,7 +309,7 @@ export class ManagedJobManager {
       if (!ACTIVE_JOB_STATES.has(status.status)) {
         return { ...publicStatus(status), cancellation_requested: false, already_finished: true };
       }
-      writeFileSync(join(dir, "cancel"), `${new Date().toISOString()}\n`, { mode: 0o600 });
+      writeManagedJobCancellation(join(dir, "cancel"));
       return {
         ...publicStatus(status),
         cancellation_requested: true,
@@ -335,11 +336,7 @@ export class ManagedJobManager {
 
 
   jobDir(value) {
-    const id = String(value || "");
-    if (!JOB_ID.test(id)) throw new Error("invalid job id");
-    const dir = join(this.jobRoot, id);
-    if (!existsSync(dir)) throw new Error("job not found or expired");
-    return dir;
+    return resolveManagedJobDirectory(this.jobRoot, value);
   }
 
   reconcileStatus(dir) {
@@ -386,7 +383,7 @@ export class ManagedJobManager {
   recoverInterruptedJobs() {
     this.assertMaintenanceAvailable();
     for (const entry of safeReadDir(this.jobRoot)) {
-      if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
+      if (!entry.isDirectory() || !MANAGED_JOB_ID.test(entry.name)) continue;
       try {
         this.reconcileStatus(join(this.jobRoot, entry.name));
       } catch (error) {
@@ -399,7 +396,7 @@ export class ManagedJobManager {
     this.assertMaintenanceAvailable();
     const entries = [];
     for (const entry of safeReadDir(this.jobRoot)) {
-      if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
+      if (!entry.isDirectory() || !MANAGED_JOB_ID.test(entry.name)) continue;
       const dir = join(this.jobRoot, entry.name);
       let status;
       let mtime;
@@ -434,18 +431,18 @@ export class ManagedJobManager {
       .filter(({ status }) => status && !ACTIVE_JOB_STATES.has(status.status))
       .sort((a, b) => a.mtime - b.mtime);
     for (const item of removable) {
-      if (safeReadDir(this.jobRoot).filter((entry) => entry.isDirectory() && JOB_ID.test(entry.name)).length <= MAX_JOBS) break;
+      if (safeReadDir(this.jobRoot).filter((entry) => entry.isDirectory() && MANAGED_JOB_ID.test(entry.name)).length <= MAX_JOBS) break;
       rmSync(item.dir, { recursive: true, force: true });
     }
   }
 }
 
 export function activeManagedJobs(jobRoot) {
-  const root = resolve(jobRoot);
-  if (!existsSync(root)) return [];
+  const root = resolveManagedJobRootIfPresent(jobRoot);
+  if (!root) return [];
   const jobs = [];
   for (const entry of safeReadDir(root)) {
-    if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
+    if (!entry.isDirectory() || !MANAGED_JOB_ID.test(entry.name)) continue;
     const dir = join(root, entry.name);
     let status;
     try {

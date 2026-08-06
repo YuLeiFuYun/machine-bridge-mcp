@@ -2,18 +2,20 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { verifyConsumerTarball } from "../scripts/consumer-package-security.mjs";
+import { prepareHardenedNpm } from "../src/local/hardened-npm.mjs";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const npmCli = process.env.npm_execpath;
-if (!npmCli) throw new Error("install smoke test must run through an npm lifecycle so npm_execpath is available");
-
+let npmCli;
 const temp = mkdtempSync(join(tmpdir(), "mbm-install-smoke-"));
 const prefix = join(temp, "prefix");
 const installCwd = join(temp, "package-free-cwd");
 mkdirSync(installCwd);
 try {
-  const packed = runNpm(["pack", "--silent", "--json", "--pack-destination", temp], root);
+  npmCli = (await prepareHardenedNpm(join(temp, "hardened-npm"))).cli;
+  const packed = runNpm(["pack", "--dry-run=false", "--workspaces=false", "--global=false", "--prefix", root, "--silent", "--json", "--pack-destination", temp], root);
   let metadata;
   try { metadata = JSON.parse(packed.stdout); } catch {
     throw new Error(`npm pack did not return clean JSON: ${packed.stdout.slice(0, 500)}`);
@@ -21,12 +23,23 @@ try {
   const record = normalizePackRecord(metadata);
   if (!record?.filename) throw new Error("npm pack did not report the tarball filename");
   const tarball = join(temp, record.filename);
+  await verifyConsumerTarball(tarball, {
+    npmCli,
+    packageName: String(record.name || "machine-bridge-mcp"),
+    packageVersion: String(record.version),
+    tempRoot: join(temp, "consumer-security"),
+  });
 
   const installArgs = [
     "install",
+    "--dry-run=false",
+    "--workspaces=false",
+    "--ignore-scripts=false",
     "--global",
     "--prefix", prefix,
     "--omit=optional",
+    "--include=prod",
+    "--package-lock-only=false",
     "--allow-scripts=esbuild,workerd,sharp,fsevents",
     tarball,
   ];
@@ -39,12 +52,15 @@ try {
     throw new Error(`documented global install emitted an optional/native-script warning: ${installOutput.slice(0, 1000)}`);
   }
 
-  const globalRoot = runNpm(["root", "--global", "--prefix", prefix], root).stdout.trim();
+  const globalRoot = runNpm(["root", "--json=false", "--parseable=false", "--workspaces=false", "--global", "--prefix", prefix], root).stdout.trim();
   const installedPackage = join(globalRoot, "machine-bridge-mcp");
   const pkg = JSON.parse(readFileSync(join(installedPackage, "package.json"), "utf8"));
   if (pkg.version !== record.version) throw new Error(`installed version ${pkg.version} did not match packed version ${record.version}`);
   if (pkg.engines?.npm !== ">=12.0.0") throw new Error("installed package omitted the npm 12 runtime requirement");
   if (containsNamedEntry(installedPackage, "fsevents")) throw new Error("optional fsevents package remained in the documented runtime installation");
+  for (const name of ["wrangler", "miniflare"]) {
+    if (containsNamedEntry(installedPackage, name)) throw new Error(`published runtime package retained private control-plane dependency ${name}`);
+  }
 
   const cli = spawnSync(process.execPath, [join(installedPackage, "bin", "machine-mcp.mjs"), "--version"], {
     encoding: "utf8",
@@ -58,27 +74,44 @@ try {
     throw new Error(`installed CLI failed: ${cli.stderr || cli.stdout}`);
   }
 
-  assertInstalledDefaultStartup(installedPackage, temp);
+  await assertInstalledDefaultStartup(installedPackage, temp);
 
   console.log(`global install smoke test ok (${pkg.version}; default startup reached controlled external boundary; optional fsevents omitted)`);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
 
-function assertInstalledDefaultStartup(installedPackage, temp) {
-  const wranglerEntrypoint = join(installedPackage, "node_modules", "wrangler", "bin", "wrangler.js");
-  writeFileSync(
-    wranglerEntrypoint,
-    'process.stderr.write("startup-probe-wrangler\\n");\nprocess.exit(73);\n',
-    "utf8",
-  );
-
+async function assertInstalledDefaultStartup(installedPackage, temp) {
   const workspace = join(temp, "startup-workspace");
   const serviceTrap = createServiceManagerTrap(temp);
   const home = join(temp, "startup-home");
   const stateHome = join(temp, "startup-state");
   const appData = join(temp, "startup-appdata");
   for (const directory of [workspace, home, stateHome, appData]) mkdirSync(directory, { recursive: true });
+  const stateRoot = process.platform === "win32"
+    ? join(appData, "machine-bridge-mcp")
+    : join(stateHome, "machine-bridge-mcp");
+
+  const [{ ensureWranglerToolchain }, { runExecutable }, { setSelectedWorkspace }] = await Promise.all([
+    import(pathToFileURL(join(installedPackage, "src", "local", "wrangler-toolchain.mjs")).href),
+    import(pathToFileURL(join(installedPackage, "src", "local", "shell.mjs")).href),
+    import(pathToFileURL(join(installedPackage, "src", "local", "state.mjs")).href),
+  ]);
+  const selectedWorkspace = process.platform === "win32" ? join(home, "MachineBridge") : workspace;
+  mkdirSync(selectedWorkspace, { recursive: true });
+  setSelectedWorkspace(selectedWorkspace, stateRoot);
+  const toolchainRoot = await ensureWranglerToolchain({
+    stateRoot,
+    packageRoot: installedPackage,
+    runCommand: runExecutable,
+    env: process.env,
+  });
+  const wranglerEntrypoint = join(toolchainRoot, "node_modules", "wrangler", "bin", "wrangler.js");
+  writeFileSync(
+    wranglerEntrypoint,
+    'process.stderr.write("startup-probe-wrangler\\n");\nprocess.exit(73);\n',
+    "utf8",
+  );
 
   const result = spawnSync(process.execPath, [join(installedPackage, "bin", "machine-mcp.mjs")], {
     cwd: workspace,
@@ -109,17 +142,12 @@ function assertInstalledDefaultStartup(installedPackage, temp) {
   if (existsSync(serviceTrap.marker) || output.includes("Autostart stop command was unavailable")) {
     throw new Error(`isolated zero-argument startup attempted to control the machine-level service: ${output.slice(0, 2000)}`);
   }
-  const stateRoot = process.platform === "win32"
-    ? join(appData, "machine-bridge-mcp")
-    : join(stateHome, "machine-bridge-mcp");
   if (!readFileSync(join(stateRoot, ".machine-bridge-mcp-state"), "utf8").includes("machine-bridge-mcp")) {
     throw new Error("installed zero-argument startup did not initialize isolated state before the external boundary");
   }
   const config = JSON.parse(readFileSync(join(stateRoot, "config.json"), "utf8"));
   const canonicalRealpath = realpathSync.native || realpathSync;
-  const expectedWorkspace = process.platform === "win32"
-    ? canonicalRealpath(join(home, "MachineBridge"))
-    : canonicalRealpath(workspace);
+  const expectedWorkspace = canonicalRealpath(selectedWorkspace);
   if (config.selectedWorkspace !== expectedWorkspace) {
     throw new Error(`installed zero-argument startup selected ${config.selectedWorkspace} instead of ${expectedWorkspace}`);
   }
@@ -150,7 +178,7 @@ function spawnNpm(args, cwd) {
   return spawnSync(process.execPath, [npmCli, ...args], {
     cwd,
     encoding: "utf8",
-    env: process.env,
+    env: nestedNpmEnvironment(process.env),
     timeout: 300_000,
     killSignal: "SIGKILL",
     windowsHide: true,

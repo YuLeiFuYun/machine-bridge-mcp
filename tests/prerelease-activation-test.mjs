@@ -1,12 +1,34 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVATION_SCHEMA_VERSION, prereleaseActivationPath, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
 import { discoverForegroundDaemonRecovery, foregroundPid } from "../scripts/foreground-daemon-recovery.mjs";
-import { persistentActivationSpawnOptions, persistentCandidateFailureMessage } from "../scripts/persistent-activation-process.mjs";
+import { persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
+import { inspectGlobalPackageInstallation } from "../scripts/global-package-installation.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-prerelease-activation-"));
 try {
+  const globalRoot = join(root, "global-root");
+  const installedRoot = join(globalRoot, "machine-bridge-mcp");
+  mkdirSync(join(installedRoot, "bin"), { recursive: true });
+  writeFileSync(join(installedRoot, "package.json"), JSON.stringify({ name: "machine-bridge-mcp", version: "3.0.0-beta.0" }));
+  writeFileSync(join(installedRoot, "bin", "machine-mcp.mjs"), "export {};\n");
+  const inspectedGlobal = inspectGlobalPackageInstallation(globalRoot, "machine-bridge-mcp");
+  assert(inspectedGlobal.version === "3.0.0-beta.0" && existsSync(inspectedGlobal.entry),
+    "global package rollback baseline inspection failed");
+  assert(inspectGlobalPackageInstallation(globalRoot, "missing-package") === null,
+    "missing global package did not normalize to null");
+  assert(inspectGlobalPackageInstallation(join(root, "missing-global-root"), "machine-bridge-mcp") === null,
+    "missing global npm root did not normalize to an absent package");
+  writeFileSync(join(installedRoot, "package.json"), "not-json");
+  expectThrow(() => inspectGlobalPackageInstallation(globalRoot, "machine-bridge-mcp"), "not valid JSON");
+  writeFileSync(join(installedRoot, "package.json"), JSON.stringify({ name: "machine-bridge-mcp", version: "3.0.0-beta.0" }));
+  const externalRoot = join(root, "external-package");
+  mkdirSync(externalRoot);
+  const linkedRoot = join(globalRoot, "linked-package");
+  symlinkSync(externalRoot, linkedRoot, "dir");
+  expectThrow(() => inspectGlobalPackageInstallation(globalRoot, "linked-package"), "real directory");
+
   const globalPackageRollbackBaseline = {
     version: "3.0.0-beta.0",
     entry: "/opt/example/lib/node_modules/machine-bridge-mcp/bin/machine-mcp.mjs",
@@ -34,6 +56,47 @@ try {
   assert(current.workspace_hash === "c".repeat(24)
     && current.global_package_rollback_baseline?.entry === globalPackageRollbackBaseline.entry,
   "activation record did not round-trip");
+  expectThrow(() => readPrereleaseActivation("3.0.0-beta.1", root, {
+    readBoundedRegularFileSync() {
+      throw Object.assign(new Error("synthetic permission failure"), { code: "EACCES" });
+    },
+  }), "record is unavailable");
+  expectThrow(() => readPrereleaseActivation("3.0.0-beta.99", root), "record is missing");
+  const recoveredRecord = validatePrereleaseActivation({
+    ...base,
+    package_version: "3.0.0-beta.3",
+    activation_recovered: true,
+    activation_recovery_reason: "relay_authentication_failed",
+    activation_recovery_detail: "remote relay rejected the foreground candidate after readiness",
+  });
+  assert(recoveredRecord.activation_recovered === true
+    && recoveredRecord.activation_recovery_reason === "relay_authentication_failed",
+  "recovered activation metadata did not normalize");
+  expectThrow(() => validatePrereleaseActivation({
+    ...base,
+    activation_recovery_reason: "relay_authentication_failed",
+  }), "requires a recovered activation");
+  expectThrow(() => validatePrereleaseActivation({
+    ...base,
+    activation_recovered: true,
+    activation_recovery_reason: "bad-reason",
+    activation_recovery_detail: "detail",
+  }), "reason is invalid");
+  assert(validateActivationRecoveryPayload({
+    activation_recovered: false,
+    activation_recovery_reason: null,
+    activation_recovery_detail: null,
+  }).recovered === false, "ordinary activation recovery payload did not normalize");
+  assert(validateActivationRecoveryPayload({
+    activation_recovered: true,
+    activation_recovery_reason: "autostart_start_failed",
+    activation_recovery_detail: "autostart did not persist",
+  }).reason === "autostart_start_failed", "recovered activation payload did not normalize");
+  expectThrow(() => validateActivationRecoveryPayload({
+    activation_recovered: false,
+    activation_recovery_reason: "unexpected",
+    activation_recovery_detail: null,
+  }), "inconsistent");
 
   const legacyVersion = "3.0.0-beta.2";
   const legacyFile = prereleaseActivationPath(legacyVersion, root);

@@ -94,7 +94,11 @@ export function createActivateCommand({
         logger: structuredLogger(true),
       }),
       startAutostart: () => startOwnedServiceRuntime({ logger: structuredLogger(true) }),
+      startRecoveryAutostart: () => startAutostart({ logger: structuredLogger(true) }),
       restorePreviousAutostart: () => startAutostart({ logger: structuredLogger(true) }),
+      inspectCandidateAutostart: () => inspectWorkspaceDaemon(state, {
+        expectedVersion, expectedEntryScript: process.argv[1],
+      }),
       inspectPreviousAutostart: (identity) => inspectWorkspaceDaemon(state, {
         expectedVersion: identity.version, expectedEntryScript: identity.entryScript,
       }),
@@ -113,13 +117,22 @@ export function createActivateCommand({
       service: result.serviceStart,
       candidate_relay_verified_before_handoff: result.candidateRelayVerified,
       candidate_auth_recovery_redeployed: result.candidateRecoveryRedeployed,
+      activation_recovered: result.activationRecovered === true,
+      activation_recovery_reason: result.activationRecovered === true ? result.recoveryReason : null,
+      activation_recovery_detail: result.activationRecovered === true ? result.recoveryDetail : null,
     };
     if (args.json) console.log(JSON.stringify(payload, null, 2));
     else {
+      if (result.activationRecovered === true) {
+        logger.warn(`persistent activation completed through verified candidate-service recovery (${result.recoveryReason}): ${result.recoveryDetail}`);
+      }
       logger.success(`Persistent runtime activated: ${expectedVersion}`);
       logger.safePlain(`  Worker: ${state.worker.name}`);
       logger.safePlain(`  Daemon: pid ${convergence.daemon.pid}`);
       logger.safePlain("  Candidate relay readiness was verified before the login service handoff.");
+      if (result.activationRecovered === true) {
+        logger.safePlain("  The exact candidate login service was independently verified after the foreground candidate ended.");
+      }
       logger.safePlain("  The login service now owns the daemon; the activation terminal may close.");
     }
     return payload;

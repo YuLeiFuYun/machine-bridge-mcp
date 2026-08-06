@@ -1,4 +1,7 @@
-import { validateSoakRecord, soakConfirmationPhrase } from "../scripts/release-soak.mjs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { validateSoakRecord, soakConfirmationPhrase, verifyCurrentStableSoak } from "../scripts/release-soak.mjs";
 
 const activated = Date.parse("2026-07-01T00:00:00.000Z");
 const accepted = activated + 7 * 24 * 60 * 60 * 1000;
@@ -32,6 +35,19 @@ expectThrow(() => validateSoakRecord({ ...record, machine_path: "/Users/example/
 const normalized = validateSoakRecord(record);
 assert(!Object.hasOwn(normalized, "machine_path") && Object.keys(normalized).length === 19, "soak record normalization retained undeclared data");
 assert(soakConfirmationPhrase("machine-bridge-mcp", "3.0.0-beta.2", 7 * 24 * 60 * 60).includes("AT LEAST 7d"), "soak confirmation phrase omitted the required duration");
+const repository = mkdtempSync(join(tmpdir(), "mbm-release-soak-read-"));
+try {
+  writeFileSync(join(repository, "package.json"), `${JSON.stringify({ name: "machine-bridge-mcp", version: "3.0.0" })}
+`);
+  expectThrow(() => verifyCurrentStableSoak(repository), "record is missing");
+  expectThrow(() => verifyCurrentStableSoak(repository, {
+    readBoundedRegularFileSync() {
+      throw Object.assign(new Error("synthetic storage failure"), { code: "EIO" });
+    },
+  }), "record is unavailable");
+} finally {
+  rmSync(repository, { recursive: true, force: true });
+}
 console.log("stable release soak record test ok");
 function expectThrow(callback, expected) { try { callback(); } catch (error) { if (String(error?.message || error).includes(expected)) return; throw error; } throw new Error(`expected throw containing: ${expected}`); }
 function assert(condition, message) { if (!condition) throw new Error(message); }

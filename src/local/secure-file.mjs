@@ -45,6 +45,15 @@ export function chmodRegularFileSync(file, mode, label = "path") {
   return withRegularFileSync(file, fsConstants.O_RDONLY, { label, chmod: mode, rejectMultipleLinks: true }, () => undefined);
 }
 
+export function inspectPathIfPresentSync(file, label = "path", options = {}) {
+  const inspect = options.lstatSync || lstatSync;
+  try { return inspect(file); }
+  catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw new Error(`${label} could not be inspected`, { cause: error });
+  }
+}
+
 export function readBoundedRegularFileSync(file, maxBytes, label = "path", options = {}) {
   return readBoundedRegularFileWithInfoSync(file, maxBytes, label, options).buffer;
 }

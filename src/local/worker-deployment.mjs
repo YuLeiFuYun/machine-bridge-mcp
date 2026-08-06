@@ -1,10 +1,10 @@
-import { createHmac } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import path, { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { runWrangler } from "./shell.mjs";
-import { deploymentDeviceIdentity, packageRoot, saveState } from "./state.mjs";
+import { packageRoot, saveState } from "./state.mjs";
 import { withWorkerSecretsFile } from "./worker-secret-file.mjs";
-import { publicDeviceJwkJson } from "./device-identity.mjs";
+import { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs";
+export { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs";
 import {
   normalizeWorkerOrigin,
   retryWorkerHealth,
@@ -19,6 +19,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   const expectedVersion = options.expectedVersion || currentPackageVersion(options.packageRoot || packageRoot);
   const desiredHash = workerDeploymentFingerprint(state, { packageRoot: options.packageRoot || packageRoot });
   const runWranglerFn = options.runWrangler || runWrangler;
+  const wranglerStateRoot = options.stateRoot || state.paths?.stateRoot;
   const saveStateFn = options.saveState || saveState;
   const retryHealthFn = options.retryHealth || retryWorkerHealth;
   const withSecretsFileFn = options.withSecretsFile || withWorkerSecretsFile;
@@ -47,10 +48,10 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   }
 
   logger.info?.("Checking Cloudflare Wrangler login");
-  const whoami = await runWranglerFn(["whoami"], { capture: true, allowFailure: true });
+  const whoami = await runWranglerFn(["whoami"], { capture: true, allowFailure: true, stateRoot: wranglerStateRoot });
   if (whoami.code !== 0) {
     logger.info?.("Wrangler is not logged in; opening Cloudflare login");
-    await runWranglerFn(["login"]);
+    await runWranglerFn(["login"], { stateRoot: wranglerStateRoot });
   }
 
   logger.info?.("Deploying Cloudflare Worker", { name: state.worker.name });
@@ -60,7 +61,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
     "--minify",
     "--keep-vars",
     "--secrets-file", secretFile,
-  ], { capture: true }));
+  ], { capture: true, stateRoot: wranglerStateRoot }));
 
   const detectedUrl = extractWorkerUrl(deploy.stdout, state.worker.name) || extractWorkerUrl(deploy.stderr, state.worker.name);
   const recordedUrl = workerUrlMatchesName(state.worker.url, state.worker.name) ? state.worker.url : "";
@@ -84,22 +85,6 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   logger.success?.("Worker ready", { url: state.worker.url, version: health.version });
   logger.debug?.("Worker health route", { network_route: health.networkRoute || "unknown" });
   return state.worker;
-}
-
-export function workerDeploymentFingerprint(state, options = {}) {
-  const root = resolve(options.packageRoot || packageRoot);
-  const keyMaterial = [
-    publicDeviceJwkJson(deploymentDeviceIdentity(state)),
-    String(state.worker.oauthTokenVersion || ""),
-  ].join("\0");
-  const fingerprint = createHmac("sha256", keyMaterial);
-  fingerprint.update("mbm-worker-deploy-v4");
-  fingerprint.update(String(state.worker.name || ""));
-  for (const file of workerDeployHashFiles(root)) {
-    fingerprint.update(path.relative(root, file));
-    fingerprint.update(readFileSync(file, "utf8"));
-  }
-  return fingerprint.digest("hex");
 }
 
 export function extractWorkerUrl(text = "", workerName = "") {
@@ -127,28 +112,6 @@ export function workerUrlMatchesName(workerUrl, workerName) {
 
 function hasCompleteWorkerState(worker = {}) {
   return Boolean(worker.url && worker.mcpServerUrl && worker.deviceIdentity && worker.oauthTokenVersion && worker.name);
-}
-
-function workerDeployHashFiles(root) {
-  const files = [];
-  for (const item of ["src/worker", "src/shared", "wrangler.jsonc", "tsconfig.json"]) {
-    collectHashFiles(resolve(root, item), files);
-  }
-  return files.sort();
-}
-
-function collectHashFiles(target, out) {
-  if (!existsSync(target)) return;
-  const info = statSync(target);
-  if (info.isFile()) {
-    if (/\.(ts|js|mjs|json|jsonc|yaml|yml|lock)$/.test(target)) out.push(target);
-    return;
-  }
-  if (!info.isDirectory()) return;
-  for (const entry of readdirSync(target, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name === ".wrangler" || entry.name.endsWith(".d.ts")) continue;
-    collectHashFiles(resolve(target, entry.name), out);
-  }
 }
 
 function workerVerificationError(reason, { deploymentSucceeded, recordedCurrentDeployment = false }) {

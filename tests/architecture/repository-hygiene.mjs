@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import { isUtf8 } from "node:buffer";
 import { execFileSync } from "node:child_process";
 import { resolveTrustedGitExecutable } from "../../src/local/trusted-git-executable.mjs";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -35,20 +37,51 @@ for (const name of workflowFiles) {
     if (!/^[0-9a-f]{40}$/.test(match[2])) throw new Error(`GitHub Action ${match[1]} in ${name} is not pinned to an immutable commit SHA`);
   }
 }
-for (const requiredWorkflow of ["ci.yml", "governance.yml", "codeql.yml", "dependency-review.yml", "scorecard.yml"]) {
+for (const requiredWorkflow of ["ci.yml", "governance.yml", "codeql.yml", "dependency-review.yml", "scorecard.yml", "workflow-policy.yml"]) {
   if (!workflowFiles.includes(`.github/workflows/${requiredWorkflow}`)) throw new Error(`required workflow is missing: ${requiredWorkflow}`);
 }
 for (const name of repositoryFiles) {
   const file = join(root, name);
   if (!existsSync(file)) continue;
   const bytes = readFileSync(file);
-  if (bytes.includes(0)) continue;
+  if (bytes.includes(0) || !isUtf8(bytes)) continue;
+  validateExactlyOneFinalLf(bytes, name);
   for (let index = 0; index < bytes.length; index += 1) {
     const value = bytes[index];
     if ((value < 32 && value !== 9 && value !== 10 && value !== 13) || value === 127) {
       throw new Error(`forbidden ASCII control byte 0x${value.toString(16).padStart(2, "0")} in ${name} at byte ${index}`);
     }
   }
+}
+
+function validateExactlyOneFinalLf(bytes, name) {
+  if (bytes.length === 0) return;
+  if (bytes[bytes.length - 1] !== 0x0a) {
+    throw new Error(`reviewable text file must end with LF: ${name}`);
+  }
+  let priorIndex = bytes.length - 2;
+  if (priorIndex >= 0 && bytes[priorIndex] === 0x0d) priorIndex -= 1;
+  if (priorIndex >= 0 && bytes[priorIndex] === 0x0a) {
+    throw new Error(`reviewable text file must not end with a blank line: ${name}`);
+  }
+}
+
+assert.doesNotThrow(() => validateExactlyOneFinalLf(Buffer.from("valid\n"), "valid-LF fixture"));
+assert.doesNotThrow(() => validateExactlyOneFinalLf(Buffer.from("valid\r\n"), "valid-CRLF fixture"));
+assert.throws(
+  () => validateExactlyOneFinalLf(Buffer.from("missing"), "missing-final-LF fixture"),
+  /must end with LF/,
+);
+for (const [name, value] of [
+  ["LF blank-line fixture", "blank\n\n"],
+  ["CRLF blank-line fixture", "blank\r\n\r\n"],
+  ["LF-CRLF blank-line fixture", "blank\n\r\n"],
+  ["CRLF-LF blank-line fixture", "blank\r\n\n"],
+]) {
+  assert.throws(
+    () => validateExactlyOneFinalLf(Buffer.from(value), name),
+    /must not end with a blank line/,
+  );
 }
 
 function validateRelativeLinks(file) {

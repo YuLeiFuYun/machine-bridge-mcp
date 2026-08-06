@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import net from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -74,6 +74,7 @@ proxy.on("connect", (_request, clientSocket, head) => {
 await listen(proxy);
 
 try {
+  verifyWorkerFingerprintPathBoundaries();
   const workerUrl = "https://worker-health.account-example.workers.dev";
   const expectedWorkerName = "worker-health";
   assert.equal(normalizeWorkerOrigin(workerUrl, expectedWorkerName), workerUrl);
@@ -253,6 +254,75 @@ async function verifyDeploymentPropagationBudget() {
     logger: quietLogger(),
   });
   assert.equal(observedAttempts, 20, "post-deployment health verification retained the short propagation window");
+}
+
+function verifyWorkerFingerprintPathBoundaries() {
+  const fixture = mkdtempSync(join(os.tmpdir(), "mbm-worker-fingerprint-"));
+  const outside = mkdtempSync(join(os.tmpdir(), "mbm-worker-fingerprint-outside-"));
+  try {
+    mkdirSync(join(fixture, "src", "worker"), { recursive: true });
+    mkdirSync(join(fixture, "src", "shared"), { recursive: true });
+    writeFileSync(join(fixture, "src", "worker", "index.ts"), "export const worker = true;\n");
+    writeFileSync(join(fixture, "src", "shared", "value.ts"), "export const value = true;\n");
+    writeFileSync(join(fixture, "wrangler.jsonc"), "{}\n");
+    writeFileSync(join(fixture, "tsconfig.json"), "{}\n");
+    const state = workerState("mbm-fingerprint-boundary");
+    const baseline = workerDeploymentFingerprint(state, { packageRoot: fixture });
+    assert.match(baseline, /^[0-9a-f]{64}$/);
+
+    const collisionA = mkdtempSync(join(os.tmpdir(), "mbm-worker-fingerprint-collision-a-"));
+    const collisionB = mkdtempSync(join(os.tmpdir(), "mbm-worker-fingerprint-collision-b-"));
+    try {
+      for (const target of [collisionA, collisionB]) {
+        mkdirSync(join(target, "src", "worker"), { recursive: true });
+        mkdirSync(join(target, "src", "shared"), { recursive: true });
+        writeFileSync(join(target, "src", "worker", "index.ts"), "export const worker = true;\n");
+        writeFileSync(join(target, "wrangler.jsonc"), "{}\n");
+        writeFileSync(join(target, "tsconfig.json"), "{}\n");
+      }
+      writeFileSync(join(collisionA, "src", "shared", "a.ts"), "/b.tsX");
+      mkdirSync(join(collisionB, "src", "shared", "a.ts"));
+      writeFileSync(join(collisionB, "src", "shared", "a.ts", "b.ts"), "X");
+      assert.equal("src/shared/a.ts" + "/b.tsX", "src/shared/a.ts/b.ts" + "X",
+        "synthetic legacy fingerprint collision fixture is invalid");
+      assert.notEqual(
+        workerDeploymentFingerprint(state, { packageRoot: collisionA }),
+        workerDeploymentFingerprint(state, { packageRoot: collisionB }),
+        "length-framed Worker deployment fingerprint accepted an ambiguous file layout",
+      );
+    } finally {
+      rmSync(collisionA, { recursive: true, force: true });
+      rmSync(collisionB, { recursive: true, force: true });
+    }
+    rmSync(join(fixture, "wrangler.jsonc"));
+    assert.throws(() => workerDeploymentFingerprint(state, { packageRoot: fixture }), /required source is missing/);
+    writeFileSync(join(fixture, "wrangler.jsonc"), "{}\n");
+    if (process.platform !== "win32") {
+      const ancestorFixture = mkdtempSync(join(os.tmpdir(), "mbm-worker-fingerprint-ancestor-"));
+      try {
+        mkdirSync(join(ancestorFixture, "real-src", "worker"), { recursive: true });
+        mkdirSync(join(ancestorFixture, "real-src", "shared"), { recursive: true });
+        writeFileSync(join(ancestorFixture, "real-src", "worker", "index.ts"), "export const worker = true;\n");
+        writeFileSync(join(ancestorFixture, "real-src", "shared", "value.ts"), "export const value = true;\n");
+        writeFileSync(join(ancestorFixture, "wrangler.jsonc"), "{}\n");
+        writeFileSync(join(ancestorFixture, "tsconfig.json"), "{}\n");
+        symlinkSync(join(ancestorFixture, "real-src"), join(ancestorFixture, "src"), "dir");
+        assert.throws(() => workerDeploymentFingerprint(state, { packageRoot: ancestorFixture }),
+          /source must not be a symbolic link/,
+          "symlinked Worker source ancestor was followed");
+      } finally {
+        rmSync(ancestorFixture, { recursive: true, force: true });
+      }
+      const external = join(outside, "external.ts");
+      writeFileSync(external, "export const external = true;\n");
+      rmSync(join(fixture, "src", "shared", "value.ts"));
+      symlinkSync(external, join(fixture, "src", "shared", "value.ts"));
+      assert.throws(() => workerDeploymentFingerprint(state, { packageRoot: fixture }), /must not be a symbolic link/);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
 }
 
 async function verifyRecordedCurrentDeploymentDoesNotRedeploy() {

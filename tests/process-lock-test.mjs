@@ -27,6 +27,11 @@ try {
   assert(defaultFirstRunWorkspace({ platform: "darwin", cwd: temp }) === resolve(temp),
     "default first-run workspace did not use the supplied POSIX cwd");
   stateRootSeparationTest();
+  expectThrow(() => loadGlobalConfig(temp, {
+    inspectPathIfPresentSync() {
+      throw Object.assign(new Error("synthetic global configuration storage failure"), { code: "EIO" });
+    },
+  }), "synthetic global configuration storage failure");
   await daemonReadinessLockTest();
   await startupWaitTest();
   await startupWaitUsesBoundedDeadlineTest();

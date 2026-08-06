@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { withOwnerStateLock } from "../src/local/owner-state-lock.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 
 const CONFIRMATION_FLAG = "--owner-terminal-confirm";
 const LOCK_DIRECTORY = "machine-bridge-release-state";
@@ -39,7 +40,8 @@ export function withGithubPublicationLock(root, callback, options = {}) {
 
 export function resolveGithubPublicationStateRoot(root) {
   const repositoryRoot = resolve(String(root || ""));
-  const result = spawnSync("git", ["rev-parse", "--git-common-dir"], {
+  const git = resolveTrustedGitExecutable({ workspace: repositoryRoot });
+  const result = spawnSync(git, ["rev-parse", "--git-common-dir"], {
     cwd: repositoryRoot,
     encoding: "utf8",
     timeout: GIT_METADATA_TIMEOUT_MS,

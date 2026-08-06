@@ -2,22 +2,31 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultStateRoot, expandHome } from "../src/local/state.mjs";
 import { ACTIVATION_SCHEMA_VERSION, writePrereleaseActivation } from "./prerelease-activation.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
-import { readPublishedNpmPrerelease } from "./published-release.mjs";
+import { readGithubPrerelease, readPublishedNpmPrerelease } from "./published-release.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { assertSoakEligiblePrerelease } from "./release-channel.mjs";
-import { persistentActivationSpawnOptions } from "./persistent-activation-process.mjs";
+import { persistentActivationSpawnOptions, validateActivationRecoveryPayload } from "./persistent-activation-process.mjs";
+import { createHardenedNpmSession, settleHardenedNpmSession } from "./hardened-npm-session.mjs";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
+import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
+import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const npmCli = process.env.npm_execpath;
+const lifecycleNpmCli = process.env.npm_execpath;
+let npmCli = "";
+let npmSession = null;
 let previousInstallation = null;
+let globalInstallAttempted = false;
+let globalInstallCompleted = false;
 let installedPrerelease = "";
-if (!npmCli) fail("published prerelease installation must run through npm");
+if (!lifecycleNpmCli) fail("published prerelease installation must run through npm");
 
 try {
   if (!process.argv.includes("--allow-worker-deploy")) {
@@ -29,30 +38,39 @@ try {
   if (pkg.version !== prerelease.raw) {
     throw new Error(`source checkout version ${pkg.version} does not match requested prerelease ${prerelease.raw}`);
   }
-  const acceptance = verifyCurrentReleaseAcceptance(root);
+  const globalPrefix = resolveNpmGlobalPrefix(lifecycleNpmCli, { cwd: root, env: process.env });
+  const acceptance = verifyCurrentReleaseAcceptance(root, { npmCli: lifecycleNpmCli, env: process.env });
   if (!acceptance.required || acceptance.metadata.package_version !== prerelease.raw) {
     throw new Error("published prerelease installation requires the locally accepted exact prerelease source");
   }
-  const promotionDigest = computePromotionContentDigest(root);
+  const promotionDigest = computePromotionContentDigest(root, { npmCli: lifecycleNpmCli });
   if (acceptance.record.promotion_content_sha256 !== promotionDigest) {
     throw new Error("current source promotion digest does not match local candidate acceptance");
   }
-  const published = readPublishedNpmPrerelease(pkg.name, prerelease.raw, prerelease.npmTag);
+  readGithubPrerelease(prerelease.raw, { expectedArtifactSha256: acceptance.artifactSha256 });
+  npmSession = await createHardenedNpmSession();
+  npmCli = npmSession.cli;
+  const published = readPublishedNpmPrerelease(pkg.name, prerelease.raw, prerelease.npmTag, { npmCli, env: process.env });
   if (published.integrity !== acceptance.metadata.integrity || published.shasum !== acceptance.metadata.shasum) {
     throw new Error("npm prerelease bytes do not match the locally accepted candidate");
   }
 
-  previousInstallation = currentGlobalInstallation(pkg.name);
+  previousInstallation = currentGlobalInstallation(pkg.name, globalPrefix);
+  globalInstallAttempted = true;
   runNpm([
-    "install", "--global", "--omit=optional",
+    "install", "--dry-run=false", "--workspaces=false", "--ignore-scripts=false",
+    "--global", "--prefix", globalPrefix,
+    "--omit=optional", "--include=prod", "--package-lock-only=false",
     "--allow-scripts=esbuild,workerd,sharp,fsevents",
     `${pkg.name}@${prerelease.raw}`,
   ]);
-  const installed = currentGlobalInstallation(pkg.name);
+  globalInstallCompleted = true;
+  const installed = currentGlobalInstallation(pkg.name, globalPrefix);
   if (!installed || installed.version !== prerelease.raw) {
     throw new Error(`global prerelease installation did not converge on ${prerelease.raw}`);
   }
   installedPrerelease = prerelease.raw;
+  disposeNpmSession();
 
   const stateRoot = resolve(expandHome(argumentValue("--state-dir") || defaultStateRoot()));
   const forwarded = forwardedActivationArgs();
@@ -60,6 +78,7 @@ try {
   if (activation.version !== prerelease.raw || activation.daemon?.version !== prerelease.raw || activation.worker?.health?.version !== prerelease.raw) {
     throw new Error("published prerelease activation did not converge on the exact registry version");
   }
+  const recovery = validateActivationRecoveryPayload(activation);
   const recordPath = writePrereleaseActivation({
     schema_version: ACTIVATION_SCHEMA_VERSION,
     package_name: pkg.name,
@@ -73,58 +92,74 @@ try {
     npm_dist_tag: prerelease.npmTag,
     workspace_hash: workspaceHash(activation.workspace),
     runtime_entry: installed.entry,
+    ...(recovery.recovered ? {
+      activation_recovered: true,
+      activation_recovery_reason: recovery.reason,
+      activation_recovery_detail: recovery.detail,
+    } : {}),
     ...(previousInstallation ? { global_package_rollback_baseline: previousInstallation } : {}),
   }, stateRoot);
 
+  if (recovery.recovered) {
+    console.warn(`Published prerelease activation used verified candidate-service recovery (${recovery.reason}): ${recovery.detail}`);
+  }
   console.log(`Published prerelease activated: ${prerelease.raw}`);
   console.log(`Worker and login daemon version: ${activation.version}`);
   console.log(`Soak activation record: ${recordPath}`);
   console.log("Use this prerelease normally. Any blocking issue requires a new beta/rc version and restarts the soak clock.");
 } catch (error) {
-  const message = boundedDiagnostic(error?.message || error);
+  const settled = settleNpmSession(error);
+  const message = releaseDiagnostic(settled?.message || settled, 1600);
   if (installedPrerelease) {
     const previousVersion = previousInstallation?.version || "unknown";
     fail(`${message}. The global package is now ${installedPrerelease}, but Worker/service activation may not have converged. Previous global version: ${previousVersion}. Preserve state and logs; fix forward with the exact prerelease or restore package, Worker, service definition, browser extension, and state as one verified unit.`);
   }
+  if (globalInstallAttempted) {
+    const previousVersion = previousInstallation?.version || "unknown";
+    const installState = globalInstallCompleted
+      ? "The global installation command completed, but the exact installed package identity was not verified"
+      : "The global installation command was attempted and may have changed the installed package";
+    fail(`${message}. ${installState}. Previous global version: ${previousVersion}. Inspect the configured global prefix before retrying or activating any runtime.`);
+  }
   fail(message);
 }
 
-function currentGlobalInstallation(packageName) {
-  try {
-    const globalRoot = runNpm(["root", "--global"]).stdout.trim();
-    const packageRoot = join(globalRoot, packageName);
-    const packagePath = join(packageRoot, "package.json");
-    const entry = join(packageRoot, "bin", "machine-mcp.mjs");
-    if (!existsSync(packagePath) || !existsSync(entry)) return null;
-    const value = JSON.parse(readFileSync(packagePath, "utf8"));
-    return { version: String(value.version || ""), entry };
-  } catch {
-    return null;
-  }
+function disposeNpmSession() {
+  const error = settleNpmSession();
+  if (error) throw error;
+}
+
+function settleNpmSession(primaryError = null) {
+  const session = npmSession;
+  npmSession = null;
+  return settleHardenedNpmSession(session, primaryError, "published prerelease failed and hardened npm temporary cleanup was incomplete");
+}
+
+function currentGlobalInstallation(packageName, globalPrefix) {
+  const globalRoot = runNpm(["root", "--json=false", "--parseable=false", "--workspaces=false", "--global", "--prefix", globalPrefix]).stdout.trim();
+  return inspectGlobalPackageInstallation(globalRoot, packageName);
 }
 
 function runActivation(entry, args) {
   const result = spawnSync(
     process.execPath,
     [entry, ...args],
-    persistentActivationSpawnOptions({ cwd: root, env: process.env }),
+    persistentActivationSpawnOptions({ cwd: root, env: nestedNpmEnvironment(process.env) }),
   );
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`prerelease runtime activation failed: ${boundedDiagnostic(result.stderr || result.stdout)}`);
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure("machine-mcp", ["activate"], result, { maxChars: 1600 }));
   try { return JSON.parse(result.stdout); } catch { throw new Error("prerelease runtime activation did not return valid JSON"); }
 }
 
 function runNpm(args) {
   const result = spawnSync(process.execPath, [npmCli, ...args], {
     cwd: root,
-    env: process.env,
+    env: nestedNpmEnvironment(process.env),
     encoding: "utf8",
     timeout: 300_000,
     killSignal: "SIGKILL",
     windowsHide: true,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`npm ${args[0]} failed: ${boundedDiagnostic(result.stderr || result.stdout)}`);
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure("npm", args, result, { maxChars: 1600 }));
   return result;
 }
 
@@ -154,14 +189,7 @@ function workspaceHash(workspace) {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
 
-function boundedDiagnostic(value) {
-  const home = String(process.env.HOME || process.env.USERPROFILE || "");
-  let text = String(value || "unknown error").replace(/[\r\n\t]+/g, " ").trim();
-  if (home) text = text.split(home).join("<home>");
-  return text.slice(0, 1600);
-}
-
 function fail(message) {
-  console.error(`published prerelease installation failed: ${message}`);
+  console.error(`published prerelease installation failed: ${releaseDiagnostic(message, 1800)}`);
   process.exit(1);
 }

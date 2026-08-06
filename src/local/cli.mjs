@@ -549,18 +549,18 @@ async function statusCommand(args) {
 
 async function doctorCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
+  const state = loadState(workspace, { stateDir: args.stateDir });
+  state.policy = resolvePolicy({}, state.policy);
   const checks = [];
   checks.push({ name: "node", ok: isSupportedNodeVersion(), detail: process.version });
   const npmCommand = npmVersionCommand();
   const npm = await runExecutable(npmCommand.file, npmCommand.args, { capture: true, allowFailure: true, timeoutMs: 10_000 });
   const npmDetail = sanitizeLines(npm.stdout || npm.stderr);
   checks.push({ name: "npm", ok: npm.code === 0 && isSupportedNpmVersion(npmDetail), detail: npmDetail || "unavailable" });
-  const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true });
+  const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true, stateRoot: state.paths.stateRoot });
   checks.push({ name: "wrangler", ok: wrangler.code === 0, detail: (wrangler.stdout || wrangler.stderr).trim() });
-  const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
+  const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true, stateRoot: state.paths.stateRoot });
   checks.push({ name: "cloudflare-login", ok: whoami.code === 0, detail: whoami.code === 0 ? "authenticated" : sanitizeLines(whoami.stderr || whoami.stdout) });
-  const state = loadState(workspace, { stateDir: args.stateDir });
-  state.policy = resolvePolicy({}, state.policy);
   checks.push({ name: "policy", ok: true, detail: formatPolicySummary(state.policy) });
   checks.push({
     name: "authorization-model",
@@ -751,7 +751,7 @@ async function deleteKnownWorkers(stateRoot) {
   }
   const failures = [];
   for (const name of names) {
-    const result = await runWrangler(["delete", name, "--force"], { capture: true, allowFailure: true });
+    const result = await runWrangler(["delete", name, "--force"], { capture: true, allowFailure: true, stateRoot });
     const detail = (result.stderr || result.stdout || "unknown error").trim();
     if (result.code === 0 || /not found|does not exist|could not find/i.test(detail)) {
       console.log(`Deleted Worker: ${name}`);

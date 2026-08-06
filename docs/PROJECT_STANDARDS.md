@@ -18,6 +18,14 @@ Branch names use a short category and purpose, for example `feat/browser-downloa
 
 Direct pushes to `main`, force pushes, and branch deletion are blocked by repository protection. An exception requires an incident record and an explicit owner decision.
 
+### Local repository readiness and release readiness
+
+A review or automation report must state the scope of its readiness claim. `local_repository` readiness means that the current working-tree candidate is bound to its objective revision, has passed every required local and project-native verification stage, has requirement-specific evidence, and has the required reviews. It does not assert that a hosted Worker, browser client, GitHub repository, npm registry, service installation, or production network currently matches that candidate.
+
+`release_ready` is a separate claim. It requires the exact candidate identity plus the applicable independent-environment and independent-authority lifecycle evidence, including hosted CI and security checks, candidate activation where package behavior changed, publication controls, and any required soak. A local simulator, local owner attestation, or absence of a local failure cannot substitute for those external observations.
+
+During a deliberately local-only review, not invoking activation, publication, push, tag, or hosted-mutation commands is evidence that the observed review path did not request those side effects. It is not evidence that external state is healthy or synchronized. Reports must retain that limitation and list missing external stages rather than converting them into local blockers or silently treating them as passed.
+
 ### Completion ownership, prerelease activation, and soak
 
 Repository automation owns implementation, local validation, candidate preparation, observed verification, acceptance recording, and pull-request completion. Package work for version 3 or later must use a `dev`, `beta`, or `rc` version before stable promotion. Direct implementation-to-stable release is prohibited.
@@ -126,7 +134,7 @@ Flaky tests are defects. A retry may diagnose environmental instability but may 
 - Third-party Actions are pinned to immutable commit SHAs and reviewed when Dependabot updates them. GitHub Action updates are grouped into one atomic pull request so coupled suites such as CodeQL cannot be split across incompatible versions.
 - npm dependencies use exact versions and a committed lockfile. Source bootstrap uses `npm ci`; the CI npm baseline itself is downloaded from an exact URL and verified against a pinned SHA-512 SRI before use. Registry signatures and attestations are verified in CI.
 - Dependency review blocks newly introduced vulnerable dependencies. CodeQL performs JavaScript/TypeScript and workflow analysis. OpenSSF Scorecard audits supply-chain posture, and both SARIF streams are failing gates with exact, expiring exceptions rather than advisory-only uploads.
-- CI generates and validates a CycloneDX SBOM. Release artifacts must match the repository-owner-tested tarball hash, be reproducible from a reviewed commit, and be tied to successful exact-commit CI, CodeQL, Governance, and Scorecard evidence.
+- CI generates and validates a CycloneDX SBOM. Release artifacts must match the repository-owner-tested tarball hash, be reproducible from a reviewed commit, and be tied to successful exact-commit CI, CodeQL, Governance, Workflow Policy Gate, and Scorecard evidence.
 - Secret scanning and push protection are enabled. Repository examples use synthetic identities and reserved domains; reachable history is scanned before release.
 - Long-lived publication tokens should be replaced by npm trusted publishing with GitHub OIDC. Until that external registry configuration is completed, release credentials remain an explicit operator responsibility and must never be stored in the repository.
 - Security reports follow [SECURITY.md](../SECURITY.md), not public issue templates.

@@ -11,7 +11,7 @@ The invariant for version 3 and later is:
 5. the owner installs that exact published prerelease and uses it for the required soak period;
 6. every blocking defect produces a new prerelease version and restarts the soak clock;
 7. stable promotion is allowed only when the packaged functional content matches the soaked prerelease; only synchronized version metadata may differ;
-8. the exact stable commit must pass cross-platform CI, CodeQL, Governance, and OpenSSF Scorecard before the stable tag and final GitHub Release are created.
+8. the exact stable commit must pass cross-platform CI, CodeQL, Governance, Workflow Policy Gate, and OpenSSF Scorecard before the stable tag and final GitHub Release are created.
 
 ## Release channels
 
@@ -67,7 +67,7 @@ npm run worker:dry-run
 npm pack --dry-run
 ```
 
-Generate the exact tarball:
+Generate the exact tarball. The prepare/record/verify commands bootstrap ephemeral hardened npm and do not regenerate acceptance bytes through the ambient npm bundle:
 
 ```sh
 npm run release:candidate
@@ -91,7 +91,7 @@ The command:
 - stops only a verified existing service daemon;
 - updates the configured same-name Worker;
 - starts the candidate in-process and verifies device authentication plus relay readiness;
-- if that current-version candidate receives an explicit device-authentication rejection, redeploys the same Worker once with the unchanged selected identity and retries within a three-start bound;
+- if that current-version candidate receives an explicit device-authentication rejection, redeploys the same Worker once with the unchanged selected identity and retries through ten bounded fresh starts with exponential delay;
 - installs the candidate as the login service runtime and atomically commits the canonical workspace/state/entrypoint/version owner record;
 - performs a controlled foreground-to-service handoff;
 - accepts the background runtime only after its matching daemon lock publishes the post-authentication, post-relay-probe `ready_ack` checkpoint;
@@ -100,7 +100,7 @@ The command:
 
 It may request one macOS user-presence or Touch ID operation to certify the daemon session key. It does not ask for per-tool approval. The wrapper does not impose a transaction-wide hard kill: each internal deployment, health, relay, service-manager, and convergence stage is independently bounded so lock release and compensation cannot be skipped.
 
-The private candidate runtime is not stored under the Git checkout, so cleaning `.release-candidate/`, switching branches, or regenerating a candidate cannot delete the daemon currently under test. The previous global installation remains available as recovery information.
+The private candidate runtime is not stored under the Git checkout, so cleaning `.release-candidate/`, switching branches, or regenerating a candidate cannot delete the daemon currently under test. The activation wrapper checks `--allow-worker-deploy` before downloads/install, reads the previous global installation while hardened npm is still live, uses the persistent release-channel prefix only for an actual service activation, and prunes only canonical real contained inactive runtime directories before writing activation evidence. `--install-only` uses the disposable foreground prefix. The previous global installation remains available as recovery information.
 
 ## 3. Coding agent verifies the live candidate
 
@@ -143,6 +143,8 @@ npm run prerelease:release -- --owner-terminal-confirm
 
 The flag is necessary but not sufficient: stdin, stdout, and stderr must all be TTYs. MCP calls, managed jobs, CI, redirected sessions, and other ordinary background automation fail before fetch, full verification, tag creation, or remote mutation. One common-Git-dir owner-only publication lock serializes tag/Release writes across the main checkout and linked worktrees. This ceremony prevents accidental and standard non-interactive publication; it is not an authentication boundary against arbitrary code already executing as the same OS user, which can emulate a terminal. Adversarial separation requires an external user-presence or isolated release environment.
 
+The command resolves trusted absolute git and GitHub CLI executables, creates a private staging copy of the accepted candidate, and never runs a new `npm pack` for the Release asset. After upload it queries the GitHub REST asset record and requires its SHA-256 digest to equal the current accepted artifact before reporting success.
+
 Historical GitHub Release backfill is governed by the same boundary and must be run by the owner from a real interactive terminal:
 
 ```sh
@@ -155,7 +157,9 @@ Publish npm through the repository-controlled channel command:
 npm run prerelease:publish
 ```
 
-The command derives `dev`, `beta`, or `next` from the package version. `prepublishOnly` rejects an incorrect or implicit `latest` tag and rechecks the package, GitHub prerelease, exact commit, and candidate acceptance.
+The command derives `dev`, `beta`, or `next` from the package version. It constructs an ephemeral integrity-pinned hardened npm for the actual publication; the ambient npm process only launches the repository script. `prepublishOnly` rejects an incorrect or implicit `latest` tag and rechecks the package, GitHub prerelease, exact commit, and candidate acceptance. npm then dry-runs publication of the private staged candidate and requires the reported name, version, SHA-1, and SRI to match acceptance before uploading that same tarball with lifecycle scripts disabled. Before upload it refuses a conflicting immutable registry object; after every upload result it waits for exact version/SHA-1/SRI/dist-tag/timestamp convergence. A matching preexisting object is idempotent, while an unresolved outcome is explicitly ambiguous: inspect registry state and do not rerun publication blindly. GitHub Release creation follows the same rule using release metadata and REST SHA-256 asset convergence.
+
+The release checks also perform an ordinary install of the exact tarball into an empty consumer project, including optional production dependencies, run a zero-vulnerability production audit, validate that deployment-only Wrangler/Miniflare packages are absent from the published runtime tree, and generate a CycloneDX SBOM with a complete closed dependency record for every component. Root-workspace overrides, workspace audit output, and the workspace SBOM do not satisfy this consumer-artifact gate. CI npm execution uses the same integrity-pinned hardened npm bootstrap as runtime deployment, with fixed replacements for the vulnerable stock undici and brace-expansion bundles. Nested npm operations remove dry-run, workspace, global/prefix, save, omit/include, package-lock-only, and script-control modes case-insensitively. Critical pack/install/publish commands also pass explicit non-dry-run/non-workspace flags, so parent lifecycle variables or user npm execution modes cannot produce a false success.
 
 ## 5. Activate the published prerelease and begin soak
 
@@ -165,7 +169,7 @@ From the exact accepted source checkout, the owner runs:
 npm run prerelease:install -- --allow-worker-deploy
 ```
 
-This command verifies that the npm registry tarball SHA-1/SHA-512 and dist-tag match the locally accepted candidate, installs that exact published version globally, updates the Worker and login daemon, verifies both versions, and writes an owner-only `npm-prerelease` activation record. Schema 2 names any retained fallback explicitly as `global_package_rollback_baseline`: it identifies the globally installed npm package and entrypoint available for operator-directed disaster recovery, not the service runtime that was active immediately before activation. The activation transaction captures and verifies that previous service identity separately while the handoff is in progress. Schema 1 records using the legacy `previous` field remain readable and are normalized in memory without rewriting historical evidence. The formal soak clock starts from this activation record, not from a local unpublished candidate.
+This command verifies that the GitHub Prerelease asset SHA-256 and npm registry tarball SHA-1/SHA-512/dist-tag all match the locally accepted candidate, resolves the owner's current global npm prefix, creates a temporary hardened npm, installs that exact published version into the same global prefix, updates the Worker and login daemon, verifies both versions, and writes an owner-only `npm-prerelease` activation record. Schema 2 also preserves optional validated recovered-activation reason/detail. It names any retained fallback explicitly as `global_package_rollback_baseline`: it identifies the globally installed npm package and entrypoint available for operator-directed disaster recovery, not the service runtime that was active immediately before activation. The activation transaction captures and verifies that previous service identity separately while the handoff is in progress. Schema 1 records using the legacy `previous` field remain readable and are normalized in memory without rewriting historical evidence. The formal soak clock starts from this activation record, not from a local unpublished candidate.
 
 Use the prerelease normally. Exercise the changed areas under real workloads. A crash, authorization anomaly, data-loss risk, repeated relay failure, incorrect service lifecycle, significant compatibility regression, or security/privacy defect is blocking.
 
@@ -238,7 +242,7 @@ Candidate and prerelease activation retain the previous global installation meta
 - fix forward when Worker/state protocol has changed;
 - restore a complete pre-upgrade backup only when package, Worker, browser extension, service definition, and local state can be restored as one unit.
 
-The activation state machine verifies candidate relay readiness before service handoff and cleans up its temporary runtime and locks on failure. Before remote preparation changes or verifies the candidate deployment, a provider whose verified stop result requires restoration is restarted after lock cleanup. After remote preparation, activation never revives a daemon known to be incompatible with the current Worker: cleanup installs and starts the compatible candidate service definition instead. This is forward recovery, not a fabricated distributed rollback; the primary failure remains visible, and any candidate-service installation or start failure is aggregated with it.
+The activation state machine verifies candidate relay readiness before service handoff and cleans up its temporary runtime and locks on failure. Before remote preparation changes or verifies the candidate deployment, a provider whose verified stop result requires restoration is restarted after lock cleanup and its prior runtime identity must reconverge. After remote preparation, activation never revives a daemon known to be incompatible with the current Worker: cleanup installs the compatible candidate definition and starts the platform provider without the strict normal-start helper immediately stopping it after an initial readiness miss. Recovery then independently requires the exact candidate service daemon, post-`ready_ack` checkpoint, and Worker version. This is forward recovery, not a fabricated distributed rollback. If the foreground candidate never completed readiness, the owner command remains nonzero even when compensation restores control. If readiness had already been proven and a later handoff-stage failure is completely recovered, the command exits zero with explicit recovered-activation metadata and warning. Any installation, provider-start, daemon-readiness, Worker-version, cleanup, or lock-release failure is aggregated and remains nonzero. An owner command that exits unsuccessfully or writes no activation record cannot be accepted even when an operator later restores service manually.
 
 ## External credentials and controls
 
@@ -249,7 +253,7 @@ Required external controls remain:
 - authenticated local `git`/`gh` access;
 - npm package-owner or maintainer access;
 - Cloudflare account protection;
-- successful exact-commit CI, CodeQL, Governance, and Scorecard;
+- successful exact-commit CI, CodeQL, Governance, Workflow Policy Gate, and Scorecard;
 - protected npm publication credentials or trusted publishing when configured.
 
 Never place npm, GitHub, Cloudflare, OAuth, account, or device credentials in source files, workflow YAML, acceptance/soak records, logs, screenshots, or project notes.

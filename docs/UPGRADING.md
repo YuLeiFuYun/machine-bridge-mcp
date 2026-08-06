@@ -1,5 +1,60 @@
 # Upgrading
 
+## 3.0.0-beta.44 managed-job and workflow-policy settlement
+
+Beta.44 supersedes beta.43 before owner activation. Do not activate the beta.43 tarball or use its pending manifest: the Workflow Bundle review found that managed-job cancellation storage failures could be treated as no cancellation and that a symlinked job directory could escape the managed-job root. Beta.44 verifies real contained job directories, atomically writes owner-only cancellation markers, and treats unreadable, malformed, symlinked, or hard-linked cancellation evidence as a job failure rather than permission to continue.
+
+The GitHub workflow security check is now named **Workflow Policy Gate**. This is distinct from the local Universal AI Development Workflow Bundle, whose `.workflow/` authority remains locally excluded from Git and package bytes. Exact-commit release evidence must include the renamed Workflow Policy Gate run.
+
+After a fresh beta.44 candidate is generated, require a zero owner-terminal activation exit, exact beta.44 Worker/daemon/service identity, one verified ready socket, provider persistence, and a beta.44 activation record. Formal soak begins only after the exact beta.44 npm prerelease is published and activated through the registry-verifying command.
+
+## 3.0.0-beta.43 second-pass release and fingerprint settlement
+
+Beta.43 superseded beta.42 but was itself blocked before owner activation by the beta.44 Workflow Bundle review. Do not activate the beta.42 tarball: its wrapper deleted the temporary hardened npm and then reused that CLI path while resolving rollback evidence, so the normal owner command could not reach the Worker/service transaction.
+
+The beta.43 candidate prepare/record/verify and first guarded push use ephemeral hardened npm. Activation checks the deployment authorization before downloading or installing, captures the global rollback baseline while hardened npm is live, and uses a private release-channel runtime only for a real persistent activation; install-only removes its temporary runtime. Runtime cleanup rejects symlinked or escaping directories and completes before activation evidence. Publication commands reconcile exact npm SHA-1/SRI/dist-tag metadata and GitHub REST SHA-256 after ambiguous remote responses; do not blindly repeat a command that reports an unresolved publication outcome.
+
+The Worker deployment fingerprint is now v5 and length-framed. The first beta.43 activation will treat the prior deployment hash as stale and verify/redeploy the same-name Worker. Required Worker source/config paths must be ordinary readable repository files or directories; symlinked, hard-linked, missing, or inaccessible sources stop before deployment.
+The first development-mode macOS trust-broker use after this upgrade may rebuild and ad-hoc sign its local helper because the cache marker now binds both source and binary digests. A permission, I/O, symlink, hard-link, or cleanup failure is not treated as a cache miss; correct the state-root problem rather than deleting trust material blindly. Release and CI diagnostics are now bounded and redacted, so preserve the original local logs only when deeper diagnosis is required and do not paste credentials.
+
+After activation, require a zero exit status, exact beta.43 Worker/daemon/service identity, one ready socket, provider persistence, and a beta.43 activation record. Formal soak begins only after the exact beta.43 npm prerelease is published and activated through the registry-verifying command.
+
+## 3.0.0-beta.42 hardened release and activation settlement
+
+Beta.42 superseded beta.41 but was itself blocked before owner activation by the beta.43 second-pass audit. Do not activate the previous beta.41 tarball: its owner install/publish path used the ambient npm bundle, inherited uppercase npm execution modes could escape sanitation, and a post-readiness programming error could be mislabeled as recovered success.
+
+The beta.42 owner candidate and published-prerelease commands bootstrap a temporary integrity-pinned npm before package installation. This may perform three bounded registry downloads before the Worker transaction begins. Preserve npm registry/proxy access, but do not set dry-run, workspace, global, prefix, save, omit/include, package-lock-only, or ignore-scripts modes to control the nested release operation; the command now removes those inherited modes and supplies its own explicit flags. Existing user registry, proxy, authentication, and trusted-publishing configuration remains available.
+
+GitHub and npm publication now use the exact locally accepted candidate bytes rather than repacking the source checkout. The GitHub asset must expose the matching REST SHA-256 digest; npm's publication dry-run must report the matching name, version, SHA-1, and SRI before upload. The published-install and soak commands verify both channels again. GitHub control operations and acceptance/soak Git reads resolve trusted absolute executables instead of npm-modified PATH entries. The published installer resolves the owner's existing global npm prefix before hardened installation, so verification and activation target the same global package location.
+
+A recovery warning is valid only when `activation_recovered=true`, the reason is one of the reviewed operational classes, the bounded detail is present, and the exact service daemon plus Worker independently converge. Unknown exceptions, malformed recovery metadata, lock failures, and incomplete cleanup remain command failures. The same recovery reason/detail is written to the activation record. Operational inability to read a private toolchain or previous global installation is not repaired by deletion; preserve state and correct the access/storage problem.
+
+Beta.42 must not be activated or accepted; it has no valid activation or soak evidence. Formal soak begins only after the exact npm prerelease is published and activated through the registry-verifying command.
+
+## 3.0.0-beta.41 recovered candidate activation
+
+Beta.41 superseded beta.40 but was itself blocked before owner activation by the beta.42 independent release-path review. The beta.40 owner command automatically installed and verified the exact beta.40 login service, but still exited nonzero after preserving a post-readiness `unauthorized` error. Because it wrote no activation record, beta.40 cannot be accepted, published, promoted, or used for soak evidence.
+
+Beta.41 preserves the strict foreground proof. If the candidate never completes device authentication, relay probing, and `ready_ack`, activation still fails even when forward recovery later produces a running service. If the foreground candidate already completed that proof and a later installation or handoff-stage failure occurs, the command may finish successfully only after the exact candidate service independently reaches verified readiness and the Worker reports the same version. The terminal prints a recovery warning; JSON output sets `activation_recovered=true` and supplies a bounded `activation_recovery_reason`.
+
+After activation, verify the command exited zero, matching Worker/daemon/service version, one verified ready daemon, provider persistence, and the activation record. A warning about verified candidate-service recovery is acceptable evidence only together with those checks; provider-active state or a later manual repair is not.
+
+## 3.0.0-beta.40 candidate activation convergence
+
+Beta.40 supersedes and blocks beta.39. The beta.39 owner-terminal activation advanced the Worker but exhausted candidate authentication startup and left the compatible login-service definition inactive. The exact beta.39 service was later recovered manually, but the activation command failed and no activation record exists. That recovery does not authorize beta.39 acceptance, publication, promotion, or soak.
+
+Beta.40 retains the beta.39 consumer dependency isolation and private hardened deployment toolchains. It changes candidate activation after an explicit cryptographic relay rejection: one same-name, unchanged-identity Worker repair remains the only permitted remote retry, followed by ten bounded candidate starts with exponential delay. Normal handoff remains strict. If the Worker has advanced and activation still fails, compensation starts the compatible provider and independently verifies the exact service daemon, post-`ready_ack` readiness, and Worker version before claiming recovery. A non-ready or unloaded provider is returned together with the original activation cause rather than hidden behind a generic cleanup message.
+
+Do not manually copy service-owner files, edit the service definition, rotate credentials, or delete state to force convergence. Beta.40 is blocked because its normal owner-terminal command exited nonzero and wrote no activation record even though automatic recovery later verified the service. Formal soak must begin from beta.41 or later after exact npm publication and registry-verifying activation.
+
+## 3.0.0-beta.39 consumer dependency isolation
+
+Beta.39 supersedes beta.38 and restarts the prerelease soak. Beta.38 must not be promoted: its source checkout used an npm root override for undici 7.29.0, but an ordinary global or downstream installation did not inherit that override and installed Wrangler/Miniflare with vulnerable undici 7.28.0.
+
+The published beta.39 runtime no longer contains Wrangler or Miniflare. The first operation that needs Cloudflare deployment constructs a digest-keyed hardened npm 12.0.1 with patched undici and brace-expansion bundles, then creates a separate digest-keyed private Wrangler toolchain below the Machine Bridge state root from the packaged lockfile. It verifies exact dependency versions, performs a zero-vulnerability audit and registry-signature check, and only then runs Wrangler. The first activation may therefore perform additional npm registry downloads. Preserve network/proxy access to the npm registry as well as Cloudflare during activation. A failed integrity, audit, signature, or incomplete private-toolchain step stops before Worker mutation and is safe to retry after diagnosis.
+
+After candidate activation, verify the package/Worker/service version, one ready daemon, and a successful `machine-mcp doctor`. Inspect the private-toolchain result indirectly through the Wrangler and Cloudflare-login checks; do not copy or edit the state directory manually. Any correction to these release paths changes packaged bytes and requires beta.43 or later plus another complete soak.
+
 ## 3.0.0-beta.38 heartbeat ordering
 
 Beta.38 is a coordinated Worker and daemon update over the currently activated beta.37 candidate. It does not claim to eliminate TCP/WebSocket interruptions caused by Wi-Fi, VPN/TUN, proxy, edge, or upstream changes. It removes Worker-side amplification paths by sending `pong` before Durable Object alarm I/O, coalescing terminal-result deadline scheduling, and preventing event-time deadline/storage failures from aborting dispatch or WebSocket handling. Keep beta.37 active until an exact beta.38 candidate has completed local verification and owner-machine activation.

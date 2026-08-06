@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, linkSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -37,6 +37,46 @@ try {
 
   const second = buildDevelopmentTrustBrokerBinary(root);
   assert(second === binary, "development trust broker cache path changed without a source change");
+
+  appendFileSync(binary, Buffer.from([0]));
+  const rebuilt = buildDevelopmentTrustBrokerBinary(root);
+  assert(rebuilt === binary, "tampered development trust broker was rebuilt at a different path");
+  const rebuiltSignature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", killSignal: "SIGKILL", timeout: 30_000 });
+  assert(rebuiltSignature.status === 0, "tampered development trust broker was not rebuilt and re-signed");
+
+  chmodSync(binary, 0o777);
+  expectThrow(
+    () => buildDevelopmentTrustBrokerBinary(root),
+    "must remain owner-only and owner-executable",
+  );
+  chmodSync(binary, 0o700);
+
+  const marker = `${binary}.sha256`;
+  const markerBytes = readFileSync(marker);
+  unlinkSync(marker);
+  symlinkSync(binary, marker);
+  expectThrow(
+    () => buildDevelopmentTrustBrokerBinary(root),
+    "must not be a symbolic link",
+  );
+  unlinkSync(marker);
+  writeFileSync(marker, markerBytes, { mode: 0o600 });
+
+  const markerHardLink = `${marker}.link`;
+  linkSync(marker, markerHardLink);
+  expectThrow(
+    () => buildDevelopmentTrustBrokerBinary(root),
+    "must not have multiple hard links",
+  );
+  unlinkSync(markerHardLink);
+
+  const binaryHardLink = `${binary}.link`;
+  linkSync(binary, binaryHardLink);
+  expectThrow(
+    () => buildDevelopmentTrustBrokerBinary(root),
+    "must not have multiple hard links",
+  );
+  unlinkSync(binaryHardLink);
 
   const publicJwk = createDeviceIdentity().publicJwk;
   const calls = [];

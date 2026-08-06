@@ -42,6 +42,14 @@ try {
     configured: true,
     keys: ["HTTPS_PROXY", "NODE_USE_ENV_PROXY", "NO_PROXY"],
   });
+  const storageFailure = {
+    inspectPathIfPresentSync() {
+      throw Object.assign(new Error("synthetic service environment storage failure"), { code: "EIO" });
+    },
+  };
+  assert.throws(() => loadServiceEnvironment(root, {}, storageFailure), /synthetic service environment storage failure/);
+  assert.throws(() => serviceEnvironmentSummary(root, storageFailure), /synthetic service environment storage failure/);
+  assert.throws(() => writeServiceEnvironment(root, {}, storageFailure), /synthetic service environment storage failure/);
 
   writeServiceEnvironment(root, {});
   const preserved = {};

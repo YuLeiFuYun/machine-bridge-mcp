@@ -2,7 +2,7 @@ import { renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
+import { inspectPathIfPresentSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-secure-file-test-"));
 try {
@@ -13,6 +13,11 @@ try {
   const detailed = readBoundedRegularFileWithInfoSync(file, 64);
   if (!detailed.info.isFile() || detailed.buffer.toString("utf8") !== "bounded-value") throw new Error("bounded detailed read omitted file metadata or content");
   expectThrow(() => readBoundedRegularFileSync(file, 4), "file exceeds 4 bytes");
+  if (!inspectPathIfPresentSync(file, "test file")?.isFile()) throw new Error("present-path inspection omitted the file");
+  if (inspectPathIfPresentSync(join(root, "missing"), "missing test file") !== null) throw new Error("missing-path inspection did not return null");
+  expectThrow(() => inspectPathIfPresentSync(file, "test file", {
+    lstatSync() { throw Object.assign(new Error("synthetic storage failure"), { code: "EIO" }); },
+  }), "could not be inspected");
 
   if (process.platform !== "win32") {
     const moved = join(root, "opened-value.txt");
