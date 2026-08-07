@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0-beta.45 - 2026-08-06
+
+### Stop Durable Objects stream write amplification and restore fresh CI bootstrap
+
+- Supersede beta.44 after live quota evidence and GitHub CI exposed two release-blocking mechanisms. One beta.44 Worker isolate reported 264 estimated resumable-stream rows for 40 calls (about 6.6 rows per call before all acknowledgement cleanup); the state machine could write both a per-stream row and the global `mcp-stream-index` at begin, activation, terminal settlement, and cleanup, producing up to eight logical rows for one ordinary call.
+- Make `mcp-stream:*` records the sole Durable Object authority. Capacity admission, request-id deduplication, persisted-call lookup, detach/rebind, deadline expiry, terminal replay, and cleanup use bounded transaction-safe prefix enumeration. Existing beta.44 records remain readable, while the derived legacy index is deleted at most once and is never recreated.
+- Bound an immediate Worker-local lifecycle to three committed rows and an ordinary daemon lifecycle to four. Duplicate settlement and read-only lookup paths write zero rows. A committed-mutation meter separates stream puts, stream deletes, one-time legacy-index migration, alarm sets/deletes, and alarm no-ops; rolled-back transactions are excluded.
+- Add repeated lifecycle, migration, reconnect, expiry, race, persistence-failure, key-integrity, and transaction-rollback regressions. Repository Durable Object storage doubles now implement the production `list({ prefix })` contract rather than preserving a production fallback for incomplete mocks.
+- Fix the pre-`npm ci` CI bootstrap. The beta.44 workflow imported `https-proxy-agent` through the hardened npm downloader before dependencies existed, so Ubuntu, macOS, and package-audit jobs failed in a fresh checkout. The bootstrap download closure now uses only Node 26 standard-library `https.Agent({ proxyEnv })`, with exact HTTPS artifact URLs, bounded downloads, proxy validation, redirect rejection, and cleanup guarantees retained.
+- Remove the beta.44 acceptance record because both Worker and packaged bytes changed. Beta.45 requires a fresh exact candidate, owner activation, live Worker/service verification, acceptance, guarded push, and complete external CI before any prerelease publication.
+
 ## 3.0.0-beta.44 - 2026-08-06
 
 ### Make managed-job cancellation and workflow governance fail closed

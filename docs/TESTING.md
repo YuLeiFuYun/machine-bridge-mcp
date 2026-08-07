@@ -193,3 +193,7 @@ The stdio integration test also sends an oversized line, verifies bounded reject
 `npm run tool-arguments:test` compiles all tool schemas under the bounded JSON Schema 2020-12 subset and covers type, range, length, array, object, pattern, enum, conditional/composition, unsupported dialect/keyword, external `$ref`, depth, node-count, issue-count, and value-redaction behavior. Worker and stdio integration additionally prove malformed calls are rejected before daemon/local side effects.
 
 Every candidate closeout requires fresh fast and full plans after the final packaged-source change; an earlier green run from another prerelease or pre-documentation tree is not terminal evidence.
+
+### Durable stream quota regressions
+
+The MCP resumption suite proves the beta.44 eight-row amplification baseline, beta.45 three/four-row bounds, one-time legacy-index migration, repeated lifecycle behavior, reconnect/detach/rebind, expiry, duplicate completion, persistence failure, and transaction rollback accounting. Storage doubles must implement the production `list({ prefix })` contract; production code must not retain a fallback for incomplete mocks. `ci-bootstrap:test` separately executes the hardened npm bootstrap in a synthetic fresh checkout with no `node_modules`, proving that pre-install proxy validation is reachable without package imports.

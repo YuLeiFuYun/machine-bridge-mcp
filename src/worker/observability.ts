@@ -11,6 +11,11 @@ export type DaemonTerminalResultDisposition =
   | "stale_connection_rejected";
 
 export type DurableTerminalResultSettlement = "committed" | "missing" | "stale";
+export type StreamStorageMutation = "put" | "delete" | "legacy_index_migration";
+type StreamMutationListener = (mutation: StreamStorageMutation, rows: number) => void;
+type StreamStorage = Pick<DurableObjectStorage, "get" | "put" | "delete" | "list" | "transaction">;
+const STREAM_KEY_PREFIX = "mcp-stream:";
+const LEGACY_STREAM_INDEX_KEY = "mcp-stream-index";
 
 export function daemonTerminalResultDecision(
   transientMatched: boolean,
@@ -45,7 +50,10 @@ export class WorkerObservability {
     protocol_errors: 0,
   };
   private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
-  private readonly durableBudget = { stream_rows_written_estimate: 0, alarm_sets: 0, alarm_deletes: 0, alarm_noops: 0 };
+  private readonly durableBudget = {
+    stream_rows_written_estimate: 0, stream_puts: 0, stream_deletes: 0,
+    legacy_index_migrations: 0, alarm_sets: 0, alarm_deletes: 0, alarm_noops: 0,
+  };
   private readonly errors = new Map<string, number>();
   private readonly tools = new Map<string, { started: number; completed: number; failed: number; active: number }>();
 
@@ -134,6 +142,14 @@ export class WorkerObservability {
     this.durableBudget.stream_rows_written_estimate += Math.max(0, Math.floor(rows));
   }
 
+  streamStorageMutation(mutation: StreamStorageMutation, rows = 1): void {
+    const count = Math.max(0, Math.floor(rows));
+    this.durableBudget.stream_rows_written_estimate += count;
+    if (mutation === "put") this.durableBudget.stream_puts += count;
+    else if (mutation === "delete") this.durableBudget.stream_deletes += count;
+    else this.durableBudget.legacy_index_migrations += count;
+  }
+
   runtimeAlarmMutation(action: "set" | "delete" | "noop"): void {
     if (action === "set") this.durableBudget.alarm_sets += 1;
     else if (action === "delete") this.durableBudget.alarm_deletes += 1;
@@ -211,4 +227,52 @@ function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown
     else if (typeof value === "string") out[safeKey] = sanitizePortableLogText(value, { maxChars: 256 });
   }
   return out;
+}
+
+
+export function meteredMcpStreamStorage(
+  storage: DurableObjectStorage,
+  onMutation: StreamMutationListener,
+): StreamStorage {
+  const report = (key: string, operation: "put" | "delete", rows = 1) => {
+    if (key.startsWith(STREAM_KEY_PREFIX)) onMutation(operation, rows);
+    else if (operation === "delete" && key === LEGACY_STREAM_INDEX_KEY) onMutation("legacy_index_migration", rows);
+  };
+  const wrapTransaction = (transaction: DurableObjectTransaction, pending: Array<[StreamStorageMutation, number]>) => ({
+    get: transaction.get.bind(transaction),
+    list: transaction.list.bind(transaction),
+    put: async (key: string, value: unknown, options?: DurableObjectPutOptions) => {
+      await transaction.put(key, value, options);
+      if (key.startsWith(STREAM_KEY_PREFIX)) pending.push(["put", 1]);
+    },
+    delete: async (key: string, options?: DurableObjectPutOptions) => {
+      const removed = await transaction.delete(key, options);
+      if (removed) {
+        if (key.startsWith(STREAM_KEY_PREFIX)) pending.push(["delete", 1]);
+        else if (key === LEGACY_STREAM_INDEX_KEY) pending.push(["legacy_index_migration", 1]);
+      }
+      return removed;
+    },
+  }) as unknown as DurableObjectTransaction;
+  return {
+    get: storage.get.bind(storage),
+    list: storage.list.bind(storage),
+    put: async (key: string, value: unknown, options?: DurableObjectPutOptions) => {
+      await storage.put(key, value, options);
+      report(key, "put");
+    },
+    delete: async (key: string, options?: DurableObjectPutOptions) => {
+      const removed = await storage.delete(key, options);
+      if (removed) report(key, "delete");
+      return removed;
+    },
+    transaction: async <T>(closure: (transaction: DurableObjectTransaction) => Promise<T>) => {
+      const outcome = await storage.transaction(async (transaction) => {
+        const pending: Array<[StreamStorageMutation, number]> = [];
+        return { value: await closure(wrapTransaction(transaction, pending)), pending };
+      });
+      for (const [mutation, rows] of outcome.pending) onMutation(mutation, rows);
+      return outcome.value;
+    },
+  } as unknown as StreamStorage;
 }

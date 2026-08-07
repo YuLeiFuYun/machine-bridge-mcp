@@ -28,7 +28,7 @@ import { buildServerInfoResult, startEventDrivenStreamCall } from "./mcp-stream-
 import { DurableStreamCallCoordinator } from "./durable-stream-calls.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
 import { daemonToolTimeoutBudget } from "./tool-timeout.ts";
-import { daemonTerminalResultDecision, WorkerObservability } from "./observability.ts";
+import { daemonTerminalResultDecision, meteredMcpStreamStorage, WorkerObservability } from "./observability.ts";
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access.ts";
@@ -60,7 +60,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.44";
+const SERVER_VERSION = "3.0.0-beta.45";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
@@ -85,10 +85,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     this.daemonRegistry = new DaemonSocketRegistry(ctx);
     this.streamChannel = new McpStreamChannel(ctx, this.observability);
     this.resumption = new McpResumptionStore(
-      ctx.storage,
-      {},
-      (streamId, message) => this.streamChannel.publish(streamId, message),
-      (rows) => this.observability.streamStorageRowsWritten(rows),
+      meteredMcpStreamStorage(ctx.storage, (mutation, rows) => this.observability.streamStorageMutation(mutation, rows)), {},
+      (streamId, message) => this.streamChannel.publish(streamId, message), () => {},
     );
     this.durableCalls = new DurableStreamCallCoordinator(
       this.resumption.calls,

@@ -336,3 +336,7 @@ Managed-job terminal persistence is an ordered recoverable protocol, not a colle
 - universal desktop UI automation beyond the implemented OS Accessibility backend;
 - scripting browser-internal/enterprise-blocked pages or inaccessible cross-origin frames;
 - operating-system or browser-profile isolation between mutually distrustful account principals in one Worker/daemon deployment; named accounts provide Worker/local authorization and targeted revocation, but all authorized roles still converge on one local OS user and workspace trust domain.
+
+### Durable stream write authority
+
+Resumable MCP state is authoritative in the bounded `mcp-stream:*` record set. Capacity, request identity, active-call recovery, deadlines, and terminal replay enumerate those records with `DurableObjectStorage.list({ prefix })` inside the same transaction that mutates them. The former `mcp-stream-index` is migration-only derived state: beta.45 deletes it once when present and never rewrites it. This removes one global-row write from every stream transition without weakening cross-isolate recovery.

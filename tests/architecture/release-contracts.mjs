@@ -570,6 +570,10 @@ for (const required of ["canonicalPackageDigest", "package_content_sha256", "pro
 if ((ciSource.match(/node scripts\/prepare-pinned-npm\.mjs/g) || []).length !== 3 || ciSource.includes("npm install --global npm@")) {
   throw new Error("CI no longer bootstraps the npm baseline from an integrity-verified immutable tarball");
 }
+if (packageJson.scripts?.["ci-bootstrap:test"] !== "node tests/ci-bootstrap-test.mjs"
+    || !FAST_CHECK_TASKS.includes("ci-bootstrap:test")) {
+  throw new Error("fresh-checkout npm bootstrap regression is missing from the fast gate");
+}
 const npmBootstrapSource = readFileSync(join(root, "scripts", "prepare-pinned-npm.mjs"), "utf8");
 const hardenedNpmSource = readFileSync(join(root, "src", "local", "hardened-npm.mjs"), "utf8");
 const hardenedNpmDownloadSource = readFileSync(join(root, "src", "local", "hardened-npm-download.mjs"), "utf8");

@@ -31,7 +31,7 @@ import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
-import { daemonTerminalResultDecision, WorkerObservability } from "../src/worker/observability.ts";
+import { daemonTerminalResultDecision, meteredMcpStreamStorage, WorkerObservability } from "../src/worker/observability.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { retainWorkerTask } from "../src/worker/worker-task-lifetime.ts";
 import { corsPreflight, searchParamsObject } from "../src/worker/http.ts";
@@ -62,6 +62,12 @@ class MemoryStorage {
   async get(key) { return structuredClone(this.values.get(key)); }
   async put(key, value) { this.values.set(key, structuredClone(value)); }
   async delete(key) { return this.values.delete(key); }
+  async list(options = {}) {
+    return new Map([...this.values.entries()]
+      .filter(([key]) => !options.prefix || key.startsWith(options.prefix))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => [key, structuredClone(value)]));
+  }
   async transaction(callback) { return callback(this); }
   async getAlarm() { return this.alarm; }
   async setAlarm(value) { this.alarm = Number(value); }
@@ -134,7 +140,30 @@ testWorkerRuntimeConfig();
 testRelayTimeoutContract();
 testWorkerPolicyParity();
 testWorkerErrors();
+
+async function testMeteredMcpStreamStorage() {
+  const storage = new MemoryStorage();
+  storage.values.set("mcp-stream-index", { schema_version: 1, entries: [] });
+  const mutations = [];
+  const metered = meteredMcpStreamStorage(storage, (mutation, rows) => mutations.push([mutation, rows]));
+  await metered.transaction(async (transaction) => {
+    await transaction.put(`mcp-stream:${"S".repeat(43)}`, { value: 1 });
+    await transaction.delete("mcp-stream-index");
+  });
+  assert(JSON.stringify(mutations) === JSON.stringify([["put", 1], ["legacy_index_migration", 1]]),
+    "committed stream transaction mutations were not classified exactly");
+  await expectReject(metered.transaction(async (transaction) => {
+    await transaction.put(`mcp-stream:${"F".repeat(43)}`, { value: 2 });
+    throw new Error("synthetic rollback");
+  }), "synthetic rollback");
+  assert(mutations.length === 2, "rolled-back transaction was counted as Durable Object writes");
+  await metered.delete(`mcp-stream:${"S".repeat(43)}`);
+  assert(JSON.stringify(mutations.at(-1)) === JSON.stringify(["delete", 1]),
+    "direct stream deletion was not classified");
+}
+
 testWorkerObservability();
+await testMeteredMcpStreamStorage();
 testPrototypeSafeFormFields();
 testMcpJsonRpcProtocol();
 testWebSocketProtocol();
@@ -2117,7 +2146,9 @@ function testWorkerObservability() {
   metrics.streamTerminalStorageResponse();
   metrics.streamTerminalStorageRaceDelivery(true);
   metrics.streamTerminalStorageRaceDelivery(false);
-  metrics.streamStorageRowsWritten(4);
+  metrics.streamStorageMutation("put", 3);
+  metrics.streamStorageMutation("delete");
+  metrics.streamStorageMutation("legacy_index_migration");
   metrics.runtimeAlarmMutation("set");
   metrics.runtimeAlarmMutation("noop");
   const snapshot = metrics.snapshot();
@@ -2146,8 +2177,12 @@ function testWorkerObservability() {
     && snapshot.stream_transport.legacy_internal_storage_race_sends === 1
     && snapshot.stream_transport.legacy_internal_storage_race_send_failures === 1,
   "Worker stream metrics conflate publication, storage response, or internal delivery races");
-  assert(snapshot.durable_budget.stream_rows_written_estimate === 4 && snapshot.durable_budget.alarm_sets === 1
-    && snapshot.durable_budget.alarm_noops === 1, "Durable Object budget metrics are incomplete");
+  assert(snapshot.durable_budget.stream_rows_written_estimate === 5
+    && snapshot.durable_budget.stream_puts === 3
+    && snapshot.durable_budget.stream_deletes === 1
+    && snapshot.durable_budget.legacy_index_migrations === 1
+    && snapshot.durable_budget.alarm_sets === 1 && snapshot.durable_budget.alarm_noops === 1,
+  "Durable Object budget metrics are incomplete");
 
   const lines = [];
   const originalWarn = console.warn;

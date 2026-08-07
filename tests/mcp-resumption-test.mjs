@@ -1,9 +1,11 @@
 import { McpResumptionStore, McpStreamLimitError, parseStreamEventId, streamEventId } from "../src/worker/mcp-resumption.ts";
 import { resumptionLimits } from "../src/worker/mcp-resumption-config.ts";
 import { pendingStreamRecord } from "../src/worker/mcp-resumption-request-index.ts";
+import { listStreamRecords } from "../src/worker/mcp-resumption-index.ts";
 import { pendingCallSnapshot } from "../src/worker/mcp-pending-call-inspection.ts";
 import { workerToolRequestFingerprint } from "../src/worker/mcp-request-fingerprint.ts";
 import {
+  indexEntry,
   messageSha256,
   readIndex,
   resumableMessageJson,
@@ -56,6 +58,8 @@ async function testRecordValidationAndLimits() {
     tool: "list_files",
   };
   assert(validRecord({ ...pending, ...identity }), "valid stream request identity was rejected");
+  assert(indexEntry({ ...pending, ...identity }).client_request_key === identity.client_request_key,
+    "legacy index projection lost the stream request identity");
   assert(!validRecord({ ...pending, client_request_key: identity.client_request_key }),
     "partial stream request identity was accepted");
   assert(!validRecord({ ...pending, ...identity, request_fingerprint: "short" }),
@@ -196,8 +200,9 @@ async function testStorageWriteBudget() {
   await store.begin({ streamId, tokenKey: "token-budget", sessionId: "session-budget", requestId: 30 });
   await store.complete(streamId, { jsonrpc: "2.0", id: 30, result: { ok: true } });
   await store.complete(streamId, { jsonrpc: "2.0", id: 30, result: { duplicate: true } });
-  assert(rows[0] === 2 && rows[1] === 2 && rows[2] === 0, "normal stream lifecycle exceeded or misreported its four-row write budget");
-  assert(rows.reduce((sum, value) => sum + value, 0) === 4, "duplicate terminal settlement consumed additional storage writes");
+  await store.resume({ lastEventId: `${streamId}:1`, tokenKey: "token-budget", sessionId: "session-budget" });
+  assert(JSON.stringify(rows) === JSON.stringify([1, 1, 0, 1]), "immediate stream lifecycle exceeded its three-row write budget");
+  assert(rows.reduce((sum, value) => sum + value, 0) === 3, "duplicate immediate settlement consumed additional storage writes");
 
   rows.length = 0;
   const durableId = validStreamId("R");
@@ -214,7 +219,62 @@ async function testStorageWriteBudget() {
   });
   await store.calls.complete(callId, connectionId, { jsonrpc: "2.0", id: 31, result: { ok: true } });
   await store.calls.complete(callId, connectionId, { jsonrpc: "2.0", id: 31, result: { duplicate: true } });
-  assert(JSON.stringify(rows) === JSON.stringify([2, 2, 2]), "durable call lifecycle exceeded its fixed six-row write budget");
+  await store.resume({ lastEventId: `${durableId}:1`, tokenKey: "token-budget", sessionId: "session-budget" });
+  assert(JSON.stringify(rows) === JSON.stringify([1, 1, 1, 1]), "durable call lifecycle exceeded its fixed four-row write budget");
+}
+
+async function testLegacyIndexMigrationAndRecordAuthority() {
+  const rows = [];
+  const storage = new MemoryStorage();
+  const oldId = validStreamId("V");
+  const oldRecord = pendingStreamRecord({
+    streamId: oldId,
+    tokenKey: "token-migration",
+    sessionId: "session-migration",
+    requestId: 40,
+    clientRequestKey: "session-migration:40",
+    requestFingerprint: "d".repeat(64),
+    tool: "exec_command",
+  }, 1, 1_000);
+  storage.values.set(`mcp-stream:${oldId}`, oldRecord);
+  storage.values.set("mcp-stream-index", { schema_version: 1, entries: [{
+    stream_id: oldId, status: "pending", created_at: 1, expires_at: 1_000,
+    client_request_key: oldRecord.client_request_key,
+    request_fingerprint: oldRecord.request_fingerprint,
+    tool: oldRecord.tool,
+  }] });
+  const store = new McpResumptionStore(storage, { now: () => 10 }, () => {}, (count) => rows.push(count));
+  assert((await store.findByRequestKey("session-migration:40"))?.streamId === oldId,
+    "beta.44 stream record was not authoritative without the legacy index");
+  const newId = validStreamId("W");
+  await store.begin({ streamId: newId, tokenKey: "token-migration", sessionId: "session-migration", requestId: 41 });
+  assert(!storage.values.has("mcp-stream-index") && rows[0] === 2,
+    "legacy stream index was not removed exactly once with the first new stream write");
+  const nextId = validStreamId("X");
+  await store.begin({ streamId: nextId, tokenKey: "token-migration", sessionId: "session-migration", requestId: 42 });
+  assert(rows[1] === 1, "legacy stream index migration repeated after removal");
+  assert((await listStreamRecords(storage)).length === 3, "per-stream record enumeration lost migrated state");
+
+  const corrupt = new MemoryStorage();
+  corrupt.values.set(`mcp-stream:${validStreamId("A")}`, { ...oldRecord, stream_id: validStreamId("B") });
+  await expectReject(listStreamRecords(corrupt), Error);
+}
+
+
+async function testRepeatedLifecycleWriteBudget() {
+  const rows = [];
+  const storage = new MemoryStorage();
+  const store = new McpResumptionStore(storage, { now: () => 5_000 }, () => {}, (count) => rows.push(count));
+  for (let index = 0; index < 32; index += 1) {
+    const suffix = String(index).padStart(43, "0");
+    const streamId = `stream_${suffix}`;
+    await store.begin({ streamId, tokenKey: "token-stress", sessionId: "session-stress", requestId: index });
+    await store.complete(streamId, { jsonrpc: "2.0", id: index, result: { index } });
+    await store.resume({ lastEventId: `${streamId}:1`, tokenKey: "token-stress", sessionId: "session-stress" });
+  }
+  assert(rows.reduce((sum, value) => sum + value, 0) === 32 * 3,
+    "repeated immediate calls exceeded the three-row lifecycle budget");
+  assert(rows.every((value) => value === 1), "repeated immediate calls contained a multi-row state rewrite");
 }
 
 async function testMissingAndCorruptCompletionState() {
@@ -531,6 +591,8 @@ await testEventIdentifiers();
 await testRecordValidationAndLimits();
 await testCompletedResultResumption();
 await testStorageWriteBudget();
+await testLegacyIndexMigrationAndRecordAuthority();
+await testRepeatedLifecycleWriteBudget();
 await testMissingAndCorruptCompletionState();
 await testLiveResultResumption();
 await testRestartFallback();

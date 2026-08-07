@@ -1,14 +1,5 @@
-import {
-  STREAM_INDEX_KEY,
-  indexEntry,
-  readIndex,
-  streamKey,
-  validRecord,
-  type JsonRpcMessage,
-  type StreamIndex,
-  type StreamIndexEntry,
-  type StreamRecord,
-} from "./mcp-resumption-records.ts";
+import { streamKey, type JsonRpcMessage, type StreamRecord } from "./mcp-resumption-records.ts";
+import { listStreamRecords } from "./mcp-resumption-index.ts";
 import { toolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
 import {
   pendingCallIdentityConflict,
@@ -27,7 +18,7 @@ import {
 } from "./mcp-pending-call-inspection.ts";
 import { CONTROL_PLANE_TOOL_NAMES, pendingCallAdmission } from "./pending-call-capacity.ts";
 
-type PendingCallStorage = Pick<DurableObjectStorage, "get" | "put" | "transaction">;
+type PendingCallStorage = Pick<DurableObjectStorage, "list" | "put" | "transaction">;
 type CompleteStream = (
   streamId: string,
   message: JsonRpcMessage,
@@ -111,8 +102,8 @@ export class McpPendingCallStore {
       ...(input.transform ? { transform: structuredClone(input.transform) } : {}),
     };
     await this.storage.transaction(async (transaction) => {
-      const index = readIndex(await transaction.get<unknown>(STREAM_INDEX_KEY));
-      const durable = pendingCallSnapshot(index.entries, now, maximum);
+      const records = await listStreamRecords(transaction);
+      const durable = pendingCallSnapshot(records, now, maximum);
       const transient = input.transientSnapshot ?? { active: 0, by_tool: Object.create(null) as Record<string, number> };
       const capacity = toolCallCapacityConfig(maximum, input.reservedPendingCalls, CONTROL_PLANE_TOOL_NAMES);
       const decision = pendingCallAdmission(transient, durable, input.tool, capacity);
@@ -121,133 +112,94 @@ export class McpPendingCallStore {
           ? `ordinary daemon-call capacity reached (${decision.ordinaryMaximum}); control-plane capacity is reserved for diagnosis and recovery`
           : undefined);
       }
-      if (index.entries.some((entry) => entry.call?.call_id === input.callId)) {
+      if (records.some((record) => record.call?.call_id === input.callId)) {
         throw new McpPendingCallConflictError("duplicate internal daemon call id");
       }
-      if (input.clientRequestKey && index.entries.some((entry) => entry.stream_id !== input.streamId
-        && (entry.client_request_key ?? entry.call?.client_request_key) === input.clientRequestKey)) {
+      if (input.clientRequestKey && records.some((record) => record.stream_id !== input.streamId
+        && (record.client_request_key ?? record.call?.client_request_key) === input.clientRequestKey)) {
         throw new McpPendingCallConflictError("duplicate in-flight JSON-RPC request id within this MCP session");
       }
-      const record = await transaction.get<unknown>(streamKey(input.streamId));
-      if (!validRecord(record) || record.status !== "pending") {
-        throw new Error("resumable MCP stream record is unavailable for activation");
-      }
+      const record = records.find((candidate) => candidate.stream_id === input.streamId);
+      if (!record || record.status !== "pending") throw new Error("resumable MCP stream record is unavailable for activation");
       if (record.call) throw new McpPendingCallConflictError("resumable MCP stream already has an active daemon call");
       const identityConflict = pendingCallIdentityConflict(record, input);
       if (identityConflict) throw new McpPendingCallConflictError(identityConflict);
-      const updated: StreamRecord = {
+      await transaction.put(streamKey(input.streamId), {
         ...record,
         expires_at: extendAttachedCallExpiry(record.expires_at, call.operation_deadline_at, this.terminalRetentionMs),
         call,
-      };
-      const entries = index.entries.map((entry) => entry.stream_id === input.streamId ? indexEntry(updated) : entry);
-      if (!entries.some((entry) => entry.stream_id === input.streamId)) {
-        throw new Error("resumable MCP stream index lost its record");
-      }
-      await transaction.put(streamKey(input.streamId), updated);
-      await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
+      } satisfies StreamRecord);
     });
-    this.onRowsWritten(2);
+    this.onRowsWritten(1);
     this.activateStream(input.streamId);
   }
 
   async get(callId: string): Promise<PendingStreamCallView | undefined> {
-    const index = readIndex(await this.storage.get<unknown>(STREAM_INDEX_KEY));
-    const entry = index.entries.find((candidate) => candidate.call?.call_id === callId);
-    return entry ? this.callView(entry) : undefined;
+    const record = (await listStreamRecords(this.storage)).find((candidate) => candidate.call?.call_id === callId);
+    return record ? this.callView(record) : undefined;
   }
 
   async getByRequestKey(requestKey: string): Promise<PendingStreamCallView | undefined> {
-    const index = readIndex(await this.storage.get<unknown>(STREAM_INDEX_KEY));
-    const entry = index.entries.find((candidate) => (
-      candidate.client_request_key ?? candidate.call?.client_request_key
-    ) === requestKey && candidate.call);
-    return entry ? this.callView(entry) : undefined;
+    const record = (await listStreamRecords(this.storage)).find((candidate) => candidate.call
+      && (candidate.client_request_key ?? candidate.call.client_request_key) === requestKey);
+    return record ? this.callView(record) : undefined;
   }
 
   async snapshot(maximum = DEFAULT_MAXIMUM_PENDING_CALLS): Promise<PendingStreamCallSnapshot> {
-    const index = readIndex(await this.storage.get<unknown>(STREAM_INDEX_KEY));
-    return pendingCallSnapshot(index.entries, this.now(), maximum);
+    return pendingCallSnapshot(await listStreamRecords(this.storage), this.now(), maximum);
   }
 
   async nextDeadlineDelayMs(): Promise<number> {
-    const index = readIndex(await this.storage.get<unknown>(STREAM_INDEX_KEY));
     const now = this.now();
-    return Math.min(Number.POSITIVE_INFINITY, ...index.entries.flatMap((entry) => {
-      if (!entry.call) return [];
-      const deadline = entry.call.state === "attached"
-        ? entry.call.operation_deadline_at
-        : entry.call.reconnect_deadline_at;
+    return Math.min(Number.POSITIVE_INFINITY, ...(await listStreamRecords(this.storage)).flatMap((record) => {
+      if (!record.call) return [];
+      const deadline = record.call.state === "attached" ? record.call.operation_deadline_at : record.call.reconnect_deadline_at;
       return Number.isSafeInteger(deadline) ? [Math.max(0, Number(deadline) - now)] : [];
     }));
   }
 
   async due(now = this.now()): Promise<PendingStreamCallView[]> {
-    const index = readIndex(await this.storage.get<unknown>(STREAM_INDEX_KEY));
-    const due: PendingStreamCallView[] = [];
-    for (const entry of index.entries) {
-      const call = entry.call;
-      if (!call) continue;
+    return (await listStreamRecords(this.storage)).flatMap((record) => {
+      const call = record.call;
+      if (!call) return [];
       const deadline = call.state === "attached" ? call.operation_deadline_at : call.reconnect_deadline_at;
-      if (Number.isSafeInteger(deadline) && Number(deadline) <= now) due.push(await this.callView(entry));
-    }
-    return due;
+      return Number.isSafeInteger(deadline) && Number(deadline) <= now ? [this.callView(record)] : [];
+    });
   }
 
   async detach(connectionId: string, graceMs: number): Promise<number> {
     const now = this.now();
     const reconnectDeadline = now + positiveDelay(graceMs);
-    let rows = 0;
     const count = await this.storage.transaction(async (transaction) => {
-      const index = readIndex(await transaction.get<unknown>(STREAM_INDEX_KEY));
-      const entries = [...index.entries];
       let changed = 0;
-      for (let position = 0; position < entries.length; position += 1) {
-        const entry = entries[position];
-        if (entry.call?.state !== "attached" || entry.call.connection_id !== connectionId) continue;
-        const record = await requiredPendingCallRecord(transaction, entry as StreamIndexEntry & { call: PendingStreamCall });
+      for (const value of await listStreamRecords(transaction)) {
+        const call = value.call;
+        if (call?.state !== "attached" || call.connection_id !== connectionId) continue;
+        const record = requiredPendingCallRecord(value, call.call_id);
         const remaining = Math.max(1, record.call.operation_deadline_at - now);
         const updated: StreamRecord = {
           ...record,
-          expires_at: extendDetachedCallExpiry(
-            record.expires_at,
-            reconnectDeadline,
-            remaining,
-            this.terminalRetentionMs,
-          ),
-          call: {
-            ...record.call,
-            state: "detached",
-            remaining_timeout_ms: remaining,
-            reconnect_deadline_at: reconnectDeadline,
-          },
+          expires_at: extendDetachedCallExpiry(record.expires_at, reconnectDeadline, remaining, this.terminalRetentionMs),
+          call: { ...record.call, state: "detached", remaining_timeout_ms: remaining, reconnect_deadline_at: reconnectDeadline },
         };
-        await transaction.put(streamKey(entry.stream_id), updated);
-        entries[position] = indexEntry(updated);
+        await transaction.put(streamKey(record.stream_id), updated);
         changed += 1;
-      }
-      if (changed > 0) {
-        await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
-        rows = changed + 1;
       }
       return changed;
     });
-    this.onRowsWritten(rows);
+    this.onRowsWritten(count);
     return count;
   }
 
   async rebind(daemonInstanceId: string, connectionId: string): Promise<string[]> {
     if (!daemonInstanceId || !connectionId) return [];
     const now = this.now();
-    let rows = 0;
-    const rebound = await this.storage.transaction(async (transaction) => {
-      const index = readIndex(await transaction.get<unknown>(STREAM_INDEX_KEY));
-      const entries = [...index.entries];
-      const ids: string[] = [];
-      for (let position = 0; position < entries.length; position += 1) {
-        const entry = entries[position];
-        if (!entry.call || entry.call.daemon_instance_id !== daemonInstanceId || entry.call.connection_id === connectionId) continue;
-        const record = await requiredPendingCallRecord(transaction, entry as StreamIndexEntry & { call: PendingStreamCall });
+    const ids = await this.storage.transaction(async (transaction) => {
+      const rebound: string[] = [];
+      for (const value of await listStreamRecords(transaction)) {
+        const call = value.call;
+        if (!call || call.daemon_instance_id !== daemonInstanceId || call.connection_id === connectionId) continue;
+        const record = requiredPendingCallRecord(value, call.call_id);
         const remaining = record.call.state === "detached"
           ? record.call.remaining_timeout_ms
           : Math.max(1, record.call.operation_deadline_at - now);
@@ -259,27 +211,17 @@ export class McpPendingCallStore {
           remaining_timeout_ms: remaining,
         };
         delete updatedCall.reconnect_deadline_at;
-        const updated: StreamRecord = {
+        await transaction.put(streamKey(record.stream_id), {
           ...record,
-          expires_at: extendAttachedCallExpiry(
-            record.expires_at,
-            updatedCall.operation_deadline_at,
-            this.terminalRetentionMs,
-          ),
+          expires_at: extendAttachedCallExpiry(record.expires_at, updatedCall.operation_deadline_at, this.terminalRetentionMs),
           call: updatedCall,
-        };
-        await transaction.put(streamKey(entry.stream_id), updated);
-        entries[position] = indexEntry(updated);
-        ids.push(updatedCall.call_id);
+        } satisfies StreamRecord);
+        rebound.push(updatedCall.call_id);
       }
-      if (ids.length > 0) {
-        await transaction.put(STREAM_INDEX_KEY, { schema_version: 1, entries } satisfies StreamIndex);
-        rows = ids.length + 1;
-      }
-      return ids;
+      return rebound;
     });
-    this.onRowsWritten(rows);
-    return rebound;
+    this.onRowsWritten(ids.length);
+    return ids;
   }
 
   async complete(callId: string, connectionId: string | undefined, message: JsonRpcMessage): Promise<boolean> {
@@ -288,12 +230,8 @@ export class McpPendingCallStore {
     return this.completeStream(view.streamId, message, { callId, connectionId });
   }
 
-  private async callView(entry: StreamIndexEntry): Promise<PendingStreamCallView> {
-    if (!entry.call) throw new Error("stream index entry has no pending call");
-    const record = await this.storage.get<unknown>(streamKey(entry.stream_id));
-    if (!validRecord(record) || !record.call || record.call.call_id !== entry.call.call_id) {
-      throw new Error("persisted pending call record is corrupt");
-    }
-    return { ...structuredClone(record.call), streamId: record.stream_id, requestId: record.request_id };
+  private callView(record: StreamRecord): PendingStreamCallView {
+    const current = requiredPendingCallRecord(record, record.call?.call_id ?? "");
+    return { ...structuredClone(current.call), streamId: current.stream_id, requestId: current.request_id };
   }
 }

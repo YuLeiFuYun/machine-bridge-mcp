@@ -807,3 +807,7 @@ No review can prove the absence of all defects. Important residual boundaries ar
 ## Ongoing review rule
 
 A future change to locks, state deletion, service lifecycle, detached processes, credentials, browser/app authority, package contents, or public transport must add a behavior-level regression test and update the applicable security/operations documentation. String-presence tests may supplement, but must not replace, executable state-transition tests.
+
+### 2026-08-06 Durable Objects write-amplification incident
+
+Live beta.44 observability measured 264 estimated stream rows for 40 calls in one isolate (about 6.6 rows per call before all acknowledgement cleanup). The causal mechanism was a global `mcp-stream-index` row rewritten alongside every per-stream transition. Beta.45 makes per-stream records the sole authority, deletes the legacy index once, meters only committed mutations, and enforces three-row immediate and four-row daemon lifecycle ceilings. The beta.44 acceptance is invalid because the quota repair changes Worker and package bytes; only a newly activated and observed beta.45 candidate may be accepted.

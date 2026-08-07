@@ -391,3 +391,7 @@ After suspected credential, client, or device compromise:
 8. remove the Worker and local state if continued remote access is unnecessary.
 
 The detailed 0.12.0 audit record and residual operational limits are in [AUDIT.md](AUDIT.md).
+
+### Durable Objects write budget
+
+`server_info.observability.durable_budget` reports isolate-local committed MCP stream puts, stream deletes, one-time legacy-index migrations, and alarm mutations. A normal daemon call is bounded to four logical stream rows (begin, activation, terminal result, acknowledgement cleanup); an immediate Worker-local result is bounded to three. Transaction attempts that roll back are not counted. Sustained values above these bounds indicate a regression or retry loop and should block release.

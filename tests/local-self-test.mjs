@@ -1206,6 +1206,12 @@ async function ciBootstrapSelfTest() {
   if (pinnedBootstrapCount !== setupIndexes.length || versionCheckCount !== setupIndexes.length || workflow.includes("npm install --global npm@")) {
     throw new Error("every CI npm execution job must prepare and verify integrity-pinned npm 12 without a mutable global install");
   }
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const checkPlan = await readFile(new URL("../scripts/check-plan.mjs", import.meta.url), "utf8");
+  if (packageJson.scripts?.["ci-bootstrap:test"] !== "node tests/ci-bootstrap-test.mjs"
+      || !checkPlan.includes('"ci-bootstrap:test"')) {
+    throw new Error("fresh-checkout npm bootstrap regression is missing from the fast gate");
+  }
   const bootstrap = await readFile(new URL("../scripts/prepare-pinned-npm.mjs", import.meta.url), "utf8");
   const hardenedNpm = await readFile(new URL("../src/local/hardened-npm.mjs", import.meta.url), "utf8");
   const hardenedNpmDownload = await readFile(new URL("../src/local/hardened-npm-download.mjs", import.meta.url), "utf8");

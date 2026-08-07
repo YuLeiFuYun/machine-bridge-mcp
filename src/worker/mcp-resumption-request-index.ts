@@ -1,12 +1,11 @@
 import {
-  STREAM_INDEX_KEY,
-  readIndex,
   validateStreamIdentity,
   type StreamRecord,
   type StreamStatus,
 } from "./mcp-resumption-records.ts";
+import { listStreamRecords } from "./mcp-resumption-index.ts";
 
-type ReadStorage = Pick<DurableObjectStorage, "get">;
+type ReadStorage = { list<T = unknown>(options?: DurableObjectListOptions): Promise<Map<string, T>> };
 
 export type BeginStreamInput = Readonly<{
   streamId: string;
@@ -58,15 +57,14 @@ export async function findStreamByRequestKey(
   storage: ReadStorage,
   requestKey: string,
 ): Promise<StreamRequestIdentity | undefined> {
-  const index = readIndex(await storage.get<unknown>(STREAM_INDEX_KEY));
-  const entry = index.entries.find((candidate) => (
+  const record = (await listStreamRecords(storage)).find((candidate) => (
     candidate.client_request_key ?? candidate.call?.client_request_key
   ) === requestKey);
-  if (!entry) return undefined;
+  if (!record) return undefined;
   return {
-    streamId: entry.stream_id,
-    status: entry.status,
-    tool: entry.tool ?? entry.call?.tool,
-    requestFingerprint: entry.request_fingerprint ?? entry.call?.request_fingerprint,
+    streamId: record.stream_id,
+    status: record.status,
+    tool: record.tool ?? record.call?.tool,
+    requestFingerprint: record.request_fingerprint ?? record.call?.request_fingerprint,
   };
 }

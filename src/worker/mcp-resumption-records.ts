@@ -23,11 +23,11 @@ export type StreamRecord = StreamIndexEntry & {
 };
 
 export const STREAM_INDEX_KEY = "mcp-stream-index";
-const STREAM_KEY_PREFIX = "mcp-stream:";
+export const STREAM_KEY_PREFIX = "mcp-stream:";
 const STREAM_ID_PATTERN = /^stream_[A-Za-z0-9_-]{43}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_REQUEST_ID_LENGTH = 256;
-const DEFAULT_MAXIMUM_STREAMS = relayContract.maximumResumableStreams;
+export const MAXIMUM_STREAM_RECORDS = relayContract.maximumResumableStreams;
 const DEFAULT_MAXIMUM_MESSAGE_BYTES = relayContract.maximumResumableMessageBytes;
 
 export function isStreamId(value: string): boolean {
@@ -43,7 +43,7 @@ export function readIndex(value: unknown): StreamIndex {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("resumable MCP stream index is corrupt");
   const candidate = value as Partial<StreamIndex>;
   if (candidate.schema_version !== 1 || !Array.isArray(candidate.entries)) throw new Error("resumable MCP stream index is corrupt");
-  if (candidate.entries.length > DEFAULT_MAXIMUM_STREAMS || !candidate.entries.every(validIndexEntry)) {
+  if (candidate.entries.length > MAXIMUM_STREAM_RECORDS || !candidate.entries.every(validIndexEntry)) {
     throw new Error("resumable MCP stream index is corrupt");
   }
   const ids = new Set(candidate.entries.map((entry) => entry.stream_id));

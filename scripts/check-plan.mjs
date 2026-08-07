@@ -33,6 +33,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "sbom-check:test",
   "npm-environment:test",
   "hardened-npm:test",
+  "ci-bootstrap:test",
   "consumer-package-security:test",
   "wrangler-toolchain:test",
   "shell:test",
