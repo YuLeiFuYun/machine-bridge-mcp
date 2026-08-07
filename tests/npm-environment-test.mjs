@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { resolveNpmGlobalPrefix } from "../scripts/npm-global-prefix.mjs";
 
@@ -56,7 +57,7 @@ const globalPrefix = resolveNpmGlobalPrefix("/synthetic/npm-cli.js", {
     return { status: 0, stdout: "/configured/global-prefix\n", stderr: "" };
   },
 });
-assert.equal(globalPrefix, "/configured/global-prefix");
+assert.equal(globalPrefix, resolve("/configured/global-prefix"));
 assert.deepEqual(prefixInvocation.args, [
   "/synthetic/npm-cli.js", "prefix", "--global", "--json=false", "--parseable=false",
 ]);
