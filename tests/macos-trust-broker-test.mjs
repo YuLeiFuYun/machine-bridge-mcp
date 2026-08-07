@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, linkSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, fstatSync, linkSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -38,7 +38,7 @@ try {
   const second = buildDevelopmentTrustBrokerBinary(root);
   assert(second === binary, "development trust broker cache path changed without a source change");
 
-  appendFileSync(binary, Buffer.from([0]));
+  appendNoFollowRegularFile(binary, Buffer.from([0]));
   const rebuilt = buildDevelopmentTrustBrokerBinary(root);
   assert(rebuilt === binary, "tampered development trust broker was rebuilt at a different path");
   const rebuiltSignature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", killSignal: "SIGKILL", timeout: 30_000 });
@@ -216,6 +216,21 @@ try {
   console.log("macOS provisioned trust broker boundary test ok");
 } finally {
   rmSync(root, { recursive: true, force: true });
+}
+
+function appendNoFollowRegularFile(file, bytes) {
+  const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
+  assert(noFollow !== 0, "macOS trust broker tamper test requires O_NOFOLLOW");
+  let fd;
+  try {
+    fd = openSync(file, Number(fsConstants.O_WRONLY) | Number(fsConstants.O_APPEND) | noFollow);
+    const info = fstatSync(fd);
+    assert(info.isFile(), "development trust broker tamper target is not a regular file");
+    assert(info.nlink === 1, "development trust broker tamper target has multiple hard links");
+    assert(writeSync(fd, bytes) === bytes.length, "development trust broker tamper write was incomplete");
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function jsonResult(value) {

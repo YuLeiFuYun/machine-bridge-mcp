@@ -526,12 +526,54 @@ if (!githubReleaseDiagnosticSource.includes("releaseCommandFailure(command, args
   throw new Error("GitHub release errors again expose complete command arguments");
 }
 const releaseDiagnosticSource = readFileSync(join(root, "scripts", "release-diagnostic.mjs"), "utf8");
-for (const required of ["sanitizePortableLogText", "releaseCommandFailure", "releaseCommandLabel", "HOME_PATHS"]) {
+for (const required of ["sanitizePortableLogText", "releaseCommandFailure", "releaseCommandLabel", "releaseDiagnosticEvent", "EVENT_NAME_PATTERN", "HOME_PATHS"]) {
   if (!releaseDiagnosticSource.includes(required)) throw new Error(`release diagnostic redaction lost required boundary: ${required}`);
 }
 if (packageJson.scripts?.["release-diagnostic:test"] !== "node tests/release-diagnostic-test.mjs"
     || !FAST_CHECK_TASKS.includes("release-diagnostic:test")) {
   throw new Error("release diagnostic redaction test is missing from local gates");
+}
+for (const [file, event] of [
+  [
+    "scripts/github-push.mjs",
+    "github.push.blocked"
+  ],
+  [
+    "scripts/github-backlog.mjs",
+    "github.backlog.failed"
+  ],
+  [
+    "scripts/npm-publication-policy.mjs",
+    "npm.publication_policy.failed"
+  ],
+  [
+    "scripts/install-published-prerelease.mjs",
+    "prerelease.install.failed"
+  ],
+  [
+    "scripts/local-release-acceptance.mjs",
+    "release.acceptance.failed"
+  ],
+  [
+    "scripts/github-release.mjs",
+    "github.release.failed"
+  ],
+  [
+    "scripts/publish-npm.mjs",
+    "npm.publish.failed"
+  ],
+  [
+    "scripts/release-soak.mjs",
+    "release.soak.failed"
+  ],
+  [
+    "scripts/start-release-candidate.mjs",
+    "release.candidate.failed"
+  ]
+]) {
+  const source = readFileSync(join(root, file), "utf8");
+  const requiredSink = `console.error(JSON.stringify(releaseDiagnosticEvent("${event}",`;
+  if (!source.includes(requiredSink)) throw new Error(`release failure sink is not a single-line JSON event: ${file}`);
 }
 const workflowPolicySource = readFileSync(join(root, ".github", "scripts", "workflow-policy.mjs"), "utf8");
 const workflowPolicyRulesSource = readFileSync(join(root, ".github", "scripts", "workflow-policy-rules.mjs"), "utf8");

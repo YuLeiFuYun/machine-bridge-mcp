@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0-beta.46 - 2026-08-07
+
+### Clear Windows and CodeQL release gates without weakening policy
+
+- Supersede beta.45 after its first exact-commit pull-request run exposed two blocking external-gate defects. Windows checkout converted executable workflow YAML to CRLF, so the repository-native LF-only Workflow Policy Gate failed even though the dedicated Linux gate passed. The JavaScript/TypeScript CodeQL run also rejected seven release failure sinks whose externally influenced diagnostic value was interpolated into a log string and one trust-broker test mutation that reopened a previously inspected path.
+- Add a minimal Git attribute contract that normalizes `.github/workflows/*.yml` and `.yaml` as text with `eol=lf`. The workflow-policy regression queries Git's effective `text` and `eol` attributes for both extensions; the verifier still rejects CRLF source and is not weakened for Windows.
+- Encode every top-level release, acceptance, publication, soak, backlog, candidate-start, and guarded-push failure as one JSON log record with a fixed validated event name and the existing bounded portable-redaction result. Hostile CR/LF, terminal controls, credentials, email addresses, and home paths cannot create a second physical log line or escape the redaction boundary.
+- Replace the macOS trust-broker tamper test's path-based append with an `O_NOFOLLOW` descriptor open, `fstat` regular-file/single-link validation, descriptor write, and guaranteed close. The test still proves tampered binaries are rebuilt and re-signed without retaining a CodeQL-visible check/use split.
+- Remove the beta.45 acceptance record because these release-script bytes change the package. Beta.46 requires a new exact candidate, owner activation, live verification, acceptance, guarded push, and successful Windows/CodeQL reruns before prerelease publication.
+
 ## 3.0.0-beta.45 - 2026-08-06
 
 ### Stop Durable Objects stream write amplification and restore fresh CI bootstrap

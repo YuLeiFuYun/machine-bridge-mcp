@@ -12,7 +12,7 @@ import { normalizePackRecord, verifyCurrentReleaseAcceptance } from "./release-a
 import { stageAcceptedCandidateTarball } from "./accepted-candidate-tarball.mjs";
 import { readPublishedNpmPrereleaseIfPresent } from "./published-release.mjs";
 import { isTransientNetworkFailure } from "./network-retry.mjs";
-import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -254,7 +254,7 @@ async function main() {
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   main().catch((error) => {
-    console.error(`npm publication failed: ${releaseDiagnostic(error?.message || error, 1600)}`);
+    console.error(JSON.stringify(releaseDiagnosticEvent("npm.publish.failed", error?.message || error, 1600)));
     process.exitCode = 1;
   });
 }

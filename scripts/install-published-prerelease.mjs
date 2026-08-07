@@ -16,7 +16,7 @@ import { createHardenedNpmSession, settleHardenedNpmSession } from "./hardened-n
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
 import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
-import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const lifecycleNpmCli = process.env.npm_execpath;
@@ -190,6 +190,6 @@ function workspaceHash(workspace) {
 }
 
 function fail(message) {
-  console.error(`published prerelease installation failed: ${releaseDiagnostic(message, 1800)}`);
+  console.error(JSON.stringify(releaseDiagnosticEvent("prerelease.install.failed", message, 1800)));
   process.exit(1);
 }

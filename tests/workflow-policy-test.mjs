@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { cpSync, linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -16,6 +17,8 @@ assert.deepEqual(verified.files, [
   "workflow-policy.yml",
 ]);
 assert(verified.actions >= 20, "workflow policy action inventory unexpectedly shrank");
+
+verifyWorkflowCheckoutAttributes();
 
 withFixture((fixture) => {
   replace(
@@ -160,6 +163,29 @@ withFixture((fixture) => {
 });
 
 console.log(`workflow policy test ok (${verified.files.length} workflows, ${verified.actions} pinned action references)`);
+
+function verifyWorkflowCheckoutAttributes() {
+  const paths = [
+    ".github/workflows/ci.yml",
+    ".github/workflows/example.yaml",
+  ];
+  const result = spawnSync("git", ["check-attr", "text", "eol", "--", ...paths], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, `git check-attr failed: ${result.stderr || result.error?.message || "unknown error"}`);
+  const values = new Map(result.stdout.trim().split(/\r?\n/).map((line) => {
+    const match = line.match(/^(.*): (text|eol): (.*)$/);
+    assert(match, `unexpected git check-attr output: ${line}`);
+    return [`${match[1]}:${match[2]}`, match[3]];
+  }));
+  for (const file of paths) {
+    assert.equal(values.get(`${file}:text`), "set", `${file} is not normalized as text`);
+    assert.equal(values.get(`${file}:eol`), "lf", `${file} is not forced to LF at checkout`);
+  }
+}
 
 function withFixture(callback) {
   const fixture = mkdtempSync(join(tmpdir(), "mbm-workflow-policy-"));

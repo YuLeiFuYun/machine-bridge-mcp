@@ -12,7 +12,7 @@ import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable
 import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
 import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
 import { runNetworkCommand } from "./network-retry.mjs";
-import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const git = resolveTrustedGitExecutable({ workspace: root });
@@ -59,7 +59,7 @@ try {
   runNetwork(git, ["push", "--set-upstream", "origin", "HEAD"]);
   console.log(`Pushed accepted branch ${branch} to origin.`);
 } catch (error) {
-  console.error(`GitHub push blocked: ${releaseDiagnostic(error?.message || error, 1200)}`);
+  console.error(JSON.stringify(releaseDiagnosticEvent("github.push.blocked", error?.message || error, 1200)));
   process.exit(1);
 }
 

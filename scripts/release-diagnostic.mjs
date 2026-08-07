@@ -2,6 +2,8 @@ import os from "node:os";
 import process from "node:process";
 import { sanitizePortableLogText } from "../src/shared/log-redaction.mjs";
 
+const EVENT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,79}$/;
+
 const HOME_PATHS = [...new Set([
   process.env.HOME,
   process.env.USERPROFILE,
@@ -10,6 +12,12 @@ const HOME_PATHS = [...new Set([
 
 export function releaseDiagnostic(value, maxChars = 1000) {
   return sanitizePortableLogText(value, { maxChars, homePaths: HOME_PATHS }).trim();
+}
+
+export function releaseDiagnosticEvent(event, value, maxChars = 1000) {
+  const name = String(event || "");
+  if (!EVENT_NAME_PATTERN.test(name)) throw new Error("release diagnostic event name is invalid");
+  return Object.freeze({ event: name, error: releaseDiagnostic(value, maxChars) });
 }
 
 export function releaseCommandLabel(command, args = []) {

@@ -26,7 +26,7 @@ import { validateCandidateManifest } from "./release-candidate-manifest.mjs";
 import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
-import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -227,6 +227,6 @@ function confirmationPhrase(name, version) {
 }
 
 function fail(message) {
-  console.error(`local release acceptance failed: ${releaseDiagnostic(message, 1200)}`);
+  console.error(JSON.stringify(releaseDiagnosticEvent("release.acceptance.failed", message, 1200)));
   process.exit(1);
 }

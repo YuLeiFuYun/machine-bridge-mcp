@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
-import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -111,7 +111,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const result = assertGitHubBacklogReady();
     console.log(result.message);
   } catch (error) {
-    console.error(`GitHub backlog gate failed: ${releaseDiagnostic(error?.message || error, 1200)}`);
+    console.error(JSON.stringify(releaseDiagnosticEvent("github.backlog.failed", error?.message || error, 1200)));
     process.exit(1);
   }
 }

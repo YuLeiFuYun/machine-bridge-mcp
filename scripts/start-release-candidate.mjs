@@ -17,7 +17,7 @@ import { assertCandidateMatchesCurrentSource, validateCandidateManifest } from "
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { createHardenedNpmSession, settleHardenedNpmSession } from "./hardened-npm-session.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
-import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
 import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
 
@@ -297,6 +297,6 @@ function readJson(path, label) {
 }
 
 function fail(message) {
-  console.error(`release candidate startup failed: ${releaseDiagnostic(message, 1200)}`);
+  console.error(JSON.stringify(releaseDiagnosticEvent("release.candidate.failed", message, 1200)));
   process.exit(1);
 }

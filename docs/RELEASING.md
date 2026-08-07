@@ -75,6 +75,8 @@ npm run release:candidate
 
 The candidate manifest records npm SHA-1/SHA-512 values and a promotion-content digest. Any packaged-file change invalidates the candidate. Every candidate start or activation recomputes the current digest and compares package identity before tarball verification, npm installation, Worker deployment, or service mutation; a stale but internally self-consistent tarball cannot be installed. Preparing or testing a candidate never authorizes npm publication; only the repository owner may invoke a publication command. An existing tag, GitHub Release, or npm version is immutable and must never be reused after source changes.
 
+A blocking external CI or CodeQL result discovered after local acceptance is still a candidate defect. When its repair changes any packaged file, increment the prerelease number, remove the old acceptance record, regenerate the candidate, repeat owner activation and observed live verification, and record a new acceptance before guarded push. Do not preserve an old acceptance merely because the runtime behavior under investigation is unchanged, and do not weaken a platform or security gate to keep the old candidate valid.
+
 ## 2. Owner activates the exact candidate
 
 The coding agent must stop and present this command. The repository owner executes it:

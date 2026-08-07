@@ -22,7 +22,7 @@ import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { readGithubPrerelease, readPublishedNpmPrerelease } from "./published-release.mjs";
 import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
-import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 export const SOAK_SCHEMA_VERSION = 1;
 const MAX_SOAK_RECORD_BYTES = 64 * 1024;
@@ -30,7 +30,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    console.error(`release soak failed: ${releaseDiagnostic(error?.message || error, 1400)}`);
+    console.error(JSON.stringify(releaseDiagnosticEvent("release.soak.failed", error?.message || error, 1400)));
     process.exitCode = 1;
   });
 }

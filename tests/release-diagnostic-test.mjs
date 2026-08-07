@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { releaseCommandFailure, releaseCommandLabel, releaseDiagnostic } from "../scripts/release-diagnostic.mjs";
+import { releaseCommandFailure, releaseCommandLabel, releaseDiagnostic, releaseDiagnosticEvent } from "../scripts/release-diagnostic.mjs";
 
 const npmToken = ["npm", "_", "abcdefghijklmnopqrstuvwxyz", "1234567890"].join("");
 const syntheticHome = ["", "Users", "synthetic-user", "project"].join("/");
@@ -18,6 +18,16 @@ assert(!diagnostic.includes("synthetic-user"), "home path was not redacted");
 assert(!diagnostic.includes("\n"), "diagnostic retained a literal line break");
 assert(diagnostic.includes("\\n"), "diagnostic did not preserve bounded line-break evidence");
 assert(releaseDiagnostic("x".repeat(500), 64).length <= 64, "release diagnostic exceeded its bound");
+const hostileEvent = releaseDiagnosticEvent("release.test.failed", `first\r\nsecond \u001b[31m ${npmToken} ${credentialUrl}`, 96);
+const hostileLine = JSON.stringify(hostileEvent);
+assert.equal(hostileLine.split("\n").length, 1, "serialized release diagnostic injected a second log line");
+assert.deepEqual(JSON.parse(hostileLine), hostileEvent, "serialized release diagnostic changed event fields");
+assert.equal(hostileEvent.event, "release.test.failed", "release diagnostic event name changed");
+assert(hostileEvent.error.length <= 96, "release diagnostic event error exceeded its bound");
+assert(!hostileLine.includes(npmToken) && !hostileLine.includes("synthetic-user:synthetic-password"),
+  "release diagnostic event exposed token or URL credentials");
+assert.throws(() => releaseDiagnosticEvent("Invalid Event", "error"), /event name is invalid/,
+  "release diagnostic accepted an unsafe event name");
 assert.equal(releaseCommandLabel("/private/tooling/git", ["fetch", "origin", "main"]), "git fetch");
 const failure = releaseCommandFailure("/private/tooling/npm", ["publish", "--registry-auth=synthetic-secret"], {
   status: 1,

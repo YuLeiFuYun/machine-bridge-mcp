@@ -22,7 +22,7 @@ import { githubReleaseByTagEndpoint, waitForGithubReleaseAsset } from "./github-
 import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
 import { verifyCurrentStableSoak } from "./release-soak.mjs";
 import { assertOwnerTerminalPublication, withGithubPublicationLock } from "./release-publication-guard.mjs";
-import { releaseCommandFailure, releaseDiagnostic } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -517,6 +517,6 @@ try {
     fail("usage: node scripts/github-release.mjs [--check|--publish|--publish-prerelease|--backfill] [--owner-terminal-confirm]");
   }
 } catch (error) {
-  console.error(`release error: ${releaseDiagnostic(error?.message || error, 1600)}`);
+  console.error(JSON.stringify(releaseDiagnosticEvent("github.release.failed", error?.message || error, 1600)));
   process.exitCode = 1;
 }
