@@ -30,7 +30,7 @@ Add one identifier per line. The denylist is deliberately local and must never b
 
 Machine-specific operational notes may be kept under the ignored `.project-local/` directory. Use it for temporary environment state and one-machine recovery observations, not for reusable engineering decisions. General lessons belong in tracked documentation such as `ENGINEERING.md`.
 
-Ignored does not mean safe for secrets: do not store passwords, tokens, private keys, authorization URLs, or copied secret-bearing logs there. `.privacy-denylist` remains the dedicated local vocabulary gate.
+Ignored does not mean safe for secrets: do not store passwords, tokens, private keys, authorization URLs, or copied secret-bearing logs there. Treat live Worker endpoints, absolute home paths, downloaded toolchains, browser captures, and other machine identifiers as retention-sensitive metadata even when they are not credentials. Prune reconstructible dependency/toolchain experiments, stale live-endpoint probes, obsolete candidate logs, and superseded workflow snapshots once their reusable conclusions have moved into tracked documentation; retain only the minimum one-machine evidence needed for an active release/recovery investigation. `.privacy-denylist` remains the dedicated local vocabulary gate.
 
 ## Runtime instruction context
 

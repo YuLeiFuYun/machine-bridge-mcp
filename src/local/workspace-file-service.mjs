@@ -1,11 +1,18 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { link, lstat, mkdir, open, opendir, rename, rm, stat } from "node:fs/promises";
-import path, { basename, dirname, join, resolve } from "node:path";
+import { lstat, open, opendir, stat } from "node:fs/promises";
+import path, { basename, resolve } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
 import { clampInteger } from "./numbers.mjs";
+import {
+  assertNoResolvedPatchCollisions as assertResolvedPatchCollisions,
+  atomicWriteText as commitAtomicText,
+  commitPatchTransaction as commitPatchOperations,
+  sha256,
+} from "./workspace-file-transaction.mjs";
+export { assertNoResolvedPatchCollisions, sha256 } from "./workspace-file-transaction.mjs";
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES = 10_000;
@@ -14,7 +21,7 @@ const MAX_WALK_ENTRIES = 200_000;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 export class WorkspaceFileService {
-  constructor({ workspace, policy, policyGate, policyForContext = null, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationLock }) {
+  constructor({ workspace, policy, policyGate, policyForContext = null, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationPaths }) {
     this.workspace = workspace;
     this.policy = policy;
     this.policyGate = policyGate;
@@ -23,7 +30,7 @@ export class WorkspaceFileService {
     this.resolveWritePath = resolveWritePath;
     this.displayPath = displayPath;
     this.throwIfCancelled = throwIfCancelled;
-    this.withMutationLock = withMutationLock;
+    this.withMutationPaths = withMutationPaths;
   }
 
   listRoots(context = {}) {
@@ -145,14 +152,15 @@ export class WorkspaceFileService {
   }
 
   async writeFile(args, context = {}) {
-    return this.withMutationLock(async () => {
+    this.throwIfCancelled(context);
+    this.policyGate.assert("write_file");
+    if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
+    const content = String(args.content ?? "");
+    const bytes = Buffer.byteLength(content);
+    if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
+    const full = await this.resolveWritePath(args.path, context);
+    return this.withMutationPaths([full], async () => {
       this.throwIfCancelled(context);
-      this.policyGate.assert("write_file");
-      if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
-      const content = String(args.content ?? "");
-      const bytes = Buffer.byteLength(content);
-      if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
-      const full = await this.resolveWritePath(args.path, context);
       const existing = await pathEntryIfExists(full);
       if (existing?.isSymbolicLink()) throw new BridgeError("conflict", "refusing to overwrite a symbolic link", { details: { reason: "symbolic_link" } });
       if (args.create_only && existing) throw new BridgeError("conflict", "file exists and create_only=true", { details: { reason: "already_exists" } });
@@ -163,23 +171,24 @@ export class WorkspaceFileService {
         if (sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new BridgeError("conflict", "expected_sha256 mismatch", { details: { reason: "hash_mismatch" } });
       }
       this.throwIfCancelled(context);
-      await atomicWriteText(full, content, existing, {
+      const commit = await commitAtomicText(full, content, existing, {
+        readText: readUtf8File,
         createOnly: args.create_only === true,
         expectedHash: args.expected_sha256 ? String(args.expected_sha256).toLowerCase() : undefined,
       });
-      return { ok: true, path: this.displayPath(full, context), sha256: sha256(content), bytes };
+      return { ok: true, path: this.displayPath(full, context), sha256: sha256(content), bytes, ...(commit.warnings.length ? { warnings: commit.warnings } : {}) };
     });
   }
-
   async editFile(args, context = {}) {
-    return this.withMutationLock(async () => {
+    this.throwIfCancelled(context);
+    this.policyGate.assert("edit_file");
+    if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
+    const oldText = String(args.old_text ?? "");
+    const newText = String(args.new_text ?? "");
+    if (!oldText) throw new BridgeError("invalid_request", "old_text must not be empty", { details: { reason: "empty_old_text" } });
+    const full = await this.resolveExistingPath(args.path, context);
+    return this.withMutationPaths([full], async () => {
       this.throwIfCancelled(context);
-      this.policyGate.assert("edit_file");
-      if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
-      const oldText = String(args.old_text ?? "");
-      const newText = String(args.new_text ?? "");
-      if (!oldText) throw new BridgeError("invalid_request", "old_text must not be empty", { details: { reason: "empty_old_text" } });
-      const full = await this.resolveExistingPath(args.path, context);
       const info = await lstat(full);
       if (!info.isFile() || info.isSymbolicLink()) throw new BridgeError("conflict", "path is not a regular non-symbolic-link file", { details: { reason: "unsupported_target_type" } });
       const current = await readUtf8File(full);
@@ -191,46 +200,58 @@ export class WorkspaceFileService {
       const bytes = Buffer.byteLength(updated);
       if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
       this.throwIfCancelled(context);
-      await atomicWriteText(full, updated, info, { expectedHash: sha256(current) });
+      await commitAtomicText(full, updated, info, { expectedHash: sha256(current), readText: readUtf8File });
       return { ok: true, path: this.displayPath(full, context), replacements: args.replace_all ? occurrences : 1, sha256: sha256(updated), bytes };
     });
   }
-
   async applyPatch(args, context = {}) {
-    return this.withMutationLock(async () => {
+    this.throwIfCancelled(context);
+    this.policyGate.assert("apply_patch");
+    const patchText = String(args.patch ?? "");
+    if (!patchText) throw new BridgeError("invalid_request", "patch is required", { details: { reason: "missing_patch" } });
+    if (Buffer.byteLength(patchText) > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", "patch exceeds maximum size", { details: { reason: "patch_limit", maximum_bytes: MAX_WRITE_BYTES } });
+    const parsed = parsePatchEnvelope(patchText);
+    const resolved = [];
+    for (const operation of parsed) {
       this.throwIfCancelled(context);
-      this.policyGate.assert("apply_patch");
-      const patchText = String(args.patch ?? "");
-      if (!patchText) throw new BridgeError("invalid_request", "patch is required", { details: { reason: "missing_patch" } });
-      if (Buffer.byteLength(patchText) > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", "patch exceeds maximum size", { details: { reason: "patch_limit", maximum_bytes: MAX_WRITE_BYTES } });
-      const parsed = parsePatchEnvelope(patchText);
+      if (operation.kind === "add") {
+        resolved.push({ operation, kind: "add", source: null, target: await this.resolveWritePath(operation.path, context) });
+        continue;
+      }
+      const source = await this.resolveExistingPath(operation.path, context);
+      const target = operation.kind === "update" && operation.moveTo
+        ? await this.resolveWritePath(operation.moveTo, context)
+        : operation.kind === "delete" ? null : source;
+      resolved.push({ operation, kind: operation.kind === "delete" ? "delete" : operation.moveTo ? "move" : "update", source, target });
+    }
+    assertResolvedPatchCollisions(resolved);
+    const mutationPaths = resolved.flatMap((item) => [item.source, item.target].filter(Boolean));
+    return this.withMutationPaths(mutationPaths, async () => {
+      this.throwIfCancelled(context);
       const prepared = [];
-      for (const operation of parsed) {
+      for (const item of resolved) {
+        const { operation, source, target } = item;
         this.throwIfCancelled(context);
-        if (operation.kind === "add") {
-          const target = await this.resolveWritePath(operation.path, context);
+        if (item.kind === "add") {
           if (await pathEntryIfExists(target)) throw new BridgeError("conflict", "add target already exists", { details: { reason: "already_exists", operation: "add" } });
           assertTextSize(operation.content);
           prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
           continue;
         }
-        const source = await this.resolveExistingPath(operation.path, context);
         const sourceInfo = await lstat(source);
         if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new BridgeError("conflict", "patch source is not a regular file", { details: { reason: "unsupported_source_type" } });
         const original = await readUtf8File(source);
-        if (operation.kind === "delete") {
+        if (item.kind === "delete") {
           prepared.push({ kind: "delete", source, target: null, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
           continue;
         }
         const content = applyUpdateHunks(original, operation.hunks);
         assertTextSize(content);
-        const target = operation.moveTo ? await this.resolveWritePath(operation.moveTo, context) : source;
         if (target !== source && await pathEntryIfExists(target)) throw new BridgeError("conflict", "move target already exists", { details: { reason: "already_exists", operation: "move" } });
-        prepared.push({ kind: operation.moveTo ? "move" : "update", source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
+        prepared.push({ kind: item.kind, source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
       }
-      assertNoResolvedPatchCollisions(prepared);
       this.throwIfCancelled(context);
-      const transaction = await commitPatchTransaction(prepared);
+      const transaction = await commitPatchOperations(prepared, { readText: readUtf8File });
       return {
         ok: true,
         ...(transaction.warnings.length ? { warnings: transaction.warnings } : {}),
@@ -243,7 +264,6 @@ export class WorkspaceFileService {
       };
     });
   }
-
   async searchText(args, context = {}) {
     const query = String(args.query || "");
     if (!query) throw new BridgeError("invalid_request", "query is required", { details: { reason: "missing_query" } });
@@ -354,137 +374,12 @@ async function readUtf8File(filePath) {
   return decodeUtf8(buffer);
 }
 
-async function writeFlushedText(filePath, content, mode) {
-  const handle = await open(filePath, "wx", mode);
-  let failure = null;
-  try {
-    await handle.writeFile(content, { encoding: "utf8" });
-    try { await handle.chmod(mode); } catch (error) { if (process.platform !== "win32") throw error; }
-    await handle.sync();
-  } catch (error) {
-    failure = error;
-  }
-  try { await handle.close(); } catch (error) { failure ||= error; }
-  if (failure) {
-    try { await rm(filePath, { force: true }); } catch {
-      throw new BridgeError("internal_error", "staged file write failed and cleanup was incomplete", { cause: failure, expose: false });
-    }
-    throw failure;
-  }
+export function atomicWriteText(full, content, existing = null, options = {}) {
+  return commitAtomicText(full, content, existing, { ...options, readText: options.readText || readUtf8File });
 }
 
-async function atomicWriteText(full, content, existing = null, options = {}) {
-  await mkdir(dirname(full), { recursive: true });
-  const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-  try {
-    await writeFlushedText(temp, content, existing ? existing.mode & 0o777 : 0o600);
-    if (options.expectedHash) {
-      let current;
-      try { current = await readUtf8File(full); } catch (error) {
-        if (error?.code === "ENOENT") throw new BridgeError("conflict", "file changed before atomic commit", { cause: error, details: { reason: "precondition_target_missing" } });
-        throw error;
-      }
-      if (sha256(current) !== options.expectedHash) throw new BridgeError("conflict", "file changed before atomic commit", { details: { reason: "hash_mismatch" } });
-    }
-    if (options.createOnly) {
-      await link(temp, full);
-      await rm(temp, { force: true });
-    } else {
-      await rename(temp, full);
-    }
-  } catch (error) {
-    await rm(temp, { force: true }).catch(() => {});
-    throw error;
-  }
-}
-
-function assertNoResolvedPatchCollisions(operations) {
-  const owners = new Map();
-  for (const operation of operations) {
-    const paths = operation.source === operation.target
-      ? [operation.source]
-      : [operation.source, operation.target].filter(Boolean);
-    for (const full of paths) {
-      const key = process.platform === "win32" ? String(full).toLowerCase() : String(full);
-      const previous = owners.get(key);
-      if (previous && previous !== operation) throw new BridgeError("conflict", "patch operations resolve to the same path", { details: { reason: "resolved_path_collision" } });
-      owners.set(key, operation);
-    }
-  }
-}
-
-export async function commitPatchTransaction(operations, options = {}) {
-  const move = options.rename || rename;
-  const remove = options.remove || rm;
-  const staged = [];
-  const committed = [];
-  try {
-    for (const operation of operations) {
-      if (operation.content === undefined) continue;
-      await mkdir(dirname(operation.target), { recursive: true });
-      const temp = join(dirname(operation.target), `.${basename(operation.target)}.mbm-patch-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-      await writeFlushedText(temp, operation.content, operation.mode);
-      staged.push({ operation, temp });
-    }
-
-    for (const operation of operations) {
-      if (operation.source) {
-        const current = await readUtf8File(operation.source);
-        if (sha256(current) !== operation.originalHash) throw new BridgeError("conflict", "patch source changed during apply", { details: { reason: "hash_mismatch" } });
-      }
-      if (operation.kind === "add" || operation.kind === "move") {
-        if (await pathEntryIfExists(operation.target)) throw new BridgeError("conflict", "patch target appeared during apply", { details: { reason: "target_appeared" } });
-      }
-    }
-
-    for (const operation of operations) {
-      let backup = null;
-      if (operation.source) {
-        backup = join(dirname(operation.source), `.${basename(operation.source)}.mbm-backup-${process.pid}-${randomBytes(6).toString("hex")}`);
-        await move(operation.source, backup);
-      }
-      const record = { operation, backup, targetCreated: false };
-      committed.push(record);
-      const stage = staged.find((item) => item.operation === operation);
-      if (stage) {
-        await move(stage.temp, operation.target);
-        record.targetCreated = true;
-      }
-    }
-  } catch (error) {
-    const recoveryFailures = [];
-    for (const item of [...committed].reverse()) {
-      if (item.targetCreated) {
-        try { await remove(item.operation.target, { force: true }); } catch (failure) { recoveryFailures.push(failure); }
-      }
-      if (item.backup) {
-        try { await move(item.backup, item.operation.source); } catch (failure) { recoveryFailures.push(failure); }
-      }
-    }
-    recoveryFailures.push(...await removePatchArtifacts(staged.map((item) => item.temp), remove));
-    if (recoveryFailures.length) {
-      throw new BridgeError("internal_error", "patch transaction failed and recovery was incomplete", { cause: error, expose: false });
-    }
-    throw error;
-  }
-
-  const cleanupFailures = await removePatchArtifacts([
-    ...staged.map((item) => item.temp),
-    ...committed.map((item) => item.backup).filter(Boolean),
-  ], remove);
-  return {
-    warnings: cleanupFailures.length
-      ? [`Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed; inspect affected directories for .mbm-backup-* or .mbm-patch-* files.`]
-      : [],
-  };
-}
-
-async function removePatchArtifacts(paths, remove) {
-  const failures = [];
-  for (const path of paths) {
-    try { await remove(path, { force: true }); } catch (error) { failures.push(error); }
-  }
-  return failures;
+export function commitPatchTransaction(operations, options = {}) {
+  return commitPatchOperations(operations, { ...options, readText: options.readText || readUtf8File });
 }
 
 function assertTextSize(content) {
@@ -502,9 +397,6 @@ function countOccurrences(content, needle) {
   return count;
 }
 
-export function sha256(value) {
-  return createHash("sha256").update(String(value)).digest("hex");
-}
 
 function detectImageMime(buffer) {
   if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";

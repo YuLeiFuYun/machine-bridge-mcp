@@ -20,9 +20,18 @@ for (const required of [
 for (const required of ["activation_recovered", "activation_recovery_reason", "activation_recovery_detail", "verified candidate-service recovery"]) {
   if (!cliActivateSource.includes(required)) throw new Error(`candidate activation CLI lost recovered-result visibility: ${required}`);
 }
+if ((cliActivateSource.match(/provisionInitialOwner: false/g) || []).length !== 2
+    || !cliSource.includes("provisionInitialOwner = true")
+    || !cliSource.includes("args.daemonOnly || provisionInitialOwner === false")) {
+  throw new Error("candidate activation must skip first-run owner provisioning while ordinary startup keeps it enabled");
+}
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+const npmrcSource = readFileSync(join(root, ".npmrc"), "utf8");
+if (!/^engine-strict=true$/m.test(npmrcSource) || !/^save-exact=true$/m.test(npmrcSource)) {
+  throw new Error("repository npm configuration must enforce engines and preserve exact dependency pins on future saves");
+}
 const wranglerConfigSource = readFileSync(join(root, "wrangler.jsonc"), "utf8");
 for (const requiredFlag of ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"]) {
   if (!wranglerConfigSource.includes(`"${requiredFlag}"`)) {
@@ -171,6 +180,9 @@ if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-rel
 const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.mjs"), "utf8");
 if (!coverageRunnerSource.includes("maxRetries") || !coverageRunnerSource.includes("retryDelay")) {
   throw new Error("coverage temporary-directory cleanup lost its concurrent-writer retry boundary");
+}
+for (const fixture of ["tests/secure-file-test.mjs", "tests/worker-secret-file-test.mjs", "tests/atomic-fs-test.mjs"]) {
+  if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical filesystem coverage lost direct fault fixture: ${fixture}`);
 }
 const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
@@ -502,7 +514,7 @@ if (managedJobClaimSource.includes("existsSync") || !managedJobClaimSource.inclu
 for (const required of ["replaceFileAtomicallySync", "verifyPathIdentity: true", "rejectMultipleLinks: true", "managed job cancellation marker is invalid"]) {
   if (!managedJobCancellationSource.includes(required)) throw new Error(`managed job cancellation boundary lost: ${required}`);
 }
-for (const required of ["MANAGED_JOB_ID", "requireContained", "identity changed during inspection", "inspectPathIfPresentSync"]) {
+for (const required of ["MANAGED_JOB_ID", "requireContained", "identity changed during inspection", "inspectPathIfPresentSync", "bigint: true"]) {
   if (!managedJobDirectorySource.includes(required)) throw new Error(`managed job directory boundary lost: ${required}`);
 }
 if (packageJson.scripts?.["managed-job-boundary:test"] !== "node tests/managed-job-boundary-test.mjs"
@@ -679,6 +691,10 @@ if (!processExecutionSource.includes('import { spawn } from "node:child_process"
     || !processExecutionSource.includes("shell: false,")
     || processExecutionSource.includes("...options")) {
   throw new Error("direct process execution lost its fixed-option non-shell child_process boundary");
+}
+const processTreeSupervisorSource = readFileSync(join(root, "src", "local", "process-tree-supervisor.mjs"), "utf8");
+for (const required of ["createSnapshotBudget", "boundedSnapshotOptions", "processSnapshotTimeoutMs", "processTreeOwnershipStillCurrent"]) {
+  if (!processTreeSupervisorSource.includes(required)) throw new Error(`process-tree supervisor lost bounded ownership escalation: ${required}`);
 }
 if (packageJson.devDependencies?.["fast-check"] !== "4.9.0" || !readFileSync(join(root, "tests", "security-properties-test.js"), "utf8").includes('from "fast-check"')) {
   throw new Error("recognized JavaScript property-based fuzzing coverage is missing");

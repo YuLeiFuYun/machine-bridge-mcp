@@ -2,7 +2,8 @@ import { renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectPathIfPresentSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
+import { inspectPathIfPresentSync, openRegularFileSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
+import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "../src/local/filesystem-identity.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-secure-file-test-"));
 try {
@@ -46,9 +47,48 @@ try {
     if (readBoundedRegularFileSync(file, 64).toString("utf8") !== "bounded-value") throw new Error("ordinary bounded read rejected a hard link without the secure-owner option");
   }
   expectThrow(() => readBoundedRegularFileSync(file, -1), "maximum file size");
+  const highIdentityA = filesystemIdentity({ dev: 7n, ino: 9007199254740992n }, "high identity A");
+  const highIdentityB = filesystemIdentity({ dev: 7n, ino: 9007199254740993n }, "high identity B");
+  if (sameFilesystemIdentity(highIdentityA, highIdentityB)) throw new Error("lossless filesystem identity collapsed adjacent >2^53 inode values");
+  expectThrow(() => filesystemIdentity({ dev: 7, ino: Number(9007199254740993n) }, "unsafe injected identity"), "cannot be represented losslessly");
+  expectThrow(() => openRegularFileSync(file, 0, {
+    verifyPathIdentity: true,
+    fstatSync() { return syntheticStat(7n, 9007199254740992n); },
+    lstatSync() { return syntheticStat(7n, 9007199254740993n); },
+  }), "identity changed while opening");
+
+  const safeNumberIdentity = filesystemIdentity({ dev: 9, ino: 11 });
+  if (safeNumberIdentity.dev !== 9n || safeNumberIdentity.ino !== 11n
+    || !sameFilesystemIdentity(safeNumberIdentity, { dev: 9n, ino: 11n })
+    || sameFilesystemIdentity(null, safeNumberIdentity)
+    || sameFilesystemIdentity(safeNumberIdentity, { dev: 10n, ino: 11n })) {
+    throw new Error("filesystem identity safe-number/null/difference branches drifted");
+  }
+  expectThrow(() => filesystemIdentity(null), "identity is unavailable");
+  expectThrow(() => exactFilesystemInteger(-1n, "negative bigint"), "is invalid");
+  expectThrow(() => exactFilesystemInteger(-1, "negative number"), "cannot be represented losslessly");
+  expectThrow(() => exactFilesystemInteger("7", "string identity"), "cannot be represented losslessly");
+  if (exactFilesystemInteger(12n, "bigint identity") !== 12n || exactFilesystemInteger(13, "number identity") !== 13n) {
+    throw new Error("exact filesystem integer conversion changed");
+  }
+  if (filesystemTimeMs(123n, "bigint time") !== 123 || filesystemTimeMs(456.5, "number time") !== 456.5) {
+    throw new Error("filesystem time conversion changed");
+  }
+  expectThrow(() => filesystemTimeMs(-1n, "negative bigint time"), "cannot be represented safely");
+  expectThrow(() => filesystemTimeMs(BigInt(Number.MAX_SAFE_INTEGER) + 1n, "oversized bigint time"), "cannot be represented safely");
+  expectThrow(() => filesystemTimeMs(-1, "negative number time"), "is invalid");
+  expectThrow(() => filesystemTimeMs(Number.NaN, "nan time"), "is invalid");
+  expectThrow(() => filesystemTimeMs("1", "string time"), "is invalid");
   console.log("secure bounded-file test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
+}
+
+function syntheticStat(dev, ino) {
+  return {
+    dev, ino, size: 13, nlink: 1, mode: 0o100600,
+    isFile: () => true, isSymbolicLink: () => false, isDirectory: () => false,
+  };
 }
 
 function expectThrow(callback, message) {

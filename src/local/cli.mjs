@@ -337,7 +337,7 @@ export function cleanupRuntimeStartFailure(error, runtime, daemonLock) {
     : error;
 }
 
-async function prepareRemoteState({ args, workspace, state, logger, onRemotePrepared }) {
+async function prepareRemoteState({ args, workspace, state, logger, onRemotePrepared, provisionInitialOwner = true }) {
   if (!args.daemonOnly) {
     await convergeRemoteConfiguration({ args, state });
     onRemotePrepared?.();
@@ -354,7 +354,9 @@ async function prepareRemoteState({ args, workspace, state, logger, onRemotePrep
     currentPackageVersion(),
     { profileDir: state.paths.profileDir, reason: "Authorize Machine Bridge startup" },
   );
-  const initialOwner = args.daemonOnly ? null : await ensureInitialOwnerAccount(state, deviceSessionIdentity);
+  const initialOwner = args.daemonOnly || provisionInitialOwner === false
+    ? null
+    : await ensureInitialOwnerAccount(state, deviceSessionIdentity);
   if (!args.daemonOnly && !args.noAutostart) {
     await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
   }

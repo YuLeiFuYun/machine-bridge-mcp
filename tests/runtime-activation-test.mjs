@@ -1,4 +1,5 @@
 import { activatePersistentRuntime, waitForActivatedRuntime } from "../src/local/runtime-activation.mjs";
+import { BridgeError } from "../src/local/errors.mjs";
 
 await testValidationAndPreflightFailures();
 await testConvergenceWait();
@@ -670,7 +671,7 @@ async function testPostDeploymentPreparationFailureUsesCandidateService() {
       prepareRemoteState: async ({ onRemotePrepared }) => {
         events.push("relay:prepared");
         onRemotePrepared();
-        throw new Error("session certificate failed after deployment");
+        throw new BridgeError("authentication_failed", "unauthorized");
       },
       createRuntime: unexpected,
       installAutostart: async () => { events.push("service:install-candidate"); return { ok: true, active: true, provider: "test" }; },
@@ -681,9 +682,10 @@ async function testPostDeploymentPreparationFailureUsesCandidateService() {
       checkWorker: async () => readyCandidateWorker(),
     });
   } catch (error) { caught = error; }
-  assert(caught?.activationRecovery === "candidate_service_started"
-    && caught.message.includes("session certificate failed after deployment"),
-  "post-deployment preparation failure did not select compatible-service recovery");
+  assert(caught?.code === "authentication_failed"
+    && caught?.activationRecovery === "candidate_service_started"
+    && caught.message.includes("unauthorized"),
+  "post-deployment account-admin authentication failure did not select compatible-service recovery");
   assert(JSON.stringify(events) === JSON.stringify([
     "service:stop",
     "relay:prepared",

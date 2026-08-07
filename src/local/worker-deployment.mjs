@@ -33,7 +33,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
       : (options.existingHealthAttempts ?? 2);
     const health = await retryHealthFn(state.worker.url, expectedVersion, attempts, healthOptions);
     if (health.ok) {
-      logger.success?.("Worker unchanged and healthy", { url: state.worker.url });
+      logger.success?.("Worker unchanged and healthy");
       logger.debug?.("Worker health route", { network_route: health.networkRoute || "unknown" });
       return state.worker;
     }
@@ -54,7 +54,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
     await runWranglerFn(["login"], { stateRoot: wranglerStateRoot });
   }
 
-  logger.info?.("Deploying Cloudflare Worker", { name: state.worker.name });
+  logger.info?.("Deploying Cloudflare Worker");
   const deploy = await withSecretsFileFn(state, secretFile => runWranglerFn([
     "deploy",
     "--name", state.worker.name,
@@ -82,7 +82,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
     logger.debug?.("Worker post-deployment health detail", { health_error: health.error, network_route: health.networkRoute || "unknown" });
     throw workerVerificationError(health.error, { deploymentSucceeded: true });
   }
-  logger.success?.("Worker ready", { url: state.worker.url, version: health.version });
+  logger.success?.("Worker ready", { version: health.version });
   logger.debug?.("Worker health route", { network_route: health.networkRoute || "unknown" });
   return state.worker;
 }

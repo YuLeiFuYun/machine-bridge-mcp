@@ -56,8 +56,17 @@ export async function withOwnerStateLock(root, callback, options = {}) {
   } catch (error) {
     callbackError = error;
   }
-  const released = removeOwnedJsonFileSync(lockPath, { token: owner.token, purpose }, { maxBytes: MAX_LOCK_BYTES });
-  if (!released) throw new Error(`${label} lock changed before release; state may require inspection`);
+  let releaseError;
+  try {
+    const released = removeOwnedJsonFileSync(lockPath, { token: owner.token, purpose }, { maxBytes: MAX_LOCK_BYTES });
+    if (!released) releaseError = new Error(`${label} lock changed before release; state may require inspection`);
+  } catch (error) {
+    releaseError = new Error(`${label} lock release failed; state may require inspection`, { cause: error });
+  }
+  if (callbackError && releaseError) {
+    throw new AggregateError([callbackError, releaseError], `${label} operation failed and lock release was incomplete`);
+  }
+  if (releaseError) throw releaseError;
   if (callbackError) throw callbackError;
   return result;
 }
@@ -74,12 +83,11 @@ function lockOwner(purpose) {
 }
 
 function readLockOwner(file, purpose) {
+  let text;
+  try { text = readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock").toString("utf8"); }
+  catch (error) { if (error?.code === "ENOENT") return { kind: "missing" }; throw error; }
   let parsed;
-  try {
-    parsed = JSON.parse(readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock").toString("utf8"));
-  } catch (error) {
-    return error?.code === "ENOENT" ? { kind: "missing" } : { kind: "invalid" };
-  }
+  try { parsed = JSON.parse(text); } catch { return { kind: "invalid" }; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "invalid" };
   if (!Number.isInteger(parsed.pid) || parsed.pid <= 0) return { kind: "invalid" };
   if (!/^[a-f0-9]{32}$/.test(String(parsed.token || ""))) return { kind: "invalid" };

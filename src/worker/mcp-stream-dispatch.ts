@@ -1,4 +1,3 @@
-import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import type { JsonRpcMessage, McpResumptionStore } from "./mcp-resumption.ts";
 import {
@@ -50,63 +49,6 @@ type ImmediateOutcomeInput = {
   outcome: PendingCallOutcome;
   transformResult?: (value: unknown) => unknown;
 };
-
-export function buildServerInfoResult(input: {
-  serverName: string;
-  serverVersion: string;
-  base: string;
-  oauth: Record<string, unknown>;
-  authorization: Record<string, any>;
-  daemon: Record<string, any>;
-  effectiveTools: string[];
-  advertisedTools: string[];
-  pendingSnapshot: Record<string, unknown>;
-  daemonRegistry: import("./daemon-sockets.ts").DaemonSocketRegistry;
-  observability: WorkerObservability;
-}): Record<string, unknown> {
-  const probing = input.daemonRegistry.probingSockets().length;
-  const ready = input.daemonRegistry.readySockets().length;
-  const candidates = input.daemonRegistry.candidateSockets().length;
-  return {
-    name: input.serverName,
-    version: input.serverVersion,
-    mcp_url: `${input.base}/mcp`,
-    oauth: input.oauth,
-    account: input.authorization.account,
-    authorization: input.authorization,
-    authority_summary: input.authorization.summary,
-    daemon: input.daemon,
-    worker: {
-      pending_calls: input.pendingSnapshot,
-      daemon_candidates: candidates,
-      daemon_probes: probing,
-      sockets_live: {
-        authenticated: input.daemonRegistry.readyRoleSockets().length + probing,
-        ready,
-        probing,
-        candidates,
-      },
-      observability: input.observability.snapshot(),
-    },
-    tools: input.effectiveTools,
-    tools_scope: "authenticated_account_effective_tools_before_host_filtering",
-    tool_delivery: {
-      full_profile_scope: "daemon-capability-ceiling-before-account-filtering",
-      daemon_advertised_tool_count: input.daemon.tool_count,
-      relay_advertised_tool_count: input.advertisedTools.length,
-      effective_account_tool_count: input.effectiveTools.length,
-      relay_advertised_scope: "stable_authenticated_account_catalog_before_host_filtering",
-      effective_scope: "live_daemon_and_account_intersection_before_host_filtering",
-      host_exposed_tools_known_to_server: false,
-      host_may_expose_subset: true,
-      remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
-      worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
-      daemon_execution_and_worker_settlement_deadlines_separate: true,
-      host_terminal_receipt_observable: false,
-      internal_stream_metrics_scope: "legacy resumable Worker-internal storage and subscription transport only",
-    },
-  };
-}
 
 export async function startEventDrivenStreamCall(input: StartStreamCallInput): Promise<void> {
   const callId = randomToken("call");

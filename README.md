@@ -169,7 +169,7 @@ The default is intentionally `full` for owner-operated local automation. This is
 
 The shared source of truth is `src/shared/policy-contract.json`. The generated matrix is in [docs/POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md).
 
-For remote calls, `server_info.authorization.effective_policy` and `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
+For routine remote health checks, prefer `server_info` with `detail: "summary"`; the empty/default call remains full diagnostics. For remote calls, `server_info.authorization.effective_policy` and, when exact membership is needed, the full projection's `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
 
 `tools/list` is a stable discovery catalog for the authenticated account role. A brief relay interruption does not withdraw tool definitions or require a tools-list-changed notification. Discovery is not authority: every `tools/call` is still intersected with the current end-to-end-ready daemon policy and tool ceiling, and fails retryably with `unavailable` when no daemon is ready. `server_info.tool_delivery` distinguishes the stable advertised catalog from the currently effective daemon/account intersection. The remote catalog also narrows configurable foreground timeouts to 60 seconds while preserving each tool’s 30- or 60-second default; larger requests fail before daemon dispatch instead of being silently truncated after side effects may have begun.
 

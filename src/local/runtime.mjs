@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { realpathSync, rmSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { isRelayReadyContext } from "./relay-connection.mjs";
+import { isRelayReadyContext } from "./relay-connection-classification.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
 import { CONTROL_PLANE_TOOL_NAMES, MAX_CONCURRENT_TOOL_CALLS, RESERVED_CONTROL_TOOL_CALLS, executionGuardrailsSnapshot } from "./execution-limits.mjs";
 export { MAX_COMMAND_BYTES } from "./process-contract.mjs";
@@ -14,9 +14,11 @@ import { RuntimeObservability } from "./observability.mjs";
 import { ToolExecutor } from "./tool-executor.mjs";
 import { boundedErrorMessage, ProcessExecutionService } from "./process-execution.mjs";
 import { GitService } from "./git-service.mjs";
+import { FileMutationCoordinator } from "./file-mutation-coordinator.mjs";
 import { createTrustedGitResolver } from "./trusted-git-executable.mjs";
 import { LifecycleController } from "./lifecycle.mjs";
 import { MAX_WRITE_BYTES, sha256, WorkspaceFileService } from "./workspace-file-service.mjs";
+import { projectRuntimeInfo } from "./runtime-info-projection.mjs";
 export { MAX_WRITE_BYTES, sha256 } from "./workspace-file-service.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { ManagedJobManager } from "./managed-jobs.mjs";
@@ -83,7 +85,7 @@ export class LocalRuntime {
       },
       onFinish: (record) => this.processTracker.releaseCall(record.id),
     });
-    this.mutationQueue = Promise.resolve();
+    this.fileMutationCoordinator = new FileMutationCoordinator();
     this.capabilityObserver = new CapabilityObserver();
     this.runtimeDir = createRuntimeDir();
     this.resolveGitExecutable = createTrustedGitResolver({ resolve: resolveGitExecutable, workspace: this.workspace, stateRoot: browserStateRoot, runtimeDir: this.runtimeDir, home: agentHome });
@@ -96,7 +98,7 @@ export class LocalRuntime {
       resolveWritePath: (value, context) => this.resolveWritePath(value, context),
       displayPath: (value, context) => this.displayPath(value, context),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
-      withMutationLock: (operation) => this.withMutationLock(operation),
+      withMutationPaths: (paths, operation) => this.fileMutationCoordinator.withPaths(paths, operation),
     });
     if (typeof jobRoot !== "string" || !jobRoot.trim()) throw new Error("persistent managed-job root is required");
     this.managedJobManager = new ManagedJobManager({
@@ -219,6 +221,8 @@ export class LocalRuntime {
   }
 
   tools() { return this.policyGate.names().filter((name) => name !== "server_info"); }
+
+  serverInfo(args = {}, context = {}) { return projectRuntimeInfo(this.runtimeInfo(context), args.detail); }
 
   runtimeInfo(context = {}) {
     const info = buildRuntimeInfo({
@@ -666,13 +670,6 @@ export class LocalRuntime {
     this.callRegistry.throwIfCancelled(context);
   }
 
-  async withMutationLock(callback) {
-    const previous = this.mutationQueue;
-    let release = () => {};
-    this.mutationQueue = new Promise((resolvePromise) => { release = resolvePromise; });
-    await previous;
-    try { return await callback(); } finally { release(); }
-  }
 }
 
 function shortCallId(value) {

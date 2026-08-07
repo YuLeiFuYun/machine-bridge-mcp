@@ -56,12 +56,17 @@ const boundaryModules = new Set([
   "policy.mjs",
   "errors.mjs",
   "call-registry.mjs",
+  "owner-state-lock.mjs",
+  "exclusive-file.mjs",
   "child-process-settlement.mjs",
   "tool-executor.mjs",
   "observability.mjs",
   "process-tracker.mjs",
   "process-execution.mjs",
   "git-service.mjs",
+  "file-mutation-coordinator.mjs",
+  "filesystem-identity.mjs",
+  "workspace-file-transaction.mjs",
   "workspace-file-service.mjs",
   "cli-options.mjs",
   "cli-policy.mjs",
@@ -89,10 +94,12 @@ const boundaryModules = new Set([
   "runtime-diagnostics.mjs",
   "system-network-route.mjs",
   "runtime-reporting.mjs",
+  "runtime-info-projection.mjs",
   "runtime-resource-service.mjs",
   "runtime-tool-handlers.mjs",
   "runtime-paths.mjs",
   "relay-call-recovery.mjs",
+  "relay-connection-classification.mjs",
   "browser-request-registry.mjs",
   "browser-bridge-http.mjs",
   "browser-broker-routes.mjs",
@@ -130,6 +137,7 @@ const lineLimits = Object.freeze({
   "src/local/relay-call-recovery.mjs": 170,
   "src/local/runtime-paths.mjs": 120,
   "src/local/runtime-reporting.mjs": 150,
+  "src/local/runtime-info-projection.mjs": 70,
   "src/local/runtime-resource-service.mjs": 100,
   "src/local/resource-operations.mjs": 110,
   "src/local/account-admin.mjs": 240,
@@ -139,7 +147,7 @@ const lineLimits = Object.freeze({
   "src/local/runtime-capabilities.mjs": 100,
   "src/local/cli.mjs": 950,
   "src/local/cli-service.mjs": 220,
-  "src/worker/index.ts": 850,
+  "src/worker/index.ts": 830,
   "src/worker/oauth-controller.ts": 360,
   "src/worker/oauth-authorization-page.ts": 100,
   "src/worker/oauth-tokens.ts": 260,
@@ -149,7 +157,8 @@ const lineLimits = Object.freeze({
   "src/local/process-output-stream.mjs": 110,
   "src/local/process-result-projection.mjs": 60,
   "src/local/process-sessions.mjs": 340,
-  "src/local/relay-connection.mjs": 780,
+  "src/local/relay-connection.mjs": 680,
+  "src/local/relay-connection-classification.mjs": 160,
   "src/local/relay-heartbeat.mjs": 130,
   "src/local/process-contract.mjs": 40,
   "src/local/process-tree.mjs": 70,
@@ -161,7 +170,10 @@ const lineLimits = Object.freeze({
   "src/shared/tool-call-capacity.mjs": 80,
   "src/local/call-capacity.mjs": 70,
   "src/local/git-service.mjs": 220,
-  "src/local/workspace-file-service.mjs": 550,
+  "src/local/file-mutation-coordinator.mjs": 80,
+  "src/local/filesystem-identity.mjs": 55,
+  "src/local/workspace-file-transaction.mjs": 190,
+  "src/local/workspace-file-service.mjs": 430,
   "src/local/tool-executor.mjs": 180,
   "src/local/security-audit-log.mjs": 220,
   "src/local/security-audit-storage.mjs": 230,
@@ -170,6 +182,8 @@ const lineLimits = Object.freeze({
   "src/local/security-audit-dispatch.mjs": 60,
   "src/local/security-audit-warning.mjs": 60,
   "src/local/call-registry.mjs": 190,
+  "src/local/owner-state-lock.mjs": 130,
+  "src/local/exclusive-file.mjs": 160,
   "src/local/lifecycle.mjs": 130,
   "src/local/loopback-health.mjs": 80,
   "src/local/cli-local-admin.mjs": 400,
@@ -213,7 +227,7 @@ const lineLimits = Object.freeze({
   "src/local/browser-extension-protocol.mjs": 130,
   "src/local/browser-pairing-store.mjs": 120,
   "src/local/browser-pairing-http.mjs": 80,
-  "src/local/worker-secret-file.mjs": 180,
+  "src/local/worker-secret-file.mjs": 165,
   "src/local/service-environment.mjs": 140,
   "src/local/service-owner.mjs": 150,
   "src/local/service-runtime.mjs": 150,
@@ -246,7 +260,7 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-modern-proxy.ts": 130,
   "src/worker/mcp-stream-proxy-contract.ts": 100,
   "src/worker/mcp-stream-subscription.ts": 130,
-  "src/worker/mcp-stream-channel.ts": 140,
+  "src/worker/mcp-stream-channel.ts": 130,
   "src/worker/worker-static-routes.ts": 90,
   "src/worker/worker-metadata.ts": 80,
   "src/worker/worker-edge-guard.ts": 100,
@@ -256,6 +270,8 @@ const lineLimits = Object.freeze({
   "src/worker/oauth-token-derivation.ts": 70,
   "src/worker/oauth-refresh-exchange.ts": 180,
   "src/worker/mcp-stream-dispatch.ts": 220,
+  "src/worker/server-info.ts": 170,
+  "src/worker/daemon-status.ts": 60,
   "src/worker/durable-stream-calls.ts": 140,
   "src/worker/durable-stream-result.ts": 40,
   "src/worker/worker-entry.ts": 80,
@@ -315,16 +331,54 @@ for (const required of ['cpu_quota: \"not-enforced\"', 'memory_quota: \"not-enfo
   if (!executionLimitSource.includes(required)) throw new Error(`execution guardrails misrepresent an unenforced OS boundary: ${required}`);
 }
 
-const workspaceFileSource = readFileSync(join(localRoot, "workspace-file-service.mjs"), "utf8");
-if (!workspaceFileSource.includes("async function writeFlushedText")
-    || !workspaceFileSource.includes("await handle.sync()")
-    || !workspaceFileSource.includes("staged file write failed and cleanup was incomplete")
-    || (workspaceFileSource.match(/await writeFlushedText\(/g) || []).length !== 2) {
-  throw new Error("workspace writes no longer flush both whole-file and patch staging files before commit");
+const filesystemIdentitySource = readFileSync(join(localRoot, "filesystem-identity.mjs"), "utf8");
+for (const required of ["filesystemIdentity", "sameFilesystemIdentity", "exactFilesystemInteger", "cannot be represented losslessly"]) {
+  if (!filesystemIdentitySource.includes(required)) throw new Error(`filesystem identity boundary lost lossless comparison behavior: ${required}`);
 }
-if (!workspaceFileSource.includes("patch transaction failed and recovery was incomplete")
-    || !workspaceFileSource.includes("Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed")) {
-  throw new Error("patch transaction failures or committed-artifact cleanup errors can be silently swallowed");
+for (const name of ["secure-file.mjs", "exclusive-file.mjs", "worker-secret-file.mjs", "managed-job-directory.mjs", "managed-job-lock.mjs", "state.mjs", "security-audit-storage.mjs", "ssh-key.mjs"]) {
+  const source = readFileSync(join(localRoot, name), "utf8");
+  if (!source.includes("filesystem-identity.mjs")) throw new Error(`${name} bypasses the shared lossless filesystem identity boundary`);
+  if (/Number\([^\n)]*\.(?:dev|ino)\)|(?:dev|ino):\s*Number\(/.test(source)) {
+    throw new Error(`${name} converts filesystem identity through Number and may lose Windows precision`);
+  }
+}
+for (const name of ["secure-file.mjs", "exclusive-file.mjs", "worker-secret-file.mjs", "managed-job-directory.mjs", "managed-job-lock.mjs", "state.mjs", "security-audit-storage.mjs"]) {
+  const source = readFileSync(join(localRoot, name), "utf8");
+  if (!source.includes("bigint: true")) throw new Error(`${name} lost a BigInt filesystem identity observation`);
+}
+if (readFileSync(join(localRoot, "secure-file.mjs"), "utf8").includes("return true;")) {
+  throw new Error("secure file identity comparison regained an unsafe fail-open fallback");
+}
+
+const mutationCoordinatorSource = readFileSync(join(localRoot, "file-mutation-coordinator.mjs"), "utf8");
+for (const required of ["this.queues = new Map()", "fileMutationPathKey", "const reservations = keys.map", "await Promise.all(reservations.map", "return await callback()"]){
+  if (!mutationCoordinatorSource.includes(required)) throw new Error(`file mutation coordinator lost reservation or settlement boundary: ${required}`);
+}
+if (mutationCoordinatorSource.indexOf("this.queues.set(key, tail)") > mutationCoordinatorSource.indexOf("await Promise.all(reservations.map")) {
+  throw new Error("file mutation coordinator waits before registering every requested path");
+}
+if (mutationCoordinatorSource.includes("Promise.race") || mutationCoordinatorSource.includes('addEventListener("abort"')) {
+  throw new Error("file mutation coordinator can release a path before an in-flight mutation callback settles");
+}
+const workspaceFileSource = readFileSync(join(localRoot, "workspace-file-service.mjs"), "utf8");
+const workspaceTransactionSource = readFileSync(join(localRoot, "workspace-file-transaction.mjs"), "utf8");
+if (!workspaceTransactionSource.includes("async function writeFlushedText")
+    || !workspaceTransactionSource.includes("await handle.sync()")
+    || !workspaceTransactionSource.includes("staged file write failed and cleanup was incomplete")
+    || (workspaceTransactionSource.match(/await writeFlushedText\(/g) || []).length !== 2) {
+  throw new Error("workspace transaction boundary no longer flushes whole-file and patch staging files before commit");
+}
+if (!workspaceTransactionSource.includes("patch transaction failed and recovery was incomplete")
+    || !workspaceTransactionSource.includes("Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed")
+    || !workspaceTransactionSource.includes("file mutation failed and staging cleanup was incomplete")
+    || !workspaceTransactionSource.includes("new AggregateError([primary, ...cleanupFailures]")
+    || !workspaceTransactionSource.includes("await createTarget(stage.temp, operation.target)")
+    || !workspaceTransactionSource.includes("reason: \"target_appeared\"")
+    || !workspaceTransactionSource.includes("fileMutationPathKey(full, platform)")) {
+  throw new Error("workspace transaction lost no-overwrite targets, shared path identity, or causal cleanup reporting");
+}
+for (const forbidden of ["writeFlushedText", ".mbm-backup-", "createTarget(stage.temp"]) {
+  if (workspaceFileSource.includes(forbidden)) throw new Error(`workspace file service regained transaction mechanics: ${forbidden}`);
 }
 const patchUpdateCalls = workspaceFileSource.match(/applyUpdateHunks\([^\n]+\)/g) || [];
 if (patchUpdateCalls.length !== 1 || patchUpdateCalls[0] !== "applyUpdateHunks(original, operation.hunks)") {
@@ -338,11 +392,37 @@ for (const required of ["toolNamesForPolicy", "toolDefinition", "advisory_only",
   if (!executionRoutingSource.includes(required)) throw new Error(`execution routing lost a policy or contract boundary: ${required}`);
 }
 const runtimeBoundarySource = readFileSync(join(localRoot, "runtime.mjs"), "utf8");
+if (runtimeBoundarySource.includes("mutationQueue") || runtimeBoundarySource.includes("withMutationLock")) throw new Error("LocalRuntime regained global file-mutation serialization");
 for (const forbidden of [
   "spawn(", "parsePatchEnvelope", "applyUpdateHunks", "workspaceShellCommand(",
   "function applicationMatchScore", "request_reached_local_runtime", "policy_contract:",
 ]) {
   if (runtimeBoundarySource.includes(forbidden)) throw new Error(`LocalRuntime regained low-level responsibility: ${forbidden}`);
+}
+const toolExecutorBoundary = readFileSync(join(localRoot, "tool-executor.mjs"), "utf8");
+if ((toolExecutorBoundary.match(/callRegistry\.throwIfCancelled/g) || []).length !== 1) {
+  throw new Error("tool executor must check cancellation before handler execution without retroactively vetoing a settled handler result");
+}
+if (!toolExecutorBoundary.includes("Handler return is the local settlement point")) {
+  throw new Error("tool executor lost the explicit late-cancellation settlement contract");
+}
+const ownerStateLockBoundary = readFileSync(join(localRoot, "owner-state-lock.mjs"), "utf8");
+for (const required of ["createMonotonicDeadline", "inspectProcessInstance", "removeOwnedJsonFileSync", "new AggregateError([callbackError, releaseError]"]) {
+  if (!ownerStateLockBoundary.includes(required)) throw new Error(`owner-state lock lost bounded ownership or causal cleanup semantics: ${required}`);
+}
+const exclusiveFileBoundary = readFileSync(join(localRoot, "exclusive-file.mjs"), "utf8");
+for (const required of ["new AggregateError([primaryError, ...cleanupErrors]", "Object.defineProperties(result", "cleanupArtifact", "ownsTemporary"]) {
+  if (!exclusiveFileBoundary.includes(required)) throw new Error(`exclusive-file boundary lost atomic cleanup causality or post-commit visibility: ${required}`);
+}
+if (exclusiveFileBoundary.includes("cleanupTargetOnFailure")) {
+  throw new Error("exclusive-file boundary regained unsafe deletion of an unowned target after failed exclusive link");
+}
+const workerSecretBoundary = readFileSync(join(localRoot, "worker-secret-file.mjs"), "utf8");
+for (const required of ["creation.cleanupArtifact", "retryExclusiveStagingCleanup", "temporary Worker secrets staging cleanup failed"]) {
+  if (!workerSecretBoundary.includes(required)) throw new Error(`Worker secret lifecycle stopped consuming exclusive-file cleanup evidence: ${required}`);
+}
+if (workerSecretBoundary.includes("options.lstatSync || lstatSync") || (workerSecretBoundary.match(/losslessLstat\(/g) || []).length < 3) {
+  throw new Error("Worker secret lifecycle regained Number-backed cleanup identity observations");
 }
 const localPolicySource = readFileSync(join(localRoot, "policy.mjs"), "utf8");
 const workerPolicySource = readFileSync(join(root, "src", "worker", "policy.ts"), "utf8");
@@ -363,12 +443,12 @@ for (const duplicate of [
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
   "observability", "mcp-session", "mcp-access", "mcp-resumption-http", "mcp-resumption",
-  "mcp-stream", "mcp-stream-proxy", "mcp-stream-channel", "mcp-stream-dispatch", "mcp-legacy-stream-prepare", "durable-stream-calls",
-  "worker-entry", "tool-timeout", "daemon-liveness", "daemon-sockets",
+  "mcp-stream", "mcp-stream-proxy", "mcp-stream-channel", "mcp-stream-dispatch", "mcp-legacy-stream-prepare", "server-info", "durable-stream-calls",
+  "worker-entry", "tool-timeout", "daemon-liveness", "daemon-sockets", "daemon-status",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
-for (const module of ["worker-static-routes", "worker-edge-guard", "worker-edge-log", "mcp-stream-proxy"]) {
+for (const module of ["worker-static-routes", "worker-edge-guard", "worker-edge-log", "worker-rate-limit-key", "mcp-stream-proxy"]) {
   if (!workerEntryBoundary.includes(`./${module}`)) throw new Error(`outer Worker entry lost boundary module: ${module}`);
 }
 const mcpStreamProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy.ts"), "utf8");
@@ -402,8 +482,11 @@ const mcpStreamChannelBoundary = readFileSync(join(root, "src", "worker", "mcp-s
 for (const required of ["acceptWebSocket", "getWebSockets", "serializeAttachment", "pollMessage", "streamSubscriberOpened"]) {
   if (!mcpStreamChannelBoundary.includes(required)) throw new Error(`MCP stream channel lost hibernatable subscription behavior: ${required}`);
 }
-for (const forbidden of ["setTimeout(", "setInterval(", "Promise<JsonRpcMessage>"]) {
-  if (mcpStreamChannelBoundary.includes(forbidden)) throw new Error(`MCP stream channel regained polling or cross-event promise state: ${forbidden}`);
+for (const forbidden of ["setTimeout(", "setInterval(", "Promise<JsonRpcMessage>", "subscriberAdmission", "withSubscriberAdmission"]) {
+  if (mcpStreamChannelBoundary.includes(forbidden)) throw new Error(`MCP stream channel regained polling, cross-event promise state, or global subscriber serialization: ${forbidden}`);
+}
+if (mcpStreamChannelBoundary.indexOf("acceptWebSocket(server, [tag])") > mcpStreamChannelBoundary.indexOf("const current = await resumption.pollMessage(streamId)")) {
+  throw new Error("MCP stream channel rechecks storage before registering the subscriber race boundary");
 }
 for (const forbidden of ["streamJsonRpcResponse(", "resumeJsonRpcResponse("]) {
   if (workerIndexBoundary.includes(forbidden)) throw new Error(`BridgeRoom regained public SSE ownership: ${forbidden}`);
@@ -440,7 +523,7 @@ if ((daemonResultBoundary.match(/scheduleRuntimeAlarm/g) || []).length !== 1) {
   throw new Error("daemon terminal result must coalesce liveness and pending-call alarm scheduling");
 }
 const legacyStreamPrepareBoundary = readFileSync(join(root, "src", "worker", "mcp-legacy-stream-prepare.ts"), "utf8");
-for (const required of ["workerToolRequestFingerprint", "findByRequestKey", 'kind: "resume"', 'kind: "conflict"', "dispatchWorkspaceCall"]) {
+for (const required of ["workerToolRequestFingerprint", "findByRequestKey", 'kind: "resume"', 'kind: "conflict"', "dispatchWorkspaceCall", "serverInfo(args)"]) {
   if (!legacyStreamPrepareBoundary.includes(required)) throw new Error(`legacy stream preparation lost retry identity or dispatch boundary: ${required}`);
 }
 for (const forbidden of ["readySockets", "invalidateDaemonSocket", "scheduleRuntimeAlarm"]) {
@@ -460,11 +543,27 @@ for (const required of ["request.clone", "boundedStreamAttempt", "response.body?
   if (!streamPrepareRetryBoundary.includes(required)) throw new Error(`stream prepare retry lost bounded replay behavior: ${required}`);
 }
 const rateLimitKeyBoundary = readFileSync(join(root, "src", "worker", "worker-rate-limit-key.ts"), "utf8");
-for (const required of ["SHA-256", "authorization", "cf-connecting-ip", "globalStatefulRateLimitKey"]) {
+for (const required of ["SHA-256", "authorization", "cf-connecting-ip", "globalStatefulRateLimitKey", "statefulRouteClass"]) {
   if (!rateLimitKeyBoundary.includes(required)) throw new Error(`stateful rate-limit identity lost isolation or privacy: ${required}`);
+}
+for (const source of [workerIndexBoundary, workerEntryBoundary]) {
+  if (!source.includes("statefulRouteClass") || source.includes("path: url.pathname") || source.includes("path: new URL(request.url).pathname")) {
+    throw new Error("Worker unexpected-error logging regained raw request paths instead of bounded route classes");
+  }
 }
 
 const mcpStreamDispatchBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-dispatch.ts"), "utf8");
+const serverInfoBoundary = readFileSync(join(root, "src", "worker", "server-info.ts"), "utf8");
+for (const required of ["buildServerInfoResult", "buildServerInfoSummary", "compactPending", "compactDaemon", 'detail === "summary"']) {
+  if (!serverInfoBoundary.includes(required)) throw new Error(`Worker server_info lost compact/full projection boundary: ${required}`);
+}
+if (mcpStreamDispatchBoundary.includes("buildServerInfoResult") || workerIndexBoundary.includes("function buildServerInfoSummary")) {
+  throw new Error("Worker server_info projection returned to stream dispatch or the composition root");
+}
+const localInfoProjectionBoundary = readFileSync(join(localRoot, "runtime-info-projection.mjs"), "utf8");
+for (const required of ["projectRuntimeInfo", 'detail !== "summary"', "compactProcesses", "compactCapacity"]) {
+  if (!localInfoProjectionBoundary.includes(required)) throw new Error(`local server_info lost compact/full projection boundary: ${required}`);
+}
 for (const required of [
   "startEventDrivenStreamCall", "resumption.calls.activate", "resumption.calls.complete", "persistImmediateStreamOutcome",
 ]) {
@@ -500,6 +599,13 @@ if (mcpResumptionHttpBoundary.includes("resumeJsonRpcResponse")) {
   throw new Error("Durable Object resumption boundary regained public SSE ownership");
 }
 
+const daemonStatusBoundary = readFileSync(join(root, "src", "worker", "daemon-status.ts"), "utf8");
+for (const required of ["daemonStatusSnapshot", "readySockets", "readyAttachment", "DAEMON_READY_TIMEOUT_MS", "DAEMON_LIVENESS_TIMEOUT_MS"]) {
+  if (!daemonStatusBoundary.includes(required)) throw new Error(`daemon status projection lost bounded readiness/liveness state: ${required}`);
+}
+if (workerIndexBoundary.includes("connected: sockets.length > 0")) {
+  throw new Error("Worker composition root regained daemon status projection logic");
+}
 const daemonSocketBoundary = readFileSync(join(root, "src", "worker", "daemon-sockets.ts"), "utf8");
 for (const required of ["class DaemonSocketRegistry", "beginProbe", "promote", "readySockets", "probingSockets"]) {
   if (!daemonSocketBoundary.includes(required)) throw new Error(`daemon socket registry lost lifecycle responsibility: ${required}`);

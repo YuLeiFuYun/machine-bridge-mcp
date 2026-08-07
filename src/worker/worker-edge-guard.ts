@@ -1,7 +1,7 @@
 import { applyCors, baseUrl, json } from "./http.ts";
 import { createThrottledEdgeLogger } from "./worker-edge-log.ts";
 import { globalStatefulRateLimitKey, statefulRateLimitKey } from "./worker-rate-limit-key.ts";
-export { statefulRateLimitKey } from "./worker-rate-limit-key.ts";
+export { statefulRateLimitKey, statefulRouteClass } from "./worker-rate-limit-key.ts";
 
 type RateLimiter = { limit(input: { key: string }): Promise<{ success: boolean }> };
 const logLimiterFailure = createThrottledEdgeLogger();

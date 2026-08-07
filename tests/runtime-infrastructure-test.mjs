@@ -20,6 +20,8 @@ import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { workspaceShellCommand } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
+import { FileMutationCoordinator } from "../src/local/file-mutation-coordinator.mjs";
+import { projectRuntimeInfo } from "../src/local/runtime-info-projection.mjs";
 import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/runtime-relay.mjs";
 import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
@@ -32,6 +34,9 @@ const PROCESS_FIXTURE_TIMEOUT_MS = 30_000;
 await testCallRegistry();
 await testToolExecutor();
 await testToolExecutorConcurrency();
+await testToolExecutorLateCancellationSettlement();
+await testFileMutationCoordinator();
+await testRuntimeInfoProjection();
 testToolResultBoundary();
 await testDuplicateRelayCallId();
 testRelayReadinessProbe();
@@ -218,6 +223,40 @@ async function testToolExecutorConcurrency() {
   releaseBlocked();
   assert(await first === "blocked-complete", "blocked concurrent tool did not resume");
   assert(registry.snapshot().active === 0, "concurrent tool calls leaked lifecycle state");
+}
+
+async function testToolExecutorLateCancellationSettlement() {
+  const registry = new CallRegistry({ maximum: 2 });
+  const observability = new RuntimeObservability();
+  const commitStarted = deferred();
+  const finishCommit = deferred();
+  let committed = false;
+  const fullPolicy = { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true };
+  const executor = new ToolExecutor({
+    handlers: {
+      write_file: async () => {
+        commitStarted.resolve();
+        await finishCommit.promise;
+        committed = true;
+        return { ok: true, committed: true };
+      },
+    },
+    policyGate: { policy: fullPolicy, assert() {} },
+    accountAccessGate: { assert() {}, authority() { return { principal: { kind: "local", role: "owner" }, effectivePolicy: fullPolicy, owner: true }; } },
+    callRegistry: registry,
+    observability,
+    logger: { event() {} },
+  });
+  const pending = executor.execute("write_file", { path: "settled.txt", content: "x" }, { callId: "late-cancel-settlement" });
+  await commitStarted.promise;
+  assert(registry.cancel("late-cancel-settlement", "caller stopped waiting") === true, "late cancellation did not reach the in-flight call");
+  finishCommit.resolve();
+  const result = await pending;
+  const metrics = observability.snapshot();
+  assert(committed && result.committed === true, "late cancellation replaced an already-settling mutation result");
+  assert(metrics.calls.completed === 1 && metrics.calls.cancelled === 0 && metrics.calls.failed === 0,
+    "late cancellation made local observability disagree with the completed handler result");
+  assert(registry.snapshot().active === 0, "late-cancelled settled call leaked registry state");
 }
 
 function testRelayReadinessProbe() {
@@ -803,6 +842,49 @@ async function testProcessTreeSupervisor() {
   await scheduled.callback();
   assert(signals.length === 2 && signals[1][1] === "SIGKILL" && escalated, "process-tree escalation did not force termination after the grace period");
 
+  let boundedCallback = null;
+  const boundedPrecheckTimeouts = [];
+  let boundedPrecheckKills = 0;
+  terminateProcessTreeWithEscalation({ pid: 4292 }, {
+    graceMs: 0,
+    ownershipCheckBudgetMs: 90,
+    monotonicNow: () => 0,
+    captureOwnership(_child, phaseOptions) {
+      boundedPrecheckTimeouts.push(phaseOptions.processSnapshotTimeoutMs);
+      return { pid: 4292 };
+    },
+    refreshOwnership(value, phaseOptions) {
+      boundedPrecheckTimeouts.push(phaseOptions.processSnapshotTimeoutMs);
+      return value;
+    },
+    isTerminationTargetOwned: () => true,
+    terminate(_child, signal) { if (signal === "SIGKILL") boundedPrecheckKills += 1; },
+    setTimeout(callback) { boundedCallback = callback; return "bounded-precheck-timer"; },
+  });
+  await boundedCallback();
+  assert(boundedPrecheckKills === 1 && boundedPrecheckTimeouts.length === 2
+    && boundedPrecheckTimeouts.every((value) => value > 0)
+    && boundedPrecheckTimeouts.reduce((sum, value) => sum + value, 0) <= 90,
+  `process-tree capture/refresh exceeded their shared ownership budget: ${boundedPrecheckTimeouts.join(",")}`);
+
+  let expiredCallback = null;
+  let expiredRefreshes = 0;
+  let expiredKills = 0;
+  let precheckNow = 0;
+  terminateProcessTreeWithEscalation({ pid: 4293 }, {
+    graceMs: 0,
+    ownershipCheckBudgetMs: 20,
+    monotonicNow: () => precheckNow,
+    captureOwnership() { precheckNow = 21; return { pid: 4293 }; },
+    refreshOwnership(value) { expiredRefreshes += 1; return value; },
+    isTerminationTargetOwned: () => true,
+    terminate(_child, signal) { if (signal === "SIGKILL") expiredKills += 1; },
+    setTimeout(callback) { expiredCallback = callback; return "expired-precheck-timer"; },
+  });
+  await expiredCallback();
+  assert(expiredRefreshes === 0 && expiredKills === 0,
+    "expired pre-escalation ownership budget refreshed or forced an unverified process tree");
+
   let exitedCallback = null;
   let exitedSignals = 0;
   const exitedChild = { pid: 4343, exitCode: null, signalCode: null };
@@ -1130,6 +1212,118 @@ function expectBridgeError(operation, code) {
   throw new Error(`expected BridgeError ${code}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
+
+async function testFileMutationCoordinator() {
+  const coordinator = new FileMutationCoordinator();
+  const root = join(tmpdir(), "mbm-file-mutation-coordinator");
+  const firstPath = join(root, "first.txt");
+  const secondPath = join(root, "second.txt");
+  const thirdPath = join(root, "third.txt");
+  for (const [paths, callback, label] of [
+    [null, async () => {}, "non-array paths"],
+    [[], async () => {}, "empty paths"],
+    [[firstPath], null, "missing callback"],
+    [["relative.txt"], async () => {}, "relative path"],
+    [[""], async () => {}, "empty path"],
+    [[`${firstPath}\0suffix`], async () => {}, "NUL path"],
+  ]) {
+    let invalidError;
+    try { await coordinator.withPaths(paths, callback); } catch (error) { invalidError = error; }
+    assert(invalidError instanceof TypeError, `file mutation coordinator accepted ${label}`);
+  }
+  const samePathOrder = [];
+  const sameStarted = deferred();
+  const sameRelease = deferred();
+  let secondSameStarted = false;
+  const firstSame = coordinator.withPaths([firstPath], async () => {
+    samePathOrder.push("first:start");
+    sameStarted.resolve();
+    await sameRelease.promise;
+    samePathOrder.push("first:end");
+  });
+  await sameStarted.promise;
+  const secondSame = coordinator.withPaths([firstPath], async () => {
+    secondSameStarted = true;
+    samePathOrder.push("second:start");
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert(!secondSameStarted, "same-path file mutations overlapped");
+  sameRelease.resolve();
+  await Promise.all([firstSame, secondSame]);
+  assert(samePathOrder.join(",") === "first:start,first:end,second:start", "same-path file mutation order changed");
+
+  const unrelatedStarted = deferred();
+  const unrelatedRelease = deferred();
+  const held = coordinator.withPaths([firstPath], async () => {
+    unrelatedStarted.resolve();
+    await unrelatedRelease.promise;
+  });
+  await unrelatedStarted.promise;
+  let secondPathStarted = false;
+  const unrelated = coordinator.withPaths([secondPath], async () => { secondPathStarted = true; });
+  await unrelated;
+  assert(secondPathStarted, "unrelated file mutation was serialized behind another path");
+  unrelatedRelease.resolve();
+  await held;
+
+  const multiStarted = deferred();
+  const multiRelease = deferred();
+  const multi = coordinator.withPaths([firstPath, secondPath, firstPath], async () => {
+    multiStarted.resolve();
+    await multiRelease.promise;
+  });
+  await multiStarted.promise;
+  let overlapStarted = false;
+  const overlap = coordinator.withPaths([secondPath], async () => { overlapStarted = true; });
+  let thirdStarted = false;
+  await coordinator.withPaths([thirdPath], async () => { thirdStarted = true; });
+  await Promise.resolve();
+  assert(thirdStarted, "multi-path reservation blocked an unrelated path");
+  assert(!overlapStarted, "multi-path reservation did not retain every conflicting path");
+  multiRelease.resolve();
+  await Promise.all([multi, overlap]);
+  assert(overlapStarted, "overlapping mutation never resumed after multi-path release");
+
+  let failed = false;
+  try { await coordinator.withPaths([firstPath], async () => { throw new Error("expected mutation failure"); }); }
+  catch (error) { failed = error?.message === "expected mutation failure"; }
+  assert(failed, "mutation coordinator swallowed a callback failure");
+  let afterFailure = false;
+  await coordinator.withPaths([firstPath], async () => { afterFailure = true; });
+  assert(afterFailure, "failed file mutation leaked its path reservation");
+}
+
+function testRuntimeInfoProjection() {
+  const full = { name: "fixture", policy: { profile: "custom" }, tool_delivery: { daemon_advertised_tool_count: 7 }, runtime: {} };
+  assert(projectRuntimeInfo(full, "full") === full, "full local server_info projection stopped preserving the canonical object");
+  const summary = projectRuntimeInfo({
+    name: "fixture",
+    protocol_version: "test",
+    workspace: ".",
+    workspace_name: "workspace",
+    policy: null,
+    tool_delivery: null,
+    runtime: {
+      processes: null,
+      process_sessions: [],
+      managed_jobs: { active: 2, retained: 3, maximum: 9, staged: 1 },
+    },
+  }, "summary");
+  assert(summary.detail === "summary" && summary.policy && Object.keys(summary.policy).length === 0
+    && summary.tool_delivery.daemon_advertised_tool_count === 0
+    && summary.runtime.lifecycle === null && summary.runtime.relay === null
+    && summary.runtime.processes.active_processes === 0 && summary.runtime.processes.draining_processes === 0
+    && summary.runtime.process_sessions.active === 0 && !("staged" in summary.runtime.process_sessions)
+    && summary.runtime.managed_jobs.active === 2 && summary.runtime.managed_jobs.staged === 1,
+  "sparse local server_info projection lost bounded defaults");
+}
+
+function deferred() {
+  let resolvePromise = () => {};
+  const promise = new Promise((resolve) => { resolvePromise = resolve; });
+  return { promise, resolve: resolvePromise };
+}
 
 function testToolResultBoundary() {
   const source = { ok: true, nested: { value: 7 } };

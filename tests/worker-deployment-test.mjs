@@ -238,6 +238,7 @@ try {
 
 async function verifyDeploymentPropagationBudget() {
   const state = workerState("mbm-propagation-budget-test");
+  const logs = [];
   let observedAttempts = 0;
   await ensureWorkerDeployment(state, {}, {
     packageRoot: root,
@@ -251,9 +252,12 @@ async function verifyDeploymentPropagationBudget() {
       observedAttempts = attempts;
       return { ok: true, version, networkRoute: "direct" };
     },
-    logger: quietLogger(),
+    logger: recordingLogger(logs),
   });
   assert.equal(observedAttempts, 20, "post-deployment health verification retained the short propagation window");
+  const serializedLogs = JSON.stringify(logs);
+  assert(!serializedLogs.includes(state.worker.url) && !serializedLogs.includes(state.worker.name),
+    "routine Worker deployment logs retained the private Worker endpoint or workspace-derived Worker name");
 }
 
 function verifyWorkerFingerprintPathBoundaries() {
@@ -601,6 +605,10 @@ function workerState(name) {
 
 function quietLogger() {
   return Object.fromEntries(["debug", "info", "warn", "success"].map(level => [level, () => {}]));
+}
+
+function recordingLogger(records) {
+  return Object.fromEntries(["debug", "info", "warn", "success"].map(level => [level, (message, fields) => records.push({ level, message, fields })]));
 }
 
 function address(server) {

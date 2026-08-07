@@ -66,7 +66,7 @@ Tool count: **51**.
 
 **Server information**
 
-Return live authorization, effective tools, daemon/relay health, runtime state, and protocol status. Use this for authority or connectivity diagnosis, not for repository inventory. Treat authorization.effective_policy and authorization.effective_tools as authoritative; daemon.policy is only a ceiling.
+Return live authorization and daemon status. Use detail=summary for routine version, authority, readiness, relay, capacity, and timeout checks; use the default/full projection for exact tool membership, OAuth metadata, account identity, and detailed observability.
 
 | Contract field | Value |
 |---|---|
@@ -81,6 +81,17 @@ Return live authorization, effective tools, daemon/relay health, runtime state, 
 ```json
 {
   "type": "object",
+  "properties": {
+    "detail": {
+      "type": "string",
+      "enum": [
+        "summary",
+        "full"
+      ],
+      "default": "full",
+      "description": "Use summary for compact health/authority status; use full for complete tool, OAuth, and observability diagnostics."
+    }
+  },
   "additionalProperties": false
 }
 ```

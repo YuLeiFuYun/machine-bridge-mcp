@@ -5,6 +5,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { tmpdir } from "node:os";
 import { runExecutable } from "./shell.mjs";
 import { chmodRegularFileSync, readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
+import { sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 const KEY_TYPES = new Set(["ed25519", "rsa"]);
 
@@ -148,10 +149,7 @@ function readKeySnapshot(path, maxBytes, label) {
 
 function assertKeySnapshotCurrent(path, expected, maxBytes, label) {
   const current = readKeySnapshot(path, maxBytes, label);
-  const sameIdentity = Number(current.info.dev) === Number(expected.info.dev)
-    && Number(current.info.ino) === Number(expected.info.ino)
-    && Number(current.info.size) === Number(expected.info.size)
-    && Number(current.info.mtimeMs) === Number(expected.info.mtimeMs);
+  const sameIdentity = sameFilesystemIdentity(current.identity, expected.identity);
   const sameBytes = current.buffer.length === expected.buffer.length
     && timingSafeEqual(current.buffer, expected.buffer);
   if (!sameIdentity || !sameBytes) throw new Error(`${label} changed during inspection; retry`);

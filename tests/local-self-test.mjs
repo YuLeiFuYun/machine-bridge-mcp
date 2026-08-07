@@ -21,9 +21,9 @@ const CLI_FIXTURE_WAIT_ATTEMPTS = 2_400;
 const DAEMON_FIXTURE_TIMEOUT_MS = 30_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 60;
 const MANAGED_JOB_MARKER_SCRIPT = "if (process.env.NODE_V8_COVERAGE) process.exit(9); require('node:fs').writeFileSync(process.argv[1], process.argv[2])";
-const SHELL_TREE_TIMEOUT_MS = 30_000;
-const SHELL_TREE_READY_MS = 25_000;
-const SHELL_TREE_EXIT_WAIT_MS = 30_000;
+const SHELL_TREE_TIMEOUT_MS = 10_000;
+const SHELL_TREE_READY_MS = 8_000;
+const SHELL_TREE_EXIT_WAIT_MS = 10_000;
 
 await runSelfTestPhase("runtime", runtimeSelfTest);
 await runSelfTestPhase("state", stateSelfTest);
@@ -1081,6 +1081,20 @@ async function serviceSelfTest() {
       trimAutostartLogs(obsoleteLogRoot, { maxBytes: 2048, keepBytes: 1024 });
       if (await readFile(currentLog, "utf8") !== "current-format-line\n") {
         throw new Error("current-format log was reset unexpectedly");
+      }
+
+      const preservedOut = join(obsoleteLogs, "daemon.out.log");
+      const preservedErr = join(obsoleteLogs, "daemon.err.log");
+      await writeFile(preservedOut, "retain-out-evidence\n", "utf8");
+      await writeFile(preservedErr, "retain-err-evidence\n", "utf8");
+      await writeFile(join(obsoleteLogs, ".log-schema"), "x".repeat(65), "utf8");
+      expectThrow(() => trimAutostartLogs(obsoleteLogRoot, { maxBytes: 2048, keepBytes: 1024 }), "file exceeds 64 bytes");
+      if (await readFile(preservedOut, "utf8") !== "retain-out-evidence\n"
+        || await readFile(preservedErr, "utf8") !== "retain-err-evidence\n") {
+        throw new Error("unreadable/oversized log schema caused daemon evidence to be truncated");
+      }
+      if ((await readFile(join(obsoleteLogs, ".log-schema"), "utf8")).length !== 65) {
+        throw new Error("failed log-schema read rewrote the marker before diagnosis");
       }
     } finally {
       await rm(obsoleteLogRoot, { recursive: true, force: true });

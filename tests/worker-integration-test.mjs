@@ -686,6 +686,16 @@ try {
   assert(!firstStatus.daemon?.tools?.includes("write_file"), "review policy did not filter write_file");
   assert(!firstStatus.daemon?.tools?.includes("exec_command"), "review policy did not filter exec_command");
   assert(firstStatus.daemon?.readiness_verified === true, "first daemon was advertised before end-to-end readiness verification");
+  const compactFirstStatus = await callServerInfo(base, ownerAccessToken, 210, { detail: "summary" });
+  assert(compactFirstStatus.detail === "summary" && compactFirstStatus.version === pkg.version
+    && compactFirstStatus.authorization?.account?.role === "owner" && !("account_id" in compactFirstStatus.authorization.account)
+    && compactFirstStatus.authorization?.effective_policy?.profile === "review"
+    && compactFirstStatus.daemon?.connected === true && compactFirstStatus.daemon?.readiness_verified === true
+    && compactFirstStatus.worker?.sockets_live?.ready === 1 && !("observability" in compactFirstStatus.worker)
+    && !("oauth" in compactFirstStatus) && !("tools" in compactFirstStatus),
+  "remote compact server_info lost authority/readiness state or retained cold-path fields");
+  assert(JSON.stringify(compactFirstStatus).length < JSON.stringify(firstStatus).length * 0.6,
+    "remote compact server_info did not materially reduce the payload");
   const invalidProbeCandidate = await connectDaemon(base);
   daemonSockets.push(invalidProbeCandidate);
   const invalidProbe = await beginDaemonHello(invalidProbeCandidate, ["list_files"]);
@@ -1904,11 +1914,11 @@ async function callTool(origin, accessToken, sessionId, id, name, argumentsValue
   return response.body;
 }
 
-async function callServerInfo(origin, accessToken, id) {
+async function callServerInfo(origin, accessToken, id, args = {}) {
   const response = await fetchJson(`${origin}/mcp`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}`, "mcp-protocol-version": "2025-11-25" },
-    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "server_info", arguments: {} } }),
+    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "server_info", arguments: args } }),
   });
   assert(response.response.status === 200, `server_info call failed: ${response.response.status}`);
   const text = response.body.result?.content?.[0]?.text;

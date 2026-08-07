@@ -6,6 +6,7 @@ import {
   FULL_ONLY_CHECK_TASKS,
   PLATFORM_CHECK_TASKS,
   PLATFORM_ONLY_CHECK_TASKS,
+  SERIAL_FAST_CHECK_TASKS,
   checkTasks,
 } from "../scripts/check-plan.mjs";
 
@@ -26,6 +27,8 @@ for (const [name, tasks] of Object.entries({
   assert.equal(new Set(tasks).size, tasks.length, `${name} check plan contains duplicate tasks`);
 }
 for (const task of FULL_CHECK_TASKS) assert.equal(typeof scripts[task], "string", `check plan references missing package script: ${task}`);
+for (const task of SERIAL_FAST_CHECK_TASKS) assert(FAST_CHECK_TASKS.includes(task), `serial fast task is not in the fast plan: ${task}`);
+assert.equal(new Set(SERIAL_FAST_CHECK_TASKS).size, SERIAL_FAST_CHECK_TASKS.length, "serial fast task list contains duplicates");
 for (const task of ["coverage:test", "browser-bridge:test", "package:test", "sbom:test", "install:test", "stdio:integration-test", "worker:integration-test", "oauth-browser:test"]) {
   assert(FULL_ONLY_CHECK_TASKS.includes(task), `environment-sensitive task is not full-only: ${task}`);
 }

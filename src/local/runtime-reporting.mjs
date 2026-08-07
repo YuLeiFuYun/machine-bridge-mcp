@@ -5,6 +5,8 @@ import {
 } from "./tools.mjs";
 import { executionGuardrailsSnapshot } from "./execution-limits.mjs";
 
+const MAX_PROJECT_OVERVIEW_TOP_LEVEL_ENTRIES = 40;
+
 export function buildRuntimeInfo({
   workspace,
   displayPath,
@@ -87,8 +89,8 @@ export async function buildProjectOverview({
   throwIfCancelled,
 }, context = {}) {
   throwIfCancelled(context);
-  const top = await listTopLevel(context).catch((error) => ({ error: safeErrorMessage(error), entries: [] }));
-  const git = await runInternalProcess(
+  const topPromise = listTopLevel(context).catch((error) => ({ error: safeErrorMessage(error), entries: [] }));
+  const gitPromise = runInternalProcess(
     gitExecutable(),
     ["-c", "core.fsmonitor=false", "-C", workspace, "rev-parse", "--show-toplevel"],
     10_000,
@@ -96,6 +98,9 @@ export async function buildProjectOverview({
     512 * 1024,
     context,
   );
+  const [top, git] = await Promise.all([topPromise, gitPromise]);
+  const topEntries = Array.isArray(top.entries) ? top.entries : [];
+  const topLevel = topEntries.slice(0, MAX_PROJECT_OVERVIEW_TOP_LEVEL_ENTRIES);
   return {
     workspace: displayPath(workspace),
     workspaceName: policy.exposeAbsolutePaths ? basename(workspace) : "workspace",
@@ -105,7 +110,9 @@ export async function buildProjectOverview({
     daemonPolicy,
     daemonTools: ["server_info", ...daemonToolNames],
     capabilityRouting: capabilityObserver.snapshot(),
-    topLevel: top.entries || [],
+    topLevel,
+    topLevelTotal: topEntries.length,
+    topLevelTruncated: Boolean(top.truncated || topEntries.length > topLevel.length),
   };
 }
 

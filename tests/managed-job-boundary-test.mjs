@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { realpathSync } from "node:fs";
 import { managedJobCancellationRequested, writeManagedJobCancellation } from "../src/local/managed-job-cancellation.mjs";
 import { resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "../src/local/managed-job-directory.mjs";
 import { confirmRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
@@ -16,6 +15,9 @@ try {
   mkdirSync(dir);
   assert.equal(resolveManagedJobDirectory(jobs, id), realpathSync(dir));
   assert.equal(resolveManagedJobRootIfPresent(jobs), realpathSync(jobs));
+  const losslessRootInfo = lstatSync(jobs, { bigint: true });
+  assert.equal(typeof losslessRootInfo.dev, "bigint");
+  assert.equal(typeof losslessRootInfo.ino, "bigint");
   assert.equal(resolveManagedJobRootIfPresent(join(root, "missing")), null);
 
   const marker = join(dir, "cancel");

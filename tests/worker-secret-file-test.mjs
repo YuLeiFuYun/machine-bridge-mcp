@@ -1,3 +1,4 @@
+import { lstatSync, readdirSync, unlinkSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,12 +52,63 @@ try {
   if (returned !== "callback-result") throw new Error("temporary secrets callback result was lost");
   if (await exists(observedPath)) throw new Error("temporary secrets file survived successful callback cleanup");
 
+  let retryCallbackRan = false;
+  const retryResult = await withWorkerSecretsFile(state, async () => { retryCallbackRan = true; return "retry-ok"; }, {
+    exclusiveFileOptions: {
+      unlink() { throw Object.assign(new Error("synthetic first staging unlink failure"), { code: "EPERM" }); },
+    },
+  });
+  if (!retryCallbackRan || retryResult !== "retry-ok") throw new Error("Worker secret staging cleanup retry blocked a recovered safe callback");
+  const hiddenAfterRetry = (await (await import("node:fs/promises")).readdir(profileDir)).filter((name) => name.startsWith(".worker-secrets-") && name.endsWith(".tmp"));
+  if (hiddenAfterRetry.length !== 0) throw new Error("Worker secret staging cleanup retry left a hidden secret-bearing temp artifact");
+
+  let blockedCallbackRan = false;
+  await expectReject(() => withWorkerSecretsFile(state, async () => { blockedCallbackRan = true; return "must-not-run"; }, {
+    exclusiveFileOptions: {
+      unlink() { throw Object.assign(new Error("synthetic first staging unlink failure"), { code: "EPERM" }); },
+    },
+    removeFile() { throw Object.assign(new Error("synthetic retry cleanup failure"), { code: "EPERM" }); },
+  }), "staging cleanup failed", AggregateError);
+  if (blockedCallbackRan) throw new Error("Worker deployment callback ran after secret-bearing staging cleanup remained unverified");
+  for (const name of readdirSync(profileDir)) {
+    if (name.startsWith("worker-secrets-") || name.startsWith(".worker-secrets-")) {
+      try { unlinkSync(join(profileDir, name)); } catch {}
+    }
+  }
+
+  await expectReject(() => withWorkerSecretsFile(state, async () => "must-not-run", { now: () => 0 }), "timestamp is invalid");
+
   const stale = join(profileDir, "worker-secrets-999999-1000-p500-deadbeefcafe.json");
   await writeFile(stale, "{}", { mode: 0o600 });
   cleanupStaleWorkerSecretFiles(profileDir, {
     inspectProcess() { return { current: false, reclaimable: true, reason: "not_running" }; },
   });
   if (await exists(stale)) throw new Error("reclaimable stale secrets file was not removed");
+
+  const legacyStale = join(profileDir, "worker-secrets-999998-1001-deadbeefcafe.json");
+  await writeFile(legacyStale, "{}", { mode: 0o600 });
+  let legacyOwner;
+  cleanupStaleWorkerSecretFiles(profileDir, {
+    inspectProcess(owner) { legacyOwner = owner; return { reclaimable: true }; },
+  });
+  if (legacyOwner?.processStartedAt !== undefined || await exists(legacyStale)) {
+    throw new Error("legacy Worker-secret filename did not preserve optional process-start identity semantics");
+  }
+
+  cleanupStaleWorkerSecretFiles(profileDir, {
+    readDirectory() { return [
+      { name: "directory-entry", isFile: () => false },
+      { name: "unrelated.txt", isFile: () => true },
+      { name: "worker-secrets-1-2-p3-acde1234abcd.json", isFile: () => true },
+    ]; },
+    lstatSync() { throw Object.assign(new Error("gone"), { code: "ENOENT" }); },
+  });
+
+  expectThrow(() => cleanupStaleWorkerSecretFiles(profileDir, {
+    readDirectory() { return [{ name: "worker-secrets-1-2-p3-acde1234abcd.json", isFile: () => true }]; },
+    lstatSync() { return syntheticSecretStat(1n, 2n); },
+    inspectProcess() { throw new Error("synthetic owner inspection failure"); },
+  }), "could not inspect temporary Worker secrets owner");
 
   const ambiguous = join(profileDir, "worker-secrets-123-2000-p1000-acde1234abcd.json");
   await writeFile(ambiguous, "{}", { mode: 0o600 });
@@ -73,6 +125,24 @@ try {
     removeFile() { throw Object.assign(new Error("denied"), { code: "EPERM" }); },
   }), "could not remove stale");
   await rm(undeletable, { force: true });
+
+  const changedIdentity = join(profileDir, "worker-secrets-654-4000-p3000-acde1234abcd.json");
+  await writeFile(changedIdentity, "{}", { mode: 0o600 });
+  const actualIdentity = lstatSync(changedIdentity, { bigint: true });
+  let identityReads = 0;
+  const identityFailure = expectThrow(() => cleanupStaleWorkerSecretFiles(profileDir, {
+    inspectProcess() { return { reclaimable: true }; },
+    lstatSync(_file) {
+      identityReads += 1;
+      if (identityReads === 1) return actualIdentity;
+      return syntheticSecretStat(actualIdentity.dev, actualIdentity.ino + 1n);
+    },
+  }), "could not remove stale temporary Worker secrets file");
+  if (!String(identityFailure?.cause?.message || "").includes("identity changed before cleanup")) {
+    throw new Error("Worker-secret cleanup hid its internal identity-change cause");
+  }
+  if (!await exists(changedIdentity)) throw new Error("identity-changed Worker secret was removed");
+  await rm(changedIdentity, { force: true });
 
   let setupFailurePath = "";
   await expectReject(() => withWorkerSecretsFile(state, async (file) => {
@@ -99,6 +169,10 @@ try {
   await rm(root, { recursive: true, force: true });
 }
 
+function syntheticSecretStat(dev, ino) {
+  return { dev, ino, size: 2n, mtimeMs: 1n, isFile: () => true, isSymbolicLink: () => false };
+}
+
 async function exists(file) {
   try { await lstat(file); return true; } catch (error) {
     if (error?.code === "ENOENT") return false;
@@ -109,7 +183,7 @@ async function exists(file) {
 function expectThrow(callback, message) {
   try { callback(); } catch (error) {
     if (!String(error?.message || error).includes(message)) throw error;
-    return;
+    return error;
   }
   throw new Error(`expected failure containing: ${message}`);
 }

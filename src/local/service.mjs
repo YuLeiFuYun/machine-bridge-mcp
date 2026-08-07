@@ -167,7 +167,8 @@ export function trimAutostartLogs(stateRoot, options = {}) {
 }
 
 function readLogSchema(file) {
-  try { return readBoundedRegularFileSync(file, 64).toString("utf8").trim(); } catch { return ""; }
+  try { return readBoundedRegularFileSync(file, 64, "autostart log schema").toString("utf8").trim(); }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
 }
 
 function readLogTail(fd, size, limit) {

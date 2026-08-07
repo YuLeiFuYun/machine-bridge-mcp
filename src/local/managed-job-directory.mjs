@@ -1,6 +1,7 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { inspectPathIfPresentSync } from "./secure-file.mjs";
+import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 export const MANAGED_JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 
@@ -10,10 +11,11 @@ export function resolveManagedJobDirectory(jobRoot, value, options = {}) {
   const canonicalize = options.realpathSync || realpathSync;
   const root = canonicalize(resolve(String(jobRoot || "")));
   const candidate = join(root, id);
+  const verify = options.lstatSync || ((target) => lstatSync(target, { bigint: true }));
   const inspect = options.inspectPath || ((target) => inspectPathIfPresentSync(
     target,
     "managed job directory",
-    options.inspectOptions || {},
+    { ...(options.inspectOptions || {}), lstatSync: verify },
   ));
   const before = inspect(candidate);
   if (!before) throw new Error("job not found or expired");
@@ -22,7 +24,7 @@ export function resolveManagedJobDirectory(jobRoot, value, options = {}) {
   }
   const canonical = canonicalize(candidate);
   requireContained(root, canonical);
-  const after = (options.lstatSync || lstatSync)(candidate);
+  const after = verify(candidate);
   if (after.isSymbolicLink() || !after.isDirectory() || !sameIdentity(before, after)) {
     throw new Error("managed job directory identity changed during inspection");
   }
@@ -31,10 +33,11 @@ export function resolveManagedJobDirectory(jobRoot, value, options = {}) {
 
 export function resolveManagedJobRootIfPresent(jobRoot, options = {}) {
   const target = resolve(String(jobRoot || ""));
+  const verify = options.lstatSync || ((value) => lstatSync(value, { bigint: true }));
   const inspect = options.inspectPath || ((value) => inspectPathIfPresentSync(
     value,
     "managed job root",
-    options.inspectOptions || {},
+    { ...(options.inspectOptions || {}), lstatSync: verify },
   ));
   const before = inspect(target);
   if (!before) return null;
@@ -43,7 +46,6 @@ export function resolveManagedJobRootIfPresent(jobRoot, options = {}) {
   }
   const canonicalize = options.realpathSync || realpathSync;
   const canonical = canonicalize(target);
-  const verify = options.lstatSync || lstatSync;
   const after = verify(target);
   if (after.isSymbolicLink() || !after.isDirectory() || !sameIdentity(before, after)) {
     throw new Error("managed job root identity changed during inspection");
@@ -63,16 +65,12 @@ function requireContained(root, candidate) {
 }
 
 function sameIdentity(left, right) {
-  const leftDevice = identityPart(left.dev);
-  const rightDevice = identityPart(right.dev);
-  const leftInode = identityPart(left.ino);
-  const rightInode = identityPart(right.ino);
-  if ([leftDevice, rightDevice, leftInode, rightInode].some((value) => value === null)) return false;
-  return leftDevice === rightDevice && leftInode === rightInode;
-}
-
-function identityPart(value) {
-  if (typeof value === "bigint") return value >= 0n ? value : null;
-  if (Number.isSafeInteger(value) && value >= 0) return BigInt(value);
-  return null;
+  try {
+    return sameFilesystemIdentity(
+      filesystemIdentity(left, "managed job directory"),
+      filesystemIdentity(right, "managed job directory"),
+    );
+  } catch {
+    return false;
+  }
 }

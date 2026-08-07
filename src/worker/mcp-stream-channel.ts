@@ -22,7 +22,6 @@ export class McpStreamChannel {
   private readonly observability: StreamChannelObservability;
   private readonly createPair: WebSocketPairFactory;
   private readonly createUpgradeResponse: UpgradeResponseFactory;
-  private subscriberAdmission: Promise<void> = Promise.resolve();
 
   constructor(context: StreamChannelContext, observability: StreamChannelObservability,
     createPair: WebSocketPairFactory = defaultWebSocketPair,
@@ -45,34 +44,35 @@ export class McpStreamChannel {
     }
     if (initial.kind === "not_found") return json({ error: "stream_not_found" }, 404);
 
-    return await this.withSubscriberAdmission(async () => {
-      const tag = streamTag(streamId);
-      const existing = this.context.getWebSockets(tag).filter((socket) => socket.readyState === WebSocket.OPEN).length;
-      if (existing >= MAX_SUBSCRIBERS_PER_STREAM) {
-        this.observability.streamSubscriberRejected();
-        return json({ error: "stream_subscriber_limit" }, 429, { "retry-after": "1" });
+    const tag = streamTag(streamId);
+    // Durable Object events are single-threaded between awaits. Count and registration are
+    // therefore one synchronous per-stream admission step; the storage recheck below must not
+    // serialize unrelated streams behind its asynchronous latency.
+    const existing = this.context.getWebSockets(tag).filter((socket) => socket.readyState === WebSocket.OPEN).length;
+    if (existing >= MAX_SUBSCRIBERS_PER_STREAM) {
+      this.observability.streamSubscriberRejected();
+      return json({ error: "stream_subscriber_limit" }, 429, { "retry-after": "1" });
+    }
+
+    const [client, server] = this.createPair();
+    this.context.acceptWebSocket(server, [tag]);
+    server.serializeAttachment({ role: SUBSCRIBER_ROLE, streamId } satisfies StreamSubscriberAttachment);
+    this.observability.streamSubscriberOpened(existing);
+
+    try {
+      // Recheck after registration. Completion may race between the first storage
+      // read and acceptWebSocket(); either publish() or this read delivers it.
+      const current = await resumption.pollMessage(streamId);
+      if (current.kind === "message") {
+        this.observability.streamTerminalStorageRaceDelivery(this.sendTerminal(server, current.message));
       }
+      else if (current.kind === "not_found") closeWebSocketQuietly(server, 1008, "stream unavailable");
+    } catch (error) {
+      closeWebSocketQuietly(server, 1011, "stream lookup failed");
+      throw error;
+    }
 
-      const [client, server] = this.createPair();
-      this.context.acceptWebSocket(server, [tag]);
-      server.serializeAttachment({ role: SUBSCRIBER_ROLE, streamId } satisfies StreamSubscriberAttachment);
-      this.observability.streamSubscriberOpened(existing);
-
-      try {
-        // Recheck after registration. Completion may race between the first storage
-        // read and acceptWebSocket(); either publish() or this read delivers it.
-        const current = await resumption.pollMessage(streamId);
-        if (current.kind === "message") {
-          this.observability.streamTerminalStorageRaceDelivery(this.sendTerminal(server, current.message));
-        }
-        else if (current.kind === "not_found") closeWebSocketQuietly(server, 1008, "stream unavailable");
-      } catch (error) {
-        closeWebSocketQuietly(server, 1011, "stream lookup failed");
-        throw error;
-      }
-
-      return this.createUpgradeResponse(client);
-    });
+    return this.createUpgradeResponse(client);
   }
 
   publish(streamId: string, message: JsonRpcMessage): void {
@@ -93,18 +93,6 @@ export class McpStreamChannel {
   rejectSubscriberMessage(socket: WebSocket): void {
     this.observability.streamSubscriberProtocolError();
     closeWebSocketQuietly(socket, 1008, "stream subscribers are receive-only");
-  }
-
-  private async withSubscriberAdmission<T>(operation: () => Promise<T>): Promise<T> {
-    let release: () => void = () => {};
-    const predecessor = this.subscriberAdmission;
-    this.subscriberAdmission = new Promise<void>((resolve) => { release = resolve; });
-    await predecessor;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
   }
 
   private sendTerminal(socket: WebSocket, message: JsonRpcMessage): boolean {

@@ -80,6 +80,16 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "check-plan:test",
 ]);
 
+export const SERIAL_FAST_CHECK_TASKS = Object.freeze([
+  "release:acceptance:test",
+  "hardened-npm:test",
+  "worker-oauth-controller:test",
+  "cli-entrypoint:test",
+  "lint",
+  "typecheck",
+  "syntax",
+]);
+
 export const PLATFORM_ONLY_CHECK_TASKS = Object.freeze([
   "privacy:test",
   "release-impact:test",

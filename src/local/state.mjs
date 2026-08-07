@@ -12,6 +12,7 @@ import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { isPlainRecord } from "./records.mjs";
+import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const appName = String(serverMetadata.name);
@@ -475,25 +476,31 @@ function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}
 
 function readProcessLockSnapshot(lockPath) {
   let info;
-  try { info = lstatSync(lockPath); } catch (error) {
+  try { info = lstatSync(lockPath, { bigint: true }); } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
   if (info.isSymbolicLink()) throw new Error(`process lock must not be a symbolic link: ${lockPath}`);
   if (!info.isFile()) throw new Error(`process lock is not a regular file: ${lockPath}`);
-  let owner = null;
+  let text;
   try {
-    const parsed = JSON.parse(readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
+    text = readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file");
   } catch (error) {
     if (error?.code === "ENOENT") return null;
+    if (error?.code !== "ERR_INVALID_UTF8") throw error;
+    return { owner: null, info: lockIdentity(info) };
   }
+  let owner = null;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
+  } catch { /* Successfully read malformed JSON remains eligible for bounded stale recovery. */ }
   return { owner, info: lockIdentity(info) };
 }
 
 function removeLockSnapshot(lockPath, snapshot) {
   let current;
-  try { current = lstatSync(lockPath); } catch (error) { return error?.code === "ENOENT"; }
+  try { current = lstatSync(lockPath, { bigint: true }); } catch (error) { return error?.code === "ENOENT"; }
   if (current.isSymbolicLink() || !current.isFile()) return false;
   if (!sameLockIdentity(snapshot.info, lockIdentity(current))) return false;
   if (snapshot.owner?.token) {
@@ -510,15 +517,14 @@ function removeLockSnapshot(lockPath, snapshot) {
 
 function lockIdentity(info) {
   return {
-    dev: Number(info.dev),
-    ino: Number(info.ino),
-    size: Number(info.size),
-    mtimeMs: Number(info.mtimeMs),
+    ...filesystemIdentity(info, "process lock"),
+    size: exactFilesystemInteger(info.size, "process lock size"),
+    mtimeMs: filesystemTimeMs(info.mtimeMs, "process lock modification time"),
   };
 }
 
 function sameLockIdentity(left, right) {
-  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
+  return sameFilesystemIdentity(left, right) && left.size === right.size && left.mtimeMs === right.mtimeMs;
 }
 
 function updateProcessLock(lockPath, token, patch) {
@@ -560,12 +566,16 @@ function releaseProcessLock(lockPath, token) {
 }
 
 export function readDaemonLockOwner(lockPath) {
-  try {
-    const parsed = JSON.parse(readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
+  let text;
+  try { text = readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file"); }
+  catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ERR_INVALID_UTF8") return null;
+    throw error;
   }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
 }
 
 function boundedPositiveInteger(value, fallback) {
@@ -577,8 +587,8 @@ function readBoundedUtf8(filePath, maxBytes, label) {
   const buffer = readBoundedRegularFileSync(filePath, maxBytes, label);
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-  } catch {
-    throw new Error(`${label} is not valid UTF-8`);
+  } catch (cause) {
+    throw Object.assign(new Error(`${label} is not valid UTF-8`, { cause }), { code: "ERR_INVALID_UTF8" });
   }
 }
 

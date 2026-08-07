@@ -58,8 +58,9 @@ try {
   }
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [
-    "runtime-reporting.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs", "execution-routing.mjs",
+    "runtime-reporting.mjs", "runtime-info-projection.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs", "execution-routing.mjs",
     "runtime-tool-handlers.mjs", "runtime-relay.mjs", "runtime-paths.mjs", "runtime-resource-service.mjs",
+    "file-mutation-coordinator.mjs", "filesystem-identity.mjs", "workspace-file-transaction.mjs", "relay-connection-classification.mjs",
   ]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted runtime boundary ${module}`);
   }
@@ -87,7 +88,7 @@ try {
   for (const module of [
     "mcp-jsonrpc.ts", "websocket-protocol.ts", "mcp-http-contract.ts", "mcp-legacy-dispatch.ts",
     "mcp-modern-controller.ts", "mcp-modern-proxy.ts", "mcp-modern-stream.ts", "mcp-stream-proxy-contract.ts",
-    "mcp-tool-call-input.ts", "worker-mcp-config.ts", "worker-runtime-config.ts",
+    "mcp-tool-call-input.ts", "worker-mcp-config.ts", "worker-runtime-config.ts", "server-info.ts", "daemon-status.ts",
   ]) {
     if (!record.files.some((item) => item.path === `src/worker/${module}`)) throw new Error(`npm package omitted extracted Worker protocol ${module}`);
   }

@@ -12,6 +12,9 @@ assert(validators.validate("list_dir", { path: "." }).valid, "valid list_dir arg
 assertIssue(validators.validate("list_dir", { path: ".", unexpected: true }), "/unexpected", "additionalProperties");
 assertIssue(validators.validate("read_file", { path: "x", start_line: 0 }), "/start_line", "minimum");
 assertIssue(validators.validate("list_files", { max_files: "10" }), "/max_files", "type");
+assert(validators.validate("server_info", {}).valid && validators.validate("server_info", { detail: "summary" }).valid
+  && validators.validate("server_info", { detail: "full" }).valid, "server_info detail modes were rejected");
+assertIssue(validators.validate("server_info", { detail: "verbose" }), "/detail", "enum");
 assertIssue(validators.validate("write_file", { path: "x", content: "y", expected_sha256: "secret-value" }), "/expected_sha256", "pattern");
 const sensitive = validators.validate("write_file", { path: "x", content: "private-content", unexpected: "secret-value" });
 assert(!JSON.stringify(sensitive).includes("private-content") && !JSON.stringify(sensitive).includes("secret-value"),

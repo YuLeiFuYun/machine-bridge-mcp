@@ -4,13 +4,10 @@ import { PendingCallRegistrationError, PendingCallRegistry } from "./pending-cal
 import { MAX_PENDING_CALLS, RESERVED_CONTROL_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission } from "./pending-call-capacity.ts";
 import { PendingAdmissionGate } from "./pending-admission.ts";
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
-import {
-  DAEMON_LIVENESS_TIMEOUT_MS,
-  DAEMON_READY_TIMEOUT_MS,
-  daemonLivenessDeadlineMs,
-  isFreshDaemonCandidate,
-} from "./daemon-liveness.ts";
+import { daemonLivenessDeadlineMs, isFreshDaemonCandidate } from "./daemon-liveness.ts";
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import { daemonStatusSnapshot } from "./daemon-status.ts";
+import { sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
 import { sanitizeDaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
@@ -24,7 +21,8 @@ import { handleMcpResumptionRequest } from "./mcp-resumption-http.ts";
 import { handleMcpStreamSubscribeRequest, mcpStreamProxyMode, mcpStreamProxyRetryId } from "./mcp-stream-proxy.ts";
 import { McpResumptionStore } from "./mcp-resumption.ts";
 import { McpStreamChannel } from "./mcp-stream-channel.ts";
-import { buildServerInfoResult, startEventDrivenStreamCall } from "./mcp-stream-dispatch.ts";
+import { startEventDrivenStreamCall } from "./mcp-stream-dispatch.ts";
+import { buildServerInfoResult, serverInfoDetail } from "./server-info.ts";
 import { DurableStreamCallCoordinator } from "./durable-stream-calls.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
 import { daemonToolTimeoutBudget } from "./tool-timeout.ts";
@@ -44,6 +42,7 @@ import {
 import { authorizationServerMetadata } from "./worker-metadata.ts";
 import { workerBodyLimitBytes, type BridgeEnv } from "./worker-runtime-config.ts";
 import { retainWorkerTask } from "./worker-task-lifetime.ts";
+import { statefulRouteClass } from "./worker-rate-limit-key.ts";
 import {
   MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_LEGACY_PROTOCOL_VERSIONS,
   MCP_MODERN_PROTOCOL_VERSIONS, MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS,
@@ -60,7 +59,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.46";
+const SERVER_VERSION = "3.0.0-beta.50";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
@@ -162,7 +161,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return json({ error: "not_found" }, 404);
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.code, message: error.message }, error.status);
-      this.observability.event("error", "http.request.failed", { path: url.pathname, error_class: workerErrorClass(error) });
+      this.observability.event("error", "http.request.failed", { route: statefulRouteClass(url.pathname), error_class: workerErrorClass(error) });
       return json({ error: "internal_server_error" }, 500);
     }
   }
@@ -219,7 +218,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         await this.scheduleRuntimeAlarm();
         return;
       }
-      const instanceId = daemonInstanceId(body.instance_id);
+      const instanceId = sanitizeDaemonInstanceId(body.instance_id) ?? "";
       if (!instanceId) {
         rejectDaemonMessage(ws, "invalid_daemon_instance", 1002, "daemon instance id required");
         return;
@@ -484,7 +483,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         resumption: this.resumption,
         observability: this.observability,
         admission: this.pendingAdmission,
-        serverInfo: () => this.serverInfoResult(base, authorized),
+        serverInfo: (args) => this.serverInfoResult(base, authorized, args),
         dispatchWorkspaceCall: (input) => this.dispatchLegacyWorkspaceStreamCall(input),
       },
     );
@@ -544,14 +543,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     await this.scheduleRuntimeAlarm();
   }
 
-  private async serverInfoResult(base: string, authorized: AuthorizedToken): Promise<Record<string, unknown>> {
+  private async serverInfoResult(base: string, authorized: AuthorizedToken, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const { daemon, effectiveTools, advertisedTools, authorization } = this.authorityContext(authorized);
     return buildServerInfoResult({
       serverName: SERVER_NAME, serverVersion: SERVER_VERSION, base,
       oauth: authorizationServerMetadata(base, SERVER_NAME), authorization, daemon,
       effectiveTools, advertisedTools, pendingSnapshot: await this.durableCalls.snapshot(this.pending.snapshot()),
       daemonRegistry: this.daemonRegistry, observability: this.observability,
-    });
+    }, serverInfoDetail(args));
   }
   private assertWorkerToolArguments(name: string, args: unknown): void {
     const validation = validateWorkerToolArguments(name, args);
@@ -577,7 +576,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     signal?: AbortSignal,
   ): Promise<unknown> {
     this.assertWorkerToolArguments(name, args);
-    if (name === "server_info") return this.serverInfoResult(base, authorized);
+    if (name === "server_info") return this.serverInfoResult(base, authorized, args);
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
       const result = await this.callDaemonTool(name, args, authorized, requestKey, signal);
@@ -811,26 +810,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private daemonStatus(detail: boolean): Record<string, unknown> {
     this.reclaimStaleDaemonSockets();
-    const sockets = this.daemonRegistry.readySockets();
-    const attachment = sockets[0] ? this.daemonRegistry.readyAttachment(sockets[0]) : undefined;
-    const tools = attachment?.tools ?? [];
-    const base = {
-      connected: sockets.length > 0,
-      count: sockets.length,
-      tool_count: tools.length,
-      connected_at: attachment?.connectedAt ?? null,
-      last_seen_at: attachment?.lastSeenAt ?? attachment?.connectedAt ?? null,
-      readiness_verified: sockets.length > 0,
-      readiness_timeout_ms: DAEMON_READY_TIMEOUT_MS,
-      liveness_timeout_ms: DAEMON_LIVENESS_TIMEOUT_MS,
-    };
-    if (!detail) return base;
-    return {
-      ...base,
-      policy: attachment?.policy ?? null,
-      tools,
-      relay_transport: attachment?.relayDiagnostics ?? null,
-    };
+    return daemonStatusSnapshot(this.daemonRegistry, detail);
   }
 
 }
@@ -839,8 +819,3 @@ export default {
   fetch: (request: Request, env: BridgeEnv, ctx: ExecutionContext) =>
     handleOuterWorkerFetch(request, env, ctx, { server: SERVER_NAME, version: SERVER_VERSION }),
 } satisfies ExportedHandler<BridgeEnv>;
-
-function daemonInstanceId(value: unknown): string {
-  if (typeof value !== "string" || !/^daemon_[A-Za-z0-9_-]{16,96}$/.test(value)) return "";
-  return value;
-}

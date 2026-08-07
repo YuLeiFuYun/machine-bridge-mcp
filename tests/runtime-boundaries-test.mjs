@@ -86,7 +86,37 @@ async function testRuntimeReporting() {
     throwIfCancelled() {},
   });
   assert(overview.gitRoot === "/workspace/project" && overview.topLevel.length === 1, "project overview lost repository metadata");
+  assert(overview.topLevelTotal === 1 && overview.topLevelTruncated === false, "project overview misreported its bounded inventory metadata");
   assert(overview.daemonPolicy.profile === "full" && overview.daemonTools.includes("read_file"), "project overview omitted the explicit daemon ceiling");
+
+  const starts = [];
+  let releaseTopLevel;
+  const topLevelGate = new Promise((resolvePromise) => { releaseTopLevel = resolvePromise; });
+  const concurrentOverview = buildProjectOverview({
+    workspace: "/workspace/project",
+    displayPath: (value) => value,
+    policy: full,
+    toolNames: [],
+    capabilityObserver: { snapshot: () => ({}) },
+    listTopLevel: async () => {
+      starts.push("top-level");
+      await topLevelGate;
+      return { entries: Array.from({ length: 55 }, (_value, index) => ({ name: `entry-${index}` })) };
+    },
+    gitExecutable: () => "/usr/bin/git",
+    runInternalProcess: async () => {
+      starts.push("git");
+      return { code: 0, stdout: "/workspace/project\n" };
+    },
+    safeErrorMessage: () => "safe",
+    throwIfCancelled() {},
+  });
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(starts.includes("top-level") && starts.includes("git"), "project overview serialized independent inventory and Git probes");
+  releaseTopLevel();
+  const boundedOverview = await concurrentOverview;
+  assert(boundedOverview.topLevel.length === 40 && boundedOverview.topLevelTotal === 55 && boundedOverview.topLevelTruncated === true,
+    "project overview did not bound oversized top-level inventories");
 
   const degraded = await buildProjectOverview({
     workspace: "/workspace/project",

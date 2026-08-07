@@ -1,4 +1,5 @@
 import { closeSync, constants as fsConstants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 export function openRegularFileSync(file, flags, options = {}) {
   const mode = Number.isInteger(options.mode) ? options.mode : undefined;
@@ -14,18 +15,23 @@ export function openRegularFileSync(file, flags, options = {}) {
     throw error;
   }
   try {
-    const info = fstatSync(fd);
+    const inspectDescriptor = options.fstatSync || fstatSync;
+    const info = inspectDescriptor(fd);
     if (!info.isFile()) throw new Error(`${label} is not a regular file`);
+    const descriptorIdentityInfo = options.fstatSync ? info : fstatSync(fd, { bigint: true });
+    const identity = filesystemIdentity(descriptorIdentityInfo, label);
     if (options.rejectMultipleLinks === true && Number(info.nlink) > 1) {
       throw new Error(`${label} must not have multiple hard links`);
     }
     if (options.verifyPathIdentity === true) {
-      const pathInfo = lstatSync(file);
+      const inspectPath = options.lstatSync || lstatSync;
+      const pathInfo = inspectPath(file);
       if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) throw new Error(`${label} must be a regular file and not a symbolic link`);
-      if (!sameFileIdentity(info, pathInfo)) throw new Error(`${label} identity changed while opening`);
+      const pathIdentityInfo = options.lstatSync ? pathInfo : lstatSync(file, { bigint: true });
+      if (!sameFilesystemIdentity(identity, filesystemIdentity(pathIdentityInfo, label))) throw new Error(`${label} identity changed while opening`);
     }
     if (Number.isInteger(options.chmod)) setDescriptorMode(fd, options.chmod);
-    return { fd, info };
+    return { fd, info, identity };
   } catch (error) {
     closeSync(fd);
     throw error;
@@ -35,7 +41,7 @@ export function openRegularFileSync(file, flags, options = {}) {
 function withRegularFileSync(file, flags, options, callback) {
   const opened = openRegularFileSync(file, flags, options);
   try {
-    return callback(opened.fd, opened.info);
+    return callback(opened.fd, opened.info, opened.identity);
   } finally {
     closeSync(opened.fd);
   }
@@ -65,7 +71,7 @@ export function readBoundedRegularFileWithInfoSync(file, maxBytes, label = "path
     label,
     verifyPathIdentity: options.verifyPathIdentity === true,
     rejectMultipleLinks: options.rejectMultipleLinks === true,
-  }, (fd, info) => {
+  }, (fd, info, identity) => {
     if (info.size > limit) throw new Error(`file exceeds ${limit} bytes`);
     options.afterOpen?.({ fd, info });
     const buffer = Buffer.alloc(info.size);
@@ -75,7 +81,7 @@ export function readBoundedRegularFileWithInfoSync(file, maxBytes, label = "path
       if (!count) break;
       offset += count;
     }
-    return { buffer: buffer.subarray(0, offset), info };
+    return { buffer: buffer.subarray(0, offset), info, identity };
   });
 }
 
@@ -125,15 +131,4 @@ function setDescriptorMode(fd, mode) {
   try { fchmodSync(fd, mode); } catch (error) {
     if (process.platform !== "win32") throw error;
   }
-}
-
-function sameFileIdentity(left, right) {
-  const leftDevice = Number(left.dev);
-  const rightDevice = Number(right.dev);
-  const leftInode = Number(left.ino);
-  const rightInode = Number(right.ino);
-  if ([leftDevice, rightDevice, leftInode, rightInode].every((value) => Number.isSafeInteger(value) && value >= 0)) {
-    return leftDevice === rightDevice && leftInode === rightInode;
-  }
-  return true;
 }

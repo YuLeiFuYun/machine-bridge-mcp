@@ -101,6 +101,11 @@ expectThrow(() => resolveManagedJobDirectory("/tmp/jobs", managedJobId, {
   lstatSync: () => unsafeManagedJobAfter,
 }), "identity changed during inspection");
 const bigintManagedJobInfo = { ...managedJobInfo, dev: 7n, ino: 11n };
+assert(resolveManagedJobRootIfPresent("/tmp/jobs", {
+  inspectPath: () => bigintManagedJobInfo,
+  realpathSync: (value) => value,
+  lstatSync: () => bigintManagedJobInfo,
+}) === "/tmp/jobs", "managed job root resolver rejected comparable bigint identity metadata");
 assert(resolveManagedJobDirectory("/tmp/jobs", managedJobId, {
   inspectPath: () => bigintManagedJobInfo,
   realpathSync: (value) => value,

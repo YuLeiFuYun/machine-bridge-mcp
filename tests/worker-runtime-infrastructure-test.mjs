@@ -4,9 +4,9 @@ import { DurableStreamCallCoordinator } from "../src/worker/durable-stream-calls
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
 import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
-import {
-  buildServerInfoResult, persistImmediateStreamOutcome, startEventDrivenStreamCall, streamTerminalMessage,
-} from "../src/worker/mcp-stream-dispatch.ts";
+import { persistImmediateStreamOutcome, startEventDrivenStreamCall, streamTerminalMessage } from "../src/worker/mcp-stream-dispatch.ts";
+import { buildServerInfoResult, serverInfoDetail } from "../src/worker/server-info.ts";
+import { daemonStatusSnapshot } from "../src/worker/daemon-status.ts";
 import { McpResumptionStore } from "../src/worker/mcp-resumption.ts";
 import { createMcpSessionId, validateMcpSessionId } from "../src/worker/mcp-session.ts";
 import { acceptsEventStream, resumeJsonRpcResponse, streamJsonRpcResponse } from "../src/worker/mcp-stream.ts";
@@ -23,11 +23,11 @@ import { respondWithoutDurableObject } from "../src/worker/worker-static-routes.
 import { createThrottledEdgeLogger } from "../src/worker/worker-edge-log.ts";
 import {
   admitGlobalStatefulRequest, admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
-  outerWorkerErrorClass, statefulRateLimitKey, workerGatewayErrorResponse,
+  outerWorkerErrorClass, statefulRateLimitKey, statefulRouteClass, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
 import { daemonToolTimeoutBudget, remoteForegroundDefaultSeconds, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
 import { workerToolRequestFingerprint } from "../src/worker/mcp-request-fingerprint.ts";
-import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { serverInfoTool, validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { daemonToolError, publicWorkerToolError, WorkerToolError } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
@@ -682,12 +682,13 @@ async function testLegacyStreamPreparationIdentity() {
     params: { name: "list_files", arguments: { path: ".", max_files: 10 } },
   };
   let dispatches = 0;
+  let serverInfoArgs = null;
   const dependencies = {
-    advertisedTools: workspaceTools,
+    advertisedTools: [serverInfoTool, ...workspaceTools],
     resumption,
     observability,
     admission,
-    async serverInfo() { return { name: "synthetic" }; },
+    async serverInfo(args) { serverInfoArgs = args; return { name: "synthetic", detail: args.detail }; },
     async dispatchWorkspaceCall(input) {
       dispatches += 1;
       await resumption.calls.activate({
@@ -702,6 +703,19 @@ async function testLegacyStreamPreparationIdentity() {
       });
     },
   };
+
+  const serverInfoBody = {
+    jsonrpc: "2.0", id: 4039, method: "tools/call",
+    params: { name: "server_info", arguments: { detail: "summary" } },
+  };
+  const serverInfoPrepared = await prepareLegacyStreamedToolCall(
+    { body: serverInfoBody, authorized, sessionId, proxyMode: "prepare" }, dependencies,
+  );
+  const serverInfoDescriptor = await serverInfoPrepared.json();
+  const serverInfoTerminal = await resumption.pollMessage(serverInfoDescriptor.stream_id);
+  assert(serverInfoArgs?.detail === "summary" && serverInfoTerminal.kind === "message"
+    && serverInfoTerminal.message.result?.structuredContent?.detail === "summary",
+  "legacy streamed server_info dropped compact projection arguments");
 
   const initial = await prepareLegacyStreamedToolCall(
     { body, authorized, sessionId, proxyMode: "prepare" }, dependencies,
@@ -887,14 +901,48 @@ async function testStreamDispatchFailureBoundaries() {
   const daemonRegistry = {
     probingSockets: () => [{}, {}], readySockets: () => [{}], candidateSockets: () => [{}], readyRoleSockets: () => [{}, {}],
   };
-  const info = buildServerInfoResult({
+  const statusSocket = {};
+  const statusRegistry = {
+    readySockets: () => [statusSocket],
+    readyAttachment: () => ({
+      tools: ["server_info", "read_file"],
+      connectedAt: "2026-08-07T12:00:00.000Z",
+      lastSeenAt: "2026-08-07T12:00:01.000Z",
+      policy: { profile: "review" },
+      relayDiagnostics: { schema_version: 1, outage_count: 2 },
+    }),
+  };
+  const compactDaemonStatus = daemonStatusSnapshot(statusRegistry, false);
+  const detailedDaemonStatus = daemonStatusSnapshot(statusRegistry, true);
+  assert(compactDaemonStatus.connected === true && compactDaemonStatus.count === 1
+    && compactDaemonStatus.tool_count === 2 && compactDaemonStatus.readiness_verified === true
+    && compactDaemonStatus.readiness_timeout_ms === 15_000 && compactDaemonStatus.liveness_timeout_ms === 90_000
+    && !("tools" in compactDaemonStatus) && !("policy" in compactDaemonStatus),
+  "daemon status compact projection lost liveness metadata or leaked detail fields");
+  assert(detailedDaemonStatus.tools?.length === 2 && detailedDaemonStatus.policy?.profile === "review"
+    && detailedDaemonStatus.relay_transport?.outage_count === 2,
+  "daemon status detailed projection lost policy, tools, or relay diagnostics");
+  const disconnectedDaemonStatus = daemonStatusSnapshot({ readySockets: () => [], readyAttachment: () => undefined }, true);
+  assert(disconnectedDaemonStatus.connected === false && disconnectedDaemonStatus.count === 0
+    && disconnectedDaemonStatus.tool_count === 0 && disconnectedDaemonStatus.connected_at === null
+    && disconnectedDaemonStatus.last_seen_at === null && disconnectedDaemonStatus.policy === null
+    && disconnectedDaemonStatus.relay_transport === null,
+  "daemon status disconnected projection lost bounded defaults");
+
+  const serverInfoInput = {
     serverName: "machine-bridge-mcp", serverVersion: "test", base: "https://example.test", oauth: { issuer: "https://example.test" },
-    authorization: { account: { role: "owner" }, summary: "summary" },
-    daemon: { tool_count: 2, relay_transport: { schema_version: 1, outage_count: 3 } },
+    authorization: {
+      account: { account_id: "acct_private", role: "owner", version: 3 }, summary: "summary",
+      effective_policy: { profile: "full", allowWrite: true, allowExec: true, execMode: "shell" },
+      effective_tool_count: 2, account_role_is_owner: true, effective_profile_is_full: true,
+      execution_model: { within_effective_authority: "automatic_without_per_operation_prompt", owner_ambient_authority: "daemon_os_user", generic_control_plane_paths: "denied_even_for_owner" },
+    },
+    daemon: { connected: true, count: 1, tool_count: 2, readiness_verified: true, readiness_timeout_ms: 15_000, liveness_timeout_ms: 90_000, relay_transport: { schema_version: 1, outage_count: 3 } },
     effectiveTools: ["server_info", "list_dir"], advertisedTools: ["server_info", "list_dir", "read_file"],
-    pendingSnapshot: { active: 31, detached: 0, request_keys: 0, maximum: 32, ordinary_capacity: 30, reserved_capacity: 2, active_ordinary: 30, active_reserved: 1, oldest_ms: 0, by_tool: { read_file: 30, diagnose_runtime: 1 } },
+    pendingSnapshot: { active: 31, detached: 0, request_keys: 0, maximum: 32, ordinary_capacity: 30, reserved_capacity: 2, active_ordinary: 30, active_reserved: 1, oldest_ms: 0, durable_streams: 1, by_tool: { read_file: 30, diagnose_runtime: 1 } },
     daemonRegistry, observability: new WorkerObservability(),
-  });
+  };
+  const info = buildServerInfoResult(serverInfoInput);
   assert(info.worker.sockets_live.authenticated === 4 && info.worker.daemon_candidates === 1
     && info.tool_delivery.effective_account_tool_count === 2 && info.tool_delivery.relay_advertised_tool_count === 3
     && info.worker.pending_calls.ordinary_capacity === 30
@@ -905,6 +953,44 @@ async function testStreamDispatchFailureBoundaries() {
     && info.tool_delivery.host_terminal_receipt_observable === false
     && info.daemon.relay_transport.outage_count === 3,
   "server_info builder lost socket, catalog, timeout, or delivery-scope diagnostics");
+  const summary = buildServerInfoResult(serverInfoInput, "summary");
+  assert(serverInfoDetail({}) === "full" && serverInfoDetail({ detail: "summary" }) === "summary",
+    "server_info detail default or summary selection changed");
+  assert(summary.detail === "summary" && summary.version === "test"
+    && summary.authorization?.account?.role === "owner" && !("account_id" in summary.authorization.account)
+    && summary.authorization?.effective_policy?.profile === "full"
+    && summary.authorization?.effective_tool_count === 2
+    && summary.daemon?.readiness_verified === true && summary.daemon?.relay_transport?.outage_count === 3
+    && summary.worker?.pending_calls?.active === 31 && !("by_tool" in summary.worker.pending_calls)
+    && summary.worker?.sockets_live?.authenticated === 4
+    && !("oauth" in summary) && !("tools" in summary) && !("observability" in summary.worker),
+  "compact server_info leaked cold-path fields or lost health/authority state");
+  assert(JSON.stringify(summary).length < JSON.stringify(info).length * 0.7,
+    "compact server_info did not materially reduce the diagnostic payload");
+  const sparseServerInfo = buildServerInfoResult({
+    ...serverInfoInput,
+    authorization: { account: null, effective_policy: null, execution_model: null },
+    daemon: {}, effectiveTools: [], advertisedTools: [], pendingSnapshot: {},
+  }, serverInfoDetail({ detail: "summary" }));
+  assert(sparseServerInfo.authorization?.account === null
+    && sparseServerInfo.authorization?.effective_policy === null
+    && sparseServerInfo.authorization?.effective_tool_count === 0
+    && sparseServerInfo.authorization?.account_role_is_owner === false
+    && sparseServerInfo.authorization?.effective_profile_is_full === false
+    && sparseServerInfo.authorization?.execution_model === null
+    && sparseServerInfo.daemon?.connected === false && sparseServerInfo.daemon?.count === 0
+    && sparseServerInfo.daemon?.connected_at === null && sparseServerInfo.daemon?.relay_transport === null
+    && sparseServerInfo.worker?.pending_calls?.active === 0
+    && sparseServerInfo.worker?.pending_calls?.durable_streams === 0,
+  "compact server_info sparse defaults drifted");
+  const arrayIdentityServerInfo = buildServerInfoResult({
+    ...serverInfoInput,
+    authorization: { ...serverInfoInput.authorization, account: [], execution_model: [] },
+  }, "summary");
+  assert(arrayIdentityServerInfo.authorization?.account === null && arrayIdentityServerInfo.authorization?.execution_model === null,
+    "compact server_info accepted array-shaped identity or execution metadata");
+  assert(serverInfoDetail({ detail: "full" }) === "full" && serverInfoDetail({ detail: "unknown" }) === "full",
+    "server_info detail fallback stopped failing closed to the compatible full projection");
 }
 
 
@@ -1089,6 +1175,31 @@ async function testMcpStreamChannel() {
   assert(raced.status === 101 && JSON.parse(raceServer.sent[0]).result.raced === true
     && metrics.storageRaceDeliveries === 1 && metrics.storageRaceFailures === 0,
   "completion between lookup and upgrade was lost or misclassified");
+
+  const independentA = `stream_${"A".repeat(43)}`;
+  const independentB = `stream_${"B".repeat(43)}`;
+  const secondPollGate = Promise.withResolvers();
+  let firstPollCount = 0;
+  const socketsBeforeIndependent = context.sockets.length;
+  const firstIndependent = channel.subscribe(upgrade, independentA, {
+    pollMessage() {
+      firstPollCount += 1;
+      return firstPollCount === 1 ? Promise.resolve({ kind: "pending" }) : secondPollGate.promise;
+    },
+  });
+  for (let turn = 0; turn < 8 && context.sockets.length === socketsBeforeIndependent; turn += 1) await Promise.resolve();
+  assert(context.sockets.length === socketsBeforeIndependent + 1, "first independent stream did not reach its registered storage recheck");
+  let secondIndependentSettled = false;
+  const secondIndependent = channel.subscribe(
+    upgrade, independentB, sequencePollStore([{ kind: "pending" }, { kind: "pending" }]),
+  ).then((value) => { secondIndependentSettled = true; return value; });
+  for (let turn = 0; turn < 8 && !secondIndependentSettled; turn += 1) await Promise.resolve();
+  const unrelatedProgressedDuringSlowRecheck = secondIndependentSettled;
+  secondPollGate.resolve({ kind: "pending" });
+  const [firstIndependentResponse, secondIndependentResponse] = await Promise.all([firstIndependent, secondIndependent]);
+  assert(unrelatedProgressedDuringSlowRecheck
+    && firstIndependentResponse.status === 101 && secondIndependentResponse.status === 101,
+  "slow storage recheck for one stream globally serialized an unrelated stream subscription");
 
   const protocolSocket = new TestWebSocket();
   protocolSocket.serializeAttachment({ role: "mcp_stream_subscriber", streamId: STREAM_TEST_ID });
@@ -2415,6 +2526,12 @@ async function testWorkerStaticRoutes() {
   assert(firstAuthenticatedKey === repeatedAuthenticatedKey && firstAuthenticatedKey !== secondAuthenticatedKey,
     "stateful rate-limit identity was not stable and isolated per credential");
   assert(!firstAuthenticatedKey.includes("synthetic-secret"), "stateful rate-limit key exposed credential material");
+  assert(statefulRouteClass("/mcp") === "mcp"
+    && statefulRouteClass("/daemon/ws") === "daemon"
+    && statefulRouteClass("/oauth/token") === "oauth"
+    && statefulRouteClass("/admin/accounts/private-looking-suffix") === "admin"
+    && statefulRouteClass("/private-looking-path") === "other",
+  "Worker route classifier lost its bounded low-cardinality logging/rate-limit contract");
   const oauthNetworkKey = await statefulRateLimitKey(new Request("https://example.test/oauth/token", {
     headers: { "cf-connecting-ip": "192.0.2.10" },
   }));

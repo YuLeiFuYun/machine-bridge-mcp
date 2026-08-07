@@ -136,7 +136,7 @@ Account and client administration is not exposed as an MCP tool and does not use
 
 The local CLI creates a root-certified ephemeral P-256 session. Each request signs the Worker origin, HTTP method, path, body hash, session key ID, timestamp, and nonce. The Worker verifies the root certificate, session signature, body, timestamp, and nonce replay state.
 
-The default root is portable owner-only P-256 material, including on macOS, so independent account commands do not normally prompt. When a separately provisioned broker has explicitly enrolled a Secure Enclave root, an independent account command may request user presence once. During normal daemon startup, the same in-memory session is reused for initial owner creation and relay authentication.
+The default root is portable owner-only P-256 material, including on macOS, so independent account commands do not normally prompt. When a separately provisioned broker has explicitly enrolled a Secure Enclave root, an independent account command may request user presence once. During normal first-run daemon startup, the same in-memory session is reused for initial owner creation and relay authentication. Candidate/prerelease activation requires an existing deployment and deliberately skips initial-owner provisioning; account administration is not used as a precondition for candidate relay readiness.
 
 The first start of a new deployment creates an owner account automatically and prints its generated password once. Subsequent starts do not display passwords.
 

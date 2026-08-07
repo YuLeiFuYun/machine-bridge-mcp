@@ -2,6 +2,10 @@
 
 This document records project-wide decisions that must survive individual fixes, releases, and maintainers. It is normative for repository changes together with [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md). Machine-specific observations belong in the ignored `.project-local/` directory instead.
 
+## Dependency save policy
+
+Repository npm saves must preserve exact versions (`save-exact=true`). Root production, development, and optional dependencies are architecture-gated to exact semantic versions and installs remain lockfile-driven. Do not add a blanket `min-release-age` project setting: npm applies it as a version-availability filter and can therefore block a newly published security fix. Supply-chain freshness is handled by explicit reviewed upgrades plus lockfile, audit, signature/attestation, lifecycle-script, and consumer-package gates rather than by making recent versions globally ineligible.
+
 ## Product and security invariants
 
 1. **The default profile is intentionally `full`.** This is an explicit product-owner decision prioritizing usability. It must not be changed to a narrower default as an incidental security cleanup. Documentation must continue to explain the authority and risks clearly.
@@ -71,16 +75,17 @@ Rules:
 - Every externally controlled input is bounded before expensive allocation, traversal, parsing, storage, or execution. A byte limit constrains bytes actually consumed and duration work, not only the subset retained in memory; once a declared or observed bound is crossed, cancel or close the source immediately.
 - Externally controlled string keys must not use prototype-chain membership or truthiness on ordinary objects. Use `Map`, `Set`, `Object.hasOwn`, or null-prototype records for command dispatch, enums, ACLs, form fields, registries, and other key-addressed contracts.
 - Repository text must not contain invisible ASCII controls other than tab, CR, and LF; architecture tests enforce this even when JavaScript syntax remains valid.
-- Persistent mutations use owner-only files, bounded no-follow reads, flushed atomic replacement, and integrity checks appropriate to the data.
+- Persistent mutations use owner-only files, bounded no-follow reads, flushed atomic/no-overwrite publication, and integrity checks appropriate to the data. Filesystem device/inode identity is never routed through an unsafe JavaScript Number: security-sensitive comparisons use the shared lossless identity boundary with BigInt default observations and fail closed when injected metadata cannot be represented exactly.
 - A transport-surviving operation exposes either authenticated replay or a durable inspection handle. A response stream alone is not durable delivery.
 - After a remote mutation, inspect the persisted file/Git anchors in a separate call before treating a subsequent test as evidence for that exact change.
 - Exclusive locks use the shared complete-before-visible hard-link claim. Reclamation requires process identity plus a matching file snapshot/token; do not unlink a path merely because an earlier read looked stale.
+- Lock/recovery readers distinguish absence, successfully read malformed metadata, and storage failure. Only ENOENT is absence; only bytes that were successfully read and then proved malformed may enter a documented stale-corruption policy. Size, permission, I/O, descriptor, and identity failures must propagate and must never become evidence that an owner is absent or reclaimable.
 - Service providers normalize success/failure to one result contract. Definition removal follows the shared platform-stop → verified-daemon-stop → remove order.
 - Retry is limited to classified transient failures. Authentication, authorization, validation, integrity, and policy errors fail immediately.
-- Cleanup-only catches may be best effort, but primary failures must not be silently discarded. Rollback of newly created credentials, keys, or other sensitive artifacts is part of the primary integrity result: incomplete rollback must be reported explicitly after attempting every cleanup target.
+- Cleanup-only catches may be best effort only after the primary result is already unambiguous. Before commit, cleanup failure must preserve the primary failure and every relevant cleanup cause. After commit, cleanup failure must not retroactively report the side effect as failed; surface fixed bounded cleanup evidence instead, and fail closed before continuing whenever the leftover artifact can contain credentials, keys, or other sensitive bytes. Rollback of newly created credentials, keys, or other sensitive artifacts is part of the primary integrity result and must attempt every cleanup target.
 - New work should not increase an already broad orchestration module when the behavior has an independent lifecycle or test surface. Extract the domain first.
 
-`runtime.mjs` owns local tool semantics. `relay-connection.mjs` owns authenticated relay connection lifecycle. The CLI orchestrates them; it must not become the second implementation of either.
+`runtime.mjs` owns local tool orchestration, not filesystem lock mechanics. A tool handler returning successfully is the local settlement point: cancellation must be observed at explicit safe/cancellable checkpoints before that point, not used afterward to retroactively replace a completed result. Relay/result ownership may still suppress delivery when a remote caller has stopped waiting; that transport fact is separate from whether local work committed.  File mutations coordinate on already-resolved canonical paths: the same path is serialized, independent paths may proceed concurrently, and a multi-path transaction must reserve every source/destination before awaiting any prior reservation. A cancellation signal must not release a reservation while an already-started filesystem operation can still settle. `relay-connection.mjs` owns authenticated relay connection lifecycle, while `relay-connection-classification.mjs` owns close/error classification, handshake/readiness validation, user-facing relay causes, and reconnect backoff. The CLI orchestrates them; it must not become the second implementation of either.
 
 ## MCP and tool-schema contract
 

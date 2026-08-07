@@ -262,6 +262,15 @@ try {
   assert(serverInfo.result?.structuredContent?.enforcement?.host_policy_is_independent === true, "server_info did not disclose the independent host-policy boundary");
   assert(serverInfo.result?.structuredContent?.tool_delivery?.host_exposed_tools_known_to_server === false, "server_info incorrectly claimed visibility into host-exposed tools");
   assert(serverInfo.result?.structuredContent?.tool_delivery?.host_may_expose_subset === true, "server_info did not disclose host-side tool filtering");
+  send({ jsonrpc: "2.0", id: 6000, method: "tools/call", params: { name: "server_info", arguments: { detail: "summary" } } });
+  const compactServerInfo = await responseFor(6000);
+  const compactInfo = compactServerInfo.result?.structuredContent;
+  assert(compactInfo?.detail === "summary" && compactInfo?.policy?.profile === "full"
+    && compactInfo?.runtime?.lifecycle && compactInfo?.tool_delivery?.daemon_advertised_tool_count === serverInfo.result?.structuredContent?.tool_delivery?.daemon_advertised_tool_count,
+  "stdio compact server_info omitted core health or policy state");
+  assert(!("tools" in compactInfo) && !("observability" in compactInfo) && !("security_audit" in compactInfo) && !("trust" in compactInfo)
+    && JSON.stringify(compactInfo).length < JSON.stringify(serverInfo.result.structuredContent).length * 0.6,
+  "stdio compact server_info retained cold-path diagnostics or failed to compact materially");
 
   send({ jsonrpc: "2.0", id: 602, method: "tools/call", params: { name: "diagnose_runtime", arguments: {} } });
   const diagnostics = await responseFor(602, 10_000);

@@ -72,13 +72,14 @@ export function runnerProcessIsCurrent(status, dir, { ownerOnly = false } = {}) 
 }
 
 function readRunnerOwner(dir, fallback = {}) {
+  let text;
+  try { text = readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8"); }
+  catch (error) { if (error?.code === "ENOENT") return { ...fallback }; throw error; }
   try {
-    const parsed = JSON.parse(readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8"));
+    const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...fallback };
     return { ...fallback, ...parsed };
-  } catch {
-    return { ...fallback };
-  }
+  } catch { return { ...fallback }; }
 }
 
 export function managedRunnerEnvironment({ fullEnv = false, recoveryToken = "", launchToken = "", source = process.env } = {}) {

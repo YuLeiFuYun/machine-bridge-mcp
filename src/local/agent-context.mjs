@@ -100,7 +100,7 @@ export class AgentContextManager {
       },
       guidance: [
         "Built-in working agreements and bounded automatic project facts are present by default unless disabled in the user-global agent config.",
-        "Call resolve_task_capabilities with the current user task before substantive local work or at the start of a reused-host conversation.",
+        "Call resolve_task_capabilities only when skill, command, application/browser routing, or refreshed project instructions are needed; use direct file, Git, and execution tools for straightforward work.",
         "The resolver returns the effective instructions again and rescans skill and command metadata on every call; the runtime supplements application and browser capability metadata.",
       ],
     };

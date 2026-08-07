@@ -67,6 +67,10 @@ export function createActivateCommand({
         state,
         logger,
         onRemotePrepared,
+        // Candidate activation requires an existing deployment. Do not repeat
+        // first-run account provisioning after Worker convergence: that extra
+        // admin-auth round trip can fail independently before relay readiness.
+        provisionInitialOwner: false,
       }),
       repairRemoteState: async ({ onRemotePrepared } = {}) => {
         logger.warn("candidate device authentication was rejected; redeploying the same Worker once with the current device identity");
@@ -76,6 +80,7 @@ export function createActivateCommand({
           state,
           logger,
           onRemotePrepared,
+          provisionInitialOwner: false,
         });
       },
       createRuntime: ({ daemonLock, readiness }) => createRemoteRuntime({

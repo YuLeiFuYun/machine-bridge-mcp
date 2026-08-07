@@ -9,7 +9,7 @@ import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { inspectProcessInstance } from "../src/local/process-identity.mjs";
-import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath } from "../src/local/state.mjs";
+import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath, readDaemonLockOwner } from "../src/local/state.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const MAINTENANCE_HOLDER_READY_MS = 30_000;
@@ -82,7 +82,6 @@ async function atomicExclusiveCreateTest() {
     windowsHide: true,
   }));
   const childResults = children.map(waitForChild);
-  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 30); });
   await writeFile(barrier, "go\n", "utf8");
   const results = await Promise.all(childResults);
   const winners = results.filter((result) => result.code === 0);
@@ -99,6 +98,36 @@ async function atomicExclusiveCreateTest() {
   try { createExclusiveFileSync(direct, "other\n"); } catch (error) { duplicate = error; }
   assert(duplicate?.code === "EEXIST", "exclusive create did not preserve existing target");
   assert(await readFile(direct, "utf8") === "complete\n", "duplicate exclusive create changed the target");
+
+  let legacyCleanupFlagFailure = null;
+  try { createExclusiveFileSync(direct, "other\n", { cleanupTargetOnFailure: true }); } catch (error) { legacyCleanupFlagFailure = error; }
+  assert(legacyCleanupFlagFailure?.code === "EEXIST" && await readFile(direct, "utf8") === "complete\n",
+    "legacy cleanupTargetOnFailure semantics deleted a pre-existing exclusive target after EEXIST");
+
+  const causalTarget = join(directory, "causal-cleanup.txt");
+  let causalFailure = null;
+  try {
+    createExclusiveFileSync(causalTarget, "private\n", {
+      link() { throw new Error("synthetic exclusive commit failure"); },
+      unlink() { throw new Error("synthetic exclusive staging cleanup failure"); },
+    });
+  } catch (error) { causalFailure = error; }
+  assert(causalFailure instanceof AggregateError
+    && causalFailure.errors?.[0]?.message === "synthetic exclusive commit failure"
+    && causalFailure.errors?.[1]?.message === "synthetic exclusive staging cleanup failure",
+  "exclusive create lost primary and staging-cleanup causes");
+
+  const warningTarget = join(directory, "cleanup-warning.txt");
+  const warningResult = createExclusiveFileSync(warningTarget, "committed\n", {
+    unlink() { throw new Error("synthetic post-commit staging cleanup failure"); },
+  });
+  assert(await readFile(warningTarget, "utf8") === "committed\n"
+    && warningResult.warnings.length === 1
+    && warningResult.cleanupError?.message.includes("post-commit")
+    && typeof warningResult.cleanupArtifact === "string"
+    && !JSON.stringify(warningResult).includes(warningResult.cleanupArtifact),
+  "exclusive create hid post-commit cleanup failure or exposed its private staging path in serialization");
+  await rm(warningResult.cleanupArtifact, { force: true });
 }
 
 async function atomicReplacementTest() {
@@ -120,6 +149,19 @@ async function atomicReplacementTest() {
   assert(result.code === 0, `atomic replacement fixture failed: ${result.stderr}`);
   const final = JSON.parse(await readFile(target, "utf8"));
   assert(final.revision === 250, "atomic replacement lost the final update");
+
+  const causalTarget = join(directory, "causal-replacement.json");
+  let causalFailure = null;
+  try {
+    replaceFileAtomicallySync(causalTarget, "private\n", {
+      replace() { throw new Error("synthetic replacement commit failure"); },
+      unlink() { throw new Error("synthetic replacement staging cleanup failure"); },
+    });
+  } catch (error) { causalFailure = error; }
+  assert(causalFailure instanceof AggregateError
+    && causalFailure.errors?.[0]?.message === "synthetic replacement commit failure"
+    && causalFailure.errors?.[1]?.message === "synthetic replacement staging cleanup failure",
+  "atomic replacement lost primary and staging-cleanup causes");
 }
 
 function processIdentityTest() {
@@ -356,6 +398,17 @@ async function malformedAndReusedPidLockTest() {
   const reclaimed = acquireStartupLock(state, { operation: "reclaim-malformed" });
   assert(reclaimed.acquired, "old malformed lock was not reclaimed");
   reclaimed.release();
+
+  await writeFile(file, "x".repeat(64 * 1024 + 1), { mode: 0o600 });
+  await utimes(file, old, old);
+  let oversizedFailure = null;
+  try { acquireStartupLock(state, { operation: "must-not-reclaim-oversized" }); } catch (error) { oversizedFailure = error; }
+  assert(String(oversizedFailure?.message || "").includes("file exceeds 65536 bytes") && existsSync(file),
+    "oversized process lock was treated as reclaimable malformed JSON instead of a read failure");
+  let ownerReadFailure = null;
+  try { readDaemonLockOwner(file); } catch (error) { ownerReadFailure = error; }
+  assert(String(ownerReadFailure?.message || "").includes("file exceeds 65536 bytes") && existsSync(file),
+    "daemon lock owner reader converted an oversized/unreliable lock into null owner metadata");
 
   await writeFile(file, `${JSON.stringify({
     pid: process.pid,

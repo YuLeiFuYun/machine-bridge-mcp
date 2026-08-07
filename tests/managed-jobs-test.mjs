@@ -5,15 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activeManagedJobs, inspectResourceFile, launchRunner, ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { managedRunnerEnvironment } from "../src/local/managed-job-runner.mjs";
+import { managedRunnerEnvironment, runnerProcessIsCurrent } from "../src/local/managed-job-runner.mjs";
 import { confirmRunnerClaim, publishProvisionalRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
 import { persistManagedJobTerminal } from "../src/local/managed-job-terminal.mjs";
 
 const MANAGED_JOB_TEST_WAIT_MS = 480_000;
 const MANAGED_JOB_MULTI_STEP_WAIT_MS = 600_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 120;
-const MANAGED_JOB_TREE_TIMEOUT_SECONDS = 180;
-const MANAGED_JOB_TREE_READY_MS = 150_000;
+const MANAGED_JOB_TREE_TIMEOUT_SECONDS = 15;
+const MANAGED_JOB_TREE_READY_MS = 10_000;
 
 async function testRunnerClaimBoundary() {
   const processStartedAt = new Date(Date.now() - 1000).toISOString();
@@ -57,6 +57,14 @@ async function testRunnerClaimBoundary() {
   await writeFile(join(unreadableDir, "runner.pid"), "not-json\n", { mode: 0o600 });
   expectThrow(() => publishProvisionalRunnerClaim(unreadableDir, process.pid, token), "already exists but is unreadable");
   await expectReject(confirmRunnerClaim({ file: join(unreadableDir, "runner.pid"), pid: process.pid, processStartedAt, launchToken: token }), "ownership claim is unreadable");
+
+  const oversizedRunnerDir = join(root, "runner-owner-oversized");
+  await mkdir(oversizedRunnerDir, { recursive: true });
+  await writeFile(join(oversizedRunnerDir, "runner.pid"), "x".repeat(1025), { mode: 0o600 });
+  expectThrow(
+    () => runnerProcessIsCurrent({ runner_pid: 2_147_483_647, runner_process_started_at: processStartedAt }, oversizedRunnerDir),
+    "file exceeds 1024 bytes",
+  );
 }
 
 function isolateStepCoverage(plan) {

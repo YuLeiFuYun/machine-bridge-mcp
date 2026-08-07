@@ -83,9 +83,10 @@ function lifecycleMiddleware(callRegistry) {
     operation.context = { ...operation.request.context, ...context };
     try {
       callRegistry.throwIfCancelled(operation.context);
-      const result = await next(operation);
-      callRegistry.throwIfCancelled(operation.context);
-      return result;
+      // Handler return is the local settlement point. Cooperative handlers observe cancellation
+      // before or during cancellable work; a later signal must not retroactively relabel a
+      // completed side effect as cancelled after observability/audit already recorded completion.
+      return await next(operation);
     } finally {
       callRegistry.finish(context.callId);
     }

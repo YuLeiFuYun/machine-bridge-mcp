@@ -1,7 +1,7 @@
 import { clampInteger } from "./numbers.mjs";
 
 const RUNTIME_TOOL_HANDLERS = Object.freeze({
-  server_info: (runtime, _args, context) => runtime.runtimeInfo(context),
+  server_info: (runtime, args, context) => runtime.serverInfo(args, context),
   project_overview: (runtime, _args, context) => runtime.projectOverview(context),
   session_bootstrap: (runtime, args, context) => runtime.sessionBootstrap(args, context),
   agent_context: (runtime, args, context) => runtime.agentContextManager.agentContext(args, context),

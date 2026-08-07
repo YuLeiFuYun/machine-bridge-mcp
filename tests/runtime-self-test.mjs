@@ -9,6 +9,9 @@ import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 
 const SUCCESS_PROCESS_TIMEOUT_SECONDS = 30;
 const RUNTIME_GIT_FIXTURE_TIMEOUT_MS = 30_000;
+const PROCESS_TREE_ESCALATION_WAIT_MS = DEFAULT_PROCESS_TERMINATION_GRACE_MS
+  + 2 * DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS
+  + 2000;
 
 export async function runtimeSelfTest() {
   const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
@@ -299,6 +302,14 @@ export async function runtimeSelfTest() {
     await expectReject(() => restricted.editFile({ path: "nested/ambiguous.txt", old_text: "same", new_text: "changed" }), "occurs 2 times", "conflict", "text_ambiguous");
     const edited = await restricted.editFile({ path: "nested/written.txt", old_text: "second", new_text: "SECOND", expected_sha256: slice.sha256 });
     if (edited.replacements !== 1 || !(await readFile(join(workspace, "nested/written.txt"), "utf8")).includes("SECOND")) throw new Error("edit_file failed");
+    await restricted.writeFile({ path: "nested/concurrent-edit.txt", content: "alpha\nbeta\ngamma\n", create_only: true });
+    await Promise.all([
+      restricted.editFile({ path: "nested/concurrent-edit.txt", old_text: "alpha", new_text: "ALPHA" }),
+      restricted.editFile({ path: "nested/concurrent-edit.txt", old_text: "beta", new_text: "BETA" }),
+    ]);
+    if (await readFile(join(workspace, "nested/concurrent-edit.txt"), "utf8") !== "ALPHA\nBETA\ngamma\n") {
+      throw new Error("same-path concurrent edits did not serialize against fresh file state");
+    }
     const patch = await restricted.applyPatch({ patch: `*** Begin Patch
 *** Update File: nested/written.txt
 @@
@@ -378,6 +389,17 @@ export async function runtimeSelfTest() {
 
     const command = await restricted.execCommand("node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"", SUCCESS_PROCESS_TIMEOUT_SECONDS);
     if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
+    const fullServerInfo = restricted.serverInfo({ detail: "full" });
+    const compactServerInfo = restricted.serverInfo({ detail: "summary" });
+    if (compactServerInfo.detail !== "summary"
+      || JSON.stringify(compactServerInfo.policy) !== JSON.stringify(fullServerInfo.policy)
+      || compactServerInfo.tool_delivery?.daemon_advertised_tool_count !== fullServerInfo.tool_delivery?.daemon_advertised_tool_count
+      || "tools" in compactServerInfo || "observability" in compactServerInfo || "security_audit" in compactServerInfo || "trust" in compactServerInfo) {
+      throw new Error("compact local server_info changed effective policy, lost core state, or retained cold-path diagnostics");
+    }
+    if (JSON.stringify(compactServerInfo).length >= JSON.stringify(fullServerInfo).length * 0.6) {
+      throw new Error("compact local server_info did not materially reduce the payload");
+    }
     const beforeBootstrap = restricted.runtimeInfo().observability.capability_routing;
     if (beforeBootstrap.bootstrap_observed || beforeBootstrap.task_resolution_observed) throw new Error("capability routing telemetry was pre-populated");
     await restricted.sessionBootstrap({ path: "." });
@@ -414,9 +436,8 @@ export async function runtimeSelfTest() {
       const descendantPidFile = join(workspace, "timeout-descendant.pid");
       const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
       await expectReject(() => restricted.execCommand(descendantCommand, 1), "command timed out");
-      await new Promise(resolvePromise => { setTimeout(resolvePromise, 2500); });
       const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
-      if (isProcessAlive(descendantPid)) {
+      if (!await waitForProcessExit(descendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
         try { process.kill(descendantPid, "SIGKILL"); } catch {}
         throw new Error("timeout escalation left a SIGTERM-ignoring descendant running");
       }
@@ -428,11 +449,10 @@ export async function runtimeSelfTest() {
       // deadline bounded, but long enough to exercise post-start tree cleanup.
       await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 2000), "command timed out");
       const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 5000)).trim());
-      const detachedDeadline = Date.now() + DEFAULT_PROCESS_TERMINATION_GRACE_MS + DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS + 2000;
-      while (isProcessAlive(detachedDescendantPid) && Date.now() < detachedDeadline) {
-        await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });
-      }
-      if (isProcessAlive(detachedDescendantPid)) {
+      // Capture/refresh and the final current-ownership check have separate bounded
+      // budgets around the graceful-termination window. Poll the real descendant until
+      // that complete production bound settles instead of sampling at one wall-clock instant.
+      if (!await waitForProcessExit(detachedDescendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
         try { process.kill(detachedDescendantPid, "SIGKILL"); } catch {}
         throw new Error("one-shot process timeout cancelled forced escalation after the direct child exited");
       }
@@ -491,6 +511,14 @@ async function waitForFileText(file, timeoutMs) {
     }
   }
   throw lastError || new Error(`timed out waiting for file: ${file}`);
+}
+
+async function waitForProcessExit(pid, timeoutMs) {
+  const deadline = performance.now() + timeoutMs;
+  while (isProcessAlive(pid) && performance.now() < deadline) {
+    await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });
+  }
+  return !isProcessAlive(pid);
 }
 
 function isProcessAlive(pid) {

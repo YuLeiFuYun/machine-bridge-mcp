@@ -28,7 +28,7 @@ type PrepareDependencies = Readonly<{
   resumption: McpResumptionStore;
   observability: WorkerObservability;
   admission: PendingAdmissionGate;
-  serverInfo: () => Promise<Record<string, unknown>>;
+  serverInfo: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
   dispatchWorkspaceCall: (input: LegacyWorkspaceStreamCallInput) => Promise<void>;
 }>;
 
@@ -84,7 +84,7 @@ export async function prepareLegacyStreamedToolCall(
             observability: dependencies.observability,
             streamId,
             requestId,
-            outcome: { ok: true, value: await dependencies.serverInfo() },
+            outcome: { ok: true, value: await dependencies.serverInfo(args) },
           });
         } else {
           await dependencies.dispatchWorkspaceCall({
