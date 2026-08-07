@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { wranglerCommand } from "../src/local/shell.mjs";
@@ -11,7 +12,7 @@ try {
   const node = resolve(root, "synthetic-node");
   const command = wranglerCommand({ packageRoot: root, node });
   if (command.cmd !== node) throw new Error("Wrangler command did not use the explicit Node executable");
-  const canonicalScript = await realpath(script);
+  const canonicalScript = realpathSync(script);
   if (JSON.stringify(command.argsPrefix) !== JSON.stringify([canonicalScript])) {
     throw new Error(`Wrangler command did not use the canonical package JavaScript entrypoint: ${JSON.stringify(command)}`);
   }
