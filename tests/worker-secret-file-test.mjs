@@ -52,6 +52,18 @@ try {
   if (returned !== "callback-result") throw new Error("temporary secrets callback result was lost");
   if (await exists(observedPath)) throw new Error("temporary secrets file survived successful callback cleanup");
 
+  let generationReads = 0;
+  const generationResult = await withWorkerSecretsFile(state, async () => "generation-ok", {
+    chmodFile() {},
+    lstatSync() {
+      generationReads += 1;
+      return syntheticSecretStat(7n, 9n, generationReads === 1 ? 100n : 200n);
+    },
+  });
+  if (generationResult !== "generation-ok" || generationReads !== 3) {
+    throw new Error("Worker secret cleanup did not refresh identity after intentional chmod generation change");
+  }
+
   let retryCallbackRan = false;
   const retryResult = await withWorkerSecretsFile(state, async () => { retryCallbackRan = true; return "retry-ok"; }, {
     exclusiveFileOptions: {
@@ -169,8 +181,8 @@ try {
   await rm(root, { recursive: true, force: true });
 }
 
-function syntheticSecretStat(dev, ino) {
-  return { dev, ino, size: 2n, mtimeMs: 1n, isFile: () => true, isSymbolicLink: () => false };
+function syntheticSecretStat(dev, ino, ctimeNs) {
+  return { dev, ino, ...(ctimeNs === undefined ? {} : { ctimeNs }), size: 2n, mtimeMs: 1n, isFile: () => true, isSymbolicLink: () => false };
 }
 
 async function exists(file) {

@@ -90,7 +90,9 @@ const managedJobOutsideInfo = { ...managedJobInfo, ino: 2 };
 const managedJobRoot = resolve("/tmp/jobs");
 const managedJobOutside = resolve("/tmp/outside");
 expectThrow(() => resolveManagedJobRootIfPresent(managedJobRoot, {
-  inspectPath: () => managedJobInfo,
+  openSync: (target) => target,
+  fstatSync: () => managedJobInfo,
+  closeSync() {},
   realpathSync: () => managedJobOutside,
   lstatSync: (target) => target === managedJobRoot ? managedJobInfo : managedJobOutsideInfo,
 }), "canonical target does not match");
@@ -98,18 +100,24 @@ const managedJobId = `job_${"A".repeat(24)}`;
 const unsafeManagedJobBefore = { ...managedJobInfo, dev: 2 ** 54, ino: 2 ** 54 };
 const unsafeManagedJobAfter = { ...managedJobInfo, dev: (2 ** 54) + 4, ino: (2 ** 54) + 8 };
 expectThrow(() => resolveManagedJobDirectory(managedJobRoot, managedJobId, {
-  inspectPath: () => unsafeManagedJobBefore,
+  openSync: (target) => target,
+  fstatSync: (target) => target === managedJobRoot ? managedJobInfo : unsafeManagedJobBefore,
+  closeSync() {},
   realpathSync: (value) => value,
-  lstatSync: () => unsafeManagedJobAfter,
+  lstatSync: (target) => target === managedJobRoot ? managedJobInfo : unsafeManagedJobAfter,
 }), "identity changed during inspection");
 const bigintManagedJobInfo = { ...managedJobInfo, dev: 7n, ino: 11n };
 assert(resolveManagedJobRootIfPresent(managedJobRoot, {
-  inspectPath: () => bigintManagedJobInfo,
+  openSync: (target) => target,
+  fstatSync: () => bigintManagedJobInfo,
+  closeSync() {},
   realpathSync: (value) => value,
   lstatSync: () => bigintManagedJobInfo,
 }) === managedJobRoot, "managed job root resolver rejected comparable bigint identity metadata");
 assert(resolveManagedJobDirectory(managedJobRoot, managedJobId, {
-  inspectPath: () => bigintManagedJobInfo,
+  openSync: (target) => target,
+  fstatSync: () => bigintManagedJobInfo,
+  closeSync() {},
   realpathSync: (value) => value,
   lstatSync: () => bigintManagedJobInfo,
 }) === join(managedJobRoot, managedJobId), "managed job resolver rejected comparable bigint identity metadata");

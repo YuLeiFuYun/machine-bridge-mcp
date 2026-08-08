@@ -110,6 +110,11 @@ try {
     throw new Error("snapshot preservation lost primary-before-cleanup AggregateError causality");
   }
 
+  const reusedGenerationA = filesystemIdentity({ dev: 5n, ino: 8n, ctimeNs: 100n }, "generation A");
+  const reusedGenerationB = filesystemIdentity({ dev: 5n, ino: 8n, ctimeNs: 101n }, "generation B");
+  if (sameFilesystemIdentity(reusedGenerationA, reusedGenerationB)) throw new Error("filesystem identity accepted same-inode generation reuse");
+  if (sameFilesystemIdentity(reusedGenerationA, { dev: 5n, ino: 8n })) throw new Error("filesystem identity dropped a known generation during comparison");
+
   const highIdentityA = filesystemIdentity({ dev: 7n, ino: 9007199254740992n }, "high identity A");
   const highIdentityB = filesystemIdentity({ dev: 7n, ino: 9007199254740993n }, "high identity B");
   if (sameFilesystemIdentity(highIdentityA, highIdentityB)) throw new Error("lossless filesystem identity collapsed adjacent >2^53 inode values");

@@ -517,7 +517,7 @@ if (managedJobClaimSource.includes("existsSync") || !managedJobClaimSource.inclu
 for (const required of ["replaceFileAtomicallySync", "verifyPathIdentity: true", "rejectMultipleLinks: true", "managed job cancellation marker is invalid"]) {
   if (!managedJobCancellationSource.includes(required)) throw new Error(`managed job cancellation boundary lost: ${required}`);
 }
-for (const required of ["MANAGED_JOB_ID", "requireContained", "identity changed during inspection", "inspectPathIfPresentSync", "bigint: true"]) {
+for (const required of ["MANAGED_JOB_ID", "requireContained", "identity changed during inspection", "openSync", "fstatSync", "O_NOFOLLOW", "O_DIRECTORY", "bigint: true"]) {
   if (!managedJobDirectorySource.includes(required)) throw new Error(`managed job directory boundary lost: ${required}`);
 }
 if (packageJson.scripts?.["managed-job-boundary:test"] !== "node tests/managed-job-boundary-test.mjs"

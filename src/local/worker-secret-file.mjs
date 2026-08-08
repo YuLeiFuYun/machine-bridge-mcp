@@ -35,6 +35,7 @@ export async function withWorkerSecretsFile(state, callback, options = {}) {
       retryExclusiveStagingCleanup(creation, options);
     }
     (options.chmodFile || chmodRegularFileSync)(tempPath, 0o600, "temporary Worker secrets file");
+    createdIdentity = fileIdentity(losslessLstat(tempPath, options.lstatSync));
     result = await callback(tempPath);
   } catch (error) {
     primaryError = error;

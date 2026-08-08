@@ -349,7 +349,7 @@ for (const required of ['cpu_quota: \"not-enforced\"', 'memory_quota: \"not-enfo
 }
 
 const filesystemIdentitySource = readFileSync(join(localRoot, "filesystem-identity.mjs"), "utf8");
-for (const required of ["filesystemIdentity", "sameFilesystemIdentity", "exactFilesystemInteger", "cannot be represented losslessly"]) {
+for (const required of ["filesystemIdentity", "sameFilesystemIdentity", "exactFilesystemInteger", "filesystemGeneration", "ctimeNs", "cannot be represented losslessly"]) {
   if (!filesystemIdentitySource.includes(required)) throw new Error(`filesystem identity boundary lost lossless comparison behavior: ${required}`);
 }
 for (const name of ["secure-file.mjs", "exclusive-file.mjs", "worker-secret-file.mjs", "managed-job-directory.mjs", "managed-job-lock.mjs", "state.mjs", "security-audit-storage.mjs", "ssh-key.mjs"]) {
@@ -583,6 +583,13 @@ for (const required of ["managed job runner state", "verifyPathIdentity: true", 
   if (!runnerJsonBoundary.includes(required)) throw new Error(`managed-job runner JSON read lost secure state-file boundary: ${required}`);
 }
 if (runnerJsonBoundary.includes('readBoundedFile(file, maxBytes)')) throw new Error("managed-job runner JSON state fell back to the generic resource-read path");
+const managedJobDirectoryBoundary = readFileSync(join(localRoot, "managed-job-directory.mjs"), "utf8");
+for (const required of ["openSync", "fstatSync", "O_NOFOLLOW", "O_DIRECTORY", "a.dev === b.dev && a.ino === b.ino"]) {
+  if (!managedJobDirectoryBoundary.includes(required)) throw new Error(`managed-job directory lost descriptor-pinned object identity: ${required}`);
+}
+if (managedJobDirectoryBoundary.includes("sameFilesystemIdentity")) {
+  throw new Error("managed-job directory regained change-time comparison even though child mutations legitimately change directory ctime");
+}
 const managedJobLockSnapshotBoundary = readFileSync(join(localRoot, "managed-job-lock.mjs"), "utf8");
 for (const required of ["readBoundedRegularFileWithInfoSync", "verifyPathIdentity: true", "rejectMultipleLinks: true", "opened.identityInfo", "managed-job lock link count"]) {
   if (!managedJobLockSnapshotBoundary.includes(required)) throw new Error(`managed-job lock lost descriptor-coherent snapshot identity: ${required}`);
