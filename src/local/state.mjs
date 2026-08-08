@@ -2,20 +2,17 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
-import { replaceFileSync } from "./atomic-fs.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { preserveFileSnapshotSync } from "./file-snapshot-preservation.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createDeviceIdentity } from "./device-identity.mjs";
 import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
-import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
 import { isPlainRecord } from "./records.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
+import { appName, packageRoot } from "./package-identity.mjs";
 
-export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-export const appName = String(serverMetadata.name);
 const STATE_MARKER = ".machine-bridge-mcp-state";
 const STATE_MARKER_SCHEMA = 2;
 export const STATE_SCHEMA_VERSION = 6;
@@ -198,7 +195,8 @@ export function loadState(workspace, options = {}) {
   ensureOwnerOnlyDir(profileDir);
   const recoveryPath = recoveryMarkerPath(statePath);
   const recoveryPending = existsSync(recoveryPath);
-  const recoveryMarker = recoveryPending ? readRecoveryMarker(recoveryPath, statePath) : null;
+  const recoverySnapshot = recoveryPending ? readRecoveryMarker(recoveryPath, statePath) : null;
+  const recoveryMarker = recoverySnapshot?.marker || null;
   let state = {};
   if (existsSync(statePath)) {
     ownerOnlyFile(statePath);
@@ -207,7 +205,9 @@ export function loadState(workspace, options = {}) {
       throw new Error("workspace state schema is obsolete; remove the state root and initialize the current version");
     }
     assertWorkspaceStateEnvelope(state, { canonicalWorkspace, stateRoot, profileDir, statePath });
-    if (recoveryPending) unlinkSync(recoveryPath);
+    if (recoverySnapshot && !unlinkRegularFileIfIdentitySync(recoveryPath, recoverySnapshot.identity, "state recovery marker")) {
+      throw new Error("workspace state recovery marker changed before removal");
+    }
   } else if (recoveryPending) {
     throw recoveryRequiredError(recoveryMarker);
   }
@@ -232,7 +232,12 @@ export function saveState(state) {
   ensureOwnerOnlyDir(envelope.profileDir);
   atomicWriteJson(envelope.statePath, { ...state });
   const recoveryPath = recoveryMarkerPath(envelope.statePath);
-  if (existsSync(recoveryPath)) unlinkSync(recoveryPath);
+  if (existsSync(recoveryPath)) {
+    const recoverySnapshot = readRecoveryMarker(recoveryPath, envelope.statePath);
+    if (!unlinkRegularFileIfIdentitySync(recoveryPath, recoverySnapshot.identity, "state recovery marker")) {
+      throw new Error("workspace state recovery marker changed before removal");
+    }
+  }
 }
 
 function assertWorkspaceStateEnvelope(state, expected = {}) {
@@ -475,27 +480,26 @@ function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}
 }
 
 function readProcessLockSnapshot(lockPath) {
-  let info;
-  try { info = lstatSync(lockPath, { bigint: true }); } catch (error) {
-    if (error?.code === "ENOENT") return null;
+  let opened;
+  try {
+    opened = readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw error;
   }
-  if (info.isSymbolicLink()) throw new Error(`process lock must not be a symbolic link: ${lockPath}`);
-  if (!info.isFile()) throw new Error(`process lock is not a regular file: ${lockPath}`);
+  const info = lockIdentity(opened.identityInfo, opened.identity);
   let text;
-  try {
-    text = readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file");
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    if (error?.code !== "ERR_INVALID_UTF8") throw error;
-    return { owner: null, info: lockIdentity(info) };
-  }
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(opened.buffer); }
+  catch { return { owner: null, info }; }
   let owner = null;
   try {
     const parsed = JSON.parse(text);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
   } catch { /* Successfully read malformed JSON remains eligible for bounded stale recovery. */ }
-  return { owner, info: lockIdentity(info) };
+  return { owner, info };
 }
 
 function removeLockSnapshot(lockPath, snapshot) {
@@ -515,10 +519,11 @@ function removeLockSnapshot(lockPath, snapshot) {
   }
 }
 
-function lockIdentity(info) {
+function lockIdentity(info, identity = filesystemIdentity(info, "process lock")) {
   return {
-    ...filesystemIdentity(info, "process lock"),
+    ...identity,
     size: exactFilesystemInteger(info.size, "process lock size"),
+    nlink: exactFilesystemInteger(info.nlink, "process lock link count"),
     mtimeMs: filesystemTimeMs(info.mtimeMs, "process lock modification time"),
   };
 }
@@ -566,16 +571,7 @@ function releaseProcessLock(lockPath, token) {
 }
 
 export function readDaemonLockOwner(lockPath) {
-  let text;
-  try { text = readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file"); }
-  catch (error) {
-    if (error?.code === "ENOENT" || error?.code === "ERR_INVALID_UTF8") return null;
-    throw error;
-  }
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch { return null; }
+  return readProcessLockSnapshot(lockPath)?.owner || null;
 }
 
 function boundedPositiveInteger(value, fallback) {
@@ -583,8 +579,11 @@ function boundedPositiveInteger(value, fallback) {
   return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : fallback;
 }
 
-function readBoundedUtf8(filePath, maxBytes, label) {
-  const buffer = readBoundedRegularFileSync(filePath, maxBytes, label);
+function readBoundedUtf8(filePath, maxBytes, label, options = {}) {
+  return decodeUtf8(readBoundedRegularFileSync(filePath, maxBytes, label, options), label);
+}
+
+function decodeUtf8(buffer, label) {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
   } catch (cause) {
@@ -593,7 +592,10 @@ function readBoundedUtf8(filePath, maxBytes, label) {
 }
 
 function readJsonObjectOrBackup(filePath, options = {}) {
-  const text = readBoundedUtf8(filePath, MAX_STATE_JSON_BYTES, "state JSON");
+  const opened = readBoundedRegularFileWithInfoSync(filePath, MAX_STATE_JSON_BYTES, "state JSON", {
+    verifyPathIdentity: true, rejectMultipleLinks: true,
+  });
+  const text = decodeUtf8(opened.buffer, "state JSON");
   let parsed;
   try {
     parsed = JSON.parse(text);
@@ -601,7 +603,7 @@ function readJsonObjectOrBackup(filePath, options = {}) {
     return parsed;
   } catch {
     const backupPath = `${filePath}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
-    replaceFileSync(filePath, backupPath);
+    preserveFileSnapshotSync(filePath, backupPath, opened.buffer, opened.identity, { label: "state JSON", mode: 0o600 });
     ownerOnlyFile(backupPath);
     pruneBackups(filePath, 3);
     if (options.allowEmptyRecovery === true) {
@@ -621,15 +623,23 @@ function recoveryMarkerPath(statePath) { return `${statePath}.recovery-required`
 
 function readRecoveryMarker(markerPath, statePath) {
   ownerOnlyFile(markerPath);
+  let opened;
   let marker;
-  try { marker = JSON.parse(readBoundedUtf8(markerPath, MAX_MARKER_BYTES, "state recovery marker")); }
-  catch { throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing"); }
+  try {
+    opened = readBoundedRegularFileWithInfoSync(markerPath, MAX_MARKER_BYTES, "state recovery marker", {
+      verifyPathIdentity: true, rejectMultipleLinks: true,
+    });
+    marker = JSON.parse(decodeUtf8(opened.buffer, "state recovery marker"));
+  } catch { throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing"); }
   if (marker?.schemaVersion !== RECOVERY_MARKER_SCHEMA || typeof marker.backup !== "string"
       || !marker.backup.startsWith(`${path.basename(statePath)}.corrupt-`) || path.basename(marker.backup) !== marker.backup
       || !Number.isFinite(Date.parse(String(marker.detectedAt || "")))) {
     throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing");
   }
-  return Object.freeze({ schemaVersion: marker.schemaVersion, backup: marker.backup, detectedAt: marker.detectedAt });
+  return {
+    marker: Object.freeze({ schemaVersion: marker.schemaVersion, backup: marker.backup, detectedAt: marker.detectedAt }),
+    identity: opened.identity,
+  };
 }
 
 function recoveryRequiredError(marker) {
@@ -688,7 +698,7 @@ function assertSafeStateRootForRemoval(root) {
 }
 
 function assertValidStateMarker(marker) {
-  const content = readBoundedUtf8(marker, MAX_MARKER_BYTES, "state marker");
+  const content = readBoundedUtf8(marker, MAX_MARKER_BYTES, "state marker", { verifyPathIdentity: true, rejectMultipleLinks: true });
   let value;
   try { value = JSON.parse(content); } catch { throw new Error(`invalid state root marker: ${marker}`); }
   if (value?.app !== appName || value?.schema !== STATE_MARKER_SCHEMA) {
@@ -731,7 +741,7 @@ function stateRootMatchesRecordedWorkspace(root) {
 function readOptionalRemovalJson(file, label) {
   let text;
   try {
-    text = readBoundedUtf8(file, MAX_STATE_JSON_BYTES, label);
+    text = readBoundedUtf8(file, MAX_STATE_JSON_BYTES, label, { verifyPathIdentity: true, rejectMultipleLinks: true });
   } catch (error) {
     if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw new Error(`${label} could not be verified before state removal`, { cause: error });
@@ -866,14 +876,6 @@ function randomToken(prefix) {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
 }
 
-export function ensureOwnerOnlyDir(dir, options = {}) {
-  return ensureOwnerOnlyDirectorySync(dir, options);
-}
-
-export function ownerOnlyFile(filePath) {
-  chmodRegularFileSync(filePath, 0o600, "owner-only path");
-}
-
 export function redactState(state) {
   const clone = redactHomeInValue(JSON.parse(JSON.stringify(state)));
   if (clone.worker?.deviceIdentity?.privateJwk?.d) clone.worker.deviceIdentity.privateJwk.d = "<redacted>";
@@ -912,8 +914,4 @@ function redactHomeInValue(value) {
     for (const key of Object.keys(value)) value[key] = redactHomeInValue(value[key]);
   }
   return value;
-}
-
-export function previewSecret(_value) {
-  return "<redacted>";
 }

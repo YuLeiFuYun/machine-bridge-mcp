@@ -1,9 +1,11 @@
 import { renameSync, writeFileSync } from "node:fs";
-import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectPathIfPresentSync, openRegularFileSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
+import { inspectPathIfPresentSync, openRegularFileSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, unlinkRegularFileIfIdentitySync } from "../src/local/secure-file.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "../src/local/filesystem-identity.mjs";
+import { removeOwnedJsonFileSync } from "../src/local/exclusive-file.mjs";
+import { preserveFileSnapshotSync } from "../src/local/file-snapshot-preservation.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-secure-file-test-"));
 try {
@@ -12,7 +14,10 @@ try {
   const value = readBoundedRegularFileSync(file, 64);
   if (value.toString("utf8") !== "bounded-value") throw new Error("bounded regular-file read returned incorrect content");
   const detailed = readBoundedRegularFileWithInfoSync(file, 64);
-  if (!detailed.info.isFile() || detailed.buffer.toString("utf8") !== "bounded-value") throw new Error("bounded detailed read omitted file metadata or content");
+  if (!detailed.info.isFile() || detailed.buffer.toString("utf8") !== "bounded-value"
+      || typeof detailed.identityInfo?.dev !== "bigint" || typeof detailed.identityInfo?.ino !== "bigint") {
+    throw new Error("bounded detailed read omitted file metadata, exact identity info, or content");
+  }
   expectThrow(() => readBoundedRegularFileSync(file, 4), "file exceeds 4 bytes");
   if (!inspectPathIfPresentSync(file, "test file")?.isFile()) throw new Error("present-path inspection omitted the file");
   if (inspectPathIfPresentSync(join(root, "missing"), "missing test file") !== null) throw new Error("missing-path inspection did not return null");
@@ -45,8 +50,66 @@ try {
     await link(file, hardLink);
     expectThrow(() => readBoundedRegularFileSync(file, 64, "owner state", { rejectMultipleLinks: true }), "multiple hard links");
     if (readBoundedRegularFileSync(file, 64).toString("utf8") !== "bounded-value") throw new Error("ordinary bounded read rejected a hard link without the secure-owner option");
+    const owned = join(root, "owned.json");
+    const ownedAlias = join(root, "owned-alias.json");
+    await writeFile(owned, `${JSON.stringify({ token: "owned-token", purpose: "test" })}\n`, { mode: 0o600 });
+    await link(owned, ownedAlias);
+    expectThrow(() => removeOwnedJsonFileSync(owned, { token: "owned-token", purpose: "test" }), "multiple hard links");
+    if ((await readFile(owned, "utf8")).length === 0 || (await readFile(ownedAlias, "utf8")).length === 0) {
+      throw new Error("owned JSON removal modified a multiply-linked lock");
+    }
   }
   expectThrow(() => readBoundedRegularFileSync(file, -1), "maximum file size");
+  if (process.platform !== "win32") {
+    const unlinkSource = join(root, "identity-unlink.txt");
+    const unlinkAlias = join(root, "identity-unlink.alias");
+    await writeFile(unlinkSource, "identity-unlink", { mode: 0o600 });
+    const unlinkSnapshot = readBoundedRegularFileWithInfoSync(unlinkSource, 1024, "identity unlink test", { verifyPathIdentity: true });
+    await link(unlinkSource, unlinkAlias);
+    if (unlinkRegularFileIfIdentitySync(unlinkSource, unlinkSnapshot.identity, "identity unlink test") !== false
+        || await readFile(unlinkSource, "utf8") !== "identity-unlink" || await readFile(unlinkAlias, "utf8") !== "identity-unlink") {
+      throw new Error("identity-checked unlink accepted a newly multiply-linked ownership file");
+    }
+  }
+
+  const preserveSource = join(root, "preserve-source.json");
+  const preserveTarget = join(root, "preserve-backup.json");
+  await writeFile(preserveSource, "original-corrupt-bytes", { mode: 0o600 });
+  const preserveSnapshot = readBoundedRegularFileWithInfoSync(preserveSource, 1024, "preserve test", { verifyPathIdentity: true });
+  await rm(preserveSource, { force: true });
+  await writeFile(preserveSource, "replacement-must-survive", { mode: 0o600 });
+  expectThrow(() => preserveFileSnapshotSync(preserveSource, preserveTarget, preserveSnapshot.buffer, preserveSnapshot.identity, { label: "preserve test" }), "changed before snapshot preservation");
+  if (await readFile(preserveSource, "utf8") !== "replacement-must-survive") {
+    throw new Error("identity-mismatched snapshot preservation removed the replacement file");
+  }
+  try {
+    await readFile(preserveTarget);
+    throw new Error("identity-mismatched snapshot preservation leaked a misleading backup");
+  } catch (error) { if (error?.code !== "ENOENT") throw error; }
+
+  const virtualCreated = { created: true, path: "virtual-backup", warnings: [] };
+  const virtualCreate = () => virtualCreated;
+  if (preserveFileSnapshotSync("source", "backup", Buffer.from("x"), { dev: 1n, ino: 2n }, { create: virtualCreate, unlinkSource: () => true, unlinkBackup: () => { throw new Error("cleanup must not run"); } }) !== virtualCreated) {
+    throw new Error("snapshot preservation changed its successful creation result");
+  }
+  expectThrow(() => preserveFileSnapshotSync("source", "backup", Buffer.from("x"), { dev: 1n, ino: 2n }, {
+    create: virtualCreate, unlinkSource: () => false, unlinkBackup: () => { throw Object.assign(new Error("already absent"), { code: "ENOENT" }); },
+  }), "changed before snapshot preservation");
+  const syntheticPrimary = new Error("synthetic source unlink failure");
+  expectThrow(() => preserveFileSnapshotSync("source", "backup", Buffer.from("x"), { dev: 1n, ino: 2n }, {
+    create: virtualCreate, unlinkSource: () => { throw syntheticPrimary; }, unlinkBackup: () => {},
+  }), "synthetic source unlink failure");
+  const syntheticCleanup = new Error("synthetic backup cleanup failure");
+  let aggregate = null;
+  try {
+    preserveFileSnapshotSync("source", "backup", Buffer.from("x"), { dev: 1n, ino: 2n }, {
+      create: virtualCreate, unlinkSource: () => { throw syntheticPrimary; }, unlinkBackup: () => { throw syntheticCleanup; },
+    });
+  } catch (error) { aggregate = error; }
+  if (!(aggregate instanceof AggregateError) || aggregate.errors?.[0] !== syntheticPrimary || aggregate.errors?.[1] !== syntheticCleanup) {
+    throw new Error("snapshot preservation lost primary-before-cleanup AggregateError causality");
+  }
+
   const highIdentityA = filesystemIdentity({ dev: 7n, ino: 9007199254740992n }, "high identity A");
   const highIdentityB = filesystemIdentity({ dev: 7n, ino: 9007199254740993n }, "high identity B");
   if (sameFilesystemIdentity(highIdentityA, highIdentityB)) throw new Error("lossless filesystem identity collapsed adjacent >2^53 inode values");

@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, opendir, stat } from "node:fs/promises";
+import { lstat, open, stat } from "node:fs/promises";
 import path, { basename, resolve } from "node:path";
+import { directoryEntriesWithMetadata } from "./directory-metadata.mjs";
 import { BridgeError } from "./errors.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
 import { clampInteger } from "./numbers.mjs";
+import { searchWorkspaceFiles } from "./workspace-search.mjs";
 import {
   assertNoResolvedPatchCollisions as assertResolvedPatchCollisions,
   atomicWriteText as commitAtomicText,
@@ -49,10 +51,9 @@ export class WorkspaceFileService {
     const entries = [];
     let resultBytes = 0;
     let truncated = false;
-    for await (const entry of await opendir(full)) {
-      this.throwIfCancelled(context);
-      const entryPath = resolve(full, entry.name);
-      const info = await pathEntryIfExists(entryPath);
+    for await (const { entry, path: entryPath, info } of directoryEntriesWithMetadata(full, {
+      throwIfCancelled: this.throwIfCancelled, context,
+    })) {
       if (!info) continue;
       const item = {
         name: entry.name,
@@ -270,7 +271,6 @@ export class WorkspaceFileService {
     const root = await this.resolveExistingPath(args.path || ".", context);
     const max = clampInteger(args.max_matches, 100, 1, 1000);
     const maxFiles = clampInteger(args.max_files, 10000, 1, 100000);
-    let visitedFiles = 0;
     const matches = [];
     const rootInfo = await stat(root);
     if (rootInfo.isFile()) {
@@ -278,14 +278,17 @@ export class WorkspaceFileService {
       return { query, root: this.displayPath(root, context), matches, visited_files: 1, truncated: matches.length >= max };
     }
     if (!rootInfo.isDirectory()) throw new BridgeError("invalid_request", "path is not a file or directory", { details: { reason: "unsupported_path_type" } });
-    const walkResult = await this.walk(root, async full => {
-      this.throwIfCancelled(context);
-      if (matches.length >= max || visitedFiles >= maxFiles) return false;
-      visitedFiles += 1;
-      await this.searchOneFile(full, query, matches, max, context);
-      return matches.length < max && visitedFiles < maxFiles;
-    }, context);
-    return { query, root: this.displayPath(root, context), matches, visited_files: visitedFiles, truncated: matches.length >= max || visitedFiles >= maxFiles || walkResult.truncated };
+    const result = await searchWorkspaceFiles({
+      maximumFiles: maxFiles, maximumMatches: max,
+      walk: (onFile) => this.walk(root, onFile, context),
+      searchFile: async (full) => {
+        const fileMatches = [];
+        await this.searchOneFile(full, query, fileMatches, max, context);
+        return fileMatches;
+      },
+      throwIfCancelled: this.throwIfCancelled, context,
+    });
+    return { query, root: this.displayPath(root, context), matches: result.matches, visited_files: result.visitedFiles, truncated: result.truncated };
   }
 
   async searchOneFile(full, query, matches, max, context = {}) {
@@ -356,11 +359,11 @@ export async function readBoundedFile(filePath, maxBytes, label) {
 }
 
 function isSkippableSearchFileError(error) {
-  const message = String(error?.message || "");
+  const reason = String(error?.details?.reason || "");
   return error?.code === "ELOOP"
-    || message.startsWith("search file exceeds maximum size")
-    || message === "search file is not a regular file"
-    || message === "refusing to read search file with multiple hard links";
+    || reason === "read_limit"
+    || reason === "unsupported_path_type"
+    || reason === "multiple_hard_links";
 }
 
 function decodeUtf8(buffer) {

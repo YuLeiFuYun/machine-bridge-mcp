@@ -102,8 +102,14 @@ if (!oauthBrowserNavigationSource.includes("negative control reached the first c
   || !oauthBrowserNavigationSource.includes("authorization state was not preserved")) {
   throw new Error("real-browser OAuth callback regression lost its first-hop, regional-hop, final-hop, or callback assertions");
 }
-if (!cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile, 64 * 1024)")) {
-  throw new Error("browser CLI pairing state read is not bounded");
+if (!cliLocalAdminSource.includes('readBrowserPairingPort(state.paths.stateRoot)')
+    || cliLocalAdminSource.includes("readBoundedRegularFileSync(pairingFile")
+    || cliLocalAdminSource.includes("function readBrowserPairingState")) {
+  throw new Error("browser CLI regained a duplicate pairing-state parser instead of the pairing-store projection");
+}
+const pairingStoreSource = readFileSync(join(root, "src", "local", "browser-pairing-store.mjs"), "utf8");
+for (const required of ["export function readBrowserPairingPort", "readPairing(file)", "verifyPathIdentity: true", "rejectMultipleLinks: true"]) {
+  if (!pairingStoreSource.includes(required)) throw new Error(`browser pairing-store projection lost secure bounded-state ownership: ${required}`);
 }
 if (!appAutomationSource.includes("matchesList[payload.selector.index]")) {
   throw new Error("application UI selector index is not applied to the filtered match list");

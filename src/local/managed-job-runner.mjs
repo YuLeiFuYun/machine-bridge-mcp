@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { classifyOperationalError } from "./log.mjs";
-import { ownerOnlyFile } from "./state.mjs";
+import { ownerOnlyFile } from "./secure-file.mjs";
 import { openPrivateAppendFile, readBoundedFile, trimDiagnosticFile } from "./managed-job-storage.mjs";
 import { publishProvisionalRunnerClaim } from "./managed-job-runner-claim.mjs";
 

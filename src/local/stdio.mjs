@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { LocalRuntime } from "./runtime.mjs";
+import { packageVersion } from "./package-identity.mjs";
 import { validateToolArguments } from "./tool-executor.mjs";
 import { classifyOperationalError, createLogger } from "./log.mjs";
 import { publicError } from "./errors.mjs";
@@ -23,9 +23,8 @@ import {
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_TOOL_CALLS = 32;
-const PACKAGE_VERSION = String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version);
 const MCP_SERVER_INFO = Object.freeze(serverImplementation({
-  name: SERVER_NAME, title: "Machine Bridge MCP", version: PACKAGE_VERSION,
+  name: SERVER_NAME, title: "Machine Bridge MCP", version: packageVersion,
   description: "Workspace-scoped local coding tools over MCP stdio or authenticated remote relay.",
 }));
 const MCP_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: false }) });

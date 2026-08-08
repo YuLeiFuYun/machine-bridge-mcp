@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { replaceFileSync } from "./atomic-fs.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 export function createExclusiveFileSync(target, content, options = {}) {
@@ -87,7 +87,6 @@ export function replaceFileAtomicallySync(target, content, options = {}) {
     closeSync(fd);
     fd = undefined;
     replace(temporary, target);
-    ownsTemporary = false;
     return { replaced: true, path: target };
   } catch (error) {
     primaryError = error;
@@ -110,23 +109,27 @@ export function removeOwnedJsonFileSync(target, expected = {}, options = {}) {
   if (!snapshot || !matchesExpected(snapshot.value, expected)) return false;
   let current;
   try { current = lstatSync(target, { bigint: true }); } catch (error) { return error?.code === "ENOENT"; }
-  if (current.isSymbolicLink() || !current.isFile() || !sameIdentity(snapshot.info, current)) return false;
+  if (current.isSymbolicLink() || !current.isFile() || current.nlink !== 1n || !sameIdentity(snapshot.info, current)) return false;
   const currentSnapshot = ownedJsonSnapshot(target, maxBytes);
   if (!currentSnapshot || !sameIdentity(snapshot.info, currentSnapshot.info) || !matchesExpected(currentSnapshot.value, expected)) return false;
   try { unlinkSync(target); return true; } catch (error) { return error?.code === "ENOENT"; }
 }
 
 function ownedJsonSnapshot(target, maxBytes) {
-  let info;
-  try { info = lstatSync(target, { bigint: true }); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
-  if (info.isSymbolicLink() || !info.isFile()) return null;
-  let text;
-  try { text = readBoundedRegularFileSync(target, maxBytes).toString("utf8"); }
-  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  let opened;
   try {
-    const value = JSON.parse(text);
+    opened = readBoundedRegularFileWithInfoSync(target, maxBytes, "owned JSON snapshot", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const value = JSON.parse(opened.buffer.toString("utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    return { value, info };
+    return { value, info: opened.identityInfo };
   } catch { return null; }
 }
 

@@ -107,12 +107,6 @@ export function oauthAccessToken(request: Request): { scheme: "bearer" | "dpop" 
   return { scheme: match[1].toLowerCase() as "bearer" | "dpop", token: match[2].trim() };
 }
 
-export function bearerToken(request: Request): string {
-  const access = oauthAccessToken(request);
-  return access.scheme === "bearer" ? access.token : "";
-}
-
-
 export async function parseJsonRequest(request: Request, limit: number): Promise<unknown> {
   const text = await readBoundedText(request, limit);
   try {

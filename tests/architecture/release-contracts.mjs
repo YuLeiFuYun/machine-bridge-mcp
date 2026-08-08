@@ -5,6 +5,9 @@ import { FAST_CHECK_TASKS, FULL_CHECK_TASKS, PLATFORM_CHECK_TASKS } from "../../
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
+if (/not found\|does not exist\|could not find/i.test(cliSource) || !cliSource.includes("if (result.code === 0)")) {
+  throw new Error("Worker deletion regained stderr-text-based success classification");
+}
 const cliActivateSource = readFileSync(join(root, "src", "local", "cli-activate.mjs"), "utf8");
 const runtimeActivationSource = readFileSync(join(root, "src", "local", "runtime-activation.mjs"), "utf8");
 for (const required of [
@@ -790,6 +793,19 @@ if (!architecture.includes("State schema version 6") || !architecture.includes("
 const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
 if (!engineering.includes("default profile is intentionally `full`") || !engineering.includes("`.project-local/`") || !engineering.includes("`Object.hasOwn`")) {
   throw new Error("engineering invariants omitted the owner-required full default or local-knowledge boundary");
+}
+if (!engineering.includes("Documented read-only discovery may conservatively omit unavailable or unsupported optional metadata")) {
+  throw new Error("engineering read-failure invariant does not distinguish optional discovery from security/persistence evidence");
+}
+const architectureGuide = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
+if (architectureGuide.includes("All bridge mutations are serialized in one runtime queue.")
+    || !architectureGuide.includes("Operations touching the same canonical path serialize; independent paths may proceed concurrently")) {
+  throw new Error("architecture mutation model drifted from canonical-path reservation semantics");
+}
+const upgradingGuide = readFileSync(join(root, "docs", "UPGRADING.md"), "utf8");
+if (!upgradingGuide.includes("historical migration records, not a declaration of the current candidate")
+    || upgradingGuide.includes("`3.0.0-beta.7` retains the portable P-256 root by default and is the next supported candidate path")) {
+  throw new Error("upgrade history regained stale present-tense candidate guidance");
 }
 
 for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTING.md")]) {

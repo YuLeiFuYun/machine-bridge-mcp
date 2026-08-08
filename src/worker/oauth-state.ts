@@ -137,17 +137,6 @@ export function emptyOAuthRefreshStore(): OAuthRefreshStore {
   };
 }
 
-export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const store = value as Partial<OAuthStore>;
-  return store.schema_version === OAUTH_STORE_SCHEMA_VERSION
-    && isRecord(store.accounts)
-    && isRecord(store.clients)
-    && isRecord(store.codes)
-    && isRecord(store.tokens)
-    && isRecord(store.auth_failures);
-}
-
 export function isCurrentOAuthRefreshStore(value: unknown): value is OAuthRefreshStore {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const store = value as Partial<OAuthRefreshStore>;

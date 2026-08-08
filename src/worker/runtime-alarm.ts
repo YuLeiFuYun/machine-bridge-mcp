@@ -14,7 +14,6 @@ type InvalidateDaemonSocket = (
   closeReason: string,
   errorCode?: string,
 ) => Promise<void>;
-
 interface RuntimeAlarmContext {
   storage: AlarmStorage;
   pending: PendingCallRegistry;
@@ -25,7 +24,6 @@ interface RuntimeAlarmContext {
   onScheduleError: (error: unknown) => void;
   onAlarmMutation?: (action: "set" | "delete" | "noop") => void;
 }
-
 export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Date.now()): Promise<void> {
   await context.pending.expireDue();
   if (context.durableCalls && context.expireDurableCall) {
@@ -79,7 +77,6 @@ export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Da
     onMutation: context.onAlarmMutation,
   });
 }
-
 export async function scheduleRuntimeAlarm(context: RuntimeAlarmContext, now = Date.now()): Promise<void> {
   try {
     let nextDeadline = Number.POSITIVE_INFINITY;
@@ -119,19 +116,23 @@ export async function scheduleRuntimeAlarm(context: RuntimeAlarmContext, now = D
       }
       nextDeadline = Math.min(nextDeadline, deadline);
     }
-    nextDeadline = Math.min(nextDeadline, await pendingAlarmDeadline(context, now));
+    const currentAlarm = await context.storage.getAlarm();
+    nextDeadline = Math.min(nextDeadline, await pendingAlarmDeadline(
+      context, now, currentAlarm === null || currentAlarm <= now,
+    ));
     await writeEarliestRuntimeAlarm({
-      storage: context.storage, nextDeadline, now,
+      storage: context.storage, nextDeadline, now, currentAlarm,
       onError: context.onScheduleError, onMutation: context.onAlarmMutation,
     });
   } catch (error) { try { context.onScheduleError(error); } catch {} }
 }
 
-async function pendingAlarmDeadline(context: RuntimeAlarmContext, now: number): Promise<number> {
+async function pendingAlarmDeadline(
+  context: RuntimeAlarmContext, now: number, includeDurable = true,
+): Promise<number> {
   const transientDelay = context.pending.nextDeadlineDelayMs();
-  const durableDelay = context.durableCalls
-    ? await context.durableCalls.nextDeadlineDelayMs()
-    : Number.POSITIVE_INFINITY;
-  const delay = Math.min(transientDelay, durableDelay);
-  return Number.isFinite(delay) ? now + Math.max(1, Math.ceil(delay)) : Number.POSITIVE_INFINITY;
+  const durableDelay = includeDurable && context.durableCalls
+    ? await context.durableCalls.nextDeadlineDelayMs() : Number.POSITIVE_INFINITY;
+  const delayDeadline = Math.min(transientDelay, durableDelay);
+  return Number.isFinite(delayDeadline) ? now + Math.max(1, Math.ceil(delayDeadline)) : Number.POSITIVE_INFINITY;
 }

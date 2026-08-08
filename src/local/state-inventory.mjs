@@ -153,7 +153,10 @@ function profileDirectories(profiles) {
 }
 
 function readStateJson(path) {
-  return JSON.parse(readBoundedRegularFileSync(path, MAX_STATE_BYTES).toString("utf8"));
+  return JSON.parse(readBoundedRegularFileSync(path, MAX_STATE_BYTES, "state inventory", {
+    verifyPathIdentity: true,
+    rejectMultipleLinks: true,
+  }).toString("utf8"));
 }
 
 function unreadableWorkerState(profile) {

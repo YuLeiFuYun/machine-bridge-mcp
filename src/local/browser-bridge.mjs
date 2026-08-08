@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
 import { WebSocket } from "ws";
 import { createToolAuthorizer } from "./policy.mjs";
-import { assertStateMaintenanceAvailable, packageRoot } from "./state.mjs";
+import { assertStateMaintenanceAvailable } from "./state.mjs";
+import { packageRoot } from "./package-identity.mjs";
 import {
   BROWSER_EXTENSION_PROTOCOL, EXPECTED_EXTENSION_VERSION, MAX_BROWSER_MESSAGE_BYTES,
   closeProtocolSocket, normalizeCompatibleExtensionInfo, parseBrowserSocketMessage, parseExtensionHello, safeSocketSend,

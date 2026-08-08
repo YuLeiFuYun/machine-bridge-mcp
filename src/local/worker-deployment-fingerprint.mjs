@@ -3,7 +3,8 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import path, { resolve } from "node:path";
 import { publicDeviceJwkJson } from "./device-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { deploymentDeviceIdentity, packageRoot } from "./state.mjs";
+import { deploymentDeviceIdentity } from "./state.mjs";
+import { packageRoot } from "./package-identity.mjs";
 
 const MAX_WORKER_DEPLOY_SOURCE_BYTES = 16 * 1024 * 1024;
 const REQUIRED_DEPLOYMENT_PATHS = Object.freeze([

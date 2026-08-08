@@ -10,9 +10,9 @@ import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
-import { daemonArgs, launchdPlist, launchdServiceTarget, normalizeServiceCommandResult, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
+import { daemonArgs, launchdPlist, launchdServiceTarget, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
-import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensureWorkerSecrets, ensureWorkspaceDirectory, loadGlobalConfig, loadState, previewSecret, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
+import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensureWorkerSecrets, ensureWorkspaceDirectory, loadGlobalConfig, loadState, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
 
 const CLI_FIXTURE_TIMEOUT_MS = 60_000;
 const MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS = 120_000;
@@ -146,7 +146,6 @@ async function stateSelfTest() {
     const redacted = redactState(state);
     if (redacted.worker.deviceIdentity?.privateJwk?.d !== "<redacted>") throw new Error("device private key was not fully redacted");
     if (redacted.worker.oauthTokenVersion !== "<redacted>") throw new Error("oauthTokenVersion was not fully redacted");
-    if (previewSecret(state.worker.oauthTokenVersion) !== "<redacted>") throw new Error("previewSecret did not fully redact secret");
     state.resources = { "private-key": { kind: "file", path: join(workspace, "private-key"), size: 10, mode: "0600" } };
     const resourceRedacted = redactState(state);
     if (resourceRedacted.resources["private-key"].path !== "<local-resource-path>") throw new Error("redacted state exposed a local resource path");
@@ -305,6 +304,17 @@ async function stateSelfTest() {
       if (!(await stat(join(unrelated, "keep.txt"))).isFile()) throw new Error("unsafe state root validation modified unrelated data");
     } finally {
       await rm(unrelated, { recursive: true, force: true }).catch(() => {});
+    }
+    if (process.platform !== "win32") {
+      const marker = join(stateRoot, ".machine-bridge-mcp-state");
+      const markerAlias = join(workspace, "state-marker.alias");
+      try {
+        await import("node:fs/promises").then(({ link }) => link(marker, markerAlias));
+        expectThrow(() => validateStateRootForRemoval(stateRoot), "multiple hard links");
+        if (!await existsForSelfTest(marker) || !await existsForSelfTest(markerAlias)) {
+          throw new Error("state-root marker hard-link rejection modified deletion evidence");
+        }
+      } finally { await rm(markerAlias, { force: true }); }
     }
   } finally {
     try { removeStateRoot(stateRoot); } catch { await rm(stateRoot, { recursive: true, force: true }).catch(() => {}); }
@@ -1000,6 +1010,11 @@ function logSelfTest() {
   if (privateFields.includes(privateHome) || !privateFields.includes("<local-path>") || !privateFields.includes("visible")) {
     throw new Error("structured log local-path redaction failed");
   }
+  const prototypeFields = formatFields(JSON.parse('{"__proto__":{"token":"must-not-leak","ordinary":"visible"},"constructor":"ordinary-constructor"}'));
+  if (!prototypeFields.includes('"__proto__"') || !prototypeFields.includes('"token":"<redacted>"')
+      || prototypeFields.includes("must-not-leak") || !prototypeFields.includes("ordinary-constructor")) {
+    throw new Error("structured log prototype-shaped fields were not preserved as sanitized ordinary data");
+  }
   const syntheticAwsKey = `AK${"IA"}${"A".repeat(16)}`;
   const syntheticNpmToken = ["npm", "A".repeat(36)].join("_");
   const syntheticSlackToken = ["xoxb", "1234567890", "ABCDEFGHIJK"].join("-");
@@ -1023,10 +1038,6 @@ function logSelfTest() {
 }
 
 async function serviceSelfTest() {
-  const normalizedFailure = normalizeServiceCommandResult("systemd", { code: 5, stdout: "", stderr: "permission denied" });
-  if (normalizedFailure.ok !== false || normalizedFailure.provider !== "systemd") throw new Error("service command failure normalization is incorrect");
-  const normalizedInactive = normalizeServiceCommandResult("systemd", { code: 5, stdout: "inactive", stderr: "" }, { allowAlreadyStopped: true });
-  if (normalizedInactive.ok !== true || normalizedInactive.already_stopped !== true) throw new Error("idempotent service stop normalization is incorrect");
   if (launchdServiceTarget(501) !== "gui/501/dev.machine-bridge-mcp.daemon") {
     throw new Error("launchd service target did not use the loaded label form");
   }
@@ -1095,6 +1106,21 @@ async function serviceSelfTest() {
       }
       if ((await readFile(join(obsoleteLogs, ".log-schema"), "utf8")).length !== 65) {
         throw new Error("failed log-schema read rewrote the marker before diagnosis");
+      }
+      if (process.platform !== "win32") {
+        const schemaFile = join(obsoleteLogs, ".log-schema");
+        const schemaAlias = join(obsoleteLogs, ".log-schema.alias");
+        await writeFile(schemaFile, "4\n", "utf8");
+        await writeFile(preservedOut, "retain-hardlink-out\n", "utf8");
+        await writeFile(preservedErr, "retain-hardlink-err\n", "utf8");
+        try {
+          await import("node:fs/promises").then(({ link }) => link(schemaFile, schemaAlias));
+          expectThrow(() => trimAutostartLogs(obsoleteLogRoot, { maxBytes: 2048, keepBytes: 1024 }), "multiple hard links");
+          if (await readFile(preservedOut, "utf8") !== "retain-hardlink-out\n"
+              || await readFile(preservedErr, "utf8") !== "retain-hardlink-err\n") {
+            throw new Error("multiply-linked log schema caused daemon evidence to be truncated");
+          }
+        } finally { await rm(schemaAlias, { force: true }); }
       }
     } finally {
       await rm(obsoleteLogRoot, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import { closeSync, constants as fsConstants, ftruncateSync, readSync, readdirSy
 import { dirname } from "node:path";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
+import { ensureOwnerOnlyDir, ownerOnlyFile } from "./secure-file.mjs";
 
 export function atomicWriteJson(file, value, maxBytes) {
   ensureOwnerOnlyDir(dirname(file));
@@ -14,7 +14,12 @@ export function atomicWriteJson(file, value, maxBytes) {
 
 export function readJson(file, maxBytes, label = "JSON") {
   let buffer;
-  try { buffer = readBoundedFile(file, maxBytes); } catch (error) {
+  try {
+    buffer = readBoundedRegularFileSync(file, maxBytes, "managed job state", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+  } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw new Error(`${label} is unavailable (${resourceErrorClass(error)})`);
   }
@@ -84,6 +89,7 @@ export function resourceErrorClass(error) {
   if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
   if (/not found|ENOENT/i.test(message)) return "not_found";
   if (/symbolic link/i.test(message)) return "symbolic_link_denied";
+  if (/multiple hard links/i.test(message)) return "insecure_links";
   if (/readable by group|permissions/i.test(message)) return "insecure_permissions";
   if (/exceeds/i.test(message)) return "size_limit";
   return "resource_unavailable";

@@ -118,6 +118,15 @@ try {
     probe: async () => ({ statusCode: 200, body: { ok: true, server: "machine-bridge-mcp", version: "1.0.0" }, networkRoute: "direct" }),
   });
   assert.equal(versionMismatch.error, "version_mismatch:1.0.0!=9.8.7");
+  for (const hostileVersion of ["x".repeat(1024), "1.0.0\nprivate-detail", "/Users/private/version", ""]) {
+    const invalidVersion = await workerHealth(workerUrl, version, {
+      expectedWorkerName,
+      probe: async () => ({ statusCode: 200, body: { ok: true, server: "machine-bridge-mcp", version: hostileVersion }, networkRoute: "direct" }),
+    });
+    assert.equal(invalidVersion.error, "unexpected_health_response");
+    assert(!JSON.stringify(invalidVersion).includes("private-detail") && !JSON.stringify(invalidVersion).includes("/Users/private"),
+      "invalid Worker health version leaked remote text into the diagnostic projection");
+  }
 
   await assert.rejects(
     requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/large/healthz`, { proxyResolver: () => "" }),

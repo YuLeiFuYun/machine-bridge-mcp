@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
@@ -21,6 +21,19 @@ try {
   state.worker.previousNames = ["machine-bridge-previous"];
   saveState(state);
   assert.deepEqual(knownWorkerNames(stateRoot), ["machine-bridge-test", "machine-bridge-previous"]);
+  if (process.platform !== "win32") {
+    const stateAlias = join(state.paths.profileDir, "state.json.alias");
+    try {
+      await link(state.paths.statePath, stateAlias);
+      assert.throws(() => knownWorkerNames(stateRoot), /cannot determine deployed Worker/,
+        "Worker deletion inventory accepted a multiply-linked state file");
+      assert((await readFile(state.paths.statePath, "utf8")).includes("machine-bridge-test")
+        && (await readFile(stateAlias, "utf8")).includes("machine-bridge-test"),
+      "state inventory hard-link rejection modified destructive-control evidence");
+    } finally {
+      await rm(stateAlias, { force: true });
+    }
+  }
   const profiles = knownProfileStates(stateRoot);
   assert.equal(profiles.length, 1);
   assert.equal(profiles[0].workspace.path, state.workspace.path);
@@ -187,6 +200,34 @@ try {
       "owner-state lock did not wait for and time out on a live owner");
   }, { purpose: "busy-owner", fileName: "busy-owner.lock", label: "busy owner" });
 
+  const hardLinkedOwnerPath = join(state.paths.profileDir, "hard-linked-owner.lock");
+  const hardLinkedOwnerAlias = join(state.paths.profileDir, "hard-linked-owner.alias");
+  await writeFile(hardLinkedOwnerPath, `${JSON.stringify({
+    pid: 2_147_483_647,
+    token: "c".repeat(32),
+    purpose: "hard-linked-owner",
+    startedAt: new Date(Date.now() - 10_000).toISOString(),
+    processStartedAt: new Date(Date.now() - 20_000).toISOString(),
+  })}\n`, { mode: 0o600 });
+  if (process.platform !== "win32") {
+    try {
+      await link(hardLinkedOwnerPath, hardLinkedOwnerAlias);
+      await assert.rejects(
+        () => withOwnerStateLock(state.paths.profileDir, async () => "should-not-run", {
+          purpose: "hard-linked-owner", fileName: "hard-linked-owner.lock", label: "hard-linked owner", maxAgeMs: 1_000,
+        }),
+        /multiple hard links/,
+        "owner-state acquisition treated a multiply-linked ownership file as reclaimable state",
+      );
+      assert((await readFile(hardLinkedOwnerPath, "utf8")).includes('"hard-linked-owner"')
+        && (await readFile(hardLinkedOwnerAlias, "utf8")).includes('"hard-linked-owner"'),
+      "owner-state hard-link rejection modified ownership evidence");
+    } finally {
+      await rm(hardLinkedOwnerAlias, { force: true });
+    }
+  }
+  await rm(hardLinkedOwnerPath, { force: true });
+
   const staleOwnerPath = join(state.paths.profileDir, "stale-owner.lock");
   await writeFile(staleOwnerPath, `${JSON.stringify({
     pid: 2_147_483_647,
@@ -209,8 +250,9 @@ try {
       return "committed";
     }, { purpose: "release-throw", fileName: "release-throw.lock", label: "release throw" });
   } catch (error) { releaseReadFailure = error; }
-  assert(/lock changed before release/.test(String(releaseReadFailure?.message || "")),
-    "owner-state lock did not fail closed when the owned file was replaced by a directory");
+  assert(/lock release failed/.test(String(releaseReadFailure?.message || ""))
+    && /not a regular file/.test(String(releaseReadFailure?.cause?.message || "")),
+    "owner-state lock did not fail closed with causal evidence when the owned file was replaced by a directory");
   await rm(releaseThrowPath, { recursive: true, force: true });
 
   assert.rejects(() => withOwnerStateLock(state.paths.profileDir, null), /requires a callback/);

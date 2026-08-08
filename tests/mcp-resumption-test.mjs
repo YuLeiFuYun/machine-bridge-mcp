@@ -4,6 +4,7 @@ import { pendingStreamRecord } from "../src/worker/mcp-resumption-request-index.
 import { listStreamRecords } from "../src/worker/mcp-resumption-index.ts";
 import { pendingCallSnapshot } from "../src/worker/mcp-pending-call-inspection.ts";
 import { workerToolRequestFingerprint } from "../src/worker/mcp-request-fingerprint.ts";
+import { callIdForStreamId, streamIdForCallId } from "../src/worker/mcp-stream-call-identity.ts";
 import {
   indexEntry,
   messageSha256,
@@ -28,6 +29,13 @@ async function testEventIdentifiers() {
   assert(parseStreamEventId(`${streamId}:1`)?.sequence === 1, "terminal event id did not parse");
   assert(parseStreamEventId(`${streamId}:2`) === null, "unknown event sequence was accepted");
   assert(parseStreamEventId("stream_short:0") === null, "short stream id was accepted");
+  const callId = callIdForStreamId(streamId);
+  assert(callId === `call_${"A".repeat(43)}` && streamIdForCallId(callId) === streamId,
+    "stream/call generation identity did not round-trip");
+  assert(streamIdForCallId("call_short") === undefined && streamIdForCallId("") === undefined,
+    "invalid call identity unexpectedly derived a stream id");
+  await expectReject(Promise.resolve().then(() => callIdForStreamId("stream_short")), Error);
+  await expectReject(Promise.resolve().then(() => callIdForStreamId("")), Error);
 }
 
 async function testRecordValidationAndLimits() {
@@ -78,6 +86,8 @@ async function testRecordValidationAndLimits() {
     remaining_timeout_ms: 9,
   };
   assert(validRecord({ ...pending, call: validCall }), "valid persisted pending-call metadata was rejected");
+  assert(validRecord({ ...pending, call: { ...validCall, transform: { kind: "project_overview", account_id: "acct_valid", account_version: 1, role: "editor", detail: "summary" } } }),
+    "valid compact project_overview persisted transform was rejected");
   assert(validRecord({
     ...pending,
     ...identity,
@@ -104,6 +114,7 @@ async function testRecordValidationAndLimits() {
     { ...validCall, state: "detached" },
     { ...validCall, remaining_timeout_ms: 0 },
     { ...validCall, transform: { kind: "project_overview", account_id: "", account_version: 1, role: "owner" } },
+    { ...validCall, transform: { kind: "project_overview", account_id: "acct_valid", account_version: 1, role: "owner", detail: "full" } },
   ]) {
     assert(!validRecord({ ...pending, call }), "invalid persisted pending-call metadata was accepted");
   }
@@ -244,7 +255,11 @@ async function testLegacyIndexMigrationAndRecordAuthority() {
     tool: oldRecord.tool,
   }] });
   const store = new McpResumptionStore(storage, { now: () => 10 }, () => {}, (count) => rows.push(count));
-  assert((await store.findByRequestKey("session-migration:40"))?.streamId === oldId,
+  const migratedRetry = await store.begin({
+    streamId: validStreamId("U"), tokenKey: "token-migration", sessionId: "session-migration", requestId: 40,
+    clientRequestKey: "session-migration:40", requestFingerprint: "d".repeat(64), tool: "exec_command",
+  });
+  assert(migratedRetry.kind === "resume" && migratedRetry.streamId === oldId,
     "beta.44 stream record was not authoritative without the legacy index");
   const newId = validStreamId("W");
   await store.begin({ streamId: newId, tokenKey: "token-migration", sessionId: "session-migration", requestId: 41 });
@@ -361,11 +376,12 @@ async function testPersistentCallRecovery() {
   assert((await restarted.pollMessage(streamId)).kind === "pending", "Worker restart orphaned a persisted active stream call");
   assert((await restarted.calls.snapshot()).active === 1, "persisted call was absent from the restarted pending snapshot");
   assert((await restarted.calls.get(callId))?.streamId === streamId, "persisted call id could not be recovered");
-  const recoveredStreamIdentity = await restarted.findByRequestKey("session-persistent:70");
-  assert(recoveredStreamIdentity?.streamId === streamId
-    && recoveredStreamIdentity.requestFingerprint === persistentFingerprint
-    && recoveredStreamIdentity.tool === "exec_command",
-  "persisted stream request identity could not be recovered before terminal delivery");
+  const recoveredStreamIdentity = await restarted.begin({
+    streamId: validStreamId("Q"), tokenKey: "token-persistent", sessionId: "session-persistent", requestId: 70,
+    clientRequestKey: "session-persistent:70", requestFingerprint: persistentFingerprint, tool: "exec_command",
+  });
+  assert(recoveredStreamIdentity.kind === "resume" && recoveredStreamIdentity.streamId === streamId,
+    "persisted stream request identity did not resume the authoritative stream after restart");
   const recoveredByRequest = await restarted.calls.getByRequestKey("session-persistent:70");
   assert(recoveredByRequest?.call_id === callId,
     "persisted client request key could not be recovered");
@@ -542,10 +558,70 @@ async function testExpiryAndCapacity() {
   assert(!storage.values.has(`mcp-stream:${second}`), "expired stream was not deleted");
 }
 
+async function testDurableReadAmplificationBudget() {
+  const rows = [];
+  const storage = new MemoryStorage();
+  const store = new McpResumptionStore(storage, { now: () => 20_000 }, () => {}, (count) => rows.push(count));
+  for (let index = 0; index < 24; index += 1) {
+    const suffix = String(index).padStart(43, "B");
+    const streamId = `stream_${suffix}`;
+    await store.begin({ streamId, tokenKey: "token-background", sessionId: "session-background", requestId: index });
+    await store.complete(streamId, { jsonrpc: "2.0", id: index, result: { retained: true } });
+  }
+
+  const streamId = validStreamId("Z");
+  const callId = `call_${"Z".repeat(43)}`;
+  const connectionId = `connection_${"Z".repeat(43)}`;
+  const requestFingerprint = "e".repeat(64);
+  storage.resetReadBudget();
+  rows.length = 0;
+  const started = await store.beginCall({
+    streamId, tokenKey: "token-hot", sessionId: "session-hot", requestId: 500,
+    clientRequestKey: "session-hot:500", requestFingerprint, tool: "exec_command",
+    callId, daemonInstanceId: "daemon_hot_read_budget_1234", connectionId, timeoutMs: 10_000,
+  });
+  assert(started.kind === "initial" && storage.listCalls === 1,
+    `hot durable creation exceeded one prefix scan: ${JSON.stringify(storage.readBudget())}`);
+  assert(started.alarmMutation === "set" && storage.alarm === started.operationDeadlineAt,
+    "combined durable admission did not atomically cover the new operation deadline with its persisted alarm");
+  assert(storage.listRows >= 24, "read-amplification fixture did not retain enough background stream rows");
+  assert(rows.reduce((sum, value) => sum + value, 0) === 1, "combined begin/call activation exceeded one stream-row write");
+
+  storage.resetReadBudget();
+  const recovered = await store.calls.get(callId);
+  assert(recovered?.streamId === streamId && storage.listCalls === 0 && storage.getCalls === 1,
+    `derived call identity did not use one point read: ${JSON.stringify(storage.readBudget())}`);
+
+  storage.resetReadBudget();
+  await store.calls.complete(callId, connectionId, { jsonrpc: "2.0", id: 500, result: { ok: true } }, recovered);
+  assert(storage.listCalls === 0, `terminal settlement regained a prefix scan: ${JSON.stringify(storage.readBudget())}`);
+  storage.resetReadBudget();
+  assert(await store.calls.get(callId) === undefined && storage.getCalls === 1 && storage.listCalls === 0,
+    `duplicate terminal lookup fell back to a prefix scan after the derived stream became ready: ${JSON.stringify(storage.readBudget())}`);
+  await store.resume({ lastEventId: `${streamId}:1`, tokenKey: "token-hot", sessionId: "session-hot" });
+  assert(rows.reduce((sum, value) => sum + value, 0) === 3, "combined durable lifecycle exceeded three stream-row writes");
+
+  const legacyStreamId = validStreamId("Y");
+  await store.begin({ streamId: legacyStreamId, tokenKey: "token-old", sessionId: "session-old", requestId: 501 });
+  const legacyCallId = `call_${"X".repeat(43)}`;
+  await store.calls.activate({
+    streamId: legacyStreamId, callId: legacyCallId, daemonInstanceId: "daemon_old_call_12345678",
+    connectionId: `connection_${"Y".repeat(43)}`, tool: "exec_command", timeoutMs: 10_000,
+  });
+  storage.resetReadBudget();
+  assert((await store.calls.get(legacyCallId))?.streamId === legacyStreamId
+    && storage.getCalls === 1 && storage.listCalls === 1,
+  "pre-beta.54 independent call id lost its bounded migration fallback");
+}
+
 class MemoryStorage {
   values = new Map();
+  alarm = null;
+  getCalls = 0;
+  listCalls = 0;
+  listRows = 0;
 
-  async get(key) { return this.values.get(key); }
+  async get(key) { this.getCalls += 1; return this.values.get(key); }
   failReadyPut = false;
   async put(key, value) {
     if (this.failReadyPut && value?.status === "ready") throw new Error("synthetic persistence failure");
@@ -560,12 +636,19 @@ class MemoryStorage {
     return this.values.delete(keyOrKeys);
   }
   async list(options = {}) {
+    this.listCalls += 1;
     const entries = [...this.values.entries()]
       .filter(([key]) => !options.prefix || key.startsWith(options.prefix))
       .sort(([left], [right]) => left.localeCompare(right));
+    this.listRows += entries.length;
     return new Map(entries.map(([key, value]) => [key, structuredClone(value)]));
   }
   async transaction(callback) { return callback(this); }
+  async getAlarm() { return this.alarm; }
+  async setAlarm(value) { this.alarm = Number(value); }
+  async deleteAlarm() { this.alarm = null; }
+  resetReadBudget() { this.getCalls = 0; this.listCalls = 0; this.listRows = 0; }
+  readBudget() { return { get_calls: this.getCalls, list_calls: this.listCalls, list_rows: this.listRows }; }
 }
 
 function validStreamId(character) {
@@ -604,4 +687,5 @@ await testStoredIntegrityFailure();
 await testCompletionStartsResultRetention();
 await testTransientPersistenceFailure();
 await testExpiryAndCapacity();
+await testDurableReadAmplificationBudget();
 console.log("MCP resumption test ok");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { installAutostart, runServiceCommand, stopSystemdService } from "../src/
 import { beginServiceOwnerUpdate, loadCommittedServiceOwner, loadServiceOwner, removeServiceOwner, serviceOwnerPath } from "../src/local/service-owner.mjs";
 import { convergeOwnedServiceRuntime, restartOwnedServiceRuntime, startOwnedServiceRuntime, waitForOwnedServiceDaemon } from "../src/local/service-runtime.mjs";
 import { waitForInactiveStatus } from "../src/local/service-convergence.mjs";
+import { systemdRemovalDecision } from "../src/local/systemd-removal.mjs";
 import { boundedPositiveInteger, stableWindowsStatus, waitForWindowsStatus, windowsStatusWaitOptions } from "../src/local/windows-service-convergence.mjs";
 import {
   installWindowsTask,
@@ -76,6 +77,7 @@ await windowsTransientStartTest();
 await windowsUnknownStatusTest();
 await windowsStopTest();
 await windowsUninstallTest();
+await systemdRemovalDecisionTest();
 await systemdStopContractTest();
 await delayedLaunchdStopTest();
 await stuckLaunchdStopTest();
@@ -132,12 +134,26 @@ async function serviceOwnerTransactionTest() {
       [{ ...valid, transactionId: "bad" }, "transaction id is invalid"],
       [{ ...valid, version: "bad version!" }, "version is invalid"],
       [{ ...valid, workspace: "relative" }, "workspace must be absolute"],
+      [{ ...valid, workspace: path.join(root, "missing-workspace") }, "workspace is unavailable"],
+      [{ ...valid, stateRoot: entryScript }, "state root is not a directory"],
+      [{ ...valid, entryScript: stateRoot }, "entry script is not a file"],
       [{ ...valid, createdAt: "not-a-date" }, "createdAt is invalid"],
+      [{ ...valid, committedAt: "not-a-date" }, "committedAt is invalid"],
     ]) {
       writeFileSync(ownerFile, `${JSON.stringify(value)}\n`, { mode: 0o600 });
       assert.match(loadOwnerFailure({ controlRoot }), new RegExp(expected));
     }
     writeFileSync(ownerFile, `${JSON.stringify(valid)}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") {
+      const ownerAlias = `${ownerFile}.alias`;
+      try {
+        linkSync(ownerFile, ownerAlias);
+        assert.throws(() => removeServiceOwner({ controlRoot }), /multiple hard links/,
+          "service-owner cleanup accepted multiply-linked ownership evidence");
+        assert.equal(existsSync(ownerFile), true);
+        assert.equal(existsSync(ownerAlias), true);
+      } finally { rmSync(ownerAlias, { force: true }); }
+    }
     const ownerStorageFailure = {
       controlRoot,
       inspectPathIfPresentSync() {
@@ -538,6 +554,22 @@ async function windowsUninstallTest() {
   assert.equal(result.status.installed, false);
 }
 
+async function systemdRemovalDecisionTest() {
+  const inactive = { installed: true, active: false, state: "inactive" };
+  assert.deepEqual(systemdRemovalDecision({ definitionPresent: true, disableCode: 0, status: inactive }),
+    { removable: true, alreadyAbsent: false, reason: "disabled" });
+  assert.equal(systemdRemovalDecision({ definitionPresent: true, disableCode: 1, status: inactive }).reason, "disable_failed",
+    "nonzero systemd disable became removable for an installed definition");
+  assert.equal(systemdRemovalDecision({ definitionPresent: true, disableCode: 1, status: { ...inactive, stderr: "not found" } }).removable, false,
+    "systemd removal trusted stderr prose over command/status evidence");
+  assert.deepEqual(systemdRemovalDecision({ definitionPresent: false, disableCode: 1, status: { installed: false, active: false, state: "unknown" } }),
+    { removable: true, alreadyAbsent: true, reason: "already_absent" });
+  for (const state of ["active", "activating", "deactivating", "reloading", "maintenance"]) {
+    const decision = systemdRemovalDecision({ definitionPresent: true, disableCode: 0, status: { installed: true, active: state === "active", state } });
+    assert.equal(decision.removable, false, `systemd ${state} state was treated as removable`);
+  }
+}
+
 async function systemdStopContractTest() {
   const calls = [];
   const statuses = [
@@ -557,6 +589,19 @@ async function systemdStopContractTest() {
   assert.equal(stopped.active, false);
   assert.equal(stopped.restore_required, true, "systemd stop omitted provider restoration evidence");
   assert.equal(calls.length, 1);
+
+  const missingButActiveStatuses = [
+    { installed: false, active: true, state: "active" },
+    { installed: false, active: false, state: "unknown" },
+  ];
+  let missingButActiveStops = 0;
+  const missingButActive = await stopSystemdService(quietLogger(), {
+    readStatus: async () => missingButActiveStatuses.shift(),
+    run: async () => { missingButActiveStops += 1; return { code: 0, stdout: "", stderr: "" }; },
+    waitForInactive: async readStatus => readStatus(),
+  });
+  assert.equal(missingButActive.ok, true);
+  assert.equal(missingButActiveStops, 1, "missing systemd definition incorrectly implied the loaded service was inactive");
 
   const transitioningStatuses = [
     { installed: true, active: false, state: "activating" },

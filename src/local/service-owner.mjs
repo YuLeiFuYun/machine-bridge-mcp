@@ -1,10 +1,11 @@
 // @ts-check
 import { randomBytes } from "node:crypto";
-import { realpathSync, rmSync, statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { ensureOwnerOnlyDir, machineServiceControlRoot } from "./state.mjs";
+import { removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { inspectPathIfPresentSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
+import { machineServiceControlRoot } from "./state.mjs";
+import { ensureOwnerOnlyDir } from "./secure-file.mjs";
 const SCHEMA_VERSION = 1;
 const MAX_BYTES = 64 * 1024;
 const FILE_NAME = "service-owner.json";
@@ -50,7 +51,9 @@ const TRANSACTION = /^[A-Za-z0-9_-]{20,128}$/;
       if (closed) return false;
       assertCurrentTransaction(file, transactionId, "pending");
       if (previous) replaceFileAtomicallySync(file, previous.raw, { mode: 0o600 });
-      else rmSync(file, { force: true });
+      else if (!removeOwnedJsonFileSync(file, { transactionId, status: "pending" }, { maxBytes: MAX_BYTES })) {
+        throw new Error("machine service owner transaction changed before rollback");
+      }
       closed = true;
       return true;
     },
@@ -74,10 +77,12 @@ const TRANSACTION = /^[A-Za-z0-9_-]{20,128}$/;
   const info = inspect(file, "machine service owner file");
   if (!info) return false;
   if (info.isSymbolicLink() || !info.isFile()) throw new Error("machine service owner file must be a regular file and not a symbolic link");
-  readBoundedRegularFileSync(file, MAX_BYTES, "machine service owner file", {
+  const opened = readBoundedRegularFileWithInfoSync(file, MAX_BYTES, "machine service owner file", {
     verifyPathIdentity: true, rejectMultipleLinks: true,
   });
-  rmSync(file, { force: true });
+  if (!unlinkRegularFileIfIdentitySync(file, opened.identity, "machine service owner file")) {
+    throw new Error("machine service owner changed before removal");
+  }
   return true;
 }
 /** @param {string} file @param {ServiceOwnerOptions} [options] @returns {{ owner: ServiceOwner, raw: Buffer } | null} */ function readOwnerSnapshotIfPresent(file, options = {}) {

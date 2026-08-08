@@ -12,8 +12,10 @@ export type DaemonTerminalResultDisposition =
 
 export type DurableTerminalResultSettlement = "committed" | "missing" | "stale";
 export type StreamStorageMutation = "put" | "delete" | "legacy_index_migration";
+export type StreamStorageRead = "get" | "list";
 type StreamMutationListener = (mutation: StreamStorageMutation, rows: number) => void;
-type StreamStorage = Pick<DurableObjectStorage, "get" | "put" | "delete" | "list" | "transaction">;
+type StreamReadListener = (operation: StreamStorageRead, rows: number) => void;
+type StreamStorage = Pick<DurableObjectStorage, "get" | "put" | "delete" | "list" | "transaction" | "getAlarm" | "setAlarm" | "deleteAlarm">;
 const STREAM_KEY_PREFIX = "mcp-stream:";
 const LEGACY_STREAM_INDEX_KEY = "mcp-stream-index";
 
@@ -51,6 +53,7 @@ export class WorkerObservability {
   };
   private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
   private readonly durableBudget = {
+    stream_rows_read_estimate: 0, stream_gets: 0, stream_lists: 0, stream_list_rows: 0,
     stream_rows_written_estimate: 0, stream_puts: 0, stream_deletes: 0,
     legacy_index_migrations: 0, alarm_sets: 0, alarm_deletes: 0, alarm_noops: 0,
   };
@@ -138,8 +141,11 @@ export class WorkerObservability {
     this.oauthRefresh[event] += 1;
   }
 
-  streamStorageRowsWritten(rows: number): void {
-    this.durableBudget.stream_rows_written_estimate += Math.max(0, Math.floor(rows));
+  streamStorageRead(operation: StreamStorageRead, rows = 0): void {
+    const count = Math.max(0, Math.floor(rows));
+    this.durableBudget.stream_rows_read_estimate += count;
+    if (operation === "get") this.durableBudget.stream_gets += 1;
+    else { this.durableBudget.stream_lists += 1; this.durableBudget.stream_list_rows += count; }
   }
 
   streamStorageMutation(mutation: StreamStorageMutation, rows = 1): void {
@@ -215,7 +221,7 @@ function sanitizeName(value: unknown): string {
 }
 
 function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  const out = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(fields).slice(0, 32)) {
     const safeKey = sanitizeName(key);
     if (!safeKey) continue;
@@ -233,14 +239,23 @@ function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown
 export function meteredMcpStreamStorage(
   storage: DurableObjectStorage,
   onMutation: StreamMutationListener,
+  onRead: StreamReadListener = () => {},
 ): StreamStorage {
   const report = (key: string, operation: "put" | "delete", rows = 1) => {
     if (key.startsWith(STREAM_KEY_PREFIX)) onMutation(operation, rows);
     else if (operation === "delete" && key === LEGACY_STREAM_INDEX_KEY) onMutation("legacy_index_migration", rows);
   };
   const wrapTransaction = (transaction: DurableObjectTransaction, pending: Array<[StreamStorageMutation, number]>) => ({
-    get: transaction.get.bind(transaction),
-    list: transaction.list.bind(transaction),
+    get: async (key: string, options?: DurableObjectGetOptions) => {
+      const value = await transaction.get(key, options);
+      if (key.startsWith(STREAM_KEY_PREFIX)) onRead("get", 1);
+      return value;
+    },
+    list: async (options?: DurableObjectListOptions) => {
+      const value = await transaction.list(options);
+      if (options?.prefix === STREAM_KEY_PREFIX) onRead("list", value.size);
+      return value;
+    },
     put: async (key: string, value: unknown, options?: DurableObjectPutOptions) => {
       await transaction.put(key, value, options);
       if (key.startsWith(STREAM_KEY_PREFIX)) pending.push(["put", 1]);
@@ -253,10 +268,22 @@ export function meteredMcpStreamStorage(
       }
       return removed;
     },
+    getAlarm: transaction.getAlarm.bind(transaction),
+    setAlarm: transaction.setAlarm.bind(transaction),
+    deleteAlarm: transaction.deleteAlarm.bind(transaction),
   }) as unknown as DurableObjectTransaction;
   return {
-    get: storage.get.bind(storage),
-    list: storage.list.bind(storage),
+    getAlarm: storage.getAlarm.bind(storage), setAlarm: storage.setAlarm.bind(storage), deleteAlarm: storage.deleteAlarm.bind(storage),
+    get: async (key: string, options?: DurableObjectGetOptions) => {
+      const value = await storage.get(key, options);
+      if (key.startsWith(STREAM_KEY_PREFIX)) onRead("get", 1);
+      return value;
+    },
+    list: async (options?: DurableObjectListOptions) => {
+      const value = await storage.list(options);
+      if (options?.prefix === STREAM_KEY_PREFIX) onRead("list", value.size);
+      return value;
+    },
     put: async (key: string, value: unknown, options?: DurableObjectPutOptions) => {
       await storage.put(key, value, options);
       report(key, "put");

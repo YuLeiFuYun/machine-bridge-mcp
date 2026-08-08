@@ -9,6 +9,7 @@ import {
 import { mcpStreamDescriptorResponse, type StreamProxyMode } from "./mcp-stream-proxy.ts";
 import { McpStreamLimitError, type McpResumptionStore } from "./mcp-resumption.ts";
 import { randomToken } from "./oauth-state.ts";
+import type { StartStreamCallResult } from "./mcp-stream-dispatch.ts";
 import type { AuthorizedToken } from "./oauth-controller.ts";
 import type { WorkerObservability } from "./observability.ts";
 import type { PendingAdmissionGate } from "./pending-admission.ts";
@@ -16,6 +17,7 @@ import type { PendingAdmissionGate } from "./pending-admission.ts";
 export type LegacyWorkspaceStreamCallInput = Readonly<{
   streamId: string;
   requestId: string | number;
+  sessionId: string;
   requestKey?: string;
   requestFingerprint: string;
   name: string;
@@ -29,7 +31,7 @@ type PrepareDependencies = Readonly<{
   observability: WorkerObservability;
   admission: PendingAdmissionGate;
   serverInfo: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  dispatchWorkspaceCall: (input: LegacyWorkspaceStreamCallInput) => Promise<void>;
+  dispatchWorkspaceCall: (input: LegacyWorkspaceStreamCallInput) => Promise<StartStreamCallResult>;
 }>;
 
 export async function prepareLegacyStreamedToolCall(
@@ -58,64 +60,51 @@ export async function prepareLegacyStreamedToolCall(
     const prepared = await dependencies.admission.run(async (): Promise<
       { kind: "initial" | "resume"; streamId: string } | { kind: "conflict" }
     > => {
-      const existing = requestKey ? await dependencies.resumption.findByRequestKey(requestKey) : undefined;
-      if (existing) {
-        const compatible = existing.tool === name
-          && (!existing.requestFingerprint || existing.requestFingerprint === requestFingerprint);
-        return compatible ? { kind: "resume", streamId: existing.streamId } : { kind: "conflict" };
+      const streamId = randomToken("stream");
+      const beginInput = {
+        streamId, tokenKey: authorized.tokenKey, sessionId, requestId,
+        ...(requestKey ? { clientRequestKey: requestKey, requestFingerprint, tool: name } : {}),
+      };
+      if (name === "server_info") {
+        const begun = await dependencies.resumption.begin(beginInput);
+        if (begun.kind === "conflict") return { kind: "conflict" };
+        if (begun.kind === "resume") return { kind: "resume", streamId: begun.streamId };
+        await persistImmediateStreamOutcome({
+          resumption: dependencies.resumption, observability: dependencies.observability,
+          streamId: begun.streamId, requestId, outcome: { ok: true, value: await dependencies.serverInfo(args) },
+        });
+        return { kind: "initial", streamId: begun.streamId };
       }
 
-      const streamId = randomToken("stream");
-      await dependencies.resumption.begin({
-        streamId,
-        tokenKey: authorized.tokenKey,
-        sessionId,
-        requestId,
-        ...(requestKey ? {
-          clientRequestKey: requestKey,
-          requestFingerprint,
-          tool: name,
-        } : {}),
-      });
       try {
-        if (name === "server_info") {
-          await persistImmediateStreamOutcome({
-            resumption: dependencies.resumption,
-            observability: dependencies.observability,
-            streamId,
-            requestId,
-            outcome: { ok: true, value: await dependencies.serverInfo(args) },
-          });
-        } else {
-          await dependencies.dispatchWorkspaceCall({
-            streamId,
-            requestId,
-            requestKey,
-            requestFingerprint,
-            name,
-            args,
-            authorized,
-          });
-        }
+        const started = await dependencies.dispatchWorkspaceCall({
+          streamId, requestId, sessionId, requestKey, requestFingerprint, name, args, authorized,
+        });
+        if (started.kind === "conflict") return { kind: "conflict" };
+        return { kind: started.kind, streamId: started.streamId };
       } catch (error) {
+        // Preserve the resumable error contract for pre-dispatch failures without
+        // forcing every successful call through a second full stream scan. If this
+        // was an ambiguous retry, begin() returns the already authoritative stream.
+        const begun = await dependencies.resumption.begin(beginInput);
+        if (begun.kind === "conflict") return { kind: "conflict" };
+        if (begun.kind === "resume") return { kind: "resume", streamId: begun.streamId };
         await persistImmediateStreamOutcome({
-          resumption: dependencies.resumption,
-          observability: dependencies.observability,
-          streamId,
-          requestId,
+          resumption: dependencies.resumption, observability: dependencies.observability,
+          streamId: begun.streamId, requestId,
           outcome: { ok: false, error: error instanceof Error ? error : new Error("streamed tool call failed") },
         });
+        return { kind: "initial", streamId: begun.streamId };
       }
-      return { kind: "initial", streamId };
     });
 
     if (prepared.kind === "conflict") {
       return json(rpcError(requestId, -32600, "request id is already active with different tool arguments", {
-        side_effects_started: true,
-        retryable: false,
+        side_effects_started: true, retryable: false,
       }), 409);
     }
     return mcpStreamDescriptorResponse(prepared.kind, prepared.streamId);
+
   } catch (error) {
     return streamPreparationFailure(requestId, error, dependencies.observability);
   }

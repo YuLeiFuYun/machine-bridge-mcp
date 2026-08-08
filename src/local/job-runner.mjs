@@ -556,7 +556,10 @@ function writeJson(file, value, maxBytes) {
 }
 
 function readJson(file, maxBytes) {
-  return JSON.parse(readBoundedFile(file, maxBytes).toString("utf8"));
+  return JSON.parse(readBoundedRegularFileSync(file, maxBytes, "managed job runner state", {
+    verifyPathIdentity: true,
+    rejectMultipleLinks: true,
+  }).toString("utf8"));
 }
 
 function readBoundedFile(file, maxBytes) {

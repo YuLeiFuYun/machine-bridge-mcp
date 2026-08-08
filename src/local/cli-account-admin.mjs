@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { AccountAdminClient, accountRoleNames, generateAccountPassword } from "./account-admin.mjs";
 import { createDeviceSessionForRoot } from "./device-root-provider.mjs";
-import { loadState, packageRoot } from "./state.mjs";
+import { loadState } from "./state.mjs";
+import { packageVersion } from "./package-identity.mjs";
 
 export function createAccountCommand({ chooseWorkspace, confirm }) {
   if (typeof chooseWorkspace !== "function" || typeof confirm !== "function") {
@@ -35,7 +34,7 @@ export async function accountAdminClient(state, sessionIdentity = null) {
 }
 
 function currentPackageVersion() {
-  return String(JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8")).version);
+  return packageVersion;
 }
 
 async function performAccountAction({ action, args, client, confirm }) {

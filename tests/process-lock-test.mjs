@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join, resolve } from "node:path";
@@ -39,6 +39,7 @@ try {
   await machineServiceLockTest();
   await malformedAndReusedPidLockTest();
   await symbolicLinkLockTest();
+  await hardLinkLockTest();
   console.log("process identity/lock test ok");
 } finally {
   await rm(temp, { recursive: true, force: true });
@@ -445,6 +446,30 @@ async function symbolicLinkLockTest() {
   await symlink(outside, file);
   owned.release();
   assert(await readFile(outside, "utf8") === "outside\n", "lock release followed a replacement symbolic link");
+}
+
+async function hardLinkLockTest() {
+  const workspace = join(temp, "hardlink-workspace");
+  const stateRoot = join(temp, "hardlink-state");
+  await mkdir(workspace, { recursive: true });
+  const state = loadState(workspace, { stateDir: stateRoot });
+  const file = join(state.paths.profileDir, "startup.lock");
+  const alias = join(temp, "hardlink-startup-lock-alias");
+  await writeFile(file, "{partial", { mode: 0o600 });
+  try {
+    await link(file, alias);
+  } catch (error) {
+    if (["EPERM", "EACCES", "EXDEV", "ENOTSUP"].includes(error?.code)) return;
+    throw error;
+  }
+  let acquireFailure = null;
+  try { acquireStartupLock(state, { operation: "hardlink-rejection" }); } catch (error) { acquireFailure = error; }
+  assert(String(acquireFailure?.message || "").includes("multiple hard links") && existsSync(file) && existsSync(alias),
+    "multiply-linked process lock was read or reclaimed instead of failing closed");
+  let ownerFailure = null;
+  try { readDaemonLockOwner(file); } catch (error) { ownerFailure = error; }
+  assert(String(ownerFailure?.message || "").includes("multiple hard links") && existsSync(file) && existsSync(alias),
+    "daemon lock owner reader accepted a multiply-linked lock");
 }
 
 function waitForChild(child) {

@@ -1,4 +1,4 @@
-import { closeSync, constants as fsConstants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import { closeSync, constants as fsConstants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, unlinkSync } from "node:fs";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 export function openRegularFileSync(file, flags, options = {}) {
@@ -31,7 +31,7 @@ export function openRegularFileSync(file, flags, options = {}) {
       if (!sameFilesystemIdentity(identity, filesystemIdentity(pathIdentityInfo, label))) throw new Error(`${label} identity changed while opening`);
     }
     if (Number.isInteger(options.chmod)) setDescriptorMode(fd, options.chmod);
-    return { fd, info, identity };
+    return { fd, info, identity, identityInfo: descriptorIdentityInfo };
   } catch (error) {
     closeSync(fd);
     throw error;
@@ -41,7 +41,7 @@ export function openRegularFileSync(file, flags, options = {}) {
 function withRegularFileSync(file, flags, options, callback) {
   const opened = openRegularFileSync(file, flags, options);
   try {
-    return callback(opened.fd, opened.info, opened.identity);
+    return callback(opened.fd, opened.info, opened.identity, opened.identityInfo);
   } finally {
     closeSync(opened.fd);
   }
@@ -50,6 +50,25 @@ function withRegularFileSync(file, flags, options, callback) {
 export function chmodRegularFileSync(file, mode, label = "path") {
   return withRegularFileSync(file, fsConstants.O_RDONLY, { label, chmod: mode, rejectMultipleLinks: true }, () => undefined);
 }
+
+export function ownerOnlyFile(filePath) {
+  return chmodRegularFileSync(filePath, 0o600, "owner-only path");
+}
+
+export function unlinkRegularFileIfIdentitySync(file, expectedIdentity, label = "file") {
+  let current;
+  try { current = lstatSync(file, { bigint: true }); } catch (error) {
+    if (String(/** @type {any} */ (error)?.code || "") === "ENOENT") return false;
+    throw error;
+  }
+  if (current.isSymbolicLink() || !current.isFile() || current.nlink !== 1n
+      || !sameFilesystemIdentity(expectedIdentity, filesystemIdentity(current, label))) return false;
+  try { unlinkSync(file); return true; } catch (error) {
+    if (String(/** @type {any} */ (error)?.code || "") === "ENOENT") return false;
+    throw error;
+  }
+}
+
 
 export function inspectPathIfPresentSync(file, label = "path", options = {}) {
   const inspect = options.lstatSync || lstatSync;
@@ -71,7 +90,7 @@ export function readBoundedRegularFileWithInfoSync(file, maxBytes, label = "path
     label,
     verifyPathIdentity: options.verifyPathIdentity === true,
     rejectMultipleLinks: options.rejectMultipleLinks === true,
-  }, (fd, info, identity) => {
+  }, (fd, info, identity, identityInfo) => {
     if (info.size > limit) throw new Error(`file exceeds ${limit} bytes`);
     options.afterOpen?.({ fd, info });
     const buffer = Buffer.alloc(info.size);
@@ -81,7 +100,7 @@ export function readBoundedRegularFileWithInfoSync(file, maxBytes, label = "path
       if (!count) break;
       offset += count;
     }
-    return { buffer: buffer.subarray(0, offset), info, identity };
+    return { buffer: buffer.subarray(0, offset), info, identity, identityInfo };
   });
 }
 
@@ -125,6 +144,10 @@ export function ensureOwnerOnlyDirectorySync(dir, options = {}) {
   } finally {
     if (fd !== undefined) close(fd);
   }
+}
+
+export function ensureOwnerOnlyDir(dir, options = {}) {
+  return ensureOwnerOnlyDirectorySync(dir, options);
 }
 
 function setDescriptorMode(fd, mode) {

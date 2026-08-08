@@ -3,6 +3,7 @@ export type PendingStreamTransform = {
   account_id: string;
   account_version: number;
   role: "owner" | "operator" | "editor" | "reviewer";
+  detail?: "summary";
 };
 
 export type PendingStreamCall = {
@@ -36,6 +37,7 @@ export function validPendingStreamCall(value: unknown): value is PendingStreamCa
     && Number.isSafeInteger(transform.account_version)
     && transform.account_version! >= 1
     && ["owner", "operator", "editor", "reviewer"].includes(String(transform.role))
+    && (transform.detail === undefined || transform.detail === "summary")
   );
   return typeof call.call_id === "string" && CALL_ID_PATTERN.test(call.call_id)
     && typeof call.daemon_instance_id === "string" && DAEMON_INSTANCE_PATTERN.test(call.daemon_instance_id)

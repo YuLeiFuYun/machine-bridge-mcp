@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { packageRoot } from "./state.mjs";
+import { packageRoot } from "./package-identity.mjs";
 import { ensureWranglerToolchain } from "./wrangler-toolchain.mjs";
 import { BoundedOutput } from "./bounded-output.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";

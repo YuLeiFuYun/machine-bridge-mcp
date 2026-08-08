@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { acquireMaintenanceLock, assertStateMaintenanceAvailable, ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
+import { acquireMaintenanceLock, assertStateMaintenanceAvailable } from "./state.mjs";
+import { ensureOwnerOnlyDir, ownerOnlyFile } from "./secure-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 
 const DEFAULT_BROWSER_PORT = 39393;
@@ -44,6 +45,15 @@ export async function savePairing(stateRoot, value) {
   const file = join(stateRoot, PAIRING_FILE);
   replaceFileAtomicallySync(file, pairingJson(normalized), { mode: 0o600 });
   ownerOnlyFile(file);
+}
+
+export function readBrowserPairingPort(stateRoot, options = {}) {
+  const file = join(stateRoot, PAIRING_FILE);
+  const inspect = options.inspectPathIfPresentSync || inspectPathIfPresentSync;
+  const existing = inspect(file, "browser pairing state");
+  if (!existing) return null;
+  if (existing.isSymbolicLink() || !existing.isFile()) throw new Error("browser pairing state must be a regular file and not a symbolic link");
+  return readPairing(file).value.port;
 }
 
 async function migrateLegacyPairing(stateRoot, file) {

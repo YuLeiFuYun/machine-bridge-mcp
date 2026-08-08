@@ -65,9 +65,7 @@ export class DurableStreamCallCoordinator {
     const code = normalized.ok ? "" : publicWorkerToolError(normalized.error).code;
     try {
       const completed = await this.calls.complete(
-        callId,
-        connectionId,
-        streamTerminalMessage(call.requestId, normalized),
+        callId, connectionId, streamTerminalMessage(call.requestId, normalized), call,
       );
       if (!completed) {
         const current = await this.calls.get(callId);

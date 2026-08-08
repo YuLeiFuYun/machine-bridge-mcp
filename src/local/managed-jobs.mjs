@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assertStateMaintenanceAvailable, ensureOwnerOnlyDir } from "./state.mjs";
+import { assertStateMaintenanceAvailable } from "./state.mjs";
+import { ensureOwnerOnlyDir } from "./secure-file.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError } from "./errors.mjs";
 import { assertOwnedByContext, principalBinding, visibleToContext } from "./authority-context.mjs";
@@ -466,12 +467,9 @@ export function activeManagedJobs(jobRoot) {
 
 export function loadManagedJobPlan(inputPath) {
   const path = resolve(String(inputPath || ""));
-  const linkInfo = lstatSync(path);
-  if (linkInfo.isSymbolicLink()) throw new Error("job plan must not be a symbolic link");
-  if (!linkInfo.isFile()) throw new Error("job plan is not a regular file");
+  const buffer = readBoundedFile(path, MAX_PLAN_BYTES);
   let value;
-  try { value = JSON.parse(readBoundedFile(path, MAX_PLAN_BYTES).toString("utf8")); } catch (error) {
-    if (/exceeds/.test(String(error?.message || error))) throw error;
+  try { value = JSON.parse(buffer.toString("utf8")); } catch {
     throw new Error("job plan is not valid JSON");
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("job plan must contain a JSON object");

@@ -8,7 +8,8 @@ import type { PendingStreamTransform } from "./mcp-pending-call-records.ts";
 import { publicWorkerToolError, WorkerToolError } from "./errors.ts";
 import { workerErrorClass } from "./http.ts";
 import { rpcResult, textToolResult } from "./mcp-jsonrpc.ts";
-import { randomToken } from "./oauth-state.ts";
+import { callIdForStreamId } from "./mcp-stream-call-identity.ts";
+import type { TransactionAlarmMutation } from "./mcp-transaction-alarm.ts";
 import type { WorkerObservability } from "./observability.ts";
 
 export type StreamCallAuthorization = {
@@ -39,7 +40,15 @@ type StartStreamCallInput = {
   reservedPendingCalls?: number;
   transform?: PendingStreamTransform;
   onSendFailure: () => void | Promise<void>;
+  createStream?: { tokenKey: string; sessionId: string };
 };
+
+export type StartStreamCallResult = Readonly<{
+  kind: "initial" | "resume" | "conflict";
+  streamId: string;
+  operationDeadlineAt?: number;
+  alarmMutation?: TransactionAlarmMutation;
+}>;
 
 type ImmediateOutcomeInput = {
   resumption: McpResumptionStore;
@@ -50,40 +59,42 @@ type ImmediateOutcomeInput = {
   transformResult?: (value: unknown) => unknown;
 };
 
-export async function startEventDrivenStreamCall(input: StartStreamCallInput): Promise<void> {
-  const callId = randomToken("call");
+export async function startEventDrivenStreamCall(input: StartStreamCallInput): Promise<StartStreamCallResult> {
+  const callId = callIdForStreamId(input.streamId);
+  let operationDeadlineAt: number | undefined;
+  let alarmMutation: TransactionAlarmMutation | undefined;
   try {
-    await input.resumption.calls.activate({
-      streamId: input.streamId,
-      callId,
-      daemonInstanceId: input.daemonInstanceId,
-      connectionId: input.connectionId,
-      clientRequestKey: input.clientRequestKey,
-      requestFingerprint: input.requestFingerprint,
-      tool: input.tool,
-      timeoutMs: input.settlementTimeoutMs,
-      transform: input.transform,
-      transientSnapshot: input.transientSnapshot,
-      maximumPendingCalls: input.maximumPendingCalls,
-      reservedPendingCalls: input.reservedPendingCalls,
-    });
+    if (input.createStream) {
+      const started = await input.resumption.beginCall({
+        streamId: input.streamId, tokenKey: input.createStream.tokenKey, sessionId: input.createStream.sessionId, requestId: input.requestId,
+        ...(input.clientRequestKey ? {
+          clientRequestKey: input.clientRequestKey, requestFingerprint: input.requestFingerprint, tool: input.tool,
+        } : {}),
+        callId, daemonInstanceId: input.daemonInstanceId, connectionId: input.connectionId,
+        tool: input.tool, timeoutMs: input.settlementTimeoutMs, transform: input.transform,
+        transientSnapshot: input.transientSnapshot, maximumPendingCalls: input.maximumPendingCalls,
+        reservedPendingCalls: input.reservedPendingCalls,
+      });
+      if (started.kind !== "initial") return started;
+      operationDeadlineAt = started.operationDeadlineAt;
+      alarmMutation = started.alarmMutation;
+    } else {
+      operationDeadlineAt = await input.resumption.calls.activate({
+        streamId: input.streamId, callId, daemonInstanceId: input.daemonInstanceId, connectionId: input.connectionId,
+        clientRequestKey: input.clientRequestKey, requestFingerprint: input.requestFingerprint, tool: input.tool,
+        timeoutMs: input.settlementTimeoutMs, transform: input.transform, transientSnapshot: input.transientSnapshot,
+        maximumPendingCalls: input.maximumPendingCalls, reservedPendingCalls: input.reservedPendingCalls,
+      });
+    }
   } catch (error) {
-    if (error instanceof McpPendingCallLimitError) {
-      throw new WorkerToolError("limit_exceeded", error.message, true);
-    }
-    if (error instanceof McpPendingCallConflictError) {
-      throw new WorkerToolError("conflict", error.message);
-    }
+    if (error instanceof McpPendingCallLimitError) throw new WorkerToolError("limit_exceeded", error.message, true);
+    if (error instanceof McpPendingCallConflictError) throw new WorkerToolError("conflict", error.message);
     throw error;
   }
   input.observability.callStarted(input.tool);
   try {
     input.socket.send(JSON.stringify({
-      type: "tool_call",
-      id: callId,
-      tool: input.tool,
-      arguments: input.arguments,
-      timeout_ms: input.executionTimeoutMs,
+      type: "tool_call", id: callId, tool: input.tool, arguments: input.arguments, timeout_ms: input.executionTimeoutMs,
       authorization: input.authorization,
     }));
   } catch {
@@ -92,6 +103,7 @@ export async function startEventDrivenStreamCall(input: StartStreamCallInput): P
     input.observability.callFinished(input.tool, error.code);
     await input.onSendFailure();
   }
+  return { kind: "initial", streamId: input.streamId, operationDeadlineAt, alarmMutation };
 }
 
 export async function persistImmediateStreamOutcome(input: ImmediateOutcomeInput): Promise<void> {

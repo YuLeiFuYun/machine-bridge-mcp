@@ -37,7 +37,6 @@ export async function atomicWriteText(full, content, existing = null, options = 
       };
     }
     await move(temp, full);
-    staged = false;
     return { warnings: [] };
   } catch (error) {
     if (!staged) throw error;

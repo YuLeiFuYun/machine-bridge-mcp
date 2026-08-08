@@ -3,8 +3,8 @@ import { lstatSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMs } from "./process-identity.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { ownerOnlyFile } from "./state.mjs";
+import { readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
+import { ownerOnlyFile } from "./secure-file.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 export function acquireRecoveryLock(dir) {
@@ -73,18 +73,22 @@ function pidLockOwner(pid, startedAtMs) {
 }
 
 function readPidLockSnapshot(file) {
-  let info;
-  try { info = lstatSync(file, { bigint: true }); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
-  if (info.isSymbolicLink() || !info.isFile()) throw new Error("job lock must be a regular non-symbolic-link file");
-  let text;
-  try { text = readBoundedRegularFileSync(file, 1024).toString("utf8").trim(); }
-  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  let opened;
+  try {
+    opened = readBoundedRegularFileWithInfoSync(file, 1024, "job lock", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
+    throw error;
+  }
   let owner = null;
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(opened.buffer.toString("utf8").trim());
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
   } catch { /* Successfully read malformed JSON may be reclaimed only after the stale grace. */ }
-  return { owner, info: pidLockIdentity(info) };
+  return { owner, info: pidLockIdentity(opened.identityInfo, opened.identity) };
 }
 
 function removePidLockOwnedBy(file, token) {
@@ -105,16 +109,17 @@ function removePidLockSnapshot(file, snapshot) {
   try { rmSync(file); return true; } catch (error) { return error?.code === "ENOENT"; }
 }
 
-function pidLockIdentity(info) {
+function pidLockIdentity(info, identity = filesystemIdentity(info, "managed-job lock")) {
   return {
-    ...filesystemIdentity(info, "managed-job lock"),
+    ...identity,
     size: exactFilesystemInteger(info.size, "managed-job lock size"),
+    nlink: exactFilesystemInteger(info.nlink, "managed-job lock link count"),
     mtimeMs: filesystemTimeMs(info.mtimeMs, "managed-job lock modification time"),
   };
 }
 
 function samePidLockIdentity(left, right) {
-  return sameFilesystemIdentity(left, right) && left.size === right.size && left.mtimeMs === right.mtimeMs;
+  return sameFilesystemIdentity(left, right) && left.size === right.size && left.nlink === right.nlink && left.mtimeMs === right.mtimeMs;
 }
 
 function replacePrivateTextFile(file, content) {

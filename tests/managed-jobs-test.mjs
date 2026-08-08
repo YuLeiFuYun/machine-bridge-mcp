@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -358,11 +358,54 @@ try {
     name: "transition lock",
     steps: [{ argv: [process.execPath, "-e", ""] }],
   });
+  if (process.platform !== "win32") {
+    const hardState = manager.stage({ name: "hard-linked state", steps: [{ argv: [process.execPath, "-e", ""] }] });
+    const hardStateDir = join(jobRoot, hardState.job_id);
+    const hardStatus = join(hardStateDir, "status.json");
+    const hardStatusAlias = join(hardStateDir, "status.json.alias");
+    const hardPlan = join(hardStateDir, "plan.json");
+    const hardPlanAlias = join(hardStateDir, "plan.json.alias");
+    try {
+      await link(hardStatus, hardStatusAlias);
+      expectThrow(() => manager.read({ job_id: hardState.job_id }), "insecure_links");
+      assert(await exists(hardStatus) && await exists(hardStatusAlias), "hard-linked job status was modified after rejection");
+      await rm(hardStatusAlias, { force: true });
+      await link(hardPlan, hardPlanAlias);
+      expectThrow(() => manager.approve({ job_id: hardState.job_id }, { localOperator: true }), "insecure_links");
+      assert(await exists(hardPlan) && await exists(hardPlanAlias), "hard-linked job plan was modified after rejection");
+    } finally {
+      await rm(hardStatusAlias, { force: true });
+      await rm(hardPlanAlias, { force: true });
+    }
+    manager.cancel({ job_id: hardState.job_id });
+  }
+
   const transitionLock = join(jobRoot, locked.job_id, "transition.lock");
   await writeFile(transitionLock, `${process.pid}\n`, { mode: 0o600 });
   expectThrow(() => manager.approve({ job_id: locked.job_id }, { localOperator: true }), "job state is being modified");
   await rm(transitionLock, { force: true });
   manager.cancel({ job_id: locked.job_id });
+
+  const hardLinked = manager.stage({
+    name: "hard-linked transition lock",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  const hardLinkedLock = join(jobRoot, hardLinked.job_id, "transition.lock");
+  const hardLinkedAlias = join(jobRoot, hardLinked.job_id, "transition.lock.alias");
+  await writeFile(hardLinkedLock, `${JSON.stringify({
+    pid: process.pid, token: "a".repeat(32), startedAt: new Date().toISOString(),
+    processStartedAt: new Date(Date.now() - 1000).toISOString(),
+  })}\n`, { mode: 0o600 });
+  try {
+    await link(hardLinkedLock, hardLinkedAlias);
+    expectThrow(() => manager.approve({ job_id: hardLinked.job_id }, { localOperator: true }), "multiple hard links");
+    assert(await exists(hardLinkedLock) && await exists(hardLinkedAlias), "managed-job lock rejection removed a multiply-linked lock");
+    await rm(hardLinkedAlias, { force: true });
+  } catch (error) {
+    if (!["EPERM", "EACCES", "EXDEV", "ENOTSUP"].includes(error?.code)) throw error;
+  }
+  await rm(hardLinkedLock, { force: true });
+  manager.cancel({ job_id: hardLinked.job_id });
 
   const staleReusedPid = manager.stage({
     name: "stale reused pid transition lock",

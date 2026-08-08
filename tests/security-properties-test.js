@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import fc from "fast-check";
 import {
   MAX_BROWSER_MESSAGE_BYTES,
@@ -87,30 +87,32 @@ try {
 
 const managedJobInfo = { isSymbolicLink: () => false, isDirectory: () => true, dev: 1, ino: 1 };
 const managedJobOutsideInfo = { ...managedJobInfo, ino: 2 };
-expectThrow(() => resolveManagedJobRootIfPresent("/tmp/jobs", {
+const managedJobRoot = resolve("/tmp/jobs");
+const managedJobOutside = resolve("/tmp/outside");
+expectThrow(() => resolveManagedJobRootIfPresent(managedJobRoot, {
   inspectPath: () => managedJobInfo,
-  realpathSync: () => "/tmp/outside",
-  lstatSync: (target) => target === "/tmp/jobs" ? managedJobInfo : managedJobOutsideInfo,
+  realpathSync: () => managedJobOutside,
+  lstatSync: (target) => target === managedJobRoot ? managedJobInfo : managedJobOutsideInfo,
 }), "canonical target does not match");
 const managedJobId = `job_${"A".repeat(24)}`;
 const unsafeManagedJobBefore = { ...managedJobInfo, dev: 2 ** 54, ino: 2 ** 54 };
 const unsafeManagedJobAfter = { ...managedJobInfo, dev: (2 ** 54) + 4, ino: (2 ** 54) + 8 };
-expectThrow(() => resolveManagedJobDirectory("/tmp/jobs", managedJobId, {
+expectThrow(() => resolveManagedJobDirectory(managedJobRoot, managedJobId, {
   inspectPath: () => unsafeManagedJobBefore,
   realpathSync: (value) => value,
   lstatSync: () => unsafeManagedJobAfter,
 }), "identity changed during inspection");
 const bigintManagedJobInfo = { ...managedJobInfo, dev: 7n, ino: 11n };
-assert(resolveManagedJobRootIfPresent("/tmp/jobs", {
+assert(resolveManagedJobRootIfPresent(managedJobRoot, {
   inspectPath: () => bigintManagedJobInfo,
   realpathSync: (value) => value,
   lstatSync: () => bigintManagedJobInfo,
-}) === "/tmp/jobs", "managed job root resolver rejected comparable bigint identity metadata");
-assert(resolveManagedJobDirectory("/tmp/jobs", managedJobId, {
+}) === managedJobRoot, "managed job root resolver rejected comparable bigint identity metadata");
+assert(resolveManagedJobDirectory(managedJobRoot, managedJobId, {
   inspectPath: () => bigintManagedJobInfo,
   realpathSync: (value) => value,
   lstatSync: () => bigintManagedJobInfo,
-}) === `/tmp/jobs/${managedJobId}`, "managed job resolver rejected comparable bigint identity metadata");
+}) === join(managedJobRoot, managedJobId), "managed job resolver rejected comparable bigint identity metadata");
 
 console.log("security property tests ok (fast-check browser protocol, policy, argv, executable and managed-job boundaries)");
 

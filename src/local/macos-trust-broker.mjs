@@ -2,12 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { deviceKeyId } from "./device-identity.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { packageRoot } from "./package-identity.mjs";
 
-const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const PROVIDER = "macos-secure-enclave-v1";
 const BROKER_PROTOCOL = 1;
 const BROKER_ENVIRONMENT_VARIABLE = "MBM_MACOS_TRUST_BROKER";

@@ -1,3 +1,4 @@
+import { projectProjectOverview } from "../shared/project-overview-projection.mjs";
 import { decorateProjectOverview } from "./authority.ts";
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import type { PendingStreamCallView } from "./mcp-pending-call-store.ts";
@@ -10,11 +11,11 @@ export function transformDurableStreamOutcome(
   try {
     return {
       ok: true,
-      value: decorateProjectOverview(outcome.value, {
+      value: projectProjectOverview(decorateProjectOverview(outcome.value, {
         accountId: call.transform.account_id,
         accountVersion: call.transform.account_version,
         role: call.transform.role,
-      }),
+      }), call.transform.detail === "summary" ? "summary" : "full"),
     };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error : new Error("stream result transformation failed") };

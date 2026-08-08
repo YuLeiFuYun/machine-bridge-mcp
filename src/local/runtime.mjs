@@ -19,6 +19,7 @@ import { createTrustedGitResolver } from "./trusted-git-executable.mjs";
 import { LifecycleController } from "./lifecycle.mjs";
 import { MAX_WRITE_BYTES, sha256, WorkspaceFileService } from "./workspace-file-service.mjs";
 import { projectRuntimeInfo } from "./runtime-info-projection.mjs";
+import { projectOverviewDetail, projectProjectOverview } from "../shared/project-overview-projection.mjs";
 export { MAX_WRITE_BYTES, sha256 } from "./workspace-file-service.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { ManagedJobManager } from "./managed-jobs.mjs";
@@ -478,9 +479,9 @@ export class LocalRuntime {
     });
   }
 
-  async projectOverview(context = {}) {
+  async projectOverview(args = {}, context = {}) {
     const effectivePolicy = this.effectivePolicy(context);
-    return buildProjectOverview({
+    const overview = await buildProjectOverview({
       workspace: this.workspace,
       displayPath: (value) => this.displayPath(value, context),
       policy: effectivePolicy,
@@ -494,6 +495,7 @@ export class LocalRuntime {
       safeErrorMessage: (error) => this.safeErrorMessage(error, {}, context),
       throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
     }, context);
+    return projectProjectOverview(overview, projectOverviewDetail(args));
   }
 
   listRoots(context = {}) { return this.workspaceFileService.listRoots(context); }

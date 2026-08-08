@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runWrangler } from "./shell.mjs";
-import { packageRoot, saveState } from "./state.mjs";
+import { saveState } from "./state.mjs";
+import { packageRoot } from "./package-identity.mjs";
 import { withWorkerSecretsFile } from "./worker-secret-file.mjs";
 import { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs";
 export { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs";

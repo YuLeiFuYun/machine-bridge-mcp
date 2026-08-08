@@ -17,10 +17,10 @@ export function validateResourceName(value) {
   return name;
 }
 
-export function inspectResourceFile(inputPath, { allowInsecurePermissions = false, includeHash = false } = {}) {
+export function inspectResourceFile(inputPath, { allowInsecurePermissions = false, includeHash = false, includeContent = false } = {}) {
   const path = resolve(String(inputPath || ""));
   const canonical = realpathFile(path);
-  const { buffer: content, info } = readBoundedRegularFileWithInfoSync(canonical, MAX_RESOURCE_BYTES);
+  const { buffer: content, info } = readBoundedRegularFileWithInfoSync(canonical, MAX_RESOURCE_BYTES, "resource file", { verifyPathIdentity: true });
   if (process.platform !== "win32" && !allowInsecurePermissions && (info.mode & 0o077) !== 0) {
     throw new Error("resource file is readable by group or others; restrict permissions or use --allow-insecure-permissions");
   }
@@ -33,6 +33,7 @@ export function inspectResourceFile(inputPath, { allowInsecurePermissions = fals
     updatedAt: new Date().toISOString(),
     allowInsecurePermissions: allowInsecurePermissions === true,
     ...(includeHash ? { sha256: createHash("sha256").update(content).digest("hex") } : {}),
+    ...(includeContent ? { content } : {}),
   };
 }
 

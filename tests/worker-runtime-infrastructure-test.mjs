@@ -1,9 +1,11 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
 import { PendingAdmissionGate } from "../src/worker/pending-admission.ts";
 import { DurableStreamCallCoordinator } from "../src/worker/durable-stream-calls.ts";
+import { transformDurableStreamOutcome } from "../src/worker/durable-stream-result.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
 import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
+import { ensureTransactionAlarmAtMost } from "../src/worker/mcp-transaction-alarm.ts";
 import { persistImmediateStreamOutcome, startEventDrivenStreamCall, streamTerminalMessage } from "../src/worker/mcp-stream-dispatch.ts";
 import { buildServerInfoResult, serverInfoDetail } from "../src/worker/server-info.ts";
 import { daemonStatusSnapshot } from "../src/worker/daemon-status.ts";
@@ -125,6 +127,7 @@ await testRuntimeAlarmCoordinator();
 await testTimeoutCallbackFailure();
 await testPendingAdmissionGate();
 await testEventDrivenStreamDispatch();
+await testDurableProjectOverviewProjection();
 await testLegacyStreamPreparationIdentity();
 await testStreamDispatchFailureBoundaries();
 await testDurableSettlementPersistenceFailure();
@@ -145,13 +148,21 @@ async function testMeteredMcpStreamStorage() {
   const storage = new MemoryStorage();
   storage.values.set("mcp-stream-index", { schema_version: 1, entries: [] });
   const mutations = [];
-  const metered = meteredMcpStreamStorage(storage, (mutation, rows) => mutations.push([mutation, rows]));
+  const reads = [];
+  const metered = meteredMcpStreamStorage(
+    storage, (mutation, rows) => mutations.push([mutation, rows]), (operation, rows) => reads.push([operation, rows]),
+  );
   await metered.transaction(async (transaction) => {
-    await transaction.put(`mcp-stream:${"S".repeat(43)}`, { value: 1 });
+    const key = `mcp-stream:${"S".repeat(43)}`;
+    await transaction.put(key, { value: 1 });
+    await transaction.get(key);
+    await transaction.list({ prefix: "mcp-stream:" });
     await transaction.delete("mcp-stream-index");
   });
   assert(JSON.stringify(mutations) === JSON.stringify([["put", 1], ["legacy_index_migration", 1]]),
     "committed stream transaction mutations were not classified exactly");
+  assert(JSON.stringify(reads) === JSON.stringify([["get", 1], ["list", 1]]),
+    "stream point/list reads were not metered without exposing storage keys");
   await expectReject(metered.transaction(async (transaction) => {
     await transaction.put(`mcp-stream:${"F".repeat(43)}`, { value: 2 });
     throw new Error("synthetic rollback");
@@ -448,6 +459,28 @@ async function testRuntimeAlarmCoordinator() {
   pendingDelay = 150;
   await scheduleRuntimeAlarm(context, 1000);
   assert(scheduled.length === 1 && mutations.at(-1) === "noop", "later heartbeat deadline rewrote an already safe earlier alarm");
+  let protectedDurableReads = 0;
+  await scheduleRuntimeAlarm({
+    ...context,
+    durableCalls: { async nextDeadlineDelayMs() { protectedDurableReads += 1; return 1; } },
+  }, 1000);
+  assert(protectedDurableReads === 0 && scheduled.length === 1,
+    "future persisted alarm did not suppress the hot-path durable deadline scan");
+
+  let recoveredDurableReads = 0;
+  let recoveredAlarm = null;
+  await scheduleRuntimeAlarm({
+    ...context,
+    storage: {
+      async getAlarm() { return recoveredAlarm; },
+      async setAlarm(value) { recoveredAlarm = Number(value); },
+      async deleteAlarm() { recoveredAlarm = null; },
+    },
+    pending: { async expireDue() { return 0; }, nextDeadlineDelayMs() { return Number.POSITIVE_INFINITY; } },
+    durableCalls: { async nextDeadlineDelayMs() { recoveredDurableReads += 1; return 40; } },
+  }, 1000);
+  assert(recoveredDurableReads === 1 && recoveredAlarm === 1040,
+    "missing persisted alarm did not recover the earliest durable deadline with one bounded scan");
 
   pendingDelay = 25;
   await scheduleRuntimeAlarm(context, 1000);
@@ -533,6 +566,65 @@ async function testRuntimeAlarmCoordinator() {
   await scheduleRuntimeAlarm(changedDeadlineContext, 5000);
   assert(changedAlarm === 5025,
     "runtime alarm did not recompute pending deadlines after socket invalidation changed call ownership");
+
+  const invalidProbe = {};
+  const invalidReady = {};
+  const scheduleInvalidations = [];
+  await scheduleRuntimeAlarm({
+    ...context,
+    storage: { async getAlarm() { return 6000; }, async setAlarm() {}, async deleteAlarm() {} },
+    pending: { async expireDue() { return 0; }, nextDeadlineDelayMs() { return Number.POSITIVE_INFINITY; } },
+    daemonRegistry: {
+      candidateSockets() { return []; },
+      probingSockets() { return [invalidProbe]; },
+      readyRoleSockets() { return [invalidReady]; },
+      attachment(socket) { return socket === invalidProbe ? { role: "probing", connectedAt: "invalid", lastSeenAt: "invalid" } : undefined; },
+      readyAttachment() { return { role: "daemon", lastSeenAt: "invalid" }; },
+    },
+    async invalidateDaemonSocket(socket, message) { scheduleInvalidations.push({ socket, message }); },
+  }, 5000);
+  assert(scheduleInvalidations.length === 2
+    && scheduleInvalidations[0].socket === invalidProbe
+    && scheduleInvalidations[1].socket === invalidReady,
+  "event-time alarm scheduling did not fail closed on invalid probing/ready liveness timestamps");
+
+  const validCandidate = {};
+  const validProbe = {};
+  const validReady = {};
+  let validSocketAlarm = null;
+  const baseNow = Date.parse("2026-08-04T00:00:20.000Z");
+  await scheduleRuntimeAlarm({
+    ...context,
+    storage: {
+      async getAlarm() { return validSocketAlarm; },
+      async setAlarm(value) { validSocketAlarm = Number(value); },
+      async deleteAlarm() { validSocketAlarm = null; },
+    },
+    pending: { async expireDue() { return 0; }, nextDeadlineDelayMs() { return Number.POSITIVE_INFINITY; } },
+    daemonRegistry: {
+      candidateSockets() { return [validCandidate]; },
+      probingSockets() { return [validProbe]; },
+      readyRoleSockets() { return [validReady]; },
+      attachment(socket) {
+        if (socket === validCandidate) return { role: "candidate", connectedAt: "2026-08-04T00:00:15.000Z" };
+        if (socket === validProbe) return { role: "probing", connectedAt: "2026-08-04T00:00:18.000Z", lastSeenAt: "2026-08-04T00:00:18.000Z" };
+        return undefined;
+      },
+      readyAttachment() { return { role: "daemon", lastSeenAt: "2026-08-04T00:00:19.000Z" }; },
+    },
+    async invalidateDaemonSocket() { throw new Error("valid daemon liveness state was invalidated"); },
+  }, baseNow);
+  assert(validSocketAlarm === Date.parse("2026-08-04T00:00:25.000Z"),
+    "event-time alarm scheduling did not select the earliest valid daemon deadline");
+
+  let transactionAlarm = 7000;
+  const transactionAlarmStorage = {
+    async getAlarm() { return transactionAlarm; },
+    async setAlarm(value) { transactionAlarm = Number(value); },
+  };
+  assert(await ensureTransactionAlarmAtMost(transactionAlarmStorage, 7100) === "noop" && transactionAlarm === 7000,
+    "transaction alarm helper rewrote an already earlier alarm");
+  await expectReject(Promise.resolve().then(() => ensureTransactionAlarmAtMost(transactionAlarmStorage, 0)), "invalid durable call alarm deadline");
 
   let durableExpired = 0;
   let durableDelay = 40;
@@ -657,6 +749,71 @@ async function testEventDrivenStreamDispatch() {
     streamTerminalMessage(45, { ok: true, value: { stale: true } }))), "stale connection settled a rebound stream call");
   assert(await reconnectStore.calls.complete(reconnectSocket.message.id, secondConnection,
     streamTerminalMessage(45, { ok: true, value: { resumed: true } })), "rebound stream call did not complete");
+
+  const combinedStorage = new MemoryStorage();
+  const combinedStore = new McpResumptionStore(combinedStorage);
+  const combinedSent = [];
+  const combinedSocket = { send(value) { combinedSent.push(JSON.parse(value)); } };
+  const combinedFingerprint = await workerToolRequestFingerprint("list_dir", { path: "." });
+  const combinedInput = {
+    resumption: combinedStore, observability, requestId: 46, clientRequestKey: "session:46",
+    requestFingerprint: combinedFingerprint, tool: "list_dir", arguments: { path: "." },
+    socket: combinedSocket, daemonInstanceId: "daemon_stream_combined_1234", connectionId: `connection_${"K".repeat(43)}`,
+    executionTimeoutMs: 8_000, settlementTimeoutMs: 10_000, transientSnapshot: { active: 0, by_tool: {} }, maximumPendingCalls: 2,
+    authorization: { account_id: "acct_test", account_version: 1, client_id: "client_test", family_id: "family_test", role: "owner" },
+    createStream: { tokenKey: "token-combined", sessionId: "session-combined" }, onSendFailure() {},
+  };
+  const combinedFirstId = `stream_${"K".repeat(43)}`;
+  const combinedFirst = await startEventDrivenStreamCall({ ...combinedInput, streamId: combinedFirstId });
+  assert(combinedFirst.kind === "initial" && combinedSent.length === 1
+    && combinedSent[0].id === `call_${"K".repeat(43)}` && Number.isFinite(combinedFirst.operationDeadlineAt)
+    && combinedFirst.alarmMutation === "set" && combinedStorage.alarm === combinedFirst.operationDeadlineAt,
+  "combined stream admission did not atomically persist, alarm-cover, and dispatch one durable call");
+  const combinedRetry = await startEventDrivenStreamCall({ ...combinedInput, streamId: `stream_${"L".repeat(43)}` });
+  assert(combinedRetry.kind === "resume" && combinedRetry.streamId === combinedFirstId && combinedSent.length === 1,
+    "combined stream retry dispatched a duplicate daemon call instead of resuming the authoritative stream");
+  const combinedConflict = await startEventDrivenStreamCall({
+    ...combinedInput, streamId: `stream_${"M".repeat(43)}`, requestFingerprint: await workerToolRequestFingerprint("list_dir", { path: ".." }),
+  });
+  assert(combinedConflict.kind === "conflict" && combinedSent.length === 1,
+    "combined stream admission lost request-id conflict protection or dispatched changed arguments");
+}
+
+async function testDurableProjectOverviewProjection() {
+  const outcome = transformDurableStreamOutcome({
+    transform: { kind: "project_overview", account_id: "acct_test", account_version: 7, role: "editor", detail: "summary" },
+  }, {
+    ok: true,
+    value: {
+      workspace: "/private/workspace", workspaceName: "workspace", gitRoot: "/private/workspace",
+      policy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      tools: ["server_info", "project_overview", "read_file", "write_file", "exec_command"],
+      daemonPolicy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      daemonTools: ["server_info", "project_overview", "read_file", "write_file", "exec_command"],
+      capabilityRouting: { task_resolution_observed: false, task_resolution_count: 0 },
+      topLevel: [{ name: "src", path: "/private/workspace/src", type: "directory", size: 1024 }],
+      topLevelTotal: 1, topLevelTruncated: false,
+    },
+  });
+  assert(outcome.ok === true
+    && outcome.value?.detail === "summary"
+    && outcome.value?.authorization?.account?.role === "editor"
+    && !("account_id" in outcome.value.authorization.account)
+    && outcome.value?.policy?.profile === "edit"
+    && outcome.value?.effectiveToolCount === 4
+    && outcome.value?.daemonToolCount === 5
+    && !("tools" in outcome.value) && !("daemonTools" in outcome.value)
+    && !("path" in outcome.value.topLevel[0]),
+  "durable project_overview replay did not decorate full authority before compact projection");
+
+  const full = transformDurableStreamOutcome({
+    transform: { kind: "project_overview", account_id: "acct_test", account_version: 7, role: "editor" },
+  }, { ok: true, value: {
+    daemonPolicy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+    daemonTools: ["server_info", "read_file", "write_file", "exec_command"], tools: ["server_info", "read_file", "write_file", "exec_command"],
+  } });
+  assert(full.ok === true && full.value?.authorization?.account?.account_id === "acct_test" && Array.isArray(full.value?.tools),
+    "durable project_overview full replay lost backward-compatible authority fields");
 }
 
 async function testLegacyStreamPreparationIdentity() {
@@ -690,17 +847,14 @@ async function testLegacyStreamPreparationIdentity() {
     admission,
     async serverInfo(args) { serverInfoArgs = args; return { name: "synthetic", detail: args.detail }; },
     async dispatchWorkspaceCall(input) {
-      dispatches += 1;
-      await resumption.calls.activate({
-        streamId: input.streamId,
-        callId: `call_${"I".repeat(43)}`,
-        daemonInstanceId: "daemon_prepare_retry_123456",
-        connectionId: `connection_${"J".repeat(43)}`,
-        clientRequestKey: input.requestKey,
-        requestFingerprint: input.requestFingerprint,
-        tool: input.name,
-        timeoutMs: 10_000,
+      const started = await resumption.beginCall({
+        streamId: input.streamId, tokenKey: input.authorized.tokenKey, sessionId: input.sessionId, requestId: input.requestId,
+        ...(input.requestKey ? { clientRequestKey: input.requestKey, requestFingerprint: input.requestFingerprint, tool: input.name } : {}),
+        callId: `call_${input.streamId.slice("stream_".length)}`, daemonInstanceId: "daemon_prepare_retry_123456",
+        connectionId: `connection_${"J".repeat(43)}`, tool: input.name, timeoutMs: 10_000,
       });
+      if (started.kind === "initial") dispatches += 1;
+      return started;
     },
   };
 
@@ -775,7 +929,7 @@ async function testLegacyStreamPreparationIdentity() {
   assert(sessionlessFirstDescriptor.kind === "initial" && sessionlessSecondDescriptor.kind === "initial"
     && sessionlessFirstDescriptor.stream_id !== sessionlessSecondDescriptor.stream_id
     && dispatches === 4,
-  "sessionless legacy streams were rejected or incorrectly given signed-session idempotency");
+  `sessionless legacy streams were rejected or incorrectly given signed-session idempotency: ${JSON.stringify({ sessionlessFirstDescriptor, sessionlessSecondDescriptor, dispatches })}`);
 
   const failedBody = structuredClone(body);
   failedBody.id = 405;
@@ -800,7 +954,7 @@ async function testLegacyStreamPreparationIdentity() {
   );
   const failedRetryDescriptor = await failedRetry.json();
   assert(failedRetryDescriptor.kind === "resume" && failedRetryDescriptor.stream_id === failedDescriptor.stream_id
-    && failedDispatches === 1, "terminal pre-activation failure was duplicated instead of reattached");
+    && failedDispatches === 2, "terminal pre-activation failure created new work instead of reattaching after a side-effect-free preflight retry");
 }
 
 async function testStreamDispatchFailureBoundaries() {
@@ -965,8 +1119,37 @@ async function testStreamDispatchFailureBoundaries() {
     && summary.worker?.sockets_live?.authenticated === 4
     && !("oauth" in summary) && !("tools" in summary) && !("observability" in summary.worker),
   "compact server_info leaked cold-path fields or lost health/authority state");
-  assert(JSON.stringify(summary).length < JSON.stringify(info).length * 0.7,
+  const summaryJson = JSON.stringify(summary);
+  assert(summaryJson.length < JSON.stringify(info).length * 0.7,
     "compact server_info did not materially reduce the diagnostic payload");
+  assert(summaryJson.length <= 1600,
+    `compact server_info exceeded its hot-path output budget: ${summaryJson.length} chars`);
+  const compactShape = (value) => Object.keys(value || {}).sort().join(",");
+  assert(compactShape(summary) === "authorization,daemon,detail,name,tool_delivery,version,worker"
+    && compactShape(summary.authorization) === "account,account_role_is_owner,effective_policy,effective_profile_is_full,effective_tool_count,execution_model"
+    && compactShape(summary.authorization.account) === "role,version"
+    && compactShape(summary.authorization.execution_model) === "owner_ambient_authority,within_effective_authority"
+    && compactShape(summary.daemon) === "connected,connected_at,count,last_seen_at,liveness_timeout_ms,readiness_timeout_ms,readiness_verified,relay_transport,tool_count"
+    && compactShape(summary.worker) === "pending_calls,sockets_live"
+    && compactShape(summary.worker.pending_calls) === "active,active_ordinary,active_reserved,detached,durable_streams,maximum,oldest_ms,ordinary_capacity,reserved_capacity"
+    && compactShape(summary.worker.sockets_live) === "authenticated,candidates,probing,ready"
+    && compactShape(summary.tool_delivery) === "effective_account_tool_count,host_exposed_tools_known_to_server,host_may_expose_subset,remote_foreground_execution_max_ms,worker_settlement_overhead_ms",
+  "compact server_info semantic shape drifted; hot-path field additions or removals require explicit review");
+  const scaledToolNames = Array.from({ length: 500 }, (_value, index) => `synthetic_tool_${index}`);
+  const scaledSummary = buildServerInfoResult({
+    ...serverInfoInput,
+    authorization: { ...serverInfoInput.authorization, effective_tool_count: scaledToolNames.length },
+    effectiveTools: scaledToolNames,
+    advertisedTools: [...scaledToolNames, ...Array.from({ length: 100 }, (_value, index) => `advertised_only_${index}`)],
+    pendingSnapshot: {
+      ...serverInfoInput.pendingSnapshot,
+      by_tool: Object.fromEntries(scaledToolNames.map((name, index) => [name, index + 1])),
+    },
+  }, "summary");
+  const scaledSummaryJson = JSON.stringify(scaledSummary);
+  assert(scaledSummaryJson.length <= summaryJson.length + 32
+    && !scaledSummaryJson.includes("synthetic_tool_") && !scaledSummaryJson.includes("advertised_only_"),
+  "compact server_info grew with exact tool membership or per-tool pending cardinality");
   const sparseServerInfo = buildServerInfoResult({
     ...serverInfoInput,
     authorization: { account: null, effective_policy: null, execution_model: null },
@@ -2257,6 +2440,8 @@ function testWorkerObservability() {
   metrics.streamTerminalStorageResponse();
   metrics.streamTerminalStorageRaceDelivery(true);
   metrics.streamTerminalStorageRaceDelivery(false);
+  metrics.streamStorageRead("get", 1);
+  metrics.streamStorageRead("list", 4);
   metrics.streamStorageMutation("put", 3);
   metrics.streamStorageMutation("delete");
   metrics.streamStorageMutation("legacy_index_migration");
@@ -2288,7 +2473,11 @@ function testWorkerObservability() {
     && snapshot.stream_transport.legacy_internal_storage_race_sends === 1
     && snapshot.stream_transport.legacy_internal_storage_race_send_failures === 1,
   "Worker stream metrics conflate publication, storage response, or internal delivery races");
-  assert(snapshot.durable_budget.stream_rows_written_estimate === 5
+  assert(snapshot.durable_budget.stream_rows_read_estimate === 5
+    && snapshot.durable_budget.stream_gets === 1
+    && snapshot.durable_budget.stream_lists === 1
+    && snapshot.durable_budget.stream_list_rows === 4
+    && snapshot.durable_budget.stream_rows_written_estimate === 5
     && snapshot.durable_budget.stream_puts === 3
     && snapshot.durable_budget.stream_deletes === 1
     && snapshot.durable_budget.legacy_index_migrations === 1
@@ -2317,6 +2506,19 @@ function testWorkerObservability() {
   assert(!lines[0].includes("abcdefghijklmnopqrstuvwxyz") && !lines[0].includes("operator@example.com") && !lines[0].includes("/Users/example"), "Worker structured event leaked a sensitive value embedded in a non-sensitive field");
   assert(event.detail.includes("Bearer <redacted>") && event.detail.includes("<redacted-email>") && event.detail.includes("<home>"), "Worker structured event did not retain redaction markers");
   assert(event.level === "warn" && event.component === "worker" && event.event === "security.test" && event.timestamp !== "1970-01-01T00:00:00.000Z", "Worker event fields overrode authoritative log metadata");
+
+  const prototypeLines = [];
+  console.warn = (line) => prototypeLines.push(String(line));
+  try {
+    metrics.event("warn", "prototype.fields", JSON.parse('{"__proto__":"ordinary-proto","constructor":"ordinary-constructor","access_token":"must-not-leak"}'));
+  } finally {
+    console.warn = originalWarn;
+  }
+  const prototypeEvent = JSON.parse(prototypeLines[0]);
+  assert(Object.hasOwn(prototypeEvent, "__proto__") && prototypeEvent.__proto__ === "ordinary-proto"
+    && prototypeEvent.constructor === "ordinary-constructor" && prototypeEvent.access_token === "<redacted>"
+    && !prototypeLines[0].includes("must-not-leak"),
+  "Worker structured event did not preserve prototype-shaped keys as sanitized ordinary data");
 }
 
 function tamperSessionId(value) {
@@ -2418,6 +2620,14 @@ function testThrottledEdgeLogger() {
   assert(lines[0].value.detail === "first_line" && lines[0].value.component === "worker-edge"
     && lines[0].value.access_token === "<redacted>" && !JSON.stringify(lines[0]).includes("must-not-leak"),
   "edge log did not bound controls, redact sensitive fields, or preserve authoritative metadata");
+  now += 100;
+  assert(log("warn", "prototype.fields", JSON.parse('{"__proto__":"ordinary-proto","constructor":"ordinary-constructor","private_key":"must-not-leak"}')) === true,
+    "prototype-shaped edge log was unexpectedly suppressed");
+  const prototype = lines.at(-1).value;
+  assert(Object.hasOwn(prototype, "__proto__") && prototype.__proto__ === "ordinary-proto"
+    && prototype.constructor === "ordinary-constructor" && prototype.private_key === "<redacted>"
+    && !JSON.stringify(prototype).includes("must-not-leak"),
+  "edge logger did not preserve prototype-shaped keys as sanitized ordinary data");
 }
 
 async function testWorkerStaticRoutes() {

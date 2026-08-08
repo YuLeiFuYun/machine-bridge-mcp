@@ -100,7 +100,7 @@ Return live authorization and daemon status. Use detail=summary for routine vers
 
 **Project overview**
 
-Summarize the connected workspace, repository root, top-level entries, and project-facing runtime context. Use this for repository inventory, not as the primary live relay-health check. Remote responses report authenticated-account effective policy/tools separately from the daemon capability ceiling.
+Summarize the connected workspace, repository root, top-level entries, and project-facing runtime context. Use detail=summary for a compact inventory/readiness projection; use full for exact tool membership, account authority detail, and complete top-level metadata.
 
 | Contract field | Value |
 |---|---|
@@ -115,6 +115,17 @@ Summarize the connected workspace, repository root, top-level entries, and proje
 ```json
 {
   "type": "object",
+  "properties": {
+    "detail": {
+      "type": "string",
+      "enum": [
+        "summary",
+        "full"
+      ],
+      "default": "full",
+      "description": "Use summary for compact workspace/inventory and authority counts; use full for exact tools, account identity, routing detail, and per-entry paths/sizes."
+    }
+  },
   "additionalProperties": false
 }
 ```

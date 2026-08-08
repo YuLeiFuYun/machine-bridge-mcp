@@ -84,7 +84,7 @@ function lockOwner(purpose) {
 
 function readLockOwner(file, purpose) {
   let text;
-  try { text = readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock").toString("utf8"); }
+  try { text = readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock", { verifyPathIdentity: true, rejectMultipleLinks: true }).toString("utf8"); }
   catch (error) { if (error?.code === "ENOENT") return { kind: "missing" }; throw error; }
   let parsed;
   try { parsed = JSON.parse(text); } catch { return { kind: "invalid" }; }

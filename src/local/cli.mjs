@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
@@ -41,7 +40,6 @@ import {
   expandHome,
   loadGlobalConfig,
   loadState,
-  packageRoot,
   readDaemonLockOwner,
   redactState,
   removeStateRoot,
@@ -52,6 +50,7 @@ import {
   selectedWorkspace,
   setSelectedWorkspace,
 } from "./state.mjs";
+import { packageName, packageVersion } from "./package-identity.mjs";
 
 const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm });
 const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
@@ -755,7 +754,7 @@ async function deleteKnownWorkers(stateRoot) {
   for (const name of names) {
     const result = await runWrangler(["delete", name, "--force"], { capture: true, allowFailure: true, stateRoot });
     const detail = (result.stderr || result.stdout || "unknown error").trim();
-    if (result.code === 0 || /not found|does not exist|could not find/i.test(detail)) {
+    if (result.code === 0) {
       console.log(`Deleted Worker: ${name}`);
     } else {
       failures.push({ name, detail: sanitizeLines(detail) || "unknown error" });
@@ -905,13 +904,11 @@ Uninstall options:
 }
 
 function currentPackageVersion() {
-  const pkg = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
-  return String(pkg.version);
+  return packageVersion;
 }
 
 function version() {
-  const pkg = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
-  console.log(`${pkg.name} ${pkg.version}`);
+  console.log(`${packageName} ${packageVersion}`);
 }
 
 function sleep(ms) {

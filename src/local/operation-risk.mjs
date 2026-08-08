@@ -182,7 +182,7 @@ function pathReadCategory(scopes) {
 
 function redactTarget(value) {
   if (!value || typeof value !== "object") return String(value || "");
-  const out = {};
+  const out = Object.create(null);
   for (const [key, item] of Object.entries(value)) {
     if (["content", "command", "stdin", "value", "old_text", "new_text", "patch"].includes(key)) {
       out[key] = `<sha256:${createHash("sha256").update(String(item || "")).digest("hex")}>`;

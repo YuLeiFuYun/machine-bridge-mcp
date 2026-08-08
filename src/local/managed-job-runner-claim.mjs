@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { ownerOnlyFile } from "./state.mjs";
+import { ownerOnlyFile } from "./secure-file.mjs";
 import { inspectPathIfPresentSync } from "./secure-file.mjs";
 import { readBoundedFile } from "./managed-job-storage.mjs";
 

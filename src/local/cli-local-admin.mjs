@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { createLogger } from "./log.mjs";
 import { inspectResourceFile, loadManagedJobPlan, ManagedJobManager, publicResourceRegistry, validateResourceName } from "./managed-jobs.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import {
-  acquireStartupLockWithWait, expandHome, loadState, ownerOnlyFile, packageRoot, saveState,
+  acquireStartupLockWithWait, expandHome, loadState, saveState,
 } from "./state.mjs";
+import { packageRoot } from "./package-identity.mjs";
+import { readBrowserPairingPort } from "./browser-pairing-store.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
 import { readLoopbackJson } from "./loopback-health.mjs";
 
@@ -225,31 +225,11 @@ async function browserCommandContext(args, chooseWorkspace) {
   const extensionPath = resolve(packageRoot, "browser-extension");
   const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
   const state = loadState(workspace, { stateDir: args.stateDir });
-  const pairingFile = join(state.paths.stateRoot, "browser-bridge.json");
-  if (!existsSync(pairingFile)) {
-    throw new Error("browser bridge is not initialized; start machine-mcp once, then run this command again");
-  }
-  ownerOnlyFile(pairingFile);
-  const pairing = readBrowserPairingState(pairingFile);
-  const pairingUrl = `http://127.0.0.1:${pairing.port}/pair`;
-  const health = await readBrowserHealth(`http://127.0.0.1:${pairing.port}/healthz`);
+  const port = readBrowserPairingPort(state.paths.stateRoot);
+  if (port === null) throw new Error("browser bridge is not initialized; start machine-mcp once, then run this command again");
+  const pairingUrl = `http://127.0.0.1:${port}/pair`;
+  const health = await readBrowserHealth(`http://127.0.0.1:${port}/healthz`);
   return { extensionPath, pairingUrl, result: browserStatusResult(health, extensionPath, pairingUrl) };
-}
-
-function readBrowserPairingState(pairingFile) {
-  let pairing;
-  try {
-    pairing = JSON.parse(readBoundedRegularFileSync(pairingFile, 64 * 1024).toString("utf8"));
-  } catch {
-    throw new Error("browser bridge state is invalid; restart machine-mcp to repair it");
-  }
-  const port = Number(pairing.port);
-  const extensionToken = String(pairing.extensionToken || pairing.token || "");
-  if (!/^[A-Za-z0-9_-]{32,100}$/.test(extensionToken) || (pairing.runtimeToken !== undefined && !/^[A-Za-z0-9_-]{32,100}$/.test(String(pairing.runtimeToken)))) {
-    throw new Error("browser bridge state contains invalid bounded tokens");
-  }
-  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("browser bridge state contains an invalid port");
-  return { port };
 }
 
 function readBrowserHealth(healthUrl) {

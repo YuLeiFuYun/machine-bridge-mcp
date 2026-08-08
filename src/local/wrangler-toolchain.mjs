@@ -18,7 +18,8 @@ import {
   writeWranglerToolchainMarker,
 } from "./wrangler-toolchain-verification.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { defaultStateRoot, packageRoot as defaultPackageRoot } from "./state.mjs";
+import { defaultStateRoot } from "./state.mjs";
+import { packageRoot as defaultPackageRoot } from "./package-identity.mjs";
 
 const TOOLCHAIN_DIRECTORY = "toolchains";
 const TOOLCHAIN_LOCK = "wrangler-toolchain.lock";

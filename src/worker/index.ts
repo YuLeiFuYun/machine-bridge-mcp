@@ -21,7 +21,7 @@ import { handleMcpResumptionRequest } from "./mcp-resumption-http.ts";
 import { handleMcpStreamSubscribeRequest, mcpStreamProxyMode, mcpStreamProxyRetryId } from "./mcp-stream-proxy.ts";
 import { McpResumptionStore } from "./mcp-resumption.ts";
 import { McpStreamChannel } from "./mcp-stream-channel.ts";
-import { startEventDrivenStreamCall } from "./mcp-stream-dispatch.ts";
+import { startEventDrivenStreamCall, type StartStreamCallResult } from "./mcp-stream-dispatch.ts";
 import { buildServerInfoResult, serverInfoDetail } from "./server-info.ts";
 import { DurableStreamCallCoordinator } from "./durable-stream-calls.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
@@ -51,6 +51,7 @@ import {
 import {
   MCP_LEGACY_PROTOCOL_VERSION, MCP_MODERN_PROTOCOL_VERSION,
 } from "../shared/mcp-protocol.mjs";
+import { projectOverviewDetail, projectProjectOverview } from "../shared/project-overview-projection.mjs";
 import {
   asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError,
   validateProtocolVersionHeader, type JsonRpcRequest,
@@ -59,7 +60,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.50";
+const SERVER_VERSION = "3.0.0-beta.54";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
@@ -84,7 +85,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     this.daemonRegistry = new DaemonSocketRegistry(ctx);
     this.streamChannel = new McpStreamChannel(ctx, this.observability);
     this.resumption = new McpResumptionStore(
-      meteredMcpStreamStorage(ctx.storage, (mutation, rows) => this.observability.streamStorageMutation(mutation, rows)), {},
+      meteredMcpStreamStorage(
+        ctx.storage,
+        (mutation, rows) => this.observability.streamStorageMutation(mutation, rows),
+        (operation, rows) => this.observability.streamStorageRead(operation, rows),
+      ), {},
       (streamId, message) => this.streamChannel.publish(streamId, message), () => {},
     );
     this.durableCalls = new DurableStreamCallCoordinator(
@@ -489,7 +494,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     );
   }
 
-  private async dispatchLegacyWorkspaceStreamCall(input: LegacyWorkspaceStreamCallInput): Promise<void> {
+  private async dispatchLegacyWorkspaceStreamCall(input: LegacyWorkspaceStreamCallInput): Promise<StartStreamCallResult> {
     const { name, args, authorized } = input;
     if (!workspaceTools.some((tool) => tool.name === name)) throw new Error("unknown tool");
     if (!accountRoleAllowsTool(authorized.role, name)) {
@@ -508,39 +513,30 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
     }
     const timeoutBudget = daemonToolTimeoutBudget(name, args);
-    await startEventDrivenStreamCall({
-      resumption: this.resumption,
-      observability: this.observability,
-      streamId: input.streamId,
-      requestId: input.requestId,
-      clientRequestKey: input.requestKey,
-      requestFingerprint: input.requestKey ? input.requestFingerprint : undefined,
-      tool: name,
-      arguments: args,
-      socket,
-      daemonInstanceId,
-      connectionId,
-      executionTimeoutMs: timeoutBudget.executionTimeoutMs,
-      settlementTimeoutMs: timeoutBudget.settlementTimeoutMs,
-      transientSnapshot: this.pending.snapshot(),
-      maximumPendingCalls: MAX_PENDING_CALLS,
-      reservedPendingCalls: RESERVED_CONTROL_PENDING_CALLS,
+    const overviewDetail = name === "project_overview" ? projectOverviewDetail(args) : "full";
+    const daemonArgs = name === "project_overview" ? {} : args;
+    const started = await startEventDrivenStreamCall({
+      resumption: this.resumption, observability: this.observability, streamId: input.streamId, requestId: input.requestId,
+      clientRequestKey: input.requestKey, requestFingerprint: input.requestKey ? input.requestFingerprint : undefined,
+      tool: name, arguments: daemonArgs, socket, daemonInstanceId, connectionId,
+      executionTimeoutMs: timeoutBudget.executionTimeoutMs, settlementTimeoutMs: timeoutBudget.settlementTimeoutMs,
+      transientSnapshot: this.pending.snapshot(), maximumPendingCalls: MAX_PENDING_CALLS, reservedPendingCalls: RESERVED_CONTROL_PENDING_CALLS,
       authorization: {
-        account_id: authorized.accountId,
-        account_version: authorized.accountVersion,
-        client_id: authorized.clientId,
-        family_id: authorized.familyId,
-        role: authorized.role,
+        account_id: authorized.accountId, account_version: authorized.accountVersion, client_id: authorized.clientId,
+        family_id: authorized.familyId, role: authorized.role,
       },
       transform: name === "project_overview" ? {
-        kind: "project_overview",
-        account_id: authorized.accountId,
-        account_version: authorized.accountVersion,
-        role: authorized.role,
+        kind: "project_overview", account_id: authorized.accountId, account_version: authorized.accountVersion, role: authorized.role,
+        ...(overviewDetail === "summary" ? { detail: "summary" as const } : {}),
       } : undefined,
+      createStream: { tokenKey: authorized.tokenKey, sessionId: input.sessionId },
       onSendFailure: () => this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed"),
     });
-    await this.scheduleRuntimeAlarm();
+    if (started.kind === "initial") {
+      if (started.alarmMutation) this.observability.runtimeAlarmMutation(started.alarmMutation);
+      await this.scheduleRuntimeAlarm();
+    }
+    return started;
   }
 
   private async serverInfoResult(base: string, authorized: AuthorizedToken, args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -579,9 +575,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (name === "server_info") return this.serverInfoResult(base, authorized, args);
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
-      const result = await this.callDaemonTool(name, args, authorized, requestKey, signal);
-      return name === "project_overview" ? decorateProjectOverview(result, { accountId: authorized.accountId,
-        accountVersion: authorized.accountVersion, role: authorized.role }) : result;
+      const overviewDetail = name === "project_overview" ? projectOverviewDetail(args) : "full";
+      const daemonArgs = name === "project_overview" ? {} : args;
+      const result = await this.callDaemonTool(name, daemonArgs, authorized, requestKey, signal);
+      return name === "project_overview" ? projectProjectOverview(decorateProjectOverview(result, { accountId: authorized.accountId,
+        accountVersion: authorized.accountVersion, role: authorized.role }), overviewDetail) : result;
     }
     throw new Error("unknown tool");
   }
@@ -668,6 +666,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       await this.scheduleRuntimeAlarm();
       return;
     }
+    if (requestKey.startsWith("modern:stream_")) return;
     if (await this.durableCalls.cancel(requestKey)) await this.scheduleRuntimeAlarm();
   }
   private async acceptDaemonWebSocket(request: Request): Promise<Response> {
@@ -785,11 +784,16 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async expireOverdueCalls(): Promise<void> {
     await this.pending.expireDue();
-    await this.durableCalls.expireDue();
+    let alarm: number | null;
+    try { alarm = await this.ctx.storage.getAlarm(); } catch {
+      await this.durableCalls.expireDue();
+      return;
+    }
+    if (alarm === null || alarm <= Date.now()) await this.durableCalls.expireDue();
   }
 
   private async scheduleRuntimeAlarm(): Promise<void> {
-    await scheduleRuntimeAlarm(this.runtimeAlarmContext());
+    await scheduleRuntimeAlarm(this.runtimeAlarmContext(), Date.now());
   }
 
   private runtimeAlarmContext() {

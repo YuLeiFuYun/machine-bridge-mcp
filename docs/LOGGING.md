@@ -26,6 +26,7 @@ The CLI accepts:
 
 Foreground mode defaults to `info` and human-readable text. Platform autostart services use `warn` with newline-delimited JSON. Foreground operators can select JSON explicitly with `--log-format json`.
 In JSON mode, every logger entry point—including direct level methods and the persistent daemon-ready transition—emits exactly one timestamped JSON object per line. No operational method may silently fall back to the human formatter.
+Structured-field sanitizers use null-prototype intermediate maps, so prototype-shaped input keys such as `__proto__` and `constructor` remain ordinary bounded data instead of mutating the sanitizer object model. Sensitive key/value redaction is applied before serialization exactly as for other fields.
 
 Human mode treats the message as the primary interface: it uses a natural-language explanation and includes only bounded diagnostic fields that add meaning. It does not repeat the machine event key. JSON mode retains the stable `event` field for ingestion and correlation. Event identifiers such as `relay.tool_result.discarded` are implementation contracts for structured logs, not text that should be shown as the warning itself.
 
@@ -144,7 +145,7 @@ logs/daemon.err.log
 
 Existing files are opened without following symbolic links where supported and tail-trimmed on UTF-8/line boundaries before startup. The active background daemon repeats the same secure trim every 15 minutes, so a long-lived process remains bounded even under repeated warning-level failures. Maintenance errors expose only a coarse error class. Background services use `warn`, so ordinary tool traffic and brief relay interruptions do not cause sustained growth.
 
-The log format has an explicit schema marker. If the marker differs from the current format, the daemon clears the active files before startup and writes the current marker. Runtime code recognizes only `daemon.out.log` and `daemon.err.log`; it does not parse or archive other log formats.
+The log format has an explicit schema marker. Because a schema mismatch authorizes truncation, the marker is read as destructive control evidence with no-follow path/descriptor identity verification and multiple-hard-link rejection; an unreadable, ambiguous, or multiply-linked marker fails before either active log is changed. If a securely read marker differs from the current format, the daemon clears the active files before startup and writes the current marker. Runtime code recognizes only `daemon.out.log` and `daemon.err.log`; it does not parse or archive other log formats.
 
 Each managed job has owner-only runner diagnostic logs. Child-step output is retained only in bounded, redacted job results according to `capture_output`; it is not copied into daemon or runner operational logs.
 

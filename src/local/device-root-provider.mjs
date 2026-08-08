@@ -3,7 +3,6 @@ import {
   createDeviceSessionDraft,
   createDeviceSessionIdentity,
   finalizeDeviceSessionIdentity,
-  publicDeviceJwkJson,
   validateDeviceIdentity,
   validatePublicDeviceRoot,
 } from "./device-identity.mjs";
@@ -17,11 +16,6 @@ import {
 export function validateDeviceRootIdentity(identity) {
   if (isMacosSecureDeviceRoot(identity)) return identity;
   return validateDeviceIdentity(identity);
-}
-
-export function publicDeviceRootJwkJson(identity) {
-  validateDeviceRootIdentity(identity);
-  return publicDeviceJwkJson(identity);
 }
 
 export async function ensurePreferredDeviceRoot({

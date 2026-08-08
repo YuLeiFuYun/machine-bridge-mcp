@@ -4,11 +4,67 @@ import { OAuthController } from "../src/worker/oauth-controller.ts";
 import { authorizationPage } from "../src/worker/oauth-authorization-page.ts";
 import { createAccount, emptyOAuthRefreshStore, emptyOAuthStore, sha256Hex } from "../src/worker/oauth-state.ts";
 import { loadOAuthRefreshStore, recordConsumedRefreshToken } from "../src/worker/oauth-refresh-families.ts";
+import { isCurrentOAuthStore } from "../src/worker/oauth-store-validation.ts";
 
 const SERVER_NAME = "machine-bridge-mcp";
 const BASE = "https://bridge.example.test";
 const REDIRECT = "https://client.example.test/callback";
 const PASSWORD = `test_password_${"A".repeat(43)}`;
+
+async function testOAuthStoreDeepValidation() {
+  const now = Math.floor(Date.now() / 1000);
+  const account = await createAccount({ name: "validator", displayName: "Validator", role: "editor", password: PASSWORD, now });
+  const clientId = `mcp_client_${"v".repeat(43)}`;
+  const codeKey = `mcp_code_${"q".repeat(43)}`;
+  const tokenKey = `sha256:${"a".repeat(64)}`;
+  const failureKey = `hmac-sha256:${"b".repeat(64)}`;
+  const valid = emptyOAuthStore();
+  valid.accounts[account.account_id] = account;
+  valid.clients[clientId] = {
+    client_id: clientId, client_name: "validator-client", redirect_uris: [REDIRECT],
+    created_at: now, last_used_at: now, has_been_authorized: true,
+    registration_identity: `hmac-sha256:${"1".repeat(64)}`,
+    trusted_account_id: account.account_id, trusted_account_version: account.version, trusted_role: "editor",
+  };
+  valid.codes[codeKey] = {
+    client_id: clientId, account_id: account.account_id, account_version: account.version, role: "editor",
+    redirect_uri: REDIRECT, code_challenge: "C".repeat(43), scope: SERVER_NAME, resource: `${BASE}/mcp`, expires_at: now + 300,
+  };
+  valid.tokens[tokenKey] = {
+    client_id: clientId, account_id: account.account_id, account_version: account.version, role: "editor",
+    scope: SERVER_NAME, resource: `${BASE}/mcp`, version: "token-version", expires_at: now + 300,
+    family_id: `mcp_family_${"f".repeat(43)}`, dpop_jkt: "j".repeat(43),
+  };
+  valid.auth_failures[failureKey] = { count: 1, window_started: now, blocked_until: 0, last_attempt: now };
+  assert(isCurrentOAuthStore(valid), "production-shaped nonempty OAuth store failed deep validation");
+
+  const badClientKey = structuredClone(valid);
+  badClientKey.clients.invalid = badClientKey.clients[clientId];
+  delete badClientKey.clients[clientId];
+  assert(!isCurrentOAuthStore(badClientKey), "invalid OAuth client map key passed deep validation");
+
+  const orphanTrustedAt = structuredClone(valid);
+  const orphanClient = orphanTrustedAt.clients[clientId];
+  delete orphanClient.trusted_account_id; delete orphanClient.trusted_account_version; delete orphanClient.trusted_role;
+  orphanClient.trusted_at = now;
+  assert(!isCurrentOAuthStore(orphanTrustedAt), "trusted_at without a trusted authority tuple passed deep validation");
+
+  const credentialRedirect = structuredClone(valid);
+  const credentialUri = new URL(REDIRECT);
+  credentialUri.username = "synthetic-user";
+  credentialUri.password = "synthetic-password";
+  credentialRedirect.clients[clientId].redirect_uris = [credentialUri.toString()];
+  assert(!isCurrentOAuthStore(credentialRedirect), "credential-bearing OAuth redirect URI passed deep validation");
+
+  const badChallenge = structuredClone(valid);
+  badChallenge.codes[codeKey].code_challenge = "short";
+  assert(!isCurrentOAuthStore(badChallenge), "invalid PKCE code challenge passed deep validation");
+
+  const reversedFailureWindow = structuredClone(valid);
+  reversedFailureWindow.auth_failures[failureKey].last_attempt = now - 1;
+  reversedFailureWindow.auth_failures[failureKey].window_started = now;
+  assert(!isCurrentOAuthStore(reversedFailureWindow), "reversed OAuth failure window passed deep validation");
+}
 
 async function testStoreAndRegistration() {
   const storage = new MemoryStorage();
@@ -160,15 +216,16 @@ async function testMalformedRoleRepair() {
   }
   const now = Math.floor(Date.now() / 1000);
   const account = await createAccount({ name: "repair.target", role: "reviewer", password: PASSWORD, now });
-  const tokenKey = "sha256:malformed-role-token";
-  const codeKey = "malformed-role-code";
+  const tokenKey = `sha256:${"a".repeat(64)}`;
+  const codeKey = `mcp_code_${"c".repeat(43)}`;
+  const clientId = `mcp_client_${"d".repeat(43)}`;
   account.role = "constructor";
   const storage = new MemoryStorage({ oauth: {
     schema_version: 1,
     accounts: { [account.account_id]: account },
     clients: {},
-    codes: { [codeKey]: { client_id: "client", account_id: account.account_id, account_version: account.version, role: "constructor", redirect_uri: REDIRECT, code_challenge: "C".repeat(43), scope: SERVER_NAME, resource: `${BASE}/mcp`, expires_at: now + 300 } },
-    tokens: { [tokenKey]: { client_id: "client", account_id: account.account_id, account_version: account.version, role: "constructor", scope: SERVER_NAME, resource: `${BASE}/mcp`, version: "token-version", expires_at: now + 300 } },
+    codes: { [codeKey]: { client_id: clientId, account_id: account.account_id, account_version: account.version, role: "constructor", redirect_uri: REDIRECT, code_challenge: "C".repeat(43), scope: SERVER_NAME, resource: `${BASE}/mcp`, expires_at: now + 300 } },
+    tokens: { [tokenKey]: { client_id: clientId, account_id: account.account_id, account_version: account.version, role: "constructor", scope: SERVER_NAME, resource: `${BASE}/mcp`, version: "token-version", expires_at: now + 300 } },
     auth_failures: {},
   } });
   const repaired = await createController(storage).oauthStore();
@@ -250,6 +307,18 @@ async function testInvalidStateFailsClosed() {
   const storage = new MemoryStorage({ oauth: { schema_version: 0 } });
   const controller = createController(storage);
   await expectReject(() => controller.oauthStore(), "oauth_state_schema_mismatch");
+
+  const malformedClient = emptyOAuthStore();
+  const clientId = `mcp_client_${"m".repeat(43)}`;
+  malformedClient.clients[clientId] = { client_id: clientId };
+  await expectReject(() => createController(new MemoryStorage({ oauth: malformedClient })).oauthStore(), "oauth_state_schema_mismatch");
+
+  const malformedToken = emptyOAuthStore();
+  malformedToken.tokens[`sha256:${"b".repeat(64)}`] = {
+    client_id: clientId, account_id: `acct_${"a".repeat(43)}`, account_version: 1, role: "owner",
+    scope: SERVER_NAME, resource: `${BASE}/mcp`, version: "token-version", expires_at: "not-a-timestamp",
+  };
+  await expectReject(() => createController(new MemoryStorage({ oauth: malformedToken })).oauthStore(), "oauth_state_schema_mismatch");
   const unconfigured = new OAuthController({ storage }, {
     DAEMON_DEVICE_PUBLIC_KEY: "",
     OAUTH_TOKEN_VERSION: "",
@@ -325,6 +394,7 @@ function assert(condition, message) {
 }
 
 await testStoreAndRegistration();
+await testOAuthStoreDeepValidation();
 await testAuthorizationPageRendering();
 await testAuthorizationAndTokens();
 await testMalformedRoleRepair();

@@ -694,8 +694,11 @@ try {
     && compactFirstStatus.worker?.sockets_live?.ready === 1 && !("observability" in compactFirstStatus.worker)
     && !("oauth" in compactFirstStatus) && !("tools" in compactFirstStatus),
   "remote compact server_info lost authority/readiness state or retained cold-path fields");
-  assert(JSON.stringify(compactFirstStatus).length < JSON.stringify(firstStatus).length * 0.6,
+  const compactFirstStatusJson = JSON.stringify(compactFirstStatus);
+  assert(compactFirstStatusJson.length < JSON.stringify(firstStatus).length * 0.6,
     "remote compact server_info did not materially reduce the payload");
+  assert(compactFirstStatusJson.length <= 2400,
+    `remote compact server_info exceeded its hot-path output budget: ${compactFirstStatusJson.length} chars`);
   const invalidProbeCandidate = await connectDaemon(base);
   daemonSockets.push(invalidProbeCandidate);
   const invalidProbe = await beginDaemonHello(invalidProbeCandidate, ["list_files"]);
@@ -1577,6 +1580,75 @@ try {
   assert(editorOverview?.tools?.includes("write_file") && !editorOverview?.tools?.includes("exec_command") && !editorOverview?.tools?.includes("browser_action"), "remote project_overview did not expose editor-effective tools");
   assert(editorOverview?.daemonTools?.includes("exec_command") && editorOverview?.daemonTools?.includes("browser_action"), "remote project_overview did not preserve daemon-advertised tools separately");
   assert(editorOverview?.policyScope === "authenticated_account_effective_authority", "remote project_overview policy scope remained ambiguous");
+
+  const compactOverviewPromise = toolCallRequest(base, editorToken, "", 2761, "project_overview", { detail: "summary" });
+  const compactOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
+  assert(compactOverviewRelay.authorization?.role === "editor"
+    && compactOverviewRelay.arguments && Object.keys(compactOverviewRelay.arguments).length === 0,
+  "remote compact project_overview failed to use the backward-compatible default/full daemon request");
+  fullDaemon.send(JSON.stringify({
+    type: "tool_result", id: compactOverviewRelay.id, ok: true,
+    result: {
+      workspace: "/synthetic/workspace", workspaceName: "workspace", gitRoot: "/synthetic/workspace",
+      policy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      tools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      daemonPolicy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      daemonTools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      capabilityRouting: {
+        bootstrap_observed: true, bootstrap_count: 8, task_resolution_observed: true, task_resolution_count: 3,
+        last_task_resolution: {
+          observed_at: "2026-08-08T00:00:00.000Z", task_fingerprint: "private-fingerprint", refresh_fingerprint: "private-refresh",
+          selected_skill: "review", matched_skills: 2, matched_commands: 3, matched_applications: 4,
+          recommended_tools: ["read_file", "git_status"], primary_route: "files", routing_ambiguity: "low", routing_score_gap: 4,
+        },
+        enforcement_boundary: "long cold-path explanation",
+      },
+      topLevel: [
+        { name: "src", path: "/synthetic/workspace/src", type: "directory", size: 4096 },
+        { name: "README.md", path: "/synthetic/workspace/README.md", type: "file", size: 1234 },
+      ],
+      topLevelTotal: 2, topLevelTruncated: false,
+    },
+  }));
+  const compactOverview = (await compactOverviewPromise).body.result?.structuredContent;
+  const compactOverviewJson = JSON.stringify(compactOverview);
+  assert(compactOverview?.detail === "summary"
+    && compactOverview?.policy?.profile === "edit"
+    && compactOverview?.effectiveToolCount === 5
+    && compactOverview?.daemonToolCount === 7
+    && compactOverview?.authorization?.account?.role === "editor"
+    && !("account_id" in compactOverview.authorization.account)
+    && compactOverview?.authorization?.effective_tool_count === 5
+    && compactOverview?.topLevel?.[0]?.name === "src"
+    && !("path" in compactOverview.topLevel[0]) && !("size" in compactOverview.topLevel[0])
+    && compactOverview?.capabilityRouting?.last_task_resolution?.primary_route === "files"
+    && !("task_fingerprint" in compactOverview.capabilityRouting.last_task_resolution)
+    && !("refresh_fingerprint" in compactOverview.capabilityRouting.last_task_resolution)
+    && !("tools" in compactOverview) && !("daemonTools" in compactOverview),
+  "remote compact project_overview leaked cold-path identity/tool/path fields or lost effective authority");
+  assert(compactOverviewJson.length <= 2600,
+    `remote compact project_overview exceeded its hot-path output budget: ${compactOverviewJson.length} chars`);
+
+  const explicitFullOverviewPromise = toolCallRequest(base, editorToken, "", 2762, "project_overview", { detail: "full" });
+  const explicitFullOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
+  assert(explicitFullOverviewRelay.arguments && Object.keys(explicitFullOverviewRelay.arguments).length === 0,
+    "explicit full project_overview was not normalized for an older default-full daemon");
+  fullDaemon.send(JSON.stringify({
+    type: "tool_result", id: explicitFullOverviewRelay.id, ok: true,
+    result: {
+      workspace: "/synthetic/workspace", workspaceName: "workspace", gitRoot: "",
+      policy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      tools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      daemonPolicy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      daemonTools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      topLevel: [],
+    },
+  }));
+  const explicitFullOverview = (await explicitFullOverviewPromise).body.result?.structuredContent;
+  assert(Array.isArray(explicitFullOverview?.tools)
+    && explicitFullOverview?.authorization?.account?.account_id === editorAccount.body.account.account_id
+    && !("detail" in explicitFullOverview),
+  "explicit full project_overview lost backward-compatible full authority fields");
 
   const duplicateHelloDaemon = await connectDaemon(base);
   daemonSockets.push(duplicateHelloDaemon);

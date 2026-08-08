@@ -119,6 +119,19 @@ export async function runtimeSelfTest() {
     if (!editorOverview.daemonTools?.includes("exec_command") || !editorOverview.daemonTools?.includes("browser_action")) {
       throw new Error("project_overview omitted daemon-advertised tools from its explicit ceiling fields");
     }
+    const compactEditorOverview = await fullAuthority.executeTool("project_overview", { detail: "summary" }, relayContext(editorAuthorization));
+    const compactEditorOverviewJson = JSON.stringify(compactEditorOverview);
+    if (compactEditorOverview.detail !== "summary"
+        || compactEditorOverview.policy?.profile !== editorOverview.policy?.profile
+        || compactEditorOverview.effectiveToolCount !== editorOverview.tools.length
+        || compactEditorOverview.daemonToolCount !== editorOverview.daemonTools.length
+        || "tools" in compactEditorOverview || "daemonTools" in compactEditorOverview
+        || compactEditorOverview.topLevel?.some((entry) => "path" in entry || "size" in entry)) {
+      throw new Error("compact local project_overview leaked cold-path arrays/paths or lost authority counts");
+    }
+    if (compactEditorOverviewJson.length > 5000) {
+      throw new Error(`compact local project_overview exceeded its hot-path output budget: ${compactEditorOverviewJson.length} chars`);
+    }
     const reviewerGitStatus = await fullAuthority.executeTool("git_status", {}, relayContext(reviewerAuthorization));
     if (!Number.isInteger(reviewerGitStatus.code)) {
       throw new Error("reviewer Git metadata did not use the fixed internal process boundary");
@@ -397,8 +410,12 @@ export async function runtimeSelfTest() {
       || "tools" in compactServerInfo || "observability" in compactServerInfo || "security_audit" in compactServerInfo || "trust" in compactServerInfo) {
       throw new Error("compact local server_info changed effective policy, lost core state, or retained cold-path diagnostics");
     }
-    if (JSON.stringify(compactServerInfo).length >= JSON.stringify(fullServerInfo).length * 0.6) {
+    const compactServerInfoJson = JSON.stringify(compactServerInfo);
+    if (compactServerInfoJson.length >= JSON.stringify(fullServerInfo).length * 0.6) {
       throw new Error("compact local server_info did not materially reduce the payload");
+    }
+    if (compactServerInfoJson.length > 2200) {
+      throw new Error(`compact local server_info exceeded its hot-path output budget: ${compactServerInfoJson.length} chars`);
     }
     const beforeBootstrap = restricted.runtimeInfo().observability.capability_routing;
     if (beforeBootstrap.bootstrap_observed || beforeBootstrap.task_resolution_observed) throw new Error("capability routing telemetry was pre-populated");

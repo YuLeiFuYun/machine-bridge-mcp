@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-reporting.mjs";
+import { projectOverviewDetail, projectProjectOverview } from "../src/shared/project-overview-projection.mjs";
 import { GitService, GIT_METADATA_TIMEOUT_MS } from "../src/local/git-service.mjs";
 import { diagnoseRuntime, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/local/runtime-diagnostics.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "../src/local/doctor-reporting.mjs";
@@ -131,6 +132,81 @@ async function testRuntimeReporting() {
     throwIfCancelled() {},
   });
   assert(degraded.gitRoot === "" && degraded.topLevel.length === 0, "project overview did not degrade safely");
+
+  assert(projectOverviewDetail({}) === "full"
+    && projectOverviewDetail({ detail: "summary" }) === "summary"
+    && projectOverviewDetail({ detail: "unknown" }) === "full",
+  "project overview detail selection lost backward-compatible full fallback");
+  const syntheticTools = Array.from({ length: 500 }, (_value, index) => `synthetic_tool_${index}`);
+  const syntheticOverview = {
+    workspace: "/workspace/project", workspaceName: "project", gitRoot: "/workspace/project",
+    policy: full, tools: syntheticTools, daemonPolicy: full, daemonTools: [...syntheticTools, "daemon_only"],
+    capabilityRouting: {
+      bootstrap_observed: true, bootstrap_count: 12, task_resolution_observed: true, task_resolution_count: 9,
+      last_task_resolution: {
+        observed_at: "2026-08-08T00:00:00.000Z", task_fingerprint: "private-task-fingerprint", refresh_fingerprint: "private-refresh",
+        selected_skill: "skill", matched_skills: 3, matched_commands: 4, matched_applications: 5,
+        recommended_tools: syntheticTools, primary_route: "files", routing_ambiguity: "low", routing_score_gap: 7,
+      },
+      enforcement_boundary: "cold path explanation",
+    },
+    topLevel: Array.from({ length: 40 }, (_value, index) => ({
+      name: `entry-${index}`, path: `/workspace/project/${"private/".repeat(12)}entry-${index}`, type: index % 2 ? "file" : "directory", size: 1000 + index,
+    })),
+    topLevelTotal: 4000, topLevelTruncated: true,
+    authorization: {
+      account: { account_id: "acct_private", role: "owner", version: 3 }, effective_policy: full, effective_tools: syntheticTools,
+      effective_tool_count: syntheticTools.length, account_role_is_owner: true, effective_profile_is_full: true,
+      execution_model: { within_effective_authority: "automatic_without_per_operation_prompt", owner_ambient_authority: "daemon_os_user", generic_control_plane_paths: "denied_even_for_owner" },
+    },
+    policyScope: "authenticated_account_effective_authority", toolsScope: "authenticated_account_effective_tools_before_host_filtering",
+  };
+  const compactOverview = projectProjectOverview(syntheticOverview, "summary");
+  const compactOverviewJson = JSON.stringify(compactOverview);
+  assert(compactOverview.detail === "summary"
+    && compactOverview.effectiveToolCount === 500 && compactOverview.daemonToolCount === 501
+    && compactOverview.authorization?.account?.role === "owner" && !("account_id" in compactOverview.authorization.account)
+    && compactOverview.topLevel.length === 40 && !("path" in compactOverview.topLevel[0]) && !("size" in compactOverview.topLevel[0])
+    && !("tools" in compactOverview) && !("daemonTools" in compactOverview)
+    && !compactOverviewJson.includes("synthetic_tool_")
+    && !compactOverviewJson.includes("private-task-fingerprint")
+    && !compactOverviewJson.includes("private-refresh")
+    && !compactOverviewJson.includes("private/private"),
+  "compact project overview leaked scale-dependent tool/path/fingerprint data or lost authority counts");
+  assert(compactOverviewJson.length <= 5200,
+    `compact project overview exceeded its 40-entry scale budget: ${compactOverviewJson.length} chars`);
+  assert(projectProjectOverview(syntheticOverview, "full") === syntheticOverview
+    && projectProjectOverview("scalar", "summary") === "scalar",
+  "project overview projection changed full/non-record compatibility results");
+  const sparseCompactOverview = projectProjectOverview({
+    workspace: null, workspaceName: null, gitRoot: null,
+    tools: [], daemonTools: null, capabilityRouting: null, topLevel: "invalid",
+    topLevelTotal: "invalid", topLevelTruncated: false, authorization: {
+      effective_tool_count: "invalid", account_role_is_owner: false, effective_profile_is_full: false,
+      execution_model: null,
+    },
+  }, "summary");
+  assert(sparseCompactOverview.detail === "summary"
+    && sparseCompactOverview.effectiveToolCount === 0
+    && sparseCompactOverview.daemonToolCount === 0
+    && sparseCompactOverview.topLevel.length === 0
+    && sparseCompactOverview.topLevelTotal === 0
+    && sparseCompactOverview.capabilityRouting.last_task_resolution === null
+    && sparseCompactOverview.authorization.account === null
+    && sparseCompactOverview.authorization.execution_model === null
+    && !("policyScope" in sparseCompactOverview) && !("toolsScope" in sparseCompactOverview),
+  "project overview sparse compact projection lost bounded fallback semantics");
+  const oddTopLevel = projectProjectOverview({
+    tools: ["one"], daemonTools: ["one"],
+    capabilityRouting: { last_task_resolution: { recommended_tools: null, matched_skills: "bad", routing_score_gap: "bad" } },
+    topLevel: [null, { name: "ok" }], topLevelTotal: 2,
+  }, "summary");
+  assert(oddTopLevel.topLevel[0].name === "" && oddTopLevel.topLevel[0].type === "other"
+    && oddTopLevel.topLevel[1].name === "ok" && oddTopLevel.topLevel[1].type === "other"
+    && oddTopLevel.capabilityRouting.last_task_resolution.recommended_tool_count === 0
+    && oddTopLevel.capabilityRouting.last_task_resolution.matched_skills === 0
+    && oddTopLevel.capabilityRouting.last_task_resolution.routing_score_gap === 0,
+  "project overview compact projection lost malformed-optional-field fallbacks");
 }
 
 async function testRuntimeDiagnostics() {

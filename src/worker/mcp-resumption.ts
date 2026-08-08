@@ -1,5 +1,4 @@
 import {
-  STREAM_INDEX_KEY,
   isStreamId,
   messageSha256,
   readyRecord,
@@ -10,9 +9,10 @@ import {
   workerRestartMessage,
   type JsonRpcMessage,
 } from "./mcp-resumption-records.ts";
-import { McpPendingCallStore } from "./mcp-pending-call-store.ts";
-import { freeCompletedStreamSlots, listStreamRecords, pruneExpiredStreams } from "./mcp-resumption-index.ts";
-import { findStreamByRequestKey, pendingStreamRecord, type BeginStreamInput, type StreamRequestIdentity } from "./mcp-resumption-request-index.ts";
+import { McpPendingCallStore, type PendingCallActivationInput } from "./mcp-pending-call-store.ts";
+import { beginResumableStream, beginResumableStreamCall, type BeginStreamResult } from "./mcp-resumption-begin.ts";
+export { McpStreamLimitError } from "./mcp-resumption-begin.ts";
+import { type BeginStreamInput } from "./mcp-resumption-request-index.ts";
 import { resumptionLimits, type McpResumptionOptions } from "./mcp-resumption-config.ts";
 export type { JsonRpcMessage } from "./mcp-resumption-records.ts";
 
@@ -23,13 +23,6 @@ export type StreamResumeResult =
   | { kind: "invalid" | "not_found" | "expired" }
   | { kind: "complete"; streamId: string }
   | { kind: "message"; streamId: string };
-
-export class McpStreamLimitError extends Error {
-  constructor() {
-    super("too many resumable MCP streams are active");
-    this.name = "McpStreamLimitError";
-  }
-}
 
 const EVENT_ID_PATTERN = /^(stream_[A-Za-z0-9_-]{43}):([01])$/;
 
@@ -71,28 +64,17 @@ export class McpResumptionStore {
     );
   }
 
-  async begin(input: BeginStreamInput): Promise<void> {
-    const now = this.now();
-    const record = pendingStreamRecord(input, now, this.pendingRetentionMs);
-    const result = await this.storage.transaction(async (transaction) => {
-      const records = await listStreamRecords(transaction);
-      const pruned = await pruneExpiredStreams(transaction, records, now);
-      const freed = await freeCompletedStreamSlots(transaction, pruned.records, this.maximumStreams - 1);
-      if (!freed.available) throw new McpStreamLimitError();
-      const legacyIndex = await transaction.get<unknown>(STREAM_INDEX_KEY);
-      await transaction.put(streamKey(input.streamId), record);
-      if (legacyIndex !== undefined) await transaction.delete(STREAM_INDEX_KEY);
-      return {
-        removedStreamIds: [...pruned.removedStreamIds, ...freed.removedStreamIds],
-        rowsWritten: 1 + pruned.removedStreamIds.length + freed.removedStreamIds.length + Number(legacyIndex !== undefined),
-      };
-    });
-    this.onRowsWritten(result.rowsWritten);
-    for (const removedStreamId of result.removedStreamIds) this.clearMemory(removedStreamId);
+  async begin(input: BeginStreamInput): Promise<BeginStreamResult> {
+    const result = await beginResumableStream(this.storage, input, this.beginOptions());
+    this.finishBegin(result);
+    return result;
   }
 
-  async findByRequestKey(requestKey: string): Promise<StreamRequestIdentity | undefined> {
-    return findStreamByRequestKey(this.storage, requestKey);
+  async beginCall(input: BeginStreamInput & PendingCallActivationInput): Promise<BeginStreamResult> {
+    const result = await beginResumableStreamCall(this.storage, input, this.beginOptions());
+    this.finishBegin(result);
+    if (result.kind === "initial") this.activate(input.streamId);
+    return result;
   }
 
   activate(streamId: string): void {
@@ -194,6 +176,17 @@ export class McpResumptionStore {
     });
     this.onRowsWritten(Number(removed));
     this.clearMemory(streamId);
+  }
+
+  private beginOptions() {
+    return {
+      now: this.now(), pendingRetentionMs: this.pendingRetentionMs, terminalRetentionMs: this.retentionMs, maximumStreams: this.maximumStreams,
+    };
+  }
+
+  private finishBegin(result: BeginStreamResult): void {
+    if (result.rowsWritten > 0) this.onRowsWritten(result.rowsWritten);
+    for (const removedStreamId of result.removedStreamIds) this.clearMemory(removedStreamId);
   }
 
   private clearMemory(streamId: string): void {

@@ -3,7 +3,7 @@ import { accountAdminAuthorized, consumeAccountAdminNonce, handleAccountAdminOpe
 import { exchangeOAuthToken, type OAuthRefreshEvent } from "./oauth-tokens.ts";
 import {
   AUTH_BLOCK_SECONDS, accountByName, authorizationIdentity, emptyOAuthStore,
-  isCurrentOAuthStore, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
+  pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
   recordAuthorizationFailure, safeEqual, sha256Hex, validateAuthorizationRequest, verifyAccountPassword,
   type OAuthClient, type OAuthStore,
 } from "./oauth-state.ts";
@@ -14,6 +14,7 @@ import {
 import { authorizationPage } from "./oauth-authorization-page.ts";
 import { handleOAuthClientAdminOperation } from "./oauth-client-admin.ts";
 import { loadOAuthRefreshStore } from "./oauth-refresh-families.ts";
+import { isCurrentOAuthStore } from "./oauth-store-validation.ts";
 
 const OAUTH_BODY_LIMIT_BYTES = 64 * 1024;
 const OAUTH_UNUSED_CLIENT_TTL_SECONDS = 60 * 60;

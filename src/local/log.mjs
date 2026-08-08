@@ -137,7 +137,7 @@ function sanitizeLogValue(value, key = "", seen = new WeakSet(), depth = 0) {
   if (seen.has(value)) return "<circular>";
   seen.add(value);
   if (Array.isArray(value)) return value.slice(0, MAX_LOG_ARRAY_ITEMS).map(item => sanitizeLogValue(item, "", seen, depth + 1));
-  const out = {};
+  const out = Object.create(null);
   for (const [childKey, childValue] of Object.entries(value).slice(0, MAX_LOG_OBJECT_KEYS)) {
     out[childKey] = sanitizeLogValue(childValue, childKey, seen, depth + 1);
   }

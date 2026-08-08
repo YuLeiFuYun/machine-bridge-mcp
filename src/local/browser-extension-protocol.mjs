@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { packageRoot } from "./state.mjs";
+import { packageRoot } from "./package-identity.mjs";
 import { EXPECTED_EXTENSION_ID, normalizeExtensionId } from "./browser-extension-identity.mjs";
 
 export const BROWSER_EXTENSION_PROTOCOL = 3;

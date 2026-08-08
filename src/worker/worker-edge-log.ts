@@ -34,7 +34,7 @@ export function createThrottledEdgeLogger(options: {
 }
 
 function safeFields(fields: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  const out = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(fields).slice(0, 16)) {
     const name = safeName(key);
     if (!name) continue;

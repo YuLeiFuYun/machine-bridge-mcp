@@ -2,11 +2,13 @@ import { closeSync, constants as fsConstants, existsSync, ftruncateSync, lstatSy
 import os from "node:os";
 import path from "node:path";
 import { runExecutable } from "./shell.mjs";
-import { ensureOwnerOnlyDir, expandHome } from "./state.mjs";
+import { expandHome } from "./state.mjs";
+import { ensureOwnerOnlyDir } from "./secure-file.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { waitForInactiveStatus, waitForStableActiveStatus, waitForStatus } from "./service-convergence.mjs";
 import { launchdStatusSummary, systemdStatusSummary } from "./service-status.mjs";
+import { systemdRemovalDecision } from "./systemd-removal.mjs";
 import { writeServiceEnvironment } from "./service-environment.mjs";
 import { beginServiceOwnerUpdate, removeServiceOwner } from "./service-owner.mjs";
 import {
@@ -119,18 +121,6 @@ export async function stopAutostart({ logger = console } = {}) {
   return stopSystemdService(logger);
 }
 
-export function normalizeServiceCommandResult(provider, result, { allowAlreadyStopped = false } = {}) {
-  const detail = `${result?.stdout || ""}
-${result?.stderr || ""}`;
-  const alreadyStopped = allowAlreadyStopped && /(?:not loaded|not found|does not exist|cannot find|not running|inactive)/i.test(detail);
-  return {
-    ...result,
-    ok: result?.code === 0 || alreadyStopped,
-    provider,
-    already_stopped: alreadyStopped,
-  };
-}
-
 export function trimAutostartLogs(stateRoot, options = {}) {
   const root = expandHome(stateRoot);
   const maxBytes = Number.isFinite(Number(options.maxBytes)) ? Math.max(1024, Number(options.maxBytes)) : 2 * 1024 * 1024;
@@ -167,8 +157,12 @@ export function trimAutostartLogs(stateRoot, options = {}) {
 }
 
 function readLogSchema(file) {
-  try { return readBoundedRegularFileSync(file, 64, "autostart log schema").toString("utf8").trim(); }
-  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  try {
+    return readBoundedRegularFileSync(file, 64, "autostart log schema", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    }).toString("utf8").trim();
+  } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
 }
 
 function readLogTail(fd, size, limit) {
@@ -509,20 +503,21 @@ async function installSystemd(spec, logger) {
 
 async function uninstallSystemd(logger) {
   const servicePath = systemdPath();
+  const definitionPresent = existsSync(servicePath);
   const disable = await serviceRun("systemctl", ["--user", "disable", "--now", "machine-bridge-mcp.service"]);
   const activeCheck = await serviceRun("systemctl", ["--user", "is-active", "machine-bridge-mcp.service"]);
-  const active = activeCheck.code === 0;
-  if (active) {
-    logger.warn?.("systemd service is still active; its definition was not removed.");
-    return { ok: false, provider: "systemd", path: servicePath, disable, active_check: activeCheck, active: true };
+  const status = systemdStatusSummary({ installed: definitionPresent, definition: "machine-bridge-mcp.service", result: activeCheck });
+  const decision = systemdRemovalDecision({ definitionPresent, disableCode: disable.code, status });
+  if (!decision.removable) {
+    logger.warn?.("systemd service removal could not be verified; its definition was not removed.");
+    return { ok: false, provider: "systemd", path: servicePath, disable, active_check: activeCheck, status, active: status.active, reason: decision.reason };
   }
-  if (existsSync(servicePath)) rmSync(servicePath, { force: true });
+  if (definitionPresent) rmSync(servicePath, { force: true });
   const reload = await serviceRun("systemctl", ["--user", "daemon-reload"]);
-  const ok = reload.code === 0 && (disable.code === 0 || /not loaded|not found|does not exist/i.test(`${disable.stdout}
-${disable.stderr}`));
+  const ok = reload.code === 0;
   if (ok) logger.info?.("Autostart removed.");
   else logger.warn?.("Autostart removal reported an error.");
-  return { ok, provider: "systemd", path: servicePath, disable, active_check: activeCheck, reload, active: false };
+  return { ok, provider: "systemd", path: servicePath, disable, active_check: activeCheck, status, reload, active: false, already_absent: decision.alreadyAbsent, reason: ok ? decision.reason : "reload_failed" };
 }
 
 export async function stopSystemdService(logger = console, options = {}) {
@@ -577,7 +572,9 @@ export async function stopSystemdService(logger = console, options = {}) {
 }
 
 function systemdStatusIsInactive(status) {
-  return status?.installed === false || status?.active === false && ["inactive", "failed"].includes(status?.state);
+  if (status?.active !== false) return false;
+  if (["inactive", "failed"].includes(status?.state)) return true;
+  return status?.installed === false && status?.state === "unknown";
 }
 function systemdStatusRequiresRestore(status) {
   return status?.active === true || ["activating", "reloading"].includes(status?.state);

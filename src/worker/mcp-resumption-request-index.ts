@@ -1,11 +1,4 @@
-import {
-  validateStreamIdentity,
-  type StreamRecord,
-  type StreamStatus,
-} from "./mcp-resumption-records.ts";
-import { listStreamRecords } from "./mcp-resumption-index.ts";
-
-type ReadStorage = { list<T = unknown>(options?: DurableObjectListOptions): Promise<Map<string, T>> };
+import { validateStreamIdentity, type StreamRecord } from "./mcp-resumption-records.ts";
 
 export type BeginStreamInput = Readonly<{
   streamId: string;
@@ -15,13 +8,6 @@ export type BeginStreamInput = Readonly<{
   clientRequestKey?: string;
   requestFingerprint?: string;
   tool?: string;
-}>;
-
-export type StreamRequestIdentity = Readonly<{
-  streamId: string;
-  status: StreamStatus;
-  tool?: string;
-  requestFingerprint?: string;
 }>;
 
 export function pendingStreamRecord(
@@ -50,21 +36,5 @@ export function pendingStreamRecord(
     status: "pending",
     created_at: now,
     expires_at: now + pendingRetentionMs,
-  };
-}
-
-export async function findStreamByRequestKey(
-  storage: ReadStorage,
-  requestKey: string,
-): Promise<StreamRequestIdentity | undefined> {
-  const record = (await listStreamRecords(storage)).find((candidate) => (
-    candidate.client_request_key ?? candidate.call?.client_request_key
-  ) === requestKey);
-  if (!record) return undefined;
-  return {
-    streamId: record.stream_id,
-    status: record.status,
-    tool: record.tool ?? record.call?.tool,
-    requestFingerprint: record.request_fingerprint ?? record.call?.request_fingerprint,
   };
 }

@@ -79,6 +79,11 @@ try {
   const ownerBrowser = await authorizer.authorize(operation("browser_action", { action: "navigate", url: "https://example.com" }, "owner"));
   assert(ownerBrowser.scopes.includes("browser-session"), "owner browser session was not classified");
 
+  const prototypeTarget = await classifyOperation("exec_command", JSON.parse('{"command":"echo protected","__proto__":"distinct-target"}'));
+  const ordinaryTarget = await classifyOperation("exec_command", { command: "echo protected" });
+  assert(prototypeTarget?.targetHash !== ordinaryTarget?.targetHash,
+    "operation-risk redaction collapsed a prototype-shaped own field out of the audit target hash");
+
   const protectedJob = await classifyOperation("start_job", {
     steps: [{ argv: ["cat"], stdin_resource: "private-value" }],
   }, { workspace });

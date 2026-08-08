@@ -1,8 +1,8 @@
 import { boundedNoncePresent, consumeBoundedNonce } from "./nonce-store.ts";
+import { JWK_THUMBPRINT_PATTERN } from "./oauth-record-contract.ts";
 
 const DPOP_WINDOW_SECONDS = 5 * 60;
 const MAX_DPOP_JTIS = 4096;
-const JKT_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const INTERNAL_RETRY_ID_PATTERN = /^retry_[A-Za-z0-9_-]{43}$/;
 const DPOP_RETRY_BINDINGS_KEY = "dpop-internal-retry-bindings";
 const MAX_DPOP_INTERNAL_RETRY_USES = 4;
@@ -44,7 +44,7 @@ export async function verifyDpopProof(input: {
   const expectedUrl = normalizedHtu(input.expectedUrl || input.request.url);
   if (String(payload.htm || "").toUpperCase() !== expectedMethod || normalizedHtu(String(payload.htu || "")) !== expectedUrl) return null;
   const jkt = await jwkThumbprint(publicJwk);
-  if (input.expectedJkt && (!JKT_PATTERN.test(input.expectedJkt) || input.expectedJkt !== jkt)) return null;
+  if (input.expectedJkt && (!JWK_THUMBPRINT_PATTERN.test(input.expectedJkt) || input.expectedJkt !== jkt)) return null;
   if (input.accessToken) {
     const ath = String(payload.ath || "");
     if (ath !== await sha256Base64Url(input.accessToken)) return null;
@@ -78,13 +78,13 @@ export async function consumeDpopProof(
   proof: VerifiedDpopProof,
   now = Math.floor(Date.now() / 1000),
 ): Promise<boolean> {
-  if (!proof || !JKT_PATTERN.test(proof.replayKey) || !Number.isSafeInteger(proof.expiresAt) || proof.expiresAt <= now) return false;
+  if (!proof || !JWK_THUMBPRINT_PATTERN.test(proof.replayKey) || !Number.isSafeInteger(proof.expiresAt) || proof.expiresAt <= now) return false;
   return consumeBoundedNonce(storage, {
     key: "dpop-proof-jtis",
     nonce: proof.replayKey,
     expiresAt: proof.expiresAt,
     now,
-    noncePattern: JKT_PATTERN,
+    noncePattern: JWK_THUMBPRINT_PATTERN,
     maximum: MAX_DPOP_JTIS,
   });
 }
@@ -96,7 +96,7 @@ export async function consumeDpopProofForInternalRetry(
   now = Math.floor(Date.now() / 1000),
 ): Promise<boolean> {
   if (!INTERNAL_RETRY_ID_PATTERN.test(retryId)
-      || !proof || !JKT_PATTERN.test(proof.replayKey)
+      || !proof || !JWK_THUMBPRINT_PATTERN.test(proof.replayKey)
       || !Number.isSafeInteger(proof.expiresAt) || proof.expiresAt <= now) return false;
   const consume = async (target: DpopNonceStorage): Promise<boolean> => {
     const raw = await target.get<unknown>(DPOP_RETRY_BINDINGS_KEY);
@@ -112,7 +112,7 @@ export async function consumeDpopProofForInternalRetry(
             key: "dpop-proof-jtis",
             nonce: proof.replayKey,
             now,
-            noncePattern: JKT_PATTERN,
+            noncePattern: JWK_THUMBPRINT_PATTERN,
           }))) return false;
       bindings[proof.replayKey] = { ...existing, uses: existing.uses + 1 };
       await target.put(DPOP_RETRY_BINDINGS_KEY, bindings);
@@ -142,7 +142,7 @@ type DpopRetryBindings = Record<string, { retry_id: string; expires_at: number; 
 function validRetryBindings(value: unknown): value is DpopRetryBindings {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
     && Object.entries(value as Record<string, unknown>).every(([key, raw]) => (
-      JKT_PATTERN.test(key)
+      JWK_THUMBPRINT_PATTERN.test(key)
       && Boolean(raw) && typeof raw === "object" && !Array.isArray(raw)
       && INTERNAL_RETRY_ID_PATTERN.test(String((raw as { retry_id?: unknown }).retry_id ?? ""))
       && Number.isSafeInteger((raw as { expires_at?: unknown }).expires_at)

@@ -16,7 +16,34 @@ try {
   assert.equal(await readOptionalRegularUtf8(textFile, 32), "hello\n");
   assert.equal(await readOptionalRegularUtf8(textFile, 2), null);
   assert.equal(await readOptionalRegularUtf8(join(root, "missing.txt"), 32), null);
+  await assert.rejects(() => readOptionalRegularUtf8(textFile, -1), /non-negative safe integer/);
+  await assert.rejects(() => readOptionalRegularUtf8(textFile, 1.5), /non-negative safe integer/);
   assert.equal(await isRegularNonSymlink(textFile), true);
+
+  let metadataReadAttempted = false;
+  let metadataHandleClosed = false;
+  const identityStats = (ino) => ({
+    dev: 7n, ino, size: 5n,
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  });
+  const precisionMismatch = await readOptionalRegularUtf8("virtual-metadata", 32, {
+    openFile: async () => ({
+      stat: async (options) => {
+        assert.equal(options?.bigint, true);
+        return identityStats(9007199254740993n);
+      },
+      read: async () => { metadataReadAttempted = true; return { bytesRead: 0 }; },
+      close: async () => { metadataHandleClosed = true; },
+    }),
+    inspectPath: async (_path, options) => {
+      assert.equal(options?.bigint, true);
+      return identityStats(9007199254740992n);
+    },
+  });
+  assert.equal(precisionMismatch, null);
+  assert.equal(metadataReadAttempted, false, "project metadata read bytes after a lossless identity mismatch");
+  assert.equal(metadataHandleClosed, true, "project metadata identity rejection leaked its descriptor");
 
   const invalidUtf8 = join(root, "invalid.bin");
   await writeFile(invalidUtf8, Buffer.from([0xff, 0xfe]));

@@ -21,6 +21,8 @@ import { workspaceShellCommand } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
 import { FileMutationCoordinator } from "../src/local/file-mutation-coordinator.mjs";
+import { DIRECTORY_METADATA_BATCH_SIZE, directoryEntriesWithMetadata } from "../src/local/directory-metadata.mjs";
+import { SEARCH_FILE_BATCH_SIZE, searchWorkspaceFiles } from "../src/local/workspace-search.mjs";
 import { projectRuntimeInfo } from "../src/local/runtime-info-projection.mjs";
 import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/runtime-relay.mjs";
 import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
@@ -36,6 +38,8 @@ await testToolExecutor();
 await testToolExecutorConcurrency();
 await testToolExecutorLateCancellationSettlement();
 await testFileMutationCoordinator();
+await testDirectoryMetadataFanout();
+await testWorkspaceSearchFanout();
 await testRuntimeInfoProjection();
 testToolResultBoundary();
 await testDuplicateRelayCallId();
@@ -63,6 +67,170 @@ testErrors();
 testWorkspaceShellSelection();
 testBoundedOutput();
 console.log("runtime infrastructure test ok");
+
+async function testWorkspaceSearchFanout() {
+  const files = Array.from({ length: 20 }, (_value, index) => `/synthetic/file-${String(index).padStart(2, "0")}`);
+  const makeWalk = (items) => async (onFile) => {
+    for (const file of items) {
+      if (await onFile(file) === false) return { truncated: true, visitedEntries: items.indexOf(file) + 1 };
+    }
+    return { truncated: false, visitedEntries: items.length };
+  };
+  let active = 0;
+  let maximumActive = 0;
+  const result = await searchWorkspaceFiles({
+    maximumFiles: files.length,
+    maximumMatches: 100,
+    walk: makeWalk(files),
+    async searchFile(file) {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+      return [{ path: file, line: 1, text: file }];
+    },
+  });
+  assert(maximumActive === SEARCH_FILE_BATCH_SIZE,
+    `workspace search fan-out exceeded or failed to use its bounded concurrency (${maximumActive})`);
+  assert(JSON.stringify(result.matches.map((match) => match.path)) === JSON.stringify(files),
+    "workspace search fan-out changed file or match ordering");
+  assert(result.visitedFiles === files.length && result.truncated === true,
+    "workspace search fan-out lost exact max_files accounting");
+
+  const lateError = new Error("later search failed");
+  const early = await searchWorkspaceFiles({
+    maximumFiles: 2,
+    maximumMatches: 1,
+    batchSize: 2,
+    walk: makeWalk(["/synthetic/first", "/synthetic/second"]),
+    async searchFile(file) {
+      if (file.endsWith("second")) throw lateError;
+      return [{ path: file, line: 1, text: "match" }];
+    },
+  });
+  assert(early.matches.length === 1 && early.visitedFiles === 1 && early.truncated === true,
+    "workspace search exposed work beyond an earlier max_matches stop");
+
+  let consumedError;
+  try {
+    await searchWorkspaceFiles({
+      maximumFiles: 2,
+      maximumMatches: 1,
+      batchSize: 2,
+      walk: makeWalk(["/synthetic/first", "/synthetic/second"]),
+      async searchFile(file) {
+        if (file.endsWith("second")) throw lateError;
+        return [];
+      },
+    });
+  } catch (error) { consumedError = error; }
+  assert(consumedError === lateError, "workspace search hid or replaced a consumed file-search error");
+
+  let searched = 0;
+  const capped = await searchWorkspaceFiles({
+    maximumFiles: 2,
+    maximumMatches: 100,
+    batchSize: 16,
+    walk: makeWalk(files.slice(0, 4)),
+    async searchFile() { searched += 1; return []; },
+  });
+  assert(searched === 2 && capped.visitedFiles === 2 && capped.truncated === true,
+    "workspace search scheduled or counted files beyond max_files");
+
+  const cancellationError = new Error("search cancelled during file I/O");
+  let cancelled = false;
+  let cancellationObserved;
+  try {
+    await searchWorkspaceFiles({
+      maximumFiles: 1,
+      maximumMatches: 1,
+      walk: makeWalk(["/synthetic/cancel"]),
+      async searchFile() { await Promise.resolve(); cancelled = true; return []; },
+      throwIfCancelled() { if (cancelled) throw cancellationError; },
+    });
+  } catch (error) { cancellationObserved = error; }
+  assert(cancellationObserved === cancellationError, "workspace search ignored cancellation after prefetched file I/O");
+}
+
+async function testDirectoryMetadataFanout() {
+  const fakeEntries = Array.from({ length: 20 }, (_value, index) => ({ name: `entry-${String(index).padStart(2, "0")}` }));
+  const openDirectory = async () => ({
+    async *[Symbol.asyncIterator]() { for (const entry of fakeEntries) yield entry; },
+  });
+  let active = 0;
+  let maximumActive = 0;
+  const inspect = async (path) => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await Promise.resolve();
+    active -= 1;
+    return { size: path.length };
+  };
+  const observed = [];
+  for await (const item of directoryEntriesWithMetadata("/synthetic", { openDirectory, inspect })) observed.push(item.entry.name);
+  assert(maximumActive === DIRECTORY_METADATA_BATCH_SIZE,
+    `directory metadata fan-out exceeded or failed to use its bounded concurrency (${maximumActive})`);
+  assert(JSON.stringify(observed) === JSON.stringify(fakeEntries.map((entry) => entry.name)),
+    "directory metadata fan-out changed directory enumeration order");
+
+  const deferredError = new Error("later metadata failed");
+  const twoEntries = async () => ({
+    async *[Symbol.asyncIterator]() { yield { name: "first" }; yield { name: "second" }; },
+  });
+  const inspectWithLateFailure = async (path) => {
+    if (path.endsWith("second")) throw deferredError;
+    return { size: 1 };
+  };
+  const truncated = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: twoEntries, inspect: inspectWithLateFailure, batchSize: 2,
+  });
+  const first = await truncated.next();
+  assert(first.value?.entry?.name === "first", "directory metadata fan-out lost the first settled entry");
+  await truncated.return();
+
+  const consumed = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: twoEntries, inspect: inspectWithLateFailure, batchSize: 2,
+  });
+  assert((await consumed.next()).value?.entry?.name === "first", "directory metadata error fixture lost its leading entry");
+  let consumedError;
+  try { await consumed.next(); } catch (error) { consumedError = error; }
+  assert(consumedError === deferredError, "directory metadata fan-out hid or replaced an error that was actually consumed");
+
+  let cancelled = false;
+  const cancellationError = new Error("cancelled between prefetched entries");
+  const cancellable = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: twoEntries,
+    inspect: async () => ({ size: 1 }),
+    batchSize: 2,
+    throwIfCancelled() { if (cancelled) throw cancellationError; },
+  });
+  assert((await cancellable.next()).value?.entry?.name === "first", "directory metadata cancellation fixture did not yield first entry");
+  cancelled = true;
+  let cancellationObserved;
+  try { await cancellable.next(); } catch (error) { cancellationObserved = error; }
+  assert(cancellationObserved === cancellationError, "directory metadata fan-out ignored cancellation between prefetched entries");
+
+  const empty = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: async () => ({ async *[Symbol.asyncIterator]() {} }),
+    inspect,
+    batchSize: 65,
+  });
+  assert((await empty.next()).done === true, "directory metadata fan-out did not settle an empty directory");
+
+  const tailError = new Error("tail metadata failed");
+  const tail = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: async () => ({
+      async *[Symbol.asyncIterator]() { yield { name: "a" }; yield { name: "b" }; yield { name: "tail" }; },
+    }),
+    batchSize: 2,
+    inspect: async (path) => { if (path.endsWith("tail")) throw tailError; return { size: 1 }; },
+  });
+  assert((await tail.next()).value?.entry?.name === "a" && (await tail.next()).value?.entry?.name === "b",
+    "directory metadata tail-error fixture lost its full leading batch");
+  let tailObserved;
+  try { await tail.next(); } catch (error) { tailObserved = error; }
+  assert(tailObserved === tailError, "directory metadata fan-out hid or replaced a consumed tail-batch error");
+}
 
 async function testCallRegistry() {
   const timers = new Map();

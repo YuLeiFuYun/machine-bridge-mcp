@@ -1,6 +1,7 @@
 import { json, parseRequestBody } from "./http.ts";
 import { OAUTH_REFRESH_STORE_KEY } from "./oauth-refresh-families.ts";
 import type { OAuthRefreshStore, OAuthStore } from "./oauth-state.ts";
+import { CLIENT_ID_PATTERN } from "./oauth-record-contract.ts";
 
 const BODY_LIMIT_BYTES = 64 * 1024;
 const MAX_OAUTH_CLIENTS = 128;
@@ -34,7 +35,7 @@ export async function handleOAuthClientAdminOperation(options: {
   if (request.method !== "DELETE") return json({ error: "method_not_allowed" }, 405, { Allow: "GET, DELETE" });
   const body = await parseRequestBody(request, BODY_LIMIT_BYTES);
   const clientId = String(body.client_id ?? "");
-  if (!/^mcp_client_[A-Za-z0-9_-]{43}$/.test(clientId)) return json({ error: "invalid_client_id" }, 400);
+  if (!CLIENT_ID_PATTERN.test(clientId)) return json({ error: "invalid_client_id" }, 400);
   if (!store.clients[clientId]) return json({ error: "client_not_found" }, 404);
   delete store.clients[clientId];
   for (const [key, value] of Object.entries(store.codes)) if (value.client_id === clientId) delete store.codes[key];

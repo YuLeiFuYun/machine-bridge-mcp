@@ -1,4 +1,6 @@
-import { streamKey, type JsonRpcMessage, type StreamRecord } from "./mcp-resumption-records.ts";
+import { streamKey, validRecord, type JsonRpcMessage, type StreamRecord } from "./mcp-resumption-records.ts";
+import { streamIdForCallId } from "./mcp-stream-call-identity.ts";
+import { ensureTransactionAlarmAtMost } from "./mcp-transaction-alarm.ts";
 import { listStreamRecords } from "./mcp-resumption-index.ts";
 import { toolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
 import {
@@ -18,7 +20,7 @@ import {
 } from "./mcp-pending-call-inspection.ts";
 import { CONTROL_PLANE_TOOL_NAMES, pendingCallAdmission } from "./pending-call-capacity.ts";
 
-type PendingCallStorage = Pick<DurableObjectStorage, "list" | "put" | "transaction">;
+type PendingCallStorage = Pick<DurableObjectStorage, "get" | "list" | "put" | "transaction">;
 type CompleteStream = (
   streamId: string,
   message: JsonRpcMessage,
@@ -47,6 +49,65 @@ export class McpPendingCallConflictError extends Error {
 
 const DEFAULT_MAXIMUM_PENDING_CALLS = 32;
 
+export type PendingCallActivationInput = Readonly<{
+  streamId: string;
+  callId: string;
+  daemonInstanceId: string;
+  connectionId: string;
+  clientRequestKey?: string;
+  requestFingerprint?: string;
+  tool: string;
+  timeoutMs: number;
+  transform?: PendingStreamTransform;
+  transientSnapshot?: { active: number; by_tool: Record<string, number> };
+  maximumPendingCalls?: number;
+  reservedPendingCalls?: number;
+}>;
+
+export function pendingCallForActivation(
+  records: readonly StreamRecord[],
+  input: PendingCallActivationInput,
+  now: number,
+): PendingStreamCall {
+  const timeoutMs = positiveDelay(input.timeoutMs);
+  const maximum = Math.max(1, Math.floor(input.maximumPendingCalls ?? DEFAULT_MAXIMUM_PENDING_CALLS));
+  const call: PendingStreamCall = {
+    call_id: input.callId, daemon_instance_id: input.daemonInstanceId, connection_id: input.connectionId,
+    ...(input.clientRequestKey ? { client_request_key: input.clientRequestKey } : {}),
+    ...(input.requestFingerprint ? { request_fingerprint: input.requestFingerprint } : {}),
+    tool: input.tool, state: "attached", started_at: now, operation_deadline_at: now + timeoutMs, remaining_timeout_ms: timeoutMs,
+    ...(input.transform ? { transform: structuredClone(input.transform) } : {}),
+  };
+  const durable = pendingCallSnapshot([...records], now, maximum);
+  const transient = input.transientSnapshot ?? { active: 0, by_tool: Object.create(null) as Record<string, number> };
+  const capacity = toolCallCapacityConfig(maximum, input.reservedPendingCalls, CONTROL_PLANE_TOOL_NAMES);
+  const decision = pendingCallAdmission(transient, durable, input.tool, capacity);
+  if (!decision.allowed) {
+    throw new McpPendingCallLimitError(decision.reason === "ordinary_capacity"
+      ? `ordinary daemon-call capacity reached (${decision.ordinaryMaximum}); control-plane capacity is reserved for diagnosis and recovery`
+      : undefined);
+  }
+  if (records.some((record) => record.call?.call_id === input.callId)) {
+    throw new McpPendingCallConflictError("duplicate internal daemon call id");
+  }
+  if (input.clientRequestKey && records.some((record) => record.stream_id !== input.streamId
+    && (record.client_request_key ?? record.call?.client_request_key) === input.clientRequestKey)) {
+    throw new McpPendingCallConflictError("duplicate in-flight JSON-RPC request id within this MCP session");
+  }
+  return call;
+}
+
+export function pendingCallTargetRecord(
+  record: StreamRecord | undefined,
+  input: PendingCallActivationInput,
+): StreamRecord {
+  if (!record || record.status !== "pending") throw new Error("resumable MCP stream record is unavailable for activation");
+  if (record.call) throw new McpPendingCallConflictError("resumable MCP stream already has an active daemon call");
+  const identityConflict = pendingCallIdentityConflict(record, input);
+  if (identityConflict) throw new McpPendingCallConflictError(identityConflict);
+  return record;
+}
+
 export class McpPendingCallStore {
   private readonly storage: PendingCallStorage;
   private readonly now: () => number;
@@ -71,70 +132,36 @@ export class McpPendingCallStore {
     this.terminalRetentionMs = positiveDelay(terminalRetentionMs);
   }
 
-  async activate(input: {
-    streamId: string;
-    callId: string;
-    daemonInstanceId: string;
-    connectionId: string;
-    clientRequestKey?: string;
-    requestFingerprint?: string;
-    tool: string;
-    timeoutMs: number;
-    transform?: PendingStreamTransform;
-    transientSnapshot?: { active: number; by_tool: Record<string, number> };
-    maximumPendingCalls?: number;
-    reservedPendingCalls?: number;
-  }): Promise<void> {
+  async activate(input: PendingCallActivationInput): Promise<number> {
     const now = this.now();
-    const timeoutMs = positiveDelay(input.timeoutMs);
-    const maximum = Math.max(1, Math.floor(input.maximumPendingCalls ?? DEFAULT_MAXIMUM_PENDING_CALLS));
-    const call: PendingStreamCall = {
-      call_id: input.callId,
-      daemon_instance_id: input.daemonInstanceId,
-      connection_id: input.connectionId,
-      ...(input.clientRequestKey ? { client_request_key: input.clientRequestKey } : {}),
-      ...(input.requestFingerprint ? { request_fingerprint: input.requestFingerprint } : {}),
-      tool: input.tool,
-      state: "attached",
-      started_at: now,
-      operation_deadline_at: now + timeoutMs,
-      remaining_timeout_ms: timeoutMs,
-      ...(input.transform ? { transform: structuredClone(input.transform) } : {}),
-    };
-    await this.storage.transaction(async (transaction) => {
+    const operationDeadlineAt = await this.storage.transaction(async (transaction) => {
       const records = await listStreamRecords(transaction);
-      const durable = pendingCallSnapshot(records, now, maximum);
-      const transient = input.transientSnapshot ?? { active: 0, by_tool: Object.create(null) as Record<string, number> };
-      const capacity = toolCallCapacityConfig(maximum, input.reservedPendingCalls, CONTROL_PLANE_TOOL_NAMES);
-      const decision = pendingCallAdmission(transient, durable, input.tool, capacity);
-      if (!decision.allowed) {
-        throw new McpPendingCallLimitError(decision.reason === "ordinary_capacity"
-          ? `ordinary daemon-call capacity reached (${decision.ordinaryMaximum}); control-plane capacity is reserved for diagnosis and recovery`
-          : undefined);
-      }
-      if (records.some((record) => record.call?.call_id === input.callId)) {
-        throw new McpPendingCallConflictError("duplicate internal daemon call id");
-      }
-      if (input.clientRequestKey && records.some((record) => record.stream_id !== input.streamId
-        && (record.client_request_key ?? record.call?.client_request_key) === input.clientRequestKey)) {
-        throw new McpPendingCallConflictError("duplicate in-flight JSON-RPC request id within this MCP session");
-      }
-      const record = records.find((candidate) => candidate.stream_id === input.streamId);
-      if (!record || record.status !== "pending") throw new Error("resumable MCP stream record is unavailable for activation");
-      if (record.call) throw new McpPendingCallConflictError("resumable MCP stream already has an active daemon call");
-      const identityConflict = pendingCallIdentityConflict(record, input);
-      if (identityConflict) throw new McpPendingCallConflictError(identityConflict);
+      const call = pendingCallForActivation(records, input, now);
+      const record = pendingCallTargetRecord(records.find((candidate) => candidate.stream_id === input.streamId), input);
       await transaction.put(streamKey(input.streamId), {
         ...record,
         expires_at: extendAttachedCallExpiry(record.expires_at, call.operation_deadline_at, this.terminalRetentionMs),
         call,
       } satisfies StreamRecord);
+      await ensureTransactionAlarmAtMost(transaction, call.operation_deadline_at);
+      return call.operation_deadline_at;
     });
     this.onRowsWritten(1);
     this.activateStream(input.streamId);
+    return operationDeadlineAt;
   }
 
   async get(callId: string): Promise<PendingStreamCallView | undefined> {
+    const expectedStreamId = streamIdForCallId(callId);
+    if (expectedStreamId) {
+      const direct = await this.storage.get<unknown>(streamKey(expectedStreamId));
+      if (direct !== undefined) {
+        if (!validRecord(direct)) throw new Error("resumable MCP stream record is corrupt");
+        return direct.call?.call_id === callId ? this.callView(direct) : undefined;
+      }
+    }
+    // Pre-beta.54 calls used an independent random call id. Their bounded fallback
+    // disappears naturally after the maximum pending-stream retention window.
     const record = (await listStreamRecords(this.storage)).find((candidate) => candidate.call?.call_id === callId);
     return record ? this.callView(record) : undefined;
   }
@@ -224,8 +251,10 @@ export class McpPendingCallStore {
     return ids;
   }
 
-  async complete(callId: string, connectionId: string | undefined, message: JsonRpcMessage): Promise<boolean> {
-    const view = await this.get(callId);
+  async complete(
+    callId: string, connectionId: string | undefined, message: JsonRpcMessage, knownCall?: PendingStreamCallView,
+  ): Promise<boolean> {
+    const view = knownCall ?? await this.get(callId);
     if (!view || (connectionId && view.connection_id !== connectionId)) return false;
     return this.completeStream(view.streamId, message, { callId, connectionId });
   }

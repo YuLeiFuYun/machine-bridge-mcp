@@ -3,7 +3,6 @@ import { inspectResourceFile } from "./managed-job-plan.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
 import { expandHome } from "./state.mjs";
 import { stateRootFromProfileStatePath } from "./runtime-paths.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
 const MAX_BROWSER_RESOURCE_BYTES = 1024 * 1024;
 
@@ -21,13 +20,14 @@ export class RuntimeResourceService {
     if (!resource) throw new Error(`unknown local resource: ${name}`);
     const inspected = inspectResourceFile(resource.path, {
       allowInsecurePermissions: resource.allowInsecurePermissions === true,
+      includeContent: true,
     });
     if (inspected.size > MAX_BROWSER_RESOURCE_BYTES) {
       throw new Error("local resource exceeds 1 MiB browser injection limit");
     }
     return {
-      buffer: readBoundedRegularFileSync(resource.path, MAX_BROWSER_RESOURCE_BYTES),
-      path: resource.path,
+      buffer: inspected.content,
+      path: inspected.path,
       size: inspected.size,
     };
   }
