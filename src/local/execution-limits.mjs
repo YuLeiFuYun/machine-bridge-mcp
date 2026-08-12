@@ -1,4 +1,5 @@
 import { CONTROL_PLANE_TOOL_NAMES } from "../shared/tool-call-capacity.mjs";
+import { resourceAdmissionGuardrailSnapshot } from "./resource-admission-diagnostics.mjs";
 
 export { CONTROL_PLANE_TOOL_NAMES };
 export const MAX_CONCURRENT_TOOL_CALLS = 16;
@@ -38,6 +39,7 @@ export function executionGuardrailsSnapshot() {
       exited_retention_ms: PROCESS_SESSION_RETENTION_MS,
       process_tree_termination: "sigterm-then-sigkill",
     },
+    resource_admission: resourceAdmissionGuardrailSnapshot(),
     operating_system_enforcement: {
       cpu_quota: "not-enforced",
       memory_quota: "not-enforced",

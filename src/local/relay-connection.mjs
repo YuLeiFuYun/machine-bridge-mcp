@@ -7,11 +7,11 @@ import {
 } from "./relay-diagnostics.mjs";
 import {
   acknowledgementMismatch, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory, relayCloseUserCause,
-  relayFatalMessage, relayServerErrorReconnectCategory, sanitizeProtocolErrorCode, welcomeMismatch,
+  relayFatalMessage, relayOutageUserAction, relayServerErrorReconnectCategory, sanitizeProtocolErrorCode, welcomeMismatch,
 } from "./relay-connection-classification.mjs";
 export {
   acknowledgementMismatch, isRelayReadyContext, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory,
-  relayServerErrorReconnectCategory, welcomeMismatch,
+  relayOutageUserAction, relayServerErrorReconnectCategory, welcomeMismatch,
 } from "./relay-connection-classification.mjs";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 75_000;
@@ -154,7 +154,8 @@ export class RelayConnection {
     const socket = this.socket;
     this.socket = null;
     if (socket) {
-      try { socket.close(1000, "daemon shutdown"); } catch {}
+      try { socket.close(1000, "daemon shutdown"); }
+      catch { /* Relay shutdown state is already authoritative and the transport may have closed concurrently. */ }
     }
     this.resetOutage();
     this.reconnectAttempt = 0;
@@ -169,7 +170,8 @@ export class RelayConnection {
     const sessionId = Number(expectedSessionId) || 0;
     if (!sessionId || sessionId !== this.activeSessionId) return { ok: false, reason: "session_ended" };
     if (!this.authenticated || !this.isSocketOpen(this.socket)) return { ok: false, reason: "transport_unavailable" };
-    if (!this.ready && value?.type !== "relay_probe_result") return { ok: false, reason: "transport_unavailable" };
+    const preReadyControl = value?.type === "relay_probe_result" || value?.type === "authority_revoke_ack";
+    if (!this.ready && !preReadyControl) return { ok: false, reason: "transport_unavailable" };
     if (!this.sendOnSocket(this.socket, value)) return { ok: false, reason: "send_failed" };
     if (value?.type === "relay_probe_result") this.readinessProbeDelivered = true;
     return { ok: true, reason: "sent" };
@@ -344,7 +346,8 @@ export class RelayConnection {
     socket.on("open", () => {
       this.clearTimer("connectTimer", "clearTimeout");
       if (this.socket !== socket || this.closed) {
-        try { socket.close(1000, "stale daemon connection"); } catch {}
+        try { socket.close(1000, "stale daemon connection"); }
+        catch { /* Stale transport ownership has already been rejected; concurrent close is harmless. */ }
         return;
       }
       this.lastInboundAt = this.now();
@@ -425,10 +428,10 @@ export class RelayConnection {
         this.clearTimer("reconnectTimer", "clearTimeout");
         this.clearTimer("outageWarnTimer", "clearTimeout");
         this.logger.warn?.("daemon connection was replaced by a newer verified instance");
-        queueMicrotask(() => {
-          try { this.onSuperseded(); } catch (error) {
-            this.logger.error?.("daemon superseded callback failed", { error_class: classifyOperationalError(error) });
-          }
+        queueMicrotask(async () => {
+          try {
+            await this.onSuperseded();
+          } catch (error) { this.logger.error?.("daemon superseded callback failed", { error_class: classifyOperationalError(error) }); }
         });
         return;
       }
@@ -484,10 +487,10 @@ export class RelayConnection {
     }
     this.logger.error?.(message);
     this.logger.debug?.("remote relay fatal details", { category, cause: relayCloseUserCause(category) });
-    queueMicrotask(() => {
-      try { this.onFatal(error); } catch (callbackError) {
-        this.logger.error?.("relay fatal callback failed", { error_class: classifyOperationalError(callbackError) });
-      }
+    queueMicrotask(async () => {
+      try {
+        await this.onFatal(error);
+      } catch (callbackError) { this.logger.error?.("relay fatal callback failed", { error_class: classifyOperationalError(callbackError) }); }
     });
   }
 
@@ -567,9 +570,7 @@ export class RelayConnection {
     this.outageWarningCount += 1;
     this.lastOutageWarnAt = this.now();
     const cause = relayCloseUserCause(this.lastCloseCategory);
-    const action = outageMs >= 5 * 60_000
-      ? " If this persists, check internet access and the deployed Worker."
-      : "";
+    const action = relayOutageUserAction(this.lastCloseCategory, outageMs);
     const outageFields = relayOutageFields(this, this.now(), cause);
     this.logger.warn?.(`remote relay unavailable for ${formatDuration(outageMs)}; reconnecting automatically (${formatAttempts(this.outageAttempts)}; ${cause}).${action}`, outageFields);
     this.logger.debug?.("remote relay outage details", outageFields);
@@ -617,7 +618,7 @@ function terminateSocket(socket) {
   try {
     if (typeof socket?.terminate === "function") socket.terminate();
     else socket?.close?.();
-  } catch {}
+  } catch { /* Callers classify the relay generation as failed independently of transport-close success. */ }
 }
 
 function redactUrl(value) {

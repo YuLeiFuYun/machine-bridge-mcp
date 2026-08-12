@@ -56,7 +56,7 @@ const tree = {
 };
 assert.equal(validateConsumerTree(tree, { packageName, packageVersion }).dependencies, 2);
 for (const [name, version, expected] of [
-  ["wrangler", "4.115.0", /private control-plane package wrangler/],
+  ["wrangler", "4.120.0", /private control-plane package wrangler/],
   ["miniflare", "4.20260722.1", /private control-plane package miniflare/],
   ["undici", "7.28.0", /vulnerable undici 7\.28\.0/],
   ["sharp", "0.35.2", /unsupported sharp 0\.35\.2/],

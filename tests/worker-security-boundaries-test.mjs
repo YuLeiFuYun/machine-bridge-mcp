@@ -1,13 +1,19 @@
 import { accountAdminAuthorized, handleAccountAdminOperation } from "../src/worker/account-admin.ts";
 import { discardRequestBody, readBoundedText } from "../src/worker/http.ts";
 import { handleOAuthClientAdminOperation } from "../src/worker/oauth-client-admin.ts";
+import { OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth-client-contract.ts";
 import { exchangeOAuthToken } from "../src/worker/oauth-tokens.ts";
+import {
+  acknowledgeAuthorityRevocation, authorityRevocationWireMessage, authorityRevocations, putWithAuthorityRevocation,
+} from "../src/worker/authority-revocations.ts";
+import { recordMatchesAuthorityRevocation } from "../src/shared/authority-revocation.mjs";
 import { deriveRefreshReplacementPair } from "../src/worker/oauth-token-derivation.ts";
 import {
   loadOAuthRefreshStore,
   recordConsumedRefreshToken,
   revokeOAuthRefreshFamily,
 } from "../src/worker/oauth-refresh-families.ts";
+import { oauthRefreshPersistenceEntries, saveOAuthRefreshStore } from "../src/worker/oauth-refresh-persistence.ts";
 import {
   createAccount,
   emptyOAuthRefreshStore,
@@ -42,6 +48,7 @@ async function testAdminAuthentication() {
   const request = new Request(`${BASE}/admin/accounts`, { method: "DELETE", headers, body });
   const authorized = await accountAdminAuthorized(request, publicDeviceJwkJson(ADMIN_ROOT), BASE, SERVER, VERSION, NOW);
   assert(authorized?.nonce === "n".repeat(32), "valid device-signed admin request was rejected");
+  assert(await authorized.request.text() === body, "admin authorization did not preserve the exact bounded request body for the operation parser");
   const otherRoot = createDeviceIdentity();
   assert(await accountAdminAuthorized(request, publicDeviceJwkJson(otherRoot), BASE, SERVER, VERSION, NOW) === null, "admin request was accepted under another device root");
   const staleHeaders = accountAdminRequestHeaders({
@@ -52,12 +59,48 @@ async function testAdminAuthentication() {
   assert(await accountAdminAuthorized(changedBody, publicDeviceJwkJson(ADMIN_ROOT), BASE, SERVER, VERSION, NOW) === null, "admin signature was accepted for a changed body");
   const wrongVersion = await accountAdminAuthorized(request, publicDeviceJwkJson(ADMIN_ROOT), BASE, SERVER, "3.0.1", NOW);
   assert(wrongVersion === null, "admin session certificate was reusable for another Worker version");
+
+  const oversizedBody = "x".repeat(128 * 1024);
+  const oversizedHeaders = accountAdminRequestHeaders({
+    sessionIdentity: ADMIN_SESSION, origin: BASE, method: "POST", pathname: "/admin/accounts", body: oversizedBody,
+    now: NOW * 1000, nonce: "o".repeat(32),
+  });
+  const oversizedStream = streamedText(oversizedBody, 32 * 1024);
+  const oversizedRequest = new Request(`${BASE}/admin/accounts`, {
+    method: "POST", headers: oversizedHeaders, body: oversizedStream.stream, duplex: "half",
+  });
+  let oversizedError;
+  try { await accountAdminAuthorized(oversizedRequest, publicDeviceJwkJson(ADMIN_ROOT), BASE, SERVER, VERSION, NOW); }
+  catch (error) { oversizedError = error; }
+  assert(oversizedError?.status === 413 && oversizedError?.code === "request_body_too_large",
+    "signed oversized admin body was not rejected by the streaming byte bound");
+  assert(oversizedStream.cancelled === true && oversizedStream.pulls <= 3,
+    "signed oversized admin body continued reading after the 64 KiB authorization bound");
+
+  const declaredBody = "{}";
+  const declaredHeaders = accountAdminRequestHeaders({
+    sessionIdentity: ADMIN_SESSION, origin: BASE, method: "POST", pathname: "/admin/accounts", body: declaredBody,
+    now: NOW * 1000, nonce: "d".repeat(32),
+  });
+  declaredHeaders["content-length"] = String(128 * 1024);
+  const declaredStream = streamedText(declaredBody, declaredBody.length);
+  const declaredRequest = new Request(`${BASE}/admin/accounts`, {
+    method: "POST", headers: declaredHeaders, body: declaredStream.stream, duplex: "half",
+  });
+  let declaredError;
+  try { await accountAdminAuthorized(declaredRequest, publicDeviceJwkJson(ADMIN_ROOT), BASE, SERVER, VERSION, NOW); }
+  catch (error) { declaredError = error; }
+  assert(declaredError?.status === 413 && declaredError?.code === "request_body_too_large",
+    "declared oversized signed admin body was not rejected before reading");
+  assert(declaredStream.cancelled === true && declaredStream.pulls === 0,
+    "declared oversized signed admin body consumed attacker-controlled bytes before cancellation");
 }
 
 async function testAccountOperations() {
   const store = emptyOAuthStore();
   let saves = 0;
-  const save = async () => { saves += 1; };
+  const revocations = [];
+  const save = async (revocation) => { saves += 1; if (revocation) revocations.push(revocation); };
   const emptyList = await handleAccountAdminOperation({ request: request("GET", "/admin/accounts"), operation: "accounts", store, save, now: NOW });
   assert(emptyList.status === 200 && (await emptyList.json()).accounts.length === 0, "empty account list failed");
 
@@ -119,6 +162,11 @@ async function testAccountOperations() {
   });
   assert(unknown.status === 404, "unknown account removal did not return not_found");
   assert(saves >= 4, "account mutations were not persisted");
+  assert(revocations.length === 3
+    && revocations[0]?.accountId === editor.account_id && revocations[0]?.accountVersion === 1
+    && revocations[1]?.accountId === editor.account_id && revocations[1]?.accountVersion === 2
+    && revocations[2]?.accountId === editor.account_id && revocations[2]?.accountVersion === 3,
+  "account mutations did not revoke the exact previous account versions in commit order");
 }
 
 async function testClientOperations() {
@@ -132,19 +180,33 @@ async function testClientOperations() {
   };
   store.tokens[`sha256:${"a".repeat(64)}`] = tokenRecord(account, NOW + 300);
   refreshStore.tokens[`sha256:${"b".repeat(64)}`] = { ...tokenRecord(account, NOW + 600), issued_at: NOW, family_expires_at: NOW + 1200 };
-  const storage = new MemoryStorage();
-  const listed = await handleOAuthClientAdminOperation({ request: request("GET", "/admin/clients"), store, refreshStore, storage, now: NOW });
-  const clients = (await listed.json()).clients;
+  const revocations = [];
+  let saves = 0;
+  const save = async (revocation) => { saves += 1; revocations.push(revocation); };
+  const listed = await handleOAuthClientAdminOperation({ request: request("GET", "/admin/clients"), store, refreshStore, save, now: NOW });
+  const listedBody = await listed.json();
+  const clients = listedBody.clients;
   assert(clients.length === 1 && clients[0].active_access_tokens === 1 && clients[0].active_refresh_tokens === 1, "trusted client inventory lost token counts");
-  const invalid = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: "invalid" }), store, refreshStore, storage, now: NOW });
+  assert(clients[0].registration_revision === null && clients[0].registration_current === false,
+    "legacy client inventory did not surface its stale registration contract");
+  store.clients[CLIENT_ID].registration_revision = OAUTH_CLIENT_REGISTRATION_REVISION;
+  const relisted = await handleOAuthClientAdminOperation({ request: request("GET", "/admin/clients"), store, refreshStore, save, now: NOW });
+  const currentClient = (await relisted.json()).clients[0];
+  assert(currentClient.registration_revision === OAUTH_CLIENT_REGISTRATION_REVISION && currentClient.registration_current === true,
+    "current client inventory did not surface its registration contract revision");
+  assert(listedBody.maximum === 50, "client admin reported a capacity different from the DCR registration ceiling");
+  const invalid = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: "invalid" }), store, refreshStore, save, now: NOW });
   assert(invalid.status === 400, "invalid OAuth client id was accepted for revocation");
-  const method = await handleOAuthClientAdminOperation({ request: request("POST", "/admin/clients", {}), store, refreshStore, storage, now: NOW });
+  const method = await handleOAuthClientAdminOperation({ request: request("POST", "/admin/clients", {}), store, refreshStore, save, now: NOW });
   assert(method.status === 405 && method.headers.get("allow") === "GET, DELETE", "client admin accepted an unsupported method");
-  const unknown = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: `mcp_client_${"z".repeat(43)}` }), store, refreshStore, storage, now: NOW });
+  const unknown = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: `mcp_client_${"z".repeat(43)}` }), store, refreshStore, save, now: NOW });
   assert(unknown.status === 404, "unknown OAuth client revocation did not return not_found");
-  const removed = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: CLIENT_ID }), store, refreshStore, storage, now: NOW });
+  const removed = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: CLIENT_ID }), store, refreshStore, save, now: NOW });
   assert(removed.status === 200 && !store.clients[CLIENT_ID], "trusted OAuth client was not removed");
   assert(Object.keys(store.tokens).length === 0 && Object.keys(refreshStore.tokens).length === 0, "client revocation retained access or refresh tokens");
+  assert(saves === 1 && revocations[0]?.accountId === account.account_id
+    && revocations[0]?.accountVersion === account.version && revocations[0]?.clientId === CLIENT_ID,
+  "client revocation was not persisted with the bound account/client authority revocation");
 }
 
 async function testRefreshReplacementDerivation() {
@@ -175,11 +237,29 @@ async function testTokenRotationAndReplay() {
     client_id: CLIENT_ID, account_id: account.account_id, account_version: account.version, role: account.role,
     redirect_uri: REDIRECT, code_challenge: await pkceS256(verifier), scope: `${SERVER} offline_access`, resource: `${BASE}/mcp`, expires_at: NOW + 300,
   };
+  const familyRevocations = [];
   const options = {
     storage, tokenVersion: "token-version", serverName: SERVER,
     loadOAuthStore: async () => store,
     withLock: async (callback) => callback(),
+    saveStores: async (oauthStore, refreshStore, revocation) => {
+      familyRevocations.push(revocation);
+      await putWithAuthorityRevocation(storage, { oauth: oauthStore, ...oauthRefreshPersistenceEntries(refreshStore) }, revocation);
+    },
   };
+  for (const [override, expectedName] of [
+    [{ loadOAuthStore: async () => { throw new Error("simulated load failure"); } }, "oauth_token_stage_load_oauth"],
+    [{ withLock: async () => { throw new Error("simulated lock failure"); } }, "oauth_token_stage_lock"],
+  ]) {
+    let stagedError;
+    try {
+      await exchangeOAuthToken(formTokenRequest({
+        grant_type: "authorization_code", code, client_id: CLIENT_ID, redirect_uri: REDIRECT,
+        code_verifier: verifier, resource: `${BASE}/mcp`,
+      }), BASE, { ...options, ...override });
+    } catch (error) { stagedError = error; }
+    assert(stagedError?.name === expectedName, `authorization-code diagnostics lost ${expectedName}`);
+  }
   const dpopKeys = await createDpopFixture();
   const dpopIssuedAt = Math.floor(Date.now() / 1000);
   const invalidDpopProof = await createDpopProof({
@@ -245,7 +325,7 @@ async function testTokenRotationAndReplay() {
   for (const [overrides, expected] of [
     [{ client_id: `mcp_client_${"x".repeat(43)}` }, "invalid_grant"],
     [{ resource: "https://other.example.test/mcp" }, "invalid_target"],
-    [{ scope: SERVER }, "invalid_scope"],
+    [{ scope: `${SERVER} unknown_scope` }, "invalid_scope"],
   ]) {
     const rejected = await exchangeOAuthToken(formTokenRequest({
       grant_type: "refresh_token", refresh_token: second.refresh_token, client_id: CLIENT_ID,
@@ -277,18 +357,86 @@ async function testTokenRotationAndReplay() {
   assert(retryOverflow.status === 429 && (await retryOverflow.json()).error === "temporarily_unavailable", "refresh retry budget was not bounded");
 
   const refreshKey = `sha256:${await sha256Hex(first.refresh_token)}`;
-  const persistedRefresh = await storage.get("oauth-refresh");
+  const persistedRefresh = await loadOAuthRefreshStore(store, storage);
   persistedRefresh.consumed[refreshKey].consumed_at = Math.floor(Date.now() / 1000) - 60;
   persistedRefresh.consumed[refreshKey].retry_until = Math.floor(Date.now() / 1000) - 30;
-  await storage.put("oauth-refresh", persistedRefresh);
+  await saveOAuthRefreshStore(storage, persistedRefresh);
   const replay = await exchangeOAuthToken(formTokenRequest({
     grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
   }), BASE, options);
   assert(replay.status === 400 && (await replay.json()).error === "invalid_grant", "post-grace refresh-token replay was not rejected");
   const familyId = persistedRefresh.consumed[refreshKey].family_id;
+  assert(familyRevocations.at(-1)?.accountId === account.account_id
+    && familyRevocations.at(-1)?.accountVersion === account.version
+    && familyRevocations.at(-1)?.clientId === CLIENT_ID
+    && familyRevocations.at(-1)?.familyId === familyId,
+  "post-grace refresh replay did not persist the bound authority-family revocation");
   assert(!Object.values(store.tokens).some((token) => token.family_id === familyId), "post-grace replay did not revoke the complete access-token family");
-  const finalRefreshStore = await storage.get("oauth-refresh");
+  const finalRefreshStore = await loadOAuthRefreshStore(store, storage);
   assert(!Object.values(finalRefreshStore.tokens).some((token) => token.family_id === familyId), "post-grace replay retained refresh tokens");
+
+  const narrowCode = `mcp_code_${"n".repeat(43)}`;
+  store.codes[narrowCode] = {
+    client_id: CLIENT_ID, account_id: account.account_id, account_version: account.version, role: account.role,
+    redirect_uri: REDIRECT, code_challenge: await pkceS256(verifier), scope: `${SERVER} offline_access`, resource: `${BASE}/mcp`, expires_at: NOW + 300,
+  };
+  const narrowInitial = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "authorization_code", code: narrowCode, client_id: CLIENT_ID,
+    redirect_uri: REDIRECT, code_verifier: verifier, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  const narrowInitialPair = await narrowInitial.json();
+  assert(narrowInitial.status === 200, "narrow-scope refresh fixture authorization-code exchange failed");
+  const narrowed = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: narrowInitialPair.refresh_token, client_id: CLIENT_ID,
+    resource: `${BASE}/mcp`, scope: SERVER,
+  }), BASE, options);
+  const narrowedPair = await narrowed.json();
+  assert(narrowed.status === 200 && narrowedPair.scope === SERVER, "refresh-token access scope could not be narrowed to an originally granted subset");
+  const narrowedAccessKey = `sha256:${await sha256Hex(narrowedPair.access_token)}`;
+  assert(store.tokens[narrowedAccessKey]?.scope === SERVER, "narrowed refresh response did not persist the access token's reduced scope");
+  const narrowedRefreshKey = `sha256:${await sha256Hex(narrowedPair.refresh_token)}`;
+  const afterNarrow = await loadOAuthRefreshStore(store, storage);
+  assert(afterNarrow.tokens[narrowedRefreshKey]?.scope === `${SERVER} offline_access`, "replacement refresh token inherited the narrowed access scope instead of the original grant");
+  const consumedNarrowKey = `sha256:${await sha256Hex(narrowInitialPair.refresh_token)}`;
+  assert(afterNarrow.consumed[consumedNarrowKey]?.access_scope === SERVER, "consumed refresh marker did not retain the access scope needed for idempotent retry");
+  const narrowedRetry = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: narrowInitialPair.refresh_token, client_id: CLIENT_ID,
+    resource: `${BASE}/mcp`, scope: SERVER,
+  }), BASE, options);
+  const narrowedRetryPair = await narrowedRetry.json();
+  assert(narrowedRetry.status === 200
+    && narrowedRetryPair.access_token === narrowedPair.access_token
+    && narrowedRetryPair.refresh_token === narrowedPair.refresh_token
+    && narrowedRetryPair.scope === SERVER,
+  "same-scope concurrent retry did not reproduce the narrowed token pair");
+  const widenedRetry = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: narrowInitialPair.refresh_token, client_id: CLIENT_ID,
+    resource: `${BASE}/mcp`,
+  }), BASE, options);
+  assert(widenedRetry.status === 400 && (await widenedRetry.json()).error === "invalid_scope",
+    "changed-scope retry of a consumed refresh token was allowed to reinterpret a deterministic access token");
+  assert(store.tokens[narrowedAccessKey]?.scope === SERVER, "changed-scope retry widened the already issued deterministic access token");
+
+  const corruptCode = `mcp_code_${"q".repeat(43)}`;
+  store.codes[corruptCode] = {
+    client_id: CLIENT_ID, account_id: account.account_id, account_version: account.version, role: account.role,
+    redirect_uri: REDIRECT, code_challenge: await pkceS256(verifier), scope: "offline_access", resource: `${BASE}/mcp`, expires_at: NOW + 300,
+  };
+  const corruptCodeExchange = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "authorization_code", code: corruptCode, client_id: CLIENT_ID,
+    redirect_uri: REDIRECT, code_verifier: verifier, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  assert(corruptCodeExchange.status === 400 && (await corruptCodeExchange.json()).error === "invalid_grant",
+    "persisted authorization code without the MCP resource scope minted credentials");
+
+  const corruptRefreshStore = await storage.get("oauth-refresh");
+  corruptRefreshStore.tokens[narrowedRefreshKey].scope = "offline_access";
+  await storage.put("oauth-refresh", corruptRefreshStore);
+  const corruptRefresh = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: narrowedPair.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  assert(corruptRefresh.status === 400 && (await corruptRefresh.json()).error === "invalid_grant",
+    "persisted refresh token without the MCP resource scope remained rotatable");
 
   const unsupported = await exchangeOAuthToken(formTokenRequest({ grant_type: "password" }), BASE, options);
   assert(unsupported.status === 400 && (await unsupported.json()).error === "unsupported_grant_type", "unsupported OAuth grant was accepted");
@@ -355,6 +503,25 @@ async function testRequestBodyStreamingBoundaries() {
     "declared oversized body was read instead of being cancelled immediately");
 }
 
+function streamedText(text, chunkBytes) {
+  const bytes = new TextEncoder().encode(text);
+  let offset = 0;
+  let pulls = 0;
+  let cancelled = false;
+  const stream = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      if (offset >= bytes.byteLength) { controller.close(); return; }
+      const end = Math.min(bytes.byteLength, offset + chunkBytes);
+      controller.enqueue(bytes.slice(offset, end));
+      offset = end;
+      if (offset >= bytes.byteLength) controller.close();
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  return { stream, get pulls() { return pulls; }, get cancelled() { return cancelled; } };
+}
+
 function countedBody(chunkBytes) {
   let pulls = 0;
   let cancelled = false;
@@ -397,20 +564,110 @@ function formTokenRequest(body, headers = {}) {
   });
 }
 
+async function testAuthorityWritesAvoidBulkPut() {
+  const storage = new MemoryStorage();
+  const ordinaryPut = storage.put.bind(storage);
+  let bulkPutCalled = false;
+  storage.put = async (key, value) => {
+    if (key && typeof key === "object") {
+      bulkPutCalled = true;
+      throw new Error("synthetic bulk put rejection");
+    }
+    return ordinaryPut(key, value);
+  };
+  await putWithAuthorityRevocation(storage, {
+    oauth: { marker: "oauth" },
+    "oauth-refresh": { marker: "refresh" },
+  });
+  assert(bulkPutCalled === false, "authority persistence returned to the deployment-incompatible bulk put path");
+  assert(storage.values.get("oauth")?.marker === "oauth" && storage.values.get("oauth-refresh")?.marker === "refresh",
+    "authority persistence transaction did not commit every protected state entry");
+  await expectReject(() => putWithAuthorityRevocation(storage, {
+    "authority-revocations": { schema_version: 1, records: [] },
+  }), "protected writes cannot replace the authority revocation queue");
+  assert(!storage.values.has("authority-revocations"), "reserved authority queue key was writable through protected-state entries");
+}
+
+async function testAuthorityRevocationQueue() {
+  const storage = new MemoryStorage();
+  const accountId = `acct_${"q".repeat(32)}`;
+  const clientId = `mcp_client_${"q".repeat(43)}`;
+  const familyId = `mcp_family_${"q".repeat(43)}`;
+  const family = { accountId, accountVersion: 7, clientId, familyId };
+  await putWithAuthorityRevocation(storage, { oauth: { marker: 1 } }, family, NOW);
+  let queued = await authorityRevocations(storage);
+  assert(queued.length === 1 && storage.values.get("oauth")?.marker === 1,
+    "authority revocation was not committed with its protected state mutation");
+  const wire = authorityRevocationWireMessage(queued[0]);
+  assert(wire.type === "authority_revoke" && wire.family_id === familyId
+    && recordMatchesAuthorityRevocation({
+      owner_kind: "account", owner_account_id: accountId, owner_account_version: 7,
+      owner_client_id: clientId, owner_family_id: familyId,
+    }, family), "authority revocation wire/matcher lost the exact principal binding");
+  await putWithAuthorityRevocation(storage, { oauth: { marker: 2 } }, { accountId, accountVersion: 7 }, NOW + 1);
+  queued = await authorityRevocations(storage);
+  assert(queued.length === 1 && !queued[0].client_id,
+    "account-wide authority revocation did not subsume narrower client/family entries");
+  assert(await acknowledgeAuthorityRevocation(storage, queued[0].id), "authority revocation acknowledgement did not remove the durable obligation");
+  assert((await authorityRevocations(storage)).length === 0, "acknowledged authority revocation remained queued");
+  assert(!await acknowledgeAuthorityRevocation(storage, "invalid"), "invalid authority revocation acknowledgement was accepted");
+}
+
+async function testAuthorityRevocationCapacityBudget() {
+  const records = [];
+  for (let index = 0; index < 1_024; index += 1) {
+    const suffix = index.toString(36).padStart(6, "0");
+    records.push({
+      id: `revoke_${"r".repeat(37)}${suffix}`,
+      account_id: `acct_${"a".repeat(90)}${suffix}`,
+      account_version: Number.MAX_SAFE_INTEGER,
+      client_id: `mcp_client_${"c".repeat(37)}${suffix}`,
+      family_id: `mcp_family_${"f".repeat(37)}${suffix}`,
+      queued_at: Number.MAX_SAFE_INTEGER,
+    });
+  }
+  const queue = { schema_version: 1, records };
+  const encodedBytes = new TextEncoder().encode(JSON.stringify(queue)).byteLength;
+  assert(encodedBytes < 512_000,
+    "maximum authority revocation queue no longer retains a conservative single-value size budget");
+  const storage = new MemoryStorage({ "authority-revocations": queue });
+  assert((await authorityRevocations(storage)).length === 1_024,
+    "maximum bounded authority revocation queue was rejected");
+  await storage.put("authority-revocations", { ...queue, future_payload: "x" });
+  await expectReject(() => authorityRevocations(storage), "authority revocation state is invalid");
+  await storage.put("authority-revocations", { schema_version: 1, records: [{ ...records[0], future_payload: "x" }] });
+  await expectReject(() => authorityRevocations(storage), "authority revocation state is invalid");
+  await storage.put("authority-revocations", { schema_version: 1, records: [...records, records[0]] });
+  await expectReject(() => authorityRevocations(storage), "authority revocation state is invalid");
+}
+
 class MemoryStorage {
   constructor(initial = {}) { this.values = new Map(Object.entries(structuredClone(initial))); }
-  async get(key) { return structuredClone(this.values.get(key)); }
+  async get(key) {
+    if (Array.isArray(key)) return new Map(key.flatMap((name) => this.values.has(name) ? [[name, structuredClone(this.values.get(name))]] : []));
+    return structuredClone(this.values.get(key));
+  }
   async put(key, value) {
     if (key && typeof key === "object") {
       for (const [name, entry] of Object.entries(key)) this.values.set(name, structuredClone(entry));
     } else this.values.set(key, structuredClone(value));
   }
-  async transaction(callback) { return callback(this); }
+  async delete(key) { return this.values.delete(key); }
+  async transaction(callback) {
+    const transaction = new MemoryStorage();
+    transaction.values = new Map([...this.values].map(([key, value]) => [key, structuredClone(value)]));
+    const result = await callback(transaction);
+    this.values = transaction.values;
+    return result;
+  }
 }
 
 await testAdminAuthentication();
 await testAccountOperations();
 await testClientOperations();
+await testAuthorityWritesAvoidBulkPut();
+await testAuthorityRevocationQueue();
+await testAuthorityRevocationCapacityBudget();
 await testRefreshReplacementDerivation();
 await testTokenRotationAndReplay();
 await testRefreshStateLifecycle();

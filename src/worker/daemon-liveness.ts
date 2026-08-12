@@ -18,8 +18,7 @@ export interface DaemonLivenessFields {
 }
 
 export function daemonLastSeenMs(attachment: DaemonLivenessFields | undefined | null): number {
-  const raw = attachment?.lastSeenAt || attachment?.connectedAt || "";
-  return Date.parse(raw);
+  return Date.parse(attachment?.lastSeenAt || "");
 }
 
 export function isLiveDaemonAttachment(

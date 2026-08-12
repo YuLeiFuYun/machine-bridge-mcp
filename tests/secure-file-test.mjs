@@ -1,8 +1,8 @@
 import { renameSync, writeFileSync } from "node:fs";
-import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectPathIfPresentSync, openRegularFileSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, unlinkRegularFileIfIdentitySync } from "../src/local/secure-file.mjs";
+import { chmodRegularFileIfIdentitySync, inspectPathIfPresentSync, openRegularFileSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "../src/local/secure-file.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "../src/local/filesystem-identity.mjs";
 import { removeOwnedJsonFileSync } from "../src/local/exclusive-file.mjs";
 import { preserveFileSnapshotSync } from "../src/local/file-snapshot-preservation.mjs";
@@ -61,6 +61,19 @@ try {
   }
   expectThrow(() => readBoundedRegularFileSync(file, -1), "maximum file size");
   if (process.platform !== "win32") {
+    const chmodSource = join(root, "identity-chmod.txt");
+    await writeFile(chmodSource, "owned-before-chmod", { mode: 0o600 });
+    const chmodSnapshot = readBoundedRegularFileWithInfoSync(chmodSource, 1024, "identity chmod test", { verifyPathIdentity: true });
+    await rm(chmodSource, { force: true });
+    await writeFile(chmodSource, "replacement-before-chmod", { mode: 0o600 });
+    expectThrow(() => chmodRegularFileIfIdentitySync(chmodSource, chmodSnapshot.identity, 0o644, "identity chmod test"), "changed before permission update");
+    const replacementMode = (await stat(chmodSource)).mode & 0o777;
+    if (replacementMode !== 0o600 || await readFile(chmodSource, "utf8") !== "replacement-before-chmod") {
+      throw new Error("identity-checked chmod modified a replacement path");
+    }
+  }
+
+  if (process.platform !== "win32") {
     const unlinkSource = join(root, "identity-unlink.txt");
     const unlinkAlias = join(root, "identity-unlink.alias");
     await writeFile(unlinkSource, "identity-unlink", { mode: 0o600 });
@@ -110,6 +123,27 @@ try {
     throw new Error("snapshot preservation lost primary-before-cleanup AggregateError causality");
   }
 
+  let transientLinkAttempts = 0;
+  const transientLinkResult = retryTransientMultipleLinksSync(() => {
+    transientLinkAttempts += 1;
+    if (transientLinkAttempts < 4) throw Object.assign(new Error("synthetic publication link"), { code: "MBM_MULTIPLE_HARD_LINKS" });
+    return "settled";
+  });
+  if (transientLinkResult !== "settled" || transientLinkAttempts !== 4) {
+    throw new Error("exclusive-publication multiple-link retry did not settle within its fixed budget");
+  }
+  let persistentLinkAttempts = 0;
+  let persistentLinkError = null;
+  try {
+    retryTransientMultipleLinksSync(() => {
+      persistentLinkAttempts += 1;
+      throw Object.assign(new Error("persistent multiple hard links"), { code: "MBM_MULTIPLE_HARD_LINKS" });
+    });
+  } catch (error) { persistentLinkError = error; }
+  if (persistentLinkAttempts !== 4 || persistentLinkError?.code !== "MBM_MULTIPLE_HARD_LINKS") {
+    throw new Error("exclusive-publication multiple-link retry became unbounded or failed open");
+  }
+
   const reusedGenerationA = filesystemIdentity({ dev: 5n, ino: 8n, ctimeNs: 100n }, "generation A");
   const reusedGenerationB = filesystemIdentity({ dev: 5n, ino: 8n, ctimeNs: 101n }, "generation B");
   if (sameFilesystemIdentity(reusedGenerationA, reusedGenerationB)) throw new Error("filesystem identity accepted same-inode generation reuse");
@@ -119,11 +153,17 @@ try {
   const highIdentityB = filesystemIdentity({ dev: 7n, ino: 9007199254740993n }, "high identity B");
   if (sameFilesystemIdentity(highIdentityA, highIdentityB)) throw new Error("lossless filesystem identity collapsed adjacent >2^53 inode values");
   expectThrow(() => filesystemIdentity({ dev: 7, ino: Number(9007199254740993n) }, "unsafe injected identity"), "cannot be represented losslessly");
-  expectThrow(() => openRegularFileSync(file, 0, {
-    verifyPathIdentity: true,
-    fstatSync() { return syntheticStat(7n, 9007199254740992n); },
-    lstatSync() { return syntheticStat(7n, 9007199254740993n); },
-  }), "identity changed while opening");
+  let identityChanged = null;
+  try {
+    openRegularFileSync(file, 0, {
+      verifyPathIdentity: true,
+      fstatSync() { return syntheticStat(7n, 9007199254740992n); },
+      lstatSync() { return syntheticStat(7n, 9007199254740993n); },
+    });
+  } catch (error) { identityChanged = error; }
+  if (identityChanged?.code !== "MBM_IDENTITY_CHANGED" || !String(identityChanged.message).includes("identity changed while opening")) {
+    throw new Error("secure file identity change lost its stable retry classification");
+  }
 
   const safeNumberIdentity = filesystemIdentity({ dev: 9, ino: 11 });
   if (safeNumberIdentity.dev !== 9n || safeNumberIdentity.ino !== 11n

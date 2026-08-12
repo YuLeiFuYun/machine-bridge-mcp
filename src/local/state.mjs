@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
@@ -8,10 +8,12 @@ import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createDeviceIdentity } from "./device-identity.mjs";
 import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
-import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
+import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
 import { isPlainRecord } from "./records.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 import { appName, packageRoot } from "./package-identity.mjs";
+import { inspectStateRootGeneration, pruneRetiredStateRootDirectories, removeStateRootGenerationIfCurrent } from "./state-root-retirement.mjs";
+import { validateOwnedStateNamespaces } from "./state-root-owned-namespaces.mjs";
 
 const STATE_MARKER = ".machine-bridge-mcp-state";
 const STATE_MARKER_SCHEMA = 2;
@@ -114,16 +116,21 @@ export function selectedWorkspace(stateRoot = defaultStateRoot()) {
 
 export function validateStateRootForRemoval(stateRoot = defaultStateRoot()) {
   const root = path.resolve(expandHome(stateRoot));
-  if (!existsSync(root)) return { exists: false, root };
+  if (!inspectPathIfPresentSync(root, "state root")) return { exists: false, root };
   const canonical = assertSafeStateRootForRemoval(root);
   return { exists: true, root: canonical };
 }
 
 export function removeStateRoot(stateRoot = defaultStateRoot()) {
-  const validation = validateStateRootForRemoval(stateRoot);
+  const requested = path.resolve(expandHome(stateRoot));
+  pruneRetiredStateRootDirectories(requested, assertSafeStateRootForRemoval);
+  const validation = validateStateRootForRemoval(requested);
   if (!validation.exists) return false;
-  rmSync(validation.root, { recursive: true, force: true });
-  return true;
+  const generation = inspectStateRootGeneration(validation.root);
+  if (removeStateRootGenerationIfCurrent(validation.root, generation, assertSafeStateRootForRemoval)) return true;
+  pruneRetiredStateRootDirectories(requested, assertSafeStateRootForRemoval);
+  if (!inspectPathIfPresentSync(validation.root, "state root")) return false;
+  throw new Error("state root changed during generation-bound removal; state requires inspection");
 }
 
 function workspaceHash(workspace) {
@@ -141,7 +148,7 @@ function profileDirForWorkspace(workspace, stateRoot = defaultStateRoot()) {
 function canonicalizePotentialPath(input) {
   let existing = path.resolve(input);
   const suffix = [];
-  while (!existsSync(existing)) {
+  while (!inspectPathIfPresentSync(existing, "path identity")) {
     const parent = path.dirname(existing);
     if (parent === existing) break;
     suffix.unshift(path.basename(existing));
@@ -193,12 +200,13 @@ export function loadState(workspace, options = {}) {
   const profileDir = profileDirForWorkspace(canonicalWorkspace, stateRoot);
   const statePath = path.join(profileDir, "state.json");
   ensureOwnerOnlyDir(profileDir);
+  removeObsoleteOperationLeaseState(profileDir);
   const recoveryPath = recoveryMarkerPath(statePath);
-  const recoveryPending = existsSync(recoveryPath);
+  const recoveryPending = Boolean(inspectPathIfPresentSync(recoveryPath, "state recovery marker"));
   const recoverySnapshot = recoveryPending ? readRecoveryMarker(recoveryPath, statePath) : null;
   const recoveryMarker = recoverySnapshot?.marker || null;
   let state = {};
-  if (existsSync(statePath)) {
+  if (inspectPathIfPresentSync(statePath, "workspace state")) {
     ownerOnlyFile(statePath);
     state = readJsonObjectOrBackup(statePath, { recoveryPath });
     if (state.schemaVersion !== STATE_SCHEMA_VERSION) {
@@ -225,6 +233,22 @@ export function loadState(workspace, options = {}) {
   return state;
 }
 
+function removeObsoleteOperationLeaseState(profileDir) {
+  const file = path.join(profileDir, "operation-leases.json");
+  const info = inspectPathIfPresentSync(file, "obsolete operation lease state", {
+    lstatSync: (target) => lstatSync(target, { bigint: true }),
+  });
+  if (!info) return false;
+  if (info.isSymbolicLink() || !info.isFile() || info.nlink !== 1n) {
+    throw new Error("obsolete operation lease state must be a single-link regular file before migration cleanup");
+  }
+  const identity = filesystemIdentity(info, "obsolete operation lease state");
+  if (!unlinkRegularFileIfIdentitySync(file, identity, "obsolete operation lease state")) {
+    throw new Error("obsolete operation lease state changed before migration cleanup");
+  }
+  return true;
+}
+
 export function saveState(state) {
   const envelope = assertWorkspaceStateEnvelope(state);
   assertNoForeignMaintenance(envelope.stateRoot);
@@ -232,7 +256,7 @@ export function saveState(state) {
   ensureOwnerOnlyDir(envelope.profileDir);
   atomicWriteJson(envelope.statePath, { ...state });
   const recoveryPath = recoveryMarkerPath(envelope.statePath);
-  if (existsSync(recoveryPath)) {
+  if (inspectPathIfPresentSync(recoveryPath, "state recovery marker")) {
     const recoverySnapshot = readRecoveryMarker(recoveryPath, envelope.statePath);
     if (!unlinkRegularFileIfIdentitySync(recoveryPath, recoverySnapshot.identity, "state recovery marker")) {
       throw new Error("workspace state recovery marker changed before removal");
@@ -326,8 +350,7 @@ export async function acquireMachineServiceLockWithWait(options = {}) {
   const metadata = { operation: options.operation };
   let lock = acquireMachineServiceLock(metadata, options);
   if (lock.acquired) return lock;
-  const ownerPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "another process";
-  logger.info?.(`waiting for ${ownerPid} to finish the current machine-service operation`);
+  logger.info?.("waiting for another process to finish the current machine-service operation");
   const deadline = createMonotonicDeadline(timeoutMs);
   while (!deadline.expired()) {
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline.remainingMs()))); });
@@ -344,7 +367,7 @@ export async function acquireMachineServiceLockWithWait(options = {}) {
 
 export function acquireMaintenanceLock(stateRoot, metadata = {}) {
   const root = path.resolve(expandHome(stateRoot));
-  if (!existsSync(root)) throw new Error("cannot acquire maintenance lock for a missing state root");
+  if (!inspectPathIfPresentSync(root, "state root")) throw new Error("cannot acquire maintenance lock for a missing state root");
   const operation = typeof metadata.operation === "string" && /^[a-z][a-z0-9._-]{0,63}$/.test(metadata.operation)
     ? metadata.operation
     : "maintenance";
@@ -361,7 +384,6 @@ export function assertStateMaintenanceAvailable(stateRoot) {
 function assertNoForeignMaintenance(stateRoot) {
   if (!stateRoot) return;
   const file = path.join(path.resolve(expandHome(stateRoot)), "maintenance.lock");
-  if (!existsSync(file)) return;
   const snapshot = readProcessLockSnapshot(file);
   if (!snapshot) return;
   if (!snapshot.owner) {
@@ -406,8 +428,7 @@ export async function acquireStartupLockWithWait(state, options = {}) {
   const metadata = { operation: options.operation };
   let lock = acquireStartupLock(state, metadata);
   if (lock.acquired) return lock;
-  const ownerPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "another process";
-  logger.info?.(`waiting for ${ownerPid} to finish the current startup/state operation`);
+  logger.info?.("waiting for another process to finish the current startup/state operation");
   const deadline = createMonotonicDeadline(timeoutMs);
   while (!deadline.expired()) {
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline.remainingMs()))); });
@@ -482,10 +503,10 @@ function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}
 function readProcessLockSnapshot(lockPath) {
   let opened;
   try {
-    opened = readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
+    opened = retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
       verifyPathIdentity: true,
       rejectMultipleLinks: true,
-    });
+    }));
   } catch (error) {
     if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw error;
@@ -682,6 +703,9 @@ function assertSafeStateRootForRemoval(root) {
     path.resolve(packageRoot),
   ]);
   if (forbidden.has(canonical)) throw new Error(`refusing to remove unsafe state root: ${canonical}`);
+  if (currentEntrypointInsideStateRoot(canonical)) {
+    throw new Error("refusing to remove a state root that contains the currently executing Machine Bridge CLI; run uninstall from an installation outside that state root");
+  }
   if (looksLikeSourceTree(canonical) || stateRootMatchesRecordedWorkspace(canonical)) {
     throw new Error(`refusing to remove state root that appears to be a workspace: ${canonical}`);
   }
@@ -689,6 +713,7 @@ function assertSafeStateRootForRemoval(root) {
   if (!hasOnlyStateEntries(entries)) {
     throw new Error(`refusing to remove state root containing unrelated entries: ${canonical}`);
   }
+  validateOwnedStateNamespaces(canonical);
   const marker = path.join(canonical, STATE_MARKER);
   if (existsSync(marker)) {
     assertValidStateMarker(marker);
@@ -707,8 +732,17 @@ function assertValidStateMarker(marker) {
 }
 
 function hasOnlyStateEntries(entries) {
-  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "maintenance.lock", "profiles", "logs", "service-environment.json", "service-launcher.cmd"]);
+  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "maintenance.lock", "profiles", "logs", "service-environment.json", "service-launcher.cmd", "toolchains", "release-channels", "release-tasks"]);
   return entries.every((entry) => allowed.has(entry) || /^config\.json\.corrupt-\d+(?:-[a-f0-9]{8})?$/.test(entry));
+}
+
+function currentEntrypointInsideStateRoot(root) {
+  const entry = String(process.argv[1] || "").trim();
+  if (!entry) return false;
+  let resolved;
+  try { resolved = canonicalizePotentialPath(entry); } catch { resolved = path.resolve(entry); }
+  const relative = path.relative(root, resolved);
+  return Boolean(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function looksLikeSourceTree(root) {
@@ -720,13 +754,12 @@ function stateRootMatchesRecordedWorkspace(root) {
   if (typeof config?.selectedWorkspace === "string" && sameWorkspaceIdentity(config.selectedWorkspace, root)) return true;
 
   const profiles = path.join(root, "profiles");
-  let entries;
-  try {
-    entries = readdirSync(profiles, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw new Error("could not inspect state-root profiles before removal", { cause: error });
+  const profilesInfo = inspectPathIfPresentSync(profiles, "state-root profiles");
+  if (!profilesInfo) return false;
+  if (profilesInfo.isSymbolicLink() || !profilesInfo.isDirectory()) {
+    throw new Error("state-root profiles must be a real directory before removal");
   }
+  const entries = readdirSync(profiles, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const profileDir = path.join(profiles, entry.name);
@@ -778,7 +811,7 @@ function cleanupStaleAtomicTemps(dir, baseName = "") {
     const file = path.join(dir, name);
     try {
       if (now - statSync(file).mtimeMs > 60 * 60 * 1000) unlinkSync(file);
-    } catch {}
+    } catch { /* Stale-temp cleanup is opportunistic and must not block the authoritative state write. */ }
   }
 }
 
@@ -795,7 +828,8 @@ function pruneBackups(filePath, keep) {
     return;
   }
   for (const backup of backups.slice(keep)) {
-    try { unlinkSync(backup.path); } catch {}
+    try { unlinkSync(backup.path); }
+    catch { /* Backup pruning is bounded housekeeping; retained backups are safer than failing state recovery. */ }
   }
 }
 

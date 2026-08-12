@@ -33,15 +33,13 @@ export function createRuntimeRelayConnection(runtime, { workerUrl, deviceIdentit
     onMessage: (data, relayContext) => handleRelayData(runtime, data, relayContext),
     onDisconnect: () => runtime.handleRelayDisconnect(),
     onReady: () => runtime.handleRelayReady(),
-    onSuperseded: () => {
-      runtime.terminateActiveProcesses("SIGKILL");
-      runtime.processSessionManager.clear();
-      runtime.onSuperseded?.();
+    onSuperseded: async () => {
+      await runtime.stop();
+      await runtime.onSuperseded?.();
     },
-    onFatal: (error) => {
-      runtime.terminateActiveProcesses("SIGKILL");
-      runtime.processSessionManager.clear();
-      onFatal?.(error);
+    onFatal: async (error) => {
+      await runtime.stop();
+      await onFatal?.(error);
     },
   });
 }

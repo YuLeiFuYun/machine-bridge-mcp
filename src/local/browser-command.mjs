@@ -7,6 +7,11 @@ const FORM_ACTIONS = new Set(["fill", "select", "check", "uncheck", "click"]);
 const WAIT_STATES = new Set(["attached", "detached", "visible", "hidden", "enabled", "editable", "checked", "unchecked"]);
 const LOAD_STATES = new Set(["domcontentloaded", "complete"]);
 const INPUT_MODES = new Set(["auto", "trusted", "dom"]);
+const MUTATING_BROWSER_METHODS = new Set(["manage_tabs", "action", "fill_form", "upload_files"]);
+
+export function browserMethodMayMutate(value) {
+  return MUTATING_BROWSER_METHODS.has(String(value || ""));
+}
 
 export function normalizeBrowserAction(value) {
   const action = String(value || "").trim();

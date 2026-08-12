@@ -1,7 +1,9 @@
-importScripts("browser-error-boundary.js", "devtools-input.js", "browser-operations.js");
+importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-input.js", "browser-operations.js");
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
+let connectGeneration = 0;
+let authenticating = false;
 const MAX_RESULT_BYTES = 7 * 1024 * 1024;
 const BROWSER_EXTENSION_PROTOCOL = 3;
 const HANDSHAKE_TIMEOUT_MS = 3000;
@@ -12,45 +14,33 @@ chrome.runtime.onStartup.addListener(() => { ensureReconnectAlarm(); void connec
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "machine-bridge-reconnect") void connectFromStorage();
 });
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "pair") return false;
-  pairConfiguration(message.endpoint, message.token, { replace: false, senderUrl: sender.url || "" })
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "pair_bootstrap") return false;
+  pairFromBootstrap(message.port, message.grant, { replace: false })
     .then(sendResponse)
     .catch(() => sendResponse({ ok: false }));
   return true;
 });
 chrome.action.onClicked.addListener((tab) => void handleActionClick(tab));
 async function handleActionClick(tab) {
-  if (tab?.id && parsePairingPage(tab.url)) {
-    await confirmRepairFromTab(tab);
+  const pairingPage = tab?.id ? browserBrokerAuth().parsePairingPage(tab.url) : null;
+  if (pairingPage) {
+    try {
+      const material = await chrome.tabs.sendMessage(tab.id, { type: "machine_bridge_pairing_material" });
+      if (material?.grant && Number.isInteger(Number(material.port))) {
+        const paired = await pairFromBootstrap(material.port, material.grant, { replace: true });
+        await setPairingPageStatus(tab.id, paired.ok === true ? "Paired. You may close this tab." : "Pairing failed.");
+        return;
+      }
+    } catch {
+      // A token-free or stale pairing tab has no isolated bootstrap material; fall through to the explicit re-pair instruction.
+    }
+    await setPairingPageStatus(tab.id, "Pairing grant unavailable. Run pair_browser_extension with opening enabled again.").catch(() => {});
     return;
   }
   const current = await chrome.storage.local.get(["endpoint"]);
-  const pairUrl = pairingUrlFromEndpoint(current.endpoint) || "http://127.0.0.1:39393/pair";
+  const pairUrl = browserBrokerAuth().pairingUrlFromEndpoint(current.endpoint) || "http://127.0.0.1:39393/pair";
   await chrome.tabs.create({ url: pairUrl });
-}
-function pairingUrlFromEndpoint(endpoint) {
-  const parsed = parseBrokerEndpoint(endpoint);
-  return parsed ? `http://127.0.0.1:${parsed.port}/pair` : "";
-}
-function parsePairingPage(value) {
-  let parsed;
-  try { parsed = new URL(String(value || "")); } catch { return null; }
-  const port = Number(parsed.port);
-  if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1" || parsed.pathname !== "/pair"
-      || parsed.username || parsed.password || parsed.search || parsed.hash
-      || !Number.isInteger(port) || port < 1024 || port > 65535) return null;
-  return parsed;
-}
-
-function parseBrokerEndpoint(value) {
-  let parsed;
-  try { parsed = new URL(String(value || "")); } catch { return null; }
-  const port = Number(parsed.port);
-  if (parsed.protocol !== "ws:" || parsed.hostname !== "127.0.0.1" || parsed.pathname !== "/extension"
-      || parsed.username || parsed.password || parsed.search || parsed.hash
-      || !Number.isInteger(port) || port < 1024 || port > 65535) return null;
-  return parsed;
 }
 
 function setConnectionState(state) {
@@ -93,13 +83,17 @@ function sendSocketQuietly(ws, payload) {
   }
 }
 
-async function pairConfiguration(rawEndpoint, rawToken, { replace, senderUrl }) {
+async function pairFromBootstrap(port, grant, { replace }) {
+  const bootstrap = browserPairingBootstrap();
+  const candidate = await bootstrap.bootstrapPairing(port, grant);
+  return pairConfiguration(candidate.endpoint, candidate.token, { replace });
+}
+
+async function pairConfiguration(rawEndpoint, rawToken, { replace }) {
   const endpoint = String(rawEndpoint || "");
   const token = String(rawToken || "");
-  const pairingPage = parsePairingPage(senderUrl);
-  const brokerEndpoint = parseBrokerEndpoint(endpoint);
-  if (!pairingPage) return { ok: false, error: "invalid_pairing_page" };
-  if (!brokerEndpoint || pairingPage.port !== brokerEndpoint.port || !/^[A-Za-z0-9_-]{32,100}$/.test(token)) return { ok: false, error: "invalid_pairing_material" };
+  const brokerEndpoint = browserBrokerAuth().parseBrokerEndpoint(endpoint);
+  if (!brokerEndpoint || !/^[A-Za-z0-9_-]{32,100}$/.test(token)) return { ok: false, error: "invalid_pairing_material" };
   const current = await chrome.storage.local.get(["endpoint", "token"]);
   const alreadyPaired = Boolean(current.endpoint && current.token);
   const samePairing = current.endpoint === endpoint && current.token === token;
@@ -110,54 +104,28 @@ async function pairConfiguration(rawEndpoint, rawToken, { replace, senderUrl }) 
       && socket.machineBridgeToken === token) {
     return { ok: true, replaced: false, already_connected: true };
   }
-  if (alreadyPaired && !replace && (current.endpoint !== endpoint || current.token !== token)) {
-    return { ok: false, requires_manual_repair: true };
-  }
+  if (alreadyPaired && !replace && !samePairing) return { ok: false, requires_manual_repair: true };
   setConnectionState("connecting");
   try {
     const connectedSocket = await connect(endpoint, token, { reconnect: false });
     await chrome.storage.local.set({ endpoint, token });
     connectedSocket.reconnectEnabled = true;
     if (connectedSocket.readyState !== WebSocket.OPEN || connectedSocket.bridgeReady !== true) void connect(endpoint, token).catch(() => {});
-    return { ok: true, replaced: alreadyPaired && (current.endpoint !== endpoint || current.token !== token) };
+    return { ok: true, replaced: alreadyPaired && !samePairing };
   } catch (error) {
     if (current.endpoint && current.token) void connect(current.endpoint, current.token).catch(() => {});
     throw error;
   }
 }
 
-async function confirmRepairFromTab(tab) {
-  if (!tab?.id || !parsePairingPage(tab.url)) return;
-  try {
-    const [result] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => ({
-        endpoint: `ws://127.0.0.1:${document.querySelector('meta[name="machine-bridge-browser-port"]')?.content || ""}/extension`,
-        token: document.querySelector('meta[name="machine-bridge-browser-token"]')?.content || "",
-      }),
-    });
-    const paired = await pairConfiguration(result?.result?.endpoint, result?.result?.token, { replace: true, senderUrl: tab.url });
-    await setPairingPageStatus(
-      tab.id,
-      paired.ok === true ? "Paired. You may close this tab." : "Pairing failed.",
-    );
-  } catch {
-    ignoreBrowserApiCall(() => setPairingPageStatus(
-      tab.id,
-      "Pairing failed. Reload this page and confirm that the expected extension build is loaded.",
-    ));
-  }
+function setPairingPageStatus(tabId, text) {
+  return chrome.tabs.sendMessage(tabId, { type: "machine_bridge_pairing_status", text });
 }
 
-function setPairingPageStatus(tabId, text) {
-  return chrome.scripting.executeScript({
-    target: { tabId },
-    func: (value) => {
-      const status = document.getElementById("status");
-      if (status) status.textContent = value;
-    },
-    args: [text],
-  });
+function browserPairingBootstrap() {
+  const bootstrap = globalThis.__machineBridgePairingBootstrap;
+  if (!bootstrap || typeof bootstrap.bootstrapPairing !== "function") throw new Error("browser pairing bootstrap module is unavailable");
+  return bootstrap;
 }
 
 ensureReconnectAlarm();
@@ -168,7 +136,7 @@ function ensureReconnectAlarm() {
 }
 
 async function connectFromStorage() {
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  if (authenticating || (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING))) return;
   const value = await chrome.storage.local.get(["endpoint", "token"]);
   if (value.endpoint && value.token) {
     setConnectionState("connecting");
@@ -178,7 +146,8 @@ async function connectFromStorage() {
   }
 }
 
-function connect(endpoint, token, { reconnect = true } = {}) {
+async function connect(endpoint, token, { reconnect = true } = {}) {
+  const generation = ++connectGeneration;
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
   if (socket) {
@@ -187,8 +156,15 @@ function connect(endpoint, token, { reconnect = true } = {}) {
     socket.keepaliveTimer = null;
     cancelRequestsForSocket(socket);
     closeSocketQuietly(socket);
+    socket = null;
   }
-  const ws = new WebSocket(endpoint, [`mbm.${token}`]);
+  authenticating = true;
+  setConnectionState("connecting");
+  let protocol;
+  try { protocol = await extensionBrokerProtocol(endpoint, token); }
+  finally { if (generation === connectGeneration) authenticating = false; }
+  if (generation !== connectGeneration) throw new Error("browser connection was superseded");
+  const ws = new WebSocket(endpoint, [protocol]);
   socket = ws;
   ws.bridgeReady = false;
   ws.serverHelloSeen = false;
@@ -196,7 +172,6 @@ function connect(endpoint, token, { reconnect = true } = {}) {
   ws.machineBridgeToken = token;
   ws.reconnectEnabled = reconnect;
   ws.keepaliveTimer = null;
-  setConnectionState("connecting");
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
     const settle = (error = null) => {
@@ -229,6 +204,14 @@ function connect(endpoint, token, { reconnect = true } = {}) {
     };
   });
 }
+
+function browserBrokerAuth() {
+  const auth = globalThis.__machineBridgeBrokerAuth;
+  if (!auth || typeof auth.extensionProtocol !== "function") throw new Error("browser broker authentication module is unavailable");
+  return auth;
+}
+
+function extensionBrokerProtocol(endpoint, token) { return browserBrokerAuth().extensionProtocol(endpoint, token); }
 
 function scheduleReconnect(endpoint, token) {
   clearTimeout(reconnectTimer);

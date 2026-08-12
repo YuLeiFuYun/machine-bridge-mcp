@@ -3,7 +3,7 @@ import path from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
-import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
 
 const MAX_LOCK_BYTES = 8 * 1024;
 const DEFAULT_WAIT_MS = 5_000;
@@ -31,7 +31,7 @@ export async function withOwnerStateLock(root, callback, options = {}) {
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      const inspected = readLockOwner(lockPath, purpose);
+      const inspected = retryTransientMultipleLinksSync(() => readOwnerStateLock(lockPath, purpose));
       if (inspected.kind === "missing") continue;
       if (inspected.kind === "invalid") {
         throw new Error(`${label} lock is malformed; inspect the owner-only state directory`);
@@ -82,7 +82,7 @@ function lockOwner(purpose) {
   };
 }
 
-function readLockOwner(file, purpose) {
+export function readOwnerStateLock(file, purpose) {
   let text;
   try { text = readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock", { verifyPathIdentity: true, rejectMultipleLinks: true }).toString("utf8"); }
   catch (error) { if (error?.code === "ENOENT") return { kind: "missing" }; throw error; }

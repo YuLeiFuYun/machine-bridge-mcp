@@ -159,6 +159,7 @@ export class AppAutomationManager {
     if (value !== null && (value.includes("\0") || value.length > MAX_TEXT_CHARS)) {
       throw new Error(`application action value exceeds ${MAX_TEXT_CHARS} characters or contains a NUL byte`);
     }
+    if (["set_value", "keystroke"].includes(action) && value === null) throw new Error(`${action} requires value or value_resource`);
     const payload = {
       operation: "act",
       application: processName,

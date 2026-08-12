@@ -2,7 +2,6 @@ const UNSAFE_DISPLAY_CONTROLS = /[\u0000-\u001f\u007f\u200B-\u200F\u202A-\u202E\
 
 export const BUILT_IN_BROWSER_ORIGINS = Object.freeze([
   "https://chatgpt.com",
-  "https://chat.openai.com",
   "https://grok.com",
   "https://x.com",
 ]);
@@ -45,10 +44,11 @@ export function oauthRedirect(location: URL): Response {
   });
 }
 
-export function authorizationRedirectLocation(redirectUri: string, code: string, state: string): URL {
+export function authorizationRedirectLocation(redirectUri: string, code: string, state: string, issuer: string): URL {
   const location = new URL(redirectUri);
   location.searchParams.append("code", code);
   if (state) location.searchParams.append("state", state);
+  location.searchParams.append("iss", issuer);
   return location;
 }
 
@@ -161,31 +161,34 @@ export async function discardRequestBody(request: Pick<Request, "body" | "header
   }
 }
 
-export async function readBoundedText(request: Request, limit: number): Promise<string> {
+export async function readBoundedBytes(
+  request: Pick<Request, "body" | "headers">,
+  limit: number,
+): Promise<Uint8Array<ArrayBuffer>> {
   const boundedLimit = normalizeBodyLimit(limit);
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   const declaredExceeded = Number.isFinite(declaredLength) && declaredLength > boundedLimit;
   const reader = request.body?.getReader();
-  if (!reader) return "";
+  if (declaredExceeded) {
+    if (reader) {
+      try { await cancelBodyReader(reader); } finally { reader.releaseLock(); }
+    }
+    throw new HttpError(413, "request_body_too_large", `request body exceeds ${boundedLimit} bytes`);
+  }
+  if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let observed = 0;
-  let exceeded = declaredExceeded;
+  let exceeded = false;
   try {
-    if (declaredExceeded) await cancelBodyReader(reader);
-    else {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        const nextObserved = Math.min(boundedLimit + 1, observed + value.byteLength);
-        if (observed + value.byteLength <= boundedLimit) chunks.push(value);
-        else {
-          exceeded = true;
-          await cancelBodyReader(reader);
-        }
-        observed = nextObserved;
-        if (exceeded) break;
-      }
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const nextObserved = Math.min(boundedLimit + 1, observed + value.byteLength);
+      if (observed + value.byteLength <= boundedLimit) chunks.push(value);
+      else { exceeded = true; await cancelBodyReader(reader); }
+      observed = nextObserved;
+      if (exceeded) break;
     }
   } finally {
     reader.releaseLock();
@@ -193,10 +196,12 @@ export async function readBoundedText(request: Request, limit: number): Promise<
   if (exceeded) throw new HttpError(413, "request_body_too_large", `request body exceeds ${boundedLimit} bytes`);
   const combined = new Uint8Array(observed);
   let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
+  for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.byteLength; }
+  return combined;
+}
+
+export async function readBoundedText(request: Pick<Request, "body" | "headers">, limit: number): Promise<string> {
+  const combined = await readBoundedBytes(request, limit);
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(combined);
   } catch {
@@ -262,7 +267,7 @@ export function corsPreflight(
 
 const DEFAULT_MCP_CORS_HEADERS = Object.freeze([
   "authorization", "content-type", "dpop", "mcp-protocol-version", "mcp-method", "mcp-name",
-  "mcp-session-id", "last-event-id", "traceparent", "tracestate", "baggage",
+  "traceparent", "tracestate", "baggage",
 ]);
 const EMPTY_CORS_HEADER_SET: ReadonlySet<string> = new Set();
 const CORS_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-z-]+$/;
@@ -287,7 +292,7 @@ export function applyCors(response: Response, request: Request, base: string, co
   if (!origin || !isConfiguredOrSameOrigin(origin, base, configured)) return response;
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", origin);
-  headers.set("access-control-expose-headers", "www-authenticate, mcp-session-id");
+  headers.set("access-control-expose-headers", "www-authenticate");
   appendVary(headers, "Origin");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

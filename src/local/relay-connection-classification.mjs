@@ -32,6 +32,14 @@ export function relayCloseCategory(code, reason = "") {
   return "unexpected_close";
 }
 
+export function relayOutageUserAction(category, outageMs) {
+  if (Number(outageMs) < 5 * 60_000) return "";
+  if (String(category || "") === "local_authority_revocation_retry") {
+    return " If this persists, inspect local authority, process-session, and managed-job state; the retained revocation will retry automatically.";
+  }
+  return " If this persists, check internet access and the deployed Worker.";
+}
+
 export function relayFatalMessage(category) {
   if (category === "relay_protocol_mismatch") {
     return "remote relay identity or version does not match this daemon; upgrade and redeploy both components";
@@ -48,6 +56,7 @@ export function relayFatalMessage(category) {
 export function relayCloseUserCause(category) {
   const causes = {
     connection_interrupted: "connection interrupted",
+    local_authority_revocation_retry: "local authority revocation requires retry",
     relay_restarting_or_unavailable: "relay restarting or temporarily unavailable",
     relay_policy_rejected: "relay rejected the connection",
     relay_internal_error: "relay internal error",

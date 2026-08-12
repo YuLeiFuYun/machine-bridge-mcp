@@ -4,6 +4,7 @@ import { buildAuthorityContext } from "./authority-context.mjs";
 import { policyProfile, toolNamesForPolicy, assertToolAllowed } from "./policy.mjs";
 
 export const ACCOUNT_ACCESS_REVISION = Number(accessContract.revision);
+const OWNER_ONLY_TOOLS = new Set((accessContract.ownerOnlyTools || []).map(String));
 const ACCOUNT_ROLE_ENTRIES = Object.entries(accessContract.roles)
   .map(([name, value]) => [name, Object.freeze({ ...value })]);
 const ACCOUNT_ROLE_BY_NAME = new Map(ACCOUNT_ROLE_ENTRIES);
@@ -23,12 +24,17 @@ export function accountRolePolicy(role) {
 }
 
 export function accountRoleToolNames(role) {
-  return toolNamesForPolicy(accountRolePolicy(role));
+  const normalized = normalizeAccountRole(role);
+  const names = toolNamesForPolicy(accountRolePolicy(normalized));
+  return normalized === OWNER_ACCOUNT_ROLE ? names : names.filter((name) => !OWNER_ONLY_TOOLS.has(name));
 }
 
 export class AccountAccessGate {
   assert(role, tool) {
     const normalized = normalizeAccountRole(role);
+    if (normalized !== OWNER_ACCOUNT_ROLE && OWNER_ONLY_TOOLS.has(String(tool || ""))) {
+      throw new BridgeError("authorization_denied", `tool is reserved for the owner account: ${String(tool || "")}`);
+    }
     assertToolAllowed(accountRolePolicy(normalized), tool);
     return normalized;
   }

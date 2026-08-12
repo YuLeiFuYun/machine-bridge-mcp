@@ -4,12 +4,17 @@ import {
   ACCOUNT_ID_PATTERN, AUTHORIZATION_CODE_PATTERN, AUTHORIZATION_IDENTITY_PATTERN, CLIENT_ID_PATTERN,
   JWK_THUMBPRINT_PATTERN, REFRESH_FAMILY_ID_PATTERN, TOKEN_HASH_PATTERN,
 } from "./oauth-record-contract.ts";
+import {
+  hasOnlyRecordFields, OAUTH_ACCOUNT_FIELDS, OAUTH_CLIENT_FIELDS, OAUTH_CODE_FIELDS,
+  OAUTH_FAILURE_FIELDS, OAUTH_STORE_FIELDS, OAUTH_TOKEN_FIELDS,
+} from "./oauth-field-contract.ts";
 
-const LEGACY_ACCOUNT_NAME_PATTERN = /^(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{1,62}[a-z0-9])$/;
+// Store validation preserves already-issued account identities; creation applies the stricter current rule.
+const PERSISTED_ACCOUNT_NAME_PATTERN = /^(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{1,62}[a-z0-9])$/;
 const BOUNDED_SECRET_PATTERN = /^[A-Za-z0-9_-]{20,128}$/;
 
 export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
-  if (!plainRecord(value) || value.schema_version !== 1) return false;
+  if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_STORE_FIELDS) || value.schema_version !== 1) return false;
   if (!plainRecord(value.accounts) || !plainRecord(value.clients) || !plainRecord(value.codes)
       || !plainRecord(value.tokens) || !plainRecord(value.auth_failures)) return false;
   return entriesMatch(value.accounts, (key, record) => ACCOUNT_ID_PATTERN.test(key) && validAccount(record, key))
@@ -20,9 +25,9 @@ export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
 }
 
 function validAccount(value: unknown, key: string): value is AccountRecord {
-  if (!plainRecord(value)) return false;
+  if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_ACCOUNT_FIELDS)) return false;
   return value.account_id === key
-    && LEGACY_ACCOUNT_NAME_PATTERN.test(stringValue(value.name))
+    && PERSISTED_ACCOUNT_NAME_PATTERN.test(stringValue(value.name))
     && boundedString(value.display_name, 128)
     && boundedString(value.role, 64)
     && typeof value.active === "boolean"
@@ -35,13 +40,15 @@ function validAccount(value: unknown, key: string): value is AccountRecord {
 }
 
 function validClient(value: unknown, key: string): value is OAuthClient {
-  if (!plainRecord(value) || value.client_id !== key || !boundedString(value.client_name, 128)
+  if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_CLIENT_FIELDS)
+      || value.client_id !== key || !boundedString(value.client_name, 128)
       || !Array.isArray(value.redirect_uris) || value.redirect_uris.length < 1 || value.redirect_uris.length > 5
       || !value.redirect_uris.every((uri) => validRedirectUri(uri))
       || !positiveInteger(value.created_at) || !positiveInteger(value.last_used_at)
       || Number(value.last_used_at) < Number(value.created_at)
       || (value.has_been_authorized !== undefined && typeof value.has_been_authorized !== "boolean")
-      || (value.registration_identity !== undefined && !AUTHORIZATION_IDENTITY_PATTERN.test(stringValue(value.registration_identity)))) return false;
+      || (value.registration_identity !== undefined && !AUTHORIZATION_IDENTITY_PATTERN.test(stringValue(value.registration_identity)))
+      || (value.registration_revision !== undefined && !positiveInteger(value.registration_revision))) return false;
   const trusted = [value.trusted_account_id, value.trusted_account_version, value.trusted_role];
   if (trusted.every((item) => item === undefined)) return value.trusted_at === undefined;
   return trusted.every((item) => item !== undefined)
@@ -52,7 +59,7 @@ function validClient(value: unknown, key: string): value is OAuthClient {
 }
 
 function validCode(value: unknown): value is OAuthCode {
-  if (!plainRecord(value)) return false;
+  if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_CODE_FIELDS)) return false;
   return CLIENT_ID_PATTERN.test(stringValue(value.client_id))
     && ACCOUNT_ID_PATTERN.test(stringValue(value.account_id))
     && positiveInteger(value.account_version)
@@ -65,7 +72,7 @@ function validCode(value: unknown): value is OAuthCode {
 }
 
 function validToken(value: unknown): value is OAuthToken {
-  if (!plainRecord(value)) return false;
+  if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_TOKEN_FIELDS)) return false;
   return CLIENT_ID_PATTERN.test(stringValue(value.client_id))
     && ACCOUNT_ID_PATTERN.test(stringValue(value.account_id))
     && positiveInteger(value.account_version)
@@ -79,7 +86,7 @@ function validToken(value: unknown): value is OAuthToken {
 }
 
 function validFailure(value: unknown): value is OAuthFailure {
-  if (!plainRecord(value)) return false;
+  if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_FAILURE_FIELDS)) return false;
   return positiveInteger(value.count)
     && positiveInteger(value.window_started)
     && nonnegativeInteger(value.blocked_until)

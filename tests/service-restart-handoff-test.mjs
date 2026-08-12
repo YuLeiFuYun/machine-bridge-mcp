@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { launchdStatusSummary, systemdStatusSummary } from "../src/local/service-status.mjs";
+import { LAUNCHD_MISSING_SERVICE_CODE, launchdStatusSummary, systemdStatusSummary } from "../src/local/service-status.mjs";
 import { runServiceRestartHandoff, serviceRestartHandoffMain } from "../src/local/service-restart-handoff.mjs";
-import { waitForActiveStatus, waitForInactiveStatus, waitForStableActiveStatus, waitForStatus } from "../src/local/service-convergence.mjs";
+import { waitForInactiveStatus, waitForStableActiveStatus, waitForStatus } from "../src/local/service-convergence.mjs";
 import { scheduleServiceRestart, serviceControlEnvironment } from "../src/local/service-restart-scheduler.mjs";
 import { restartWindowsTask, startWindowsTask } from "../src/local/windows-service.mjs";
 import { stopOwnedPlatformService } from "../src/local/service-ownership.mjs";
@@ -174,11 +174,18 @@ function testServiceStatusSanitization() {
   assert.equal(loadedIdle.active, false);
   assert.equal(loadedIdle.pid, null);
 
-  const unloaded = launchdStatusSummary({ installed: false, result: { code: 1, stdout: "", stderr: "private failure" } });
+  const unloaded = launchdStatusSummary({ installed: false, result: { code: LAUNCHD_MISSING_SERVICE_CODE, stdout: "", stderr: "private failure" } });
   assert.equal(unloaded.loaded, false);
   assert.equal(unloaded.active, false);
   assert.equal(unloaded.state, "inactive");
+  assert.equal(unloaded.status_available, true);
   assert.equal(unloaded.definition, "");
+  const launchdUnavailable = launchdStatusSummary({ installed: true, result: { code: 1, stdout: "state = running\npid = 99\n", stderr: "private failure" } });
+  assert.equal(launchdUnavailable.loaded, false);
+  assert.equal(launchdUnavailable.active, null);
+  assert.equal(launchdUnavailable.state, "unknown");
+  assert.equal(launchdUnavailable.status_available, false);
+  assert.equal(launchdUnavailable.pid, null);
   const runningWithoutPid = launchdStatusSummary({ installed: true, definition: "test", result: { code: 0, stdout: "state = running\n" } });
   assert.equal(runningWithoutPid.active, true);
   const loadedWithoutState = launchdStatusSummary({ installed: true, definition: "test", result: { code: 0, stdout: "" } });
@@ -192,9 +199,17 @@ function testServiceStatusSanitization() {
   assert.equal(active.active, true);
   const unknown = systemdStatusSummary({ installed: false, result: { code: 1, stdout: "unexpected-private-text\n" } });
   assert.equal(unknown.ok, false);
-  assert.equal(unknown.active, false);
+  assert.equal(unknown.active, null);
   assert.equal(unknown.state, "unknown");
+  assert.equal(unknown.status_available, false);
   assert.equal(unknown.definition, "");
+  const missing = systemdStatusSummary({ installed: false, result: { code: 4, stdout: "unknown\n" } });
+  assert.equal(missing.active, false);
+  assert.equal(missing.state, "unknown");
+  assert.equal(missing.status_available, true);
+  const transitioning = systemdStatusSummary({ installed: true, result: { code: 3, stdout: "activating\n" } });
+  assert.equal(transitioning.active, null);
+  assert.equal(transitioning.status_available, true);
 }
 
 function testServiceLock() {
@@ -247,8 +262,9 @@ async function testServiceOwnershipBoundary() {
 
 async function testServiceConvergenceBranches() {
   let activeReads = 0;
-  const active = await waitForActiveStatus(
+  const active = await waitForStatus(
     async () => ({ active: ++activeReads >= 2 }),
+    (status) => status.active === true,
     { attempts: 3, delayMs: 1 },
   );
   assert.equal(active.active, true);

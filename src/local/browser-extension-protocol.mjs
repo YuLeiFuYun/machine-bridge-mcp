@@ -61,7 +61,8 @@ export function parseBrowserSocketMessage(data) {
 
 /** @param {ProtocolSocket} socket @param {number} code @param {string} reason */
 export function closeProtocolSocket(socket, code, reason) {
-  try { socket.close(code, reason); } catch {}
+  try { socket.close(code, reason); }
+  catch { /* Protocol rejection is already decided; a concurrently closed socket needs no second failure path. */ }
 }
 
 /** @param {ProtocolSocket | null | undefined} socket @param {unknown} value */

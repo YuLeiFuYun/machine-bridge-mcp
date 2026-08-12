@@ -1,14 +1,6 @@
 const DEFAULT_ATTEMPTS = 20;
 const DEFAULT_DELAY_MS = 100;
 
-export async function waitForActiveStatus(
-  readStatus,
-  { attempts = DEFAULT_ATTEMPTS, delayMs = DEFAULT_DELAY_MS, sleep = delay } = {},
-) {
-  return waitForStatus(readStatus, (status) => status?.active === true, { attempts, delayMs, sleep });
-}
-
-
 export async function waitForStableActiveStatus(
   readStatus,
   { attempts = DEFAULT_ATTEMPTS, delayMs = DEFAULT_DELAY_MS, stableSamples = 5, sleep = delay, identity = stableIdentity } = {},

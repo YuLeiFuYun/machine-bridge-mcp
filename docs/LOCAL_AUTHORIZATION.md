@@ -140,7 +140,7 @@ Bearer remains available for MCP hosts that do not implement DPoP. Client trust,
 
 ## Audit and incident response
 
-The local security audit is a bounded SHA-256 hash chain. It records operation class, outcome, duration, byte counts, target digest, and salted principal references. It does not record command text, file paths, file contents, form values, or tool output.
+The local security audit is a bounded SHA-256 hash chain. It records operation class, outcome, duration, byte counts, and pseudonymous target/principal references. Target and account/client/family identifiers are HMAC-keyed with fresh per-daemon runtime keys before persistent state applies its per-file salt; the resulting references remain useful for within-runtime correlation without making the stored public salt sufficient for offline identifier/path enumeration. They are not stable cross-restart identities. The audit does not record command text, file paths, file contents, form values, or tool output.
 
 For incident response:
 

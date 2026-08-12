@@ -6,12 +6,13 @@ const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.js
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
 assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
 assert(metadata.protocolVersion === "2026-07-28", "shared primary protocol version is invalid");
-assert(JSON.stringify(metadata.modernProtocolVersions) === JSON.stringify(["2026-07-28"]), "modern protocol versions are invalid");
-assert(JSON.stringify(metadata.legacyProtocolVersions) === JSON.stringify(["2025-11-25"]), "legacy protocol versions are invalid");
-assert(JSON.stringify(metadata.supportedProtocolVersions) === JSON.stringify([...metadata.modernProtocolVersions, ...metadata.legacyProtocolVersions]), "dual-era protocol inventory is inconsistent");
+assert(JSON.stringify(metadata.supportedProtocolVersions) === JSON.stringify(["2026-07-28"]), "supported protocol inventory is not current-only");
+assert(JSON.stringify(metadata.remoteHttpInitializationCompatibilityVersions) === JSON.stringify(["2025-11-25", "2025-06-18"]),
+  "remote HTTP initialization compatibility inventory drifted");
+assert(!Object.hasOwn(metadata, "modernProtocolVersions") && !Object.hasOwn(metadata, "legacyProtocolVersions"), "shared metadata retained protocol-era compatibility inventories");
 assert(Array.isArray(metadata.instructions) && metadata.instructions.length >= 4, "shared server instructions are missing");
-assert(metadata.instructions.some((line) => line.includes("never use a hosted GitHub connector or ChatGPT GitHub plugin") && line.includes("stop rather than substitute")), "shared initialization omitted the fail-closed local GitHub control-plane rule");
-assert(metadata.instructions.some((line) => line.includes("Straightforward file, Git, and shell work") && line.includes("instead of adding a resolver call")), "shared initialization still requires an unnecessary capability-resolution round trip for direct work");
+assert(metadata.instructions.some((line) => line.includes("never use a hosted GitHub connector or ChatGPT GitHub plugin") && line.includes("stop rather than substitute")), "shared instructions omitted the fail-closed local GitHub control-plane rule");
+assert(metadata.instructions.some((line) => line.includes("Straightforward file, Git, and shell work") && line.includes("instead of adding a resolver call")), "shared instructions still require an unnecessary capability-resolution round trip for direct work");
 assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
 const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
 const workerCatalogSource = await readFile(new URL("../src/worker/tool-catalog.ts", import.meta.url), "utf8");

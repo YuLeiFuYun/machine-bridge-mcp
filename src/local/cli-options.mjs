@@ -32,7 +32,6 @@ const COMMAND_OPTIONS = new Map(Object.entries({
   autostart: new Set(["workspace", "stateDir", "quiet"]),
   resource: new Set(["workspace", "stateDir", "allowInsecurePermissions", "showPaths", "json"]),
   account: new Set(["workspace", "stateDir", "json", "yes"]),
-  approval: new Set(["workspace", "stateDir", "json", "yes"]),
   browser: new Set(["workspace", "stateDir", "json"]),
   job: new Set(["workspace", "stateDir", "json", "yes"]),
   uninstall: new Set(["stateDir", "keepWorker", "yes"]),
@@ -44,9 +43,8 @@ const STATIC_POSITIONAL_RULES = new Map([
   ["uninstall", Object.freeze({ max: 0, tooMany: "uninstall does not accept positional arguments" })],
 ]);
 const RESOURCE_POSITIONAL_LIMITS = new Map(Object.entries({ add: 3, "generate-ssh-key": 3, remove: 2, check: 2 }));
-const JOB_POSITIONAL_LIMITS = new Map(Object.entries({ read: 2, inspect: 2, cancel: 2, approve: 2, submit: 2 }));
+const JOB_POSITIONAL_LIMITS = new Map(Object.entries({ read: 2, inspect: 2, cancel: 2, submit: 2 }));
 const ACCOUNT_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, clients: 1, "revoke-client": 2, add: 3, role: 3, enable: 2, disable: 2, "rotate-password": 2, remove: 2 }));
-const APPROVAL_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, revoke: 2, clear: 1 }));
 const ACTION_POSITIONAL_RULES = new Map(Object.entries({
   workspace(args) {
     const action = String(args._[0] || "show");
@@ -65,17 +63,14 @@ const ACTION_POSITIONAL_RULES = new Map(Object.entries({
     const action = String(args._[0] || "list");
     return { max: ACCOUNT_POSITIONAL_LIMITS.get(action) ?? 1, tooMany: `account ${action} received too many positional arguments` };
   },
-  approval(args) {
-    const action = String(args._[0] || "list");
-    return { max: APPROVAL_POSITIONAL_LIMITS.get(action) ?? 2, tooMany: `approval ${action} received too many positional arguments` };
-  },
   browser(args) {
     const action = String(args._[0] || "status");
     return { max: 1, tooMany: `browser ${action} received too many positional arguments` };
   },
   job(args) {
     const action = String(args._[0] || "list");
-    return { max: JOB_POSITIONAL_LIMITS.get(action) ?? 1, tooMany: `job ${action} received too many positional arguments` };
+    const max = JOB_POSITIONAL_LIMITS.get(action);
+    return max === undefined ? null : { max, tooMany: `job ${action} received too many positional arguments` };
   },
 }));
 

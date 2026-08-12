@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { clampInt } from "./browser-command.mjs";
+import { browserMethodMayMutate, clampInt } from "./browser-command.mjs";
 import { closeProtocolSocket, parseBrowserSocketMessage, safeSocketSend } from "./browser-extension-protocol.mjs";
 
 export class BrowserBrokerRoutes {
@@ -77,11 +77,14 @@ export class BrowserBrokerRoutes {
       const route = this.routes.get(routedId);
       if (!route) return;
       this.routes.delete(routedId);
-      safeSocketSend(socket, { type: "response", id: message.id, ok: false, error: "browser broker request timed out" });
-      this.sendExtension({ type: "cancel", id: routedId });
+      const cancellationRequested = this.sendExtension({ type: "cancel", id: routedId });
+      const error = browserMethodMayMutate(route.method)
+        ? `browser broker request timed out after dispatch; ${cancellationRequested ? "cancellation requested but effect settlement is pending" : "cancellation delivery failed and effect settlement is unknown"}; inspect browser state before retrying`
+        : "browser broker request timed out";
+      safeSocketSend(socket, { type: "response", id: message.id, ok: false, error });
     }, timeoutMs);
     timeout.unref?.();
-    this.routes.set(routedId, { socket, id: message.id, timeout });
+    this.routes.set(routedId, { socket, id: message.id, method: message.method, timeout });
     if (this.sendExtension({ ...message, id: routedId, timeout_ms: timeoutMs })) return;
     clearTimeout(timeout);
     this.routes.delete(routedId);
@@ -119,7 +122,10 @@ export class BrowserBrokerRoutes {
   rejectAll(message) {
     for (const [id, route] of this.routes) {
       clearTimeout(route.timeout);
-      safeSocketSend(route.socket, { type: "response", id: route.id, ok: false, error: message });
+      const error = browserMethodMayMutate(route.method)
+        ? "browser connection changed after request dispatch; outcome is unknown; inspect browser state before retrying"
+        : message;
+      safeSocketSend(route.socket, { type: "response", id: route.id, ok: false, error });
       this.routes.delete(id);
     }
   }
@@ -127,7 +133,8 @@ export class BrowserBrokerRoutes {
   close(message) {
     this.rejectAll(message);
     for (const client of this.clients) {
-      try { client.close(1001, "runtime stopped"); } catch {}
+      try { client.close(1001, "runtime stopped"); }
+      catch { /* Runtime shutdown is idempotent and the client may already be closed. */ }
     }
     this.clients.clear();
   }

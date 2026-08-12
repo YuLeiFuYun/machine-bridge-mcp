@@ -56,7 +56,7 @@
   {
     "name": "session_bootstrap",
     "title": "Load session bootstrap",
-    "description": "Load built-in working agreements, bounded automatic project facts, user-global and root workspace instructions, and capability refresh metadata. Modern clients call it explicitly; legacy initialize clients receive the same bounded guidance through the compatibility adapter.",
+    "description": "Load built-in working agreements, bounded automatic project facts, authority-permitted user-global guidance, root workspace instructions, and capability refresh metadata. Delegated remote accounts do not read the daemon owner's home-scoped agent config unless their effective authority permits unrestricted paths. Clients call it explicitly when refreshed authority-scoped project context is needed; MCP 2026-07-28 has no initialization-time compatibility adapter.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -79,7 +79,7 @@
   {
     "name": "resolve_task_capabilities",
     "title": "Resolve task capabilities",
-    "description": "Rescan task-relevant instructions, skills, registered commands, installed applications, browser metadata, and the effective tool catalog. Return bounded set-level execution routes, ranked tools, routing ambiguity, and an optional selected skill. Pass known_refresh_fingerprint to omit unchanged static instructions while recomputing task-specific ranking. The result is advisory: direct Bash and every other policy-allowed tool remain available.",
+    "description": "Rescan authority-permitted task-relevant instructions, skills, registered commands, installed applications, browser metadata, and the effective tool catalog. Delegated remote accounts remain confined to project-scoped capability context unless their effective authority permits unrestricted paths. Return bounded set-level execution routes, ranked tools, routing ambiguity, and an optional selected skill. Pass known_refresh_fingerprint to omit unchanged static instructions while recomputing task-specific ranking. The result is advisory: direct Bash and every other policy-allowed tool remain available.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -2141,7 +2141,7 @@
   {
     "name": "start_job",
     "title": "Start managed job",
-    "description": "Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, and guaranteed-attempt finally steps. The independent local runner continues if the MCP connection disappears. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments.",
+    "description": "Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, and guaranteed-attempt finally steps. The independent local runner continues if the MCP connection disappears. Use an idempotency_key to deduplicate an uncertain retry while the original job record is retained; eviction/retention expiry ends that deduplication window, so this is not permanent exactly-once execution. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments.",
     "availability": "write+direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -2155,6 +2155,10 @@
         "name": {
           "type": "string",
           "maxLength": 128
+        },
+        "idempotency_key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$"
         },
         "steps": {
           "type": "array",
@@ -2337,7 +2341,7 @@
   {
     "name": "list_jobs",
     "title": "List managed jobs",
-    "description": "List recent detached managed jobs and their lifecycle status without returning step output.",
+    "description": "List recent detached managed jobs and their lifecycle status without returning step output. Owner/local callers also receive coarse retained-state capacity counts, including unreadable retired cleanup blockers, without internal retired filenames or filesystem identities.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,

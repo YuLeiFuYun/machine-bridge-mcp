@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTIVATION_SCHEMA_VERSION, prereleaseActivationPath, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
+import { ACTIVATION_SCHEMA_VERSION, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
 import { discoverForegroundDaemonRecovery, foregroundPid } from "../scripts/foreground-daemon-recovery.mjs";
 import { persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
 import { inspectGlobalPackageInstallation } from "../scripts/global-package-installation.mjs";
@@ -98,27 +98,8 @@ try {
     activation_recovery_detail: null,
   }), "inconsistent");
 
-  const legacyVersion = "3.0.0-beta.2";
-  const legacyFile = prereleaseActivationPath(legacyVersion, root);
-  writeFileSync(legacyFile, `${JSON.stringify({
-    ...base,
-    schema_version: 1,
-    package_version: legacyVersion,
-    previous: globalPackageRollbackBaseline,
-    global_package_rollback_baseline: undefined,
-  }, null, 2)}\n`, { mode: 0o600 });
-  const migratedLegacy = readPrereleaseActivation(legacyVersion, root);
-  assert(migratedLegacy.schema_version === ACTIVATION_SCHEMA_VERSION
-    && migratedLegacy.global_package_rollback_baseline?.version === globalPackageRollbackBaseline.version
-    && !Object.hasOwn(migratedLegacy, "previous"),
-  "legacy activation record was not normalized to the current explicit baseline field");
-  expectThrow(() => validatePrereleaseActivation({ ...base, schema_version: 1 }), "legacy prerelease activation");
-  expectThrow(() => validatePrereleaseActivation({ ...base, previous: globalPackageRollbackBaseline }), "ambiguous");
-  expectThrow(() => validatePrereleaseActivation({
-    ...base,
-    global_package_rollback_baseline: undefined,
-    previous: globalPackageRollbackBaseline,
-  }), "current prerelease activation");
+  expectThrow(() => validatePrereleaseActivation({ ...base, schema_version: 1 }), "unsupported prerelease activation schema");
+  expectThrow(() => validatePrereleaseActivation({ ...base, previous: globalPackageRollbackBaseline }), "unsupported fields: previous");
   expectThrow(() => validatePrereleaseActivation({
     ...base,
     global_package_rollback_baseline: { ...globalPackageRollbackBaseline, entry: "relative/bin/machine-mcp.mjs" },
@@ -128,11 +109,6 @@ try {
     source: "npm-prerelease",
     npm_dist_tag: "beta",
     published_at: "2026-07-21T11:00:00.000Z",
-  });
-  validatePrereleaseActivation({
-    ...base,
-    schema_version: 1,
-    global_package_rollback_baseline: undefined,
   });
   expectThrow(() => validatePrereleaseActivation({ ...base, schema_version: "2" }), "unsupported prerelease activation schema");
   expectThrow(() => validatePrereleaseActivation({ ...base, package_version: "3.0.0-dev.1" }), "beta or rc");

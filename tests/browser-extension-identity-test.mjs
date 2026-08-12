@@ -65,12 +65,17 @@ async function testLegacyPairingMigration() {
     await writeFile(join(root, "browser-bridge.json"), JSON.stringify({ token: legacyToken, port: 39393 }), { mode: 0o600 });
     const [first, second] = await Promise.all([loadOrCreatePairing(root), loadOrCreatePairing(root)]);
     assert.equal(first.schemaVersion, 2);
-    assert.equal(first.extensionToken, legacyToken);
+    assert.equal(first.pairingAuthVersion, 2);
+    assert.equal(first.migrationPending, true);
+    assert.notEqual(first.extensionToken, legacyToken, "legacy pairing token was retained after pairing-auth privacy rotation");
     assert.notEqual(first.runtimeToken, legacyToken);
+    assert.equal(first.extensionToken, second.extensionToken, "concurrent legacy migration produced divergent extension credentials");
     assert.equal(first.runtimeToken, second.runtimeToken, "concurrent legacy migration produced divergent runtime credentials");
     const persisted = JSON.parse(await readFile(join(root, "browser-bridge.json"), "utf8"));
     assert.equal(persisted.schemaVersion, 2);
-    assert.equal(persisted.extensionToken, legacyToken);
+    assert.equal(persisted.pairingAuthVersion, 2);
+    assert.equal(persisted.migrationPending, true);
+    assert.equal(persisted.extensionToken, first.extensionToken);
     assert.equal(persisted.runtimeToken, first.runtimeToken);
     assert.equal(Object.hasOwn(persisted, "token"), false);
     await assert.rejects(() => loadOrCreatePairing(root, {
@@ -78,9 +83,34 @@ async function testLegacyPairingMigration() {
         throw Object.assign(new Error("synthetic pairing storage failure"), { code: "EIO" });
       },
     }), /synthetic pairing storage failure/);
-    await assert.rejects(() => savePairing(root, { schemaVersion: 2, extensionToken: legacyToken, runtimeToken: legacyToken, port: 39393 }), /invalid/);
-    await assert.rejects(() => savePairing(root, { schemaVersion: 2, extensionToken: legacyToken, runtimeToken: "r".repeat(43), port: 80 }), /invalid/);
+    await assert.rejects(() => savePairing(root, { schemaVersion: 2, pairingAuthVersion: 2, extensionToken: legacyToken, runtimeToken: legacyToken, port: 39393 }), /invalid/);
+    await assert.rejects(() => savePairing(root, { schemaVersion: 2, pairingAuthVersion: 2, extensionToken: legacyToken, runtimeToken: "r".repeat(43), port: 80 }), /invalid/);
+    await assert.rejects(() => savePairing(root, { schemaVersion: 2, pairingAuthVersion: 2, extensionToken: legacyToken, runtimeToken: "r".repeat(43), port: 39393, migrationPending: "true" }), /invalid/);
+    await assert.rejects(() => savePairing(root, { schemaVersion: 2, pairingAuthVersion: 2, extensionToken: legacyToken, runtimeToken: "r".repeat(43), port: 39393 }), /invalid/);
+
+    const priorExtension = "e".repeat(43);
+    const priorRuntime = "r".repeat(43);
+    await writeFile(join(root, "browser-bridge.json"), `${JSON.stringify({ schemaVersion: 2, extensionToken: priorExtension, runtimeToken: priorRuntime, port: 39394 })}\n`, { mode: 0o600 });
+    const upgraded = await loadOrCreatePairing(root);
+    assert.equal(upgraded.schemaVersion, 2);
+    assert.equal(upgraded.pairingAuthVersion, 2);
+    assert.equal(upgraded.migrationPending, true);
+    assert.notEqual(upgraded.extensionToken, priorExtension, "schema-2 extension credential was not rotated");
+    assert.equal(upgraded.runtimeToken, priorRuntime, "schema-2 runtime credential changed and would split mixed-version local runtimes");
+    assert.equal(upgraded.port, 39394);
+    assert.equal(beta55AcceptsPairingState(JSON.parse(await readFile(join(root, "browser-bridge.json"), "utf8"))), true,
+      "current pairing envelope is no longer readable by the beta.55 rollback parser");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function beta55AcceptsPairingState(value) {
+  const token = /^[A-Za-z0-9_-]{32,100}$/;
+  const port = Number(value?.port);
+  return value?.schemaVersion === 2
+    && token.test(String(value?.extensionToken || ""))
+    && token.test(String(value?.runtimeToken || ""))
+    && value.extensionToken !== value.runtimeToken
+    && Number.isInteger(port) && port >= 1024 && port <= 65535;
 }

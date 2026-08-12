@@ -4,7 +4,6 @@ import {
   daemonReadyDeadlineMs,
 } from "./daemon-liveness.ts";
 import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
-import type { McpPendingCallStore, PendingStreamCallView } from "./mcp-pending-call-store.ts";
 import type { PendingCallRegistry } from "./pending-calls.ts";
 import { writeEarliestRuntimeAlarm, type AlarmStorage } from "./runtime-alarm-storage.ts";
 
@@ -17,8 +16,6 @@ type InvalidateDaemonSocket = (
 interface RuntimeAlarmContext {
   storage: AlarmStorage;
   pending: PendingCallRegistry;
-  durableCalls?: Pick<McpPendingCallStore, "due" | "nextDeadlineDelayMs">;
-  expireDurableCall?: (call: PendingStreamCallView) => Promise<void>;
   daemonRegistry: DaemonSocketRegistry;
   invalidateDaemonSocket: InvalidateDaemonSocket;
   onScheduleError: (error: unknown) => void;
@@ -26,9 +23,6 @@ interface RuntimeAlarmContext {
 }
 export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Date.now()): Promise<void> {
   await context.pending.expireDue();
-  if (context.durableCalls && context.expireDurableCall) {
-    for (const call of await context.durableCalls.due(now)) await context.expireDurableCall(call);
-  }
   let nextDeadline = Number.POSITIVE_INFINITY;
   for (const socket of context.daemonRegistry.candidateSockets()) {
     const attachment = context.daemonRegistry.attachment(socket);
@@ -68,7 +62,7 @@ export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Da
     }
     nextDeadline = Math.min(nextDeadline, deadline);
   }
-  nextDeadline = Math.min(nextDeadline, await pendingAlarmDeadline(context, now));
+  nextDeadline = Math.min(nextDeadline, pendingAlarmDeadline(context, now));
   await writeEarliestRuntimeAlarm({
     storage: context.storage,
     nextDeadline,
@@ -117,22 +111,18 @@ export async function scheduleRuntimeAlarm(context: RuntimeAlarmContext, now = D
       nextDeadline = Math.min(nextDeadline, deadline);
     }
     const currentAlarm = await context.storage.getAlarm();
-    nextDeadline = Math.min(nextDeadline, await pendingAlarmDeadline(
-      context, now, currentAlarm === null || currentAlarm <= now,
-    ));
+    nextDeadline = Math.min(nextDeadline, pendingAlarmDeadline(context, now));
     await writeEarliestRuntimeAlarm({
       storage: context.storage, nextDeadline, now, currentAlarm,
       onError: context.onScheduleError, onMutation: context.onAlarmMutation,
     });
-  } catch (error) { try { context.onScheduleError(error); } catch {} }
+  } catch (error) {
+    try { context.onScheduleError(error); }
+    catch { /* The error observer must not recursively fail the Durable Object alarm callback. */ }
+  }
 }
 
-async function pendingAlarmDeadline(
-  context: RuntimeAlarmContext, now: number, includeDurable = true,
-): Promise<number> {
-  const transientDelay = context.pending.nextDeadlineDelayMs();
-  const durableDelay = includeDurable && context.durableCalls
-    ? await context.durableCalls.nextDeadlineDelayMs() : Number.POSITIVE_INFINITY;
-  const delayDeadline = Math.min(transientDelay, durableDelay);
-  return Number.isFinite(delayDeadline) ? now + Math.max(1, Math.ceil(delayDeadline)) : Number.POSITIVE_INFINITY;
+function pendingAlarmDeadline(context: RuntimeAlarmContext, now: number): number {
+  const delay = context.pending.nextDeadlineDelayMs();
+  return Number.isFinite(delay) ? now + Math.max(1, Math.ceil(delay)) : Number.POSITIVE_INFINITY;
 }

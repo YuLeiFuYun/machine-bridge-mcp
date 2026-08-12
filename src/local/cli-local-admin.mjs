@@ -8,7 +8,8 @@ import {
   acquireStartupLockWithWait, expandHome, loadState, saveState,
 } from "./state.mjs";
 import { packageRoot } from "./package-identity.mjs";
-import { readBrowserPairingPort } from "./browser-pairing-store.mjs";
+import { readBrowserPairing, readBrowserPairingPort } from "./browser-pairing-store.mjs";
+import { startBrowserPairingLaunch } from "./browser-pairing-launch.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
 import { readLoopbackJson } from "./loopback-health.mjs";
 
@@ -18,7 +19,7 @@ export function createLocalAdminCommands(dependencies) {
   if (typeof chooseWorkspace !== "function" || typeof confirm !== "function") {
     throw new TypeError("local admin commands require chooseWorkspace and confirm dependencies");
   }
-  const context = Object.freeze({ chooseWorkspace, confirm });
+  const context = Object.freeze({ chooseWorkspace, confirm, openExternal: dependencies.openExternal || openExternal });
   return Object.freeze({
     resourceCommand: (args) => resourceCommand(args, context),
     browserCommand: (args) => browserCommand(args, context),
@@ -207,10 +208,13 @@ async function browserStatusAction(args, { chooseWorkspace }) {
   renderBrowserStatus(context.result, args.json === true);
 }
 
-async function browserPairAction(args, { chooseWorkspace }) {
+async function browserPairAction(args, { chooseWorkspace, openExternal: openTarget }) {
   const context = await browserCommandContext(args, chooseWorkspace);
   if (!context.result.running) throw new Error("browser bridge is not reachable; keep machine-mcp running and retry");
-  await openExternal(context.pairingUrl);
+  const pairing = readBrowserPairing(context.stateRoot);
+  if (!pairing || pairing.port !== context.port) throw new Error("browser pairing state changed; retry setup");
+  const launch = await startBrowserPairingLaunch({ brokerPort: pairing.port, extensionToken: pairing.extensionToken });
+  try { await openTarget(launch.url); } catch (error) { launch.close(); throw error; }
   if (args.json) {
     console.log(JSON.stringify({ ...context.result, pairing_page_opened: true }, null, 2));
     return;
@@ -229,7 +233,7 @@ async function browserCommandContext(args, chooseWorkspace) {
   if (port === null) throw new Error("browser bridge is not initialized; start machine-mcp once, then run this command again");
   const pairingUrl = `http://127.0.0.1:${port}/pair`;
   const health = await readBrowserHealth(`http://127.0.0.1:${port}/healthz`);
-  return { extensionPath, pairingUrl, result: browserStatusResult(health, extensionPath, pairingUrl) };
+  return { extensionPath, pairingUrl, port, stateRoot: state.paths.stateRoot, result: browserStatusResult(health, extensionPath, pairingUrl) };
 }
 
 function readBrowserHealth(healthUrl) {

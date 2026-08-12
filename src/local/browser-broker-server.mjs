@@ -2,9 +2,16 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { isAllowedExtensionOrigin, isAllowedLoopbackHost } from "./browser-pairing-http.mjs";
 import { EXPECTED_EXTENSION_ID } from "./browser-extension-identity.mjs";
+import { createBrokerAuthRegistry } from "./browser-broker-auth.mjs";
+import { createBrowserBrokerAuthHttpHandler } from "./browser-broker-auth-http.mjs";
 
 export async function startBrowserBrokerServer({ port, extensionToken, runtimeToken, maxPayload, onHttp, onSocket }) {
-  const server = createServer(onHttp);
+  const runtimeAuth = createBrokerAuthRegistry(runtimeToken, "runtime");
+  const extensionAuth = createBrokerAuthRegistry(extensionToken, "extension");
+  const handleAuthHttp = createBrowserBrokerAuthHttpHandler({ port, extensionToken, runtimeAuth, extensionAuth });
+  const server = createServer((request, response) => {
+    if (!handleAuthHttp(request, response)) onHttp(request, response);
+  });
   const wss = new WebSocketServer({ noServer: true, maxPayload });
   server.on("upgrade", (request, socket, head) => {
     try {
@@ -17,8 +24,8 @@ export async function startBrowserBrokerServer({ port, extensionToken, runtimeTo
       const protocol = String(request.headers["sec-websocket-protocol"] || "");
       const origin = String(request.headers.origin || "");
       let role = "";
-      if (url.pathname === "/extension" && protocol === `mbm.${extensionToken}` && isAllowedExtensionOrigin(origin, EXPECTED_EXTENSION_ID)) role = "extension";
-      if (url.pathname === "/runtime" && protocol === `mbm-runtime.${runtimeToken}` && !origin) role = "runtime";
+      if (url.pathname === "/extension" && isAllowedExtensionOrigin(origin, EXPECTED_EXTENSION_ID) && extensionAuth.consume(protocol)) role = "extension";
+      if (url.pathname === "/runtime" && !origin && runtimeAuth.consume(protocol)) role = "runtime";
       if (!role) {
         rejectUpgrade(socket, "401 Unauthorized");
         return;
@@ -39,8 +46,10 @@ export async function startBrowserBrokerServer({ port, extensionToken, runtimeTo
     };
     const onError = (error) => {
       cleanup();
-      try { wss.close(); } catch {}
-      try { server.close(); } catch {}
+      try { wss.close(); }
+      catch { /* Startup failure already owns the result; closing an unopened/half-open WebSocket server is best-effort. */ }
+      try { server.close(); }
+      catch { /* Startup failure already owns the result; closing an unopened/half-open HTTP server is best-effort. */ }
       rejectPromise(error);
     };
     const onListening = () => {

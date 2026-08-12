@@ -1,4 +1,4 @@
-import { closeSync, constants as fsConstants, existsSync, ftruncateSync, lstatSync, mkdirSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, ftruncateSync, lstatSync, mkdirSync, readSync, realpathSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runExecutable } from "./shell.mjs";
@@ -9,6 +9,7 @@ import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.m
 import { waitForInactiveStatus, waitForStableActiveStatus, waitForStatus } from "./service-convergence.mjs";
 import { launchdStatusSummary, systemdStatusSummary } from "./service-status.mjs";
 import { systemdRemovalDecision } from "./systemd-removal.mjs";
+import { removeServiceDefinitionIfCurrent, snapshotServiceDefinition } from "./service-definition.mjs";
 import { writeServiceEnvironment } from "./service-environment.mjs";
 import { beginServiceOwnerUpdate, removeServiceOwner } from "./service-owner.mjs";
 import {
@@ -116,7 +117,7 @@ export async function restartAutostart({ logger = console } = {}) {
 }
 
 export async function stopAutostart({ logger = console } = {}) {
-  if (process.platform === "darwin") return stopLaunchd(logger);
+  if (process.platform === "darwin") return stopLaunchdService(logger);
   if (process.platform === "win32") return stopWindowsTask(logger, { run: serviceRun });
   return stopSystemdService(logger);
 }
@@ -151,7 +152,8 @@ export function trimAutostartLogs(stateRoot, options = {}) {
     writePrivateServiceFile(schemaFile, `${schemaVersion}\n`);
   } finally {
     for (const opened of openedLogs) {
-      try { closeSync(opened.fd); } catch {}
+      try { closeSync(opened.fd); }
+      catch { /* Descriptor cleanup cannot improve the already-completed log rotation outcome. */ }
     }
   }
 }
@@ -220,7 +222,7 @@ export function stableNodeExecutable(options = {}) {
       if (!sameExecutable) continue;
       if (platform !== "win32" && (statSync(candidate).mode & 0o111) === 0) continue;
       return candidate;
-    } catch {}
+    } catch { /* Inaccessible or transient PATH candidates are skipped in favor of the known executable. */ }
   }
   return execPath;
 }
@@ -343,6 +345,9 @@ async function startLaunchd(logger) {
   const serviceTarget = launchdServiceTarget();
   if (!existsSync(plistPath)) return { ok: false, provider: "launchd", installed: false, loaded: false, active: false, reason: "not_installed" };
   const before = await statusLaunchd();
+  if (before.status_available !== true || typeof before.active !== "boolean") {
+    return { ok: false, provider: "launchd", installed: true, loaded: null, active: null, reason: "status_unavailable", status: before };
+  }
   if (before.active) {
     const existing = await waitForStableActiveStatus(statusLaunchd);
     if (existing.stable) {
@@ -375,6 +380,9 @@ async function restartLaunchd(logger) {
   const plistPath = launchdPlistPath();
   if (!existsSync(plistPath)) return { ok: false, provider: "launchd", installed: false, reason: "not_installed" };
   const before = await statusLaunchd();
+  if (before.status_available !== true || typeof before.active !== "boolean") {
+    return { ok: false, provider: "launchd", installed: true, active: null, restarted: false, reason: "status_unavailable", status: before };
+  }
   if (!before.active) {
     const started = await startLaunchd(logger);
     return { ...started, restarted: false, reason: started.ok ? "started_inactive_service" : started.reason || "start_failed" };
@@ -396,17 +404,29 @@ async function restartLaunchd(logger) {
   return { ok, provider: "launchd", installed: true, active_before: true, active: after?.active === true && stability.stable, restarted: ok, kickstart: kick };
 }
 
-async function stopLaunchd(logger) {
+export async function stopLaunchdService(logger = console, options = {}) {
   const plistPath = launchdPlistPath();
   const domainTarget = launchdDomainTarget();
   const serviceTarget = launchdServiceTarget();
-  const before = await statusLaunchd();
+  const run = typeof options.run === "function" ? options.run : serviceRun;
+  const readStatus = typeof options.readStatus === "function" ? options.readStatus : statusLaunchd;
+  const waitForUnloaded = typeof options.waitForUnloaded === "function"
+    ? options.waitForUnloaded
+    : callback => waitForStatus(callback, launchdStatusIsSafelyUnloaded);
+  const before = await readStatus();
   if (!before.loaded) {
+    if (!launchdStatusIsSafelyUnloaded(before)) {
+      return {
+        ok: false, provider: "launchd", installed: before?.installed === true, loaded: null,
+        active_before: null, active: null, restore_required: null, already_stopped: false,
+        reason: "status_unavailable", status: before,
+      };
+    }
     logger.info?.("launchd service is not loaded");
     return {
       ok: true,
       provider: "launchd",
-      installed: existsSync(plistPath),
+      installed: before?.installed === true,
       loaded: false,
       active_before: false,
       active: false,
@@ -418,36 +438,46 @@ async function stopLaunchd(logger) {
     };
   }
 
-  const byServiceTarget = await serviceRun("launchctl", ["bootout", serviceTarget]);
+  const byServiceTarget = await run("launchctl", ["bootout", serviceTarget]);
   const byPlist = byServiceTarget.code === 0
     ? null
-    : await serviceRun("launchctl", ["bootout", domainTarget, plistPath]);
-  const after = await waitForInactiveStatus(statusLaunchd);
+    : await run("launchctl", ["bootout", domainTarget, plistPath]);
+  const after = await waitForUnloaded(readStatus);
   const rawResult = byPlist || byServiceTarget;
-  const active = after?.active !== false;
-  const ok = !active;
+  const ok = launchdStatusIsSafelyUnloaded(after);
   if (ok) logger.info?.("launchd service stopped");
-  else logger.warn?.("launchd service is still active after the stop request");
+  else logger.warn?.("launchd service removal from the launchd domain could not be verified");
   return {
     ...rawResult,
     ok,
     provider: "launchd",
-    installed: existsSync(plistPath),
+    installed: after?.installed === true,
+    loaded: ok ? false : after?.loaded ?? null,
     active_before: before.active === true,
-    active,
+    active: ok ? false : after?.active ?? null,
     restore_required: ok,
     already_stopped: false,
     code: ok ? 0 : rawResult.code,
+    reason: ok ? "stopped" : "stop_not_observed",
+    status: after,
     bootout_service_target: byServiceTarget,
     ...(byPlist ? { bootout_plist_fallback: byPlist } : {}),
   };
 }
 
+function launchdStatusIsSafelyUnloaded(status) {
+  return status?.status_available === true && status?.loaded === false && status?.active === false;
+}
+
 async function uninstallLaunchd(logger) {
-  const stopped = await stopLaunchd(logger);
   const plistPath = launchdPlistPath();
+  const definitionIdentity = snapshotServiceDefinition(plistPath, "launchd service definition");
+  const stopped = await stopLaunchdService(logger);
   if (!stopped.ok) return { ok: false, provider: "launchd", path: plistPath, stop: stopped };
-  if (existsSync(plistPath)) rmSync(plistPath, { force: true });
+  if (!removeServiceDefinitionIfCurrent(plistPath, definitionIdentity, "launchd service definition")) {
+    logger.warn?.("launchd service definition changed during removal; the replacement was retained.");
+    return { ok: false, provider: "launchd", path: plistPath, stop: stopped, reason: "definition_changed" };
+  }
   logger.info?.("Autostart removed.");
   return { ok: true, provider: "launchd", path: plistPath, stop: stopped };
 }
@@ -503,7 +533,8 @@ async function installSystemd(spec, logger) {
 
 async function uninstallSystemd(logger) {
   const servicePath = systemdPath();
-  const definitionPresent = existsSync(servicePath);
+  const definitionIdentity = snapshotServiceDefinition(servicePath, "systemd service definition");
+  const definitionPresent = definitionIdentity !== null;
   const disable = await serviceRun("systemctl", ["--user", "disable", "--now", "machine-bridge-mcp.service"]);
   const activeCheck = await serviceRun("systemctl", ["--user", "is-active", "machine-bridge-mcp.service"]);
   const status = systemdStatusSummary({ installed: definitionPresent, definition: "machine-bridge-mcp.service", result: activeCheck });
@@ -512,7 +543,10 @@ async function uninstallSystemd(logger) {
     logger.warn?.("systemd service removal could not be verified; its definition was not removed.");
     return { ok: false, provider: "systemd", path: servicePath, disable, active_check: activeCheck, status, active: status.active, reason: decision.reason };
   }
-  if (definitionPresent) rmSync(servicePath, { force: true });
+  if (!removeServiceDefinitionIfCurrent(servicePath, definitionIdentity, "systemd service definition")) {
+    logger.warn?.("systemd service definition changed during removal; the replacement was retained.");
+    return { ok: false, provider: "systemd", path: servicePath, disable, active_check: activeCheck, status, active: false, reason: "definition_changed" };
+  }
   const reload = await serviceRun("systemctl", ["--user", "daemon-reload"]);
   const ok = reload.code === 0;
   if (ok) logger.info?.("Autostart removed.");
@@ -582,6 +616,12 @@ function systemdStatusRequiresRestore(status) {
 
 async function startSystemd(logger) {
   const before = await statusSystemd();
+  if (typeof before.active !== "boolean") {
+    return { ok: false, provider: "systemd", installed: before.installed === true, active: null, reason: "status_unavailable", status: before };
+  }
+  if (before.installed !== true) {
+    return { ok: false, provider: "systemd", installed: false, active: false, reason: "not_installed", status: before };
+  }
   if (before.active) {
     const existing = await waitForStableActiveStatus(statusSystemd);
     if (existing.stable) {
@@ -599,6 +639,13 @@ async function startSystemd(logger) {
 }
 
 async function restartSystemd(logger) {
+  const before = await statusSystemd();
+  if (typeof before.active !== "boolean") {
+    return { ok: false, provider: "systemd", installed: before.installed === true, active: null, restarted: false, reason: "status_unavailable", status: before };
+  }
+  if (before.installed !== true) {
+    return { ok: false, provider: "systemd", installed: false, active: false, restarted: false, reason: "not_installed", status: before };
+  }
   const command = await serviceRun("systemctl", ["--user", "restart", "machine-bridge-mcp.service"]);
   const stability = await waitForStableActiveStatus(statusSystemd);
   const after = stability.status;

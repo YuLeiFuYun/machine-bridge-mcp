@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.55",
+  "version": "3.0.0-beta.62",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -49,10 +49,9 @@
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit && npm run typecheck:local",
     "syntax": "node scripts/syntax-check.mjs",
     "check": "npm run check:full",
-    "worker:dry-run": "wrangler deploy --dry-run",
+    "worker:dry-run": "node scripts/run-worker-dry-run.mjs",
     "worker:integration-test": "node tests/worker-integration-test.mjs",
     "release:check": "npm run consumer-security:test && node scripts/github-release.mjs --check",
-    "release:publish": "node scripts/github-release.mjs --publish",
     "release:backfill": "node scripts/github-release.mjs --backfill",
     "stdio:integration-test": "node tests/stdio-integration-test.mjs",
     "catalog:test": "node tests/catalog-test.mjs",
@@ -79,6 +78,7 @@
     "numbers:test": "node tests/numbers-test.mjs",
     "records:test": "node tests/records-test.mjs",
     "state-inventory:test": "node tests/state-inventory-test.mjs",
+    "state-root-retirement:test": "node tests/state-root-retirement-test.mjs",
     "release-state:test": "node tests/release-state-test.mjs",
     "release-ci:test": "node tests/release-ci-test.mjs",
     "agent-context:test": "node tests/agent-context-test.mjs",
@@ -125,7 +125,9 @@
     "worker-oauth-controller:test": "node tests/worker-oauth-controller-test.mjs",
     "cli-service:test": "node tests/cli-service-test.mjs",
     "release:acceptance:test": "node tests/release-acceptance-test.mjs",
+    "release-oauth-canary:test": "node tests/release-oauth-canary-test.mjs",
     "release:candidate": "npm run check && node scripts/local-release-acceptance.mjs --prepare",
+    "release:oauth-canary": "node scripts/release-oauth-canary.mjs",
     "release:accept": "node scripts/local-release-acceptance.mjs --record",
     "release:acceptance:verify": "node scripts/local-release-acceptance.mjs --verify",
     "github:push": "node scripts/github-push.mjs",
@@ -164,13 +166,13 @@
     "stable:publish": "node scripts/publish-npm.mjs stable",
     "publish-npm:test": "node tests/publish-npm-test.mjs",
     "release-candidate-manifest:test": "node tests/release-candidate-manifest-test.mjs",
-    "device-key-id-compatibility:test": "node tests/device-key-id-compatibility-test.mjs",
+    "device-key-id-stability:test": "node tests/device-key-id-stability-test.mjs",
     "candidate-runtime-store:test": "node tests/candidate-runtime-store-test.mjs",
     "service-restart:test": "node tests/service-restart-handoff-test.mjs",
     "browser-identity:test": "node tests/browser-extension-identity-test.mjs",
-    "mcp-resumption:test": "node tests/mcp-resumption-test.mjs",
     "mcp-protocol:test": "node tests/mcp-protocol-test.mjs",
-    "mcp-modern-controller:test": "node tests/mcp-modern-controller-test.mjs",
+    "mcp-controller:test": "node tests/mcp-controller-test.mjs",
+    "mcp-response-proxy:test": "node tests/mcp-response-proxy-test.mjs",
     "mcp:conformance": "node scripts/official-mcp-conformance.mjs",
     "mcp:conformance:test": "node tests/official-mcp-conformance-test.mjs",
     "sbom-check:test": "node tests/sbom-check-test.mjs",
@@ -179,12 +181,19 @@
     "consumer-security:test": "node scripts/consumer-package-security.mjs",
     "consumer-package-security:test": "node tests/consumer-package-security-test.mjs",
     "wrangler-toolchain:test": "node tests/wrangler-toolchain-test.mjs",
+    "worker-types-generator:test": "node tests/worker-types-generator-test.mjs",
     "npm-environment:test": "node tests/npm-environment-test.mjs",
     "hardened-npm:test": "node tests/hardened-npm-test.mjs",
     "workflow-policy:check": "node .github/scripts/workflow-policy.mjs",
     "workflow-policy:test": "node tests/workflow-policy-test.mjs",
     "managed-job-boundary:test": "node tests/managed-job-boundary-test.mjs",
-    "ci-bootstrap:test": "node tests/ci-bootstrap-test.mjs"
+    "ci-bootstrap:test": "node tests/ci-bootstrap-test.mjs",
+    "browser-broker-auth:test": "node tests/browser-broker-auth-test.mjs",
+    "browser-pairing-content:test": "node tests/browser-pairing-content-test.mjs",
+    "browser-pairing-launch:test": "node tests/browser-pairing-launch-test.mjs",
+    "browser-cli-pairing:test": "node tests/browser-cli-pairing-test.mjs",
+    "resource-admission:test": "node tests/resource-admission-test.mjs",
+    "resource-build-root:test": "node tests/resource-build-root-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
@@ -197,7 +206,7 @@
     "fast-check": "4.9.0",
     "globals": "17.8.0",
     "typescript": "7.0.2",
-    "wrangler": "4.115.0"
+    "wrangler": "4.120.0"
   },
   "keywords": [
     "mcp",
@@ -229,7 +238,7 @@
     "esbuild@0.28.1": true,
     "fsevents": false,
     "sharp@0.35.3": true,
-    "workerd@1.20260722.1": true
+    "workerd@1.20260801.1": true
   },
   "packageManager": "npm@12.0.1",
   "devEngines": {

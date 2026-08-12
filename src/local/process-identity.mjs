@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
 const COMMAND_TIMEOUT_MS = 3000;
@@ -25,12 +25,17 @@ export function processStartTimeMs(pid) {
   const parsed = normalizePid(pid);
   if (!parsed) return null;
   if (parsed === process.pid) return currentProcessStartTimeMs();
-  if (process.platform === "win32") {
-    const command = `(Get-CimInstance Win32_Process -Filter "ProcessId = ${parsed}").CreationDate.ToUniversalTime().ToString('o')`;
-    const result = runBounded("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]);
-    return result.ok ? parseTime(result.stdout) : null;
-  }
-  const result = runBounded("ps", ["-p", String(parsed), "-o", "lstart="]);
+  const [command, args] = processStartCommand(parsed);
+  const result = runBounded(command, args);
+  return result.ok ? parseTime(result.stdout) : null;
+}
+
+export async function processStartTimeMsAsync(pid) {
+  const parsed = normalizePid(pid);
+  if (!parsed) return null;
+  if (parsed === process.pid) return currentProcessStartTimeMs();
+  const [command, args] = processStartCommand(parsed);
+  const result = await runBoundedAsync(command, args);
   return result.ok ? parseTime(result.stdout) : null;
 }
 
@@ -129,6 +134,14 @@ export function inspectProcessInstance(owner, options = {}) {
   };
 }
 
+function processStartCommand(pid) {
+  if (process.platform === "win32") {
+    const command = `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CreationDate.ToUniversalTime().ToString('o')`;
+    return ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]];
+  }
+  return ["ps", ["-p", String(pid), "-o", "lstart="]];
+}
+
 function runBounded(command, args) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
@@ -140,6 +153,16 @@ function runBounded(command, args) {
     stdio: ["ignore", "pipe", "ignore"],
   });
   return { ok: !result.error && result.status === 0, stdout: String(result.stdout || "") };
+}
+
+function runBoundedAsync(command, args) {
+  return new Promise((resolvePromise) => {
+    execFile(command, args, {
+      encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, killSignal: "SIGKILL",
+      maxBuffer: COMMAND_OUTPUT_BYTES, windowsHide: true,
+      env: process.platform === "win32" ? process.env : { ...process.env, LC_ALL: "C", LANG: "C" },
+    }, (error, stdout) => resolvePromise({ ok: !error, stdout: String(stdout || "") }));
+  });
 }
 
 function normalizePid(value) {

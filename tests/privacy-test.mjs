@@ -93,6 +93,16 @@ try {
   git(["add", "scripts/privacy-check.mjs", "README.md"]);
   const publicAutomationEmail = ["support", "github.com"].join("@");
   git(["commit", "-q", "-m", "safe baseline", "-m", `Signed-off-by: dependabot[bot] <${publicAutomationEmail}>`]);
+  const workingTreeDeletion = join(temp, "removed-publication-file.txt");
+  writeFileSync(workingTreeDeletion, "neutral tracked content\n");
+  git(["add", "removed-publication-file.txt"]);
+  git(["commit", "-q", "-m", "tracked deletion fixture"]);
+  rmSync(workingTreeDeletion, { force: true });
+  const deletedWorkingTreeResult = runCheck();
+  assert(deletedWorkingTreeResult.status === 0,
+    `unstaged tracked deletion was misclassified as an unreadable publication file: ${deletedWorkingTreeResult.stderr}`);
+  git(["add", "-u"]);
+  git(["commit", "-q", "-m", "remove tracked deletion fixture"]);
   const safeHistory = runCheck({ args: ["--history"] });
   assert(safeHistory.status === 0, `public Dependabot trailer was rejected by history scanning: ${safeHistory.stderr}`);
   const historicalToken = ["npm", "H".repeat(36)].join("_");

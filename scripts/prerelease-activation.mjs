@@ -5,9 +5,14 @@ import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "../src
 import { assertSoakEligiblePrerelease } from "./release-channel.mjs";
 
 export const ACTIVATION_SCHEMA_VERSION = 2;
-const LEGACY_ACTIVATION_SCHEMA_VERSION = 1;
 const MAX_ACTIVATION_BYTES = 64 * 1024;
 const SOURCES = new Set(["local-candidate", "npm-prerelease"]);
+const ACTIVATION_FIELDS = new Set([
+  "schema_version", "package_name", "package_version", "source", "shasum", "integrity",
+  "promotion_content_sha256", "activated_at", "npm_dist_tag", "published_at", "workspace_hash",
+  "runtime_entry", "activation_recovered", "activation_recovery_reason", "activation_recovery_detail",
+  "global_package_rollback_baseline",
+]);
 
 export function prereleaseActivationPath(version, stateRoot = defaultStateRoot()) {
   const parsed = assertSoakEligiblePrerelease(version);
@@ -43,8 +48,10 @@ export function readPrereleaseActivation(version, stateRoot = defaultStateRoot()
 
 export function validatePrereleaseActivation(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("prerelease activation record must be an object");
+  const unknown = Object.keys(value).filter((key) => !ACTIVATION_FIELDS.has(key));
+  if (unknown.length) throw new Error(`prerelease activation record contains unsupported fields: ${unknown.join(", ")}`);
   const schemaVersion = value.schema_version;
-  if (![LEGACY_ACTIVATION_SCHEMA_VERSION, ACTIVATION_SCHEMA_VERSION].includes(schemaVersion)) {
+  if (schemaVersion !== ACTIVATION_SCHEMA_VERSION) {
     throw new Error("unsupported prerelease activation schema");
   }
   const parsed = assertSoakEligiblePrerelease(value.package_version);
@@ -65,21 +72,9 @@ export function validatePrereleaseActivation(value) {
   const runtimeEntry = String(value.runtime_entry || "");
   if (runtimeEntry && !isAbsolute(runtimeEntry)) throw new Error("prerelease activation runtime entry must be absolute");
   const activationRecovery = normalizeActivationRecovery(value);
-  const hasLegacyBaseline = value.previous !== undefined;
-  const hasGlobalBaseline = value.global_package_rollback_baseline !== undefined;
-  if (hasLegacyBaseline && hasGlobalBaseline) {
-    throw new Error("prerelease activation rollback baseline is ambiguous");
-  }
-  if (schemaVersion === LEGACY_ACTIVATION_SCHEMA_VERSION && hasGlobalBaseline) {
-    throw new Error("legacy prerelease activation cannot use the global package rollback baseline field");
-  }
-  if (schemaVersion === ACTIVATION_SCHEMA_VERSION && hasLegacyBaseline) {
-    throw new Error("current prerelease activation cannot use the legacy previous field");
-  }
-  const baselineInput = hasGlobalBaseline ? value.global_package_rollback_baseline : value.previous;
-  const globalPackageRollbackBaseline = baselineInput === undefined
+  const globalPackageRollbackBaseline = value.global_package_rollback_baseline === undefined
     ? undefined
-    : validateGlobalPackageRollbackBaseline(baselineInput);
+    : validateGlobalPackageRollbackBaseline(value.global_package_rollback_baseline);
   return Object.freeze({
     schema_version: ACTIVATION_SCHEMA_VERSION,
     package_name: value.package_name,

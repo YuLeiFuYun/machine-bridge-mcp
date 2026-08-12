@@ -1,6 +1,8 @@
 import { closeSync, constants as fsConstants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, unlinkSync } from "node:fs";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
+const MULTIPLE_LINK_RETRY_BUFFER = new Int32Array(new SharedArrayBuffer(4));
+
 export function openRegularFileSync(file, flags, options = {}) {
   const mode = Number.isInteger(options.mode) ? options.mode : undefined;
   const label = String(options.label || "path");
@@ -21,14 +23,16 @@ export function openRegularFileSync(file, flags, options = {}) {
     const descriptorIdentityInfo = options.fstatSync ? info : fstatSync(fd, { bigint: true });
     const identity = filesystemIdentity(descriptorIdentityInfo, label);
     if (options.rejectMultipleLinks === true && Number(info.nlink) > 1) {
-      throw new Error(`${label} must not have multiple hard links`);
+      throw Object.assign(new Error(`${label} must not have multiple hard links`), { code: "MBM_MULTIPLE_HARD_LINKS" });
     }
     if (options.verifyPathIdentity === true) {
       const inspectPath = options.lstatSync || lstatSync;
       const pathInfo = inspectPath(file);
       if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) throw new Error(`${label} must be a regular file and not a symbolic link`);
       const pathIdentityInfo = options.lstatSync ? pathInfo : lstatSync(file, { bigint: true });
-      if (!sameFilesystemIdentity(identity, filesystemIdentity(pathIdentityInfo, label))) throw new Error(`${label} identity changed while opening`);
+      if (!sameFilesystemIdentity(identity, filesystemIdentity(pathIdentityInfo, label))) {
+        throw Object.assign(new Error(`${label} identity changed while opening`), { code: "MBM_IDENTITY_CHANGED" });
+      }
     }
     if (Number.isInteger(options.chmod)) setDescriptorMode(fd, options.chmod);
     return { fd, info, identity, identityInfo: descriptorIdentityInfo };
@@ -47,8 +51,26 @@ function withRegularFileSync(file, flags, options, callback) {
   }
 }
 
+export function retryTransientMultipleLinksSync(callback) {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try { return callback(); }
+    catch (error) {
+      if (error?.code !== "MBM_MULTIPLE_HARD_LINKS" || attempt === 4) throw error;
+      Atomics.wait(MULTIPLE_LINK_RETRY_BUFFER, 0, 0, 1);
+    }
+  }
+  throw new Error("transient multiple-link retry did not settle");
+}
+
 export function chmodRegularFileSync(file, mode, label = "path") {
   return withRegularFileSync(file, fsConstants.O_RDONLY, { label, chmod: mode, rejectMultipleLinks: true }, () => undefined);
+}
+
+export function chmodRegularFileIfIdentitySync(file, expectedIdentity, mode, label = "path") {
+  return withRegularFileSync(file, fsConstants.O_RDONLY, { label, rejectMultipleLinks: true }, (fd, _info, identity) => {
+    if (!sameFilesystemIdentity(expectedIdentity, identity)) throw new Error(`${label} changed before permission update`);
+    setDescriptorMode(fd, mode);
+  });
 }
 
 export function ownerOnlyFile(filePath) {

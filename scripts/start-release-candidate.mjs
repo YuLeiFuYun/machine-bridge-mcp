@@ -17,6 +17,7 @@ import { assertCandidateMatchesCurrentSource, validateCandidateManifest } from "
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { createHardenedNpmSession, settleHardenedNpmSession } from "./hardened-npm-session.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { withReleaseRuntimeLock } from "../src/local/release-runtime-lock.mjs";
 import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
 import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
@@ -63,51 +64,31 @@ try {
   }
 
   const stateRoot = resolve(expandHome(argumentValue("--state-dir") || defaultStateRoot()));
-  const installPrefix = persistentActivation
-    ? createCandidateRuntimePrefix({ stateRoot, version: manifest.package_version, shasum: manifest.shasum })
-    : foregroundInstallPrefix;
-  if (!persistentActivation) rmSync(installPrefix, { recursive: true, force: true });
-  ensureOwnerOnlyDirectorySync(installPrefix);
-  runNpm([
-    "install",
-    "--dry-run=false",
-    "--workspaces=false",
-    "--ignore-scripts=false",
-    "--global",
-    "--prefix", installPrefix,
-    "--omit=optional",
-    "--include=prod",
-    "--package-lock-only=false",
-    "--allow-scripts=esbuild,workerd,sharp,fsevents",
-    tarball,
-  ], root);
-
-  const globalRoot = runNpm(["root", "--json=false", "--parseable=false", "--workspaces=false", "--global", "--prefix", installPrefix], root).stdout.trim();
-  const installedPackage = join(globalRoot, manifest.package_name);
-  const installed = readJson(join(installedPackage, "package.json"), "installed candidate package");
-  if (installed.version !== manifest.package_version) {
-    throw new Error(`installed candidate version ${installed.version} does not match ${manifest.package_version}`);
+  const forwardedArgs = process.argv.slice(2).filter((value) => ![
+    "--install-only", "--allow-worker-deploy", "--activate-service",
+  ].includes(value));
+  if (persistentActivation) {
+    await withReleaseRuntimeLock(stateRoot, async () => {
+      const installPrefix = createCandidateRuntimePrefix({ stateRoot, version: manifest.package_version, shasum: manifest.shasum });
+      const installedPackage = installCandidateRuntime({ installPrefix, manifest, tarball });
+      const previousInstallation = persistentActivation
+        ? currentGlobalInstallation(manifest.package_name, globalPrefix, npmCli)
+        : null;
+      disposeNpmSession();
+      activatePersistentCandidate({
+        manifest, installedPackage, installPrefix, stateRoot, forwardedArgs, previousInstallation,
+      });
+    });
+    process.exit(0);
   }
 
-  console.log(`Verified candidate tarball: ${manifest.filename} (${manifest.shasum})`);
-  console.log(`Installed isolated candidate: ${installedPackage}`);
-  const previousInstallation = persistentActivation
-    ? currentGlobalInstallation(manifest.package_name, globalPrefix, npmCli)
-    : null;
+  const installPrefix = foregroundInstallPrefix;
+  rmSync(installPrefix, { recursive: true, force: true });
+  const installedPackage = installCandidateRuntime({ installPrefix, manifest, tarball });
   disposeNpmSession();
   if (installOnly) {
     rmSync(installPrefix, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
     console.log("Candidate installation check passed; temporary runtime was removed and startup was skipped by --install-only.");
-    process.exit(0);
-  }
-
-  const forwardedArgs = process.argv.slice(2).filter((value) => ![
-    "--install-only", "--allow-worker-deploy", "--activate-service",
-  ].includes(value));
-  if (activateService) {
-    activatePersistentCandidate({
-      manifest, installedPackage, installPrefix, stateRoot, forwardedArgs, previousInstallation,
-    });
     process.exit(0);
   }
 
@@ -139,6 +120,32 @@ try {
 } catch (error) {
   const settled = settleNpmSession(error);
   fail(settled?.message || settled);
+}
+
+function installCandidateRuntime({ installPrefix, manifest, tarball }) {
+  ensureOwnerOnlyDirectorySync(installPrefix);
+  runNpm([
+    "install",
+    "--dry-run=false",
+    "--workspaces=false",
+    "--ignore-scripts=false",
+    "--global",
+    "--prefix", installPrefix,
+    "--omit=optional",
+    "--include=prod",
+    "--package-lock-only=false",
+    "--allow-scripts=esbuild,workerd,sharp,fsevents",
+    tarball,
+  ], root);
+  const globalRoot = runNpm(["root", "--json=false", "--parseable=false", "--workspaces=false", "--global", "--prefix", installPrefix], root).stdout.trim();
+  const installedPackage = join(globalRoot, manifest.package_name);
+  const installed = readJson(join(installedPackage, "package.json"), "installed candidate package");
+  if (installed.version !== manifest.package_version) {
+    throw new Error(`installed candidate version ${installed.version} does not match ${manifest.package_version}`);
+  }
+  console.log(`Verified candidate tarball: ${manifest.filename} (${manifest.shasum})`);
+  console.log(`Installed isolated candidate: ${installedPackage}`);
+  return installedPackage;
 }
 
 function activatePersistentCandidate({

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -17,11 +18,13 @@ try {
   assert.equal(resolveNpmCli({ npmCli }), realpathSync(npmCli));
 
   let nowMs = Date.parse("2026-08-05T07:00:00.000Z");
-  const stateRoot = join(root, "state");
+  const stateRoot = toolchainState(root, "state");
+  const controlRoot = join(root, "control");
   const fake = createFakeNpmRunner();
   const options = {
     packageRoot,
     stateRoot,
+    controlRoot,
     npmCli,
     runCommand: fake.run,
     now: () => nowMs,
@@ -36,6 +39,12 @@ try {
   assert.equal(fake.count("ci"), 1, "concurrent toolchain initialization installed more than once");
   assert.equal(fake.count("audit"), 1, "initial toolchain audit did not run exactly once");
   assert.equal(fake.count("signatures"), 1, "initial registry signature verification did not run exactly once");
+
+  const callsBeforeMaintenance = fake.total();
+  await withForeignMaintenanceLock(stateRoot, async () => {
+    await assert.rejects(ensureWranglerToolchain(options), /state maintenance is active in another process/);
+  });
+  assert.equal(fake.total(), callsBeforeMaintenance, "toolchain work began after foreign state maintenance acquired exclusive ownership");
 
   await ensureWranglerToolchain(options);
   assert.equal(fake.count("ci"), 1, "fresh verified toolchain was reinstalled");
@@ -70,12 +79,13 @@ try {
   await ensureWranglerToolchain(options);
   assert.equal(fake.count("ci"), 2, "tampered toolchain lockfile did not trigger a clean reinstall");
 
-  const vulnerableState = join(root, "vulnerable-state");
+  const vulnerableState = toolchainState(root, "vulnerable-state");
   const vulnerable = createFakeNpmRunner({ undici: "7.28.0" });
   await assert.rejects(
     ensureWranglerToolchain({
       packageRoot,
       stateRoot: vulnerableState,
+      controlRoot,
       npmCli,
       runCommand: vulnerable.run,
       now: () => nowMs,
@@ -83,11 +93,12 @@ try {
     /undici versions 7\.28\.0 do not match 7\.29\.0/,
   );
 
-  const invalidTreeState = join(root, "invalid-tree-state");
+  const invalidTreeState = toolchainState(root, "invalid-tree-state");
   const invalidTree = createFakeNpmRunner();
   await ensureWranglerToolchain({
     packageRoot,
     stateRoot: invalidTreeState,
+    controlRoot,
     npmCli,
     runCommand: invalidTree.run,
     now: () => nowMs,
@@ -97,6 +108,7 @@ try {
   await ensureWranglerToolchain({
     packageRoot,
     stateRoot: invalidTreeState,
+    controlRoot,
     npmCli,
     runCommand: async (command, args, runOptions) => {
       if (invalidLsPending && args[1] === "ls") {
@@ -113,7 +125,8 @@ try {
   await assert.rejects(
     ensureWranglerToolchain({
       packageRoot,
-      stateRoot: join(root, "audit-failure-state"),
+      stateRoot: toolchainState(root, "audit-failure-state"),
+      controlRoot,
       npmCli,
       runCommand: auditedFailure.run,
       now: () => nowMs,
@@ -126,15 +139,55 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
+function toolchainState(root, name) {
+  const stateRoot = join(root, name);
+  mkdirSync(stateRoot, { recursive: true });
+  return stateRoot;
+}
+
+async function withForeignMaintenanceLock(stateRoot, callback) {
+  const stateModuleUrl = new URL("../src/local/state.mjs", import.meta.url).href;
+  const script = `import { acquireMaintenanceLock } from ${JSON.stringify(stateModuleUrl)};\n`
+    + `const lock=acquireMaintenanceLock(process.argv[1],{operation:"wrangler-test"});\n`
+    + `if(!lock.acquired)throw new Error("maintenance lock not acquired");\n`
+    + `process.stdout.write("ready\\n");\n`
+    + `process.on("SIGTERM",()=>{try{lock.release()}catch{}process.exit(0)});\n`
+    + `setInterval(()=>{},1000);\n`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script, stateRoot], {
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    env: { ...process.env, NODE_V8_COVERAGE: "" },
+  });
+  await new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      error ? rejectPromise(error) : resolvePromise();
+    };
+    const timer = setTimeout(() => finish(new Error("foreign maintenance fixture did not become ready")), 10_000);
+    child.once("error", finish);
+    child.once("exit", (code) => finish(new Error(`foreign maintenance fixture exited early (${code})`)));
+    child.stdout.once("data", (chunk) => finish(String(chunk).includes("ready") ? null : new Error("foreign maintenance fixture emitted an invalid readiness marker")));
+  });
+  try { return await callback(); }
+  finally {
+    const closed = new Promise((resolvePromise) => {
+      child.once("close", resolvePromise);
+    });
+    child.kill("SIGTERM");
+    await closed;
+  }
+}
+
 function createFakeNpmRunner(options = {}) {
   const calls = [];
   const versions = {
-    wrangler: options.wrangler || "4.115.0",
+    wrangler: options.wrangler || "4.120.0",
     undici: options.undici || "7.29.0",
     sharp: options.sharp || "0.35.3",
   };
   return {
     count(kind) { return calls.filter((value) => value === kind).length; },
+    total() { return calls.length; },
     async run(_command, args, runOptions) {
       const npmArgs = args.slice(1);
       if (npmArgs[0] === "--version") {

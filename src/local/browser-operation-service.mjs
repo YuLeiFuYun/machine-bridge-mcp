@@ -16,6 +16,7 @@ export class BrowserOperationService {
     ensureStarted,
     request,
     bridgeStatus,
+    createPairingLaunch,
     extensionPath,
     expectedExtensionVersion,
     expectedExtensionId,
@@ -27,6 +28,7 @@ export class BrowserOperationService {
     this.ensureStarted = ensureStarted;
     this.request = request;
     this.bridgeStatus = bridgeStatus;
+    this.createPairingLaunch = createPairingLaunch;
     this.extensionPath = extensionPath;
     this.expectedExtensionVersion = expectedExtensionVersion;
     this.expectedExtensionId = expectedExtensionId;
@@ -75,7 +77,11 @@ export class BrowserOperationService {
       restricted_pages: ["browser-internal pages", "extension stores", "some PDF/plugin viewers", "pages blocked by enterprise policy"],
       security: {
         loopback_only: true,
-        bearer_pairing_token: true,
+        bearer_pairing_token: false,
+        short_lived_pairing_grant: true,
+        ephemeral_pairing_listener: true,
+        one_time_hmac_socket_auth: true,
+        long_lived_tokens_on_wire: false,
         pinned_extension_identity: true,
         arbitrary_extension_code_from_mcp: false,
         resource_values_returned_to_model: false,
@@ -87,12 +93,14 @@ export class BrowserOperationService {
     this.authorizeTool("pair_browser_extension");
     const status = await this.status(context);
     if (args.open !== false) {
+      const launch = await this.createPairingLaunch(this.bridgeStatus().port);
       const command = process.platform === "darwin"
-        ? { cmd: "open", argv: [status.pairing_url] }
+        ? { cmd: "open", argv: [launch.url] }
         : process.platform === "win32"
-          ? { cmd: "cmd.exe", argv: ["/d", "/s", "/c", "start", "", status.pairing_url] }
-          : { cmd: "xdg-open", argv: [status.pairing_url] };
-      await this.runProcess(command.cmd, command.argv, 30_000, false, 128 * 1024, context);
+          ? { cmd: "cmd.exe", argv: ["/d", "/s", "/c", "start", "", launch.url] }
+          : { cmd: "xdg-open", argv: [launch.url] };
+      try { await this.runProcess(command.cmd, command.argv, 30_000, false, 128 * 1024, context); }
+      catch (error) { launch.close(); throw error; }
     }
     return {
       ...status,
@@ -100,7 +108,7 @@ export class BrowserOperationService {
       setup_steps: [
         "Open the browser extensions page and enable developer mode.",
         "Load the unpacked extension from extension_path once.",
-        "Open pairing_url; the installed extension stores the loopback endpoint and token locally.",
+        "Run pair_browser_extension with opening enabled; the sanitized pairing_url alone contains no pairing grant.",
         "After upgrades, reload the unpacked extension and accept any newly requested browser permission.",
       ],
     };

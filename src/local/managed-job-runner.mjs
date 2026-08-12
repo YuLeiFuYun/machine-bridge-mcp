@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { classifyOperationalError } from "./log.mjs";
@@ -42,7 +42,6 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
   const logger = options.logger || console;
   child.once?.("error", (error) => {
     logger.error?.("managed job runner process reported an asynchronous failure", {
-      job_id: basename(dir),
       recovery: recover,
       error_class: classifyOperationalError(error),
     });
@@ -52,7 +51,8 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
   try {
     publishProvisionalRunnerClaim(dir, pid, launchToken);
   } catch (error) {
-    try { child.kill?.("SIGKILL"); } catch {}
+    try { child.kill?.("SIGKILL"); }
+    catch { /* An uncommitted two-phase runner claim prevents this child from executing even if local kill delivery fails. */ }
     throw error;
   }
   child.unref();
@@ -75,17 +75,17 @@ function readRunnerOwner(dir, fallback = {}) {
   let text;
   try { text = readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8"); }
   catch (error) { if (error?.code === "ENOENT") return { ...fallback }; throw error; }
-  try {
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...fallback };
-    return { ...fallback, ...parsed };
-  } catch { return { ...fallback }; }
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch (error) { throw new Error("managed job runner claim is invalid", { cause: error }); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("managed job runner claim is invalid");
+  return { ...fallback, ...parsed };
 }
 
 export function managedRunnerEnvironment({ fullEnv = false, recoveryToken = "", launchToken = "", source = process.env } = {}) {
   const env = fullEnv ? { ...source } : {};
   if (!fullEnv) {
-    for (const key of ["PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP"]) {
+    for (const key of ["PATH", "HOME", "USERPROFILE", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "AGENT_RESOURCE_COORDINATOR_ROOT", "AGENT_BUILD_ROOT"]) {
       if (typeof source[key] === "string" && source[key]) env[key] = source[key];
     }
   }

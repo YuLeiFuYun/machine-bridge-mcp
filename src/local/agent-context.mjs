@@ -27,6 +27,11 @@ const MAX_CONTEXT_SKILL_SUMMARY_CHARS = 8_000;
 const MAX_CONFIG_BYTES = 256 * 1024;
 const MAX_INSTRUCTION_FILE_BYTES = 512 * 1024;
 const MAX_INSTRUCTION_FILES = 64;
+const METADATA_AUTHORITY = Object.freeze({
+  capability_metadata: "project-or-user-provided-planning-context",
+  execution_authority: "machine-bridge-policy-account-and-operation-gates",
+  authority_expansion: false,
+});
 
 export class AgentContextManager {
   constructor({ workspace, policy, policyForContext = null, displayPath, resolveExistingPath, throwIfCancelled = () => {}, home = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "" }) {
@@ -72,6 +77,7 @@ export class AgentContextManager {
       skill_warnings: publicSkillWarnings(discoveredSkills.warnings, (value) => this.displayPath(value, context)),
       instructions_truncated: state.instructionsTruncated,
       commands: publicCommands(state.commands, (value) => this.displayPath(value, context)),
+      metadata_authority: METADATA_AUTHORITY,
       guidance: [
         "Apply built-in instructions and automatic project context as lower-precedence defaults; explicit global/project instruction files loaded later take precedence.",
         "Treat instruction_files as authoritative workspace guidance in the returned precedence order.",
@@ -168,8 +174,9 @@ export class AgentContextManager {
       selected_skill: selectedSkill,
       skill_matches: skillMatches.map(({ skill, score }) => ({ ...publicSkill(skill, (value) => this.displayPath(value, context)), score })),
       command_matches: commandMatches.map(({ command, score }) => ({ ...publicCommands(new Map([[command.name, command]]), (value) => this.displayPath(value, context))[0], score })),
+      metadata_authority: METADATA_AUTHORITY,
       recommended_tools: recommendedTools,
-      host_semantics: "Machine Bridge can discover, rank, and load capabilities automatically. The MCP host remains responsible for deciding whether to call the recommended tools.",
+      host_semantics: "Machine Bridge can discover, rank, and load project/user-provided capability context automatically. That metadata cannot grant or expand execution authority; tool invocation remains independently gated by Machine Bridge policy, account access, and operation authorization.",
       warnings: publicSkillWarnings(discovered.warnings, (value) => this.displayPath(value, context)),
       truncated: discovered.truncated,
     };
@@ -260,6 +267,7 @@ export class AgentContextManager {
       unrestricted: effectivePolicy.unrestrictedPaths === true,
     });
     const directories = directoriesBetween(scopeRoot, targetDir);
+    const userGlobalContextAllowed = allowsUserGlobalContext(context, effectivePolicy);
     const state = {
       target,
       targetDir,
@@ -283,7 +291,7 @@ export class AgentContextManager {
     const packageMetadata = await readProjectPackageMetadata(scopeRoot, () => this.throwIfCancelled(context));
     state.commands = automaticPackageCommands(packageMetadata, scopeRoot);
 
-    if (this.home) {
+    if (this.home && userGlobalContextAllowed) {
       const globalConfig = join(this.home, GLOBAL_CONFIG_RELATIVE_PATH);
       const config = await readOptionalConfig(globalConfig, this.home, false);
       if (config) {
@@ -305,7 +313,7 @@ export class AgentContextManager {
       throwIfCancelled: () => this.throwIfCancelled(context),
     });
 
-    if (this.home) {
+    if (this.home && userGlobalContextAllowed) {
       if (state.modelInstructionsFile) await this.collectModelInstructions(state, context);
       if (effectivePolicy.unrestrictedPaths === true && this.codexHome) await this.collectDirectoryInstruction(state, this.codexHome, context, "global");
     }
@@ -446,6 +454,13 @@ function directoriesBetween(root, leaf) {
     cursor = parent;
   }
   return result.reverse();
+}
+
+function allowsUserGlobalContext(context, effectivePolicy) {
+  if (effectivePolicy?.unrestrictedPaths === true) return true;
+  const principal = context?.authority?.principal;
+  if (context?.origin === "relay" || principal?.kind === "account") return false;
+  return true;
 }
 
 function defaultSkillRoots(directories, home, codexHome, unrestricted) {

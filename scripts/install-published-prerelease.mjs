@@ -17,6 +17,7 @@ import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
 import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
 import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
+import { withReleaseRuntimeLock } from "../src/local/release-runtime-lock.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const lifecycleNpmCli = process.env.npm_execpath;
@@ -55,58 +56,60 @@ try {
     throw new Error("npm prerelease bytes do not match the locally accepted candidate");
   }
 
-  previousInstallation = currentGlobalInstallation(pkg.name, globalPrefix);
-  globalInstallAttempted = true;
-  runNpm([
-    "install", "--dry-run=false", "--workspaces=false", "--ignore-scripts=false",
-    "--global", "--prefix", globalPrefix,
-    "--omit=optional", "--include=prod", "--package-lock-only=false",
-    "--allow-scripts=esbuild,workerd,sharp,fsevents",
-    `${pkg.name}@${prerelease.raw}`,
-  ]);
-  globalInstallCompleted = true;
-  const installed = currentGlobalInstallation(pkg.name, globalPrefix);
-  if (!installed || installed.version !== prerelease.raw) {
-    throw new Error(`global prerelease installation did not converge on ${prerelease.raw}`);
-  }
-  installedPrerelease = prerelease.raw;
-  disposeNpmSession();
-
   const stateRoot = resolve(expandHome(argumentValue("--state-dir") || defaultStateRoot()));
-  const forwarded = forwardedActivationArgs();
-  const activation = runActivation(installed.entry, ["activate", ...forwarded, "--state-dir", stateRoot, "--json"]);
-  if (activation.version !== prerelease.raw || activation.daemon?.version !== prerelease.raw || activation.worker?.health?.version !== prerelease.raw) {
-    throw new Error("published prerelease activation did not converge on the exact registry version");
-  }
-  const recovery = validateActivationRecoveryPayload(activation);
-  const recordPath = writePrereleaseActivation({
-    schema_version: ACTIVATION_SCHEMA_VERSION,
-    package_name: pkg.name,
-    package_version: prerelease.raw,
-    source: "npm-prerelease",
-    shasum: published.shasum,
-    integrity: published.integrity,
-    promotion_content_sha256: promotionDigest,
-    activated_at: new Date().toISOString(),
-    published_at: published.publishedAt,
-    npm_dist_tag: prerelease.npmTag,
-    workspace_hash: workspaceHash(activation.workspace),
-    runtime_entry: installed.entry,
-    ...(recovery.recovered ? {
-      activation_recovered: true,
-      activation_recovery_reason: recovery.reason,
-      activation_recovery_detail: recovery.detail,
-    } : {}),
-    ...(previousInstallation ? { global_package_rollback_baseline: previousInstallation } : {}),
-  }, stateRoot);
+  await withReleaseRuntimeLock(stateRoot, async () => {
+    previousInstallation = currentGlobalInstallation(pkg.name, globalPrefix);
+    globalInstallAttempted = true;
+    runNpm([
+      "install", "--dry-run=false", "--workspaces=false", "--ignore-scripts=false",
+      "--global", "--prefix", globalPrefix,
+      "--omit=optional", "--include=prod", "--package-lock-only=false",
+      "--allow-scripts=esbuild,workerd,sharp,fsevents",
+      `${pkg.name}@${prerelease.raw}`,
+    ]);
+    globalInstallCompleted = true;
+    const installed = currentGlobalInstallation(pkg.name, globalPrefix);
+    if (!installed || installed.version !== prerelease.raw) {
+      throw new Error(`global prerelease installation did not converge on ${prerelease.raw}`);
+    }
+    installedPrerelease = prerelease.raw;
+    disposeNpmSession();
 
-  if (recovery.recovered) {
-    console.warn(`Published prerelease activation used verified candidate-service recovery (${recovery.reason}): ${recovery.detail}`);
-  }
-  console.log(`Published prerelease activated: ${prerelease.raw}`);
-  console.log(`Worker and login daemon version: ${activation.version}`);
-  console.log(`Soak activation record: ${recordPath}`);
-  console.log("Use this prerelease normally. Any blocking issue requires a new beta/rc version and restarts the soak clock.");
+    const forwarded = forwardedActivationArgs();
+    const activation = runActivation(installed.entry, ["activate", ...forwarded, "--state-dir", stateRoot, "--json"]);
+    if (activation.version !== prerelease.raw || activation.daemon?.version !== prerelease.raw || activation.worker?.health?.version !== prerelease.raw) {
+      throw new Error("published prerelease activation did not converge on the exact registry version");
+    }
+    const recovery = validateActivationRecoveryPayload(activation);
+    const recordPath = writePrereleaseActivation({
+      schema_version: ACTIVATION_SCHEMA_VERSION,
+      package_name: pkg.name,
+      package_version: prerelease.raw,
+      source: "npm-prerelease",
+      shasum: published.shasum,
+      integrity: published.integrity,
+      promotion_content_sha256: promotionDigest,
+      activated_at: new Date().toISOString(),
+      published_at: published.publishedAt,
+      npm_dist_tag: prerelease.npmTag,
+      workspace_hash: workspaceHash(activation.workspace),
+      runtime_entry: installed.entry,
+      ...(recovery.recovered ? {
+        activation_recovered: true,
+        activation_recovery_reason: recovery.reason,
+        activation_recovery_detail: recovery.detail,
+      } : {}),
+      ...(previousInstallation ? { global_package_rollback_baseline: previousInstallation } : {}),
+    }, stateRoot);
+
+    if (recovery.recovered) {
+      console.warn(`Published prerelease activation used verified candidate-service recovery (${recovery.reason}): ${recovery.detail}`);
+    }
+    console.log(`Published prerelease activated: ${prerelease.raw}`);
+    console.log(`Worker and login daemon version: ${activation.version}`);
+    console.log(`Soak activation record: ${recordPath}`);
+    console.log("Use this prerelease normally. Any blocking issue requires a new beta/rc version and restarts the soak clock.");
+  });
 } catch (error) {
   const settled = settleNpmSession(error);
   const message = releaseDiagnostic(settled?.message || settled, 1600);

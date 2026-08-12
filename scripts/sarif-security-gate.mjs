@@ -69,7 +69,8 @@ function primaryLocation(result) {
 
 function normalizeSarifPath(value, run, sarifFile) {
   let path = String(value || "<unknown>").replaceAll("\\", "/");
-  try { path = decodeURIComponent(path); } catch {}
+  try { path = decodeURIComponent(path); }
+  catch { /* Malformed percent-encoding remains a literal path and is still normalized below. */ }
   if (path.startsWith("file://")) path = fileURLToPath(path).replaceAll("\\", "/");
   const baseId = run.originalUriBaseIds?.["%SRCROOT%"]?.uri;
   if (baseId && path.startsWith(String(baseId))) path = path.slice(String(baseId).length);

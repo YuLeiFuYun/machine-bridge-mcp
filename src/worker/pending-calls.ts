@@ -1,24 +1,12 @@
 import { toolCallAdmission, toolCallCapacityConfig, type ToolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
-import type { PendingCallOutcome, PendingCallRecord, PendingCallSettlement, RegisterPendingCall } from "./pending-call-contract.ts";
+import { PendingCallRegistrationError, type PendingCallOutcome, type PendingCallRecord, type PendingCallSettlement, type RegisterPendingCall } from "./pending-call-contract.ts";
 import { PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
 import { pendingRegistrySnapshot } from "./pending-call-capacity.ts";
-
-export class PendingCallRegistrationError extends Error {
-  readonly code: "conflict" | "limit_exceeded";
-  readonly retryable: boolean;
-  constructor(code: "conflict" | "limit_exceeded", message: string, retryable = false) {
-    super(message);
-    this.name = "PendingCallRegistrationError";
-    this.code = code;
-    this.retryable = retryable;
-  }
-}
-
+import { recordMatchesAuthorityRevocation, type AuthorityRevocation } from "../shared/authority-revocation.mjs";
 type PendingCallRegistryOptions = PendingCallDeadlineOptions & {
   reservedCapacity?: number;
   reservedTools?: Iterable<string>;
 };
-
 export class PendingCallRegistry {
   private readonly capacity: ToolCallCapacityConfig;
   private readonly byId = new Map<string, PendingCallRecord>();
@@ -31,7 +19,9 @@ export class PendingCallRegistry {
   }
   get size(): number { return this.byId.size; }
   hasRequestKey(requestKey?: string): boolean { return Boolean(requestKey && this.byRequestKey.has(requestKey)); }
-
+  resultOwnership(id: string, socket: WebSocket): "owned" | "missing" | "stale" {
+    const record = this.byId.get(id); return !record ? "missing" : record.socket === socket ? "owned" : "stale";
+  }
   nextDeadlineDelayMs(): number {
     return Math.min(Number.POSITIVE_INFINITY, ...[...this.byId.values()].map((record) => this.deadlines.nextDelayMs(record)));
   }
@@ -65,6 +55,13 @@ export class PendingCallRegistry {
   async cancelRequest(requestKey: string, onCancel: (record: PendingCallRecord) => Error): Promise<boolean> {
     const id = this.byRequestKey.get(requestKey);
     return id ? this.fail(id, onCancel, "pending daemon call was cancelled") : false;
+  }
+
+  async cancelAuthority(revocation: AuthorityRevocation, onCancel: (record: PendingCallRecord) => Error): Promise<number> {
+    const ids = [...this.byId.values()].filter((record) => recordMatchesAuthorityRevocation(record, revocation)).map((record) => record.id);
+    let cancelled = 0;
+    for (const id of ids) cancelled += Number(await this.fail(id, onCancel, "pending daemon authority was revoked"));
+    return cancelled;
   }
 
   async rejectSocket(socket: WebSocket, createError: (record: PendingCallRecord) => Error): Promise<number> {
@@ -116,7 +113,7 @@ export class PendingCallRegistry {
     }
     if (this.byId.has(input.id)) throw new PendingCallRegistrationError("conflict", "duplicate internal daemon call id");
     if (input.clientRequestKey && this.byRequestKey.has(input.clientRequestKey)) {
-      throw new PendingCallRegistrationError("conflict", "duplicate in-flight JSON-RPC request id within this MCP session");
+      throw new PendingCallRegistrationError("conflict", "duplicate in-flight response-stream request key");
     }
   }
 
@@ -126,6 +123,11 @@ export class PendingCallRegistry {
     const abortHandler = input.signal ? () => { void this.expire(input.id, input.onAbort, "pending daemon call was cancelled"); } : undefined;
     const record: PendingCallRecord = {
       id: input.id, socket: input.socket, daemonInstanceId: input.daemonInstanceId, clientRequestKey: input.clientRequestKey,
+      ...(input.authority ? {
+        owner_kind: "account" as const, owner_account_id: input.authority.accountId,
+        owner_account_version: input.authority.accountVersion, owner_client_id: input.authority.clientId,
+        owner_family_id: input.authority.familyId,
+      } : {}),
       tool: String(input.tool || "unknown"), startedAt, deadlineAt: startedAt + timeoutMs, remainingTimeoutMs: timeoutMs,
       onTimeout: input.onTimeout, settlement, signal: input.signal, abortHandler,
     };

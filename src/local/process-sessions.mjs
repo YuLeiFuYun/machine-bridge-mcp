@@ -2,43 +2,68 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { executionEnv } from "./shell.mjs";
-import { assertOwnedByContext, principalBinding } from "./authority-context.mjs";
+import { attachChildProcessSettlement } from "./child-process-settlement.mjs";
+import { assertOwnedByContext, principalBinding, visibleToContext } from "./authority-context.mjs";
+import { recordMatchesAuthorityRevocation } from "../shared/authority-revocation.mjs";
 import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
 import { validateArgv } from "./process-contract.mjs";
 import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
+import { BridgeError, errorCode } from "./errors.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
+import { boundedErrorMessage, notifySessionWaiters, sessionHasOutputAfter, waitForSessionChange, waitForSpawn } from "./process-session-events.mjs";
+import { terminateProcessSessions } from "./process-session-termination.mjs";
+import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
 import {
   MAX_PROCESS_SESSIONS, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_SESSION_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS,
 } from "./execution-limits.mjs";
 
+const PROCESS_SESSION_TERMINATION_SETTLEMENT_MS = 5_000;
+
 export class ProcessSessionManager {
-  constructor({ workspace, policy, authorizeTool = null, policyForContext = null, runtimeDir, processTracker, resolveCwd, displayPath, throwIfCancelled }) {
+  constructor({ workspace, policy, authorizeTool = null, policyForContext = null, runtimeDir, processTracker, resourceCoordinator = null, resourceWaitMs = 2_000, terminationSettlementWaitMs = PROCESS_SESSION_TERMINATION_SETTLEMENT_MS, resolveCwd, displayPath, throwIfCancelled, terminateTree = terminateProcessTree, spawnProcess = spawn, childSettlementOptions = {} }) {
     this.workspace = workspace;
     this.policy = policy;
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.policyForContext = typeof policyForContext === "function" ? policyForContext : () => this.policy;
     this.runtimeDir = runtimeDir;
     this.processTracker = processTracker;
+    this.resourceCoordinator = resourceCoordinator;
+    this.resourceWaitMs = resourceWaitMs;
+    this.terminationSettlementWaitMs = clampInteger(terminationSettlementWaitMs, PROCESS_SESSION_TERMINATION_SETTLEMENT_MS, 1, 30_000);
     this.resolveCwd = resolveCwd;
     this.displayPath = displayPath;
     this.throwIfCancelled = throwIfCancelled;
+    this.terminateTree = typeof terminateTree === "function" ? terminateTree : terminateProcessTree;
+    this.spawnProcess = spawnProcess;
+    this.childSettlementOptions = childSettlementOptions;
     this.sessions = new Map();
   }
 
-  status() {
+  status(context = {}) {
+    const visible = [...this.sessions.values()].filter((session) => visibleToContext(session, context));
     return {
-      active: [...this.sessions.values()].filter((session) => session.closedAt === null).length,
-      retained: this.sessions.size,
+      active: visible.filter((session) => session.closedAt === null).length,
+      retained: visible.length,
       maximum: MAX_PROCESS_SESSIONS,
     };
   }
 
-  clear() {
-    for (const session of this.sessions.values()) notifySessionWaiters(session);
-    this.sessions.clear();
+  async clearAndWait(signal = "SIGKILL") {
+    return terminateProcessSessions({
+      sessions: this.sessions, terminateTree: this.terminateTree, signal,
+      waitMs: this.terminationSettlementWaitMs, mode: "shutdown",
+    });
+  }
+
+  async revokeAuthority(revocation) {
+    return terminateProcessSessions({
+      sessions: this.sessions, terminateTree: this.terminateTree, signal: "SIGKILL",
+      waitMs: this.terminationSettlementWaitMs, mode: "authority_revocation",
+      matches: (session) => recordMatchesAuthorityRevocation(session, revocation),
+    });
   }
 
   notifyCancellation() {
@@ -80,13 +105,20 @@ export class ProcessSessionManager {
     if (this.sessions.size >= MAX_PROCESS_SESSIONS) throw new Error(`process session limit reached (${MAX_PROCESS_SESSIONS})`);
     this.throwIfCancelled(context);
 
-    const launch = delegatedProcessCommand({ command: argv[0], args: argv.slice(1), workspace: this.workspace, runtimeDir: this.runtimeDir, context });
-    const child = spawn(launch.command, launch.args, {
-      cwd,
-      env: executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir }),
-      detached: process.platform !== "win32",
-      windowsHide: true,
+    const baseEnvironment = executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir });
+    const admitted = await acquireProcessResources(this.resourceCoordinator, argv[0], argv.slice(1), baseEnvironment, {
+      cwd, priority: "interactive", waitMs: this.resourceWaitMs, signal: context.signal,
     });
+    const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
+    let child;
+    try {
+      child = this.spawnProcess(launch.command, launch.args, { cwd, env: admitted.environment, detached: process.platform !== "win32", windowsHide: true });
+    } catch (error) {
+      await releaseProcessResources(admitted.lease);
+      throw error;
+    }
+    let resolveResourceBindingSettled;
+    const resourceBindingSettled = new Promise((resolvePromise) => { resolveResourceBindingSettled = resolvePromise; });
     const session = {
       id: `proc_${randomBytes(24).toString("base64url")}`,
       child,
@@ -102,6 +134,9 @@ export class ProcessSessionManager {
       stdinClosed: false,
       waiters: new Set(),
       terminationTimer: null,
+      startupFailed: false,
+      resourceLease: admitted.lease,
+      resourceBindingSettled,
       ...principalBinding(context),
     };
     this.sessions.set(session.id, session);
@@ -117,14 +152,19 @@ export class ProcessSessionManager {
       session.lastActivity = Date.now();
       notifySessionWaiters(session);
     });
-    child.on("close", (code, signal) => {
-      session.exitCode = Number.isInteger(code) ? code : null;
-      session.signal = signal ? String(signal) : null;
-      session.closedAt = Date.now();
-      session.lastActivity = Date.now();
-      session.stdinClosed = true;
-      this.untrackChild(child);
-      notifySessionWaiters(session);
+    attachChildProcessSettlement(child, {
+      ...this.childSettlementOptions,
+      onSettle: (code, signal) => {
+        session.exitCode = Number.isInteger(code) ? code : null;
+        session.signal = signal ? String(signal) : null;
+        session.closedAt = Date.now();
+        session.lastActivity = Date.now();
+        session.stdinClosed = true;
+        this.untrackChild(child);
+        void session.resourceBindingSettled.then(() => releaseProcessResourcesQuietly(session.resourceLease));
+        if (session.startupFailed) this.sessions.delete(session.id);
+        notifySessionWaiters(session);
+      },
     });
 
     child.on("error", (error) => {
@@ -134,13 +174,40 @@ export class ProcessSessionManager {
     });
     try {
       await waitForSpawn(child);
+      await bindProcessResources(admitted.lease, child);
+      resolveResourceBindingSettled();
     } catch (error) {
-      this.sessions.delete(session.id);
-      this.untrackChild(child);
-      throw error;
+      resolveResourceBindingSettled();
+      throw this.failedStartError(session, error);
     }
-    this.throwIfCancelled(context);
+    try { this.throwIfCancelled(context); }
+    catch (error) { throw this.failedStartError(session, error); }
     return this.summary(session, context);
+  }
+
+  failedStartError(session, error) {
+    session.startupFailed = true; session.stdinClosed = true;
+    try { session.child?.stdin?.destroy?.(); }
+    catch { /* Startup failure already owns the error path; closing stdin is best-effort cleanup. */ }
+    if (session.closedAt !== null) {
+      this.sessions.delete(session.id);
+      return error;
+    }
+    let terminationRequested = false;
+    try { terminationRequested = this.terminateTree(session.child, "SIGKILL") === true; }
+    catch { /* The returned settlement metadata records that child termination could not be confirmed. */ }
+    session.lastActivity = Date.now();
+    const code = errorCode(error);
+    return new BridgeError(code, "process session start failed after the child was spawned", {
+      cause: error instanceof Error ? error : undefined,
+      retryable: false,
+      details: {
+        side_effects_started: true,
+        termination_requested: terminationRequested,
+        effect_settlement: terminationRequested ? "pending" : "unknown",
+        ownership_retained_until_close: true,
+      },
+    });
   }
 
   async read(args, context = {}) {
@@ -198,9 +265,11 @@ export class ProcessSessionManager {
     this.throwIfCancelled(context);
     const wasRunning = session.closedAt === null;
     const force = args.force === true;
-    if (wasRunning && force) terminateProcessTree(session.child, "SIGKILL");
-    else if (wasRunning && !session.terminationTimer) {
+    if (wasRunning && force && !this.terminateTree(session.child, "SIGKILL")) {
+      throw new BridgeError("unavailable", "process termination request could not be delivered", { retryable: true });
+    } else if (wasRunning && !force && !session.terminationTimer) {
       session.terminationTimer = terminateProcessTreeWithEscalation(session.child, {
+        terminate: this.terminateTree,
         onTerminationSettled: () => { session.terminationTimer = null; },
       });
     }
@@ -265,52 +334,4 @@ export class ProcessSessionManager {
   untrackChild(child) {
     this.processTracker.untrack(child);
   }
-}
-
-function waitForSpawn(child) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const onSpawn = () => { cleanup(); resolvePromise(); };
-    const onError = (error) => { cleanup(); rejectPromise(error); };
-    const cleanup = () => {
-      child.off("spawn", onSpawn);
-      child.off("error", onError);
-    };
-    child.once("spawn", onSpawn);
-    child.once("error", onError);
-  });
-}
-
-function sessionHasOutputAfter(session, stdoutOffset, stderrOffset) {
-  return session.stdout.totalBytes > stdoutOffset || session.stderr.totalBytes > stderrOffset;
-}
-
-function notifySessionWaiters(session) {
-  for (const waiter of [...session.waiters]) waiter();
-}
-
-function waitForSessionChange(session, waitMs, cancellationCheck) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    let timer;
-    const done = () => {
-      cleanup();
-      try {
-        cancellationCheck();
-        resolvePromise();
-      } catch (error) {
-        rejectPromise(error);
-      }
-    };
-    const cleanup = () => {
-      if (timer) clearTimeout(timer);
-      session.waiters.delete(done);
-    };
-    session.waiters.add(done);
-    timer = setTimeout(done, waitMs);
-    timer.unref?.();
-  });
-}
-
-function boundedErrorMessage(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/[\r\n]+/g, " ").slice(0, 4096) || "process failed";
 }

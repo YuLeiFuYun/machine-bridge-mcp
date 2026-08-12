@@ -4,7 +4,6 @@ import { isAllowedLoopbackHost, pairingHtml, securityHeaders, sendJson } from ".
 
 export function handleBrowserBridgeHttp(request, response, {
   port,
-  token,
   extensionConnected,
   extensionStatusInfo,
   extensionReloadRequired,
@@ -41,7 +40,7 @@ export function handleBrowserBridgeHttp(request, response, {
     return;
   }
   if (url.pathname === "/pair") {
-    const html = pairingHtml(port, token);
+    const html = pairingHtml(port);
     response.writeHead(200, securityHeaders("text/html; charset=utf-8"));
     response.end(html);
     return;

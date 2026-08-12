@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, welcomeMismatch } from "../src/local/relay-connection.mjs";
+import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, relayOutageUserAction, welcomeMismatch } from "../src/local/relay-connection.mjs";
 import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
 
 class FakeSocket extends EventEmitter {
@@ -106,6 +106,14 @@ class ManualScheduler {
 }
 
 
+assert(relayOutageUserAction("connection_interrupted", 5 * 60_000).includes("check internet access"),
+  "sustained transport outage lost its network troubleshooting action");
+const localRevocationAction = relayOutageUserAction("local_authority_revocation_retry", 5 * 60_000);
+assert(localRevocationAction.includes("local authority, process-session, and managed-job state") && !localRevocationAction.includes("internet"),
+  "local authority-revocation retry was misdirected to network troubleshooting");
+assert(relayOutageUserAction("local_authority_revocation_retry", 5 * 60_000 - 1) === "",
+  "brief local authority retry emitted a premature operator action");
+
 const scheduler = new ManualScheduler();
 const sockets = [];
 const events = [];
@@ -148,6 +156,8 @@ assert(connection.status().authenticated === true && connection.status().ready =
 const authenticatedRelaySession = connection.currentSessionId();
 assert(authenticatedRelaySession > 0, "authenticated relay did not establish a session for the readiness probe");
 assert(connection.sendForSession({ type: "relay_probe_result", id: "probe_test-ready" }, authenticatedRelaySession).ok === true, "readiness probe result could not use the authenticated session before ready state");
+assert(connection.sendForSession({ type: "authority_revoke_ack", revocation_id: `revoke_${"r".repeat(43)}` }, authenticatedRelaySession).ok === true,
+  "authority revocation acknowledgement could not use the authenticated session before ready state");
 let startedResolved = false;
 void started.then(() => { startedResolved = true; });
 await Promise.resolve();

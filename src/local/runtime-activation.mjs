@@ -263,7 +263,7 @@ async function startCandidateWithRecovery({
     } catch (error) {
       lastError = error;
       let stopFailure = null;
-      try { runtime.stop(); } catch (failure) { stopFailure = failure; }
+      try { await runtime.stop(); } catch (failure) { stopFailure = failure; }
       finally { onRuntimeStopped(); }
       if (stopFailure) {
         const cleanupError = new AggregateError(

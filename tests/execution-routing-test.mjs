@@ -1,4 +1,5 @@
 import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
+import { accountRoleToolNames } from "../src/local/account-access.mjs";
 import { buildExecutionRouting } from "../src/local/execution-routing.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
 
@@ -20,6 +21,26 @@ assert(durable.primary_route?.id === "managed-job", "durable multi-step work did
 assert(durable.routes.some((route) => route.id === "shell"), "durable routing incorrectly removed the shell escape hatch");
 assert(durable.recommended_tools.includes("start_job") && durable.recommended_tools.includes("exec_command"),
   "durable routing did not expose both the safe primary route and shell alternative");
+
+const operatorDurable = buildExecutionRouting("Run a long background multi-step migration that must survive disconnects and always clean up", {
+  policy: policyProfile("agent"),
+  availableTools: accountRoleToolNames("operator"),
+});
+assert(operatorDurable.primary_route?.id !== "managed-job"
+  && operatorDurable.routes.every((route) => route.id !== "managed-job" && !route.fallback_routes.includes("managed-job"))
+  && !operatorDurable.recommended_tools.includes("start_job")
+  && !operatorDurable.recommended_tools.includes("stage_job"),
+"routing recommended an unsatisfiable managed-job creation path to a non-owner account");
+assert(operatorDurable.effective_tool_count < operatorDurable.policy_effective_tool_count,
+  "routing collapsed account-effective authority and the broader effective-policy tool count into one number");
+const operatorExistingJob = buildExecutionRouting("Inspect and cancel my existing managed job", {
+  policy: policyProfile("agent"),
+  availableTools: accountRoleToolNames("operator"),
+});
+assert(operatorExistingJob.routes.some((route) => route.id === "managed-job"
+  && route.tools.includes("read_job") && route.tools.includes("cancel_job")
+  && !route.tools.includes("start_job")),
+"owner-only creation filtering removed legitimate existing-job control tools from the managed-job route");
 
 const registered = buildExecutionRouting("Run the repository verification command", {
   policy: policyProfile("full"),
@@ -83,7 +104,9 @@ assert(ambiguous.ranked_tools.length <= 12 && ambiguous.recommended_tools.length
   "routing output exceeded its bounded context budget");
 assert(ambiguous.recovery_guidance.some((item) => item.includes("ambiguous mutation")),
   "routing result omitted failure-aware recovery guidance");
-assert(ambiguous.enforcement.startsWith("advisory_only"), "routing result did not state its non-enforcement boundary");
+assert(ambiguous.enforcement.startsWith("advisory_only") && ambiguous.enforcement.includes("effective authority")
+  && !ambiguous.enforcement.includes("effective policy"),
+"routing result did not state its account-attenuated non-enforcement boundary");
 
 const descriptions = new Map(catalog.map((tool) => [tool.name, tool.description]));
 assert(descriptions.get("exec_command")?.includes("pipelines") && descriptions.get("exec_command")?.includes("general escape hatch"),

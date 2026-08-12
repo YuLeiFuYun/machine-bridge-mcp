@@ -50,14 +50,14 @@ The complete component and trust-boundary diagram is in [docs/OVERVIEW.md](docs/
 
 ## MCP protocol model
 
-Machine Bridge is a dual-era server with a modern core:
+Machine Bridge executes one MCP protocol version: `2026-07-28`.
 
-- **MCP `2026-07-28` is primary.** Every request carries protocol version and client capabilities in `_meta`; HTTP requests also mirror the version, method, and applicable name/parameter values into validated headers. Clients use `server/discover`; no `initialize` handshake or MCP session is created.
-- **MCP `2025-11-25` is a compatibility adapter.** Legacy clients still use `initialize`, a signed `Mcp-Session-Id`, and the older resumable Streamable HTTP behavior.
-- **Modern HTTP streams are request-scoped and not resumable.** Closing the response stream cancels that request. `Last-Event-ID`, recovery GETs, and session-bound replay exist only in the legacy adapter.
-- **Transport identity is not conversation identity.** Modern stdio and HTTP processes/connections may interleave unrelated requests; state that spans calls must use an explicit tool, job, process-session, or resource identifier.
+- **Every request is self-describing.** Protocol version and client capabilities travel in `_meta`; HTTP requests also mirror the version, method, and applicable name/parameter values into validated headers. Clients use `server/discover`; there is no `initialize` handshake or MCP protocol session.
+- **HTTP streams are request-scoped and non-resumable.** Closing the response stream cancels that request. There is no recovery GET, SSE event-ID replay, or session-bound delivery store.
+- **Removed session-protocol traffic never executes.** A bounded detector may return upgrade guidance for an obsolete `initialize` or session-header request, but it does not create legacy state or dispatch a tool.
+- **Transport identity is not conversation identity.** Stdio and HTTP processes/connections may interleave unrelated requests; state that spans calls must use an explicit tool, job, process-session, or resource identifier.
 
-The Worker validates the actual `/mcp` Origin, mirrored headers, role-filtered tool visibility, and raw arguments before routing, durable stream allocation, or daemon dispatch. Tool arguments use one bounded JSON Schema 2020-12 contract in both Worker and local runtime; validation has fixed schema and runtime-work budgets and never echoes rejected values. Modern stream cancellation uses a private random capability stripped from public requests and forwards no OAuth/DPoP credential.
+The Worker validates the actual `/mcp` Origin, mirrored headers, role-filtered tool visibility, and raw arguments before routing or daemon dispatch. Tool arguments use one bounded JSON Schema 2020-12 contract in both Worker and local runtime; validation has fixed schema and runtime-work budgets and never echoes rejected values. Request-stream cancellation uses a private random capability stripped from public requests and forwards no OAuth/DPoP credential.
 
 `resolve_task_capabilities` provides bounded, set-level route advice across registered commands, direct Bash/argv, process sessions, managed jobs, files/Git, browser, applications, resources, and diagnostics. It does not hide or disable tools: Bash through `exec_command` remains the first-class general escape hatch under a shell-capable effective policy. The versioned result is filtered by the authenticated account's effective authority, reports routing ambiguity and fallbacks, and accepts the previous `refresh.fingerprint` to omit unchanged static instructions while still recomputing task-specific matches. Route scores are deterministic relative ranks within one response, not probabilities or cross-version metrics.
 
@@ -190,7 +190,7 @@ Machine Bridge does not launch or identify a separate browser profile. It contro
 
 ## Durable work and local resources
 
-Remote foreground process, shell, browser, and application calls are bounded to 60 seconds of daemon execution. The Worker retains separate settlement ownership for five additional seconds, but neither that margin nor its internal stream metrics prove that an external MCP host consumed the terminal frame. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; inspect `diagnose_runtime.runtime.processes` remotely (or `server_info.runtime.processes` over local stdio) when a heavy filesystem or process operation is still draining. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
+Remote foreground process, shell, browser, and application calls are bounded to 60 seconds of daemon execution. The Worker retains separate settlement ownership for five additional seconds, but neither that margin nor its internal stream metrics prove that an external MCP host consumed the terminal frame. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; a remote owner can inspect `diagnose_runtime.runtime.processes`, while local stdio exposes `server_info.runtime.processes`. Non-owner accounts receive authority-scoped readiness rather than machine-wide process activity. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
 
 Credentials and files can be registered by alias without returning their contents through MCP:
 
@@ -213,7 +213,6 @@ machine-mcp doctor
 machine-mcp workspace show|set|reset
 machine-mcp service status|install|start|stop|uninstall
 machine-mcp account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove
-machine-mcp approval list|revoke|clear
 machine-mcp browser status|setup|pair|path
 machine-mcp resource add|list|check|remove
 machine-mcp job submit|inspect|list|read|cancel

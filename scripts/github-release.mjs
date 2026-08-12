@@ -22,7 +22,7 @@ import { githubReleaseByTagEndpoint, waitForGithubReleaseAsset } from "./github-
 import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
 import { verifyCurrentStableSoak } from "./release-soak.mjs";
 import { assertOwnerTerminalPublication, withGithubPublicationLock } from "./release-publication-guard.mjs";
-import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -407,7 +407,7 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
   }
   if (cleanupError) {
     if (!releaseVerified) throw cleanupError;
-    console.warn(`GitHub release bytes were verified but candidate staging cleanup was incomplete: ${String(cleanupError?.message || cleanupError).replace(/[\r\n\t]+/g, " ").slice(0, 600)}`);
+    console.warn(`GitHub release bytes were verified but candidate staging cleanup was incomplete: ${releaseDiagnostic(cleanupError?.message || cleanupError, 600)}`);
   }
 
   fetchRemote();
@@ -494,7 +494,7 @@ function backfillMissingReleases() {
   }
   if (cleanupError) {
     if (!completed) throw cleanupError;
-    console.warn(`GitHub Release backfill completed but temporary cleanup was incomplete: ${String(cleanupError?.message || cleanupError).replace(/[\r\n\t]+/g, " ").slice(0, 600)}`);
+    console.warn(`GitHub Release backfill completed but temporary cleanup was incomplete: ${releaseDiagnostic(cleanupError?.message || cleanupError, 600)}`);
   }
 
   console.log(`Backfilled ${missing.length} GitHub Release(s): ${missing.join(", ")}`);

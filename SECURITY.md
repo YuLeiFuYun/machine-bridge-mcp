@@ -240,7 +240,7 @@ Request bodies, messages, traversals, files, output, OAuth stores, nonce stores,
 
 Operational logs omit tool arguments, command text, stdin, file/patch contents, form values, and outputs. Known credential forms, private-key material, embedded-credential URLs, user-home paths, email addresses, and control characters are recursively redacted as defense in depth.
 
-The local security audit is a bounded SHA-256 hash chain. It records operation type, risk category, outcome, duration, byte counts, target digest, and salted principal references. It does not record commands, paths, contents, fields, or results.
+The local security audit is a bounded SHA-256 hash chain. It records operation type, risk category, outcome, duration, byte counts, and pseudonymous target/principal references. Risky target correlation and account/client/family identity are HMAC-keyed with fresh per-daemon runtime keys before persistent audit state applies its existing per-file salt, so the public salt stored beside the chain is not sufficient to recompute references from guessed paths, short commands, or account identifiers. Those references are intentionally not stable cross-restart identities. The audit does not record commands, paths, contents, fields, or results.
 
 No logging policy prevents data from being returned to an authorized client that explicitly invokes an enabled tool. Remote arguments and results necessarily traverse the user's Worker and MCP host.
 

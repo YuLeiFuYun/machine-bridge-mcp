@@ -5,9 +5,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ACCEPTANCE_SCHEMA_VERSION, PROMOTION_DIGEST_POLICY_VERSION, acceptanceConfirmationForVersion } from "../../scripts/release-acceptance.mjs";
+import { ACCEPTANCE_CONFIRMATION, ACCEPTANCE_SCHEMA_VERSION } from "../../scripts/release-acceptance.mjs";
 import { computePromotionContentDigest } from "../../scripts/promotion-digest.mjs";
-import { compareReleaseVersions, parseReleaseVersion } from "../../scripts/release-channel.mjs";
 import { resolveTrustedGitExecutable } from "../../src/local/trusted-git-executable.mjs";
 import { releaseDiagnostic } from "../../scripts/release-diagnostic.mjs";
 
@@ -58,7 +57,7 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
 
   if (acceptance.schema_version !== ACCEPTANCE_SCHEMA_VERSION
       || acceptance.result !== "passed"
-      || acceptance.confirmation !== acceptanceConfirmationForVersion(pkg.version)) {
+      || acceptance.confirmation !== ACCEPTANCE_CONFIRMATION) {
     throw new Error("interactive local candidate acceptance marker is invalid");
   }
   if (acceptance.package_name !== pkg.name
@@ -76,11 +75,9 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
   if (acceptance.package_content_sha256 !== expectedDigest) {
     throw new Error(`interactive local candidate acceptance content digest does not match the current npm package (expected ${expectedDigest})`);
   }
-  if (compareReleaseVersions(parseReleaseVersion(pkg.version), parseReleaseVersion(PROMOTION_DIGEST_POLICY_VERSION)) >= 0) {
-    const promotionDigest = computePromotionContentDigest(projectRoot, { packageJson: pkg, packRecord: pack });
-    if (acceptance.promotion_content_sha256 !== promotionDigest) {
-      throw new Error(`interactive local candidate promotion digest does not match the current npm package (expected ${promotionDigest})`);
-    }
+  const promotionDigest = computePromotionContentDigest(projectRoot, { packageJson: pkg, packRecord: pack });
+  if (acceptance.promotion_content_sha256 !== promotionDigest) {
+    throw new Error(`interactive local candidate promotion digest does not match the current npm package (expected ${promotionDigest})`);
   }
   return { acceptance, digest: expectedDigest, pack };
 }

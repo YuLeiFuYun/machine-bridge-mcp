@@ -49,6 +49,10 @@ try {
   assert(JSON.stringify(calls.at(-1).argv) === JSON.stringify(["-a", "Example", "https://example.test/"]), "application launcher arguments are incorrect");
 
   await expectReject(() => manager.operateApplication({ application: "Example", action: "set_value", selector: { role: "AXTextField" }, value: "bad\0value" }), "contains a NUL byte");
+  const beforeMissingValue = calls.length;
+  await expectReject(() => manager.operateApplication({ application: "Example", action: "keystroke", selector: { role: "AXTextField" } }), "requires value or value_resource");
+  await expectReject(() => manager.operateApplication({ application: "Example", action: "set_value", selector: { role: "AXTextField" } }), "requires value or value_resource");
+  assert(calls.length === beforeMissingValue, "application value validation occurred after the fixed JXA helper was dispatched");
   const activated = await manager.operateApplication({ application: "Example", action: "activate" });
   const activatedPayload = JSON.parse(calls.at(-1).stdin);
   assert(activated.ok === true && activatedPayload.selector === null, "activate incorrectly required a UI selector");
@@ -223,7 +227,7 @@ async function liveMacosCalculatorSmoke(root) {
     const clicked = await runtime.executeTool("operate_local_application", { application: "Calculator", action: "click", selector: { identifier: "One" }, timeout_seconds: 30 });
     assert(clicked.ok === true && clicked.element?.identifier === "One", "live Calculator click failed");
   } finally {
-    runtime.stop();
+    await runtime.stop();
     spawnSync("osascript", ["-e", "tell application \"Calculator\" to quit"], { stdio: "ignore" });
   }
 }

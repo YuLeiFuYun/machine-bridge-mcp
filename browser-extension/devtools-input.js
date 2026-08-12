@@ -53,7 +53,8 @@
       throw trustedInputError(error, { safeToFallback: !dispatchStarted, dispatchStarted });
     } finally {
       if (attached) {
-        try { await chrome.debugger.detach(target); } catch {}
+        try { await chrome.debugger.detach(target); }
+        catch { /* Cleanup may race a tab/debugger detach that already completed. */ }
       }
     }
   }

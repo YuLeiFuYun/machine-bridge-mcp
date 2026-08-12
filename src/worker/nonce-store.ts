@@ -7,16 +7,19 @@ interface TransactionalNonceStorage extends NonceStorage {
   transaction<T>(callback: (transaction: NonceStorage) => Promise<T>): Promise<T>;
 }
 
+interface NonceOptions {
+  key: string;
+  nonce: string;
+  expiresAt: number;
+  now: number;
+  noncePattern: RegExp;
+  maximum: number;
+  maxFutureSeconds: number;
+}
+
 export async function consumeBoundedNonce(
   storage: DurableObjectStorage | NonceStorage,
-  options: {
-    key: string;
-    nonce: string;
-    expiresAt: number;
-    now: number;
-    noncePattern: RegExp;
-    maximum: number;
-  },
+  options: NonceOptions,
 ): Promise<boolean> {
   validateOptions(options);
   const consume = (target: NonceStorage) => consumeInStorage(target, options);
@@ -24,36 +27,13 @@ export async function consumeBoundedNonce(
   return consume(storage);
 }
 
-export async function boundedNoncePresent(
-  storage: Pick<NonceStorage, "get">,
-  options: {
-    key: string;
-    nonce: string;
-    now: number;
-    noncePattern: RegExp;
-  },
-): Promise<boolean> {
-  if (!/^[a-z][a-z0-9-]{1,127}$/.test(options.key)
-      || !options.noncePattern.test(options.nonce)
-      || !Number.isSafeInteger(options.now) || options.now <= 0) return false;
-  const raw = await storage.get<unknown>(options.key);
-  if (!validNonceRecord(raw, options.noncePattern)) return false;
-  return Number((raw as Record<string, number>)[options.nonce] ?? 0) > options.now;
-}
-
 async function consumeInStorage(
   storage: NonceStorage,
-  options: {
-    key: string;
-    nonce: string;
-    expiresAt: number;
-    now: number;
-    noncePattern: RegExp;
-    maximum: number;
-  },
+  options: NonceOptions,
 ): Promise<boolean> {
   const raw = await storage.get<unknown>(options.key);
-  if (raw !== undefined && !validNonceRecord(raw, options.noncePattern)) return false;
+  if (raw !== undefined
+      && !validNonceRecord(raw, options.noncePattern, options.maximum, options.now + options.maxFutureSeconds)) return false;
   const nonces: Record<string, number> = raw ? { ...raw as Record<string, number> } : {};
   for (const [nonce, expiresAt] of Object.entries(nonces)) {
     if (expiresAt <= options.now) delete nonces[nonce];
@@ -65,26 +45,31 @@ async function consumeInStorage(
   return true;
 }
 
-function validateOptions(options: {
-  key: string;
-  nonce: string;
-  expiresAt: number;
-  now: number;
-  noncePattern: RegExp;
-  maximum: number;
-}): void {
+function validateOptions(options: NonceOptions): void {
   if (!/^[a-z][a-z0-9-]{1,127}$/.test(options.key)) throw new Error("nonce-store key is invalid");
   if (!options.noncePattern.test(options.nonce)) throw new Error("nonce-store nonce is invalid");
   if (!Number.isSafeInteger(options.now) || options.now <= 0) throw new Error("nonce-store current time is invalid");
-  if (!Number.isSafeInteger(options.expiresAt) || options.expiresAt <= options.now) throw new Error("nonce-store expiration is invalid");
   if (!Number.isSafeInteger(options.maximum) || options.maximum < 1 || options.maximum > 4096) throw new Error("nonce-store maximum is invalid");
+  const latestExpiry = options.now + options.maxFutureSeconds;
+  if (!Number.isSafeInteger(options.maxFutureSeconds) || options.maxFutureSeconds < 1 || !Number.isSafeInteger(latestExpiry)) {
+    throw new Error("nonce-store future window is invalid");
+  }
+  if (!Number.isSafeInteger(options.expiresAt) || options.expiresAt <= options.now || options.expiresAt > latestExpiry) {
+    throw new Error("nonce-store expiration is invalid");
+  }
 }
 
-function validNonceRecord(value: unknown, noncePattern: RegExp): value is Record<string, number> {
+function validNonceRecord(value: unknown, noncePattern: RegExp, maximum: number, latestExpiry: number): value is Record<string, number> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  return Object.entries(value).every(([nonce, expiresAt]) => (
-    noncePattern.test(nonce) && Number.isSafeInteger(expiresAt) && expiresAt > 0
-  ));
+  let count = 0;
+  for (const nonce in value) {
+    if (!Object.hasOwn(value, nonce)) continue;
+    count += 1;
+    if (count > maximum) return false;
+    const expiresAt = (value as Record<string, unknown>)[nonce];
+    if (!noncePattern.test(nonce) || !Number.isSafeInteger(expiresAt) || Number(expiresAt) <= 0 || Number(expiresAt) > latestExpiry) return false;
+  }
+  return true;
 }
 
 function hasTransactions(storage: DurableObjectStorage | NonceStorage): storage is TransactionalNonceStorage {

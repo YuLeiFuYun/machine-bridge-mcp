@@ -2,14 +2,13 @@
   "name": "machine-bridge-mcp",
   "protocolVersion": "2026-07-28",
   "supportedProtocolVersions": [
-    "2026-07-28",
-    "2025-11-25"
+    "2026-07-28"
   ],
   "instructions": [
     "You are connected to a local workspace through machine-bridge-mcp.",
     "Use resolve_task_capabilities only when the task needs local skill/registered-command discovery, application/browser routing, or refreshed project instructions. Straightforward file, Git, and shell work should use the already exposed tools directly instead of adding a resolver call. When capability routing is useful, pass the current user request and target path and reuse refresh.fingerprint as known_refresh_fingerprint to omit unchanged static instructions. Its execution_routing is bounded, set-level, and advisory: direct Bash remains the general escape hatch whenever the effective policy allows it. MCP transport connections are not conversation identity; refresh task-specific ranking when routing is actually needed rather than assuming prior requests established context.",
     "Before any GitHub read or mutation, apply the effective project control-plane instructions. When a project requires local git, gh, and gh api through Machine Bridge, never use a hosted GitHub connector or ChatGPT GitHub plugin; if the local control plane is unavailable, stop rather than substitute another GitHub tool.",
-    "MCP 2026-07-28 clients use server/discover and per-request metadata. The discovery result includes conservative built-in working agreements; session_bootstrap remains an explicit refresh tool for project facts, local instructions, and capability routing. Legacy 2025-11-25 initialize clients receive the same guidance through the compatibility adapter.",
+    "MCP uses 2026-07-28 request-scoped protocol natively. Remote HTTP also accepts stateless initialization-era 2025-06-18 and 2025-11-25 compatibility for hosts that have not migrated yet; that compatibility never creates MCP session IDs or replay state. stdio remains current-only. Clients using 2026-07-28 use server/discover and per-request metadata; session_bootstrap remains an explicit refresh tool for project facts, local instructions, and capability routing.",
     "For existing-browser work, use the paired Machine Bridge browser extension. It operates the user current Chromium profile and tabs, can inspect DOM/source, fill complex forms, and inject sensitive text from registered local resources without returning those values.",
     "For local application work, use structured application discovery and Accessibility actions. Arbitrary caller-supplied AppleScript or JavaScript is intentionally not accepted.",
     "Remote mode uses a Cloudflare relay; stdio mode runs on the local machine. File and command operations execute on the user's local runtime, not in the Worker.",
@@ -31,10 +30,8 @@
     "File mutation state failures are typed and privacy-bounded. For write_file, edit_file, and apply_patch, inspect error.code and error.details.reason; do not blindly retry conflict. Re-read the current file or target state, reconcile the intended change, and retry with a fresh precondition.",
     "Inspect before editing, prefer read_file line ranges, edit_file, or apply_patch over whole-file replacement, and report commands that were run."
   ],
-  "modernProtocolVersions": [
-    "2026-07-28"
-  ],
-  "legacyProtocolVersions": [
-    "2025-11-25"
+  "remoteHttpInitializationCompatibilityVersions": [
+    "2025-11-25",
+    "2025-06-18"
   ]
 }

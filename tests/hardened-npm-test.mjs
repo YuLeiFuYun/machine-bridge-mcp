@@ -12,6 +12,7 @@ import {
   verifyHardenedNpm,
 } from "../src/local/hardened-npm.mjs";
 import { downloadHardenedNpmArtifact } from "../src/local/hardened-npm-download.mjs";
+import { createHardenedDownloadTimeout } from "../src/local/hardened-npm-download-timeout.mjs";
 import { createHardenedNpmSession, settleHardenedNpmSession } from "../scripts/hardened-npm-session.mjs";
 import { operationalErrorCode, throwOperationalOrIntegrity } from "../src/local/private-toolchain-integrity.mjs";
 
@@ -106,12 +107,118 @@ try {
     assert.equal(downloads, 12, "symlinked hardened npm CLI was accepted instead of reconstructed");
   }
 
+  const retryDelays = [];
+  const transientRequest = fakeDownloadSequence([
+    { error: Object.assign(new Error("synthetic registry timeout"), { code: "ETIMEDOUT" }) },
+    { statusCode: 503 },
+    { statusCode: 200, body: bytesByName.get("npm") },
+  ]);
+  const retriedDownload = await downloadHardenedNpmArtifact(artifacts[0], {
+    request: transientRequest, proxyAgentForUrl: () => ({ agent: null }), sleep: (milliseconds) => { retryDelays.push(milliseconds); },
+  });
+  assert.deepEqual(retriedDownload, bytesByName.get("npm"), "hardened npm transient retry changed successful tarball bytes");
+  assert.equal(transientRequest.calls, 3, "hardened npm did not retry transient timeout/503 failures to success");
+  assert.deepEqual(retryDelays, [750, 1500], "hardened npm transient retry lost bounded linear backoff");
+
+  const slowScheduler = createManualTimerScheduler();
+  const slowBody = bytesByName.get("npm");
+  const slowDownload = await downloadHardenedNpmArtifact(artifacts[0], {
+    request: fakeProgressiveDownload(slowScheduler, slowBody),
+    proxyAgentForUrl: () => ({ agent: null }),
+    downloadTimeout: { idleMs: 100, maximumMs: 500, schedule: slowScheduler.setTimeout, cancel: slowScheduler.clearTimeout },
+  });
+  assert.deepEqual(slowDownload, slowBody, "hardened npm rejected a bounded download that kept making progress beyond one idle interval");
+
+  const stalledScheduler = createManualTimerScheduler();
+  const timeoutErrors = [];
+  createHardenedDownloadTimeout("npm", { destroy: (error) => timeoutErrors.push(error) }, {
+    idleMs: 100, maximumMs: 500, schedule: stalledScheduler.setTimeout, cancel: stalledScheduler.clearTimeout,
+  });
+  stalledScheduler.advance(100);
+  assert.equal(timeoutErrors[0]?.code, "ETIMEDOUT", "hardened npm idle timeout lost its transient timeout classification");
+  assert.match(timeoutErrors[0]?.message || "", /download stalled/, "hardened npm idle timeout stopped distinguishing a real stall");
+
+  const maximumScheduler = createManualTimerScheduler();
+  const maximumErrors = [];
+  const maximumTimeout = createHardenedDownloadTimeout("npm", { destroy: (error) => maximumErrors.push(error) }, {
+    idleMs: 100, maximumMs: 250, schedule: maximumScheduler.setTimeout, cancel: maximumScheduler.clearTimeout,
+  });
+  maximumScheduler.advance(90); maximumTimeout.progress();
+  maximumScheduler.advance(90); maximumTimeout.progress();
+  maximumScheduler.advance(70);
+  assert.match(maximumErrors[0]?.message || "", /maximum duration/, "hardened npm progress could extend a download beyond its absolute bound");
+  maximumTimeout.progress();
+  const clearedScheduler = createManualTimerScheduler();
+  const clearedErrors = [];
+  const clearedTimeout = createHardenedDownloadTimeout("npm", { destroy: (error) => clearedErrors.push(error) }, {
+    idleMs: 100, maximumMs: 250, schedule: clearedScheduler.setTimeout, cancel: clearedScheduler.clearTimeout,
+  });
+  clearedTimeout.clear(); clearedTimeout.clear(); clearedTimeout.progress(); clearedScheduler.advance(500);
+  assert.equal(clearedErrors.length, 0, "cleared hardened npm timeout fired after successful settlement");
+
+  const permanentRequest = fakeDownloadSequence([
+    { error: Object.assign(new Error("synthetic certificate rejection"), { code: "CERT_HAS_EXPIRED" }) },
+  ]);
+  await assert.rejects(
+    downloadHardenedNpmArtifact(artifacts[0], { request: permanentRequest, proxyAgentForUrl: () => ({ agent: null }), sleep: () => {} }),
+    /certificate rejection/,
+  );
+  assert.equal(permanentRequest.calls, 1, "hardened npm retried a non-transient TLS/certificate failure");
+
   const redirectRequest = fakeRequest(302);
   await assert.rejects(
-    downloadHardenedNpmArtifact(artifacts[0], { request: redirectRequest, proxyAgentForUrl: () => ({ agent: null }) }),
+    downloadHardenedNpmArtifact(artifacts[0], { request: redirectRequest, proxyAgentForUrl: () => ({ agent: null }), sleep: () => {} }),
     /HTTP 302/,
   );
-  assert.equal(redirectRequest.calls, 1, "hardened npm followed a registry redirect");
+  assert.equal(redirectRequest.calls, 1, "hardened npm followed or retried a registry redirect");
+
+  await assert.rejects(
+    downloadHardenedNpmArtifact({ ...artifacts[0], url: artifacts[0].url.replace("https:", "http:") }, { request: fakeRequest(200) }),
+    /not an exact HTTPS registry URL/,
+  );
+  const setupFailure = new Error("synthetic request setup failure");
+  await assert.rejects(
+    downloadHardenedNpmArtifact(artifacts[0], { agent: null, request: () => { throw setupFailure; } }),
+    error => error === setupFailure,
+  );
+  const defaultAgentRequest = fakeDownloadSequence([{ statusCode: 200, body: bytesByName.get("npm") }]);
+  assert.deepEqual(
+    await downloadHardenedNpmArtifact(artifacts[0], { request: defaultAgentRequest, proxyEnv: {} }),
+    bytesByName.get("npm"),
+    "hardened npm default proxy-aware HTTPS agent changed artifact bytes",
+  );
+  for (const proxyEnv of [
+    "not-an-object",
+    { HTTPS_PROXY: "bad proxy" },
+    { HTTPS_PROXY: "ftp://proxy.example.invalid" },
+    { HTTPS_PROXY: "https://proxy.example.invalid/\nheader" },
+    { NO_PROXY: "example.invalid\nother.invalid" },
+  ]) {
+    await assert.rejects(
+      downloadHardenedNpmArtifact(artifacts[0], { request: fakeRequest(200), proxyEnv }),
+      error => error?.code === "http_proxy_configuration",
+    );
+  }
+  const tooLarge = { ...artifacts[0], maximumBytes: bytesByName.get("npm").length - 1 };
+  await assert.rejects(
+    downloadHardenedNpmArtifact(tooLarge, { request: fakeDownloadSequence([{ statusCode: 200, body: bytesByName.get("npm") }]), agent: null }),
+    /exceeds its byte limit/,
+  );
+  await assert.rejects(
+    downloadHardenedNpmArtifact(tooLarge, { request: fakeDownloadSequence([{ statusCode: 200, body: bytesByName.get("npm"), omitLength: true }]), agent: null }),
+    error => error?.code === "ERR_RESPONSE_TOO_LARGE",
+  );
+  const responseFailure = new Error("synthetic response stream failure");
+  await assert.rejects(
+    downloadHardenedNpmArtifact(artifacts[0], { request: fakeDownloadSequence([{ statusCode: 200, responseError: responseFailure }]), agent: null }),
+    error => error === responseFailure,
+  );
+  const exhaustedTransient = fakeDownloadSequence([{ error: Object.assign(new Error("persistent synthetic timeout"), { code: "ETIMEDOUT" }) }]);
+  await assert.rejects(
+    downloadHardenedNpmArtifact(artifacts[0], { request: exhaustedTransient, agent: null, sleep: () => {} }),
+    /persistent synthetic timeout/,
+  );
+  assert.equal(exhaustedTransient.calls, 3, "hardened npm did not stop after its bounded transient retry count");
 
   const deceptiveOrigin = artifacts.map((item) => ({ ...item }));
   deceptiveOrigin[0].url = deceptiveOrigin[0].url.replace("registry.npmjs.org/", "registry.npmjs.org.evil/");
@@ -134,18 +241,71 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-function fakeRequest(statusCode) {
-  const create = () => {
-    create.calls += 1;
+function createManualTimerScheduler() {
+  let now = 0; let nextId = 1; const timers = new Map();
+  const setTimer = (callback, milliseconds) => { const id = nextId++; timers.set(id, { at: now + milliseconds, callback }); return id; };
+  const clearTimer = (id) => { timers.delete(id); };
+  return {
+    setTimeout: setTimer,
+    clearTimeout: clearTimer,
+    advance(milliseconds) {
+      const target = now + milliseconds;
+      while (true) {
+        const due = [...timers.entries()].filter(([, timer]) => timer.at <= target)
+          .sort((left, right) => left[1].at - right[1].at || left[0] - right[0])[0];
+        if (!due) break;
+        const [id, timer] = due; timers.delete(id); now = timer.at; timer.callback();
+      }
+      now = target;
+    },
+  };
+}
+
+function fakeProgressiveDownload(scheduler, body) {
+  return () => {
     const request = new EventEmitter();
     request.destroy = (error) => { if (error) request.emit("error", error); };
     request.end = () => {
       queueMicrotask(() => {
         const response = new EventEmitter();
-        response.statusCode = statusCode;
-        response.headers = {};
-        response.resume = () => {};
+        response.statusCode = 200; response.headers = { "content-length": String(body.length) };
+        response.resume = () => {}; response.destroy = (error) => { if (error) response.emit("error", error); };
         request.emit("response", response);
+        const midpoint = Math.ceil(body.length / 2);
+        scheduler.advance(75); response.emit("data", body.subarray(0, midpoint));
+        scheduler.advance(75); response.emit("data", body.subarray(midpoint));
+        scheduler.advance(75); response.emit("end");
+      });
+    };
+    return request;
+  };
+}
+
+function fakeRequest(statusCode) { return fakeDownloadSequence([{ statusCode }]); }
+
+function fakeDownloadSequence(outcomes) {
+  const create = () => {
+    const outcome = outcomes[Math.min(create.calls, outcomes.length - 1)];
+    create.calls += 1;
+    const request = new EventEmitter();
+    request.destroy = (error) => { if (error) queueMicrotask(() => request.emit("error", error)); };
+    request.end = () => {
+      queueMicrotask(() => {
+        if (outcome.error) { request.emit("error", outcome.error); return; }
+        const response = new EventEmitter();
+        response.statusCode = outcome.statusCode;
+        response.headers = outcome.body && !outcome.omitLength ? { "content-length": String(outcome.body.length) } : {};
+        response.resume = () => {};
+        response.destroy = (error) => {
+          response.destroyedError = error || null;
+          if (error) queueMicrotask(() => response.emit("error", error));
+        };
+        request.emit("response", response);
+        if (outcome.statusCode === 200) {
+          if (outcome.responseError) { response.emit("error", outcome.responseError); return; }
+          if (outcome.body?.length) response.emit("data", outcome.body);
+          if (!response.destroyedError) response.emit("end");
+        }
       });
     };
     return request;

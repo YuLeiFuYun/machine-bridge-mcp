@@ -77,7 +77,7 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
       verified = true;
       if (!signalled.has(Number(owner.pid))) {
         const purpose = options.reason || "service stop";
-        logger.info?.(`stopping detached background daemon (pid ${owner.pid}) for ${purpose}`);
+        logger.info?.(`stopping detached background daemon for ${purpose}`);
         try {
           process.kill(Number(owner.pid), "SIGTERM");
         } catch (error) {
@@ -106,7 +106,7 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
       if (!current.current) continue;
       const identity = inspectWorkspaceDaemonOwner(state, signalState.owner);
       if (!identity.verified_service_daemon) continue;
-      logger.warn?.(`detached background daemon ignored graceful termination; forcing process ${pid} to stop`);
+      logger.warn?.("detached background daemon ignored graceful termination; forcing it to stop");
       try {
         process.kill(pid, "SIGKILL");
         signalState.forced = true;

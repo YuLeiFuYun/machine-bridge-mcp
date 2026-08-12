@@ -11,11 +11,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  acceptanceConfirmationForVersion,
+  ACCEPTANCE_CONFIRMATION,
   ACCEPTANCE_SCHEMA_VERSION,
   acceptancePath,
   packProject,
-  requiresLocalAcceptance,
   verifyAcceptanceRecord,
   verifyCurrentReleaseAcceptance,
   verifyTarball,
@@ -28,6 +27,7 @@ import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
+import { readReleaseOAuthCanaryEvidence } from "./release-oauth-canary-evidence.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateDirectory = join(root, ".release-candidate");
@@ -64,9 +64,6 @@ async function runWithHardenedNpm() {
 
 function prepareCandidate(npmCli) {
   const pkg = readPackage();
-  if (!requiresLocalAcceptance(pkg.version)) {
-    throw new Error(`local acceptance policy begins at ${pkg.name} 1.2.8; current version is ${pkg.version}`);
-  }
   rmSync(candidateDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   mkdirSync(candidateDirectory, { recursive: true });
   const metadata = packProject(root, candidateDirectory, { npmCli, env: process.env });
@@ -84,7 +81,9 @@ function prepareCandidate(npmCli) {
   parseReleaseVersion(pkg.version);
   console.log("npm run release:candidate:activate -- --allow-worker-deploy");
   console.log("The owner runs this one command. It installs the exact candidate in the private state root, updates the same-name Worker, verifies candidate relay readiness, replaces the login daemon, verifies the background handoff, and exits while the service remains active.");
-  console.log("After that observed live verification succeeds, the coding agent records acceptance with:");
+  console.log("After activation, the coding agent runs the bounded deployed OAuth canary with:");
+  console.log("npm run release:oauth-canary -- --allow-live-oauth-canary");
+  console.log("Only after the canary and observed live verification succeed does the coding agent record acceptance with:");
   console.log(`npm run release:accept -- --confirm \"${phrase}\"`);
   console.log("Automated tests alone do not authorize acceptance or the first GitHub push.");
 }
@@ -101,6 +100,13 @@ function recordAcceptance(npmCli) {
     packageVersion: pkg.version,
   });
   verifyTarball(join(candidateDirectory, pending.filename), pending);
+  readReleaseOAuthCanaryEvidence(root, {
+    package_name: pending.package_name,
+    package_version: pending.package_version,
+    shasum: pending.shasum,
+    integrity: pending.integrity,
+    promotion_content_sha256: pending.promotion_content_sha256,
+  });
 
   const verificationDirectory = join(candidateDirectory, "verification");
   rmSync(verificationDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
@@ -120,7 +126,7 @@ function recordAcceptance(npmCli) {
   const record = {
     schema_version: ACCEPTANCE_SCHEMA_VERSION,
     result: "passed",
-    confirmation: acceptanceConfirmationForVersion(pkg.version),
+    confirmation: ACCEPTANCE_CONFIRMATION,
     package_name: current.package_name,
     package_version: current.package_version,
     filename: current.filename,

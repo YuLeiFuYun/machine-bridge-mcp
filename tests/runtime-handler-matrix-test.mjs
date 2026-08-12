@@ -89,7 +89,7 @@ try {
     write: route("write_process"),
     kill: route("kill_process"),
     notifyCancellation() {},
-    clear() {},
+    async clearAndWait() {},
   };
 
   const argumentsByTool = {
@@ -135,7 +135,7 @@ try {
   assert(runtime.callRegistry.snapshot().active === 0, "runtime handler matrix leaked call registry state");
   console.log(`runtime handler matrix test ok (${names.length} handlers)`);
 } finally {
-  runtime.stop();
+  await runtime.stop();
   await rm(root, { recursive: true, force: true });
 }
 

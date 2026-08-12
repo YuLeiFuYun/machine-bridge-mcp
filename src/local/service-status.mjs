@@ -1,34 +1,47 @@
 const SYSTEMD_STATES = new Set(["active", "inactive", "failed", "activating", "deactivating", "reloading", "maintenance", "unknown"]);
+export const LAUNCHD_MISSING_SERVICE_CODE = 113;
 
 export function launchdStatusSummary({ installed, definition, result }) {
   const detail = String(result?.stdout || "");
-  const loaded = Number(result?.code) === 0;
-  const state = launchdField(detail, "state") || (loaded ? "loaded" : "inactive");
-  const pid = positiveMatch(detail, /\bpid = (\d+)/);
+  const queryCode = Number(result?.code);
+  const loaded = queryCode === 0;
+  const missing = queryCode === LAUNCHD_MISSING_SERVICE_CODE;
+  const statusAvailable = loaded || missing;
+  const state = loaded ? launchdField(detail, "state") || "loaded" : missing ? "inactive" : "unknown";
+  const pid = loaded ? positiveMatch(detail, /\bpid = (\d+)/) : null;
   return {
     ok: Boolean(installed),
     provider: "launchd",
     installed: Boolean(installed),
     definition: String(definition || ""),
     loaded,
-    active: loaded && (pid !== null || state === "running"),
+    active: statusAvailable ? loaded && (pid !== null || state === "running") : null,
     state,
+    status_available: statusAvailable,
+    status_query_code: Number.isInteger(queryCode) ? queryCode : null,
     pid,
-    runs: positiveMatch(detail, /\bruns = (\d+)/),
-    last_termination_signal: textMatch(detail, /\blast terminating signal = ([^\n]+)/),
+    runs: loaded ? positiveMatch(detail, /\bruns = (\d+)/) : null,
+    last_termination_signal: loaded ? textMatch(detail, /\blast terminating signal = ([^\n]+)/) : null,
   };
 }
 
 export function systemdStatusSummary({ installed, definition, result }) {
   const firstLine = String(result?.stdout || "").split(/\r?\n/, 1)[0].trim().toLowerCase();
-  const state = SYSTEMD_STATES.has(firstLine) ? firstLine : "unknown";
+  const statusAvailable = SYSTEMD_STATES.has(firstLine);
+  const state = statusAvailable ? firstLine : "unknown";
+  const safelyAbsent = statusAvailable && state === "unknown" && !installed;
+  const safelyInactive = statusAvailable && ["inactive", "failed"].includes(state);
+  const active = state === "active" ? true : safelyInactive || safelyAbsent ? false : null;
+  const queryCode = Number(result?.code);
   return {
     ok: Boolean(installed),
     provider: "systemd",
     installed: Boolean(installed),
     definition: String(definition || ""),
-    active: state === "active",
+    active,
     state,
+    status_available: statusAvailable,
+    status_query_code: Number.isInteger(queryCode) ? queryCode : null,
   };
 }
 

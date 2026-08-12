@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import {
   SECURITY_AUDIT_MAX_BYTES,
@@ -10,10 +11,11 @@ const MAX_PENDING_RECORDS = 1024;
 const CLOSE_TIMEOUT_MS = 5000;
 
 export class SecurityAuditLog {
-  constructor({ root = "", now = Date.now, WorkerClass = Worker } = {}) {
+  constructor({ root = "", now = Date.now, WorkerClass = Worker, identityKey = null } = {}) {
     this.root = root ? String(root) : "";
     this.file = this.root ? auditFilePath(this.root) : "";
     this.now = typeof now === "function" ? now : Date.now;
+    this.identityKey = identityKey ? Buffer.from(identityKey) : randomBytes(32);
     this.worker = null;
     this.workerReady = false;
     this.closed = false;
@@ -52,7 +54,7 @@ export class SecurityAuditLog {
     return new Promise((resolvePromise) => {
       this.pending.set(id, { resolve: resolvePromise, kind: "record" });
       try {
-        this.worker.postMessage({ type: "record", id, input: projectAuditInput(input), nowMs: Number(this.now()) });
+        this.worker.postMessage({ type: "record", id, input: projectAuditInput(input, this.identityKey), nowMs: Number(this.now()) });
       } catch (error) {
         this.pending.delete(id);
         this.droppedRecords += 1;
@@ -175,7 +177,7 @@ function disabledSnapshot() {
   };
 }
 
-function projectAuditInput(input) {
+function projectAuditInput(input, identityKey) {
   const principal = input?.principal && typeof input.principal === "object" ? input.principal : {};
   return {
     outcome: input?.outcome,
@@ -188,11 +190,16 @@ function projectAuditInput(input) {
     errorCode: input?.errorCode,
     principal: {
       kind: principal.kind,
-      accountId: principal.accountId,
+      accountId: runtimePrivateReference(identityKey, principal.accountId),
       accountVersion: principal.accountVersion,
-      clientId: principal.clientId,
-      familyId: principal.familyId,
+      clientId: runtimePrivateReference(identityKey, principal.clientId),
+      familyId: runtimePrivateReference(identityKey, principal.familyId),
       role: principal.role,
     },
   };
+}
+
+function runtimePrivateReference(key, value) {
+  if (!value) return null;
+  return createHmac("sha256", key).update(String(value)).digest("hex");
 }

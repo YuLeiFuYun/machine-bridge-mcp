@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { BridgeError, errorCode, publicError, remoteBridgeError } from "../src/local/errors.mjs";
+import { BridgeError, errorCode, publicError } from "../src/local/errors.mjs";
 import { CallRegistry } from "../src/local/call-registry.mjs";
 import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
@@ -17,7 +17,7 @@ import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs"
 import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
-import { workspaceShellCommand } from "../src/local/shell.mjs";
+import { runExecutable, workspaceShellCommand } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
 import { FileMutationCoordinator } from "../src/local/file-mutation-coordinator.mjs";
@@ -46,7 +46,7 @@ await testDuplicateRelayCallId();
 testRelayReadinessProbe();
 await testRelayReadinessStateGuards();
 testRelayCancellationSuppression();
-testRelayResumeReconciliation();
+await testRelayResumeReconciliation();
 testRelayToolTimeoutNormalization();
 testRelayHandshakeDiagnostics();
 testRuntimeConvenienceMethods();
@@ -55,9 +55,13 @@ testAutostartLogMaintenance();
 await testProcessExecutionNoShell();
 await testForegroundTimeoutAlignment();
 await testFixedInternalProcessBoundary();
+await testProcessExitFallbackSettlement();
 testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
-testProcessTracker();
+await testProcessErrorRetainsOwnershipUntilClose();
+await testRunExecutableErrorWaitsForClose();
+await testProcessTimeoutIsNotSafeToRetry();
+await testProcessTracker();
 await testProcessTreeSupervisor();
 await testChildProcessSettlement();
 testHardSpawnSyncTimeout();
@@ -254,11 +258,33 @@ async function testCallRegistry() {
   expectBridgeError(() => registry.throwIfCancelled(first), "timeout");
   assert(cancelled[0]?.reason === "deadline exceeded", "deadline did not use the central cancellation path");
   assert(registry.snapshot().active === 2, "cancelled call vanished before lifecycle finish");
+  const prototypeOriginRegistry = new CallRegistry({ maximum: 1 });
+  prototypeOriginRegistry.open({ callId: "prototype-origin", tool: "read_file", origin: "__proto__" });
+  const prototypeOriginSnapshot = prototypeOriginRegistry.snapshot();
+  assert(Object.hasOwn(prototypeOriginSnapshot.by_origin, "__proto__") && prototypeOriginSnapshot.by_origin.__proto__ === 1,
+    "call-registry diagnostics lost a prototype-shaped origin key");
+  assert(Object.getPrototypeOf(prototypeOriginSnapshot.by_origin) === null, "call-registry origin diagnostics regained prototype semantics");
+  prototypeOriginRegistry.finish("prototype-origin");
   registry.finish("one");
   assert(registry.cancelOrigin("relay", "relay disconnected") === 1, "relay origin cancellation did not find its call");
   assert(cancelled.at(-1)?.reason === "relay disconnected", "relay origin cancellation lost its reason");
   registry.finish("two");
   assert(registry.snapshot().active === 0, "finished calls leaked from registry");
+
+  const authority = new CallRegistry({ maximum: 3 });
+  const accountId = `acct_${"r".repeat(32)}`;
+  const clientId = `mcp_client_${"r".repeat(43)}`;
+  const familyId = `mcp_family_${"r".repeat(43)}`;
+  authority.open({ callId: "family-call", tool: "run_process", origin: "relay" });
+  authority.bindPrincipal("family-call", { kind: "account", accountId, accountVersion: 4, clientId, familyId, role: "operator" });
+  authority.open({ callId: "new-version", tool: "read_file", origin: "relay" });
+  authority.bindPrincipal("new-version", { kind: "account", accountId, accountVersion: 5, clientId, familyId, role: "operator" });
+  assert(authority.cancelAuthority({ accountId, accountVersion: 4, clientId, familyId }) === 1,
+    "family authority revocation did not cancel the exact old-version call");
+  expectBridgeError(() => authority.throwIfCancelled({ callId: "family-call" }), "authorization_denied");
+  authority.throwIfCancelled({ callId: "new-version" });
+  authority.finish("family-call");
+  authority.finish("new-version");
 
   const defaultCapacity = new CallRegistry();
   assert(defaultCapacity.snapshot().maximum === 16,
@@ -274,8 +300,24 @@ async function testCallRegistry() {
 
   registry.open({ callId: "stop-one", tool: "read_file" });
   registry.open({ callId: "stop-two", tool: "git_status" });
-  registry.cancelAll("runtime stopped");
-  assert(registry.snapshot().active === 0, "cancelAll left stopped calls registered");
+  const callDrain = registry.cancelAllAndWait("runtime stopped", 100);
+  assert(registry.snapshot().active === 2, "call shutdown discarded handlers before lifecycle settlement");
+  expectBridgeError(() => registry.open({ callId: "late-stop-call", tool: "read_file" }), "unavailable");
+  registry.finish("stop-one");
+  let drainSettled = false;
+  callDrain.then(() => { drainSettled = true; });
+  await Promise.resolve();
+  assert(!drainSettled, "call shutdown settled while a handler was still registered");
+  registry.finish("stop-two");
+  await callDrain;
+  assert(registry.snapshot().active === 0, "call shutdown left settled calls registered");
+
+  const stalledCalls = new CallRegistry({ maximum: 1 });
+  stalledCalls.open({ callId: "stalled-stop-call", tool: "run_process" });
+  await expectReject(() => stalledCalls.cancelAllAndWait("runtime stopped", 20), "unavailable", "tool call shutdown did not settle");
+  assert(stalledCalls.snapshot().active === 1, "failed call shutdown discarded the retained in-flight handler");
+  expectBridgeError(() => stalledCalls.open({ callId: "post-timeout-call", tool: "read_file" }), "unavailable");
+  stalledCalls.finish("stalled-stop-call");
 }
 
 async function testToolExecutor() {
@@ -514,7 +556,7 @@ function testRelayCancellationSuppression() {
   assert(!runtime.suppressedRelayResults.has("unknown-call"), "unknown cancellation created an unbounded suppression entry");
 }
 
-function testRelayResumeReconciliation() {
+async function testRelayResumeReconciliation() {
   assert(normalizeRelayResumeCalls({ ids: ["call_valid_12345678"] }).ok, "valid resumed-call set was rejected");
   assert(!normalizeRelayResumeCalls({ ids: ["call_duplicate_12345678", "call_duplicate_12345678"] }).ok, "duplicate resumed-call ids were accepted");
   assert(!normalizeRelayResumeCalls({ ids: ["invalid"] }).ok, "malformed resumed-call id was accepted");
@@ -541,12 +583,33 @@ function testRelayResumeReconciliation() {
     && !runtime.relayCallRecovery.pendingResults.has("call_discard_12345678"), "reconnect reconciliation retained an orphaned queued result");
   assert(events.some((event) => event.name === "relay.calls.reconciled"), "reconnect reconciliation was not observable");
 
+  const revocationAttempts = [];
+  const aggregateRevocationRuntime = {
+    callRegistry: { cancelAuthority() { revocationAttempts.push("calls"); return 1; } },
+    processSessionManager: { revokeAuthority() { revocationAttempts.push("sessions"); throw new Error("synthetic session revocation failure"); } },
+    managedJobManager: { revokeAuthority() { revocationAttempts.push("jobs"); return 2; } },
+    logger: {},
+  };
+  let aggregateRevocationFailure = null;
+  try { await LocalRuntime.prototype.applyAuthorityRevocation.call(aggregateRevocationRuntime, { accountId: `acct_${"a".repeat(32)}`, accountVersion: 1 }); }
+  catch (error) { aggregateRevocationFailure = error; }
+  assert(aggregateRevocationFailure instanceof BridgeError && aggregateRevocationFailure.code === "unavailable"
+    && aggregateRevocationFailure.retryable === true && aggregateRevocationFailure.cause instanceof AggregateError
+    && revocationAttempts.join(",") === "calls,sessions,jobs",
+  "authority revocation stopped before attempting every local execution category or lost its retry classification");
+
   let violation = "";
   let confirmed = 0;
   let acknowledged = "";
+  const cancelledControlCalls = [];
+  let revokedAuthority;
+  let revocationAck;
+  let revocationInterrupt = null;
   const controlRuntime = {
     relayResumeSessionId: 0,
     reconcileRelayCalls(ids) { this.resumed = ids; },
+    cancelRelayCall(id, reason) { cancelledControlCalls.push({ id, reason }); return true; },
+    applyAuthorityRevocation(value) { revokedAuthority = value; },
     handleRelayProtocolViolation(reason) { violation = reason; },
     relayCallRecovery: {
       pulse() {},
@@ -555,32 +618,91 @@ function testRelayResumeReconciliation() {
     relay: {
       acknowledge() {},
       confirmReady() { confirmed += 1; return true; },
+      interrupt(category) { revocationInterrupt = category; return true; },
+      sendForSession(message, sessionId) { revocationAck = { message, sessionId }; return { ok: true }; },
     },
   };
-  LocalRuntime.prototype.handleRelayControlMessage.call(
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "resume_calls", ids: ["call_valid_12345678"] },
     { sessionId: 17, authenticated: true, ready: false },
   );
   assert(controlRuntime.relayResumeSessionId === 17 && controlRuntime.resumed[0] === "call_valid_12345678", "valid resume_calls did not establish the reconnect contract");
-  LocalRuntime.prototype.handleRelayControlMessage.call(
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    {
+      type: "authority_revoke", revocation_id: `revoke_${"r".repeat(43)}`,
+      account_id: `acct_${"r".repeat(32)}`, account_version: 4,
+    },
+    { sessionId: 17, authenticated: true, ready: false },
+  );
+  assert(revokedAuthority?.accountVersion === 4
+    && revocationAck?.sessionId === 17
+    && revocationAck.message.revocation_id === `revoke_${"r".repeat(43)}`,
+  "pre-ready authority revocation was not applied and acknowledged on its authenticated relay generation");
+  revocationAck = null;
+  controlRuntime.applyAuthorityRevocation = () => { throw new Error("synthetic revocation application failure"); };
+  let revocationFailure = null;
+  try {
+    await LocalRuntime.prototype.handleRelayControlMessage.call(
+      controlRuntime,
+      {
+        type: "authority_revoke", revocation_id: `revoke_${"f".repeat(43)}`,
+        account_id: `acct_${"f".repeat(32)}`, account_version: 5,
+      },
+      { sessionId: 17, authenticated: true, ready: false },
+    );
+  } catch (error) { revocationFailure = error; }
+  assert(String(revocationFailure?.message || "").includes("synthetic revocation application failure"),
+    "failed local authority revocation did not propagate its application failure");
+  assert(revocationAck === null, "failed local authority revocation was acknowledged and could be removed from the durable Worker queue");
+  assert(revocationInterrupt === "local_authority_revocation_retry",
+    "failed local authority revocation did not interrupt the relay generation for prompt durable-queue replay");
+  controlRuntime.applyAuthorityRevocation = (value) => { revokedAuthority = value; };
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "ready_ack" },
     { sessionId: 17, authenticated: true, ready: false },
   );
   assert(confirmed === 1 && controlRuntime.relayResumeSessionId === 0, "ready_ack was not gated by resume reconciliation");
-  LocalRuntime.prototype.handleRelayControlMessage.call(
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "tool_result_ack", id: "call_valid_12345678" },
     { sessionId: 17, authenticated: true, ready: true },
   );
   assert(acknowledged === "call_valid_12345678", "valid Worker result acknowledgement was not applied");
-  LocalRuntime.prototype.handleRelayControlMessage.call(
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "ready_ack" },
     { sessionId: 18, authenticated: true, ready: false },
   );
   assert(violation === "resume_calls_required", "ready_ack without resume_calls was accepted");
+  violation = "";
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "cancel_call", id: "call_cancel_12345678" },
+    { sessionId: 17, authenticated: true, ready: false },
+  );
+  assert(violation === "invalid_cancel_call" && cancelledControlCalls.length === 0,
+    "pre-ready relay cancellation bypassed the authenticated ready-generation gate");
+  violation = "";
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "cancel_call", id: "not-a-call-id" },
+    { sessionId: 17, authenticated: true, ready: true },
+  );
+  assert(violation === "invalid_cancel_call" && cancelledControlCalls.length === 0,
+    "malformed relay cancellation reached the call registry");
+  violation = "";
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "cancel_call", id: "call_cancel_12345678" },
+    { sessionId: 17, authenticated: true, ready: true },
+  );
+  assert(violation === "" && cancelledControlCalls.length === 1
+    && cancelledControlCalls[0].id === "call_cancel_12345678"
+    && cancelledControlCalls[0].reason === "caller_cancelled",
+  "ready-generation relay cancellation did not reach the call registry exactly once");
 }
 
 function testRelayHandshakeDiagnostics() {
@@ -715,7 +837,7 @@ function testRelayReconnectDelivery() {
   recovery.ready();
   assert(recovery.pendingResults.has("call_reconnect") && scheduledCallback === null,
     "replayed result was discarded before Worker acknowledgement");
-  assert(events.some((event) => event.name === "relay.tool_results.replayed" && event.fields.delivered_results === 1), "replayed result was not observable");
+  assert(events.some((event) => event.name === "relay.tool_results.redelivered" && event.fields.delivered_results === 1), "redelivered result was not observable");
   recovery.pulse();
   assert(recovery.pendingResults.has("call_reconnect"), "heartbeat replay discarded an unacknowledged result");
   assert(recovery.acknowledge("call_reconnect") && recovery.pendingResults.size === 0,
@@ -880,6 +1002,45 @@ async function testFixedInternalProcessBoundary() {
   }
 }
 
+async function testProcessExitFallbackSettlement() {
+  class ExitOnlyChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4344;
+      this.exitCode = null;
+      this.signalCode = null;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.stdin = new PassThrough();
+      this.unrefCount = 0;
+    }
+    unref() { this.unrefCount += 1; }
+  }
+  const child = new ExitOnlyChild();
+  const tracker = new ProcessTracker();
+  const service = new ProcessExecutionService({
+    workspace: process.cwd(),
+    policy: { minimalEnv: false },
+    policyGate: { assert() {} },
+    runtimeDir: process.cwd(),
+    processTracker: tracker,
+    resolveExistingPath: async (value) => value,
+    resolveLocalCommand: async () => ({}),
+    displayPath: (value) => value,
+    throwIfCancelled() {},
+    childSettlementOptions: { fallbackMs: 0 },
+    spawnProcess: () => {
+      queueMicrotask(() => { child.exitCode = 0; child.emit("exit", 0, null); });
+      return child;
+    },
+  });
+  const result = await service.runFixedInternal(process.execPath, ["-e", ""], 5_000, false, 1024);
+  assert(result.code === 0, "one-shot process exit fallback changed a successful exit result");
+  assert(tracker.snapshot().active_processes === 0, "one-shot process exit fallback retained process ownership without close");
+  assert(child.stdout.destroyed && child.stderr.destroyed && child.stdin.destroyed && child.unrefCount === 1,
+    "one-shot process exit fallback did not close residual stdio handles before settlement");
+}
+
 async function testProcessCancellationSettlesBeforeClose() {
   class NeverClosingChild extends EventEmitter {
     constructor() {
@@ -914,14 +1075,139 @@ async function testProcessCancellationSettlesBeforeClose() {
   const running = service.run("never", [], 60_000, false, 1024, { callId: "stuck", signal: controller.signal });
   assert(spawnInvocation?.options?.shell === false, "direct process execution did not explicitly disable shell interpretation");
   controller.abort(new BridgeError("cancelled", "relay disconnected"));
-  await expectReject(() => Promise.race([running, new Promise((_, reject) => { setTimeout(() => reject(new Error("cancellation did not settle")), 100); })]), "cancelled", "relay disconnected");
+  const cancellation = await expectReject(() => Promise.race([running, new Promise((_, reject) => { setTimeout(() => reject(new Error("cancellation did not settle")), 100); })]), "cancelled", "relay disconnected");
+  assert(cancellation.retryable === false && cancellation.details?.side_effects_started === true
+    && cancellation.details?.termination_requested === true && cancellation.details?.effect_settlement === "pending",
+  "cancelled process implied its already-started side effects had settled or were safe to retry");
   assert(terminated === 1, "cancelled process was not terminated");
   assert(tracker.snapshot().active_processes === 1, "process tracker released a child before close");
   child.emit("close", null);
   assert(tracker.snapshot().active_processes === 0, "process tracker retained child after close");
+
+  const deadlineChild = new NeverClosingChild();
+  service.spawnProcess = () => deadlineChild;
+  const deadlineController = new AbortController();
+  const deadlineRun = service.run("never", [], 60_000, false, 1024, { callId: "deadline", signal: deadlineController.signal });
+  deadlineController.abort(new BridgeError("timeout", "tool call timed out"));
+  const deadline = await expectReject(() => deadlineRun, "timeout", "tool call timed out");
+  assert(deadline.retryable === false && deadline.details?.effect_settlement === "pending",
+    "registry deadline lost its timeout code or became safe to retry after process dispatch");
+  deadlineChild.emit("close", null);
 }
 
-function testProcessTracker() {
+async function testProcessErrorRetainsOwnershipUntilClose() {
+  class ErrorThenCloseChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4_242_425;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.stdin = new PassThrough();
+      this.exitCode = null;
+      this.signalCode = null;
+    }
+  }
+  const child = new ErrorThenCloseChild();
+  let releases = 0;
+  const tracker = new ProcessTracker();
+  const service = new ProcessExecutionService({
+    workspace: process.cwd(), policy: { minimalEnv: false }, policyGate: { assert() {} }, runtimeDir: process.cwd(),
+    processTracker: tracker,
+    resourceCoordinator: { acquire: async () => ({ async bindProcess() { return this; }, async release() { releases += 1; return true; } }) },
+    resolveExistingPath: async (value) => value, resolveLocalCommand: async () => ({}), displayPath: (value) => value,
+    throwIfCancelled() {}, spawnProcess: () => child,
+  });
+  const running = service.run("synthetic-child", [], 60_000, false, 1024, { callId: "error-before-close" });
+  for (let attempt = 0; attempt < 20 && child.listenerCount("error") === 0; attempt += 1) {
+    await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  }
+  assert(child.listenerCount("error") > 0, "child error fixture never reached process ownership registration");
+  child.emit("error", new Error("synthetic child error before close"));
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(tracker.snapshot().active_processes === 1 && releases === 0,
+    "child error released process ownership or resources before close");
+  child.emit("close", null);
+  let childFailure = null;
+  try { await running; } catch (error) { childFailure = error; }
+  assert(childFailure?.message === "synthetic child error before close", "child error changed meaning while ownership was retained");
+  assert(tracker.snapshot().active_processes === 0 && releases === 1,
+    "child close did not release retained process ownership exactly once after an error");
+}
+
+async function testRunExecutableErrorWaitsForClose() {
+  class ErrorThenCloseChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4_242_426;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+    }
+  }
+  const child = new ErrorThenCloseChild();
+  let settled = false;
+  const running = runExecutable("synthetic-internal", [], {
+    capture: true, timeoutMs: 60_000,
+    spawnProcess(_command, _args, options) {
+      assert(options.shell === false && options.detached === (process.platform !== "win32"),
+        "runExecutable test seam changed the fixed production spawn boundary");
+      return child;
+    },
+  }).finally(() => { settled = true; });
+  child.emit("error", new Error("synthetic internal child error before close"));
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(settled === false, "runExecutable settled directly from child error before close");
+  child.emit("close", null);
+  let failure = null;
+  try { await running; } catch (error) { failure = error; }
+  assert(failure?.message === "synthetic internal child error before close" && settled === true,
+    "runExecutable did not preserve the child error until close settlement");
+}
+
+async function testProcessTimeoutIsNotSafeToRetry() {
+  class NeverClosingChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4_242_424;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.stdin = new PassThrough();
+      this.exitCode = null;
+      this.signalCode = null;
+    }
+  }
+  const child = new NeverClosingChild();
+  let terminated = 0;
+  const tracker = new ProcessTracker();
+  const service = new ProcessExecutionService({
+    workspace: process.cwd(),
+    policy: { minimalEnv: false },
+    policyGate: { assert() {} },
+    runtimeDir: process.cwd(),
+    processTracker: tracker,
+    resolveExistingPath: async (value) => value,
+    resolveLocalCommand: async () => ({}),
+    displayPath: (value) => value,
+    throwIfCancelled() {},
+    spawnProcess: () => child,
+    terminateProcess: () => { terminated += 1; return null; },
+  });
+  let timeoutError = null;
+  try { await service.run("never", [], 10, false, 1024, { callId: "timeout-ambiguous" }); }
+  catch (error) { timeoutError = error; }
+  assert(timeoutError instanceof BridgeError && timeoutError.code === "timeout", "process timeout did not retain its stable error code");
+  assert(timeoutError.retryable === false, "process timeout advertised an ambiguous started side effect as safely retryable");
+  assert(timeoutError.details?.side_effects_started === true
+    && timeoutError.details?.termination_requested === true
+    && timeoutError.details?.effect_settlement === "pending",
+  "process timeout omitted its pending side-effect settlement metadata");
+  assert(terminated === 1 && tracker.snapshot().active_processes === 1,
+    "process timeout test did not preserve the intended fast-return/background-termination contract");
+  child.emit("close", null);
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(tracker.snapshot().active_processes === 0, "timed-out process remained tracked after close");
+}
+
+async function testProcessTracker() {
   const terminations = [];
   const escalations = [];
   const tracker = new ProcessTracker({
@@ -983,6 +1269,36 @@ function testProcessTracker() {
   timerTracker.track(timedChild, "timed-again");
   timerTracker.terminateCall("timed-again");
   assert(scheduledCount === 2, "settled process escalation was not released from the tracker");
+
+  const drainTerminations = [];
+  const drainTracker = new ProcessTracker({
+    terminate(child, signal) { drainTerminations.push({ child, signal }); return true; },
+  });
+  const drainingChild = { pid: 301 };
+  drainTracker.track(drainingChild, "drain");
+  const drained = drainTracker.drain("SIGKILL", 100);
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
+  assert(drainTerminations.length === 1 && drainTerminations[0].signal === "SIGKILL",
+    "process tracker drain did not request forced termination");
+  drainTracker.untrack(drainingChild);
+  await drained;
+  const lateChild = { pid: 302 };
+  drainTracker.track(lateChild, "late-during-drain");
+  assert(drainTerminations.length === 2 && drainTerminations[1].child === lateChild,
+    "process tracker allowed a new child to escape after runtime drain began");
+  drainTracker.untrack(lateChild);
+
+  let stalledDrainRequests = 0;
+  const stalledDrainTracker = new ProcessTracker({ terminate() { stalledDrainRequests += 1; return true; } });
+  const stalledDrainChild = { pid: 303 };
+  stalledDrainTracker.track(stalledDrainChild, "stalled-drain");
+  await expectReject(() => stalledDrainTracker.drain("SIGKILL", 20), "unavailable", "process shutdown did not settle");
+  assert(stalledDrainTracker.snapshot().active_processes === 1,
+    "failed process drain discarded the only retained ownership handle");
+  const retriedDrain = stalledDrainTracker.drain("SIGKILL", 100);
+  assert(stalledDrainRequests === 2, "failed process drain permanently suppressed a later termination retry");
+  stalledDrainTracker.untrack(stalledDrainChild);
+  await retriedDrain;
   timerTracker.terminateCall("timed-again", { force: true });
   assert(clearedTimers.join(",") === "timer-2", "forced process termination did not clear the pending escalation timer");
 }
@@ -1320,8 +1636,6 @@ function testErrors() {
   assert(errorCode(new Error("something timed out")) === "execution_failed", "untyped messages must not be reclassified heuristically");
   const publicValue = publicError(new BridgeError("network_error", "network unavailable"));
   assert(publicValue.code === "network_error" && publicValue.retryable === true, "public error lost retryability");
-  const remote = remoteBridgeError({ code: "limit_exceeded", message: "busy", retryable: true, details: { retained: true } });
-  assert(remote.code === "limit_exceeded" && remote.retryable === true && remote.details?.retained === true, "remote structured error was not preserved");
   const hidden = publicError(new BridgeError("internal_error", "private", { expose: false, details: { secret: "must-not-leak" } }));
   assert(!hidden.details && hidden.message === "internal error", "non-exposed error leaked structured details");
   const rawUnknown = publicError(new Error("private path /Users/private-user and token secret"));
@@ -1475,7 +1789,7 @@ function testRuntimeInfoProjection() {
     runtime: {
       processes: null,
       process_sessions: [],
-      managed_jobs: { active: 2, retained: 3, maximum: 9, staged: 1 },
+      managed_jobs: { active: 2, retained: 3, maximum: 9, staged: 1, capacity: { retained_state: 9, retired_state: 6, retired_unreadable: 2 } },
     },
   }, "summary");
   assert(summary.detail === "summary" && summary.policy && Object.keys(summary.policy).length === 0
@@ -1483,8 +1797,17 @@ function testRuntimeInfoProjection() {
     && summary.runtime.lifecycle === null && summary.runtime.relay === null
     && summary.runtime.processes.active_processes === 0 && summary.runtime.processes.draining_processes === 0
     && summary.runtime.process_sessions.active === 0 && !("staged" in summary.runtime.process_sessions)
-    && summary.runtime.managed_jobs.active === 2 && summary.runtime.managed_jobs.staged === 1,
-  "sparse local server_info projection lost bounded defaults");
+    && summary.runtime.managed_jobs.active === 2 && summary.runtime.managed_jobs.staged === 1
+    && summary.runtime.managed_jobs.capacity?.retained_state === 9
+    && summary.runtime.managed_jobs.capacity?.retired_state === 6
+    && summary.runtime.managed_jobs.capacity?.retired_unreadable === 2,
+  "sparse local server_info projection lost bounded defaults or owner retained-state capacity diagnostics");
+  const hiddenSummary = projectRuntimeInfo({
+    runtime: { processes: { activity_hidden_by_authority: true }, process_sessions: { active: 1, retained: 1, maximum: 8 }, managed_jobs: { active: 0, retained: 0, maximum: 50 } },
+  }, "summary");
+  assert(hiddenSummary.runtime.processes.activity_hidden_by_authority === true
+    && !("active_processes" in hiddenSummary.runtime.processes),
+  "server_info summary converted hidden global process activity into false zero-valued evidence");
 }
 
 function deferred() {

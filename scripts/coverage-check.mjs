@@ -3,19 +3,23 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { captureCoverageGeneration } from "./coverage-generation.mjs";
+import { mergeFunctionExecutions } from "./coverage-range-merge.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const CRITICAL_SCRIPT_FILES = new Set(["scripts/release-publication-guard.mjs"]);
+const CRITICAL_SCRIPT_FILES = new Set(["scripts/release-publication-guard.mjs", "scripts/verification-generation-guard.mjs"]);
+const generationBefore = captureCoverageGeneration(root);
 const coverageDir = mkdtempSync(resolve(tmpdir(), "machine-bridge-coverage-"));
 const tests = [
   "tests/policy-test.mjs",
   "tests/runtime-infrastructure-test.mjs",
   "tests/control-plane-resilience-test.mjs",
+  "tests/process-output-continuation-test.mjs",
   "tests/runtime-boundaries-test.mjs",
   "tests/worker-runtime-infrastructure-test.mjs",
-  "tests/mcp-resumption-test.mjs",
   "tests/mcp-protocol-test.mjs",
-  "tests/mcp-modern-controller-test.mjs",
+  "tests/mcp-controller-test.mjs",
+  "tests/mcp-response-proxy-test.mjs",
   "tests/tool-argument-validation-test.mjs",
   "tests/worker-oauth-controller-test.mjs",
   "tests/logging-structure-test.mjs",
@@ -28,6 +32,11 @@ const tests = [
   "tests/secure-file-test.mjs",
   "tests/worker-secret-file-test.mjs",
   "tests/atomic-fs-test.mjs",
+  "tests/coverage-range-merge-test.mjs",
+  "tests/coverage-generation-test.mjs",
+  "tests/check-runner-test.mjs",
+  "tests/resource-admission-test.mjs",
+  "tests/resource-build-root-test.mjs",
   "tests/runtime-activation-test.mjs",
   "tests/release-publication-guard-test.mjs",
   "tests/local-self-test.mjs",
@@ -35,13 +44,18 @@ const tests = [
   "tests/records-test.mjs",
   "tests/project-metadata-test.mjs",
   "tests/state-inventory-test.mjs",
+  "tests/state-root-retirement-test.mjs",
   "tests/worker-deployment-test.mjs",
+  "tests/hardened-npm-test.mjs",
   "tests/agent-context-test.mjs",
   "tests/agent-boundaries-test.mjs",
   "tests/capability-ranking-test.mjs",
   "tests/execution-routing-test.mjs",
+  "tests/browser-broker-auth-test.mjs",
+  "tests/browser-pairing-launch-test.mjs",
   "tests/browser-bridge-test.mjs",
   "tests/relay-connection-test.mjs",
+  "tests/managed-job-boundary-test.mjs",
   "tests/managed-jobs-test.mjs",
   "tests/account-admin-test.mjs",
   "tests/monotonic-deadline-test.mjs",
@@ -68,6 +82,10 @@ try {
       throw new Error(`coverage fixture failed: ${test}`);
     }
   }
+  const generationAfter = captureCoverageGeneration(root);
+  if (generationAfter !== generationBefore) {
+    throw new Error(`coverage generation changed during verification: ${generationBefore} -> ${generationAfter}`);
+  }
 
   const coverage = collectCoverage(coverageDir);
   const thresholds = {
@@ -75,7 +93,6 @@ try {
     "src/local/device-identity.mjs": [90, null],
     "src/local/operation-authorization.mjs": [85, 45],
     "src/local/operation-risk.mjs": [85, 60],
-    "src/local/operation-state-lock.mjs": [100, 7],
     "src/local/security-audit-log.mjs": [85, 55],
     "src/local/security-audit-dispatch.mjs": [100, 70],
     "src/local/security-audit-warning.mjs": [100, 75],
@@ -84,7 +101,6 @@ try {
     "src/local/delegated-process-sandbox.mjs": [80, 45],
     "src/shared/device-session-auth.mjs": [100, null],
     "src/shared/mcp-protocol.mjs": [90, 70],
-    "src/shared/mcp-subscriptions.mjs": [95, 75],
     "src/shared/tool-argument-validation.mjs": [90, 70],
     "src/shared/tool-call-capacity.mjs": [100, 75],
     "src/shared/project-overview-projection.mjs": [100, 90],
@@ -92,6 +108,7 @@ try {
     "src/local/errors.mjs": [70, 50],
     "src/local/call-registry.mjs": [85, 55],
     "src/local/call-capacity.mjs": [100, 70],
+    "src/local/call-registry-drain.mjs": [100, 70],
     "src/local/process-tree-signal.mjs": [90, 55],
     "src/local/process-tree-supervisor.mjs": [100, 70],
     "src/local/process-tree-snapshot.mjs": [90, 65],
@@ -100,6 +117,7 @@ try {
     "src/local/tool-result-boundary.mjs": [100, 75],
     "src/local/observability.mjs": [95, 40],
     "src/local/process-tracker.mjs": [65, 35],
+    "src/local/process-session-termination.mjs": [100, 70],
     "src/local/file-mutation-coordinator.mjs": [100, 65],
     "src/local/file-snapshot-preservation.mjs": [100, 75],
     "src/local/directory-metadata.mjs": [100, 80],
@@ -110,7 +128,49 @@ try {
     "src/local/runtime.mjs": [75, 55],
     "src/local/runtime-paths.mjs": [90, 50],
     "src/local/resource-operations.mjs": [80, 50],
+    "src/local/resource-admission.mjs": [95, 40],
+    "src/local/resource-admission-policy.mjs": [100, 65],
+    "src/local/resource-waiters.mjs": [95, 45],
+    "src/local/resource-cargo-concurrency.mjs": [100, 75],
+    "src/local/resource-cmake-concurrency.mjs": [100, 75],
+    "src/local/resource-go-concurrency.mjs": [100, 75],
+    "src/local/resource-gradle-concurrency.mjs": [100, 75],
+    "src/local/resource-swift-concurrency.mjs": [100, 75],
+    "src/local/resource-xcode-concurrency.mjs": [100, 75],
+    "src/local/resource-xcode-command.mjs": [100, 75],
+    "src/local/resource-xcode-non-build.mjs": [100, 75],
+    "src/local/resource-make-concurrency.mjs": [100, 75],
+    "src/local/resource-ninja-command-concurrency.mjs": [100, 75],
+    "src/local/resource-ninja-concurrency.mjs": [100, 75],
+    "src/local/resource-command-profile.mjs": [100, 55],
+    "src/local/resource-command-concurrency.mjs": [100, 70],
+    "src/local/resource-maven-concurrency.mjs": [100, 75],
+    "src/local/resource-pytest-concurrency.mjs": [100, 75],
+    "src/local/resource-elastic-memory.mjs": [100, 75],
+    "src/local/resource-elastic-request.mjs": [100, 70],
+    "src/local/resource-script-classification.mjs": [100, 50],
+    "src/local/resource-shell-analysis.mjs": [95, 60],
+    "src/local/resource-host-cache.mjs": [100, 70],
+    "src/local/resource-host-darwin.mjs": [100, 65],
+    "src/local/resource-host-linux.mjs": [100, 85],
+    "src/local/resource-host-snapshot.mjs": [100, null],
+    "src/local/resource-lease-accounting.mjs": [95, 65],
+    "src/local/resource-coordinator-accounting.mjs": [100, null],
+    "src/local/resource-probe-command.mjs": [100, 40],
+    "src/local/resource-process-ancestry.mjs": [100, 45],
+    "src/local/resource-process-ancestry-cache.mjs": [100, 70],
+    "src/local/resource-process-priority.mjs": [100, 60],
+    "src/local/resource-project-key.mjs": [100, 45],
+    "src/local/resource-wait.mjs": [100, 75],
+    "src/local/resource-staging-recovery.mjs": [100, 55],
+    "src/local/resource-build-root.mjs": [90, 65],
+    "src/local/resource-process-admission.mjs": [100, 35],
+    "src/local/resource-request-contract.mjs": [100, 70],
+    "src/local/secure-file.mjs": [90, 65],
+    "src/local/ssh-key.mjs": [90, 65],
+    "src/local/service-definition.mjs": [100, 75],
     "src/local/account-admin.mjs": [90, 60],
+    "src/local/account-admin-response.mjs": [100, 75],
     "src/local/cli.mjs": [48, 21.9],
     "src/local/cli-service.mjs": [100, 75],
     "src/local/service-convergence.mjs": [100, 75],
@@ -124,6 +184,7 @@ try {
     "src/local/windows-service-convergence.mjs": [100, 95],
     "src/local/runtime-activation.mjs": [90, 70],
     "scripts/release-publication-guard.mjs": [100, 80],
+    "scripts/verification-generation-guard.mjs": [100, 80],
     "src/local/child-process-settlement.mjs": [100, 85],
     "src/local/cli-options.mjs": [65, 35],
     "src/local/cli-policy.mjs": [70, 35],
@@ -134,6 +195,8 @@ try {
     "src/local/network-proxy.mjs": [90, 65],
     "src/local/worker-health.mjs": [85, 60],
     "src/local/worker-deployment.mjs": [80, 55],
+    "src/local/hardened-npm-download.mjs": [90, 70],
+    "src/local/hardened-npm-download-timeout.mjs": [100, 85],
     "src/local/agent-contract.mjs": [95, 40],
     "src/local/agent-context-projection.mjs": [95, 60],
     "src/local/agent-skill-discovery.mjs": [85, 60],
@@ -154,13 +217,22 @@ try {
     "src/local/monotonic-deadline.mjs": [100, 100],
     "src/local/path-inspection.mjs": [100, 60],
     "src/local/state.mjs": [85, 45],
+    "src/local/state-root-retirement.mjs": [90, 70],
     "src/local/relay-connection.mjs": [90, 55],
     "src/local/relay-connection-classification.mjs": [90, 60],
     "src/local/managed-jobs.mjs": [85, 50],
+    "src/local/managed-job-capacity.mjs": [100, 75],
+    "src/local/managed-job-directory-generation.mjs": [90, 70],
+    "src/local/managed-job-retention.mjs": [90, 70],
+    "src/local/managed-job-terminal-maintenance.mjs": [90, 70],
     "src/local/managed-job-projection.mjs": [90, 60],
     "src/local/managed-job-storage.mjs": [75, 50],
     "src/local/managed-job-runner-claim.mjs": [90, 60],
     "src/local/managed-job-runner.mjs": [80, 50],
+    "src/local/browser-broker-auth.mjs": [95, 80],
+    "src/local/browser-pairing-grant.mjs": [95, 75],
+    "src/local/browser-pairing-launch.mjs": [90, 70],
+    "src/local/browser-broker-auth-http.mjs": [90, 70],
     "src/local/browser-bridge.mjs": [80, 55],
     "src/local/browser-request-registry.mjs": [95, 35],
     "src/local/browser-broker-routes.mjs": [85, 55],
@@ -184,20 +256,14 @@ try {
     "src/worker/mcp-jsonrpc.ts": [95, 55],
     "src/worker/mcp-tool-call-input.ts": [100, 75],
     "src/worker/mcp-http-contract.ts": [90, 70],
-    "src/worker/mcp-modern-controller.ts": [90, 70],
-    "src/worker/mcp-modern-proxy.ts": [90, 70],
-    "src/worker/mcp-modern-stream.ts": [100, null],
+    "src/worker/mcp-controller.ts": [90, 70],
+    "src/worker/mcp-removed-protocol.ts": [100, 75],
+    "src/worker/mcp-response-proxy.ts": [90, 70],
+    "src/worker/mcp-response-stream.ts": [100, null],
+    "src/worker/mcp-http-accept.ts": [100, 75],
+    "src/worker/mcp-stream-proxy-contract.ts": [100, 75],
     "src/worker/worker-mcp-config.ts": [100, 75],
-    "src/worker/mcp-resumption-config.ts": [100, 80],
-    "src/worker/mcp-resumption-records.ts": [90, 65],
-    "src/worker/mcp-resumption-request-index.ts": [100, 70],
-    "src/worker/mcp-resumption-begin.ts": [100, 70],
-    "src/worker/mcp-stream-call-identity.ts": [100, 70],
-    "src/worker/mcp-transaction-alarm.ts": [100, 80],
-    "src/worker/mcp-pending-call-store.ts": [90, 60],
     "src/worker/runtime-alarm.ts": [95, 65],
-    "src/worker/mcp-stream-proxy.ts": [85, 55],
-    "src/worker/mcp-stream-subscription.ts": [85, 60],
     "src/worker/worker-static-routes.ts": [100, 90],
     "src/worker/worker-metadata.ts": [100, null],
     "src/worker/worker-edge-guard.ts": [100, 55],
@@ -205,11 +271,8 @@ try {
     "src/worker/oauth-token-issuance.ts": [100, 80],
     "src/worker/oauth-token-derivation.ts": [100, 75],
     "src/worker/oauth-refresh-exchange.ts": [95, 60],
-    "src/worker/mcp-stream-dispatch.ts": [90, 60],
     "src/worker/server-info.ts": [95, 65],
     "src/worker/daemon-status.ts": [100, 70],
-    "src/worker/mcp-resumption.ts": [90, 70],
-    "src/worker/mcp-stream.ts": [90, 65],
     "src/worker/websocket-protocol.ts": [100, 50],
   };
   const failures = [];
@@ -244,27 +307,39 @@ function collectCoverage(directory) {
       if (!file.startsWith("src/") && !CRITICAL_SCRIPT_FILES.has(file)) continue;
       let entry = scripts.get(file);
       if (!entry) {
-        entry = { functions: new Map(), blocks: new Map() };
+        entry = { functions: new Map() };
         scripts.set(file, entry);
       }
       for (const fn of script.functions || []) {
         if (!fn.ranges?.length) continue;
         const outer = fn.ranges[0];
         const functionKey = `${outer.startOffset}:${outer.endOffset}:${fn.functionName}`;
-        entry.functions.set(functionKey, (entry.functions.get(functionKey) || false) || outer.count > 0);
-        for (const range of fn.ranges.slice(1)) {
-          const blockKey = `${range.startOffset}:${range.endOffset}`;
-          entry.blocks.set(blockKey, (entry.blocks.get(blockKey) || false) || range.count > 0);
+        let functionEntry = entry.functions.get(functionKey);
+        if (!functionEntry) {
+          functionEntry = { executions: [] };
+          entry.functions.set(functionKey, functionEntry);
         }
+        functionEntry.executions.push(fn.ranges);
       }
     }
   }
-  return new Map([...scripts].map(([file, entry]) => [file, {
-    functionsTotal: entry.functions.size,
-    functionsCovered: [...entry.functions.values()].filter(Boolean).length,
-    blocksTotal: entry.blocks.size,
-    blocksCovered: [...entry.blocks.values()].filter(Boolean).length,
-  }]));
+  return new Map([...scripts].map(([file, entry]) => {
+    const blocks = new Map();
+    let functionsCovered = 0;
+    for (const functionEntry of entry.functions.values()) {
+      const merged = mergeFunctionExecutions(functionEntry.executions);
+      if (merged.functionCovered) functionsCovered += 1;
+      for (const [blockKey, covered] of merged.blocks) {
+        blocks.set(blockKey, (blocks.get(blockKey) || false) || covered);
+      }
+    }
+    return [file, {
+      functionsTotal: entry.functions.size,
+      functionsCovered,
+      blocksTotal: blocks.size,
+      blocksCovered: [...blocks.values()].filter(Boolean).length,
+    }];
+  }));
 }
 
 function percent(covered, total) {

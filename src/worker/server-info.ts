@@ -1,6 +1,7 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import type { WorkerObservability } from "./observability.ts";
+import { hiddenWorkerActivity, hiddenWorkerPending, projectDaemonStatus, workerGlobalActivityVisible } from "./server-info-activity.ts";
 
 export type ServerInfoDetail = "summary" | "full";
 
@@ -9,8 +10,8 @@ type ServerInfoInput = {
   serverVersion: string;
   base: string;
   oauth: Record<string, unknown>;
-  authorization: Record<string, any>;
-  daemon: Record<string, any>;
+  authorization: Record<string, unknown>;
+  daemon: Record<string, unknown>;
   effectiveTools: string[];
   advertisedTools: string[];
   pendingSnapshot: Record<string, unknown>;
@@ -24,7 +25,9 @@ export function serverInfoDetail(args: Record<string, unknown> = {}): ServerInfo
 
 export function buildServerInfoResult(input: ServerInfoInput, detail: ServerInfoDetail = "full"): Record<string, unknown> {
   const socketsLive = liveSocketSnapshot(input.daemonRegistry);
-  if (detail === "summary") return buildServerInfoSummary(input, socketsLive);
+  const globalActivityVisible = workerGlobalActivityVisible(input.authorization);
+  const daemon = projectDaemonStatus(input.daemon, globalActivityVisible);
+  if (detail === "summary") return buildServerInfoSummary(input, socketsLive, globalActivityVisible);
   return {
     name: input.serverName,
     version: input.serverVersion,
@@ -33,13 +36,17 @@ export function buildServerInfoResult(input: ServerInfoInput, detail: ServerInfo
     account: input.authorization.account,
     authorization: input.authorization,
     authority_summary: input.authorization.summary,
-    daemon: input.daemon,
-    worker: {
+    daemon,
+    worker: globalActivityVisible ? {
       pending_calls: input.pendingSnapshot,
       daemon_candidates: socketsLive.candidates,
       daemon_probes: socketsLive.probing,
       sockets_live: socketsLive,
       observability: input.observability.snapshot(),
+    } : {
+      pending_calls: hiddenWorkerPending(input.pendingSnapshot),
+      sockets_live: hiddenWorkerActivity(),
+      observability: hiddenWorkerActivity(),
     },
     tools: input.effectiveTools,
     tools_scope: "authenticated_account_effective_tools_before_host_filtering",
@@ -47,7 +54,11 @@ export function buildServerInfoResult(input: ServerInfoInput, detail: ServerInfo
   };
 }
 
-function buildServerInfoSummary(input: ServerInfoInput, socketsLive: ReturnType<typeof liveSocketSnapshot>): Record<string, unknown> {
+function buildServerInfoSummary(
+  input: ServerInfoInput,
+  socketsLive: ReturnType<typeof liveSocketSnapshot>,
+  globalActivityVisible: boolean,
+): Record<string, unknown> {
   const authorization = input.authorization;
   return {
     detail: "summary",
@@ -62,9 +73,12 @@ function buildServerInfoSummary(input: ServerInfoInput, socketsLive: ReturnType<
       execution_model: compactExecutionModel(authorization.execution_model),
     },
     daemon: compactDaemon(input.daemon),
-    worker: {
+    worker: globalActivityVisible ? {
       pending_calls: compactPending(input.pendingSnapshot),
       sockets_live: socketsLive,
+    } : {
+      pending_calls: hiddenWorkerPending(input.pendingSnapshot),
+      sockets_live: hiddenWorkerActivity(),
     },
     tool_delivery: {
       effective_account_tool_count: input.effectiveTools.length,
@@ -103,7 +117,7 @@ function compactExecutionModel(value: unknown): Record<string, unknown> | null {
   };
 }
 
-function compactDaemon(value: Record<string, any>): Record<string, unknown> {
+function compactDaemon(value: Record<string, unknown>): Record<string, unknown> {
   return {
     connected: value.connected === true,
     count: value.count ?? 0,
@@ -127,7 +141,6 @@ function compactPending(value: Record<string, unknown>): Record<string, unknown>
     active_reserved: value.active_reserved ?? 0,
     detached: value.detached ?? 0,
     oldest_ms: value.oldest_ms ?? 0,
-    durable_streams: value.durable_streams ?? 0,
   };
 }
 
@@ -145,6 +158,5 @@ function fullToolDelivery(input: ServerInfoInput): Record<string, unknown> {
     worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
     daemon_execution_and_worker_settlement_deadlines_separate: true,
     host_terminal_receipt_observable: false,
-    internal_stream_metrics_scope: "legacy resumable Worker-internal storage and subscription transport only",
   };
 }

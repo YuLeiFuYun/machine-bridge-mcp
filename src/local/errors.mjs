@@ -62,18 +62,6 @@ export function publicError(error, options = {}) {
   };
 }
 
-export function remoteBridgeError(value, fallbackMessage = "remote operation failed") {
-  if (isRecord(value)) {
-    const code = normalizeErrorCode(value.code);
-    const message = typeof value.message === "string" && value.message ? value.message : fallbackMessage;
-    return new BridgeError(code, message, {
-      retryable: value.retryable === true,
-      details: isRecord(value.details) ? value.details : undefined,
-    });
-  }
-  return new BridgeError("execution_failed", fallbackMessage);
-}
-
 function normalizeErrorCode(value, fallback = "execution_failed") {
   const code = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 64);
   return ERROR_CODES.has(code) ? code : fallback;

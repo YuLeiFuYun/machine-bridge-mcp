@@ -109,15 +109,42 @@ export function decorateProjectOverview(value: unknown, account: AccountIdentity
     : [];
   const effectiveTools = ["server_info", ...accountRoleToolNames(account.role, daemonTools)];
   const authority = accountAuthoritySnapshot({ ...account, daemonPolicy, effectiveTools });
+  const projected = account.role === "owner" ? value : redactNonOwnerProjectOverview(value);
   return {
-    ...value,
+    ...projected,
     daemonPolicy,
-    daemonTools,
+    daemonToolCount: daemonTools.length,
+    daemonTools: account.role === "owner" ? daemonTools : [],
+    ...(account.role === "owner" ? {} : { daemonToolsHiddenByAuthority: true }),
     policy: authority.effective_policy,
     tools: authority.effective_tools,
     policyScope: "authenticated_account_effective_authority",
     toolsScope: "authenticated_account_effective_tools_before_host_filtering",
     authorization: authority,
+  };
+}
+
+function redactNonOwnerProjectOverview(value: Record<string, unknown>): Record<string, unknown> {
+  const topLevel = Array.isArray(value.topLevel)
+    ? value.topLevel.map((item) => projectTopLevelEntry(item))
+    : [];
+  return {
+    workspace: ".",
+    workspaceName: "workspace",
+    gitRoot: typeof value.gitRoot === "string" && value.gitRoot ? "." : "",
+    capabilityRouting: { activity_hidden_by_authority: true },
+    topLevel,
+    topLevelTotal: Number.isFinite(Number(value.topLevelTotal)) ? Number(value.topLevelTotal) : topLevel.length,
+    topLevelTruncated: value.topLevelTruncated === true,
+  };
+}
+
+function projectTopLevelEntry(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return { name: "", type: "other" };
+  return {
+    name: typeof value.name === "string" ? value.name : "",
+    type: typeof value.type === "string" ? value.type : "other",
+    ...(Number.isFinite(Number(value.size)) ? { size: Number(value.size) } : {}),
   };
 }
 

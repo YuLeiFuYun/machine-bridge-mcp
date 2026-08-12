@@ -1,7 +1,13 @@
 {
-  "revision": 1,
+  "revision": 3,
   "defaultRole": "reviewer",
   "ownerRole": "owner",
+  "ownerOnlyTools": [
+    "diagnose_runtime",
+    "list_local_resources",
+    "stage_job",
+    "start_job"
+  ],
   "roles": {
     "reviewer": {
       "profile": "review",

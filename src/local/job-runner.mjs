@@ -4,16 +4,19 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { executionEnv } from "./shell.mjs";
-import { childExitedBeforeTimeout, createChildProcessSettlement } from "./child-process-settlement.mjs";
+import { attachChildProcessSettlement, childExitedBeforeTimeout } from "./child-process-settlement.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, processState } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { managedJobCancellationRequested } from "./managed-job-cancellation.mjs";
-import { persistManagedJobTerminal } from "./managed-job-terminal.mjs";
+import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
+import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus, managedJobFinalStatus, persistManagedJobTerminal } from "./managed-job-terminal.mjs";
 import { sanitizeLogText } from "./log.mjs";
 import { confirmRunnerClaim } from "./managed-job-runner-claim.mjs";
+import { ResourceCoordinator } from "./resource-admission.mjs";
+import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
 
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
 const TEMP_TOKEN = /\{\{temp:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -22,13 +25,17 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_JOB_CAPTURE_BYTES = 256 * 1024;
 const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 const MAX_STATUS_BYTES = 256 * 1024;
-const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
+const RECOVERY_LOCK_HANDOFF_WAIT_MS = 30_000;
+const FATAL_IDENTITY_FIELDS = [
+  "job_id", "name", "plan_sha256", "created_at", "approval", "owner_kind", "owner_account_id",
+  "owner_account_version", "owner_client_id", "owner_family_id",
+];
 
 const options = parseArgs(process.argv.slice(2));
 const jobDirInput = typeof options.jobDir === "string" ? options.jobDir.trim() : "";
 if (!jobDirInput) throw new Error("--job-dir is required");
 const jobDir = resolve(jobDirInput);
-if (!JOB_ID.test(basename(jobDir))) throw new Error("--job-dir must name a managed job directory");
+if (!MANAGED_JOB_ID.test(basename(jobDir))) throw new Error("--job-dir must name a managed job directory");
 const recover = options.recover === true;
 const recoveryLockToken = typeof process.env.MBM_RECOVERY_LOCK_TOKEN === "string" ? process.env.MBM_RECOVERY_LOCK_TOKEN : "";
 const launchToken = typeof process.env.MBM_RUNNER_LAUNCH_TOKEN === "string" ? process.env.MBM_RUNNER_LAUNCH_TOKEN : "";
@@ -43,6 +50,7 @@ const resourcesDir = join(runtimeDir, "resources");
 const temporaryFilesDir = join(runtimeDir, "files");
 const runnerPidFile = join(jobDir, "runner.pid");
 const RUNNER_PROCESS_STARTED_AT = new Date(currentProcessStartTimeMs()).toISOString();
+const resourceCoordinator = new ResourceCoordinator();
 
 class JobCancelledError extends Error {
   constructor() {
@@ -54,8 +62,9 @@ class JobCancelledError extends Error {
 
 let activeChild = null;
 let activeChildCancellationAware = false;
-let cancellationEscalation = null;
+let activeChildTermination = null;
 let cancelRequested = false;
+let runnerClaimConfirmed = false;
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => requestCancellation());
 }
@@ -67,6 +76,7 @@ try {
     file: runnerPidFile, pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT, launchToken,
   });
   if (recover) await releaseRecoveryClaim();
+  runnerClaimConfirmed = true;
   const plan = readJson(planFile, 1024 * 1024);
   assertPlanIntegrity(plan, initial);
   await main(plan, initial);
@@ -79,7 +89,7 @@ try {
 async function releaseRecoveryClaim() {
   if (!/^[a-f0-9]{32}$/.test(recoveryLockToken)) throw new Error("recovery runner is missing its ownership token");
   const file = join(jobDir, "recovery.lock");
-  const deadline = createMonotonicDeadline(5000);
+  const deadline = createMonotonicDeadline(RECOVERY_LOCK_HANDOFF_WAIT_MS);
   while (!deadline.expired()) {
     if (removeOwnedJsonFileSync(file, { pid: process.pid, token: recoveryLockToken })) return;
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
@@ -146,11 +156,13 @@ async function main(plan, initial) {
       : error;
   }
   const cancelled = mainError instanceof JobCancelledError || cancellationMarker;
-  let finalStatus;
-  if (recover) finalStatus = cleanupError ? "recovery_failed" : "recovered";
-  else if (cancelled) finalStatus = cleanupError ? "cancelled_cleanup_failed" : "cancelled";
-  else if (mainError) finalStatus = cleanupError ? "failed_cleanup_failed" : "failed";
-  else finalStatus = cleanupError ? "succeeded_cleanup_failed" : "succeeded";
+  const finalStatus = managedJobFinalStatus({ recover, cancelled, mainError, cleanupError });
+  if (cleanupError && classifyError(cleanupError) === "resource_error") {
+    const stage = cleanupError?.details?.admission_reason || cleanupError?.details?.reason || cleanupError?.code
+      || (/resource lease/i.test(String(cleanupError?.message || "")) ? "resource_lease" : "resource_operation");
+    try { process.stderr.write(`managed job cleanup infrastructure failure: stage=${sanitizeLogText(stage, 64)}\n`); }
+    catch { /* Last-resort diagnostics must not replace the managed job's primary failure. */ }
+  }
 
   const result = {
     job_id: status.job_id,
@@ -181,7 +193,7 @@ function assertLaunchState(status) {
   if (!status || typeof status !== "object" || Array.isArray(status)) throw new Error("job status is unavailable or invalid");
   const expected = recover ? "interrupted" : "queued";
   if (status.status !== expected) throw new Error(`runner cannot start job in status: ${status.status}`);
-  if (status.approval === "pending-local-operator" || !status.approval) throw new Error("runner cannot start an unapproved managed job");
+  if (status.approval !== "mcp") throw new Error("runner cannot start a managed job without direct execution authority");
 }
 
 function assertPlanIntegrity(plan, status) {
@@ -195,9 +207,21 @@ function recordFatalRunnerError(error) {
   const now = new Date().toISOString();
   try {
     process.stderr.write(`managed job runner fatal: error_class=${classifyError(error)} message=${sanitizeLogText(error?.message || error, 512)}\n`);
-  } catch {}
-  let status = {};
-  try { status = readJson(statusFile, MAX_STATUS_BYTES); } catch {}
+  } catch { /* Last-resort diagnostics must not prevent terminal-state recovery. */ }
+  if (!runnerClaimConfirmed) {
+    reportFatalRecordSkipped("runner_claim_unconfirmed");
+    return;
+  }
+  let status;
+  try { status = readJson(statusFile, MAX_STATUS_BYTES); }
+  catch (stateError) {
+    reportFatalRecordSkipped(classifyError(stateError));
+    return;
+  }
+  if (!fatalRunnerStatusIsCurrent(status, initial)) {
+    reportFatalRecordSkipped("state_integrity");
+    return;
+  }
   const finalStatus = recover ? "recovery_failed" : "runner_failed";
   const result = {
     job_id: status.job_id ?? null,
@@ -226,6 +250,24 @@ function recordFatalRunnerError(error) {
   reportTerminalPersistenceFailure(terminal);
 }
 
+function fatalRunnerStatusIsCurrent(status, accepted) {
+  if (!status || typeof status !== "object" || Array.isArray(status)
+      || !accepted || typeof accepted !== "object" || Array.isArray(accepted)) return false;
+  if (isTerminalManagedJobStatus(status.status) || !ACTIVE_JOB_STATES.has(status.status)) return false;
+  if (status.job_id !== basename(jobDir) || FATAL_IDENTITY_FIELDS.some((field) => status[field] !== accepted[field])) return false;
+  const runnerPid = Number(status.runner_pid || 0);
+  const acceptedPid = Number(accepted.runner_pid || 0);
+  if (runnerPid && runnerPid !== process.pid && runnerPid !== acceptedPid) return false;
+  const runnerStartedAt = String(status.runner_process_started_at || "");
+  const acceptedStartedAt = String(accepted.runner_process_started_at || "");
+  return !runnerStartedAt || runnerStartedAt === RUNNER_PROCESS_STARTED_AT || runnerStartedAt === acceptedStartedAt;
+}
+
+function reportFatalRecordSkipped(reason) {
+  try { process.stderr.write(`managed job fatal terminal record skipped: reason=${sanitizeLogText(reason, 64)}\n`); }
+  catch { /* A closed diagnostic stream is irrelevant to the already-decided state transition. */ }
+}
+
 function reportTerminalPersistenceFailure(terminal) {
   if (terminal.statusPersisted && terminal.artifactsScrubbed && !terminal.statusErrorClass) return;
   const fields = [
@@ -236,7 +278,8 @@ function reportTerminalPersistenceFailure(terminal) {
     `result_error=${terminal.resultErrorClass || "none"}`,
     `cleanup_error=${terminal.cleanupErrorClass || "none"}`,
   ];
-  process.stderr.write(`managed job terminal persistence incomplete: ${fields.join(" ")}\n`);
+  try { process.stderr.write(`managed job terminal persistence incomplete: ${fields.join(" ")}\n`); }
+  catch { /* Persistence outcome is authoritative even if its fallback diagnostic cannot be written. */ }
 }
 
 async function runStep(step, index, phase, plan, resourceContext, cancellationAware, captureBudget) {
@@ -282,39 +325,58 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
   };
 }
 
-function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget }) {
+async function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget }) {
+  if (cancellationAware && isCancellationRequested()) throw new JobCancelledError();
+  const admitted = await acquireProcessResources(resourceCoordinator, argv[0], argv.slice(1), env, {
+    cwd, priority: "background", waitMs: 30 * 60_000,
+    cancelCheck: () => { if (cancellationAware && isCancellationRequested()) throw new JobCancelledError(); },
+  });
   return new Promise((resolvePromise, rejectPromise) => {
-    if (cancellationAware && isCancellationRequested()) {
-      rejectPromise(new JobCancelledError());
+    let child;
+    try {
+      child = spawn(admitted.command, admitted.args, {
+        cwd, env: admitted.environment, detached: process.platform !== "win32", windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      void releaseProcessResourcesQuietly(admitted.lease).then(() => rejectPromise(error));
       return;
     }
-    const child = spawn(argv[0], argv.slice(1), {
-      cwd,
-      env,
-      detached: process.platform !== "win32",
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
     activeChild = child;
     activeChildCancellationAware = cancellationAware;
+    let terminationSettlement = null;
+    const terminateAndSettle = () => {
+      if (terminationSettlement) return terminationSettlement;
+      terminationSettlement = new Promise((resolveTermination) => {
+        try {
+          terminateProcessTreeWithEscalation(child, {
+            onTerminationSettled: resolveTermination,
+          });
+        } catch {
+          resolveTermination();
+        }
+      });
+      return terminationSettlement;
+    };
+    activeChildTermination = terminateAndSettle;
+    let resourceBindError = null; let childError = null;
+    const resourceBinding = bindProcessResources(admitted.lease, child).catch((error) => {
+      resourceBindError = error;
+      void terminateAndSettle();
+    });
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
     let stdoutTruncated = 0;
     let stderrTruncated = 0;
     let timedOut = false;
     let closed = false;
-    let killTimer = null;
     const timer = setTimeout(() => {
-      if (childExitedBeforeTimeout({
-        exitCode: child.exitCode,
-        signalCode: child.signalCode,
-        processState: processState(child.pid),
-      })) {
+      if (childExitedBeforeTimeout({ exitCode: child.exitCode, signalCode: child.signalCode, processState: processState(child.pid) })) {
         settlement.onExit(child.exitCode, child.signalCode);
         return;
       }
       timedOut = true;
-      killTimer = terminateProcessTreeWithEscalation(child);
+      void terminateAndSettle();
     }, timeoutMs);
     timer.unref?.();
     const cancellationPoll = setInterval(() => {
@@ -335,38 +397,21 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
       stderr = next.buffer;
       stderrTruncated += next.truncated;
     });
-    const settlement = createChildProcessSettlement({
-      readExitState: () => ({ code: child.exitCode, signal: child.signalCode }),
-      onFallback() {
-        for (const stream of [child.stdin, child.stdout, child.stderr]) {
-          try { stream?.destroy?.(); } catch {}
-        }
-        try { child.unref(); } catch {}
-      },
+    const settlement = attachChildProcessSettlement(child, {
       onSettle(code, signal) {
         finish(() => {
-          if (cancellationAware && isCancellationRequested()) {
-            rejectPromise(new JobCancelledError());
-            return;
-          }
+          if (resourceBindError) { rejectPromise(resourceBindError); return; }
+          if (childError) { rejectPromise(childError); return; }
+          if (cancellationAware && isCancellationRequested()) { rejectPromise(new JobCancelledError()); return; }
           resolvePromise({
             code: Number.isInteger(code) ? code : 1,
             signal: signal ? String(signal) : null,
-            timedOut,
-            stdout,
-            stderr,
-            stdoutTruncated,
-            stderrTruncated,
+            timedOut, stdout, stderr, stdoutTruncated, stderrTruncated,
           });
         });
       },
     });
-    child.on("error", (error) => {
-      settlement.cancel();
-      finish(() => rejectPromise(error));
-    });
-    child.on("exit", (code, signal) => settlement.onExit(code, signal));
-    child.on("close", (code, signal) => settlement.onClose(code, signal));
+    child.on("error", (error) => { childError ||= error; });
     if (input && input.length) child.stdin.end(input);
     else child.stdin.end();
 
@@ -375,15 +420,14 @@ function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captur
       closed = true;
       settlement.cancel();
       clearTimeout(timer);
-      if (killTimer && !timedOut) clearTimeout(killTimer);
       clearInterval(cancellationPoll);
       activeChild = null;
       activeChildCancellationAware = false;
-      if (cancellationEscalation && !isCancellationRequested()) {
-        clearTimeout(cancellationEscalation);
-        cancellationEscalation = null;
-      }
-      callback();
+      activeChildTermination = null;
+      void resourceBinding
+        .then(() => terminationSettlement || undefined)
+        .then(() => releaseProcessResources(admitted.lease))
+        .then(callback, rejectPromise);
     }
   });
 }
@@ -414,7 +458,7 @@ function materializeResources(resources) {
       if (text.length > 0) patterns.push(text);
       const trimmed = text.replace(/[\r\n]+$/, "");
       if (trimmed.length > 0 && trimmed !== text) patterns.push(trimmed);
-    } catch {}
+    } catch { /* Binary resources still use byte-level base64/hex redaction below. */ }
     if (data.length > 0 && data.length <= 64 * 1024) {
       patterns.push(data.toString("base64"), data.toString("hex"));
     }
@@ -523,12 +567,8 @@ function updateStatus(status, changes) {
 
 function requestCancellation() {
   cancelRequested = true;
-  const child = activeChild;
-  if (!child || !activeChildCancellationAware) return;
-  if (cancellationEscalation) return;
-  cancellationEscalation = terminateProcessTreeWithEscalation(child, {
-    onEscalated: () => { cancellationEscalation = null; },
-  });
+  if (!activeChild || !activeChildCancellationAware) return;
+  void activeChildTermination?.();
 }
 
 function isCancellationRequested() {

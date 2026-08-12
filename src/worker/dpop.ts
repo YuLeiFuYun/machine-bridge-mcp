@@ -1,11 +1,8 @@
-import { boundedNoncePresent, consumeBoundedNonce } from "./nonce-store.ts";
+import { consumeBoundedNonce } from "./nonce-store.ts";
 import { JWK_THUMBPRINT_PATTERN } from "./oauth-record-contract.ts";
 
 const DPOP_WINDOW_SECONDS = 5 * 60;
 const MAX_DPOP_JTIS = 4096;
-const INTERNAL_RETRY_ID_PATTERN = /^retry_[A-Za-z0-9_-]{43}$/;
-const DPOP_RETRY_BINDINGS_KEY = "dpop-internal-retry-bindings";
-const MAX_DPOP_INTERNAL_RETRY_USES = 4;
 
 export interface VerifiedDpopProof {
   jkt: string;
@@ -86,76 +83,14 @@ export async function consumeDpopProof(
     now,
     noncePattern: JWK_THUMBPRINT_PATTERN,
     maximum: MAX_DPOP_JTIS,
+    maxFutureSeconds: DPOP_WINDOW_SECONDS * 2,
   });
-}
-
-export async function consumeDpopProofForInternalRetry(
-  storage: DurableObjectStorage | DpopNonceStorage,
-  proof: VerifiedDpopProof,
-  retryId: string,
-  now = Math.floor(Date.now() / 1000),
-): Promise<boolean> {
-  if (!INTERNAL_RETRY_ID_PATTERN.test(retryId)
-      || !proof || !JWK_THUMBPRINT_PATTERN.test(proof.replayKey)
-      || !Number.isSafeInteger(proof.expiresAt) || proof.expiresAt <= now) return false;
-  const consume = async (target: DpopNonceStorage): Promise<boolean> => {
-    const raw = await target.get<unknown>(DPOP_RETRY_BINDINGS_KEY);
-    if (raw !== undefined && !validRetryBindings(raw)) return false;
-    const bindings: DpopRetryBindings = raw ? structuredClone(raw as DpopRetryBindings) : {};
-    for (const [key, binding] of Object.entries(bindings)) {
-      if (binding.expires_at <= now) delete bindings[key];
-    }
-    const existing = bindings[proof.replayKey];
-    if (existing) {
-      if (existing.retry_id !== retryId || existing.uses >= MAX_DPOP_INTERNAL_RETRY_USES
-          || !(await boundedNoncePresent(target, {
-            key: "dpop-proof-jtis",
-            nonce: proof.replayKey,
-            now,
-            noncePattern: JWK_THUMBPRINT_PATTERN,
-          }))) return false;
-      bindings[proof.replayKey] = { ...existing, uses: existing.uses + 1 };
-      await target.put(DPOP_RETRY_BINDINGS_KEY, bindings);
-      return true;
-    }
-    if (Object.keys(bindings).length >= MAX_DPOP_JTIS) return false;
-    const consumed = await consumeDpopProof(target, proof, now);
-    if (!consumed) return false;
-    bindings[proof.replayKey] = { retry_id: retryId, expires_at: proof.expiresAt, uses: 1 };
-    await target.put(DPOP_RETRY_BINDINGS_KEY, bindings);
-    return true;
-  };
-  return hasDpopTransactions(storage) ? storage.transaction(consume) : consume(storage);
 }
 
 type DpopNonceStorage = {
   get<T = unknown>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
 };
-
-type DpopTransactionalStorage = DpopNonceStorage & {
-  transaction<T>(callback: (transaction: DpopNonceStorage) => Promise<T>): Promise<T>;
-};
-
-type DpopRetryBindings = Record<string, { retry_id: string; expires_at: number; uses: number }>;
-
-function validRetryBindings(value: unknown): value is DpopRetryBindings {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-    && Object.entries(value as Record<string, unknown>).every(([key, raw]) => (
-      JWK_THUMBPRINT_PATTERN.test(key)
-      && Boolean(raw) && typeof raw === "object" && !Array.isArray(raw)
-      && INTERNAL_RETRY_ID_PATTERN.test(String((raw as { retry_id?: unknown }).retry_id ?? ""))
-      && Number.isSafeInteger((raw as { expires_at?: unknown }).expires_at)
-      && Number((raw as { expires_at?: unknown }).expires_at) > 0
-      && Number.isSafeInteger((raw as { uses?: unknown }).uses)
-      && Number((raw as { uses?: unknown }).uses) >= 1
-      && Number((raw as { uses?: unknown }).uses) <= MAX_DPOP_INTERNAL_RETRY_USES
-    ));
-}
-
-function hasDpopTransactions(storage: DurableObjectStorage | DpopNonceStorage): storage is DpopTransactionalStorage {
-  return typeof (storage as Partial<DpopTransactionalStorage>).transaction === "function";
-}
 
 export async function jwkThumbprint(jwk: JsonWebKey): Promise<string> {
   const publicJwk = publicP256Jwk(jwk);

@@ -37,6 +37,7 @@ const SENSITIVE_SEGMENTS = new Set([
   ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker", ".npmrc", ".pypirc",
   "keychains", "cookies", "login data", "credentials", "secrets",
 ]);
+const RESOURCE_TOKEN = /\{\{resource:[a-z][a-z0-9._-]{0,63}\}\}/;
 
 export function reviewedOperationToolNames() {
   return new Set([
@@ -119,20 +120,24 @@ export async function classifyOperation(tool, args = {}, options = {}) {
 
 function jobUsesProtectedResources(args) {
   const steps = [...(Array.isArray(args?.steps) ? args.steps : []), ...(Array.isArray(args?.finally_steps) ? args.finally_steps : [])];
-  return steps.some((step) => Boolean(step?.stdin_resource) || (step?.env_resources && Object.keys(step.env_resources).length > 0));
+  return steps.some((step) => Boolean(step?.stdin_resource)
+    || (step?.env_resources && Object.keys(step.env_resources).length > 0)
+    || (Array.isArray(step?.argv) && step.argv.some((value) => RESOURCE_TOKEN.test(String(value)))));
 }
 
 function protectedJobProjection(args) {
   const steps = [...(Array.isArray(args?.steps) ? args.steps : []), ...(Array.isArray(args?.finally_steps) ? args.finally_steps : [])];
   return {
     step_count: steps.length,
-    resource_reference_count: steps.reduce((count, step) => count + (step?.stdin_resource ? 1 : 0) + Object.keys(step?.env_resources || {}).length, 0),
+    resource_reference_count: steps.reduce((count, step) => count + (step?.stdin_resource ? 1 : 0)
+      + Object.keys(step?.env_resources || {}).length
+      + (Array.isArray(step?.argv) ? step.argv.reduce((total, value) => total + (String(value).match(/\{\{resource:[a-z][a-z0-9._-]{0,63}\}\}/g)?.length || 0), 0) : 0), 0),
   };
 }
 
 function requirement(scopes, category, tool, target) {
   const normalized = normalizeScopes(Array.isArray(scopes) ? scopes : [scopes]);
-  if (!normalized.length) throw new Error("operation approval requirement is missing a scope");
+  if (!normalized.length) throw new Error("operation authorization requirement is missing a scope");
   return {
     scope: normalized[0],
     scopes: normalized,

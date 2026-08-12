@@ -48,7 +48,7 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
     }
   }
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.115.0") {
+if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.120.0") {
   throw new Error("Wrangler must remain outside the published production dependency graph and exact in development");
 }
 if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?.version !== ">=26.0.0"
@@ -57,9 +57,9 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 }
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
-if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.115.0"
+if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.120.0"
     || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.3"
-    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.115.0"
+    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.120.0"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.0"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.3") {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
@@ -77,6 +77,11 @@ if (allowedWorkerdScripts.length !== 1 || allowedWorkerdScripts[0] !== `workerd@
   throw new Error("the reviewed workerd lifecycle-script allowlist does not exactly match package-lock");
 }
 if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser-service-worker-test.mjs") throw new Error("browser service-worker behavior test is missing");
+if (packageJson.scripts?.["browser-pairing-content:test"] !== "node tests/browser-pairing-content-test.mjs") throw new Error("browser pairing content bootstrap behavior test is missing");
+if (packageJson.scripts?.["browser-pairing-launch:test"] !== "node tests/browser-pairing-launch-test.mjs") throw new Error("browser ephemeral pairing launch behavior test is missing");
+if (packageJson.scripts?.["browser-cli-pairing:test"] !== "node tests/browser-cli-pairing-test.mjs") throw new Error("browser CLI pairing launch regression test is missing");
+if (packageJson.scripts?.["resource-admission:test"] !== "node tests/resource-admission-test.mjs") throw new Error("machine-wide resource admission regression test is missing");
+if (packageJson.scripts?.["resource-build-root:test"] !== "node tests/resource-build-root-test.mjs") throw new Error("shared build-root regression test is missing");
 if (packageJson.scripts?.["browser-identity:test"] !== "node tests/browser-extension-identity-test.mjs") throw new Error("browser extension identity regression test is missing");
 if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
 if (packageJson.scripts?.["coverage:test"] !== "node scripts/coverage-check.mjs") throw new Error("critical-module coverage gate is missing");
@@ -90,8 +95,16 @@ if (packageJson.scripts?.["deadline:test"] !== "node tests/monotonic-deadline-te
 if (packageJson.scripts?.["oauth-browser:test"] !== "node tests/oauth-browser-navigation-test.mjs") throw new Error("real-browser OAuth navigation regression test is missing");
 if (packageJson.scripts?.["records:test"] !== "node tests/records-test.mjs") throw new Error("plain-record helper test is missing");
 if (packageJson.scripts?.["state-inventory:test"] !== "node tests/state-inventory-test.mjs") throw new Error("state inventory regression test is missing");
-if (!existsSync(join(root, "scripts", "generate-worker-types.mjs"))) throw new Error("cross-platform Worker type generator is missing");
+if (packageJson.scripts?.["state-root-retirement:test"] !== "node tests/state-root-retirement-test.mjs" || !FAST_CHECK_TASKS.includes("state-root-retirement:test")) throw new Error("state-root generation-removal regression is missing from the fast gate");
+for (const file of ["generate-worker-types.mjs", "run-worker-dry-run.mjs", "wrangler-command-lifecycle.mjs"]) {
+  if (!existsSync(join(root, "scripts", file))) throw new Error(`bounded Wrangler command lifecycle file is missing: ${file}`);
+}
 if (packageJson.scripts?.["worker:types"] !== "node scripts/generate-worker-types.mjs") throw new Error("generated Worker types are not isolated behind the cross-platform generator");
+if (packageJson.scripts?.["worker:dry-run"] !== "node scripts/run-worker-dry-run.mjs") throw new Error("Worker deployment dry-run bypasses the bounded Wrangler lifecycle adapter");
+const wranglerLifecycleSource = readFileSync(join(root, "scripts", "wrangler-command-lifecycle.mjs"), "utf8");
+for (const required of ["completionMarker", 'child.kill("SIGTERM")', 'child.kill("SIGKILL")', "completed but did not exit", "timed out after"]) {
+  if (!wranglerLifecycleSource.includes(required)) throw new Error(`bounded Wrangler lifecycle contract regressed: ${required}`);
+}
 if (packageJson.scripts?.["typecheck:local"] !== "tsc -p tsconfig.local.json --noEmit") throw new Error("local JavaScript contract typecheck is missing");
 if (!String(packageJson.scripts?.typecheck || "").includes("npm run typecheck:local")) throw new Error("complete typecheck omits local JavaScript contracts");
 if (packageJson.scripts?.["tool-docs:check"] !== "node scripts/generate-tool-reference.mjs --check") throw new Error("generated MCP tool documentation gate is missing");
@@ -103,11 +116,32 @@ if (packageJson.scripts?.["shell:test"] !== "node tests/shell-test.mjs") throw n
 if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
 if (packageJson.scripts?.["runtime-boundaries:test"] !== "node tests/runtime-boundaries-test.mjs") throw new Error("extracted runtime boundary test is missing");
 if (packageJson.scripts?.["release-publication-guard:test"] !== "node tests/release-publication-guard-test.mjs") throw new Error("GitHub publication ownership test is missing");
+if (packageJson.scripts?.["release-oauth-canary:test"] !== "node tests/release-oauth-canary-test.mjs") throw new Error("deployed OAuth canary regression test is missing");
+if (packageJson.scripts?.["release:oauth-canary"] !== "node scripts/release-oauth-canary.mjs") throw new Error("deployed OAuth canary release command is missing");
 if (packageJson.scripts?.["worker-oauth-controller:test"] !== "node tests/worker-oauth-controller-test.mjs") throw new Error("Worker OAuth controller state-machine test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
 if (packageJson.scripts?.["cli-service:test"] !== "node tests/cli-service-test.mjs") throw new Error("CLI service adapter regression test is missing");
 if (packageJson.scripts?.["service-restart:test"] !== "node tests/service-restart-handoff-test.mjs") throw new Error("service restart/status boundary regression test is missing");
 const stateSource = readFileSync(join(root, "src", "local", "state.mjs"), "utf8");
+const stateInventorySource = readFileSync(join(root, "src", "local", "state-inventory.mjs"), "utf8");
+const stateOwnerLockInventorySource = readFileSync(join(root, "src", "local", "state-owner-lock-inventory.mjs"), "utf8");
+const stateOwnedNamespacesSource = readFileSync(join(root, "src", "local", "state-root-owned-namespaces.mjs"), "utf8");
+const releaseRuntimeLockSource = readFileSync(join(root, "src", "local", "release-runtime-lock.mjs"), "utf8");
+for (const required of ['"toolchains"', '"release-channels"', '"release-tasks"', "currentEntrypointInsideStateRoot", "canonicalizePotentialPath(entry)", "validateOwnedStateNamespaces(canonical)"]) {
+  if (!stateSource.includes(required)) throw new Error(`state-root removal lost owned namespace/self-runtime guard: ${required}`);
+}
+for (const required of ["TOOLCHAIN_DIRECTORY", "TOOLCHAIN_LOCK_TEMP", "ACTIVATION_RECORD", "ACTIVATION_TEMP", "RUNTIME_DIRECTORY", "LEGACY_RELEASE_TASK", '"wrangler-toolchain.lock"', '"activations"', '"runtimes"']) {
+  if (!stateOwnedNamespacesSource.includes(required)) throw new Error(`state-root owned namespace validation lost required boundary: ${required}`);
+}
+for (const required of ['const LOCK_FILE = "release-runtime.lock"', 'const LOCK_PURPOSE = "release-runtime"', "fileName: LOCK_FILE", "purpose: LOCK_PURPOSE", "assertStateMaintenanceAvailable(stateRoot)", "machineServiceControlRoot(options)"]) {
+  if (!releaseRuntimeLockSource.includes(required)) throw new Error(`release-runtime lock lost required control-root/maintenance boundary: ${required}`);
+}
+if (!stateInventorySource.includes("activeOwnerStateLocks(root)")
+    || !stateOwnerLockInventorySource.includes('"wrangler-toolchain.lock"')
+    || !stateOwnerLockInventorySource.includes('readOwnerStateLock(lockPath, "wrangler-toolchain")')
+    || !stateOwnerLockInventorySource.includes('"invalid_or_unreadable_lock"')) {
+  throw new Error("state-root destructive inventory lost the private-toolchain owner-lock blocker");
+}
 if (!cliSource.includes('promptOnFirstRun ? defaultFirstRunWorkspace() : process.cwd()')
     || !cliSource.includes("Workspace folder [${fallback}] (press Enter to use the default): ")
     || !cliSource.includes("ensureWorkspaceDirectory(answer.trim() || fallback)")
@@ -136,6 +170,10 @@ for (const required of ["runtime-boundaries:test", "worker-oauth-controller:test
 for (const required of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
   if (!PLATFORM_CHECK_TASKS.includes(required)) throw new Error(`platform check plan omits required task: ${required}`);
 }
+const localSelfTestSource = readFileSync(join(root, "tests", "local-self-test.mjs"), "utf8");
+for (const required of ["mbm-resource-cli-coordinator-", "mbm-resource-cli-build-", "resourceCliEnv", "previousResourceRoot", "previousBuildRoot", "delete process.env.AGENT_RESOURCE_COORDINATOR_ROOT", "delete process.env.AGENT_BUILD_ROOT"]) {
+  if (!localSelfTestSource.includes(required)) throw new Error(`local resource CLI self-test lost isolated resource roots or environment restoration: ${required}`);
+}
 for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test", "promotion-digest:test", "published-release:test"]) {
   if (!FULL_CHECK_TASKS.includes(required)) throw new Error(`full check plan omits required task: ${required}`);
 }
@@ -151,7 +189,7 @@ for (const [name, command] of Object.entries({
   "publish-npm:test": "node tests/publish-npm-test.mjs",
   "runtime-activation:test": "node tests/runtime-activation-test.mjs",
   "candidate-runtime-store:test": "node tests/candidate-runtime-store-test.mjs",
-  "device-key-id-compatibility:test": "node tests/device-key-id-compatibility-test.mjs",
+  "device-key-id-stability:test": "node tests/device-key-id-stability-test.mjs",
 })) {
   if (packageJson.scripts?.[name] !== command) throw new Error(`release state-machine test is missing or drifted: ${name}`);
 }
@@ -184,20 +222,85 @@ const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.
 if (!coverageRunnerSource.includes("maxRetries") || !coverageRunnerSource.includes("retryDelay")) {
   throw new Error("coverage temporary-directory cleanup lost its concurrent-writer retry boundary");
 }
-for (const fixture of ["tests/secure-file-test.mjs", "tests/worker-secret-file-test.mjs", "tests/atomic-fs-test.mjs"]) {
+for (const fixture of ["tests/secure-file-test.mjs", "tests/worker-secret-file-test.mjs", "tests/atomic-fs-test.mjs", "tests/state-root-retirement-test.mjs"]) {
   if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical filesystem coverage lost direct fault fixture: ${fixture}`);
+}
+if (!coverageRunnerSource.includes('"src/local/state-root-retirement.mjs"')) throw new Error("critical state-root generation-removal coverage threshold is missing");
+const stateRootRetirementSource = readFileSync(join(root, "src", "local", "state-root-retirement.mjs"), "utf8");
+for (const forbidden of ["restoreRetiredRoot", "renameSync(retired, root)", "could not be restored"]) {
+  if (stateRootRetirementSource.includes(forbidden)) throw new Error(`state-root retirement regained unsafe pathname rollback: ${forbidden}`);
+}
+for (const fixture of ["tests/coverage-range-merge-test.mjs", "tests/coverage-generation-test.mjs"]) {
+  if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical coverage evidence lost self-test fixture: ${fixture}`);
+}
+for (const required of ["captureCoverageGeneration", "generationBefore", "generationAfter", "mergeFunctionExecutions"]) {
+  if (!coverageRunnerSource.includes(required)) throw new Error(`critical coverage evidence lost generation/range contract: ${required}`);
+}
+for (const fixture of ["tests/resource-admission-test.mjs", "tests/resource-build-root-test.mjs"]) {
+  if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical resource coverage lost direct scheduler fixture: ${fixture}`);
+}
+for (const threshold of [
+  '"src/local/resource-admission.mjs"', '"src/local/resource-admission-policy.mjs"',
+  '"src/local/resource-waiters.mjs"', '"src/local/resource-cargo-concurrency.mjs"', '"src/local/resource-cmake-concurrency.mjs"', '"src/local/resource-go-concurrency.mjs"', '"src/local/resource-gradle-concurrency.mjs"', '"src/local/resource-swift-concurrency.mjs"', '"src/local/resource-xcode-concurrency.mjs"', '"src/local/resource-xcode-command.mjs"', '"src/local/resource-xcode-non-build.mjs"', '"src/local/resource-make-concurrency.mjs"', '"src/local/resource-ninja-command-concurrency.mjs"', '"src/local/resource-ninja-concurrency.mjs"', '"src/local/resource-command-profile.mjs"',
+  '"src/local/resource-command-concurrency.mjs"', '"src/local/resource-maven-concurrency.mjs"', '"src/local/resource-pytest-concurrency.mjs"', '"src/local/resource-elastic-memory.mjs"', '"src/local/resource-elastic-request.mjs"',
+  '"src/local/resource-script-classification.mjs"', '"src/local/resource-host-cache.mjs"',
+  '"src/local/resource-host-darwin.mjs"', '"src/local/resource-host-linux.mjs"', '"src/local/resource-wait.mjs"',
+  '"src/local/resource-lease-accounting.mjs"', '"src/local/resource-coordinator-accounting.mjs"',
+  '"src/local/resource-probe-command.mjs"', '"src/local/resource-process-ancestry.mjs"',
+  '"src/local/resource-process-ancestry-cache.mjs"', '"src/local/resource-process-priority.mjs"',
+  '"src/local/resource-project-key.mjs"',
+  '"src/local/resource-request-contract.mjs"',
+]) {
+  if (!coverageRunnerSource.includes(threshold)) throw new Error(`critical resource coverage lost scheduler threshold: ${threshold}`);
+}
+const agentContextTestSource = readFileSync(join(root, "tests", "agent-context-test.mjs"), "utf8");
+if (!agentContextTestSource.includes("processResourceWaitMs: 5 * 60_000")) {
+  throw new Error("agent-context coverage fixture lost cooperative long resource admission wait");
+}
+const fullAccessSource = readFileSync(join(root, "src", "local", "full-access-test.mjs"), "utf8");
+if (!fullAccessSource.includes("processResourceWaitMs: FULL_ACCESS_RESOURCE_WAIT_MS")
+    || !fullAccessSource.includes("const FULL_ACCESS_RESOURCE_WAIT_MS = 5 * 60_000")) {
+  throw new Error("full-access real-machine diagnostic lost cooperative long resource admission wait");
+}
+if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAccessSource.includes("TERMINAL_JOB_STATES")) {
+  throw new Error("full-access diagnostic regained a divergent managed-job terminal-state enum");
 }
 const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
+const verificationGenerationGuardSource = readFileSync(join(root, "scripts", "verification-generation-guard.mjs"), "utf8");
 if (!checkEntrypointSource.includes("runVerificationPlan")
+    || !checkEntrypointSource.includes("runWithStableGeneration")
+    || !checkEntrypointSource.includes("captureCoverageGeneration")
+    || !checkEntrypointSource.includes('"docs"')
+    || !checkEntrypointSource.includes('".github"')
+    || !checkEntrypointSource.includes('"release-acceptance"')
+    || !checkEntrypointSource.includes('value !== undefined && value !== ""')
+    || !checkEntrypointSource.includes("MBM_CHECK_CONCURRENCY must be an integer from 1 to 16")
+    || !verificationGenerationGuardSource.includes("if (after !== before)")
+    || !verificationGenerationGuardSource.includes("discard this run")
     || !checkRunnerSource.includes("process.execPath")
     || !checkRunnerSource.includes("npmCli")
     || checkRunnerSource.includes("npm.cmd")) {
-  throw new Error("cross-platform check runner no longer invokes the pinned npm CLI through Node");
+  throw new Error("cross-platform check runner, frozen-input guard, or bounded concurrency contract drifted");
 }
 const localAcceptanceSource = readFileSync(join(root, "scripts", "local-release-acceptance.mjs"), "utf8");
-for (const required of ["GIT_INDEX_FILE", "resolveTrustedGitExecutable", "createHardenedNpmSession", "runWithHardenedNpm", "packProject(root, candidateDirectory, { npmCli", "verifyCurrentReleaseAcceptance(root, { npmCli", 'git, ["read-tree", "HEAD"]', 'git, ["add", "--all"', "--print-digest", "package_content_sha256"]) {
+for (const required of ["GIT_INDEX_FILE", "resolveTrustedGitExecutable", "createHardenedNpmSession", "runWithHardenedNpm", "packProject(root, candidateDirectory, { npmCli", "verifyCurrentReleaseAcceptance(root, { npmCli", "readReleaseOAuthCanaryEvidence", 'git, ["read-tree", "HEAD"]', 'git, ["add", "--all"', "--print-digest", "package_content_sha256"]) {
   if (!localAcceptanceSource.includes(required)) throw new Error(`local acceptance recorder lost portable digest boundary: ${required}`);
+}
+const releaseOauthCanarySource = readFileSync(join(root, "scripts", "release-oauth-canary.mjs"), "utf8");
+const releaseOauthCanaryCore = readFileSync(join(root, "scripts", "release-oauth-canary-core.mjs"), "utf8");
+const releaseOauthCanaryEvidence = readFileSync(join(root, "scripts", "release-oauth-canary-evidence.mjs"), "utf8");
+for (const required of ["--allow-live-oauth-canary", "assertCandidateMatchesCurrentSource", "readPrereleaseActivation", "runReleaseOAuthCanaryFlow", "writeReleaseOAuthCanaryEvidence"]) {
+  if (!releaseOauthCanarySource.includes(required)) throw new Error(`deployed OAuth canary runner lost candidate/live boundary: ${required}`);
+}
+for (const required of ["role: \"reviewer\"", "authorization-code token exchange", "refresh-token exchange", "authenticated MCP", "stale client discovery", "stale account discovery", "admin.removeClient", "admin.remove", "temporary state cleanup was incomplete"]) {
+  if (!releaseOauthCanaryCore.includes(required)) throw new Error(`deployed OAuth canary core lost flow/cleanup boundary: ${required}`);
+}
+for (const forbidden of ["console.log(password", "console.log(accessToken", "console.log(refreshToken", "account_password:", "access_token:", "refresh_token:"]) {
+  if (releaseOauthCanarySource.includes(forbidden)) throw new Error(`deployed OAuth canary runner may expose credential material: ${forbidden}`);
+}
+for (const required of ["readBoundedRegularFileSync", "rejectMultipleLinks: true", "integrity", "promotion_content_sha256", "cleanup_completed"]) {
+  if (!releaseOauthCanaryEvidence.includes(required)) throw new Error(`deployed OAuth canary evidence lost binding/privacy boundary: ${required}`);
 }
 const workerDeploymentSource = readFileSync(join(root, "src", "local", "worker-deployment.mjs"), "utf8");
 const workerFingerprintSource = readFileSync(join(root, "src", "local", "worker-deployment-fingerprint.mjs"), "utf8");
@@ -237,7 +340,7 @@ if (!releaseSoakSource.includes("resolveTrustedGitExecutable") || releaseSoakSou
   throw new Error("release soak evidence regained PATH-resolved Git tag lookup");
 }
 if (packageJson.scripts?.release !== "node scripts/github-release.mjs --publish") throw new Error("source release command is missing");
-if (packageJson.scripts?.["release:publish"] !== packageJson.scripts?.release) throw new Error("legacy release:publish alias drifted from npm run release");
+if (Object.hasOwn(packageJson.scripts || {}, "release:publish")) throw new Error("removed release:publish alias returned to the live npm command surface");
 if (packageJson.scripts?.["release:accept"] !== "node scripts/local-release-acceptance.mjs --record") throw new Error("interactive acceptance command is missing");
 if (packageJson.scripts?.["release:acceptance:verify"] !== "node scripts/local-release-acceptance.mjs --verify") throw new Error("release acceptance verification command is missing");
 if (packageJson.scripts?.["github:push"] !== "node scripts/github-push.mjs") throw new Error("guarded GitHub push command is missing");
@@ -309,7 +412,7 @@ if ([pushAcceptance, pushNpmDispose, pushRemoteMutation].some((value) => value <
   throw new Error("guarded GitHub push no longer verifies accepted bytes through hardened npm and disposes it before remote mutation");
 }
 const candidateStartSource = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
-for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"']) {
+for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"', "withReleaseRuntimeLock"]) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
 }
 const candidateSourceGuard = candidateStartSource.indexOf("assertCandidateMatchesCurrentSource(manifest");
@@ -325,6 +428,19 @@ if (candidateSourceGuard < 0 || candidateTarballVerification < 0 || candidateAut
     || candidatePersistentRuntime > candidateHardenedNpm
     || candidateHardenedNpm > candidateInstall) {
   throw new Error("candidate startup no longer rejects stale source and tarball bytes before hardened npm network/setup and installation");
+}
+const candidateReleaseRuntimeLock = candidateStartSource.indexOf("await withReleaseRuntimeLock(stateRoot");
+const candidatePersistentPrefix = candidateStartSource.indexOf("const installPrefix = createCandidateRuntimePrefix");
+const candidateInstallCall = candidateStartSource.indexOf("installCandidateRuntime({ installPrefix, manifest, tarball })");
+const candidatePersistentActivationCall = candidateStartSource.indexOf("activatePersistentCandidate({");
+if ([candidateReleaseRuntimeLock, candidatePersistentPrefix, candidateInstallCall, candidatePersistentActivationCall].some((value) => value < 0)
+    || candidateReleaseRuntimeLock > candidatePersistentPrefix
+    || candidatePersistentPrefix > candidateInstallCall
+    || candidateInstallCall > candidatePersistentActivationCall) {
+  throw new Error("persistent candidate runtime construction/activation escaped the global release-runtime lock");
+}
+if (!cliSource.includes("await withReleaseRuntimeLock(stateRoot, () => uninstallStateRoot({ stateRoot, deleteRemote }))")) {
+  throw new Error("uninstall no longer serializes state removal against persistent candidate runtime construction");
 }
 if (!candidateStartSource.includes("persistentActivationSpawnOptions")
     || (candidateStartSource.match(/killSignal: "SIGKILL"/g) || []).length !== 1) {
@@ -388,7 +504,7 @@ for (const required of [
   if (!acceptedCandidateSource.includes(required)) throw new Error(`accepted candidate staging lost required boundary: ${required}`);
 }
 const publishedPrereleaseInstallSource = readFileSync(join(root, "scripts", "install-published-prerelease.mjs"), "utf8");
-for (const required of ["createHardenedNpmSession", "resolveNpmGlobalPrefix", "readGithubPrerelease", "expectedArtifactSha256: acceptance.artifactSha256", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--include=prod", "validateActivationRecoveryPayload", "globalInstallAttempted", "globalInstallCompleted", "may have changed the installed package"]) {
+for (const required of ["createHardenedNpmSession", "resolveNpmGlobalPrefix", "readGithubPrerelease", "expectedArtifactSha256: acceptance.artifactSha256", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--include=prod", "validateActivationRecoveryPayload", "globalInstallAttempted", "globalInstallCompleted", "may have changed the installed package", "withReleaseRuntimeLock"]) {
   if (!publishedPrereleaseInstallSource.includes(required)) throw new Error(`published prerelease installation lost hardened activation boundary: ${required}`);
 }
 const publishedAcceptanceCheck = publishedPrereleaseInstallSource.indexOf("verifyCurrentReleaseAcceptance(root");
@@ -396,12 +512,19 @@ const publishedDigestCheck = publishedPrereleaseInstallSource.indexOf("computePr
 const publishedGithubAssetCheck = publishedPrereleaseInstallSource.indexOf("readGithubPrerelease(prerelease.raw");
 const publishedHardenedNpm = publishedPrereleaseInstallSource.indexOf("npmSession = await createHardenedNpmSession()");
 const publishedRegistryRead = publishedPrereleaseInstallSource.indexOf("readPublishedNpmPrerelease(");
+const publishedReleaseRuntimeLock = publishedPrereleaseInstallSource.indexOf("await withReleaseRuntimeLock(stateRoot");
 const publishedInstallAttempted = publishedPrereleaseInstallSource.indexOf("globalInstallAttempted = true");
 const publishedInstallCall = publishedPrereleaseInstallSource.indexOf('"install", "--dry-run=false"');
 const publishedInstallCompleted = publishedPrereleaseInstallSource.indexOf("globalInstallCompleted = true");
-if ([publishedInstallAttempted, publishedInstallCall, publishedInstallCompleted].some((value) => value < 0)
-    || publishedInstallAttempted > publishedInstallCall || publishedInstallCall > publishedInstallCompleted) {
-  throw new Error("published prerelease installation no longer marks ambiguous global mutation before and after npm install");
+const publishedActivationCall = publishedPrereleaseInstallSource.indexOf("const activation = runActivation(");
+const publishedActivationRecord = publishedPrereleaseInstallSource.indexOf("const recordPath = writePrereleaseActivation(");
+if ([publishedReleaseRuntimeLock, publishedInstallAttempted, publishedInstallCall, publishedInstallCompleted, publishedActivationCall, publishedActivationRecord].some((value) => value < 0)
+    || publishedReleaseRuntimeLock > publishedInstallAttempted
+    || publishedInstallAttempted > publishedInstallCall
+    || publishedInstallCall > publishedInstallCompleted
+    || publishedInstallCompleted > publishedActivationCall
+    || publishedActivationCall > publishedActivationRecord) {
+  throw new Error("published prerelease mutation/activation escaped the global release-runtime lock or lost ambiguous-install markers");
 }
 if ([publishedAcceptanceCheck, publishedDigestCheck, publishedGithubAssetCheck, publishedHardenedNpm, publishedRegistryRead].some((value) => value < 0)
     || publishedAcceptanceCheck > publishedGithubAssetCheck
@@ -415,15 +538,18 @@ for (const required of ["githubReleaseByTagEndpoint", "normalizeGithubReleaseAss
   if (!publishedReleaseSource.includes(required)) throw new Error(`published release verification lost GitHub asset digest boundary: ${required}`);
 }
 const prereleaseActivationSource = readFileSync(join(root, "scripts", "prerelease-activation.mjs"), "utf8");
-for (const required of ["ACTIVATION_SCHEMA_VERSION = 2", "LEGACY_ACTIVATION_SCHEMA_VERSION = 1", "global_package_rollback_baseline", "rollback baseline is ambiguous"]) {
-  if (!prereleaseActivationSource.includes(required)) throw new Error(`prerelease activation schema lost explicit rollback-baseline semantics: ${required}`);
+for (const required of ["ACTIVATION_SCHEMA_VERSION = 2", "ACTIVATION_FIELDS", "global_package_rollback_baseline", "unsupported prerelease activation schema", "unsupported fields"]) {
+  if (!prereleaseActivationSource.includes(required)) throw new Error(`prerelease activation schema lost current-only rollback-baseline semantics: ${required}`);
+}
+for (const removed of ["LEGACY_ACTIVATION_SCHEMA_VERSION", "value.previous", "hasLegacyBaseline", "legacy prerelease activation"]) {
+  if (prereleaseActivationSource.includes(removed)) throw new Error(`prerelease activation restored removed schema compatibility: ${removed}`);
 }
 for (const [label, source] of [["candidate", candidateStartSource], ["published prerelease", publishedPrereleaseInstallSource]]) {
   for (const required of ["ACTIVATION_SCHEMA_VERSION", "global_package_rollback_baseline", "activation_recovery_detail"]) {
     if (!source.includes(required)) throw new Error(`${label} activation writer lost the current explicit rollback-baseline contract: ${required}`);
   }
   if (source.includes("{ previous:") || source.includes("{ previous }")) {
-    throw new Error(`${label} activation writer restored the ambiguous legacy previous field`);
+    throw new Error(`${label} activation writer restored the removed previous rollback-baseline field`);
   }
 }
 if (!publishedPrereleaseInstallSource.includes("persistentActivationSpawnOptions")
@@ -446,7 +572,7 @@ if (!candidateStartSource.includes("discoverForegroundDaemonRecovery")
 }
 
 const candidateRuntimeStoreSource = readFileSync(join(root, "scripts", "candidate-runtime-store.mjs"), "utf8");
-for (const required of ["release-channels", "runtimes", "withFileTypes", "entry.isDirectory()", "RUNTIME_DIRECTORY_PATTERN", "active candidate runtime is outside", "must be a real directory", "requireSameDirectory"]) {
+for (const required of ["release-channels", "runtimes", "withFileTypes", "entry.isDirectory()", "isCandidateRuntimeDirectoryName", "active candidate runtime is outside", "must be a real directory", "requireSameDirectory"]) {
   if (!candidateRuntimeStoreSource.includes(required)) throw new Error(`candidate runtime store lost required boundary: ${required}`);
 }
 if (!FULL_CHECK_TASKS.includes("release:acceptance:test")) throw new Error("complete check omits local release acceptance regression coverage");
@@ -493,17 +619,77 @@ for (const [label, file] of [
   ["service environment", "src/local/service-environment.mjs"],
   ["service owner", "src/local/service-owner.mjs"],
   ["global configuration", "src/local/state.mjs"],
-  ["legacy approval state", "src/local/operation-authorization.mjs"],
 ]) {
   const source = readFileSync(join(root, file), "utf8");
   if (!source.includes("inspectPathIfPresentSync")) throw new Error(`${label} lost fail-closed path inspection`);
   if (/existsSync/.test(source) && file !== "src/local/state.mjs") throw new Error(`${label} regained existsSync absence classification`);
 }
+for (const required of [
+  "removeObsoleteOperationLeaseState", '"operation-leases.json"', "inspectPathIfPresentSync",
+  "info.isSymbolicLink()", "!info.isFile()", "info.nlink !== 1n", "filesystemIdentity",
+  "unlinkRegularFileIfIdentitySync", "changed before migration cleanup",
+]) {
+  if (!stateSource.includes(required)) throw new Error(`obsolete operation-lease migration cleanup lost fail-closed boundary: ${required}`);
+}
+const browserPairingSource = readFileSync(join(root, "src", "local", "browser-pairing-store.mjs"), "utf8");
+for (const required of ["const PAIRING_SCHEMA_VERSION = 2", "const PAIRING_AUTH_VERSION = 2", "pairingAuthVersion: PAIRING_AUTH_VERSION", "migrationPending: true"]) {
+  if (!browserPairingSource.includes(required)) throw new Error(`browser pairing envelope lost beta.55 rollback readability or hardened-auth identity: ${required}`);
+}
+if (!readFileSync(join(root, "tests", "browser-extension-identity-test.mjs"), "utf8").includes("beta55AcceptsPairingState")) {
+  throw new Error("browser pairing rollback compatibility fixture is missing");
+}
 const managedJobSource = readFileSync(join(root, "src", "local", "managed-jobs.mjs"), "utf8");
+const cliOptionsSource = readFileSync(join(root, "src", "local", "cli-options.mjs"), "utf8");
+for (const removed of ["approval: new Set", "approve: 2", "APPROVAL_POSITIONAL_LIMITS", "approval(args)"]) {
+  if (cliOptionsSource.includes(removed)) throw new Error(`removed approval CLI parsing surface returned: ${removed}`);
+}
 const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
+const managedJobRetentionSource = readFileSync(join(root, "src", "local", "managed-job-retention.mjs"), "utf8");
+const managedJobTerminalSource = readFileSync(join(root, "src", "local", "managed-job-terminal.mjs"), "utf8");
 const managedJobClaimSource = readFileSync(join(root, "src", "local", "managed-job-runner-claim.mjs"), "utf8");
 const managedJobCancellationSource = readFileSync(join(root, "src", "local", "managed-job-cancellation.mjs"), "utf8");
 const managedJobDirectorySource = readFileSync(join(root, "src", "local", "managed-job-directory.mjs"), "utf8");
+const managedJobDirectoryGenerationSource = readFileSync(join(root, "src", "local", "managed-job-directory-generation.mjs"), "utf8");
+const managedJobCapacitySource = readFileSync(join(root, "src", "local", "managed-job-capacity.mjs"), "utf8");
+const managedJobsIntegrationSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8");
+if (!managedJobsIntegrationSource.includes("RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500")
+    || !/withResourceTransactionLock\(coordinatorRoot,[\s\S]{0,400}\{ timeoutMs: 30_000 \}\)/.test(managedJobsIntegrationSource)) {
+  throw new Error("managed-job resource-contention regression lost its setup/acquisition timing separation");
+}
+if (!managedJobTerminalSource.includes('export const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"])')
+    || !managedJobRunnerSource.includes("ACTIVE_JOB_STATES.has(status.status)")
+    || !managedJobRetentionSource.includes("...ACTIVE_JOB_STATES")
+    || managedJobRunnerSource.includes("FATAL_RECORDABLE_STATUSES")) {
+  throw new Error("managed-job active lifecycle states no longer have one shared source of truth");
+}
+if (!coverageRunnerSource.includes('"src/local/managed-job-capacity.mjs"')) {
+  throw new Error("critical managed-job capacity coverage threshold is missing");
+}
+if (managedJobCapacitySource.includes("entry.isDirectory() && MANAGED_JOB_ID")
+    || !managedJobCapacitySource.includes("job_state_unreadable")) {
+  throw new Error("managed-job capacity again ignores wrong-type state in the reserved public job namespace");
+}
+if (!coverageRunnerSource.includes('"src/local/managed-job-directory-generation.mjs"')) {
+  throw new Error("critical managed-job directory-generation coverage threshold is missing");
+}
+if (!coverageRunnerSource.includes('"src/local/managed-job-retention.mjs"')) {
+  throw new Error("critical managed-job retention coverage threshold is missing");
+}
+if (!coverageRunnerSource.includes('"src/local/managed-job-terminal-maintenance.mjs"')) {
+  throw new Error("critical managed-job terminal-maintenance coverage threshold is missing");
+}
+if (!managedJobDirectoryGenerationSource.includes('startsWith("retired_job_")') || managedJobDirectoryGenerationSource.includes("job_retired_")) {
+  throw new Error("managed-job retired namespace no longer reserves malformed internal names or drifted toward the public job-id grammar");
+}
+for (const forbidden of ["existsSync(dir)", "quarantine could not be restored", "renameSync(quarantine, dir)"]) {
+  if (managedJobDirectoryGenerationSource.includes(forbidden)) throw new Error(`managed-job retirement regained unsafe pathname rollback: ${forbidden}`);
+}
+if (!managedJobSource.includes('state_kind: "retired_managed_job"') || !managedJobSource.includes("managedJobCapacitySnapshot")) {
+  throw new Error("managed-job retired-state privacy/capacity projection contract is missing");
+}
+for (const removed of ["approve(args", '"pending-local-operator"', "start the staged job through"]) {
+  if (managedJobSource.includes(removed)) throw new Error(`removed staged-job promotion contract returned: ${removed}`);
+}
 for (const required of ["writeManagedJobCancellation", "resolveManagedJobDirectory", "resolveManagedJobRootIfPresent"]) {
   if (!managedJobSource.includes(required)) throw new Error(`managed job manager lost secure boundary: ${required}`);
 }
@@ -511,18 +697,66 @@ if (managedJobRunnerSource.includes("existsSync(cancelFile)")
     || !managedJobRunnerSource.includes("managedJobCancellationRequested(cancelFile)")) {
   throw new Error("managed job runner again treats cancellation inspection failure as absence");
 }
+if (managedJobRunnerSource.includes('child.on("error", (error) => { settlement.cancel()')
+    || !managedJobRunnerSource.includes('child.on("error", (error) => { childError ||= error; })')) {
+  throw new Error("managed job runner again settles process ownership directly from child error before close/exit settlement");
+}
+if (!managedJobRunnerSource.includes("RECOVERY_LOCK_HANDOFF_WAIT_MS = 30_000")
+    || !/await confirmRunnerClaim[\s\S]{0,400}if \(recover\) await releaseRecoveryClaim\(\);\s*runnerClaimConfirmed = true;/.test(managedJobRunnerSource)) {
+  throw new Error("recovery runner can again terminalize a job before recovery-lock handoff is complete");
+}
 if (managedJobClaimSource.includes("existsSync") || !managedJobClaimSource.includes("inspectPathIfPresentSync")) {
   throw new Error("managed job runner claim again treats inspection failure as absence");
 }
 for (const required of ["replaceFileAtomicallySync", "verifyPathIdentity: true", "rejectMultipleLinks: true", "managed job cancellation marker is invalid"]) {
   if (!managedJobCancellationSource.includes(required)) throw new Error(`managed job cancellation boundary lost: ${required}`);
 }
-for (const required of ["MANAGED_JOB_ID", "requireContained", "identity changed during inspection", "openSync", "fstatSync", "O_NOFOLLOW", "O_DIRECTORY", "bigint: true"]) {
+for (const required of ["MANAGED_JOB_ID", "requireContained", "identity changed during inspection", "openSync", "fstatSync", "O_NOFOLLOW", "O_DIRECTORY", "0o700", "bigint: true"]) {
   if (!managedJobDirectorySource.includes(required)) throw new Error(`managed job directory boundary lost: ${required}`);
 }
 if (packageJson.scripts?.["managed-job-boundary:test"] !== "node tests/managed-job-boundary-test.mjs"
     || !FAST_CHECK_TASKS.includes("managed-job-boundary:test")) {
   throw new Error("managed job filesystem fault injection is missing from the fast gate");
+}
+const sshKeySource = readFileSync(join(root, "src", "local", "ssh-key.mjs"), "utf8");
+for (const required of ["GENERATED_KEY_IDENTITIES", "chmodRegularFileIfIdentitySync", "installedLinkIdentity(opened.fd, source, target)", "removeGeneratedSshKeyPair", "refusing path-only cleanup"]) {
+  if (!sshKeySource.includes(required)) throw new Error(`SSH key transaction lost identity-bound compensation: ${required}`);
+}
+if (sshKeySource.includes("copyFile(source, target") || sshKeySource.includes("rm(request.privateKeyPath") || sshKeySource.includes("chmodRegularFileSync")) {
+  throw new Error("SSH key handling regained unreachable cross-filesystem fallback, pathname-only rollback, or pathname-only chmod");
+}
+const serviceDefinitionSource = readFileSync(join(root, "src", "local", "service-definition.mjs"), "utf8");
+const serviceStatusSource = readFileSync(join(root, "src", "local", "service-status.mjs"), "utf8");
+const serviceSource = readFileSync(join(root, "src", "local", "service.mjs"), "utf8");
+for (const required of ["verifyPathIdentity: true", "rejectMultipleLinks: true", "unlinkRegularFileIfIdentitySync"]) {
+  if (!serviceDefinitionSource.includes(required)) throw new Error(`service definition lost snapshot-bound removal: ${required}`);
+}
+for (const required of ["snapshotServiceDefinition", "removeServiceDefinitionIfCurrent", 'reason: "definition_changed"']) {
+  if (!serviceSource.includes(required)) throw new Error(`service uninstall lost definition-generation guard: ${required}`);
+}
+for (const required of ["LAUNCHD_MISSING_SERVICE_CODE = 113", "status_available: statusAvailable", 'missing ? "inactive" : "unknown"']) {
+  if (!serviceStatusSource.includes(required)) throw new Error(`launchd status lost fail-closed query evidence: ${required}`);
+}
+for (const required of ["const safelyAbsent", "const safelyInactive", 'state === "active" ? true : safelyInactive || safelyAbsent ? false : null']) {
+  if (!serviceStatusSource.includes(required)) throw new Error(`systemd status lost tri-state activity evidence: ${required}`);
+}
+if ((serviceSource.match(/before\.status_available !== true/g) || []).length < 2
+    || (serviceSource.match(/typeof before\.active !== "boolean"/g) || []).length < 4
+    || (serviceSource.match(/before\.installed !== true/g) || []).length < 2) {
+  throw new Error("service start/restart paths no longer fail closed on unavailable provider status or missing definitions");
+}
+for (const required of ["stopLaunchdService", "launchdStatusIsSafelyUnloaded", "status?.status_available === true", "status?.loaded === false", "status?.active === false"]) {
+  if (!serviceSource.includes(required)) throw new Error(`launchd stop lost verified-unloaded boundary: ${required}`);
+}
+if (serviceSource.includes("waitForInactiveStatus(statusLaunchd)")) {
+  throw new Error("launchd stop again accepts inactive process state without verified domain unload");
+}
+const windowsServiceSource = readFileSync(join(root, "src", "local", "windows-service.mjs"), "utf8");
+for (const required of ["snapshotServiceDefinition", "removeServiceDefinitionIfCurrent", 'reason: "launcher_changed"']) {
+  if (!windowsServiceSource.includes(required)) throw new Error(`Windows service uninstall lost launcher-generation guard: ${required}`);
+}
+if (existsSync(join(root, "src", "local", "state-locations.mjs"))) {
+  throw new Error("dead divergent state-locations module returned to the release surface");
 }
 
 for (const [label, file] of [
@@ -634,12 +868,19 @@ if (packageJson.scripts?.["ci-bootstrap:test"] !== "node tests/ci-bootstrap-test
 const npmBootstrapSource = readFileSync(join(root, "scripts", "prepare-pinned-npm.mjs"), "utf8");
 const hardenedNpmSource = readFileSync(join(root, "src", "local", "hardened-npm.mjs"), "utf8");
 const hardenedNpmDownloadSource = readFileSync(join(root, "src", "local", "hardened-npm-download.mjs"), "utf8");
+const hardenedNpmDownloadTimeoutSource = readFileSync(join(root, "src", "local", "hardened-npm-download-timeout.mjs"), "utf8");
 const hardenedNpmVerificationSource = readFileSync(join(root, "src", "local", "hardened-npm-verification.mjs"), "utf8");
 if (!npmBootstrapSource.includes("prepareHardenedNpm")
     || !hardenedNpmSource.includes("npm-12.0.1.tgz") || !hardenedNpmSource.includes("sha512-L5T9i/YAQWQWqTS/")
     || !hardenedNpmSource.includes("undici-6.28.0.tgz") || !hardenedNpmSource.includes("brace-expansion-5.0.9.tgz")
     || !hardenedNpmDownloadSource.includes("proxyAgentForHttp") || !hardenedNpmDownloadSource.includes("status !== 200")
-    || !hardenedNpmDownloadSource.includes("downloadHardenedNpmArtifact")
+    || !hardenedNpmDownloadSource.includes("downloadHardenedNpmArtifact") || !hardenedNpmDownloadSource.includes("DOWNLOAD_ATTEMPTS = 3")
+    || !hardenedNpmDownloadSource.includes("createHardenedDownloadTimeout") || !hardenedNpmDownloadSource.includes("timeout.progress()")
+    || !hardenedNpmDownloadSource.includes("retryableDownloadError") || hardenedNpmDownloadSource.includes("timer.unref")
+    || !hardenedNpmDownloadTimeoutSource.includes("DEFAULT_IDLE_TIMEOUT_MS = 60_000")
+    || !hardenedNpmDownloadTimeoutSource.includes("DEFAULT_MAXIMUM_DURATION_MS = 300_000")
+    || !hardenedNpmDownloadTimeoutSource.includes("download stalled") || !hardenedNpmDownloadTimeoutSource.includes("maximum duration")
+    || hardenedNpmDownloadTimeoutSource.includes(".unref")
     || !hardenedNpmVerificationSource.includes("throwOperationalOrIntegrity")
     || !hardenedNpmVerificationSource.includes("HARDENED_NPM_MARKER")) {
   throw new Error("pinned npm bootstrap lost its hardened exact tarballs, bounded proxy-aware download, SHA-512 integrity, or redirect boundary");
@@ -688,12 +929,21 @@ if (acceptedCodeql.size !== expectedCodeql.size || [...expectedCodeql].some((ite
   throw new Error("CodeQL exception inventory contains an unreviewed or missing exact finding");
 }
 const processExecutionSource = readFileSync(join(root, "src", "local", "process-execution.mjs"), "utf8");
+const shellSource = readFileSync(join(root, "src", "local", "shell.mjs"), "utf8");
 if (!processExecutionSource.includes('import { spawn } from "node:child_process";')
     || !processExecutionSource.includes("function spawnDirectProcess")
     || !processExecutionSource.includes("return spawn(command, args, {")
     || !processExecutionSource.includes("shell: false,")
     || processExecutionSource.includes("...options")) {
   throw new Error("direct process execution lost its fixed-option non-shell child_process boundary");
+}
+if (processExecutionSource.includes('child.on("error", (error) => {\n        void cleanupAfterClose()')
+    || !processExecutionSource.includes('child.on("error", (error) => { childError ||= error; })')) {
+  throw new Error("one-shot process execution again releases ownership directly from child error before close");
+}
+if (shellSource.includes('child.on("error", error => finish(')
+    || !shellSource.includes('child.on("error", error => { childError ||= error; })')) {
+  throw new Error("internal executable execution again settles directly from child error before close");
 }
 const processTreeSupervisorSource = readFileSync(join(root, "src", "local", "process-tree-supervisor.mjs"), "utf8");
 for (const required of ["createSnapshotBudget", "boundedSnapshotOptions", "processSnapshotTimeoutMs", "processTreeOwnershipStillCurrent"]) {
@@ -797,6 +1047,17 @@ if (!engineering.includes("default profile is intentionally `full`") || !enginee
 if (!engineering.includes("Documented read-only discovery may conservatively omit unavailable or unsupported optional metadata")) {
   throw new Error("engineering read-failure invariant does not distinguish optional discovery from security/persistence evidence");
 }
+for (const required of [
+  "Diagnose before changing semantics",
+  "Falsified fixes do not silently accumulate",
+  "Hosted-runtime behavior requires hosted-runtime evidence",
+  "Multi-record authority state commits through one explicit transaction boundary",
+  "Verification runs require an immutable source snapshot",
+  "OAuth persistence is a deployed acceptance boundary",
+  "remote initialization compatibility is stateless and bounded",
+]) {
+  if (!engineering.includes(required)) throw new Error(`engineering incident invariant omitted: ${required}`);
+}
 const architectureGuide = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
 if (architectureGuide.includes("All bridge mutations are serialized in one runtime queue.")
     || !architectureGuide.includes("Operations touching the same canonical path serialize; independent paths may proceed concurrently")) {
@@ -818,7 +1079,7 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Completion ownership, prerelease activation, and soak", "npm run release:candidate", "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "real interactive terminal", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "npm run release:candidate", "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "real interactive terminal", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const releasingGuide = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
@@ -831,7 +1092,7 @@ if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || 
   throw new Error("generated MCP tool reference is missing or malformed");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
-for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "npm run release:candidate", "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
+for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
 }
 if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {

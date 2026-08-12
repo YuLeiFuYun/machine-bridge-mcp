@@ -31,6 +31,12 @@ export class LifecycleController {
     this.transition("failed");
   }
 
+  markStopFailed(error) {
+    if (this.state !== "stopping") throw new BridgeError("conflict", `${this.name} cannot fail stop from state ${this.state}`);
+    this.failureCode = String(error?.code || error?.name || "execution_failed").slice(0, 64);
+    this.transition("stop_failed");
+  }
+
   beginStop() {
     if (this.state === "stopped" || this.state === "stopping") return false;
     this.transition("stopping");

@@ -1,11 +1,11 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
-import { acquireRuntimeStartServiceLock, cleanupRuntimeStartFailure, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { acquireRuntimeStartServiceLock, cleanupRuntimeStartFailure, installAutostartBestEffort, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
@@ -17,7 +17,7 @@ import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensure
 const CLI_FIXTURE_TIMEOUT_MS = 60_000;
 const MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS = 120_000;
 const UNINSTRUMENTED_JOB_CLI_ENV = Object.freeze({ ...process.env, NODE_V8_COVERAGE: "" });
-const CLI_FIXTURE_WAIT_ATTEMPTS = 2_400;
+const CLI_FIXTURE_WAIT_ATTEMPTS = 12_000;
 const DAEMON_FIXTURE_TIMEOUT_MS = 30_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 60;
 const MANAGED_JOB_MARKER_SCRIPT = "if (process.env.NODE_V8_COVERAGE) process.exit(9); require('node:fs').writeFileSync(process.argv[1], process.argv[2])";
@@ -117,6 +117,18 @@ async function stateSelfTest() {
     if (selectedWorkspace(stateRoot) !== canonicalWorkspace) throw new Error("selected workspace was not persisted canonically");
     const state = loadState(workspace, { stateDir: stateRoot });
     if (state.schemaVersion !== 6) throw new Error("unexpected state schema version");
+    const obsoleteLeaseState = join(state.paths.profileDir, "operation-leases.json");
+    await writeFile(obsoleteLeaseState, '{"schemaVersion":2,"leases":[]}\n', { mode: 0o600 });
+    loadState(workspace, { stateDir: stateRoot });
+    await expectReject(readFile(obsoleteLeaseState), /ENOENT/);
+    if (process.platform !== "win32") {
+      const outsideObsoleteLease = join(stateRoot, "outside-operation-leases.json");
+      await writeFile(outsideObsoleteLease, '{}\n', { mode: 0o600 });
+      await symlink(outsideObsoleteLease, obsoleteLeaseState);
+      expectThrow(() => loadState(workspace, { stateDir: stateRoot }), "single-link regular file");
+      await rm(obsoleteLeaseState, { force: true });
+      await rm(outsideObsoleteLease, { force: true });
+    }
     ensureWorkerSecrets(state, { rotateSecrets: true });
     state.oversized = "x".repeat(2 * 1024 * 1024 + 1);
     expectThrow(() => saveState(state), "state JSON exceeds");
@@ -261,6 +273,14 @@ async function stateSelfTest() {
     await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({ token: "synthetic-browser-token-1234567890123456", port: 39393 })}\n`, { mode: 0o600 });
     await writeFile(join(stateRoot, "service-environment.json"), `${JSON.stringify({ schemaVersion: 1, environment: {} })}\n`, { mode: 0o600 });
     await writeFile(join(stateRoot, "service-launcher.cmd"), "@echo off\r\nexit /b 0\r\n", { mode: 0o600 });
+    await mkdir(join(stateRoot, "toolchains"), { recursive: true });
+    await mkdir(join(stateRoot, "release-channels", "runtimes"), { recursive: true });
+    await mkdir(join(stateRoot, "release-tasks", "legacy-fixture"), { recursive: true });
+    const previousEntryScript = process.argv[1];
+    try {
+      process.argv[1] = join(stateRoot, "release-channels", "runtimes", "v3.0.0-test", "bin", "machine-mcp.mjs");
+      expectThrow(() => validateStateRootForRemoval(stateRoot), "currently executing Machine Bridge CLI");
+    } finally { process.argv[1] = previousEntryScript; }
     const safeRemoval = validateStateRootForRemoval(stateRoot);
     if (!safeRemoval.exists || safeRemoval.root !== state.paths.stateRoot) throw new Error("safe state root validation failed after corrupt config recovery");
 
@@ -386,6 +406,9 @@ setInterval(() => {}, 2 ** 31 - 1);
       || !messages.some((message) => message.includes("foreground startup is taking over"))) {
       throw new Error("foreground takeover did not report orphan termination and successful takeover");
     }
+    if (messages.some((message) => /\bpid\s+\d+\b/i.test(message))) {
+      throw new Error("default daemon takeover log exposed a process identifier");
+    }
     const duplicate = acquireDaemonLock(state);
     if (duplicate.acquired || duplicate.owner?.mode !== "foreground" || duplicate.owner?.version !== "0.11.1") {
       throw new Error("foreground takeover lock metadata was not persisted");
@@ -446,7 +469,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     if (!stopResult.ok || stopResult.reason !== "stopped" || !stopResult.verified_service_daemon || isProcessAlive(child.pid)) {
       throw new Error("verified unresponsive service daemon was not forcibly reclaimed after identity revalidation");
     }
-    if (process.platform !== "win32" && (!stopResult.forced || !stopMessages.some((message) => message.includes("forcing process")))) {
+    if (process.platform !== "win32" && (!stopResult.forced || !stopMessages.some((message) => message.includes("ignored graceful termination") && message.includes("forcing")))) {
       throw new Error("POSIX forced daemon reclamation was not reported or recorded");
     }
     await waitForChildExit(child);
@@ -622,7 +645,15 @@ async function clientConfigDefaultSelfTest() {
 async function resourceCliSelfTest() {
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-resource-cli-state-"));
   const workspaceRaw = await mkdtemp(join(tmpdir(), "mbm-resource-cli-workspace-"));
+  const resourceCoordinatorRoot = await mkdtemp(join(tmpdir(), "mbm-resource-cli-coordinator-"));
+  const buildRoot = await mkdtemp(join(tmpdir(), "mbm-resource-cli-build-"));
   const workspace = await realpath(workspaceRaw);
+  const previousResourceRoot = process.env.AGENT_RESOURCE_COORDINATOR_ROOT;
+  const previousBuildRoot = process.env.AGENT_BUILD_ROOT;
+  process.env.AGENT_RESOURCE_COORDINATOR_ROOT = resourceCoordinatorRoot;
+  process.env.AGENT_BUILD_ROOT = buildRoot;
+  const resourceCliEnv = { ...UNINSTRUMENTED_JOB_CLI_ENV,
+    AGENT_RESOURCE_COORDINATOR_ROOT: process.env.AGENT_RESOURCE_COORDINATOR_ROOT, AGENT_BUILD_ROOT: process.env.AGENT_BUILD_ROOT };
   const resourceFile = join(workspace, "credential-file.txt");
   await writeFile(resourceFile, "local-value-not-returned", { mode: 0o600 });
   if (process.platform !== "win32") await chmod(resourceFile, 0o600);
@@ -707,7 +738,7 @@ async function resourceCliSelfTest() {
 
     const jobs = spawnSync(process.execPath, [entry, "job", "list", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
-      env: UNINSTRUMENTED_JOB_CLI_ENV,
+      env: resourceCliEnv,
       killSignal: "SIGKILL",
     });
     if (jobs.status !== 0 || !Array.isArray(JSON.parse(jobs.stdout).jobs)) throw new Error("local job list fallback failed");
@@ -719,7 +750,7 @@ async function resourceCliSelfTest() {
     });
     const inspectedPlan = spawnSync(process.execPath, [entry, "job", "inspect", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
-      env: UNINSTRUMENTED_JOB_CLI_ENV,
+      env: resourceCliEnv,
       killSignal: "SIGKILL",
     });
     if (inspectedPlan.status !== 0) {
@@ -732,7 +763,7 @@ async function resourceCliSelfTest() {
     }
     const removedApproval = spawnSync(process.execPath, [entry, "job", "approve", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json", "--yes"], {
       encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
-      env: UNINSTRUMENTED_JOB_CLI_ENV,
+      env: resourceCliEnv,
       killSignal: "SIGKILL",
     });
     if (removedApproval.status === 0 || !String(removedApproval.stderr).includes("Unknown job action")) {
@@ -762,7 +793,7 @@ async function resourceCliSelfTest() {
       await symlink(planFile, linkedPlan);
       const linked = spawnSync(process.execPath, [entry, "job", "submit", linkedPlan, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
         encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
-      env: UNINSTRUMENTED_JOB_CLI_ENV,
+      env: resourceCliEnv,
         killSignal: "SIGKILL",
       });
       if (linked.status === 0 || !String(linked.stderr).includes("must not be a symbolic link")) {
@@ -771,7 +802,7 @@ async function resourceCliSelfTest() {
     }
     const submitted = spawnSync(process.execPath, [entry, "job", "submit", planFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
-      env: UNINSTRUMENTED_JOB_CLI_ENV,
+      env: resourceCliEnv,
       killSignal: "SIGKILL",
     });
     if (submitted.status !== 0) throw new Error(`local job submit failed: ${submitted.stderr || submitted.stdout}`);
@@ -781,7 +812,7 @@ async function resourceCliSelfTest() {
     for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
       const read = spawnSync(process.execPath, [entry, "job", "read", submittedId, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
         encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
-      env: UNINSTRUMENTED_JOB_CLI_ENV,
+      env: resourceCliEnv,
         killSignal: "SIGKILL",
       });
       if (read.status !== 0) throw new Error(`local job read failed: ${read.stderr || read.stdout}`);
@@ -808,19 +839,44 @@ async function resourceCliSelfTest() {
       if (value.status === "running") break;
       await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
+    const retiredSource = join(manager.jobRoot, `job_${"Y".repeat(24)}`);
+    await mkdir(retiredSource, { mode: 0o700 });
+    const retiredInfo = await stat(retiredSource, { bigint: true });
+    const retiredPath = join(manager.jobRoot, `retired_job_${"Q".repeat(24)}_d${retiredInfo.dev}_i${retiredInfo.ino}`);
+    await rename(retiredSource, retiredPath);
     const uninstallBlocked = spawnSync(process.execPath, [entry, "uninstall", "--state-dir", stateRoot, "--keep-worker", "--yes"], {
       encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
-    if (uninstallBlocked.status === 0 || !String(uninstallBlocked.stderr).includes("managed jobs are active")) {
+    const uninstallBlockedText = String(uninstallBlocked.stderr || "");
+    if (uninstallBlocked.status === 0
+        || !uninstallBlockedText.includes("refusing to uninstall while managed-job state")
+        || !uninstallBlockedText.includes("inspect with machine-mcp job list/read")) {
       throw new Error(`uninstall did not refuse an active managed job: ${uninstallBlocked.stderr || uninstallBlocked.stdout}`);
     }
+    if (await existsForSelfTest(retiredPath)) throw new Error("uninstall did not reclaim an exact retired managed-job generation before inventory");
     manager.cancel({ job_id: activeJob.job_id });
     for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
       const value = manager.read({ job_id: activeJob.job_id });
       if (!["queued", "running", "cleaning", "interrupted"].includes(value.status)) break;
       await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
     }
+
+    const corruptRetiredPath = join(manager.jobRoot, `retired_job_${"Z".repeat(24)}_d0_i0`);
+    await mkdir(corruptRetiredPath, { mode: 0o700 });
+    const corruptRetiredUninstall = spawnSync(process.execPath, [entry, "uninstall", "--state-dir", stateRoot, "--keep-worker", "--yes"], {
+      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+    });
+    const corruptRetiredText = String(corruptRetiredUninstall.stderr || "");
+    if (corruptRetiredUninstall.status === 0
+        || !corruptRetiredText.includes("retired-managed-job:unreadable")
+        || !corruptRetiredText.includes("owner-only state root")
+        || corruptRetiredText.includes("_d0_i0")) {
+      throw new Error(`uninstall did not retain a privacy-bounded inconsistent retired managed-job generation: ${corruptRetiredUninstall.stderr || corruptRetiredUninstall.stdout}`);
+    }
+    if (!(await existsForSelfTest(corruptRetiredPath))) throw new Error("uninstall removed an inconsistent retired managed-job generation");
+    await rm(corruptRetiredPath, { recursive: true, force: true });
 
     const removed = spawnSync(process.execPath, [entry, "resource", "remove", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
@@ -832,8 +888,14 @@ async function resourceCliSelfTest() {
       throw new Error("resource removal affected the wrong alias or was not visible without restart");
     }
   } finally {
+    if (previousResourceRoot === undefined) delete process.env.AGENT_RESOURCE_COORDINATOR_ROOT;
+    else process.env.AGENT_RESOURCE_COORDINATOR_ROOT = previousResourceRoot;
+    if (previousBuildRoot === undefined) delete process.env.AGENT_BUILD_ROOT;
+    else process.env.AGENT_BUILD_ROOT = previousBuildRoot;
     await rm(stateRoot, { recursive: true, force: true }).catch(() => {});
     await rm(workspaceRaw, { recursive: true, force: true }).catch(() => {});
+    await rm(resourceCoordinatorRoot, { recursive: true, force: true }).catch(() => {});
+    await rm(buildRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -870,6 +932,37 @@ async function cliSelfTest() {
     "could not be acquired for runtime start",
   );
   await expectReject(acquireRuntimeStartServiceLock({}, null), "requires a machine-service lock acquirer");
+  const autostartEvents = [];
+  await installAutostartBestEffort({
+    workspace: "/synthetic-workspace", stateRoot: "/synthetic-state", entryScript: "/synthetic-entry.mjs",
+    logger: {
+      info(message) { autostartEvents.push(`info:${message}`); },
+      warn(message) { autostartEvents.push(`warn:${message}`); },
+    },
+  }, {
+    acquireServiceLock: async (options) => {
+      autostartEvents.push(`lock:${options.operation}`);
+      return { acquired: true, release() { autostartEvents.push("lock:release"); } };
+    },
+    installAutostart: async () => { autostartEvents.push("install"); return { ok: true, provider: "test" }; },
+    structuredLogger: () => ({}),
+  });
+  if (autostartEvents.join("|") !== "lock:runtime-start-autostart|install|info:Autostart installed for future logins|lock:release") {
+    throw new Error(`automatic autostart install lost machine-service lock ordering: ${autostartEvents.join("|")}`);
+  }
+  let blockedAutostartInstalls = 0;
+  const blockedAutostartWarnings = [];
+  await installAutostartBestEffort({
+    workspace: "/synthetic-workspace", stateRoot: "/synthetic-state", entryScript: "/synthetic-entry.mjs",
+    logger: { info() {}, warn(message) { blockedAutostartWarnings.push(message); } },
+  }, {
+    acquireServiceLock: async () => ({ acquired: false, release() { throw new Error("unacquired lock must not release"); } }),
+    installAutostart: async () => { blockedAutostartInstalls += 1; return { ok: true }; },
+    structuredLogger: () => ({}),
+  });
+  if (blockedAutostartInstalls !== 0 || blockedAutostartWarnings.at(-1) !== "Autostart installation skipped") {
+    throw new Error("automatic autostart installation mutated the provider without the machine-service lock");
+  }
   const primary = new Error("runtime failed");
   if (cleanupRuntimeStartFailure(primary, { stop() {} }, { release() {} }) !== primary) {
     throw new Error("successful runtime cleanup replaced the primary startup error");
@@ -1328,13 +1421,11 @@ async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const workerModules = await Promise.all([
     "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
-    "oauth-token-issuance.ts", "oauth-refresh-exchange.ts", "oauth-controller.ts", "oauth-authorization-page.ts", "observability.ts", "mcp-session.ts", "tool-timeout.ts", "daemon-liveness.ts",
+    "oauth-token-issuance.ts", "oauth-refresh-exchange.ts", "oauth-refresh-persistence.ts", "oauth-controller.ts", "oauth-authorization-page.ts", "authority-revocations.ts", "observability.ts", "tool-timeout.ts", "daemon-liveness.ts",
     "daemon-sockets.ts", "daemon-socket-attachment.ts", "runtime-alarm.ts", "runtime-alarm-storage.ts",
-    "mcp-resumption.ts", "mcp-resumption-records.ts", "mcp-pending-call-store.ts", "mcp-pending-call-records.ts",
-    "mcp-pending-call-expiry.ts", "mcp-pending-call-storage.ts", "mcp-pending-call-inspection.ts",
-    "pending-admission.ts", "durable-stream-calls.ts", "mcp-jsonrpc.ts", "mcp-http-contract.ts",
-    "mcp-legacy-dispatch.ts", "mcp-modern-controller.ts", "mcp-modern-stream.ts", "mcp-modern-proxy.ts",
-    "worker-mcp-config.ts", "mcp-stream-proxy.ts", "mcp-stream-proxy-contract.ts", "websocket-protocol.ts",
+    "pending-admission.ts", "mcp-jsonrpc.ts", "mcp-http-contract.ts", "mcp-controller.ts",
+    "mcp-response-stream.ts", "mcp-response-proxy.ts", "mcp-http-accept.ts", "mcp-removed-protocol.ts",
+    "worker-mcp-config.ts", "mcp-stream-proxy-contract.ts", "websocket-protocol.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
   for (const module of ["mcp-jsonrpc", "websocket-protocol"]) {
@@ -1350,17 +1441,24 @@ async function workerSourceSelfTest() {
   if (unawaitedAsyncRoutes.length) {
     throw new Error(`Worker async routes must be awaited so HttpError is caught: ${unawaitedAsyncRoutes.join(", ")}`);
   }
+  if (combinedSource.includes("storage.put(writes)")) {
+    throw new Error("Worker OAuth/authority persistence returned to the deployment-incompatible bulk-write path");
+  }
   for (const required of [
     "MAX_PENDING_CALLS",
     "MAX_DAEMON_MESSAGE_BYTES",
     "withOAuthLock",
-    "oauthQueue",
+    "blockConcurrencyWhile",
     "AUTH_FAILURE_LIMIT",
     "OAUTH_BODY_LIMIT_BYTES",
     "PendingCallRegistry",
     "isJsonRpcId(candidate.id)",
     "pruneRecordByExpiry(oauthStore.tokens, MAX_ACCESS_TOKENS)",
     "pruneRecordByExpiry(refreshStore.tokens, MAX_REFRESH_TOKENS)",
+    "OAuth store persistence failed",
+    "oauth-refresh-consumed:",
+    "OAuth refresh consumed-token shard capacity exceeded",
+    "protected writes cannot replace the authority revocation queue",
     "A valid PKCE S256 challenge is required.",
     "hmac-sha256:",
     "DAEMON_HELLO_TIMEOUT_MS",
@@ -1372,10 +1470,9 @@ async function workerSourceSelfTest() {
     "async alarm()",
     "storage.setAlarm",
     "connection_id",
-    "operation_deadline_at",
-    "reconnect_deadline_at",
-    "McpPendingCallStore",
-    "extendDetachedCallExpiry",
+    "detachSocket",
+    "rebindInstance",
+    "clientRequestKey",
     "PendingAdmissionGate",
     "Object.create(null)",
     'role: "candidate"',
@@ -1386,9 +1483,8 @@ async function workerSourceSelfTest() {
     "daemon_hello_timeout",
     "daemon_ready_timeout",
     "replaced by verified daemon",
-    "serverMetadata.modernProtocolVersions",
-    "serverMetadata.legacyProtocolVersions",
-    "notifications/cancelled",
+    "MCP_PROTOCOL_VERSIONS",
+    "MCP_REMOVED_PROTOCOL_MESSAGE",
     "structuredContent",
     "../shared/tool-catalog.json",
   ]) {
@@ -1445,7 +1541,8 @@ async function expectReject(promise, pattern) {
   try {
     await promise;
   } catch (error) {
-    if (String(error?.message || error).includes(pattern)) return;
+    const message = String(error?.message || error);
+    if (pattern instanceof RegExp ? pattern.test(message) : message.includes(String(pattern))) return;
     throw error;
   }
   throw new Error(`expected rejection containing: ${pattern}`);
@@ -1455,7 +1552,8 @@ function expectThrow(callback, pattern) {
   try {
     callback();
   } catch (error) {
-    if (String(error?.message || error).includes(pattern)) return;
+    const message = String(error?.message || error);
+    if (pattern instanceof RegExp ? pattern.test(message) : message.includes(String(pattern))) return;
     throw error;
   }
   throw new Error(`expected throw containing: ${pattern}`);

@@ -13,6 +13,7 @@ export function projectRuntimeInfo(info, detail = "full") {
     workspace_name: info.workspace_name,
     policy,
     tool_delivery: {
+      effective_tool_count: delivery.effective_tool_count ?? 0,
       daemon_advertised_tool_count: delivery.daemon_advertised_tool_count ?? 0,
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
@@ -29,6 +30,7 @@ export function projectRuntimeInfo(info, detail = "full") {
 
 function compactProcesses(value) {
   const source = record(value);
+  if (source.activity_hidden_by_authority === true) return { activity_hidden_by_authority: true };
   return {
     active_processes: source.active_processes ?? 0,
     draining_processes: source.draining_processes ?? 0,
@@ -37,11 +39,18 @@ function compactProcesses(value) {
 
 function compactCapacity(value) {
   const source = record(value);
+  const capacity = source.capacity && typeof source.capacity === "object" && !Array.isArray(source.capacity)
+    ? record(source.capacity) : null;
   return {
     active: source.active ?? 0,
     retained: source.retained ?? 0,
     maximum: source.maximum ?? 0,
     ...(source.staged === undefined ? {} : { staged: source.staged }),
+    ...(capacity ? { capacity: {
+      retained_state: capacity.retained_state ?? 0,
+      retired_state: capacity.retired_state ?? 0,
+      retired_unreadable: capacity.retired_unreadable ?? 0,
+    } } : {}),
   };
 }
 

@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-reporting.mjs";
+import { runtimeActivityVisible } from "../src/local/runtime-activity-projection.mjs";
 import { projectOverviewDetail, projectProjectOverview } from "../src/shared/project-overview-projection.mjs";
 import { GitService, GIT_METADATA_TIMEOUT_MS } from "../src/local/git-service.mjs";
 import { diagnoseRuntime, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/local/runtime-diagnostics.mjs";
@@ -11,8 +12,10 @@ import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-
 import { policyProfile } from "../src/local/policy.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-inspection.mjs";
 import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
+import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 
 await testRuntimeReporting();
+testProcessSessionStatusAuthority();
 await testRuntimeDiagnostics();
 testDoctorReportingScope();
 await testGitServiceMetadataTimeout();
@@ -74,6 +77,43 @@ async function testRuntimeReporting() {
   });
   assert(redacted.workspace_name === "workspace" && redacted.runtime.runtime_dir === "<private-runtime-dir>", "review policy leaked private paths");
 
+  const editorContext = { authority: { owner: false, principal: { kind: "account", role: "editor" } } };
+  assert(runtimeActivityVisible({}) === true
+    && runtimeActivityVisible({ authority: { owner: true, principal: { kind: "account", role: "owner" } } }) === true
+    && runtimeActivityVisible(editorContext) === false
+    && runtimeActivityVisible({ origin: "relay", authority: { principal: { kind: "account", role: "editor" } } }) === false,
+  "runtime activity projection failed open for a malformed relay/account authority context");
+  const nonOwner = buildRuntimeInfo({
+    workspace: "/workspace/project", displayPath: () => ".", policy: review, toolNames: ["read_file"],
+    capabilityObserver: { snapshot: () => ({ last_task_resolution: { selected_skill: "private-skill" } }) },
+    observability: { snapshot: () => ({ tools: { exec_command: { started: 9 } }, calls: { started: 9 } }) },
+    callRegistry: { snapshot: () => ({ active: 5, maximum: 16, ordinary_capacity: 14, reserved_capacity: 2, oldest_ms: 9999, by_origin: { relay: 5 } }) },
+    lifecycle: { snapshot: () => ({ state: "running" }) }, relayStatus: () => ({ ready: true }), runtimeDir: "/private/runtime",
+    processTracker: { snapshot: () => ({ active_processes: 4, draining_processes: 2 }) },
+    processSessionManager: { status: (context) => ({ active: context === editorContext ? 1 : 99, retained: 1, maximum: 8 }) },
+    managedJobManager: {
+      status: (context) => ({ active: 0, retained: context === editorContext ? 1 : 99, maximum: 50 }),
+      resourceInfo: (context) => ({ count: context === editorContext ? null : 99, names: [], inventory_hidden_by_authority: true }),
+    },
+    securityAudit: { enabled: true, healthy: true, chain_verified: true, persistence: "atomic", worker_ready: true, retained: 400, last_event_at: "private", queue_depth: 3 },
+    deviceRootStatus: { provider: "secure", root_storage: "Secure Enclave", key_id: "private-stable-key" },
+    context: editorContext,
+  });
+  assert(nonOwner.observability.capability_routing.activity_hidden_by_authority === true
+    && nonOwner.observability.tool_calls.activity_hidden_by_authority === true
+    && nonOwner.observability.in_flight_calls.activity_hidden_by_authority === true
+    && nonOwner.observability.in_flight_calls.maximum === 16
+    && !("active" in nonOwner.observability.in_flight_calls) && !("oldest_ms" in nonOwner.observability.in_flight_calls),
+  "non-owner runtime info leaked global task/tool/in-flight activity or hid static call capacity");
+  assert(nonOwner.runtime.processes.activity_hidden_by_authority === true
+    && nonOwner.runtime.process_sessions.active === 1 && nonOwner.runtime.managed_jobs.retained === 1
+    && nonOwner.runtime.local_resources.inventory_hidden_by_authority === true,
+  "non-owner runtime info leaked global process activity or lost principal-bound session/job state");
+  assert(nonOwner.security_audit.activity_hidden_by_authority === true && !("last_event_at" in nonOwner.security_audit)
+    && !("retained" in nonOwner.security_audit) && !("queue_depth" in nonOwner.security_audit)
+    && nonOwner.trust.device_root.key_id_hidden_by_authority === true && !("key_id" in nonOwner.trust.device_root),
+  "non-owner runtime info leaked audit activity or the stable device-root key id");
+
   const overview = await buildProjectOverview({
     workspace: "/workspace/project",
     displayPath: (value) => value,
@@ -89,6 +129,16 @@ async function testRuntimeReporting() {
   assert(overview.gitRoot === "/workspace/project" && overview.topLevel.length === 1, "project overview lost repository metadata");
   assert(overview.topLevelTotal === 1 && overview.topLevelTruncated === false, "project overview misreported its bounded inventory metadata");
   assert(overview.daemonPolicy.profile === "full" && overview.daemonTools.includes("read_file"), "project overview omitted the explicit daemon ceiling");
+  const nonOwnerOverview = await buildProjectOverview({
+    workspace: "/workspace/project", displayPath: (value) => value, policy: review, toolNames: ["read_file"],
+    daemonPolicy: full, daemonToolNames: ["read_file", "exec_command"],
+    capabilityObserver: { snapshot: () => ({ last_task_resolution: { selected_skill: "private-skill" } }) },
+    listTopLevel: async () => ({ entries: [] }), gitExecutable: () => "/usr/bin/git",
+    runInternalProcess: async () => ({ code: 0, stdout: "/workspace/project\n" }), safeErrorMessage: () => "safe", throwIfCancelled() {},
+  }, editorContext);
+  assert(nonOwnerOverview.capabilityRouting.activity_hidden_by_authority === true
+    && nonOwnerOverview.daemonTools.includes("exec_command"),
+  "non-owner project overview leaked cross-principal capability activity or lost the explicitly labeled daemon ceiling");
 
   const starts = [];
   let releaseTopLevel;
@@ -175,6 +225,10 @@ async function testRuntimeReporting() {
   "compact project overview leaked scale-dependent tool/path/fingerprint data or lost authority counts");
   assert(compactOverviewJson.length <= 5200,
     `compact project overview exceeded its 40-entry scale budget: ${compactOverviewJson.length} chars`);
+  const hiddenCompactOverview = projectProjectOverview({ ...syntheticOverview, capabilityRouting: { activity_hidden_by_authority: true } }, "summary");
+  assert(hiddenCompactOverview.capabilityRouting.activity_hidden_by_authority === true
+    && !("task_resolution_count" in hiddenCompactOverview.capabilityRouting),
+  "compact project overview converted hidden capability activity into false zero-valued evidence");
   assert(projectProjectOverview(syntheticOverview, "full") === syntheticOverview
     && projectProjectOverview("scalar", "summary") === "scalar",
   "project overview projection changed full/non-record compatibility results");
@@ -207,6 +261,32 @@ async function testRuntimeReporting() {
     && oddTopLevel.capabilityRouting.last_task_resolution.matched_skills === 0
     && oddTopLevel.capabilityRouting.last_task_resolution.routing_score_gap === 0,
   "project overview compact projection lost malformed-optional-field fallbacks");
+}
+
+function testProcessSessionStatusAuthority() {
+  const manager = Object.create(ProcessSessionManager.prototype);
+  const owner = (accountId, closedAt = null) => ({
+    closedAt,
+    owner_kind: "account",
+    owner_account_id: accountId,
+    owner_account_version: 1,
+    owner_client_id: "client-a",
+    owner_family_id: "family-a",
+  });
+  manager.sessions = new Map([
+    ["mine-live", owner("acct-editor")],
+    ["mine-closed", owner("acct-editor", Date.now())],
+    ["other-live", owner("acct-owner")],
+  ]);
+  const editorContext = { authority: { owner: false, principal: {
+    kind: "account", role: "editor", accountId: "acct-editor", accountVersion: 1, clientId: "client-a", familyId: "family-a",
+  } } };
+  const editor = manager.status(editorContext);
+  const localOwner = manager.status({});
+  assert(editor.active === 1 && editor.retained === 2 && editor.maximum === 8,
+    "process-session status leaked another principal's retained or active session");
+  assert(localOwner.active === 2 && localOwner.retained === 3,
+    "local owner process-session status lost the full machine-user view");
 }
 
 async function testRuntimeDiagnostics() {

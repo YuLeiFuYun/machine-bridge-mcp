@@ -29,7 +29,7 @@ There is no temporary elevation path. A `reviewer`, `editor`, or `operator` cann
 
 The Worker filters the stable `tools/list` discovery catalog by account role. It separately rejects calls that are outside the current account role or the live end-to-end-ready daemon ceiling before relay. Every accepted call carries account ID, account version, OAuth client ID, refresh-family ID, and role. The local runtime validates those values again before dispatch.
 
-Authenticated `server_info.authorization.effective_policy` and `effective_tools` describe the current account. `daemon.policy` and `daemon.tools` describe only the local capability ceiling; a `full` daemon does not make an `editor` account full.
+Authenticated `server_info.authorization.effective_policy` and `effective_tools` describe the current account. `daemon.policy` describes only the local capability ceiling; a `full` daemon does not make an `editor` account full. Exact `daemon.tools` names are owner-only diagnostic inventory: non-owner responses retain the daemon tool count and an explicit hidden marker without revealing owner-only capability names. Non-owner `server_info` likewise hides cross-principal runtime/Worker activity, protected local-resource inventory, and stable device-root key identity instead of representing those unknown values as zero.
 
 ## Account lifecycle
 
@@ -146,21 +146,21 @@ The first start of a new deployment creates an owner account automatically and p
 
 When the platform cannot prove that boundary, operator process execution is unavailable. The runtime does not fall back to a path blacklist that only appears isolated.
 
-Browser/application control, local data export, credential operations, persistent job creation, sensitive targets, and unrestricted paths remain owner-only.
+Browser/application control, local data export, credential operations, persistent job creation, machine-wide runtime diagnostics, protected local-resource inventory, sensitive targets, and unrestricted paths remain owner-only. In the public remote catalog this additionally means `diagnose_runtime`, `list_local_resources`, `stage_job`, and `start_job` are not discoverable or callable by reviewer/editor/operator accounts even where the underlying local daemon profile would otherwise admit them.
 
 ## Concurrency and revocation
 
-MCP sessions provide a request-ID namespace and cancellation boundary. Pending calls are bound to the authenticated token and session.
+Each MCP request has its own request-ID/cancellation boundary. Native `2026-07-28` HTTP streams are request-scoped rather than session-scoped, and the bounded initialization-era compatibility path does not create an MCP session either. Pending calls are bound to the authenticated account/client/family authority that was validated for that request.
 
 A brief relay interruption preserves an ordinary call only within the same-daemon reconnect grace period. Reconciliation or expiry cancels calls without a receiver and terminates their child process trees. A replacement daemon process cannot claim a detached call.
 
-Revoking an account, client, or refresh family blocks new requests immediately. Already-relayed work remains subject to local ownership, cancellation, timeout, daemon lifecycle, and process cleanup.
+Revoking an account, client, or refresh family blocks new requests immediately through the persisted OAuth/account-version state. The same mutation transaction durably queues the matching local-authority revocation before it commits. A daemon acknowledges that record only after revocation has been applied completely to pending calls, process sessions, and every inspectable matching managed job. The daemon attempts all three local execution categories before reporting an incomplete revocation, so a failed process-session termination does not postpone cancellation of an independently revocable managed job. A process-session whose direct forced tree-termination request cannot be delivered remains retained and makes the revocation retryable rather than being deleted from local control state. This internal safety cancellation is not gated by the public `cancel_job` tool's current policy availability: a job accepted under an earlier wider daemon policy must still be revocable after the policy narrows. If any matching local execution state cannot be inspected or cancelled safely—for example because a process-session termination request fails, a job transition is temporarily owned, or durable job state is unreadable—the daemon does not acknowledge the record and deliberately interrupts that relay generation so the still-persisted Worker queue is replayed on the next verified connection. That intentional reconnect is diagnosed as `local_authority_revocation_retry`, not as a generic network interruption, so operators are directed toward local retained state rather than transport troubleshooting. The queue is therefore not discarded merely because a local cancellation attempt failed. A transient Worker/relay delivery failure is likewise retried by the runtime alarm or the next verified daemon connection. Already-relayed work also remains subject to ordinary cancellation, timeout, daemon lifecycle, and process-tree cleanup.
 
 ## Audit and privacy
 
 Operational logs and the local security audit do not contain account passwords, tokens, command text, file content, form values, or results.
 
-The audit chain records salted principal references, so repeated activity can be correlated locally without storing raw account/client identifiers in each entry. `server_info` may return the current authenticated account ID, role, and version to that account.
+Before audit events leave the daemon thread, account/client/family identifiers are HMAC-pseudonymized with a fresh per-daemon runtime key; persistent audit state then applies its existing per-file salt before storing the references. Repeated activity can therefore be correlated within one daemon runtime without storing raw identifiers or leaving a reference that can be recomputed from the public salt alone. Cross-restart principal correlation is intentionally not an audit identity guarantee. `server_info` may still return the current authenticated account ID, role, and version to that same account as part of its own authorization context.
 
 Do not use secrets, email addresses, customer identifiers, or unnecessary personal data in account names and display names.
 

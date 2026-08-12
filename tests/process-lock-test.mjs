@@ -253,6 +253,7 @@ async function startupWaitTest() {
   assert(lock.acquired, "startup wait did not acquire the released lock");
   assert(Date.now() - started >= 100, "startup wait returned before the competing operation released its lock");
   assert(messages.some((message) => message.includes("waiting for")) && messages.some((message) => message.includes("continuing")), "startup wait progress messages are incomplete");
+  assert(!messages.some((message) => /\bpid\s+\d+\b/i.test(message)), "default startup wait log exposed the competing process identifier");
   lock.release();
   const result = await childResult;
   assert(result.code === 0, `startup lock fixture failed: ${result.stderr}`);

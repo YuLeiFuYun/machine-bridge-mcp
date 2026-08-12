@@ -15,7 +15,8 @@ export function projectProjectOverview(value, detail = "full") {
     policy: value.policy ?? null,
     effectiveToolCount: numberOrLength(authorization.effective_tool_count, value.tools),
     daemonPolicy: value.daemonPolicy ?? null,
-    daemonToolCount: arrayLength(value.daemonTools),
+    daemonToolCount: numberOr(value.daemonToolCount, arrayLength(value.daemonTools)),
+    ...(value.daemonToolsHiddenByAuthority === true ? { daemonToolsHiddenByAuthority: true } : {}),
     capabilityRouting: compactCapabilityRouting(value.capabilityRouting),
     topLevel: compactTopLevel(value.topLevel),
     topLevelTotal: numberOr(value.topLevelTotal, 0),
@@ -45,6 +46,7 @@ function compactAuthorization(value) {
 
 function compactCapabilityRouting(value) {
   const source = record(value);
+  if (source.activity_hidden_by_authority === true) return { activity_hidden_by_authority: true };
   const last = record(source.last_task_resolution);
   return {
     bootstrap_observed: source.bootstrap_observed === true,

@@ -34,7 +34,7 @@ export function createActivateCommand({
       component: "activate",
     });
     const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: true, allowPositional: true });
-    const state = loadState(workspace, { stateDir: args.stateDir });
+    let state = loadState(workspace, { stateDir: args.stateDir });
     if (!state.worker?.url) {
       throw new Error("activate requires an existing deployment; run machine-mcp once interactively before persistent activation");
     }
@@ -42,7 +42,17 @@ export function createActivateCommand({
     const expectedVersion = currentPackageVersion();
     const result = await activatePersistentRuntime({
       expectedVersion,
-      acquireStartupLock: () => acquireStartupLockWithWait(state, { operation: "activate", logger }),
+      acquireStartupLock: async () => {
+        const lock = await acquireStartupLockWithWait(state, { operation: "activate", logger });
+        try {
+          state = loadState(workspace, { stateDir: args.stateDir });
+          if (!state.worker?.url) throw new Error("activate requires an existing deployment; run machine-mcp once interactively before persistent activation");
+          return lock;
+        } catch (error) {
+          lock.release();
+          throw error;
+        }
+      },
       acquireServiceLock: () => acquireMachineServiceLockWithWait({ operation: "activate", logger }),
       inspectActivationOwnership: async () => {
         const daemon = inspectWorkspaceDaemon(state);

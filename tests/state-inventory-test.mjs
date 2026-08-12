@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { link, mkdir, mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
+import { pruneRetiredManagedJobDirectories } from "../src/local/managed-job-directory-generation.mjs";
 import { acquireDaemonLock, acquireStartupLock, loadState, saveState } from "../src/local/state.mjs";
 import { withOwnerStateLock } from "../src/local/owner-state-lock.mjs";
-import { acquireJobTransitionLock, acquireRecoveryLock } from "../src/local/managed-job-lock.mjs";
+import { acquireJobCapacityLock, acquireJobTransitionLock, acquireRecoveryLock } from "../src/local/managed-job-lock.mjs";
 
 const stateRoot = await mkdtemp(join(tmpdir(), "mbm-state-inventory-root-"));
 const workspace = await mkdtemp(join(tmpdir(), "mbm-state-inventory-workspace-"));
@@ -14,9 +15,26 @@ try {
   assert.deepEqual(knownProfileStates(stateRoot), []);
   assert.deepEqual(activeStateJobs(stateRoot), []);
   assert.deepEqual(activeStateLocks(stateRoot), []);
+  if (process.platform !== "win32") {
+    const profilesLink = join(stateRoot, "profiles");
+    await symlink(workspace, profilesLink);
+    assert.throws(() => knownWorkerNames(stateRoot), /state profile directory must be a real directory/,
+      "destructive state inventory followed a symbolic-link profiles directory");
+    await rm(profilesLink, { force: true });
+  }
 
   const state = loadState(workspace, { stateDir: stateRoot });
-  await mkdir(join(stateRoot, "profiles", "not-a-profile"), { recursive: true });
+  const profilesRoot = join(stateRoot, "profiles");
+  const unexpectedProfile = join(profilesRoot, "not-a-profile");
+  await mkdir(unexpectedProfile, { recursive: true });
+  assert.throws(() => knownWorkerNames(stateRoot), /state profile directory contains an unexpected entry/,
+    "destructive state inventory ignored an unknown profile namespace entry");
+  await rm(unexpectedProfile, { recursive: true, force: true });
+  const wrongTypeProfile = join(profilesRoot, "f".repeat(24));
+  await writeFile(wrongTypeProfile, "not-a-profile-directory\n", { mode: 0o600 });
+  assert.throws(() => knownWorkerNames(stateRoot), /state profile directory contains an unexpected entry/,
+    "destructive state inventory ignored a wrong-type reserved profile entry");
+  await rm(wrongTypeProfile, { force: true });
   state.worker.name = "machine-bridge-test";
   state.worker.previousNames = ["machine-bridge-previous"];
   saveState(state);
@@ -40,6 +58,35 @@ try {
   const canonicalStateRoot = await realpath(stateRoot);
   assert.equal(profiles[0].paths.stateRoot, canonicalStateRoot);
   assert.equal(profiles[0].paths.profileDir, join(canonicalStateRoot, "profiles", state.workspace.hash));
+
+  const retiredJobRoot = join(state.paths.profileDir, "jobs");
+  await mkdir(retiredJobRoot, { recursive: true, mode: 0o700 });
+  const retiredSource = join(retiredJobRoot, `job_${"R".repeat(24)}`);
+  await mkdir(retiredSource, { mode: 0o700 });
+  const retiredInfo = await lstat(retiredSource, { bigint: true });
+  const retiredName = `retired_job_${"Q".repeat(24)}_d${retiredInfo.dev}_i${retiredInfo.ino}`;
+  const retiredPath = join(retiredJobRoot, retiredName);
+  await rename(retiredSource, retiredPath);
+  const retiredState = activeStateJobs(stateRoot);
+  assert(retiredState.length === 1 && retiredState[0].state_kind === "retired_managed_job"
+    && retiredState[0].status === "retired_cleanup_pending" && !("job_id" in retiredState[0]),
+  "state inventory did not expose exactly one privacy-bounded crash-left retired managed-job generation");
+  pruneRetiredManagedJobDirectories(retiredJobRoot, { warn() {} });
+  assert.equal(await lstat(retiredPath).then(() => true, () => false), false,
+    "state maintenance did not reclaim a generation-verified retired managed-job directory");
+
+  const corruptRetiredName = `retired_job_${"Z".repeat(24)}_d0_i0`;
+  const corruptRetiredPath = join(retiredJobRoot, corruptRetiredName);
+  await mkdir(corruptRetiredPath, { mode: 0o700 });
+  const corruptRetiredState = activeStateJobs(stateRoot);
+  assert(corruptRetiredState.length === 1 && corruptRetiredState[0].state_kind === "retired_managed_job"
+    && corruptRetiredState[0].status === "unreadable" && corruptRetiredState[0].error_class === "integrity_error"
+    && !("job_id" in corruptRetiredState[0]),
+  "state inventory did not fail closed with a privacy-bounded projection for inconsistent retired state");
+  pruneRetiredManagedJobDirectories(retiredJobRoot, { warn() {} });
+  assert.equal(await lstat(corruptRetiredPath).then(() => true, () => false), true,
+    "state maintenance removed an inconsistent retired managed-job generation");
+  await rm(corruptRetiredPath, { recursive: true, force: true });
 
   state.worker.name = "-invalid";
   saveState(state);
@@ -102,6 +149,33 @@ try {
   releaseOwnerLock();
   await heldOwnerLock;
   assert.deepEqual(activeStateLocks(stateRoot), []);
+
+  const toolchains = join(stateRoot, "toolchains");
+  await mkdir(toolchains, { recursive: true });
+  let releaseToolchainLock;
+  let toolchainLockEntered;
+  const toolchainLockReady = new Promise((resolve) => { toolchainLockEntered = resolve; });
+  const heldToolchainLock = withOwnerStateLock(toolchains, async () => {
+    toolchainLockEntered();
+    await new Promise((resolve) => { releaseToolchainLock = resolve; });
+  }, { purpose: "wrangler-toolchain", fileName: "wrangler-toolchain.lock", label: "Wrangler toolchain" });
+  await toolchainLockReady;
+  const toolchainLocks = activeStateLocks(stateRoot);
+  assert.equal(toolchainLocks.length, 1);
+  assert.equal(toolchainLocks[0].kind, "toolchain");
+  assert.equal(toolchainLocks[0].pid, process.pid);
+  releaseToolchainLock();
+  await heldToolchainLock;
+  assert.deepEqual(activeStateLocks(stateRoot), []);
+
+  const toolchainLockPath = join(toolchains, "wrangler-toolchain.lock");
+  await writeFile(toolchainLockPath, "{invalid\n", { mode: 0o600 });
+  const malformedToolchainLocks = activeStateLocks(stateRoot);
+  assert.equal(malformedToolchainLocks.length, 1);
+  assert.equal(malformedToolchainLocks[0].kind, "toolchain");
+  assert.equal(malformedToolchainLocks[0].pid, null);
+  assert.equal(malformedToolchainLocks[0].reason, "invalid_or_unreadable_lock");
+  await rm(toolchainLockPath, { force: true });
 
   const primaryLockFailure = new Error("synthetic owner-state operation failure");
   let aggregateLockFailure;
@@ -264,8 +338,17 @@ try {
   assert.equal(fallbackLockResult, "fallback", "owner-state lock option fallbacks changed normal acquisition");
 
   const stagedJobId = `job_${"J".repeat(24)}`;
-  const stagedJobDir = join(state.paths.profileDir, "jobs", stagedJobId);
+  const jobRoot = join(state.paths.profileDir, "jobs");
+  const stagedJobDir = join(jobRoot, stagedJobId);
   await mkdir(stagedJobDir, { recursive: true, mode: 0o700 });
+  const capacity = acquireJobCapacityLock(jobRoot);
+  assert(capacity, "managed-job capacity lock could not be acquired");
+  const capacityLocks = activeStateLocks(stateRoot);
+  assert.equal(capacityLocks.length, 1);
+  assert.equal(capacityLocks[0].kind, "job-capacity");
+  assert.equal(capacityLocks[0].pid, process.pid);
+  capacity.release();
+  assert.deepEqual(activeStateLocks(stateRoot), []);
   const transition = acquireJobTransitionLock(stagedJobDir);
   assert(transition, "managed-job transition lock could not be acquired");
   const nestedLocks = activeStateLocks(stateRoot);

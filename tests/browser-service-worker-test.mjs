@@ -1,12 +1,16 @@
+import { createHmac, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { performance } from "node:perf_hooks";
 
 const serviceWorkerSource = await readFile(new URL("../browser-extension/service-worker.js", import.meta.url), "utf8");
+const brokerAuthSource = await readFile(new URL("../browser-extension/broker-auth.js", import.meta.url), "utf8");
+const pairingBootstrapSource = await readFile(new URL("../browser-extension/pairing-bootstrap.js", import.meta.url), "utf8");
 const browserErrorBoundarySource = await readFile(new URL("../browser-extension/browser-error-boundary.js", import.meta.url), "utf8");
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const browserOperationsSource = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");
 
+await testPairingGrantBoundary();
 await testHandshakeReadiness();
 await testFailedReplacementPreservesPairing();
 await testSocketReplacementCleanup();
@@ -20,6 +24,20 @@ await testBrowserWaitIgnoresWallClockRollback();
 await testAggregateFrameAndSourceBudgets();
 console.log("browser service worker test ok");
 
+async function testPairingGrantBoundary() {
+  const token = "g".repeat(32);
+  const context = createContext({ brokerTokens: { "39393": token }, chrome: baseChrome() });
+  loadServiceWorker(context, ["pairFromBootstrap"]);
+  const bootstrap = context.__machineBridgePairingBootstrap;
+  await expectReject(() => bootstrap.bootstrapPairing(39393, "invalid"), "bootstrap is invalid");
+  const grant = pairingGrant(39393, token);
+  const tampered = `${grant.slice(0, -1)}x`;
+  await expectReject(() => bootstrap.bootstrapPairing(39393, tampered), "broker authentication failed");
+  const candidate = await bootstrap.bootstrapPairing(39393, grant);
+  assert(candidate.endpoint === "ws://127.0.0.1:39393/extension" && candidate.token === token, "authenticated pairing bootstrap did not return the broker-bound extension credential");
+}
+
+
 async function testHandshakeReadiness() {
   const badge = [];
   const sent = [];
@@ -30,13 +48,14 @@ async function testHandshakeReadiness() {
   class MockWebSocket {
     static OPEN = 1;
     static CONNECTING = 0;
-    constructor() { this.readyState = MockWebSocket.CONNECTING; instance = this; socketCount += 1; }
+    constructor(_endpoint, protocols) { this.protocols = protocols; this.readyState = MockWebSocket.CONNECTING; instance = this; socketCount += 1; }
     send(value) { sent.push(JSON.parse(value)); }
     close(code = 1000, reason = "") { this.readyState = 3; this.onclose?.({ code, reason }); }
     open() { this.readyState = MockWebSocket.OPEN; this.onopen?.(); }
     receive(value) { this.onmessage?.({ data: JSON.stringify(value) }); }
   }
   const context = createContext({
+    brokerTokens: { "39393": "x".repeat(32) },
     WebSocket: MockWebSocket,
     chrome: baseChrome({
       action: {
@@ -55,8 +74,9 @@ async function testHandshakeReadiness() {
     }),
   });
   const api = loadServiceWorker(context, ["pairConfiguration"]);
-  const ready = api.pairConfiguration("ws://127.0.0.1:39393/extension", "x".repeat(32), { replace: false, senderUrl: "http://127.0.0.1:39393/pair" });
-  await tick();
+  const ready = api.pairConfiguration("ws://127.0.0.1:39393/extension", "x".repeat(32), { replace: false });
+  await waitForCondition(() => Boolean(instance));
+  assert(instance.protocols?.[0]?.startsWith("mbm-extension-v2.") && !instance.protocols[0].includes("x".repeat(32)), "extension WebSocket exposed the long-lived pairing token");
   instance.open();
   await tick();
   assert(!badge.includes("ON"), "extension reported connected before broker hello acknowledgement");
@@ -70,11 +90,11 @@ async function testHandshakeReadiness() {
   const paired = await ready;
   assert(paired.ok === true && persisted.length === 1, "authenticated pairing was not persisted exactly once");
   assert(badge.at(-1) === "ON", "extension did not report connected after hello_ack");
-  const repeated = await api.pairConfiguration("ws://127.0.0.1:39393/extension", "x".repeat(32), { replace: false, senderUrl: "http://127.0.0.1:39393/pair" });
+  const repeated = await api.pairConfiguration("ws://127.0.0.1:39393/extension", "x".repeat(32), { replace: false });
   assert(repeated.already_connected === true && socketCount === 1 && persisted.length === 1, "reopening the same pairing page disrupted or rewrote an authenticated connection");
-  const mismatched = await api.pairConfiguration("ws://127.0.0.1:39394/extension", "y".repeat(32), { replace: false, senderUrl: "http://127.0.0.1:39393/pair" });
-  assert(mismatched.ok === false && mismatched.error === "invalid_pairing_material", "pairing accepted a broker port different from the pairing page");
-  const decorated = await api.pairConfiguration("ws://127.0.0.1:39393/extension?unexpected=1", "z".repeat(32), { replace: false, senderUrl: "http://127.0.0.1:39393/pair" });
+  const mismatched = await api.pairConfiguration("ws://127.0.0.1:39394/extension", "y".repeat(32), { replace: false });
+  assert(mismatched.ok === false && mismatched.requires_manual_repair === true, "a different authenticated broker candidate bypassed explicit repair confirmation");
+  const decorated = await api.pairConfiguration("ws://127.0.0.1:39393/extension?unexpected=1", "z".repeat(32), { replace: false });
   assert(decorated.ok === false && decorated.error === "invalid_pairing_material", "pairing accepted a decorated broker endpoint");
 }
 
@@ -95,6 +115,7 @@ async function testFailedReplacementPreservesPairing() {
     fail() { this.close(1002, "candidate rejected"); }
   }
   const context = createContext({
+    brokerTokens: { "39393": oldToken, "39394": newToken },
     WebSocket: MockWebSocket,
     chrome: baseChrome({
       storage: { local: {
@@ -106,12 +127,12 @@ async function testFailedReplacementPreservesPairing() {
   const api = loadServiceWorker(context, ["pairConfiguration"]);
   await tick();
   storedPairing = { endpoint: oldEndpoint, token: oldToken };
-  const candidate = api.pairConfiguration(newEndpoint, newToken, { replace: true, senderUrl: "http://127.0.0.1:39394/pair" });
-  await tick();
+  const candidate = api.pairConfiguration(newEndpoint, newToken, { replace: true });
+  await waitForCondition(() => instances.length >= 1);
   assert(instances[0]?.endpoint === newEndpoint, "replacement did not start with the candidate endpoint");
   instances[0].fail();
   await expectReject(() => candidate, "handshake failed");
-  await tick();
+  await waitForCondition(() => instances.length >= 2);
   assert(persisted.length === 0, "failed replacement overwrote stored pairing material");
   assert(instances[1]?.endpoint === oldEndpoint, "failed replacement did not reconnect the previous pairing");
   instances[1].close();
@@ -131,6 +152,7 @@ async function testSocketReplacementCleanup() {
     receive(value) { return this.onmessage?.({ data: JSON.stringify(value) }); }
   }
   const context = createContext({
+    brokerTokens: { "39393": "a".repeat(32), "39394": "b".repeat(32) },
     WebSocket: MockWebSocket,
     setInterval() { return nextInterval++; },
     clearInterval(value) { if (value) clearedIntervals.push(value); },
@@ -142,6 +164,7 @@ async function testSocketReplacementCleanup() {
   };
   const api = loadServiceWorker(context, ["connect", "handleMessage", "activeRequests"]);
   const firstReady = api.connect("ws://127.0.0.1:39393/extension", "a".repeat(32));
+  await waitForCondition(() => instances.length >= 1);
   const first = instances.at(-1);
   first.open();
   first.receive({ type: "hello", role: "extension", protocol: 3 });
@@ -154,9 +177,10 @@ async function testSocketReplacementCleanup() {
   assert(api.activeRequests.get("request-1")?.cancelled === false, "browser request did not enter the active registry");
 
   const replacement = api.connect("ws://127.0.0.1:39394/extension", "b".repeat(32), { reconnect: false });
-  const second = instances.at(-1);
   assert(api.activeRequests.get("request-1")?.cancelled === true, "socket replacement did not cancel the old socket requests");
   assert(clearedIntervals.includes(firstKeepalive), "socket replacement did not clear the old keepalive timer");
+  await waitForCondition(() => instances.length >= 2);
+  const second = instances.at(-1);
   second.open();
   second.receive({ type: "hello", role: "extension", protocol: 3 });
   await tick();
@@ -445,6 +469,8 @@ async function testAggregateFrameAndSourceBudgets() {
 
 function loadServiceWorker(context, names) {
   vm.runInContext(browserErrorBoundarySource, context, { filename: "browser-error-boundary.js" });
+  vm.runInContext(brokerAuthSource, context, { filename: "broker-auth.js" });
+  vm.runInContext(pairingBootstrapSource, context, { filename: "pairing-bootstrap.js" });
   vm.runInContext(`${serviceWorkerSource}\nglobalThis.__machineBridgeServiceWorkerTest = { ${names.join(", ")} };`, context, { filename: "service-worker.js" });
   return context.__machineBridgeServiceWorkerTest;
 }
@@ -455,6 +481,7 @@ function loadBrowserOperations(context) {
 }
 
 function createContext(overrides = {}) {
+  const brokerTokens = overrides.brokerTokens || {};
   return vm.createContext({
     importScripts() {},
     console,
@@ -464,6 +491,10 @@ function createContext(overrides = {}) {
     URL,
     Promise,
     performance,
+    crypto: webcrypto,
+    AbortController,
+    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+    fetch: brokerAuthFetch(brokerTokens),
     setTimeout,
     clearTimeout,
     setInterval: () => 1,
@@ -472,6 +503,66 @@ function createContext(overrides = {}) {
     ...overrides,
   });
 }
+
+function brokerAuthFetch(tokens) {
+  const pairing = new Map();
+  return async (input, init = {}) => {
+    const url = new URL(String(input));
+    const token = tokens[String(url.port)];
+    const challenge = String(url.searchParams.get("challenge") || "");
+    const marker = init.headers?.["x-machine-bridge-broker-auth"];
+    if (marker !== "machine-bridge-browser-v2" || typeof token !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(challenge)) {
+      return response(404);
+    }
+    if (url.pathname === "/extension-auth" && init.method === "GET") {
+      const initProof = String(url.searchParams.get("init") || "");
+      const expectedInit = createHmac("sha256", token).update(`machine-bridge-browser-extension-init-v2\0${challenge}`).digest("base64url");
+      if (initProof !== expectedInit) return response(400);
+      const serverNonce = "s".repeat(32);
+      const proof = createHmac("sha256", token).update(`machine-bridge-browser-extension-server-v2\0${challenge}\0${serverNonce}`).digest("base64url");
+      return response(204, { "x-machine-bridge-broker-nonce": serverNonce, "x-machine-bridge-broker-proof": proof });
+    }
+    if (url.pathname !== "/pair-auth") return response(404);
+    const grantId = String(url.searchParams.get("grant") || "");
+    const match = /^(\d{13})\.([A-Za-z0-9_-]{22})$/.exec(grantId);
+    if (!match) return response(401);
+    const secret = createHmac("sha256", token).update(`machine-bridge-browser-pair-v2\0${url.port}\0${match[1]}\0${match[2]}`).digest("base64url");
+    if (init.method === "GET") {
+      const initProof = String(url.searchParams.get("init") || "");
+      const expectedInit = createHmac("sha256", secret).update(`machine-bridge-browser-pair-init-v2\0${grantId}\0${challenge}`).digest("base64url");
+      if (initProof !== expectedInit) return response(401);
+      const serverNonce = "p".repeat(32);
+      pairing.set(grantId, { challenge, serverNonce });
+      const proof = createHmac("sha256", secret).update(`machine-bridge-browser-pair-server-v2\0${grantId}\0${challenge}\0${serverNonce}`).digest("base64url");
+      return response(204, { "x-machine-bridge-broker-nonce": serverNonce, "x-machine-bridge-broker-proof": proof });
+    }
+    if (init.method === "POST") {
+      const pending = pairing.get(grantId); pairing.delete(grantId);
+      const nonce = String(url.searchParams.get("nonce") || "");
+      const proof = String(url.searchParams.get("proof") || "");
+      const expected = createHmac("sha256", secret).update(`machine-bridge-browser-pair-client-v2\0${grantId}\0${challenge}\0${nonce}`).digest("base64url");
+      if (!pending || pending.challenge !== challenge || pending.serverNonce !== nonce || proof !== expected) return response(401);
+      return response(204, { "x-machine-bridge-extension-token": token });
+    }
+    return response(405);
+  };
+}
+
+function response(status, values = {}) {
+  const headers = new Map(Object.entries(values));
+  return { status, headers: { get(name) { return headers.get(String(name).toLowerCase()) || null; } } };
+}
+
+
+function pairingGrant(port, token, now = Date.now()) {
+  const expiresAt = now + 30_000;
+  const nonce = Buffer.alloc(16, 7).toString("base64url");
+  const proof = createHmac("sha256", token)
+    .update(`machine-bridge-browser-pair-v2\0${port}\0${expiresAt}\0${nonce}`)
+    .digest("base64url");
+  return `${expiresAt}.${nonce}.${proof}`;
+}
+
 
 function baseChrome(overrides = {}) {
   return {
@@ -497,6 +588,14 @@ function listener() {
 
 function tick() {
   return new Promise((resolve) => { setTimeout(resolve, 0); });
+}
+
+async function waitForCondition(predicate, attempts = 100) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await tick();
+  }
+  throw new Error("timed out waiting for browser service-worker test condition");
 }
 
 async function expectReject(operation, expected) {

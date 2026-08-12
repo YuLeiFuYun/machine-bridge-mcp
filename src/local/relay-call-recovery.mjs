@@ -120,11 +120,11 @@ export class RelayCallRecovery {
       delivered += 1;
     }
     if (delivered > 0) {
-      this.logger.event?.(reason === "reconnected" ? "info" : "debug", "relay.tool_results.replayed", {
+      this.logger.event?.(reason === "reconnected" ? "info" : "debug", "relay.tool_results.redelivered", {
         delivered_results: delivered,
         reason,
         unacknowledged_results: this.pendingResults.size,
-      }, "Replayed completed tool results awaiting Worker acknowledgement");
+      }, "Redelivered completed tool results awaiting Worker acknowledgement");
     }
   }
 

@@ -10,6 +10,8 @@ const localAutomationFiles = [
   join(root, "src", "local", "browser-bridge.mjs"),
   join(root, "src", "local", "browser-operation-service.mjs"),
   join(root, "browser-extension", "service-worker.js"),
+  join(root, "browser-extension", "broker-auth.js"),
+  join(root, "browser-extension", "pairing-bootstrap.js"),
   join(root, "browser-extension", "browser-error-boundary.js"),
   join(root, "browser-extension", "browser-operations.js"),
   join(root, "browser-extension", "devtools-input.js"),
@@ -28,6 +30,8 @@ const brokerServerSource = readFileSync(join(root, "src", "local", "browser-brok
 if (extensionManifest.manifest_version !== 3 || !extensionManifest.permissions?.includes("scripting") || !extensionManifest.permissions?.includes("alarms") || !extensionManifest.permissions?.includes("debugger")) {
   throw new Error("packaged browser extension is missing required Manifest V3 capabilities");
 }
+const pairingContent = extensionManifest.content_scripts?.find((entry) => entry.js?.includes("pairing.js"));
+if (pairingContent?.run_at !== "document_start") throw new Error("browser pairing content script must run at document_start before page scripts");
 if (!extensionManifest.host_permissions?.includes("<all_urls>")) {
   throw new Error("browser extension no longer declares the generic page access documented by the security model");
 }
@@ -41,6 +45,9 @@ if (!brokerServerSource.includes("isAllowedExtensionOrigin(origin, EXPECTED_EXTE
   throw new Error("browser broker no longer pins WebSocket Origin to the packaged extension identity");
 }
 const serviceWorkerSource = readFileSync(join(root, "browser-extension", "service-worker.js"), "utf8");
+const extensionBrokerAuthSource = readFileSync(join(root, "browser-extension", "broker-auth.js"), "utf8");
+const pairingBootstrapSource = readFileSync(join(root, "browser-extension", "pairing-bootstrap.js"), "utf8");
+const pairingContentSource = readFileSync(join(root, "browser-extension", "pairing.js"), "utf8");
 const browserErrorBoundarySource = readFileSync(join(root, "browser-extension", "browser-error-boundary.js"), "utf8");
 const browserOperationsSource = readFileSync(join(root, "browser-extension", "browser-operations.js"), "utf8");
 const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
@@ -62,16 +69,17 @@ if (!workerToolTimeoutSource.includes('from "../shared/foreground-timeout.mjs"')
     || !sharedForegroundTimeoutSource.includes('"browser_screenshot", "browser_upload_files"')) {
   throw new Error("shared foreground timeout classification omits browser_upload_files or lost Worker ownership");
 }
-for (const origin of ["https://chatgpt.com", "https://chat.openai.com", "https://grok.com", "https://x.com"]) {
+for (const origin of ["https://chatgpt.com", "https://grok.com", "https://x.com"]) {
   if (!workerHttpSource.includes(`"${origin}"`)) throw new Error(`Worker built-in browser origins omit ${origin}`);
 }
+if (workerHttpSource.includes('"https://chat.openai.com"')) throw new Error("Worker retained the removed ChatGPT browser origin");
 if (!workerHttpSource.includes("BUILT_IN_BROWSER_ORIGIN_SET.has(origin)") || !workerHttpSource.includes("allowed.includes(origin)")) {
   throw new Error("Worker CORS validation no longer combines built-in and configured exact origins");
 }
 if (!workerSource.includes('mcpOriginRejection(request, base, this.env.MBM_ALLOWED_ORIGINS ?? "")')) {
   throw new Error("Durable Object no longer validates Origin on actual MCP endpoint requests");
 }
-if (workerSource.indexOf("this.modernMcp.handleControl(request, proxyMode)")
+if (workerSource.indexOf("this.mcp.handleControl(request, proxyMode)")
   > workerSource.indexOf("authorizeMcpRequest({")) {
   throw new Error("private modern cancellation again reuses the public OAuth/DPoP proof");
 }
@@ -117,9 +125,13 @@ if (!appAutomationSource.includes("matchesList[payload.selector.index]")) {
 if (!appAutomationSource.includes("item.role === 'AXSecureTextField'") || !appAutomationSource.includes("includeValues && !item.sensitive")) {
   throw new Error("application UI inspection does not suppress secure field values");
 }
-if (!serviceWorkerSource.includes('importScripts("browser-error-boundary.js", "devtools-input.js", "browser-operations.js")')) {
+if (!serviceWorkerSource.includes('importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-input.js", "browser-operations.js")')) {
   throw new Error("browser service worker lost fixed browser module loading");
 }
+const stripIndex = pairingContentSource.indexOf("history.replaceState");
+const bootstrapSendIndex = pairingContentSource.indexOf('sendMessage({ type: "pair_bootstrap"');
+if (stripIndex < 0 || bootstrapSendIndex < 0 || stripIndex > bootstrapSendIndex) throw new Error("browser pairing bootstrap fragment is not stripped before extension messaging");
+if (!pairingContentSource.includes("if (location.hash) return")) throw new Error("browser pairing proceeds when the bootstrap fragment remains page-visible");
 if (!browserErrorBoundarySource.includes("__machineBridgeBrowserErrorBoundary")
     || !browserErrorBoundarySource.includes('return SAFE_EXACT.has(message) ? message : "browser operation failed"')) {
   throw new Error("browser error boundary no longer defaults unclassified exceptions to a fixed public message");
@@ -128,6 +140,8 @@ if (!browserOperationsSource.includes('files: ["page-automation.js"]')) {
   throw new Error("browser operations module does not inject the fixed page automation module");
 }
 if (serviceWorkerSource.split(/\r?\n/).length > 350) throw new Error("browser service worker regained page-operation responsibilities");
+if (extensionBrokerAuthSource.split(/\r?\n/).length > 110) throw new Error("browser extension broker auth helper exceeded its transport/authentication responsibility");
+if (pairingBootstrapSource.split(/\r?\n/).length > 70) throw new Error("browser extension pairing bootstrap helper exceeded its authentication responsibility");
 for (const obsolete of ["func: inspectDocument", "func: performAction", "func: performFormFill", "func: performFileUpload"]) {
   if (serviceWorkerSource.includes(obsolete) || browserOperationsSource.includes(obsolete)) throw new Error(`browser service worker retained cross-world helper reference: ${obsolete}`);
 }
@@ -146,15 +160,14 @@ for (const [name, source] of [
   if (/catch\s*(?:\([^)]*\))?\s*\{\s*\}/.test(source)) throw new Error(`${name} contains an unexplained empty catch`);
 }
 for (const required of [
-  "transient_committed", "durable_committed", "owner_missing_acknowledged", "stale_connection_rejected",
-  "unmatched_results_is_legacy_aggregate",
+  "committed", "owner_missing_acknowledged", "stale_connection_rejected",
 ]) {
   if (!workerObservabilitySource.includes(required)) throw new Error(`Worker terminal-result observability lost disposition: ${required}`);
 }
-if (!workerSource.includes("daemonTerminalResultDecision(transientMatched, durableSettlement)")
-    || !workerSource.includes("if (decision.acknowledge)")
-    || !workerSource.includes("this.observability.daemonTerminalResult(decision.disposition)")) {
-  throw new Error("Worker result handling no longer separates acknowledged owner-missing replay from rejected stale connections");
+if (!workerSource.includes("this.pending.resultOwnership(body.id, ws)")
+    || !workerSource.includes('ownership === "missing"')
+    || !workerSource.includes('ownership === "missing" ? "owner_missing_acknowledged" : "stale_connection_rejected"')) {
+  throw new Error("Worker result handling no longer separates acknowledged owner-missing late results from rejected stale connections");
 }
 
 if (!workerSource.includes('from "./websocket-protocol.ts"')

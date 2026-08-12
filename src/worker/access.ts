@@ -5,8 +5,19 @@ import { policyAllowsAvailability, type DaemonPolicy } from "./policy.ts";
 
 export type AccountRole = keyof typeof accessContract.roles;
 
+export interface AuthorizedToken {
+  tokenKey: string;
+  accountId: string;
+  accountVersion: number;
+  clientId: string;
+  familyId: string;
+  dpopJkt: string;
+  role: AccountRole;
+}
+
 const roles = accessContract.roles as Record<string, { profile: string }>;
 const profiles = policyContract.profiles as unknown as Record<string, DaemonPolicy>;
+const ownerOnlyTools = new Set((accessContract.ownerOnlyTools as string[] | undefined)?.map(String) ?? []);
 const toolAvailability = new Map((toolCatalog as Array<{ name: string; availability: string }>).map((tool) => [tool.name, tool.availability]));
 
 export const ACCOUNT_ACCESS_REVISION = Number(accessContract.revision);
@@ -38,6 +49,7 @@ export function accountRolePolicy(role: AccountRole): DaemonPolicy {
 
 export function accountRoleAllowsTool(role: AccountRole, toolName: string): boolean {
   if (toolName === "server_info") return true;
+  if (role !== OWNER_ACCOUNT_ROLE && ownerOnlyTools.has(toolName)) return false;
   const availability = toolAvailability.get(toolName);
   return Boolean(availability && policyAllowsAvailability(accountRolePolicy(role), availability));
 }

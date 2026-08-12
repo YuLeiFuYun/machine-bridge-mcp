@@ -60,6 +60,24 @@ await orphanStatus({ _: ["status"] });
 assert(orphanOutputs.at(-1).effective_active === true && orphanOutputs.at(-1).orphaned_workspace_daemon === true,
   "inactive provider with a verified surviving service daemon was not projected as orphaned active state");
 
+const unknownOutputs = [];
+const unknownStatus = createServiceCommand({
+  chooseWorkspace: async () => "/synthetic-workspace",
+  stateRootFromArgs: () => "/synthetic-state",
+  acquireMachineServiceLockWithWait: acquireTestServiceLock,
+  structuredLogger: () => ({}),
+  currentPackageVersion: () => "3.0.0-test",
+  service: { ...service, async autostartStatus() { return { ok: true, active: null, provider: "test", state: "unknown" }; } },
+  inspectWorkspaceDaemon: () => ({ alive: false, verified_service_daemon: false, mode: "service", pid: null }),
+  loadState: () => structuredClone(state),
+  resolveWorkspace: (value) => value,
+  selectedWorkspace: () => "/synthetic-workspace",
+  print: (value) => unknownOutputs.push(JSON.parse(value)),
+});
+await unknownStatus({ _: ["status"] });
+assert(unknownOutputs.at(-1).effective_active === null,
+  "unverifiable provider state was collapsed into an inactive service status");
+
 const ownerStatusOutput = [];
 const ownerStatus = createServiceCommand({
   chooseWorkspace: async () => "/fallback-workspace",

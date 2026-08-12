@@ -21,10 +21,10 @@ Unless the user explicitly narrows or expands the task, a coding agent may:
 - run repository-local inspection, validation, packaging, dependency, privacy, and dry-run commands;
 - create local branches and commits;
 - generate the exact candidate with `npm run release:candidate`;
-- after explicit owner authorization and owner execution of the printed activation command, verify the live candidate through Machine Bridge and record acceptance;
+- after explicit owner authorization and owner execution of the printed activation command, run the repository's bounded synthetic release OAuth canary, verify the live candidate through Machine Bridge, and record acceptance;
 - push only with `npm run github:push`, manage the pull request through local `git`/`gh`, and prepare verified source-release metadata according to the mandatory prerelease/soak state machine; creating a Git tag or GitHub Release remains an owner-terminal action.
 
-This is standing authorization for implementation, local validation, observed candidate verification, acceptance recording, pull-request completion, and source-release metadata. It is not standing authorization for Git tag/GitHub Release publication, npm publication, global installation, Worker/service mutation, credential rotation, or destructive live-data changes.
+This is standing authorization for implementation, local validation, observed candidate verification, the repository's bounded synthetic release OAuth canary after owner activation, acceptance recording, pull-request completion, and source-release metadata. The canary is the only standing live-data exception: it creates one random `reviewer` account plus one DCR client, never emits their credentials/tokens, exercises authorization-code/MCP/refresh, and must revoke the client and remove the account before recording evidence. It is not standing authorization for Git tag/GitHub Release publication, npm publication, global installation, Worker/service mutation, credential rotation, any other live-user-data mutation, or destructive live-data changes.
 
 GitHub-only infrastructure changes whose npm package bytes are unchanged do not require a synthetic package version or runtime acceptance. They still require review and applicable checks.
 
@@ -42,8 +42,9 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
   ```
 
   This is a live activation command, not a per-operation authorization prompt. It updates the same-name Worker, verifies candidate relay readiness, replaces the login daemon, verifies background handoff, and exits while the service remains active.
+- The coding agent then runs `npm run release:oauth-canary -- --allow-live-oauth-canary`. The candidate-bound canary creates only synthetic temporary reviewer/client state, proves authorization-code exchange, authenticated MCP, refresh rotation, refreshed MCP, and cleanup, and records no credential/token/client/account value.
 - The coding agent then verifies Worker version/hash, remote health, relay readiness, connected daemon/service identity, representative functionality, relevant failure paths, and log/privacy behavior through Machine Bridge.
-- Only after observed live verification may the agent run `npm run release:accept`.
+- Only after the candidate-bound OAuth canary evidence and observed live verification may the agent run `npm run release:accept`.
 - The accepted prerelease is reviewed and merged; the owner then creates its Git tag and GitHub Prerelease from a real interactive terminal with `npm run prerelease:release -- --owner-terminal-confirm`.
 - npm prerelease publication is an explicit owner/release-operator action using `npm run prerelease:publish`.
 - The owner installs and activates the published prerelease with `npm run prerelease:install -- --allow-worker-deploy`; only this registry-verified activation starts formal soak.
@@ -77,7 +78,7 @@ Do not perform these merely because code or a version changed:
 - rotate credentials or device roots;
 - replace the live daemon/service outside the exact owner-executed activation workflow;
 - create or push a version tag, GitHub Release, or GitHub Prerelease;
-- mutate live user data or perform disruptive repository operations.
+- mutate live user data outside the candidate-bound synthetic release OAuth canary, or perform disruptive repository operations.
 
 The coding agent prepares and prints the exact command. The owner runs live activation and every GitHub/npm publication command from the required local terminal. Conversational authorization cannot substitute for the command's explicit flag and real TTY boundary.
 
@@ -90,6 +91,21 @@ The coding agent prepares and prints the exact command. The owner runs live acti
 - `npm run release:candidate` creates the exact tarball consumed by `npm run release:candidate:activate -- --allow-worker-deploy`. Any packaged-file change invalidates acceptance.
 - Release evidence contains bounded synthetic metadata only; never put user names, machine paths, command output, credentials, or private content in it.
 
+## Incident diagnosis and evidence hard gate
+
+A production incident is an evidence problem before it is a patching problem. The following order is mandatory for runtime, authentication, persistence, release, and hosted-client failures:
+
+1. Freeze and identify the exact candidate, deployed Worker, daemon, workspace, and relevant state generation before changing behavior. A generic host/UI error is a symptom, not a causal classification.
+2. Separate **observed facts**, **inferences**, **falsified hypotheses**, and **unknowns** in the working record. Do not rewrite a plausible hypothesis as a root cause merely because a patch compiles or a local test passes.
+3. Prefer privacy-bounded stage/error instrumentation and a minimal control experiment before semantic changes. Instrumentation must use fixed low-cardinality enums/classes and must not log request bodies, credentials, authorization codes, PKCE verifiers, tokens, DPoP proofs/JWKs, account identifiers, or raw exception messages.
+4. Change one causal hypothesis at a time when live evidence can distinguish alternatives. A hypothesis that live evidence falsifies must be removed before the final candidate unless the retained change has a separate documented invariant, regression test, and risk justification.
+5. Do not rotate credentials, recreate accounts, weaken authentication, remove proof-of-possession, delete state, rename remote resources, or force deployment as generic diagnostics. Such mutations require positive evidence that the corresponding identity/security boundary is the failing stage.
+6. Local unit tests, MemoryStorage fakes, Miniflare, and local Wrangler/workerd are necessary evidence only for the behavior they actually exercise. For behavior owned by a hosted runtime, provider, browser, operating system, or connector, release acceptance requires the corresponding deployed/live observation when practical.
+7. Verification evidence is valid only for a frozen source snapshot. Do not edit packaged or integration-test source while a verification run is in progress; any hot reload, concurrent source write, or candidate-regeneration race invalidates that run and requires a clean rerun from the final tree.
+8. Authentication/token/persistent-state changes require a deployed-edge canary before acceptance: successful authorization-code exchange, persisted access and refresh state, an authenticated MCP request, and at least one successful refresh-token rotation. When access-token lifetime or refresh continuity is material, also verify survival across the relevant TTL/soak boundary.
+
+When the incident is closed, record the causal evidence and the disproved branches in tracked documentation, then convert the lesson into a test or executable guard where possible. A prose-only promise is not sufficient when the failure mode can be mechanically prevented.
+
 ## Standard handoff
 
 ### Prerelease
@@ -97,8 +113,8 @@ The coding agent prepares and prints the exact command. The owner runs live acti
 1. Finish implementation and review; use a `dev`, `beta`, or `rc` version.
 2. Run complete verification and `npm run release:candidate`.
 3. Present `npm run release:candidate:activate -- --allow-worker-deploy` to the owner and stop.
-4. After the owner runs it, verify the live candidate through Machine Bridge.
-5. Record exact candidate acceptance, commit, and push only through `npm run github:push`.
+4. After the owner runs it, run `npm run release:oauth-canary -- --allow-live-oauth-canary`, then verify the live candidate through Machine Bridge.
+5. Record exact candidate acceptance only after both candidate-bound canary evidence and observed live verification; commit and push only through `npm run github:push`.
 6. Complete the pull request and exact-commit checks.
 7. The owner runs `npm run prerelease:release -- --owner-terminal-confirm` from a real interactive terminal.
 8. The owner runs `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy`.
@@ -110,7 +126,7 @@ The coding agent prepares and prints the exact command. The owner runs live acti
 1. Promote the same base version without functional package changes.
 2. Run `npm run release:soak:verify`, complete checks, and prepare a stable candidate.
 3. Present the same persistent candidate activation command to the owner.
-4. Verify the live stable candidate and record exact acceptance.
+4. Run the candidate-bound synthetic OAuth canary, verify the live stable candidate, and record exact acceptance only after both succeed.
 5. Push/review/merge through the guarded flow.
 6. The owner runs `npm run release -- --owner-terminal-confirm` from a real interactive terminal only after soak and exact-commit gates pass.
 7. The owner explicitly runs `npm run stable:publish`.

@@ -52,11 +52,28 @@ const boundaryModules = new Set([
   "process-tree.mjs",
   "process-tree-ownership.mjs",
   "execution-limits.mjs",
+  "resource-admission.mjs",
+  "resource-admission-policy.mjs",
+  "resource-admission-diagnostics.mjs",
+  "resource-build-root.mjs",
+  "resource-command-profile.mjs",
+  "resource-host-linux.mjs",
+  "resource-host-snapshot.mjs",
+  "resource-lease-accounting.mjs",
+  "resource-coordinator-accounting.mjs",
+  "resource-process-ancestry.mjs",
+  "resource-project-key.mjs",
+  "resource-process-admission.mjs",
+  "resource-request-contract.mjs",
+  "resource-script-classification.mjs",
+  "resource-shell-analysis.mjs",
+  "resource-waiters.mjs",
   "project-package.mjs",
   "policy.mjs",
   "errors.mjs",
   "call-registry.mjs",
   "owner-state-lock.mjs",
+  "release-runtime-lock.mjs",
   "exclusive-file.mjs",
   "child-process-settlement.mjs",
   "tool-executor.mjs",
@@ -78,6 +95,8 @@ const boundaryModules = new Set([
   "cli-local-admin.mjs",
   "capability-ranking.mjs",
   "execution-routing.mjs",
+  "resource-staging-recovery.mjs",
+  "resource-wait.mjs",
   "managed-job-plan.mjs",
   "numbers.mjs",
   "private-toolchain-integrity.mjs",
@@ -85,6 +104,8 @@ const boundaryModules = new Set([
   "project-metadata.mjs",
   "records.mjs",
   "state-inventory.mjs",
+  "state-owner-lock-inventory.mjs",
+  "state-root-owned-namespaces.mjs",
   "browser-extension-protocol.mjs",
   "browser-extension-identity.mjs",
   "browser-pairing-store.mjs",
@@ -93,6 +114,7 @@ const boundaryModules = new Set([
   "service-environment.mjs",
   "service-status.mjs",
   "service-ownership.mjs",
+  "service-definition.mjs",
   "monotonic-deadline.mjs",
   "runtime-capabilities.mjs",
   "runtime-diagnostics.mjs",
@@ -108,6 +130,10 @@ const boundaryModules = new Set([
   "browser-request-registry.mjs",
   "browser-bridge-http.mjs",
   "browser-broker-routes.mjs",
+  "browser-broker-auth.mjs",
+  "browser-pairing-grant.mjs",
+  "browser-pairing-launch.mjs",
+  "browser-broker-auth-http.mjs",
   "browser-broker-server.mjs",
   "windows-launcher.mjs",
   "managed-job-lock.mjs",
@@ -126,7 +152,7 @@ for (const name of boundaryModules) {
   }
 }
 
-for (const name of ["process-tree-ownership.mjs", "process-identity.mjs", "delegated-process-sandbox.mjs", "macos-trust-broker.mjs"]) {
+for (const name of ["process-tree-ownership.mjs", "process-identity.mjs", "resource-process-ancestry.mjs", "delegated-process-sandbox.mjs", "macos-trust-broker.mjs"]) {
   const source = readFileSync(join(localRoot, name), "utf8");
   const timeoutCount = (source.match(/\btimeout:/g) || []).length;
   const hardKillCount = (source.match(/killSignal:\s*["']SIGKILL["']/g) || []).length;
@@ -142,10 +168,18 @@ const lineLimits = Object.freeze({
   "src/local/relay-call-recovery.mjs": 170,
   "src/local/runtime-paths.mjs": 120,
   "src/local/runtime-reporting.mjs": 150,
+  "src/local/runtime-activity-projection.mjs": 60,
   "src/local/runtime-info-projection.mjs": 70,
   "src/local/runtime-resource-service.mjs": 100,
   "src/local/resource-operations.mjs": 110,
+  "src/local/resource-staging-recovery.mjs": 100,
+  "src/local/resource-wait.mjs": 50,
+  "src/local/secure-file.mjs": 180,
+  "src/local/ssh-key.mjs": 290,
+  "src/local/service-definition.mjs": 40,
+  "src/local/cli-activate.mjs": 180,
   "src/local/account-admin.mjs": 240,
+  "src/local/account-admin-response.mjs": 120,
   "src/local/runtime-diagnostics.mjs": 120,
   "src/local/runtime-diagnostic-state.mjs": 40,
   "src/local/system-network-route.mjs": 80,
@@ -156,6 +190,7 @@ const lineLimits = Object.freeze({
   "src/worker/index.ts": 830,
   "src/worker/oauth-controller.ts": 360,
   "src/worker/oauth-record-contract.ts": 20,
+  "src/worker/oauth-field-contract.ts": 40,
   "src/worker/oauth-store-validation.ts": 140,
   "src/worker/oauth-authorization-page.ts": 100,
   "src/worker/oauth-tokens.ts": 260,
@@ -175,6 +210,47 @@ const lineLimits = Object.freeze({
   "src/local/process-tree-snapshot.mjs": 100,
   "src/local/process-tree-ownership.mjs": 80,
   "src/local/execution-limits.mjs": 55,
+  "src/local/resource-admission.mjs": 340,
+  "src/local/resource-admission-policy.mjs": 150,
+  "src/local/resource-pressure.mjs": 90,
+  "src/local/resource-disk-headroom.mjs": 30,
+  "src/local/resource-admission-diagnostics.mjs": 60,
+  "src/local/resource-build-root.mjs": 90,
+  "src/local/resource-cargo-concurrency.mjs": 45,
+  "src/local/resource-cmake-concurrency.mjs": 45,
+  "src/local/resource-go-concurrency.mjs": 45,
+  "src/local/resource-gradle-concurrency.mjs": 60,
+  "src/local/resource-swift-concurrency.mjs": 35,
+  "src/local/resource-xcode-concurrency.mjs": 35,
+  "src/local/resource-xcode-command.mjs": 30,
+  "src/local/resource-xcode-non-build.mjs": 30,
+  "src/local/resource-make-concurrency.mjs": 60,
+  "src/local/resource-ninja-command-concurrency.mjs": 30,
+  "src/local/resource-ninja-concurrency.mjs": 35,
+  "src/local/resource-command-profile.mjs": 180,
+  "src/local/resource-command-concurrency.mjs": 70,
+  "src/local/resource-maven-concurrency.mjs": 40,
+  "src/local/resource-pytest-concurrency.mjs": 45,
+  "src/local/resource-elastic-memory.mjs": 30,
+  "src/local/resource-elastic-request.mjs": 40,
+  "src/local/resource-host-cache.mjs": 50,
+  "src/local/resource-host-darwin.mjs": 80,
+  "src/local/resource-host-linux.mjs": 80,
+  "src/local/resource-host-snapshot.mjs": 100,
+  "src/local/resource-lease-accounting.mjs": 130,
+  "src/local/resource-cpu-window.mjs": 40,
+  "src/local/resource-coordinator-accounting.mjs": 30,
+  "src/local/resource-probe-command.mjs": 60,
+  "src/local/resource-process-ancestry.mjs": 45,
+  "src/local/resource-process-ancestry-cache.mjs": 60,
+  "src/local/resource-project-key.mjs": 55,
+  "src/local/resource-process-admission.mjs": 60,
+  "src/local/resource-process-priority.mjs": 40,
+  "src/local/resource-transaction-lock.mjs": 190,
+  "src/local/resource-request-contract.mjs": 50,
+  "src/local/resource-script-classification.mjs": 45,
+  "src/local/resource-shell-analysis.mjs": 80,
+  "src/local/resource-waiters.mjs": 140,
   "src/shared/tool-call-capacity.mjs": 80,
   "src/shared/project-overview-projection.mjs": 110,
   "src/local/call-capacity.mjs": 70,
@@ -195,6 +271,7 @@ const lineLimits = Object.freeze({
   "src/local/security-audit-warning.mjs": 60,
   "src/local/call-registry.mjs": 190,
   "src/local/owner-state-lock.mjs": 130,
+  "src/local/release-runtime-lock.mjs": 40,
   "src/local/exclusive-file.mjs": 160,
   "src/local/lifecycle.mjs": 130,
   "src/local/loopback-health.mjs": 80,
@@ -210,21 +287,29 @@ const lineLimits = Object.freeze({
   "src/local/execution-routing.mjs": 300,
   "src/local/managed-jobs.mjs": 700,
   "src/local/managed-job-lock.mjs": 140,
+  "src/local/managed-job-capacity.mjs": 50,
+  "src/local/managed-job-retention.mjs": 130,
+  "src/local/managed-job-terminal-maintenance.mjs": 80,
   "src/local/managed-job-projection.mjs": 100,
   "src/local/managed-job-storage.mjs": 130,
   "src/local/managed-job-runner.mjs": 100,
   "src/local/managed-job-cancellation.mjs": 80,
   "src/local/managed-job-directory.mjs": 80,
+  "src/local/managed-job-directory-generation.mjs": 70,
   "src/local/managed-job-plan.mjs": 300,
   "src/local/numbers.mjs": 30,
   "src/local/package-identity.mjs": 20,
   "src/local/project-metadata.mjs": 80,
   "src/local/records.mjs": 20,
   "src/local/state-inventory.mjs": 170,
+  "src/local/state-owner-lock-inventory.mjs": 60,
+  "src/local/state-root-owned-namespaces.mjs": 90,
+  "src/local/state-root-retirement.mjs": 90,
   "src/local/worker-health.mjs": 280,
   "src/local/worker-deployment.mjs": 220,
   "src/local/hardened-npm.mjs": 230,
   "src/local/hardened-npm-download.mjs": 110,
+  "src/local/hardened-npm-download-timeout.mjs": 60,
   "src/local/hardened-npm-extract.mjs": 50,
   "src/local/hardened-npm-verification.mjs": 110,
   "src/local/npm-environment.mjs": 40,
@@ -235,6 +320,10 @@ const lineLimits = Object.freeze({
   "src/local/browser-request-registry.mjs": 100,
   "src/local/browser-bridge-http.mjs": 80,
   "src/local/browser-broker-routes.mjs": 180,
+  "src/local/browser-broker-auth.mjs": 100,
+  "src/local/browser-broker-auth-http.mjs": 90,
+  "src/local/browser-pairing-grant.mjs": 110,
+  "src/local/browser-pairing-launch.mjs": 80,
   "src/local/browser-broker-server.mjs": 90,
   "src/local/browser-operation-service.mjs": 360,
   "src/local/browser-extension-protocol.mjs": 130,
@@ -250,33 +339,14 @@ const lineLimits = Object.freeze({
   "src/local/windows-launcher.mjs": 90,
   "src/local/monotonic-deadline.mjs": 60,
   "src/local/path-inspection.mjs": 50,
-  "src/worker/mcp-session.ts": 120,
   "src/worker/mcp-access.ts": 80,
-  "src/worker/mcp-resumption-http.ts": 80,
-  "src/worker/mcp-resumption-config.ts": 80,
-  "src/worker/mcp-resumption.ts": 220,
-  "src/worker/mcp-resumption-begin.ts": 130,
-  "src/worker/mcp-stream-call-identity.ts": 20,
-  "src/worker/mcp-transaction-alarm.ts": 20,
-  "src/worker/mcp-resumption-records.ts": 200,
-  "src/worker/mcp-resumption-index.ts": 60,
-  "src/worker/mcp-resumption-request-index.ts": 50,
-  "src/worker/mcp-pending-call-store.ts": 280,
-  "src/worker/mcp-pending-call-records.ts": 80,
-  "src/worker/mcp-pending-call-expiry.ts": 40,
-  "src/worker/mcp-pending-call-storage.ts": 40,
-  "src/worker/mcp-pending-call-inspection.ts": 50,
-  "src/worker/mcp-stream.ts": 160,
-  "src/worker/mcp-legacy-stream-prepare.ts": 180,
-  "src/worker/mcp-request-fingerprint.ts": 60,
-  "src/worker/mcp-stream-proxy.ts": 120,
-  "src/worker/mcp-stream-attempt.ts": 60,
-  "src/worker/mcp-stream-prepare-retry.ts": 60,
-  "src/worker/mcp-stream-terminal-socket.ts": 80,
-  "src/worker/mcp-modern-proxy.ts": 130,
   "src/worker/mcp-stream-proxy-contract.ts": 100,
-  "src/worker/mcp-stream-subscription.ts": 130,
-  "src/worker/mcp-stream-channel.ts": 130,
+  "src/worker/mcp-http-accept.ts": 40,
+  "src/worker/mcp-response-proxy.ts": 140,
+  "src/worker/mcp-response-stream.ts": 90,
+  "src/worker/mcp-controller.ts": 220,
+  "src/worker/mcp-initialization-compat.ts": 170,
+  "src/worker/mcp-removed-protocol.ts": 40,
   "src/worker/worker-static-routes.ts": 90,
   "src/worker/worker-metadata.ts": 80,
   "src/worker/worker-edge-guard.ts": 100,
@@ -285,11 +355,10 @@ const lineLimits = Object.freeze({
   "src/worker/oauth-token-issuance.ts": 120,
   "src/worker/oauth-token-derivation.ts": 70,
   "src/worker/oauth-refresh-exchange.ts": 180,
-  "src/worker/mcp-stream-dispatch.ts": 220,
+  "src/worker/oauth-refresh-authority.ts": 40,
   "src/worker/server-info.ts": 170,
+  "src/worker/server-info-activity.ts": 40,
   "src/worker/daemon-status.ts": 60,
-  "src/worker/durable-stream-calls.ts": 140,
-  "src/worker/durable-stream-result.ts": 40,
   "src/worker/worker-entry.ts": 80,
   "src/worker/tool-timeout.ts": 80,
   "src/worker/tool-catalog.ts": 80,
@@ -298,7 +367,7 @@ const lineLimits = Object.freeze({
   "src/worker/daemon-socket-attachment.ts": 80,
   "src/worker/runtime-alarm.ts": 140,
   "src/worker/runtime-alarm-storage.ts": 60,
-  "src/worker/observability.ts": 320,
+  "src/worker/observability.ts": 180,
   "src/worker/pending-calls.ts": 180,
   "src/worker/pending-call-capacity.ts": 150,
   "src/worker/pending-admission.ts": 40,
@@ -330,6 +399,222 @@ for (const name of ["app-automation.mjs", "browser-bridge.mjs", "managed-jobs.mj
   if (!source.includes("authorizeTool")) throw new Error(`${name} lost the shared authorization gate`);
 }
 
+const resourceAdmissionSource = readFileSync(join(localRoot, "resource-admission.mjs"), "utf8");
+for (const required of ["createResourceWaiter", "selectedResourceWaiter", "process_group_isolated", "contention_key", "ResourceAdmissionError"]) {
+  if (!resourceAdmissionSource.includes(required)) throw new Error(`resource admission lost durable/fair ownership contract: ${required}`);
+}
+if (!resourceAdmissionSource.includes('from "./resource-wait.mjs"') || resourceAdmissionSource.includes("timer.unref")) {
+  throw new Error("resource admission wait liveness regressed to an unreferenced timer");
+}
+if (!resourceAdmissionSource.includes("withResourceTransactionLock") || resourceAdmissionSource.includes("withOwnerStateLock")) {
+  throw new Error("resource admission lost the beta.60-compatible transaction-lock boundary required for rolling activation");
+}
+for (const required of ["PROCESS_OWNERSHIP_LOCK_WAIT_MS = 30_000", "Math.min(PROCESS_OWNERSHIP_LOCK_WAIT_MS, waitMs - (performance.now() - started))", "}, PROCESS_OWNERSHIP_LOCK_WAIT_MS);"]) {
+  if (!resourceAdmissionSource.includes(required)) throw new Error(`resource coordinator lost operation-bounded transaction-lock waiting: ${required}`);
+}
+const resourceTransactionLockSource = readFileSync(join(localRoot, "resource-transaction-lock.mjs"), "utf8");
+for (const required of ["mkdirSync(lockPath", 'OWNER_NAME = "owner.json"', "validDirectoryOwner", "validPriorFileOwner", "removeDirectoryGeneration", "recoverResourceTransactionOwnerStaging", "rmdirSync(lockPath)", "resource transaction lock was replaced before quarantine restore"]) {
+  if (!resourceTransactionLockSource.includes(required)) throw new Error(`resource transaction lock lost rolling-version ownership semantics: ${required}`);
+}
+const resourceStagingRecoverySource = readFileSync(join(localRoot, "resource-staging-recovery.mjs"), "utf8");
+for (const required of ["OWNER_STAGING", "recoverResourceTransactionOwnerStaging", "stagingPublisherMayBeCurrent", "unexpected owner-publication state"]) {
+  if (!resourceStagingRecoverySource.includes(required)) throw new Error(`resource transaction owner-staging recovery regressed: ${required}`);
+}
+if (!resourceTransactionLockSource.includes('schema_version: 1') || !resourceTransactionLockSource.includes('kind: "file"')) {
+  throw new Error("resource transaction lock no longer interoperates with beta.60 directories and prior beta.61 owner-state files");
+}
+const resourceWaitSource = readFileSync(join(localRoot, "resource-wait.mjs"), "utf8");
+for (const required of ["setTimeout", "removeEventListener", "signal?.aborted", "resourceRetryDelayMs", "resourceChangeSignal", "signalResourceChange", "waitForResourceChange", "WeakMap", "2 ** step"]) {
+  if (!resourceWaitSource.includes(required)) throw new Error(`resource wait lost liveness/cancellation cleanup: ${required}`);
+}
+if (!resourceAdmissionSource.includes("retryAttempt") || !resourceAdmissionSource.includes("resourceRetryDelayMs")
+    || !resourceAdmissionSource.includes("waitForResourceChange") || !resourceAdmissionSource.includes("signalResourceChange(this)")
+    || !resourceAdmissionSource.includes("if (removeResourceWaiter(this.waitersDir, waiter)) signalResourceChange(this)")
+    || !resourceAdmissionSource.includes("if (pruned) signalResourceChange(this)") || !resourceAdmissionSource.includes("waiters.length < entries.length")) {
+  throw new Error("resource admission regained fixed-cadence polling or lost same-daemon capacity/fairness wakeups");
+}
+for (const required of ["fitElasticRequestToPressure", "normalizedRequest(effectiveRequest)", "decision.reservation ?", "result.lease.request", "wait_${waiter.waiter_id}"]) {
+  if (!resourceAdmissionSource.includes(required)) throw new Error(`resource admission lost in-queue elastic fan-out fitting: ${required}`);
+}
+const resourcePolicySource = readFileSync(join(localRoot, "resource-admission-policy.mjs"), "utf8");
+for (const required of ["aggregateResourceLeases", "resourceRequestIncrement", "reservation: declared", "cpu_overcommit", "io_overcommit", "memory_overcommit", "cpuPressure", "ioPressure", "memoryPressure", "disk_reserve_floor", "project_resource_busy"]) {
+  if (!resourcePolicySource.includes(required)) throw new Error(`resource admission lost work-conserving multi-resource policy: ${required}`);
+}
+const resourcePressureSource = readFileSync(join(localRoot, "resource-pressure.mjs"), "utf8");
+for (const required of ["resourcePressureState", "psi_memory_full", "load_backlog", 'platform !== "darwin"', "heavy_root_count"]) {
+  if (!resourcePressureSource.includes(required)) throw new Error(`resource pressure classification lost current host-signal policy: ${required}`);
+}
+const resourceDiskHeadroomSource = readFileSync(join(localRoot, "resource-disk-headroom.mjs"), "utf8");
+for (const required of ["resourceDiskHardFloorBytes", "resourceDiskSoftFloorBytes", "Math.min(50 * GIB", "Math.min(80 * GIB"]) {
+  if (!resourceDiskHeadroomSource.includes(required)) throw new Error(`resource disk headroom lost bounded proportional floors: ${required}`);
+}
+const resourceAccountingSource = readFileSync(join(localRoot, "resource-lease-accounting.mjs"), "utf8");
+for (const required of ["resourceLeaseAccountingContext", "resourceRequestIncrement", "ancestorLeaseIds", "Math.max(own[key], childSum[key])"]) {
+  if (!resourceAccountingSource.includes(required)) throw new Error(`resource lease accounting lost nested-envelope behavior: ${required}`);
+}
+const resourceCpuWindowSource = readFileSync(join(localRoot, "resource-cpu-window.mjs"), "utf8");
+for (const required of ["unobservedResourceCpu", "leaseObservedBySample", "bound_at", 'owner?.kind !== "process"']) {
+  if (!resourceCpuWindowSource.includes(required)) throw new Error(`resource CPU window lost sample-aligned startup protection: ${required}`);
+}
+const resourceCoordinatorAccountingSource = readFileSync(join(localRoot, "resource-coordinator-accounting.mjs"), "utf8");
+for (const required of ["resourceCoordinatorEvaluator", "resourceLeaseAccountingContext", "candidate?.owner?.pid"]) {
+  if (!resourceCoordinatorAccountingSource.includes(required)) throw new Error(`resource coordinator accounting lost requester ancestry: ${required}`);
+}
+const resourceAncestrySource = readFileSync(join(localRoot, "resource-process-ancestry.mjs"), "utf8");
+for (const required of ["pid=,ppid=", "ParentProcessId", "sampleResourceProcessParentsAsync", "runResourceProbeAsync"]) {
+  if (!resourceAncestrySource.includes(required)) throw new Error(`resource process ancestry lost bounded async cross-platform sampling: ${required}`);
+}
+if (resourceAncestrySource.includes("spawnSync") || resourceAncestrySource.includes("cachedResourceProcessParentSampler")) {
+  throw new Error("resource process ancestry regained blocking transport or cache responsibility");
+}
+const resourceAncestryCacheSource = readFileSync(join(localRoot, "resource-process-ancestry-cache.mjs"), "utf8");
+for (const required of ["cachedResourceProcessParentSamplerAsync", "DEFAULT_CACHE_MS = 1_000", "inFlight"]) {
+  if (!resourceAncestryCacheSource.includes(required)) throw new Error(`resource process ancestry cache lost bounded/in-flight behavior: ${required}`);
+}
+for (const required of ["cachedResourceProcessParentSamplerAsync", "sampleResourceProcessParentsAsync", "resourceCoordinatorEvaluator", "resourceRequestForProject"]) {
+  if (!resourceAdmissionSource.includes(required)) throw new Error(`resource admission lost hierarchy-aware async coordination: ${required}`);
+}
+const resourceProjectKeySource = readFileSync(join(localRoot, "resource-project-key.mjs"), "utf8");
+for (const required of ["agent-resource-contention-v1", "resourceProjectContentionKey", "resourceProjectIdentityHash", "resourceProjectHash", "realpathSync", "ENOENT", "ENOTDIR", "canonicalResourceProjectPath", "normalizeResourceProjectIdentity", "extendedUnc"]) {
+  if (!resourceProjectKeySource.includes(required)) throw new Error(`resource project key lost canonical cross-language identity: ${required}`);
+}
+const resourceProfileSource = readFileSync(join(localRoot, "resource-command-profile.mjs"), "utf8");
+for (const required of ['resource_class: resourceClass', '"adaptive", 0.5', 'plan?.invalid', '"build-validation", "light"', "swiftJobPlan", "shellTokens.length === 1", "xcodeResourcePlan", "xcodeIsLightCommand", "xcodeNonBuildResourcePlan", "CARGO_BUILD_JOBS", "MBM_CHECK_CONCURRENCY", "resourceCommandEffectiveCwd", "directInterpreterHeavyScript", "packageManagerTokensHeavy", "markElasticCompilerJobs", "markPreservedCompilerJobs"]) {
+  if (!resourceProfileSource.includes(required)) throw new Error(`resource command classification lost bounded/adaptive behavior: ${required}`);
+}
+if (!resourceProfileSource.includes('from "./resource-shell-analysis.mjs"') || !resourceProfileSource.includes('from "./resource-script-classification.mjs"') || resourceProfileSource.includes("function heavyShellScript")) {
+  throw new Error("resource command profile regained script parsing/classification responsibility");
+}
+const resourceScriptSource = readFileSync(join(localRoot, "resource-script-classification.mjs"), "utf8");
+for (const required of ["heavyScriptName", "directInterpreterHeavyScript", "packageManagerTokensHeavy", "heavyPackageScriptName", "coverage", "smoke"]) {
+  if (!resourceScriptSource.includes(required)) throw new Error(`resource script classification lost actual-entrypoint behavior: ${required}`);
+}
+const resourceShellSource = readFileSync(join(localRoot, "resource-shell-analysis.mjs"), "utf8");
+for (const required of ["heavyShellScript", "shellSegments", "commandTokens", "pythonModuleTokens", "commandString", 'from "./resource-script-classification.mjs"']) {
+  if (!resourceShellSource.includes(required)) throw new Error(`resource shell analysis lost bounded command-shape behavior: ${required}`);
+}
+if (resourceShellSource.includes("function heavyScriptName")) throw new Error("resource shell analysis regained script-name classification responsibility");
+const resourceConcurrencySource = readFileSync(join(localRoot, "resource-command-concurrency.mjs"), "utf8");
+for (const required of ["DEFAULT_COMPILER_JOBS = 3", "cargoJobPlan", "genericBuildJobPlan", "cmakeBuildJobPlan", "goJobPlan", "gradleJobPlan", "makeCommandJobPlan", "makeFlagsJobPlan", "mavenJobPlan", "ninjaCommandJobPlan", "ninjaJobserverPlan", "verificationFanoutPlan", "hasConfiguredValue(value)", "unboundedPlan", "MBM_CHECK_CONCURRENCY"]) {
+  if (!resourceConcurrencySource.includes(required)) throw new Error(`resource command concurrency lost explicit/default fan-out accounting: ${required}`);
+}
+const resourceCargoConcurrencySource = readFileSync(join(localRoot, "resource-cargo-concurrency.mjs"), "utf8");
+for (const required of ["CARGO_BUILD_JOBS", "availableParallelism", 'text === "default"', "cores + parsed", "cargoDeclaredJobPlan", 'current === "--"', "preserve"]) {
+  if (!resourceCargoConcurrencySource.includes(required)) throw new Error(`Cargo concurrency lost relative/default explicit-job accounting: ${required}`);
+}
+const resourceCmakeConcurrencySource = readFileSync(join(localRoot, "resource-cmake-concurrency.mjs"), "utf8");
+for (const required of ["cmakeBuildJobPlan", "CMAKE_BUILD_PARALLEL_LEVEL", "CMAKE_INT_MAX", '"--parallel"', '"--preset"', "cmakeIsFlag", "invalidPlan", "unboundedPlan", "preserve"]) {
+  if (!resourceCmakeConcurrencySource.includes(required)) throw new Error(`CMake concurrency lost last-wins/preset/native fail-closed accounting: ${required}`);
+}
+const resourceMakeConcurrencySource = readFileSync(join(localRoot, "resource-make-concurrency.mjs"), "utf8");
+for (const required of ["GNUMAKEFLAGS", "MAKEFLAGS", "makeCommandJobPlan", "makeFlagsJobPlan", "--jobserver-auth=", "compactPlan", "preserve"]) {
+  if (!resourceMakeConcurrencySource.includes(required)) throw new Error(`GNU make concurrency lost argv/environment option accounting: ${required}`);
+}
+const resourceGradleConcurrencySource = readFileSync(join(localRoot, "resource-gradle-concurrency.mjs"), "utf8");
+for (const required of ["gradleJobPlan", "JAVA_OPTS", "GRADLE_OPTS", "org.gradle.workers.max", '"--max-workers"', '"--system-prop"', "splitJvmOptions", "GRADLE_INT_MAX", "invalidPlan", "unboundedPlan", "preserve"]) {
+  if (!resourceGradleConcurrencySource.includes(required)) throw new Error(`Gradle concurrency lost CLI/system-property precedence or validation accounting: ${required}`);
+}
+const resourceNinjaCommandSource = readFileSync(join(localRoot, "resource-ninja-command-concurrency.mjs"), "utf8");
+for (const required of ["ninjaCommandJobPlan", "NINJA_INT_MAX", 'value === "-j"', 'startsWith("-j")', '"--jobs"', "invalidPlan", "unboundedPlan"]) {
+  if (!resourceNinjaCommandSource.includes(required)) throw new Error(`Ninja direct concurrency lost getopt last-wins/validation accounting: ${required}`);
+}
+const resourceNinjaConcurrencySource = readFileSync(join(localRoot, "resource-ninja-concurrency.mjs"), "utf8");
+for (const required of ["ninjaJobserverPlan", "MAKEFLAGS", "--jobserver-auth=", "--jobserver-fds=", 'platform === "win32"', 'value.startsWith("fifo:")', 'args[0].includes("n")', "descriptorPair", "cooperativePlan", "unbounded: true", "preserve: true"]) {
+  if (!resourceNinjaConcurrencySource.includes(required)) throw new Error(`Ninja concurrency lost GNU jobserver preservation: ${required}`);
+}
+const resourceGoConcurrencySource = readFileSync(join(localRoot, "resource-go-concurrency.mjs"), "utf8");
+for (const required of ["goJobPlan", "GOFLAGS", "directGoPlan", "splitGoFlags", "^--?p=", '"-args"', '"--args"', "ambiguous", "fatal", "invalidPlan", "unboundedPlan", "preserve"]) {
+  if (!resourceGoConcurrencySource.includes(required)) throw new Error(`Go concurrency lost direct/GOFLAGS precedence or invalid-fast-path accounting: ${required}`);
+}
+const resourceSwiftConcurrencySource = readFileSync(join(localRoot, "resource-swift-concurrency.mjs"), "utf8");
+for (const required of ["swiftJobPlan", "SWIFT_UINT32_MAX", '"-j", "--jobs"', "parsed === 0", "invalidPlan", "unboundedPlan"]) {
+  if (!resourceSwiftConcurrencySource.includes(required)) throw new Error(`SwiftPM concurrency lost scalar last-wins/llbuild-zero accounting: ${required}`);
+}
+const resourceXcodeConcurrencySource = readFileSync(join(localRoot, "resource-xcode-concurrency.mjs"), "utf8");
+for (const required of ["xcodeBuildJobPlan", "xcodeHasIndependentTestFanout", "xcodeResourcePlan", 'value === "-jobs"', 'startsWith("-jobs=")', "seen > 1", "parsed < 1", "invalidPlan", "unboundedPlan"]) {
+  if (!resourceXcodeConcurrencySource.includes(required)) throw new Error(`Xcode concurrency lost single-jobs validation or independent-test-fanout accounting: ${required}`);
+}
+const resourceXcodeCommandSource = readFileSync(join(localRoot, "resource-xcode-command.mjs"), "utf8");
+for (const required of ["xcodeIsLightCommand", '"-help"', '"-usage"', '"-showsdks"']) {
+  if (!resourceXcodeCommandSource.includes(required)) throw new Error(`Xcode light command classification lost query safety: ${required}`);
+}
+const resourceXcodeNonBuildSource = readFileSync(join(localRoot, "resource-xcode-non-build.mjs"), "utf8");
+for (const required of ["xcodeNonBuildResourcePlan", '"-resolvePackageDependencies"', '"-exportArchive"', '"-downloadPlatform"', '"-deleteComponent"', '"-showBuildSettings"', '"xcode-maintenance"', '"xcode-artifact"', '"xcode-package-resolution"', '"xcode-query"']) {
+  if (!resourceXcodeNonBuildSource.includes(required)) throw new Error(`Xcode non-build resource classification lost workload-specific accounting: ${required}`);
+}
+const resourceMavenConcurrencySource = readFileSync(join(localRoot, "resource-maven-concurrency.mjs"), "utf8");
+for (const required of ["mavenJobPlan", "mavenCoreMultiplierPlan", "MAVEN_ARGS", "availableParallelism", "Math.trunc", 'endsWith("C")', "preserve"]) {
+  if (!resourceMavenConcurrencySource.includes(required)) throw new Error(`Maven concurrency lost exact CLI/environment thread accounting: ${required}`);
+}
+const resourcePytestConcurrencySource = readFileSync(join(localRoot, "resource-pytest-concurrency.mjs"), "utf8");
+for (const required of ["pytestWorkerPlan", 'requested === "0"', '"auto", "logical"', '"--maxprocesses"', "unboundedPlan"]) {
+  if (!resourcePytestConcurrencySource.includes(required)) throw new Error(`pytest worker concurrency lost bounded auto/logical accounting: ${required}`);
+}
+const resourceElasticSource = readFileSync(join(localRoot, "resource-elastic-request.mjs"), "utf8");
+for (const required of ["Symbol(", "markElasticCompilerJobs", "memory_floor_mb", "cpu_overcommit", "elasticMemoryJobLimit", "markPreservedCompilerJobs", "preservesCompilerJobs", "fitElasticRequestToPressure", "cpu_busy_cores", "unobserved_reserved_cpu"]) {
+  if (!resourceElasticSource.includes(required)) throw new Error(`elastic resource request lost in-memory headroom fitting: ${required}`);
+}
+const resourceElasticMemorySource = readFileSync(join(localRoot, "resource-elastic-memory.mjs"), "utf8");
+for (const required of ["elasticMemoryJobLimit", "elasticMemoryMb", "memory_overcommit", "used?.memory_mb"]) {
+  if (!resourceElasticMemorySource.includes(required)) throw new Error(`elastic resource memory fitting lost declared fan-out budget behavior: ${required}`);
+}
+const resourceWaitersSource = readFileSync(join(localRoot, "resource-waiters.mjs"), "utf8");
+if (!resourceWaitersSource.includes("resource waiter changed during stale pruning")) throw new Error("resource waiter stale pruning lost fail-closed ownership revalidation");
+if (["elasticCompilerJobs", "preserveCompilerJobs"].some((marker) => resourceAdmissionSource.includes(marker)
+    || resourceWaitersSource.includes(marker))) {
+  throw new Error("elastic compiler marker leaked into persisted resource coordinator request schema");
+}
+const resourceHostSource = readFileSync(join(localRoot, "resource-host-snapshot.mjs"), "utf8");
+for (const required of ["sampleResourceHostAsync", "sampleDarwinHostAsync", "CPU_BUSY_SAMPLE_MS = 50", "options.previous", "cpuBusyWindow", "cpuTimeTotals", 'from "./resource-host-linux.mjs"']) {
+  if (!resourceHostSource.includes(required)) throw new Error(`resource host snapshot lost async orchestration: ${required}`);
+}
+if (resourceHostSource.includes('"ps"') || resourceHostSource.includes("spawnSync") || resourceHostSource.includes("execFile") || resourceHostSource.includes("function sampleLinux") || resourceHostSource.includes("function sampleDarwin")) {
+  throw new Error("resource host snapshot regained blocking transport or platform parsing responsibility");
+}
+const resourceDarwinHostSource = readFileSync(join(localRoot, "resource-host-darwin.mjs"), "utf8");
+for (const required of ["sampleDarwinHostAsync", "Promise.all", "memory_pressure", "vm_stat", "iostat", "pmset"]) {
+  if (!resourceDarwinHostSource.includes(required)) throw new Error(`Darwin resource host sampling lost parallel pressure probes: ${required}`);
+}
+const resourceProbeSource = readFileSync(join(localRoot, "resource-probe-command.mjs"), "utf8");
+for (const required of ["runResourceProbeAsync", "execFile", "runResourceProbeSync", "spawnSync", 'killSignal: "SIGKILL"']) {
+  if (!resourceProbeSource.includes(required)) throw new Error(`resource probe transport lost bounded sync/async execution: ${required}`);
+}
+const resourceHostCacheSource = readFileSync(join(localRoot, "resource-host-cache.mjs"), "utf8");
+for (const required of ["HOST_SAMPLE_FRESH_MS = 500", "HOST_CPU_PREVIOUS_MAX_AGE_MS = 2_000", "HOST_IO_SAMPLE_FRESH_MS = 5_000", "HOST_IO_HINT_MAX_AGE_MS = 30_000", "cached?.sample_scope === scope", "previous: cpuPrevious", "withCachedIo(quick, scopedCached)", "io_sampled_at_ms"]) {
+  if (!resourceHostCacheSource.includes(required)) throw new Error(`resource host cache lost global-CPU/scoped-I/O freshness split: ${required}`);
+}
+if (!resourceAdmissionSource.includes("hostSamplesInFlight") || !resourceAdmissionSource.includes("resourceProjectHash(cwd)") || !resourceAdmissionSource.includes("resourceHostNeedsFreshIo")) {
+  throw new Error("resource admission lost in-process single-flight host sampling");
+}
+if (!resourceAdmissionSource.includes("sampleResourceHostAsync") || resourceAdmissionSource.includes("sampleResourceHost(")) {
+  throw new Error("resource admission live path regained blocking host sampling");
+}
+if ((resourceAdmissionSource.match(/readdirSync\(this\.leasesDir\)\.some/g) || []).length < 2) {
+  throw new Error("resource admission regained unconditional process-ancestry sampling on an empty lease set");
+}
+const resourceLinuxHostSource = readFileSync(join(localRoot, "resource-host-linux.mjs"), "utf8");
+for (const required of ["/proc/meminfo", "/proc/pressure/cpu", "/proc/pressure/memory", "/proc/pressure/io", "MemAvailable", "avg10"]) {
+  if (!resourceLinuxHostSource.includes(required)) throw new Error(`Linux resource host sampling lost kernel pressure signal: ${required}`);
+}
+const resourceBuildRootSource = readFileSync(join(localRoot, "resource-build-root.mjs"), "utf8");
+for (const required of [
+  "AgentBuilds.noindex", ".metadata_never_index", "CARGO_TARGET_DIR", "--scratch-path", "-derivedDataPath",
+  "applyCompilerConcurrency", "--parallel", "--max-workers", '"-T"', '"-p"',
+]) {
+  if (!resourceBuildRootSource.includes(required)) throw new Error(`shared build root lost compiler-cache isolation: ${required}`);
+}
+const resourcePrioritySource = readFileSync(join(localRoot, "resource-process-priority.mjs"), "utf8");
+for (const required of ["BACKGROUND_NICE_INCREMENT = 5", "UNBOUNDED_NICE_INCREMENT = 2", 'request?.priority === "background"', 'request?.unbounded === true', 'request?.heavy !== true']) {
+  if (!resourcePrioritySource.includes(required)) throw new Error(`resource process priority lost work-conserving background behavior: ${required}`);
+}
+const resourceProcessAdmissionSource = readFileSync(join(localRoot, "resource-process-admission.mjs"), "utf8");
+if (!resourceProcessAdmissionSource.includes("applyResourceProcessPriority")) throw new Error("resource process admission lost centralized background priority injection");
+if (!resourceProcessAdmissionSource.includes("{ ...request, ...lease.request }") || resourceProcessAdmissionSource.includes("fitElastic")) {
+  throw new Error("resource process admission lost coordinator-selected values or process-local compiler metadata after durable lease normalization");
+}
+for (const [name, required] of [["process-execution.mjs", "acquireProcessResources"], ["process-sessions.mjs", "acquireProcessResources"], ["job-runner.mjs", "acquireProcessResources"]]) {
+  if (!readFileSync(join(localRoot, name), "utf8").includes(required)) throw new Error(`${name} bypasses shared machine resource admission`);
+}
 for (const name of ["process-execution.mjs", "process-tracker.mjs", "job-runner.mjs", "shell.mjs"]) {
   const source = readFileSync(join(localRoot, name), "utf8");
   if (source.includes('from "./process-sessions.mjs"')) {
@@ -427,8 +712,15 @@ for (const required of ["verifyPathIdentity: true", "rejectMultipleLinks: true"]
   if (!logSchemaReadBoundary.includes(required)) throw new Error(`autostart log schema lost destructive-evidence read hardening: ${required}`);
 }
 const stateInventoryBoundary = readFileSync(join(localRoot, "state-inventory.mjs"), "utf8");
-for (const required of ['readBoundedRegularFileSync(path, MAX_STATE_BYTES, "state inventory"', "verifyPathIdentity: true", "rejectMultipleLinks: true"]) {
+for (const required of ['readBoundedRegularFileSync(path, MAX_STATE_BYTES, "state inventory"', "verifyPathIdentity: true", "rejectMultipleLinks: true", "inspectPathIfPresentSync", "state profile directory must be a real directory", "state profile directory contains an unexpected entry", "managed-job root must be a real directory"]) {
   if (!stateInventoryBoundary.includes(required)) throw new Error(`state inventory lost destructive-evidence read hardening: ${required}`);
+}
+if (stateInventoryBoundary.includes("existsSync(")) throw new Error("destructive state inventory again treats inspection failure as absence");
+for (const forbidden of ["if (existsSync(statePath))", "const recoveryPending = existsSync(recoveryPath)", "if (existsSync(recoveryPath))", "if (!existsSync(file)) return;", "while (!existsSync(existing))"]) {
+  if (stateBoundary.includes(forbidden)) throw new Error(`state persistence again treats inspection failure as absence: ${forbidden}`);
+}
+for (const required of ['inspectPathIfPresentSync(statePath, "workspace state")', 'inspectPathIfPresentSync(recoveryPath, "state recovery marker")', 'while (!inspectPathIfPresentSync(existing, "path identity"))', 'readProcessLockSnapshot(file)']) {
+  if (!stateBoundary.includes(required)) throw new Error(`state persistence lost fail-closed presence inspection: ${required}`);
 }
 const packageIdentitySource = readFileSync(join(localRoot, "package-identity.mjs"), "utf8");
 for (const required of ["server-metadata.json", "package.json", "fileURLToPath", "export const packageRoot", "export const packageName", "export const packageVersion", "export const appName"]) {
@@ -456,11 +748,17 @@ if (!macosTrustBrokerSource.includes('from "./package-identity.mjs"') || macosTr
   throw new Error("macOS trust broker regained a duplicate package-root implementation");
 }
 const secureFileBoundary = readFileSync(join(localRoot, "secure-file.mjs"), "utf8");
-if (!secureFileBoundary.includes("if (!sameFilesystemIdentity(identity, filesystemIdentity(pathIdentityInfo, label))) throw")) {
-  throw new Error("secure file identity comparison regained an unsafe fail-open fallback");
+for (const required of ["sameFilesystemIdentity(identity, filesystemIdentity(pathIdentityInfo, label))", 'code: "MBM_IDENTITY_CHANGED"']) {
+  if (!secureFileBoundary.includes(required)) throw new Error(`secure file identity comparison/retry classification regressed: ${required}`);
 }
-for (const required of ["export function ownerOnlyFile", "export function ensureOwnerOnlyDir"]) {
+for (const required of ["export function ownerOnlyFile", "export function ensureOwnerOnlyDir", "export function chmodRegularFileIfIdentitySync", "export function retryTransientMultipleLinksSync", 'code: "MBM_MULTIPLE_HARD_LINKS"']) {
   if (!secureFileBoundary.includes(required)) throw new Error(`secure-file lost owner-only permission boundary: ${required}`);
+}
+for (const required of ["sameFilesystemIdentity(expectedIdentity, identity)", "setDescriptorMode(fd, mode)"]) {
+  if (!secureFileBoundary.includes(required)) throw new Error(`secure-file identity-bound chmod contract regressed: ${required}`);
+}
+if (existsSync(join(localRoot, "state-locations.mjs"))) {
+  throw new Error("unused divergent state-locations module returned; extract live state path semantics only with real importers and parity tests");
 }
 for (const obsolete of ["export function ownerOnlyFile", "export function ensureOwnerOnlyDir", "export function previewSecret"]) {
   if (stateBoundary.includes(obsolete)) throw new Error(`state module regained generic/dead helper: ${obsolete}`);
@@ -469,6 +767,50 @@ for (const name of ["managed-job-runner-claim.mjs", "managed-job-storage.mjs", "
   const source = readFileSync(join(localRoot, name), "utf8");
   if (source.includes('from "./state.mjs"')) throw new Error(`${name} regained an unnecessary state dependency`);
   if (!source.includes('from "./secure-file.mjs"')) throw new Error(`${name} bypasses the secure owner-only file boundary`);
+}
+
+const resourceOperationsSource = readFileSync(join(localRoot, "resource-operations.mjs"), "utf8");
+for (const required of ["const lockState = loadStateFn", "await acquireLockFn(lockState", "const state = loadStateFn"]) {
+  if (!resourceOperationsSource.includes(required)) throw new Error(`SSH resource registration lost lock-then-fresh-state authority: ${required}`);
+}
+if (!(resourceOperationsSource.indexOf("await acquireLockFn(lockState") < resourceOperationsSource.indexOf("const state = loadStateFn"))) {
+  throw new Error("SSH resource registration reloads authority before acquiring the startup lock");
+}
+const cliSourceForStateAuthority = readFileSync(join(localRoot, "cli.mjs"), "utf8");
+for (const [operation, marker] of [["start", 'state = loadState(workspace, { stateDir: args.stateDir });'], ["rotate-secrets", 'state = loadState(workspace, { stateDir: args.stateDir });']]) {
+  const lockMarker = operation === "start" ? 'operation: "start"' : 'operation: "rotate-secrets"';
+  const lockAt = cliSourceForStateAuthority.indexOf(lockMarker);
+  const reloadAt = cliSourceForStateAuthority.indexOf(marker, lockAt);
+  if (lockAt < 0 || reloadAt < 0 || reloadAt < lockAt) throw new Error(`${operation} lost post-lock state refresh`);
+}
+const activateCliSource = readFileSync(join(localRoot, "cli-activate.mjs"), "utf8");
+for (const required of ["const lock = await acquireStartupLockWithWait", "state = loadState(workspace", "lock.release();"]) {
+  if (!activateCliSource.includes(required)) throw new Error(`activation lost lock-scoped state refresh/cleanup: ${required}`);
+}
+
+const serviceDefinitionSource = readFileSync(join(localRoot, "service-definition.mjs"), "utf8");
+for (const required of ["verifyPathIdentity: true", "rejectMultipleLinks: true", "unlinkRegularFileIfIdentitySync", "if (!expectedIdentity)"]) {
+  if (!serviceDefinitionSource.includes(required)) throw new Error(`service-definition snapshot/removal boundary regressed: ${required}`);
+}
+const sshKeySource = readFileSync(join(localRoot, "ssh-key.mjs"), "utf8");
+for (const required of ["GENERATED_KEY_IDENTITIES", "chmodRegularFileIfIdentitySync", "installedLinkIdentity(opened.fd, source, target)", "removeGeneratedSshKeyPair", "replacement was preserved"]) {
+  if (!sshKeySource.includes(required)) throw new Error(`SSH key ownership transaction boundary regressed: ${required}`);
+}
+if (sshKeySource.indexOf("inspectSshKeyPair(request.privateKeyPath") > sshKeySource.indexOf("secureKeyModes(request.privateKeyPath")) {
+  throw new Error("existing SSH key permissions are changed before key-pair validation");
+}
+
+for (const required of ["export async function installAutostartBestEffort", 'operation: "runtime-start-autostart"', "serviceLock?.release?.()", "await install("]) {
+  if (!cliSourceForStateAuthority.includes(required)) throw new Error(`automatic autostart install lost machine-service serialization: ${required}`);
+}
+
+const managedJobPlanSource = readFileSync(join(localRoot, "managed-job-plan.mjs"), "utf8");
+if (managedJobPlanSource.includes("Object.entries(resources).slice(0, MAX_RESOURCES)") || !managedJobPlanSource.includes("local resource registry limit exceeded")) {
+  throw new Error("managed-job resource registry regained silent truncation instead of rejecting corrupt over-limit state");
+}
+const managedJobStorageSource = readFileSync(join(localRoot, "managed-job-storage.mjs"), "utf8");
+for (const required of ["MANAGED_STATE_READ_ATTEMPTS = 4", 'error?.code === "MBM_IDENTITY_CHANGED"', 'return "identity_changed"']) {
+  if (!managedJobStorageSource.includes(required)) throw new Error(`managed-job state bounded identity retry regressed: ${required}`);
 }
 
 const mutationCoordinatorSource = readFileSync(join(localRoot, "file-mutation-coordinator.mjs"), "utf8");
@@ -481,6 +823,78 @@ if (mutationCoordinatorSource.indexOf("this.queues.set(key, tail)") > mutationCo
 if (mutationCoordinatorSource.includes("Promise.race") || mutationCoordinatorSource.includes('addEventListener("abort"')) {
   throw new Error("file mutation coordinator can release a path before an in-flight mutation callback settles");
 }
+const browserBridgeSource = readFileSync(join(localRoot, "browser-bridge.mjs"), "utf8");
+for (const required of ["verifyBrokerServerProof(this.runtimeToken", "const authenticated = true", "proxy.authenticated", "refusing a second broker owner"]) {
+  if (!browserBridgeSource.includes(required)) throw new Error(`browser broker lost authenticated-peer split-brain protection: ${required}`);
+}
+const brokerProofCheck = browserBridgeSource.indexOf("verifyBrokerServerProof(this.runtimeToken");
+const brokerSocketOpen = browserBridgeSource.indexOf("new WebSocket(url, [protocol]");
+if (brokerProofCheck < 0 || brokerSocketOpen < 0 || brokerProofCheck > brokerSocketOpen) {
+  throw new Error("runtime broker exposes its WebSocket proof before authenticating the candidate loopback owner");
+}
+if (browserBridgeSource.indexOf("if (proxy.authenticated)") > browserBridgeSource.indexOf("if (offset === MAX_PORT_ATTEMPTS - 1)")) {
+  throw new Error("browser broker can skip past an authenticated-but-unready peer and create a second owner");
+}
+for (const required of ["pairing.migrationPending && offset === 0", "previous browser broker occupies the migrated pairing port", "migrationPending: false"]) {
+  if (!browserBridgeSource.includes(required)) throw new Error(`browser pairing migration lost fail-closed owner handoff: ${required}`);
+}
+const browserBrokerAuthSource = readFileSync(join(localRoot, "browser-broker-auth.mjs"), "utf8");
+for (const required of ["createMonotonicDeadline", "createBrokerInitProof", "machine-bridge-browser-${role}-init-v2", "pending.delete(key)", "machine-bridge-browser-${role}-${direction}-v2", "BROKER_AUTH_REQUEST_HEADER"]) {
+  if (!browserBrokerAuthSource.includes(required)) throw new Error(`browser broker authentication boundary regressed: ${required}`);
+}
+const brokerInitProofIndex = browserBrokerAuthSource.indexOf("createBrokerInitProof(token, role, clientChallenge)");
+const brokerPendingIndex = browserBrokerAuthSource.indexOf("pending.set(clientChallenge");
+if (brokerInitProofIndex < 0 || brokerPendingIndex < 0 || brokerInitProofIndex > brokerPendingIndex) {
+  throw new Error("browser broker allocates normal auth pending state before proving client credential possession");
+}
+for (const required of ["pending.get(clientChallenge)", "serverNonce: existing.serverNonce", "pending.delete(parsed.clientChallenge)"]) {
+  if (!browserBrokerAuthSource.includes(required)) throw new Error(`browser broker normal-auth replay lost client-challenge idempotence: ${required}`);
+}
+const browserPairingLaunchSource = readFileSync(join(localRoot, "browser-pairing-launch.mjs"), "utf8");
+for (const required of ["createBrowserPairingGrant(extensionToken, targetPort)", 'server.listen(0, "127.0.0.1")', 'host.toLowerCase() !== `127.0.0.1:${listenerPort}`', "response.end(html, () => close())", "setTimeout(close, ttl)", "broker_port"]) {
+  if (!browserPairingLaunchSource.includes(required)) throw new Error(`browser ephemeral pairing launch lost bounded one-shot listener behavior: ${required}`);
+}
+const pairingListenIndex = browserPairingLaunchSource.indexOf('server.listen(0, "127.0.0.1")');
+const pairingUrlIndex = browserPairingLaunchSource.indexOf('return { url:');
+if (pairingListenIndex < 0 || pairingUrlIndex < 0 || pairingListenIndex > pairingUrlIndex) throw new Error("browser ephemeral pairing launch lost bind-before-open ordering");
+const cliLocalAdminBrowserSource = readFileSync(join(localRoot, "cli-local-admin.mjs"), "utf8");
+for (const required of ["readBrowserPairing(context.stateRoot)", "startBrowserPairingLaunch({ brokerPort: pairing.port, extensionToken: pairing.extensionToken })", "await openTarget(launch.url)", "launch.close()"] ) {
+  if (!cliLocalAdminBrowserSource.includes(required)) throw new Error(`browser CLI pairing bypassed the shared ephemeral launch boundary: ${required}`);
+}
+if (cliLocalAdminBrowserSource.includes("await openExternal(context.pairingUrl)")) throw new Error("browser CLI pairing reopened the long-lived broker URL directly");
+const browserPairingGrantSource = readFileSync(join(localRoot, "browser-pairing-grant.mjs"), "utf8");
+for (const required of ["createBrowserPairingGrant", "createPairingBootstrapRegistry", "machine-bridge-browser-pair-v2", "machine-bridge-browser-pair-init-v2", "machine-bridge-browser-pair-${direction}-v2", "pending.get(grant.id)", "serverNonce: existing.serverNonce", "used.set(grant.id", "pending.delete(grant.id)"]) {
+  if (!browserPairingGrantSource.includes(required)) throw new Error(`browser pairing bootstrap boundary regressed: ${required}`);
+}
+const initProofIndex = browserPairingGrantSource.indexOf("bootstrapInitProof(grant.secret");
+const pairingPendingIndex = browserPairingGrantSource.indexOf("pending.set(grant.id");
+if (initProofIndex < 0 || pairingPendingIndex < 0 || initProofIndex > pairingPendingIndex) {
+  throw new Error("browser pairing bootstrap allocates pending state before proving fragment-secret possession");
+}
+const browserBrokerAuthHttpSource = readFileSync(join(localRoot, "browser-broker-auth-http.mjs"), "utf8");
+for (const required of ["createPairingBootstrapRegistry", "x-machine-bridge-extension-token", "hasAuthMarker(request)", 'auth.issue(url.searchParams.get("challenge"), url.searchParams.get("init"))', "pairingAuth.consume("]) {
+  if (!browserBrokerAuthHttpSource.includes(required)) throw new Error(`browser broker HTTP authentication boundary regressed: ${required}`);
+}
+const browserBrokerServerSource = readFileSync(join(localRoot, "browser-broker-server.mjs"), "utf8");
+for (const required of ["createBrowserBrokerAuthHttpHandler", "extensionAuth.consume(protocol)", "runtimeAuth.consume(protocol)"]) {
+  if (!browserBrokerServerSource.includes(required)) throw new Error(`browser broker server authentication boundary regressed: ${required}`);
+}
+for (const legacy of ['`mbm.${extensionToken}`', '`mbm-runtime.${runtimeToken}`']) {
+  if (browserBrokerServerSource.includes(legacy)) throw new Error(`browser broker regained a long-lived WebSocket bearer protocol: ${legacy}`);
+}
+const extensionBrokerAuthSource = readFileSync(join(root, "browser-extension", "broker-auth.js"), "utf8");
+for (const required of ["BROKER_AUTH_REQUEST_HEADER", "BROKER_AUTH_REQUEST_VALUE", "machine-bridge-browser-extension-init-v2", "machine-bridge-browser-extension-server-v2", "machine-bridge-browser-extension-client-v2"]) {
+  if (!extensionBrokerAuthSource.includes(required)) throw new Error(`browser extension authentication helper regressed: ${required}`);
+}
+const extensionPairingBootstrapSource = readFileSync(join(root, "browser-extension", "pairing-bootstrap.js"), "utf8");
+for (const required of ["machine-bridge-browser-pair-init-v2", "machine-bridge-browser-pair-server-v2", "machine-bridge-browser-pair-client-v2", "x-machine-bridge-extension-token", "bootstrapPairing"]) {
+  if (!extensionPairingBootstrapSource.includes(required)) throw new Error(`browser extension pairing bootstrap regressed: ${required}`);
+}
+const extensionServiceWorkerSource = readFileSync(join(root, "browser-extension", "service-worker.js"), "utf8");
+for (const required of ["pairFromBootstrap", "browserPairingBootstrap", "machine_bridge_pairing_material"]) {
+  if (!extensionServiceWorkerSource.includes(required)) throw new Error(`browser extension pairing authorization regressed: ${required}`);
+}
+
 const workspaceFileSource = readFileSync(join(localRoot, "workspace-file-service.mjs"), "utf8");
 const directoryMetadataSource = readFileSync(join(localRoot, "directory-metadata.mjs"), "utf8");
 const workspaceSearchSource = readFileSync(join(localRoot, "workspace-search.mjs"), "utf8");
@@ -538,7 +952,7 @@ const executionRoutingSource = readFileSync(join(localRoot, "execution-routing.m
 if (executionRoutingSource.includes("toolsForPolicy")) {
   throw new Error("execution routing deep-copies the complete tool schema catalog instead of reading bounded metadata");
 }
-for (const required of ["toolNamesForPolicy", "toolDefinition", "advisory_only", "general escape hatch", "schema_version: 1"]) {
+for (const required of ["toolNamesForPolicy", "toolDefinition", "advisory_only", "general_escape_hatch_available", "schema_version: 1"]) {
   if (!executionRoutingSource.includes(required)) throw new Error(`execution routing lost a policy or contract boundary: ${required}`);
 }
 const runtimeBoundarySource = readFileSync(join(localRoot, "runtime.mjs"), "utf8");
@@ -548,6 +962,28 @@ for (const forbidden of [
   "function applicationMatchScore", "request_reached_local_runtime", "policy_contract:",
 ]) {
   if (runtimeBoundarySource.includes(forbidden)) throw new Error(`LocalRuntime regained low-level responsibility: ${forbidden}`);
+}
+const authorityRevocationBoundary = /async applyAuthorityRevocation\(revocation\)[\s\S]*?\n  runProcess\(/.exec(runtimeBoundarySource)?.[0] || "";
+for (const required of ["async applyAuthorityRevocation", "try { calls =", "sessionRevocation = Promise.resolve(this.processSessionManager.revokeAuthority", "try { jobs =", "sessions = await sessionRevocation", "failures.length", "retained revocation must be retried"]) {
+  if (!authorityRevocationBoundary.includes(required)) throw new Error(`authority revocation lost all-category fail-closed application: ${required}`);
+}
+const runtimeStopBoundary = /async stop\(\)[\s\S]*?\n  send\(/.exec(runtimeBoundarySource)?.[0] || "";
+for (const required of [
+  "await this.callRegistry.cancelAllAndWait(\"runtime stopped\")",
+  "await this.processTracker.drain(\"SIGKILL\")",
+  "await this.processSessionManager.clearAndWait()",
+  "this.lifecycle.markStopFailed(error)",
+  "this.lifecycle.markStopped()",
+]) {
+  if (!runtimeStopBoundary.includes(required)) throw new Error(`runtime stop lost close-settled ownership teardown: ${required}`);
+}
+if (!(runtimeStopBoundary.indexOf("callRegistry.cancelAllAndWait") < runtimeStopBoundary.indexOf("processTracker.drain")
+  && runtimeStopBoundary.indexOf("processTracker.drain") < runtimeStopBoundary.indexOf("processSessionManager.clearAndWait"))) {
+  throw new Error("runtime stop no longer drains calls before processes and process sessions");
+}
+const processTrackerBoundary = readFileSync(join(localRoot, "process-tracker.mjs"), "utf8");
+for (const required of ["async drain(", "this.drainSignal = signal", "if (this.drainSignal) this.requestDrainTermination(child)", "process shutdown did not settle before the runtime teardown deadline"]) {
+  if (!processTrackerBoundary.includes(required)) throw new Error(`process tracker lost runtime drain ownership semantics: ${required}`);
 }
 const toolExecutorBoundary = readFileSync(join(localRoot, "tool-executor.mjs"), "utf8");
 if ((toolExecutorBoundary.match(/callRegistry\.throwIfCancelled/g) || []).length !== 1) {
@@ -575,8 +1011,22 @@ for (const required of ["includeContent = false", '"resource file", { verifyPath
   if (!managedJobPlanBoundary.includes(required)) throw new Error(`resource inspection lost validated-byte snapshot behavior: ${required}`);
 }
 const managedJobsBoundary = readFileSync(join(localRoot, "managed-jobs.mjs"), "utf8");
+const managedJobRetentionBoundary = readFileSync(join(localRoot, "managed-job-retention.mjs"), "utf8");
+const managedJobTerminalMaintenanceBoundary = readFileSync(join(localRoot, "managed-job-terminal-maintenance.mjs"), "utf8");
 const externalPlanBoundary = /export function loadManagedJobPlan[\s\S]*?function failRunnerLaunch/.exec(managedJobsBoundary)?.[0] || "";
 if (externalPlanBoundary.includes("lstatSync(")) throw new Error("external job-plan load regained a redundant pre-open path stat");
+for (const section of [
+  /  cancel\(args[\s\S]*?  revokeAuthority/.exec(managedJobsBoundary)?.[0] || "",
+  /function cancelManagedJob[\s\S]*?export function activeManagedJobs/.exec(managedJobsBoundary)?.[0] || "",
+  /function failRunnerLaunch[\s\S]*?function markRecoveryExhausted/.exec(managedJobsBoundary)?.[0] || "",
+  /function markRecoveryExhausted[\s\S]*?function relaunchInterruptedJob/.exec(managedJobsBoundary)?.[0] || "",
+  /export function scrubTerminalJobArtifacts[\s\S]*$/.exec(managedJobTerminalMaintenanceBoundary)?.[0] || "",
+  /function expireStagedJob[\s\S]*$/.exec(managedJobRetentionBoundary)?.[0] || "",
+]) {
+  if (section.includes("recovery.lock") || section.includes("transition.lock")) {
+    throw new Error("managed-job terminal artifact cleanup regained bare deletion authority over an active/reclaimable job lock");
+  }
+}
 const jobRunnerBoundary = readFileSync(join(localRoot, "job-runner.mjs"), "utf8");
 const runnerJsonBoundary = /function readJson[\s\S]*?function readBoundedFile/.exec(jobRunnerBoundary)?.[0] || "";
 for (const required of ["managed job runner state", "verifyPathIdentity: true", "rejectMultipleLinks: true"]) {
@@ -604,9 +1054,19 @@ for (const required of ["export function unlinkRegularFileIfIdentitySync", 'lsta
   if (!secureRemovalBoundary.includes(required)) throw new Error(`secure-file identity-checked unlink boundary regressed: ${required}`);
 }
 const ownerStateLockBoundary = readFileSync(join(localRoot, "owner-state-lock.mjs"), "utf8");
-for (const required of ["createMonotonicDeadline", "inspectProcessInstance", "removeOwnedJsonFileSync", "new AggregateError([callbackError, releaseError]", "verifyPathIdentity: true", "rejectMultipleLinks: true"]) {
+for (const required of ["createMonotonicDeadline", "inspectProcessInstance", "removeOwnedJsonFileSync", "new AggregateError([callbackError, releaseError]", "verifyPathIdentity: true", "rejectMultipleLinks: true", "retryTransientMultipleLinksSync"]) {
   if (!ownerStateLockBoundary.includes(required)) throw new Error(`owner-state lock lost bounded ownership or causal cleanup semantics: ${required}`);
 }
+for (const [name, markers] of [
+  ["state.mjs", ["retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(lockPath"]],
+  ["managed-job-lock.mjs", ["retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(file"]],
+  ["browser-pairing-store.mjs", ["readPublishedPairing", "retryTransientMultipleLinksSync(() => readPairing(file))"]],
+  ["managed-job-runner-claim.mjs", ["verifyPathIdentity: true", "rejectMultipleLinks: true", "retryTransientMultipleLinksSync"]],
+]) {
+  const source = readFileSync(join(localRoot, name), "utf8");
+  for (const marker of markers) if (!source.includes(marker)) throw new Error(`${name} lost bounded exclusive-publication contention handling: ${marker}`);
+}
+
 const fileSnapshotPreservationBoundary = readFileSync(join(localRoot, "file-snapshot-preservation.mjs"), "utf8");
 for (const required of ["options.create || createExclusiveFileSync", "options.unlinkSource || unlinkRegularFileIfIdentitySync", "options.unlinkBackup || unlinkSync", "new AggregateError([primaryError, cleanupError]"]) {
   if (!fileSnapshotPreservationBoundary.includes(required)) throw new Error(`file snapshot preservation lost commit/identity/cleanup causality: ${required}`);
@@ -632,9 +1092,20 @@ if (!localPolicySource.includes('policy-contract.json') || !workerPolicySource.i
 }
 const workerIndexBoundary = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const workerEntryBoundary = readFileSync(join(root, "src", "worker", "worker-entry.ts"), "utf8");
+const workerHttpBoundary = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
+for (const removedHeader of ["mcp-session-id", "last-event-id"]) {
+  if (workerHttpBoundary.includes(`\"${removedHeader}\"`)) {
+    throw new Error(`Worker CORS allowlist regained removed MCP header: ${removedHeader}`);
+  }
+}
 const workerOAuthControllerBoundary = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
 const workerOAuthStoreValidationBoundary = readFileSync(join(root, "src", "worker", "oauth-store-validation.ts"), "utf8");
 const workerOAuthRecordContractBoundary = readFileSync(join(root, "src", "worker", "oauth-record-contract.ts"), "utf8");
+const workerAccountAdminBoundary = readFileSync(join(root, "src", "worker", "account-admin.ts"), "utf8");
+if (workerAccountAdminBoundary.includes("clone().arrayBuffer()") || !workerAccountAdminBoundary.includes("readBoundedBytes(request, BODY_LIMIT_BYTES)")) {
+  throw new Error("account-admin authorization regained an unbounded cloned-body read");
+}
+if (!workerAccountAdminBoundary.includes("rebuildBoundedAdminRequest")) throw new Error("account-admin authorization no longer reuses its exact bounded body for operation parsing");
 for (const required of ["ACCOUNT_ID_PATTERN", "CLIENT_ID_PATTERN", "AUTHORIZATION_CODE_PATTERN", "TOKEN_HASH_PATTERN", "REFRESH_FAMILY_ID_PATTERN", "JWK_THUMBPRINT_PATTERN", "AUTHORIZATION_IDENTITY_PATTERN"]) {
   if (!workerOAuthRecordContractBoundary.includes(required)) throw new Error(`OAuth persisted-ID contract lost canonical pattern: ${required}`);
 }
@@ -659,60 +1130,53 @@ for (const duplicate of [
 }
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
-  "observability", "mcp-session", "mcp-access", "mcp-resumption-http", "mcp-resumption",
-  "mcp-stream", "mcp-stream-proxy", "mcp-stream-channel", "mcp-stream-dispatch", "mcp-legacy-stream-prepare", "server-info", "durable-stream-calls",
+  "observability", "mcp-access", "mcp-controller", "mcp-stream-proxy-contract", "server-info",
   "worker-entry", "tool-timeout", "daemon-liveness", "daemon-sockets", "daemon-status",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
-for (const module of ["worker-static-routes", "worker-edge-guard", "worker-edge-log", "worker-rate-limit-key", "mcp-stream-proxy"]) {
+for (const module of ["worker-static-routes", "worker-edge-guard", "worker-edge-log", "worker-rate-limit-key", "mcp-response-proxy", "mcp-stream-proxy-contract"]) {
   if (!workerEntryBoundary.includes(`./${module}`)) throw new Error(`outer Worker entry lost boundary module: ${module}`);
 }
-const mcpStreamProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy.ts"), "utf8");
-for (const required of [
-  "proxyMcpEventStream", "handleMcpStreamSubscribeRequest", "proxyModernMcpStream",
-  "streamJsonRpcResponse", "resumeJsonRpcResponse", "subscribeTerminalMessage", "waitUntil",
-]) {
-  if (!mcpStreamProxyBoundary.includes(required)) throw new Error(`outer MCP stream proxy lost era routing or legacy recovery ownership: ${required}`);
+const mcpResponseProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-response-proxy.ts"), "utf8");
+for (const required of ["proxyMcpResponseStream", '"direct"', '"cancel"', "waitUntil", "cancelCall"]) {
+  if (!mcpResponseProxyBoundary.includes(required)) throw new Error(`current MCP response proxy lost request-scoped stream/cancellation ownership: ${required}`);
 }
 const mcpStreamProxyContractBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy-contract.ts"), "utf8");
+for (const forbidden of ["prepare", "subscribe", "retry", "descriptor", "last-event-id", "Mcp-Session-Id"]) {
+  if (mcpStreamProxyContractBoundary.toLowerCase().includes(forbidden.toLowerCase())) {
+    throw new Error(`current MCP proxy contract regained removed compatibility state: ${forbidden}`);
+  }
+}
 for (const required of [
   "sanitizeBridgeRequest", "MCP_STREAM_PROXY_MODE_HEADER", "MCP_STREAM_PROXY_ID_HEADER",
-  "mcpStreamDescriptorResponse", "STREAM_ID_PATTERN", "Upgrade", "withProxyHeaders",
+  "mcpStreamProxyId", "mcpStreamRequestKey", "STREAM_ID_PATTERN", "withProxyHeaders",
 ]) {
   if (!mcpStreamProxyContractBoundary.includes(required)) throw new Error(`MCP stream proxy contract lost boundary hardening: ${required}`);
 }
-const mcpModernProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-modern-proxy.ts"), "utf8");
-for (const required of [
-  "modern-direct", "modern-cancel", "request.signal", "waitUntil", "streamHeartbeatMs",
-]) {
-  if (!mcpModernProxyBoundary.includes(required)) throw new Error(`modern MCP proxy lost non-resumable stream or cancellation behavior: ${required}`);
+const mcpControllerBoundary = readFileSync(join(root, "src", "worker", "mcp-controller.ts"), "utf8");
+for (const required of ["class McpController", "server/discover", "tools/list", "tools/call", "subscriptions/listen", "jsonRpcResponseStream"]) {
+  if (!mcpControllerBoundary.includes(required)) throw new Error(`current MCP controller lost request-scoped responsibility: ${required}`);
 }
-for (const forbidden of ["modern-prepare", "modern-subscribe", "ModernMcpTransientRegistry", "mcpStreamDescriptorResponse"]) {
-  if (mcpModernProxyBoundary.includes(forbidden)) throw new Error(`modern MCP proxy regained cross-event delivery state: ${forbidden}`);
+for (const forbidden of ["mcp-subscriptions", "subscriptionResponse(", "subscriptions/acknowledged"]) {
+  if (mcpControllerBoundary.includes(forbidden)) throw new Error(`current MCP controller regained unused change-subscription machinery: ${forbidden}`);
 }
-const mcpModernControllerBoundary = readFileSync(join(root, "src", "worker", "mcp-modern-controller.ts"), "utf8");
-for (const forbidden of ["ModernMcpTransientRegistry", "modern-prepare", "modern-subscribe", "mcpStreamDescriptorResponse"]) {
-  if (mcpModernControllerBoundary.includes(forbidden)) throw new Error(`modern MCP controller regained cross-event delivery state: ${forbidden}`);
+for (const forbidden of ["initialize", "Mcp-Session-Id", "Last-Event-ID", "resumption", "legacy", "modern"]) {
+  if (mcpControllerBoundary.includes(forbidden)) throw new Error(`current MCP controller regained removed protocol-era state: ${forbidden}`);
 }
-const mcpStreamChannelBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-channel.ts"), "utf8");
-for (const required of ["acceptWebSocket", "getWebSockets", "serializeAttachment", "pollMessage", "streamSubscriberOpened"]) {
-  if (!mcpStreamChannelBoundary.includes(required)) throw new Error(`MCP stream channel lost hibernatable subscription behavior: ${required}`);
+const mcpInitializationCompatibilityBoundary = readFileSync(join(root, "src", "worker", "mcp-initialization-compat.ts"), "utf8");
+for (const required of ["MCP_INITIALIZATION_COMPATIBILITY_VERSIONS", "initialize", "notifications/initialized", "tools/list", "tools/call", "ping"]) {
+  if (!mcpInitializationCompatibilityBoundary.includes(required)) throw new Error(`MCP initialization compatibility lost required stateless surface: ${required}`);
 }
-for (const forbidden of ["setTimeout(", "setInterval(", "Promise<JsonRpcMessage>", "subscriberAdmission", "withSubscriberAdmission"]) {
-  if (mcpStreamChannelBoundary.includes(forbidden)) throw new Error(`MCP stream channel regained polling, cross-event promise state, or global subscriber serialization: ${forbidden}`);
+for (const forbidden of ["Last-Event-ID", "resumption", "replay", "subscribe", "DurableObjectStorage", "ctx.storage"]) {
+  if (mcpInitializationCompatibilityBoundary.includes(forbidden)) throw new Error(`MCP initialization compatibility regained stateful legacy machinery: ${forbidden}`);
 }
-if (mcpStreamChannelBoundary.indexOf("acceptWebSocket(server, [tag])") > mcpStreamChannelBoundary.indexOf("const current = await resumption.pollMessage(streamId)")) {
-  throw new Error("MCP stream channel rechecks storage before registering the subscriber race boundary");
+if (!mcpInitializationCompatibilityBoundary.includes('headers.has("Mcp-Session-Id")')
+    || !mcpInitializationCompatibilityBoundary.includes("stateless compatibility transport")) {
+  throw new Error("MCP initialization compatibility stopped rejecting session IDs explicitly");
 }
-for (const forbidden of ["streamJsonRpcResponse(", "resumeJsonRpcResponse("]) {
-  if (workerIndexBoundary.includes(forbidden)) throw new Error(`BridgeRoom regained public SSE ownership: ${forbidden}`);
-}
-
-for (const forbidden of [
-  "const terminal = this.dispatchJsonRpc", ".resumption.attach(", "this.ctx.waitUntil(",
-]) {
-  if (workerIndexBoundary.includes(forbidden)) throw new Error(`stream initiation regained a cross-event terminal promise: ${forbidden}`);
+for (const forbidden of ["streamJsonRpcResponse(", "resumeJsonRpcResponse(", ".resumption", "durableCalls"]) {
+  if (workerIndexBoundary.includes(forbidden)) throw new Error(`BridgeRoom regained removed MCP delivery state: ${forbidden}`);
 }
 if (!workerIndexBoundary.includes("this.invalidateDaemonSocket(socket, message, closeReason, errorCode, false)")) {
   throw new Error("runtime alarm invalidation regained recursive alarm scheduling");
@@ -720,6 +1184,10 @@ if (!workerIndexBoundary.includes("this.invalidateDaemonSocket(socket, message, 
 const daemonCleanupBoundary = /private cleanupDaemonSocket[\s\S]*?private async handleMcp/.exec(workerIndexBoundary)?.[0] || "";
 if (!daemonCleanupBoundary.includes("beginCleanup") || daemonCleanupBoundary.includes("scheduleRuntimeAlarm")) {
   throw new Error("daemon socket cleanup must remain idempotent and scheduling-free");
+}
+const daemonDetachBoundary = /private async detachDaemonSocketCalls[\s\S]*?private reclaimStaleDaemonSockets/.exec(workerIndexBoundary)?.[0] || "";
+if (!daemonDetachBoundary.includes("this.pending.rejectSocket(ws, () => dispatchedDaemonDisconnectError(message))")) {
+  throw new Error("identity-damaged daemon socket cleanup regained retryable settlement for already-dispatched calls");
 }
 const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?private cleanupDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";
 if (daemonWebSocketErrorBoundary.indexOf("const cleanup = this.cleanupDaemonSocket")
@@ -739,70 +1207,17 @@ const daemonResultBoundary = /const outcome: PendingCallOutcome[\s\S]*?async web
 if ((daemonResultBoundary.match(/scheduleRuntimeAlarm/g) || []).length !== 1) {
   throw new Error("daemon terminal result must coalesce liveness and pending-call alarm scheduling");
 }
-const legacyStreamPrepareBoundary = readFileSync(join(root, "src", "worker", "mcp-legacy-stream-prepare.ts"), "utf8");
-for (const required of ["workerToolRequestFingerprint", "beginInput", "resumption.begin(beginInput)", 'kind: "resume"', 'kind: "conflict"', "dispatchWorkspaceCall", "serverInfo(args)"]) {
-  if (!legacyStreamPrepareBoundary.includes(required)) throw new Error(`legacy stream preparation lost retry identity or dispatch boundary: ${required}`);
-}
-if (legacyStreamPrepareBoundary.includes("findByRequestKey")) {
-  throw new Error("legacy stream preparation regained a separate request-key prefix scan before stream admission");
-}
-for (const forbidden of ["readySockets", "invalidateDaemonSocket", "scheduleRuntimeAlarm"]) {
-  if (legacyStreamPrepareBoundary.includes(forbidden)) throw new Error(`legacy stream preparation crossed into daemon lifecycle ownership: ${forbidden}`);
-}
-const resumptionBeginBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption-begin.ts"), "utf8");
-for (const required of ["listStreamRecords(transaction)", "existingRequestDecision", "pendingCallForActivation", "transaction.put(streamKey(input.streamId)", "transaction.delete(STREAM_INDEX_KEY)"]) {
-  if (!resumptionBeginBoundary.includes(required)) throw new Error(`legacy stream admission lost single-scan durable state boundary: ${required}`);
-}
-if (resumptionBeginBoundary.includes("transaction.put(STREAM_INDEX_KEY")) {
-  throw new Error("legacy stream admission recreated the beta.44 global stream-index write hotspot");
-}
-const streamCallIdentityBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-call-identity.ts"), "utf8");
-for (const required of ["callIdForStreamId", "streamIdForCallId", 'return `call_${match[1]}`', 'return match ? `stream_${match[1]}`']) {
-  if (!streamCallIdentityBoundary.includes(required)) throw new Error(`durable stream/call point-lookup identity drifted: ${required}`);
-}
-const pendingCallStoreBoundary = readFileSync(join(root, "src", "worker", "mcp-pending-call-store.ts"), "utf8");
-const pendingCallGetBoundary = /async get\(callId: string\)[\s\S]*?async getByRequestKey/.exec(pendingCallStoreBoundary)?.[0] || "";
-for (const required of ["streamIdForCallId(callId)", "this.storage.get<unknown>(streamKey(expectedStreamId))", "Pre-beta.54 calls", "listStreamRecords(this.storage)"]) {
-  if (!pendingCallGetBoundary.includes(required)) throw new Error(`durable terminal lookup lost point-read plus bounded migration fallback: ${required}`);
-}
 const eventExpiryBoundary = /private async expireOverdueCalls[\s\S]*?private async scheduleRuntimeAlarm/.exec(workerIndexBoundary)?.[0] || "";
-for (const required of ["this.ctx.storage.getAlarm()", "alarm === null || alarm <= Date.now()", "this.durableCalls.expireDue()"] ) {
-  if (!eventExpiryBoundary.includes(required)) throw new Error(`event-entry durable expiry lost alarm-gated recovery: ${required}`);
-}
-if (/await this\.pending\.expireDue\(\);\s*await this\.durableCalls\.expireDue\(\)/.test(eventExpiryBoundary)) {
-  throw new Error("HTTP/WebSocket event entry regained unconditional durable stream prefix scanning");
-}
-const transactionAlarmBoundary = readFileSync(join(root, "src", "worker", "mcp-transaction-alarm.ts"), "utf8");
-for (const required of ["transaction.getAlarm()", "current <= deadlineAt", "transaction.setAlarm(deadlineAt)"]) {
-  if (!transactionAlarmBoundary.includes(required)) throw new Error(`durable call admission lost atomic alarm coverage: ${required}`);
-}
-if (!resumptionBeginBoundary.includes("ensureTransactionAlarmAtMost(transaction, call.operation_deadline_at)")) {
-  throw new Error("combined stream/call admission no longer advances the persisted alarm inside its transaction");
+if (!eventExpiryBoundary.includes("this.pending.expireDue()") || eventExpiryBoundary.includes("durable")) {
+  throw new Error("event-entry expiry must remain transient-request-only");
 }
 const runtimeAlarmBoundary = readFileSync(join(root, "src", "worker", "runtime-alarm.ts"), "utf8");
-for (const required of ["currentAlarm === null || currentAlarm <= now", "currentAlarm,"]) {
-  if (!runtimeAlarmBoundary.includes(required)) throw new Error(`runtime alarm scheduling lost hot-path durable-read suppression: ${required}`);
+for (const forbidden of ["durableCalls", "mcp-pending-call-store", "resumption"]) {
+  if (runtimeAlarmBoundary.includes(forbidden)) throw new Error(`runtime alarm regained removed MCP durable state: ${forbidden}`);
 }
-if (runtimeAlarmBoundary.includes("durableDeadlineAt")) {
-  throw new Error("runtime alarm scheduling regained a post-transaction durable-deadline hint instead of atomic alarm coverage");
-}
-const modernCancelBoundary = /private async cancelClientRequest[\s\S]*?private async acceptDaemonWebSocket/.exec(workerIndexBoundary)?.[0] || "";
-if (!modernCancelBoundary.includes('requestKey.startsWith("modern:stream_")')
-    || modernCancelBoundary.indexOf('requestKey.startsWith("modern:stream_")') > modernCancelBoundary.indexOf("this.durableCalls.cancel(requestKey)")) {
-  throw new Error("modern stream cancellation regained a fallback scan of legacy durable stream state");
-}
-const streamProxyContractBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy-contract.ts"), "utf8");
-for (const required of ["MCP_STREAM_PROXY_RETRY_HEADER", "headers.delete(MCP_STREAM_PROXY_RETRY_HEADER)", "mcpStreamProxyRetryId"]) {
-  if (!streamProxyContractBoundary.includes(required)) throw new Error(`MCP internal retry header lost spoofing boundary: ${required}`);
-}
-const dpopRetryBoundary = readFileSync(join(root, "src", "worker", "dpop.ts"), "utf8");
-for (const required of ["consumeDpopProofForInternalRetry", "DPOP_RETRY_BINDINGS_KEY", "MAX_DPOP_INTERNAL_RETRY_USES", "boundedNoncePresent", "storage.transaction"]) {
-  if (!dpopRetryBoundary.includes(required)) throw new Error(`DPoP internal retry binding lost replay isolation: ${required}`);
-}
-
-const streamPrepareRetryBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-prepare-retry.ts"), "utf8");
-for (const required of ["request.clone", "boundedStreamAttempt", "response.body?.cancel", "request.signal"]) {
-  if (!streamPrepareRetryBoundary.includes(required)) throw new Error(`stream prepare retry lost bounded replay behavior: ${required}`);
+const dpopBoundary = readFileSync(join(root, "src", "worker", "dpop.ts"), "utf8");
+for (const forbidden of ["consumeDpopProofForInternalRetry", "DPOP_RETRY_BINDINGS_KEY", "MAX_DPOP_INTERNAL_RETRY_USES"]) {
+  if (dpopBoundary.includes(forbidden)) throw new Error(`DPoP regained removed internal compatibility retry state: ${forbidden}`);
 }
 const rateLimitKeyBoundary = readFileSync(join(root, "src", "worker", "worker-rate-limit-key.ts"), "utf8");
 for (const required of ["SHA-256", "authorization", "cf-connecting-ip", "globalStatefulRateLimitKey", "statefulRouteClass"]) {
@@ -814,65 +1229,35 @@ for (const source of [workerIndexBoundary, workerEntryBoundary]) {
   }
 }
 
-const mcpStreamDispatchBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-dispatch.ts"), "utf8");
 const serverInfoBoundary = readFileSync(join(root, "src", "worker", "server-info.ts"), "utf8");
-const durableStreamResultBoundary = readFileSync(join(root, "src", "worker", "durable-stream-result.ts"), "utf8");
-const pendingCallRecordBoundary = readFileSync(join(root, "src", "worker", "mcp-pending-call-records.ts"), "utf8");
 for (const required of [
-  'projectOverviewDetail(args)', 'overviewDetail === "summary"', 'const daemonArgs = name === "project_overview" ? {} : args',
-  'arguments: daemonArgs', 'detail: "summary" as const', 'projectProjectOverview(decorateProjectOverview',
+  'projectOverviewDetail(args)', 'const daemonArgs = name === "project_overview" ? {} : args',
+  'projectProjectOverview(decorateProjectOverview', '), overviewDetail)',
 ]) {
   if (!workerIndexBoundary.includes(required)) throw new Error(`remote project_overview lost post-authority compact projection boundary: ${required}`);
-}
-for (const required of ["projectProjectOverview(decorateProjectOverview", 'call.transform.detail === "summary" ? "summary" : "full"']) {
-  if (!durableStreamResultBoundary.includes(required)) throw new Error(`durable project_overview lost post-authority compact replay boundary: ${required}`);
-}
-for (const required of ['detail?: "summary"', 'transform.detail === undefined || transform.detail === "summary"']) {
-  if (!pendingCallRecordBoundary.includes(required)) throw new Error(`persisted project_overview compact transform lost compatibility validation: ${required}`);
 }
 for (const required of ["buildServerInfoResult", "buildServerInfoSummary", "compactPending", "compactDaemon", 'detail === "summary"']) {
   if (!serverInfoBoundary.includes(required)) throw new Error(`Worker server_info lost compact/full projection boundary: ${required}`);
 }
-if (mcpStreamDispatchBoundary.includes("buildServerInfoResult") || workerIndexBoundary.includes("function buildServerInfoSummary")) {
-  throw new Error("Worker server_info projection returned to stream dispatch or the composition root");
+if (workerIndexBoundary.includes("function buildServerInfoSummary")) {
+  throw new Error("Worker server_info projection returned to the composition root");
 }
 const localInfoProjectionBoundary = readFileSync(join(localRoot, "runtime-info-projection.mjs"), "utf8");
 for (const required of ["projectRuntimeInfo", 'detail !== "summary"', "compactProcesses", "compactCapacity"]) {
   if (!localInfoProjectionBoundary.includes(required)) throw new Error(`local server_info lost compact/full projection boundary: ${required}`);
 }
-for (const required of [
-  "startEventDrivenStreamCall", "resumption.calls.activate", "resumption.calls.complete", "persistImmediateStreamOutcome",
-]) {
-  if (!mcpStreamDispatchBoundary.includes(required)) throw new Error(`durable stream dispatch lost its lifecycle boundary: ${required}`);
-}
 const pendingCallsBoundary = readFileSync(join(root, "src", "worker", "pending-calls.ts"), "utf8");
-for (const required of ["register(input", "detachSocket", "rebindInstance"]) {
+for (const required of ["register(input", "detachSocket", "rebindInstance", "resultOwnership"]) {
   if (!pendingCallsBoundary.includes(required)) throw new Error(`pending-call registry lost bounded JSON-call semantics: ${required}`);
 }
 for (const forbidden of ["registerEvent", "settlement.kind", 'kind: "event"']) {
   if (pendingCallsBoundary.includes(forbidden)) throw new Error(`obsolete event settlement returned to the transient pending registry: ${forbidden}`);
 }
 
-const mcpResumptionBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption.ts"), "utf8");
-for (const required of ["./mcp-resumption-config.ts", "./mcp-resumption-records.ts", "./mcp-pending-call-store.ts", "token_key", "session_id", "workerRestartMessage", "active = new Set", "transientReady = new Map"]) {
-  if (!mcpResumptionBoundary.includes(required)) throw new Error(`MCP resumption lost a lifecycle or isolation boundary: ${required}`);
-}
-if (mcpResumptionBoundary.includes(".list(")) {
-  throw new Error("MCP resumption scans full stored result values instead of its bounded metadata index");
-}
-for (const forbidden of ["Map<string, Promise", "attach(streamId", "Promise<JsonRpcMessage>"]) {
-  if (mcpResumptionBoundary.includes(forbidden)) throw new Error(`MCP resumption regained cross-event promise state: ${forbidden}`);
-}
-const mcpResumptionRecordsBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption-records.ts"), "utf8");
-for (const required of ["STREAM_INDEX_KEY", "message_sha256", "sha256Hex", "DEFAULT_MAXIMUM_MESSAGE_BYTES"]) {
-  if (!mcpResumptionRecordsBoundary.includes(required)) throw new Error(`MCP resumption records lost a storage-integrity boundary: ${required}`);
-}
-const mcpResumptionHttpBoundary = readFileSync(join(root, "src", "worker", "mcp-resumption-http.ts"), "utf8");
-for (const required of ["Last-Event-ID", "resolveMcpSession", "tokenKey", "sessionId", "mcpStreamDescriptorResponse"]) {
-  if (!mcpResumptionHttpBoundary.includes(required)) throw new Error(`MCP resumption HTTP boundary lost request binding: ${required}`);
-}
-if (mcpResumptionHttpBoundary.includes("resumeJsonRpcResponse")) {
-  throw new Error("Durable Object resumption boundary regained public SSE ownership");
+for (const forbidden of [
+  "Mcp-Session-Id", "Last-Event-ID", "mcp-resumption", "durable-stream", "mcp-legacy", "mcp-modern",
+]) {
+  if (workerIndexBoundary.includes(forbidden)) throw new Error(`Worker composition root regained removed MCP compatibility state: ${forbidden}`);
 }
 
 const daemonStatusBoundary = readFileSync(join(root, "src", "worker", "daemon-status.ts"), "utf8");

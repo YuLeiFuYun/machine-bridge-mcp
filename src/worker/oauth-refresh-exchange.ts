@@ -4,7 +4,6 @@ import {
   consumedRefreshRetrySource,
   loadOAuthRefreshStore,
   MAX_REFRESH_RETRY_ISSUES,
-  OAUTH_REFRESH_STORE_KEY,
   recordConsumedRefreshRetry,
   recordConsumedRefreshToken,
   revokeOAuthRefreshFamily,
@@ -17,6 +16,8 @@ import {
   type OAuthTokenExchangeOptions,
 } from "./oauth-token-issuance.ts";
 import { normalizeOAuthScope, safeEqual, sha256Hex, type OAuthRefreshToken, type OAuthStore } from "./oauth-state.ts";
+import { refreshFamilyAuthority } from "./oauth-refresh-authority.ts";
+import { saveOAuthRefreshStore } from "./oauth-refresh-persistence.ts";
 
 export async function exchangeRefreshToken(
   body: Record<string, unknown>,
@@ -39,6 +40,10 @@ export async function exchangeRefreshToken(
       if (retrySource) {
         const validation = await validateRefreshGrant(retrySource, body, base, options, dpop, oauthStore, false);
         if (validation.response) return rejected(options, validation.response);
+        const retryAccessScope = consumed.access_scope ?? retrySource.scope;
+        if (validation.accessScope !== retryAccessScope) {
+          return rejected(options, json({ error: "invalid_scope" }, 400));
+        }
         if (dpop && !(await consumeDpopProof(options.storage, dpop))) return rejectDpop(options);
         const issued = await issueTokenPair(
           oauthStore,
@@ -46,13 +51,13 @@ export async function exchangeRefreshToken(
           retrySource,
           options.tokenVersion,
           retrySource.dpop_jkt,
-          { derivationSeed: refreshToken, issuedAt: consumed.consumed_at },
+          { derivationSeed: refreshToken, issuedAt: consumed.consumed_at, accessScope: retryAccessScope },
         );
         recordConsumedRefreshRetry(consumed);
         validation.client.last_used_at = now;
         await saveOAuthStores(oauthStore, refreshStore, options.storage);
         options.onRefreshEvent?.("retry_issued");
-        return tokenResponse(issued, retrySource.scope, retrySource.dpop_jkt);
+        return tokenResponse(issued, retryAccessScope, retrySource.dpop_jkt);
       }
       if (Number.isSafeInteger(consumed.retry_until) && consumed.retry_until! >= now
         && Number(consumed.retry_issues) >= MAX_REFRESH_RETRY_ISSUES) {
@@ -62,8 +67,9 @@ export async function exchangeRefreshToken(
           error_description: "concurrent refresh retry limit reached; retry with the newest token response",
         }, 429, { "retry-after": "1" });
       }
+      const revocation = refreshFamilyAuthority(consumed.source, oauthStore, refreshStore.tokens, consumed.family_id);
       revokeOAuthRefreshFamily(oauthStore, refreshStore, consumed.family_id, consumed.expires_at);
-      await saveOAuthStores(oauthStore, refreshStore, options.storage);
+      await options.saveStores(oauthStore, refreshStore, revocation);
       options.onRefreshEvent?.("family_revoked");
       return json({ error: "invalid_grant" }, 400);
     }
@@ -79,20 +85,20 @@ export async function exchangeRefreshToken(
         record,
         options.tokenVersion,
         record.dpop_jkt,
-        { derivationSeed: refreshToken, issuedAt: now },
+        { derivationSeed: refreshToken, issuedAt: now, accessScope: validation.accessScope },
       );
     } catch (error) {
       if (!(error instanceof HttpError) || error.code !== "invalid_grant") throw error;
       delete refreshStore.tokens[refreshKey];
-      await options.storage.put(OAUTH_REFRESH_STORE_KEY, refreshStore);
+      await saveOAuthRefreshStore(options.storage, refreshStore);
       return reject(options);
     }
     delete refreshStore.tokens[refreshKey];
-    recordConsumedRefreshToken(oauthStore, refreshStore, refreshKey, record, record.family_expires_at, now);
+    recordConsumedRefreshToken(oauthStore, refreshStore, refreshKey, record, record.family_expires_at, now, validation.accessScope);
     validation.client.last_used_at = now;
     await saveOAuthStores(oauthStore, refreshStore, options.storage);
     options.onRefreshEvent?.("rotated");
-    return tokenResponse(issued, record.scope, record.dpop_jkt);
+    return tokenResponse(issued, validation.accessScope, record.dpop_jkt);
   });
 }
 
@@ -104,7 +110,7 @@ async function validateRefreshGrant(
   dpop: VerifiedDpopProof | undefined,
   oauthStore: OAuthStore,
   allowDpopBinding: boolean,
-): Promise<{ client: OAuthStore["clients"][string]; response?: never } | { client?: never; response: Response }> {
+): Promise<{ client: OAuthStore["clients"][string]; accessScope: string; response?: never } | { client?: never; accessScope?: never; response: Response }> {
   if (record.dpop_jkt && record.dpop_jkt !== dpop?.jkt) return { response: json({ error: "invalid_dpop_proof" }, 400) };
   if (!record.dpop_jkt && dpop?.jkt) {
     if (!allowDpopBinding) return { response: json({ error: "invalid_dpop_proof" }, 400) };
@@ -116,7 +122,11 @@ async function validateRefreshGrant(
   if (String(body.resource ?? record.resource) !== record.resource || record.resource !== `${base}/mcp`) {
     return { response: json({ error: "invalid_target", error_description: "resource mismatch" }, 400) };
   }
-  if (body.scope !== undefined && normalizeOAuthScope(body.scope, options.serverName) !== record.scope) {
+  if (normalizeOAuthScope(record.scope, options.serverName) !== record.scope) {
+    return { response: json({ error: "invalid_grant" }, 400) };
+  }
+  const accessScope = body.scope === undefined ? record.scope : normalizeOAuthScope(body.scope, options.serverName);
+  if (!accessScope || !scopeSubset(accessScope, record.scope)) {
     return { response: json({ error: "invalid_scope" }, 400) };
   }
   if (!options.tokenVersion) throw new HttpError(503, "server_error", "OAuth token version is not configured");
@@ -128,7 +138,12 @@ async function validateRefreshGrant(
     || client.trusted_role !== account.role) {
     return { response: json({ error: "invalid_grant" }, 400) };
   }
-  return { client };
+  return { client, accessScope };
+}
+
+function scopeSubset(requested: string, granted: string): boolean {
+  const grantedScopes = new Set(granted.split(/\s+/).filter(Boolean));
+  return requested.split(/\s+/).filter(Boolean).every((scope) => grantedScopes.has(scope));
 }
 
 function reject(options: OAuthTokenExchangeOptions): Response {

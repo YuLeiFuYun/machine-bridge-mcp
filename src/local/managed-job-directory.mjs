@@ -46,7 +46,7 @@ function withPinnedDirectory(target, label, options, missingAllowed, callback) {
   }
   const open = options.openSync || openSync;
   let fd;
-  try { fd = open(target, Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW) | Number(fsConstants.O_DIRECTORY)); }
+  try { fd = open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY, 0o700); }
   catch (error) {
     if (missingAllowed && error?.code === "ENOENT") return null;
     if (["ELOOP", "ENOTDIR"].includes(error?.code)) throw new Error(`${label} must be a real directory and not a symbolic link`, { cause: error });

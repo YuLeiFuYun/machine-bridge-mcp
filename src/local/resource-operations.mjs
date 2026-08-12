@@ -1,8 +1,7 @@
 import { realpathSync } from "node:fs";
-import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { inspectResourceFile, validateResourceName } from "./managed-jobs.mjs";
-import { generateSshKeyPair } from "./ssh-key.mjs";
+import { generateSshKeyPair, removeGeneratedSshKeyPair } from "./ssh-key.mjs";
 import { acquireStartupLockWithWait, loadState, saveState } from "./state.mjs";
 
 export async function generateRegisteredSshKey(
@@ -17,11 +16,12 @@ export async function generateRegisteredSshKey(
   const generateKeyFn = options.generateSshKeyPair || generateSshKeyPair;
   const inspectResourceFn = options.inspectResourceFile || inspectResourceFile;
   const saveStateFn = options.saveState || saveState;
-  const removeFileFn = options.removeFile || rm;
-  const state = loadStateFn(workspace, { stateDir });
-  const lock = await acquireLockFn(state, { operation: "generate-ssh-key" });
+  const rollbackKeyFn = options.removeGeneratedSshKeyPair || removeGeneratedSshKeyPair;
+  const lockState = loadStateFn(workspace, { stateDir });
+  const lock = await acquireLockFn(lockState, { operation: "generate-ssh-key" });
   let key = null;
   try {
+    const state = loadStateFn(workspace, { stateDir });
     state.resources ||= {};
     const existing = Object.hasOwn(state.resources, name) ? state.resources[name] : null;
     if (existing?.path && !samePathIdentity(existing.path, target)) {
@@ -40,7 +40,7 @@ export async function generateRegisteredSshKey(
     } catch (error) {
       if (key.created) {
         try {
-          await removeGeneratedSshKeyPair(key, removeFileFn);
+          await rollbackKeyFn(key);
         } catch (cleanupError) {
           throw new AggregateError(
             [error, cleanupError],
@@ -68,19 +68,6 @@ export async function generateRegisteredSshKey(
   }
 }
 
-
-export async function removeGeneratedSshKeyPair(key, removeFile = rm) {
-  if (!key?.created) return;
-  const failures = [];
-  for (const [kind, filePath] of [["private", key.privateKeyPath], ["public", key.publicKeyPath]]) {
-    try {
-      await removeFile(filePath, { force: true });
-    } catch (cause) {
-      failures.push(new Error(`generated SSH ${kind} key cleanup failed`, { cause }));
-    }
-  }
-  if (failures.length) throw new AggregateError(failures, "generated SSH key rollback was incomplete");
-}
 
 function samePathIdentity(left, right) {
   const a = canonicalIfExisting(left);

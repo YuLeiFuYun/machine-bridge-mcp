@@ -36,11 +36,13 @@ import { OperationAuthorizer } from "./operation-authorization.mjs";
 import { SecurityAuditLog } from "./security-audit-log.mjs";
 import { delegatedProcessIsolationStatus } from "./delegated-process-sandbox.mjs";
 import { policyForContext } from "./authority-context.mjs";
-import { createRuntimeRelayConnection, normalizeRelayResumeCalls, normalizeRelayToolCall } from "./runtime-relay.mjs";
+import { createRuntimeRelayConnection, normalizeRelayToolCall } from "./runtime-relay.mjs";
+import { handleRuntimeRelayControlMessage } from "./runtime-relay-control.mjs";
 import { RelayCallRecovery } from "./relay-call-recovery.mjs";
 import { RuntimeResourceService } from "./runtime-resource-service.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage } from "./runtime-paths.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
+import { ResourceCoordinator } from "./resource-admission.mjs";
 import {
   resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
   sessionBootstrap as buildRuntimeSessionBootstrap,
@@ -53,7 +55,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", approvalRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null }) {
+  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = 2_000, resourceCoordinatorRoot = "" }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
@@ -66,6 +68,8 @@ export class LocalRuntime {
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
     this.deviceRootStatus = deviceRootStatus && typeof deviceRootStatus === "object" ? Object.freeze({ ...deviceRootStatus }) : null;
     this.processTracker = new ProcessTracker();
+    this.resourceCoordinator = new ResourceCoordinator(resourceCoordinatorRoot ? { root: resourceCoordinatorRoot } : {});
+    const resourceWaitMs = Number.isInteger(processResourceWaitMs) && processResourceWaitMs >= 0 ? Math.min(processResourceWaitMs, 30 * 60_000) : 2_000;
     this.lifecycle = new LifecycleController("local runtime");
     this.observability = new RuntimeObservability();
     this.relayInstanceId = `daemon_${randomBytes(18).toString("base64url")}`;
@@ -78,7 +82,7 @@ export class LocalRuntime {
       reservedTools: CONTROL_PLANE_TOOL_NAMES,
       onCancel: (record) => {
         this.processSessionManager?.notifyCancellation();
-        this.browserBridgeManager?.cancelCall(record.id);
+        this.browserBridgeManager?.cancelCall(record.id, record.controller.signal.reason);
         this.processTracker.terminateCall(record.id);
         this.logger.event?.("debug", "tool.call.cancel_requested", {
           call_id: shortCallId(record.id), tool: record.tool, origin: record.origin,
@@ -121,6 +125,8 @@ export class LocalRuntime {
       policyForContext: (context) => this.effectivePolicy(context),
       runtimeDir: this.runtimeDir,
       processTracker: this.processTracker,
+      resourceCoordinator: this.resourceCoordinator,
+      resourceWaitMs,
       resolveCwd: async (input, context) => {
         const cwd = await this.resolveExistingPath(input, context);
         if (!(await stat(cwd)).isDirectory()) throw new Error("cwd is not a directory");
@@ -146,6 +152,8 @@ export class LocalRuntime {
       policyForContext: (context) => this.effectivePolicy(context),
       runtimeDir: this.runtimeDir,
       processTracker: this.processTracker,
+      resourceCoordinator: this.resourceCoordinator,
+      resourceWaitMs,
       resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
       resolveLocalCommand: (args, context) => this.agentContextManager.resolveLocalCommand(args, context),
       displayPath: (value, context) => this.displayPath(value, context),
@@ -177,13 +185,13 @@ export class LocalRuntime {
       readResourceText,
       throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
-    this.securityAudit = new SecurityAuditLog({ root: approvalRoot });
+    this.securityAudit = new SecurityAuditLog({ root: securityStateRoot });
     this.operationAuthorizer = new OperationAuthorizer({
       workspace: this.workspace,
-      root: approvalRoot,
+      root: securityStateRoot,
       resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
       resolveWritePath: (value, context) => this.resolveWritePath(value, context),
-      protectedRoots: [approvalRoot, browserStateRoot],
+      protectedRoots: [securityStateRoot, browserStateRoot],
     });
     this.browserBridgeManager = new BrowserBridgeManager({
       policy: this.policy,
@@ -223,6 +231,15 @@ export class LocalRuntime {
 
   tools() { return this.policyGate.names().filter((name) => name !== "server_info"); }
 
+  effectiveToolNames(context = {}) {
+    const effectivePolicy = this.effectivePolicy(context);
+    const policyNames = toolNamesForPolicy(effectivePolicy);
+    const principal = context?.authority?.principal;
+    if (principal?.kind !== "account") return policyNames;
+    const accountNames = new Set(this.accountAccessGate.names(principal.role));
+    return policyNames.filter((name) => accountNames.has(name));
+  }
+
   serverInfo(args = {}, context = {}) { return projectRuntimeInfo(this.runtimeInfo(context), args.detail); }
 
   runtimeInfo(context = {}) {
@@ -230,7 +247,8 @@ export class LocalRuntime {
       workspace: this.workspace,
       displayPath: (value) => this.displayPath(value, context),
       policy: this.effectivePolicy(context),
-      toolNames: this.tools(),
+      toolNames: this.effectiveToolNames(context).filter((name) => name !== "server_info"),
+      daemonToolNames: this.tools(),
       capabilityObserver: this.capabilityObserver,
       observability: this.observability,
       callRegistry: this.callRegistry,
@@ -240,12 +258,12 @@ export class LocalRuntime {
       processTracker: this.processTracker,
       processSessionManager: this.processSessionManager,
       managedJobManager: this.managedJobManager,
+      securityAudit: this.securityAudit.snapshot(), deviceRootStatus: this.deviceRootStatus, context,
     });
     return {
       ...info,
-      security_audit: this.securityAudit.snapshot(),
       trust: {
-        device_root: this.deviceRootStatus,
+        ...info.trust,
         daemon_session: { ephemeral: true, certificate_lifetime_seconds: 86400, reconnect_prompts: false },
         delegated_process_isolation: delegatedProcessIsolationStatus(),
         routine_operation_prompts: false,
@@ -270,20 +288,22 @@ export class LocalRuntime {
     }
   }
 
-  stop() {
+  async stop() {
     if (!this.lifecycle.beginStop()) return;
     try {
       this.relay?.stop();
       this.relayCallRecovery.stop();
-      this.callRegistry.cancelAll("runtime stopped");
-      this.terminateActiveProcesses("SIGKILL");
-      this.processSessionManager.clear();
-      void this.securityAudit.close();
+      await this.callRegistry.cancelAllAndWait("runtime stopped");
+      await this.processTracker.drain("SIGKILL");
+      await this.processSessionManager.clearAndWait();
+      await this.securityAudit.close();
       this.browserBridgeManager?.stop();
       rmSync(this.runtimeDir, { recursive: true, force: true });
-    } finally {
-      this.lifecycle.markStopped();
+    } catch (error) {
+      this.lifecycle.markStopFailed(error);
+      throw error;
     }
+    this.lifecycle.markStopped();
   }
 
   send(value) {
@@ -300,7 +320,7 @@ export class LocalRuntime {
       this.handleRelayProtocolViolation("invalid_server_message");
       return;
     }
-    if (this.handleRelayControlMessage(message, relayContext)) return;
+    if (await this.handleRelayControlMessage(message, relayContext)) return;
     if (message.type === "relay_probe") {
       if (isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("unexpected_relay_probe");
       this.handleRelayProbe(message, relayContext);
@@ -312,59 +332,7 @@ export class LocalRuntime {
   }
 
   handleRelayControlMessage(message, relayContext = {}) {
-    if (message.type === "welcome") {
-      this.relay?.observeWelcome(message);
-      return true;
-    }
-    if (message.type === "hello_ack") {
-      this.relayResumeSessionId = 0;
-      this.relay?.acknowledge(message);
-      return true;
-    }
-    if (message.type === "resume_calls") {
-      const sessionId = Number(relayContext.sessionId) || 0;
-      const resume = normalizeRelayResumeCalls(message);
-      if (!resume.ok || !sessionId || relayContext.authenticated !== true || relayContext.ready === true) {
-        this.handleRelayProtocolViolation("invalid_resume_calls");
-        return true;
-      }
-      this.reconcileRelayCalls(resume.ids);
-      this.relayResumeSessionId = sessionId;
-      return true;
-    }
-    if (message.type === "ready_ack") {
-      const sessionId = Number(relayContext.sessionId) || 0;
-      if (!sessionId || sessionId !== this.relayResumeSessionId) {
-        this.handleRelayProtocolViolation("resume_calls_required");
-        return true;
-      }
-      this.relay?.confirmReady(message);
-      this.relayResumeSessionId = 0;
-      return true;
-    }
-    if (message.type === "pong") {
-      this.relayCallRecovery.pulse();
-      return true;
-    }
-    if (message.type === "tool_result_ack") {
-      if (!isRelayReadyContext(relayContext, this.relay)
-          || typeof message.id !== "string"
-          || !/^call_[A-Za-z0-9_-]{8,240}$/.test(message.id)) {
-        this.handleRelayProtocolViolation("invalid_tool_result_ack");
-        return true;
-      }
-      this.relayCallRecovery.acknowledge(message.id);
-      return true;
-    }
-    if (message.type === "error") {
-      this.relay?.handleServerError(message);
-      return true;
-    }
-    if (message.type === "cancel_call") {
-      if (typeof message.id === "string") this.cancelRelayCall(message.id, "caller_cancelled");
-      return true;
-    }
-    return false;
+    return handleRuntimeRelayControlMessage(this, message, relayContext);
   }
 
   handleRelayProtocolViolation(errorCode) {
@@ -485,7 +453,7 @@ export class LocalRuntime {
       workspace: this.workspace,
       displayPath: (value) => this.displayPath(value, context),
       policy: effectivePolicy,
-      toolNames: toolNamesForPolicy(effectivePolicy).filter((name) => name !== "server_info"),
+      toolNames: this.effectiveToolNames(context).filter((name) => name !== "server_info"),
       daemonPolicy: this.policy,
       daemonToolNames: this.tools(),
       capabilityObserver: this.capabilityObserver,
@@ -541,6 +509,7 @@ export class LocalRuntime {
       runFixedInternal: (...args) => this.processExecutionService.runFixedInternal(...args),
       probeShell: (callContext, timeoutMs) => this.processExecutionService.probeShell(callContext, timeoutMs),
       managedJobManager: this.managedJobManager,
+      resourceCoordinatorSnapshot: () => this.resourceCoordinator.snapshot({ cwd: this.workspace }),
       relayStatus: () => this.relay?.status?.() || null,
       controlPlaneState: {
         lifecycle: this.lifecycle.snapshot(),
@@ -564,6 +533,7 @@ export class LocalRuntime {
       appAutomationManager: this.appAutomationManager,
       capabilityObserver: this.capabilityObserver,
       policy: this.effectivePolicy(context),
+      availableTools: this.effectiveToolNames(context),
     }, args, context);
   }
 
@@ -573,6 +543,7 @@ export class LocalRuntime {
       appAutomationManager: this.appAutomationManager,
       capabilityObserver: this.capabilityObserver,
       policy: this.effectivePolicy(context),
+      availableTools: this.effectiveToolNames(context),
     }, args, context);
   }
 
@@ -590,6 +561,28 @@ export class LocalRuntime {
 
   terminateActiveProcesses(signal = "SIGTERM", escalate = false) {
     this.processExecutionService.terminateAll(signal, escalate);
+  }
+
+  async applyAuthorityRevocation(revocation) {
+    let calls = 0; let sessions = 0; let jobs = 0;
+    const failures = [];
+    let sessionRevocation = null;
+    try { calls = this.callRegistry.cancelAuthority(revocation); } catch (error) { failures.push(error); }
+    try { sessionRevocation = Promise.resolve(this.processSessionManager.revokeAuthority(revocation)); }
+    catch (error) { failures.push(error); }
+    try { jobs = this.managedJobManager.revokeAuthority(revocation); } catch (error) { failures.push(error); }
+    if (sessionRevocation) {
+      try { sessions = await sessionRevocation; } catch (error) { failures.push(error); }
+    }
+    if (failures.length) {
+      throw new BridgeError("unavailable", "local authority revocation was incomplete; retained revocation must be retried", {
+        cause: new AggregateError(failures, "local authority revocation failures"), retryable: true,
+      });
+    }
+    this.logger.event?.("debug", "authority.revocation.applied", {
+      calls_cancelled: calls, process_sessions_revoked: sessions, managed_jobs_cancelled: jobs,
+    }, "Revoked authority removed local execution ownership");
+    return { calls_cancelled: calls, process_sessions_revoked: sessions, managed_jobs_cancelled: jobs };
   }
 
   runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024, context = {}, cwd = this.workspace, stdin = null) {
@@ -671,7 +664,6 @@ export class LocalRuntime {
   throwIfCancelled(context = {}) {
     this.callRegistry.throwIfCancelled(context);
   }
-
 }
 
 function shortCallId(value) {

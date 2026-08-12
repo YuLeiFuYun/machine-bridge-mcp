@@ -12,7 +12,8 @@ export function runExecutable(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const capture = Boolean(options.capture);
     const maxOutputBytes = Number.isFinite(Number(options.maxOutputBytes)) ? Math.max(1024, Number(options.maxOutputBytes)) : 2 * 1024 * 1024;
-    const child = spawn(executable, argv, {
+    const spawnProcess = typeof options.spawnProcess === "function" ? options.spawnProcess : spawn;
+    const child = spawnProcess(executable, argv, {
       cwd: options.cwd || process.cwd(),
       env: options.env || process.env,
       stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
@@ -23,7 +24,7 @@ export function runExecutable(command, args = [], options = {}) {
     const stdout = new BoundedOutput(maxOutputBytes);
     const stderr = new BoundedOutput(maxOutputBytes);
     let settled = false;
-    let timedOut = false;
+    let timedOut = false; let childError = null;
     let timer = null;
     let killTimer = null;
     const timeoutMs = Number(options.timeoutMs);
@@ -45,17 +46,12 @@ export function runExecutable(command, args = [], options = {}) {
       child.stdout?.on("data", chunk => stdout.append(chunk));
       child.stderr?.on("data", chunk => stderr.append(chunk));
     }
-    child.on("error", error => finish(() => {
-      const result = capturedResult(127, stdout, stderr, error.message);
-      if (options.allowFailure) resolve(result);
-      else reject(error);
-    }));
+    child.on("error", error => { childError ||= error; });
     child.on("close", code => finish(() => {
-      const timeoutMessage = timedOut ? `command timed out after ${timeoutMs}ms` : "";
-      const result = {
-        ...capturedResult(timedOut ? 124 : code, stdout, stderr, timeoutMessage),
-      };
-      if ((!timedOut && code === 0) || options.allowFailure) resolve(result);
+      const failureMessage = timedOut ? `command timed out after ${timeoutMs}ms` : childError?.message || "";
+      const result = { ...capturedResult(timedOut ? 124 : childError ? 127 : code, stdout, stderr, failureMessage) };
+      if ((!timedOut && !childError && code === 0) || options.allowFailure) resolve(result);
+      else if (childError && !timedOut) reject(childError);
       else {
         const error = new Error((result.stderr || result.stdout || `${executable} exited ${result.code}`).trim());
         error.result = result;

@@ -19,6 +19,7 @@ import {
 } from "./wrangler-toolchain-verification.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { defaultStateRoot } from "./state.mjs";
+import { withToolchainOperationLock } from "./toolchain-operation-lock.mjs";
 import { packageRoot as defaultPackageRoot } from "./package-identity.mjs";
 
 const TOOLCHAIN_DIRECTORY = "toolchains";
@@ -37,10 +38,11 @@ export async function ensureWranglerToolchain(options = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
   const auditMaxAgeMs = positiveInteger(options.auditMaxAgeMs, DEFAULT_AUDIT_MAX_AGE_MS);
   const parent = path.join(descriptor.stateRoot, TOOLCHAIN_DIRECTORY);
-  ensureOwnerOnlyDirectorySync(parent);
 
-  return withOwnerStateLock(parent, async () => {
-    const npmCli = explicitNpmCli || (await ensureHardenedNpm(parent, options.hardenedNpm || {})).cli;
+  return withToolchainOperationLock(descriptor.stateRoot, async () => {
+    ensureOwnerOnlyDirectorySync(parent);
+    return withOwnerStateLock(parent, async () => {
+      const npmCli = explicitNpmCli || (await ensureHardenedNpm(parent, options.hardenedNpm || {})).cli;
     let marker = null;
     let installed = false;
     try {
@@ -74,12 +76,16 @@ export async function ensureWranglerToolchain(options = {}) {
       await auditToolchain(descriptor, npmCli, runCommand, options);
       writeWranglerToolchainMarker(descriptor, checkedAt);
     }
-    return descriptor.root;
+      return descriptor.root;
+    }, {
+      purpose: "wrangler-toolchain",
+      fileName: TOOLCHAIN_LOCK,
+      label: "Wrangler toolchain",
+      timeoutMs: options.lockTimeoutMs,
+    });
   }, {
-    purpose: "wrangler-toolchain",
-    fileName: TOOLCHAIN_LOCK,
-    label: "Wrangler toolchain",
-    timeoutMs: options.lockTimeoutMs,
+    controlRoot: options.controlRoot,
+    timeoutMs: options.operationLockTimeoutMs,
   });
 }
 export function wranglerToolchainDescriptor(options = {}) {
@@ -176,13 +182,13 @@ async function runNpm(npmCli, args, cwd, runCommand, options, timeoutMs, allowFa
 }
 
 function validateTemplate(manifest, lock) {
-  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.115.0") {
+  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.120.0") {
     throw new Error("Wrangler toolchain manifest lost its exact private Wrangler dependency");
   }
   if (manifest.overrides?.undici !== "7.29.0" || manifest.overrides?.sharp !== "0.35.3") {
     throw new Error("Wrangler toolchain manifest lost its security overrides");
   }
-  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "sharp@0.35.3": true, "workerd@1.20260722.1": true };
+  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "sharp@0.35.3": true, "workerd@1.20260801.1": true };
   if (JSON.stringify(manifest.allowScripts) !== JSON.stringify(expectedScripts)) {
     throw new Error("Wrangler toolchain manifest lost its exact install-script policy");
   }

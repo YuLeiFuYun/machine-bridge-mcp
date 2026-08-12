@@ -1,5 +1,6 @@
-import type { OAuthController, AuthorizedToken } from "./oauth-controller.ts";
-import { consumeDpopProof, consumeDpopProofForInternalRetry, verifyDpopProof } from "./dpop.ts";
+import type { AuthorizedToken } from "./access.ts";
+import type { OAuthController } from "./oauth-controller.ts";
+import { consumeDpopProof, verifyDpopProof } from "./dpop.ts";
 import { discardRequestBody, oauthAccessToken } from "./http.ts";
 
 export type McpAccessResult =
@@ -12,7 +13,7 @@ export async function authorizeMcpRequest(input: {
   oauth: OAuthController;
   storage: DurableObjectStorage;
   bodyLimitBytes: number;
-  internalDpopRetryId?: string;
+  requiredScope: string;
 }): Promise<McpAccessResult> {
   const access = oauthAccessToken(input.request);
   const authorized = await input.oauth.verifyAccessToken(access.token, input.base);
@@ -25,9 +26,7 @@ export async function authorizeMcpRequest(input: {
       accessToken: access.token,
       expectedJkt: authorized.dpopJkt,
     }) : null;
-    dpopValid = Boolean(proof && (input.internalDpopRetryId
-      ? await consumeDpopProofForInternalRetry(input.storage, proof, input.internalDpopRetryId)
-      : await consumeDpopProof(input.storage, proof)));
+    dpopValid = Boolean(proof && await consumeDpopProof(input.storage, proof));
   } else if (authorized && access.scheme !== "bearer") {
     dpopValid = false;
   }
@@ -35,15 +34,24 @@ export async function authorizeMcpRequest(input: {
 
   await discardRequestBody(input.request, input.bodyLimitBytes);
   const scheme = authorized?.dpopJkt ? "DPoP" : "Bearer";
+  const requiredScope = oauthChallengeScope(input.requiredScope);
   return {
     response: new Response(authorized?.dpopJkt ? "Valid DPoP proof required" : "OAuth bearer token required", {
       status: 401,
       headers: {
-        "WWW-Authenticate": `${scheme} resource_metadata="${input.base}/.well-known/oauth-protected-resource/mcp"`,
+        "WWW-Authenticate": `${scheme} resource_metadata="${input.base}/.well-known/oauth-protected-resource/mcp", scope="${requiredScope}"`,
         "cache-control": "no-store",
         "content-type": "text/plain; charset=utf-8",
         "x-content-type-options": "nosniff",
       },
     }),
   };
+}
+
+function oauthChallengeScope(value: string): string {
+  const scope = String(value || "");
+  if (!scope || !/^[\x21\x23-\x5B\x5D-\x7E]+$/.test(scope)) {
+    throw new Error("OAuth challenge scope is invalid");
+  }
+  return scope;
 }

@@ -33,7 +33,7 @@ Keep `machine-mcp` running, then use either the MCP tool `pair_browser_extension
 machine-mcp browser setup
 ```
 
-The command prints the packaged extension directory and opens the local pairing page. In the browser:
+The command prints the packaged extension directory and keeps the reported pairing URL sanitized, but the URL it actually opens is a process-owned one-shot loopback page whose 30-second bootstrap exists only in the fragment. In the browser:
 
 1. open the extensions page;
 2. enable Developer mode;
@@ -107,10 +107,10 @@ The implementation reduces avoidable risk as follows:
 
 - all browser/app tools are `full`-only;
 - no arbitrary evaluation, caller-provided script source, or caller-selected DevTools method is accepted; trusted input exposes only fixed `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, and `Input.insertText` sequences;
-- loopback HTTP validates `Host`; extension WebSockets require a random bearer subprotocol and a canonical `chrome-extension://` origin whose host is a 32-character Chromium extension ID; pairing-page and broker ports must match;
-- runtime-to-broker connections require a separate authenticated subprotocol;
-- the pairing token is stored owner-only, embedded only in the non-cacheable local pairing page, and omitted from MCP results and logs;
-- an established extension pairing cannot be silently replaced by another localhost page; replacement requires clicking the extension action on the active pairing page;
+- loopback HTTP validates `Host`; broker-auth challenge issuance also requires a fixed internal request header, so ordinary cross-origin web requests cannot consume the bounded challenge registry without a preflight the broker does not authorize;
+- extension and runtime WebSockets use separate role-bound HMAC exchanges: clients verify a broker server proof before upgrade, then send a one-time client proof under a five-second monotonic deadline; the long-lived owner-only tokens are HMAC keys and never WebSocket bearer subprotocols; extension sockets additionally require the canonical `chrome-extension://` origin for the pinned 32-character Chromium extension ID;
+- public pairing status and the HTTP pairing document are token-free; an explicit pair action first binds a one-shot OS-random loopback listener and puts a 30-second bootstrap only in that temporary URL fragment, the `document_start` content script strips it before page scripts and retains it only in the extension isolated world, and a two-step `/pair-auth` exchange first requires an init HMAC under the fragment secret before allocating server state, then requires the broker to prove owner-token-derived knowledge before it releases the extension token; successful grants are one-time, and neither bootstrap nor token is emitted in MCP results or logs;
+- an established extension pairing cannot be silently replaced by a public localhost page; manual replacement requires a fresh fragment bootstrap retained by the isolated content script plus an extension-action click;
 - arguments, form values, page source, screenshots, and results are not operational log data;
 - message, aggregate source/element/frame, form-field, upload, DOM-node/text, concurrency, proxy-route, actionability, and request-deadline limits are enforced; ambiguous selectors, stale refs, hidden/disabled/edit-blocked controls, moving targets, and obscured pointer targets fail explicitly;
 - MCP cancellation clears local and broker pending state and propagates a cancellation signal to the extension; an action already delivered to a page or application may still have completed;

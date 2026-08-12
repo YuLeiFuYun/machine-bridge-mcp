@@ -1,6 +1,7 @@
 import { ADMIN_AUTH_SCHEME, ADMIN_AUTH_TTL_SECONDS, adminAuthTranscript } from "../shared/admin-auth.mjs";
+import type { AuthorityRevocation } from "../shared/authority-revocation.mjs";
 import { decodeBase64Url, verifyDeviceSessionCertificate, verifyP256Signature } from "./device-session-verifier.ts";
-import { json, methodNotAllowed, parseRequestBody } from "./http.ts";
+import { json, methodNotAllowed, parseRequestBody, readBoundedBytes } from "./http.ts";
 import { consumeBoundedNonce } from "./nonce-store.ts";
 import {
   accountByName, createAccount, publicAccount, replaceAccountPassword, revokeAccountCredentials,
@@ -13,6 +14,7 @@ const MAX_ACCOUNTS = 64;
 export interface AccountAdminAuthorization {
   nonce: string;
   expiresAt: number;
+  request: Request;
 }
 
 export async function accountAdminAuthorized(
@@ -57,11 +59,24 @@ export async function accountAdminAuthorized(
     return null;
   }
   if (!(await verifyP256Signature(certificate.sessionPublicJwk, transcript, suppliedSignature))) return null;
-  const body = new Uint8Array(await request.clone().arrayBuffer());
-  if (body.byteLength > BODY_LIMIT_BYTES) return null;
+  const body = await readBoundedBytes(request, BODY_LIMIT_BYTES);
   const actualBodyHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", body)));
   if (bodyHash !== actualBodyHash) return null;
-  return { nonce, expiresAt: Math.max(now, issuedAt) + ADMIN_AUTH_TTL_SECONDS };
+  return {
+    nonce,
+    expiresAt: Math.max(now, issuedAt) + ADMIN_AUTH_TTL_SECONDS,
+    request: rebuildBoundedAdminRequest(request, body),
+  };
+}
+
+function rebuildBoundedAdminRequest(request: Request, body: Uint8Array<ArrayBuffer>): Request {
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  const method = request.method.toUpperCase();
+  return new Request(request.url, {
+    method, headers,
+    body: method === "GET" || method === "HEAD" || body.byteLength === 0 ? undefined : body.buffer,
+  });
 }
 
 export async function consumeAccountAdminNonce(
@@ -76,6 +91,7 @@ export async function consumeAccountAdminNonce(
     now,
     noncePattern: /^[A-Za-z0-9_-]{32,128}$/,
     maximum: 256,
+    maxFutureSeconds: ADMIN_AUTH_TTL_SECONDS * 2,
   });
 }
 
@@ -83,7 +99,7 @@ export async function handleAccountAdminOperation(options: {
   request: Request;
   operation: "accounts" | "rotate-password";
   store: OAuthStore;
-  save: () => Promise<void>;
+  save: (revocation?: AuthorityRevocation) => Promise<void>;
   now: number;
 }): Promise<Response> {
   const { request, operation, store, save, now } = options;
@@ -122,9 +138,10 @@ async function create(
   return json({ account: publicAccount(account) }, 201);
 }
 
-async function update(body: Record<string, unknown>, store: OAuthStore, save: () => Promise<void>, now: number): Promise<Response> {
+async function update(body: Record<string, unknown>, store: OAuthStore, save: (revocation?: AuthorityRevocation) => Promise<void>, now: number): Promise<Response> {
   const account = store.accounts[String(body.account_id ?? "")];
   if (!account) return json({ error: "account_not_found" }, 404);
+  const previousVersion = account.version;
   const removesLastOwner = account.active && account.role === "owner" && activeOwnerCount(store) === 1
     && (body.active === false || (body.role !== undefined && body.role !== "owner"));
   if (removesLastOwner) return json({ error: "last_owner_required" }, 409);
@@ -134,33 +151,37 @@ async function update(body: Record<string, unknown>, store: OAuthStore, save: ()
     return json({ error: "invalid_account", message: "account display name, role, or active state is invalid" }, 400);
   }
   revokeAccountCredentials(store, account.account_id);
-  await save();
+  await save(account.version !== previousVersion ? {
+    accountId: account.account_id,
+    accountVersion: previousVersion,
+  } : undefined);
   return json({ account: publicAccount(account) });
 }
 
-async function remove(body: Record<string, unknown>, store: OAuthStore, save: () => Promise<void>): Promise<Response> {
+async function remove(body: Record<string, unknown>, store: OAuthStore, save: (revocation?: AuthorityRevocation) => Promise<void>): Promise<Response> {
   const accountId = String(body.account_id ?? "");
   const account = store.accounts[accountId];
   if (!account) return json({ error: "account_not_found" }, 404);
   if (account.active && account.role === "owner" && activeOwnerCount(store) === 1) return json({ error: "last_owner_required" }, 409);
   revokeAccountCredentials(store, accountId);
   delete store.accounts[accountId];
-  await save();
+  await save({ accountId, accountVersion: account.version });
   return new Response(null, { status: 204 });
 }
 
-async function rotatePassword(request: Request, store: OAuthStore, save: () => Promise<void>, now: number): Promise<Response> {
+async function rotatePassword(request: Request, store: OAuthStore, save: (revocation?: AuthorityRevocation) => Promise<void>, now: number): Promise<Response> {
   if (request.method !== "POST") return methodNotAllowed("POST");
   const body = await parseRequestBody(request, BODY_LIMIT_BYTES);
   const account = store.accounts[String(body.account_id ?? "")];
   if (!account) return json({ error: "account_not_found" }, 404);
+  const previousVersion = account.version;
   try {
     await replaceAccountPassword(account, body.password, now);
   } catch {
     return json({ error: "invalid_password", message: "account password must be a generated 256-bit token" }, 400);
   }
   revokeAccountCredentials(store, account.account_id);
-  await save();
+  await save({ accountId: account.account_id, accountVersion: previousVersion });
   return json({ account: publicAccount(account) });
 }
 

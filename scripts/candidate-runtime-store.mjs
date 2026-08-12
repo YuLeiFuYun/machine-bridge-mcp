@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isCandidateRuntimeDirectoryName } from "../src/local/state-root-owned-namespaces.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 
-const RUNTIME_DIRECTORY_PATTERN = /^v[0-9A-Za-z.-]+-[0-9a-f]{12}-[0-9a-f]{12}$/;
 const NON_BLOCKING_CLEANUP_CODES = new Set(["EACCES", "EPERM", "EIO", "ENOSPC", "EDQUOT", "ENOMEM", "EROFS", "EMFILE", "ENFILE", "EAGAIN", "ENOBUFS", "EINTR", "ESTALE", "EBUSY", "ENOTEMPTY", "ETIMEDOUT"]);
 
 export function candidateRuntimeContainer(stateRoot) {
@@ -48,7 +48,7 @@ export function pruneInactiveCandidateRuntimes({ stateRoot, activePrefix, remove
 
   const removed = [];
   for (const entry of readdirSync(container, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !RUNTIME_DIRECTORY_PATTERN.test(entry.name)) continue;
+    if (!entry.isDirectory() || !isCandidateRuntimeDirectoryName(entry.name)) continue;
     const candidatePath = join(container, entry.name);
     const candidateInfo = realDirectoryIfPresent(candidatePath, "inactive candidate runtime");
     if (!candidateInfo) continue;

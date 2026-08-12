@@ -29,7 +29,8 @@ export function terminateProcessTreeWithEscalation(child, options = {}) {
       ? Promise.resolve(capture(child, captureOptions)).catch(() => null)
       : Promise.resolve(null);
   } catch { ownershipBeforeSignal = Promise.resolve(null); }
-  try { terminate(child, "SIGTERM", options); } catch {}
+  try { terminate(child, "SIGTERM", options); }
+  catch { /* Ownership-checked forced escalation remains available after the grace period. */ }
   const refreshedOwnership = ownershipBeforeSignal
     .then((snapshot) => {
       if (!snapshot) return null;
@@ -51,9 +52,9 @@ async function superviseEscalation({ child, options, terminate, isOwned, refresh
     try { owned = await isOwned(ownership, child, options); } catch { return; }
     if (!owned) return;
     try { terminate(child, "SIGKILL", options); } catch { return; }
-    try { options.onEscalated?.(); } catch {}
+    try { options.onEscalated?.(); } catch { /* Observer failure must not suppress termination settlement. */ }
   } finally {
-    try { options.onTerminationSettled?.(); } catch {}
+    try { options.onTerminationSettled?.(); } catch { /* Observer failure cannot change settled supervision. */ }
   }
 }
 

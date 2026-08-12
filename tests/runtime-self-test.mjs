@@ -8,6 +8,7 @@ import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 
 const SUCCESS_PROCESS_TIMEOUT_SECONDS = 30;
+const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000;
 const RUNTIME_GIT_FIXTURE_TIMEOUT_MS = 30_000;
 const PROCESS_TREE_ESCALATION_WAIT_MS = DEFAULT_PROCESS_TERMINATION_GRACE_MS
   + 2 * DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS
@@ -17,6 +18,9 @@ export async function runtimeSelfTest() {
   const workspace = await mkdtemp(join(tmpdir(), "mbm-daemon-workspace-"));
   const outside = await mkdtemp(join(tmpdir(), "mbm-daemon-outside-"));
   const jobState = await mkdtemp(join(tmpdir(), "mbm-daemon-jobs-"));
+  const resourceCoordinatorRoot = join(jobState, "resource-coordinator");
+  const protectedResource = join(jobState, "owner-resource.txt");
+  await writeFile(protectedResource, "owner-only-resource\n", { mode: 0o600 });
   const deviceIdentity = createDeviceIdentity();
   const logEvents = [];
   const logger = {
@@ -34,8 +38,10 @@ export async function runtimeSelfTest() {
     workspace,
     policy: { allowWrite: true, allowExec: true },
     logger,
+    processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
+    resourceCoordinatorRoot,
     jobRoot: join(jobState, "restricted"),
-    approvalRoot: join(jobState, "approvals"),
+    securityStateRoot: join(jobState, "security-state"),
   });
   const unrestricted = new LocalRuntime({
     workerUrl: "https://example.invalid",
@@ -45,6 +51,8 @@ export async function runtimeSelfTest() {
     workspace,
     policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true, exposeAbsolutePaths: false },
     logger,
+    processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
+    resourceCoordinatorRoot,
     jobRoot: join(jobState, "unrestricted"),
   });
   const unrestrictedVisible = new LocalRuntime({
@@ -55,6 +63,8 @@ export async function runtimeSelfTest() {
     workspace,
     policy: { allowWrite: true, allowExec: true, unrestrictedPaths: true, exposeAbsolutePaths: true },
     logger,
+    processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
+    resourceCoordinatorRoot,
     jobRoot: join(jobState, "unrestricted-visible"),
   });
   const fullAuthority = new LocalRuntime({
@@ -64,9 +74,18 @@ export async function runtimeSelfTest() {
     workspace,
     policy: policyProfile("full"),
     logger,
+    processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
+    resourceCoordinatorRoot,
     jobRoot: join(jobState, "full-authority"),
-    approvalRoot: join(jobState, "full-authority-control"),
+    resources: { "owner-secret": { kind: "file", path: protectedResource } },
+    securityStateRoot: join(jobState, "full-authority-control"),
   });
+  for (const runtime of [restricted, unrestricted, unrestrictedVisible, fullAuthority]) {
+    if (runtime.processExecutionService.resourceWaitMs !== SELF_TEST_RESOURCE_WAIT_MS
+        || runtime.processSessionManager.resourceWaitMs !== SELF_TEST_RESOURCE_WAIT_MS) {
+      throw new Error("runtime self-test resource wait override did not reach both process boundaries");
+    }
+  }
   const previousSecret = process.env.MBM_DAEMON_SELFTEST_SECRET;
   process.env.MBM_DAEMON_SELFTEST_SECRET = "should-not-leak";
   try {
@@ -79,16 +98,31 @@ export async function runtimeSelfTest() {
       return true;
     };
     restricted.relayCallRecovery.isRecoverable = () => true;
-    await restricted.handleMessage(JSON.stringify({
+    const processService = restricted.processExecutionService;
+    const originalResourceCoordinator = processService.resourceCoordinator;
+    const originalSpawnProcess = processService.spawnProcess;
+    let deadlineSpawned = false;
+    processService.resourceCoordinator = null;
+    processService.spawnProcess = (...spawnArgs) => { deadlineSpawned = true; return originalSpawnProcess(...spawnArgs); };
+    const deadlineCall = restricted.handleMessage(JSON.stringify({
       type: "tool_call",
       id: "deadline-call",
       tool: "run_process",
       arguments: { argv: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], timeout_seconds: 10 },
-      timeout_ms: 1000,
+      timeout_ms: 10000,
       authorization: ownerAuthorization,
     }), { sessionId: 1, authenticated: true, ready: true });
+    for (let attempt = 0; !deadlineSpawned && attempt < 200; attempt += 1) await new Promise((resolvePromise) => { setTimeout(resolvePromise, 5); });
+    if (!deadlineSpawned) throw new Error("relay deadline fixture did not reach process dispatch");
+    restricted.callRegistry.cancel("deadline-call", "deadline exceeded", "timeout");
+    await deadlineCall;
+    processService.spawnProcess = originalSpawnProcess;
+    processService.resourceCoordinator = originalResourceCoordinator;
     const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
-    if (deadlineResult?.ok !== false || deadlineResult.error?.code !== "timeout" || deadlineResult.error?.retryable !== true) throw new Error(`relay deadline did not return a structured retryable timeout: ${JSON.stringify(deadlineResult)}`);
+    if (deadlineResult?.ok !== false || deadlineResult.error?.code !== "timeout" || deadlineResult.error?.retryable !== false
+        || deadlineResult.error?.details?.side_effects_started !== true || deadlineResult.error?.details?.effect_settlement !== "pending") {
+      throw new Error(`relay deadline lost its non-retryable pending-effect timeout contract: ${JSON.stringify(deadlineResult)}`);
+    }
     relayMessages.length = 0;
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
@@ -105,6 +139,10 @@ export async function runtimeSelfTest() {
     const otherOperatorAuthorization = { account_id: `acct_${"p".repeat(32)}`, account_version: 1, client_id: `mcp_client_${"p".repeat(43)}`, family_id: `mcp_family_${"p".repeat(43)}`, role: "operator" };
     const otherReviewerAuthorization = { account_id: `acct_${"q".repeat(32)}`, account_version: 1, client_id: `mcp_client_${"q".repeat(43)}`, family_id: `mcp_family_${"q".repeat(43)}`, role: "reviewer" };
     const relayContext = (authorization) => ({ origin: "relay", authorization });
+    await fullAuthority.executeTool("stage_job", {
+      name: "owner diagnostic isolation",
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    }, relayContext(ownerAuthorization));
 
     const editorOverview = await fullAuthority.executeTool("project_overview", {}, relayContext(editorAuthorization));
     if (editorOverview.policy?.allowExec !== false || editorOverview.policy?.unrestrictedPaths !== false) {
@@ -113,11 +151,64 @@ export async function runtimeSelfTest() {
     if (editorOverview.daemonPolicy?.profile !== "full" || editorOverview.daemonPolicy?.execMode !== "shell") {
       throw new Error("project_overview lost the full daemon capability ceiling");
     }
-    if (editorOverview.tools?.includes("exec_command") || editorOverview.tools?.includes("browser_action")) {
-      throw new Error("project_overview exposed daemon-only tools in the editor-effective tool list");
+    if (editorOverview.tools?.includes("exec_command") || editorOverview.tools?.includes("browser_action") || editorOverview.tools?.includes("stage_job")) {
+      throw new Error("project_overview exposed daemon-only or owner-only tools in the editor-effective tool list");
     }
     if (!editorOverview.daemonTools?.includes("exec_command") || !editorOverview.daemonTools?.includes("browser_action")) {
       throw new Error("project_overview omitted daemon-advertised tools from its explicit ceiling fields");
+    }
+    if (editorOverview.capabilityRouting?.activity_hidden_by_authority !== true) {
+      throw new Error("project_overview leaked cross-principal capability-routing activity to the editor account");
+    }
+    const editorServerInfo = await fullAuthority.executeTool("server_info", { detail: "full" }, relayContext(editorAuthorization));
+    if (editorServerInfo.tools?.includes("stage_job") || editorServerInfo.tools?.includes("exec_command")
+        || editorServerInfo.tools?.includes("browser_action") || editorServerInfo.tools?.includes("list_local_resources")) {
+      throw new Error("server_info exposed tools outside the editor account authority");
+    }
+    if (editorServerInfo.runtime?.local_resources?.count !== null
+        || editorServerInfo.runtime?.local_resources?.names?.length !== 0
+        || editorServerInfo.runtime?.local_resources?.inventory_hidden_by_authority !== true) {
+      throw new Error("server_info leaked protected local resource inventory to a non-owner account");
+    }
+    if (editorServerInfo.runtime?.managed_jobs?.retained !== 0 || editorServerInfo.runtime?.managed_jobs?.staged !== 0) {
+      throw new Error("server_info leaked another principal's managed-job activity to the editor account");
+    }
+    if (editorServerInfo.observability?.capability_routing?.activity_hidden_by_authority !== true
+        || editorServerInfo.observability?.tool_calls?.activity_hidden_by_authority !== true
+        || editorServerInfo.observability?.in_flight_calls?.activity_hidden_by_authority !== true
+        || "active" in (editorServerInfo.observability?.in_flight_calls || {})
+        || editorServerInfo.runtime?.processes?.activity_hidden_by_authority !== true) {
+      throw new Error("server_info leaked cross-principal task/tool/call/process activity to the editor account");
+    }
+    if (editorServerInfo.security_audit?.activity_hidden_by_authority !== true
+        || "last_event_at" in (editorServerInfo.security_audit || {})
+        || "retained" in (editorServerInfo.security_audit || {})) {
+      throw new Error("server_info leaked cross-principal security-audit activity to the editor account");
+    }
+    const ownerServerInfo = await fullAuthority.executeTool("server_info", { detail: "full" }, relayContext(ownerAuthorization));
+    if (!ownerServerInfo.runtime?.local_resources?.names?.includes("owner-secret") || ownerServerInfo.runtime?.managed_jobs?.staged !== 1) {
+      throw new Error("owner server_info lost its authorized resource inventory or managed-job aggregate");
+    }
+    if (editorServerInfo.tool_delivery?.effective_tool_count !== editorServerInfo.tools?.length
+        || editorServerInfo.tool_delivery?.daemon_advertised_tool_count !== editorOverview.daemonTools?.length
+        || editorServerInfo.tool_delivery?.daemon_advertised_tool_count <= editorServerInfo.tool_delivery?.effective_tool_count) {
+      throw new Error("server_info did not distinguish effective account tools from the daemon capability ceiling");
+    }
+    const operatorDurableRouting = await fullAuthority.executeTool("resolve_task_capabilities", {
+      path: ".",
+      task: "Run a long background multi-step migration that must survive disconnects and always clean up",
+    }, relayContext(operatorAuthorization));
+    if (operatorDurableRouting.recommended_tools?.includes("start_job")
+        || operatorDurableRouting.recommended_tools?.includes("stage_job")
+        || operatorDurableRouting.execution_routing?.routes?.some((route) => route.id === "managed-job")) {
+      throw new Error("task routing exposed an unsatisfiable owner-only managed-job creation route to the operator account");
+    }
+    if (!operatorDurableRouting.routing_observability?.includes("effective authority")
+        || operatorDurableRouting.routing_observability?.includes("effective policy")) {
+      throw new Error("task routing observability mislabeled account-attenuated authority as policy-only availability");
+    }
+    if (operatorDurableRouting.application_discovery?.reason !== "effective_authority") {
+      throw new Error("application capability discovery mislabeled delegated-account attenuation as a policy-only denial");
     }
     const compactEditorOverview = await fullAuthority.executeTool("project_overview", { detail: "summary" }, relayContext(editorAuthorization));
     const compactEditorOverviewJson = JSON.stringify(compactEditorOverview);
@@ -125,6 +216,7 @@ export async function runtimeSelfTest() {
         || compactEditorOverview.policy?.profile !== editorOverview.policy?.profile
         || compactEditorOverview.effectiveToolCount !== editorOverview.tools.length
         || compactEditorOverview.daemonToolCount !== editorOverview.daemonTools.length
+        || compactEditorOverview.capabilityRouting?.activity_hidden_by_authority !== true
         || "tools" in compactEditorOverview || "daemonTools" in compactEditorOverview
         || compactEditorOverview.topLevel?.some((entry) => "path" in entry || "size" in entry)) {
       throw new Error("compact local project_overview leaked cold-path arrays/paths or lost authority counts");

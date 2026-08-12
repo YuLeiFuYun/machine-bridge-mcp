@@ -6,6 +6,7 @@ export function diagnosticControlPlaneState(state = {}, relay = null) {
       relay,
       processes: state.processes ?? null,
       execution_guardrails: state.executionGuardrails ?? null,
+      resource_admission: state.resourceAdmission ?? null,
       security_audit: state.securityAudit ?? null,
     },
   };

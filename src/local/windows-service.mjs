@@ -1,6 +1,7 @@
 import { waitForInactiveStatus } from "./service-convergence.mjs";
 import { stableWindowsStatus, waitForWindowsStatus, windowsStatusWaitOptions } from "./windows-service-convergence.mjs";
 import { windowsLauncherPath, windowsTaskAction, writeWindowsLauncher } from "./windows-launcher.mjs";
+import { removeServiceDefinitionIfCurrent, snapshotServiceDefinition } from "./service-definition.mjs";
 export { windowsBatchArgument, windowsCommandLineArgument, windowsLauncherContent, windowsLauncherPath, windowsTaskAction, writeWindowsLauncher } from "./windows-launcher.mjs";
 
 export const WINDOWS_TASK = "MachineBridgeMCP";
@@ -132,16 +133,25 @@ export async function stopWindowsTask(logger = console, options = {}) {
 
 export async function uninstallWindowsTask(logger = console, options = {}) {
   const run = requiredRun(options.run);
+  const launcher = options.stateRoot ? windowsLauncherPath(options.stateRoot) : "";
+  const launcherIdentity = launcher ? snapshotServiceDefinition(launcher, "Windows service launcher") : null;
   const stopped = await stopWindowsTask(logger, { ...options, run });
   if (!stopped.ok) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, stop: stopped, reason: "stop_failed" };
   const command = await run("schtasks", ["/Delete", "/TN", WINDOWS_TASK, "/F"]);
   const status = await waitForWindowsStatus(
     () => statusWindowsTask({ ...options, run }), value => value.installed === false, options,
   );
-  const ok = status.installed === false;
-  if (ok) logger.info?.("Windows Scheduled Task removed");
-  else logger.warn?.("Windows Scheduled Task removal could not be verified");
-  return { ok, provider: "schtasks", task: WINDOWS_TASK, stop: stopped, command, status, reason: ok ? "removed" : "removal_not_observed" };
+  const taskRemoved = status.installed === false;
+  if (!taskRemoved) {
+    logger.warn?.("Windows Scheduled Task removal could not be verified");
+    return { ok: false, provider: "schtasks", task: WINDOWS_TASK, stop: stopped, command, status, reason: "removal_not_observed" };
+  }
+  if (launcher && !removeServiceDefinitionIfCurrent(launcher, launcherIdentity, "Windows service launcher")) {
+    logger.warn?.("Windows service launcher changed during removal; the replacement was retained.");
+    return { ok: false, provider: "schtasks", task: WINDOWS_TASK, stop: stopped, command, status, reason: "launcher_changed" };
+  }
+  logger.info?.("Windows Scheduled Task removed");
+  return { ok: true, provider: "schtasks", task: WINDOWS_TASK, stop: stopped, command, status, reason: "removed" };
 }
 
 export async function statusWindowsTask(options = {}) {

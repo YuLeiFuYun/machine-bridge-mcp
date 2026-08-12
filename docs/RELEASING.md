@@ -75,7 +75,7 @@ npm run release:candidate
 
 The candidate manifest records npm SHA-1/SHA-512 values and a promotion-content digest. Any packaged-file change invalidates the candidate. Every candidate start or activation recomputes the current digest and compares package identity before tarball verification, npm installation, Worker deployment, or service mutation; a stale but internally self-consistent tarball cannot be installed. Preparing or testing a candidate never authorizes npm publication; only the repository owner may invoke a publication command. An existing tag, GitHub Release, or npm version is immutable and must never be reused after source changes.
 
-A blocking external CI or CodeQL result discovered after local acceptance is still a candidate defect. When its repair changes any packaged file, increment the prerelease number, remove the old acceptance record, regenerate the candidate, repeat owner activation and observed live verification, and record a new acceptance before guarded push. Do not preserve an old acceptance merely because the runtime behavior under investigation is unchanged, and do not weaken a platform or security gate to keep the old candidate valid.
+A blocking external CI or CodeQL result discovered after local acceptance is still a candidate defect. When its repair changes any packaged file, increment the prerelease number, remove the old acceptance record, regenerate the candidate, repeat owner activation, rerun the candidate-bound deployed OAuth canary, repeat observed live verification, and record a new acceptance before guarded push. Do not preserve an old acceptance or canary evidence merely because the runtime behavior under investigation is unchanged, and do not weaken a platform or security gate to keep the old candidate valid.
 
 Platform fidelity is evidence from the provider environment, not an inference from local success. In particular, Windows filesystem/process semantics and hosted security analyzers must pass on the exact candidate head; local simulations may diagnose or prevent regressions but cannot close those provider gates.
 
@@ -106,9 +106,17 @@ It may request one macOS user-presence or Touch ID operation to certify the daem
 
 The private candidate runtime is not stored under the Git checkout, so cleaning `.release-candidate/`, switching branches, or regenerating a candidate cannot delete the daemon currently under test. The activation wrapper checks `--allow-worker-deploy` before downloads/install, reads the previous global installation while hardened npm is still live, uses the persistent release-channel prefix only for an actual service activation, and prunes only canonical real contained inactive runtime directories before writing activation evidence. `--install-only` uses the disposable foreground prefix. The previous global installation remains available as recovery information.
 
-## 3. Coding agent verifies the live candidate
+## 3. Coding agent runs the deployed OAuth canary and verifies the live candidate
 
-After the owner command completes, the coding agent verifies through Machine Bridge:
+After the owner command completes, the coding agent first runs the candidate-bound synthetic canary:
+
+```sh
+npm run release:oauth-canary -- --allow-live-oauth-canary
+```
+
+The command refuses stale source/candidate identity and the wrong recorded Worker version. For prereleases it also binds to the exact activation record. It creates one random temporary `reviewer` account and one DCR client, performs authorization-code exchange, an authenticated `server_info` MCP call, refresh-token rotation, and a second authenticated MCP call, then revokes the temporary client and removes the temporary account before it writes evidence. Credentials, authorization codes, client/account identifiers, and access/refresh tokens exist only in process memory and are never printed or stored in canary evidence. A main-path failure still attempts both cleanup operations; cleanup failure makes the canary fail closed and prevents evidence creation.
+
+The coding agent then verifies through Machine Bridge:
 
 - `server_info` reports the exact candidate version;
 - Worker health reports the same version and deployment identity;
@@ -119,9 +127,9 @@ After the owner command completes, the coding agent verifies through Machine Bri
 - browser, application, proxy, credential, service, and platform-specific behavior are tested when affected;
 - logs contain no sensitive arguments, output, tokens, or raw user paths.
 
-Only observed live evidence counts. A green unit suite, prepared tarball, unobserved process, or ambiguous response does not count.
+Only observed live evidence counts. A green unit suite, prepared tarball, unobserved process, or ambiguous response does not count. `release:accept` also requires the `.release-candidate/oauth-canary.json` evidence to match the pending candidate; regenerating the candidate removes the evidence and forces a new deployed canary.
 
-After successful verification, the coding agent records acceptance using the exact phrase emitted by `release:candidate`:
+After successful canary and live verification, the coding agent records acceptance using the exact phrase emitted by `release:candidate`:
 
 ```sh
 npm run release:accept -- --confirm "I VERIFIED machine-bridge-mcp <version> CANDIDATE ON THE OWNER MACHINE AND IT WORKS"
@@ -227,7 +235,7 @@ The owner activates the exact stable candidate with the same persistent command:
 npm run release:candidate:activate -- --allow-worker-deploy
 ```
 
-The coding agent verifies the live stable candidate and records its exact acceptance. Then commit, push with `npm run github:push`, and merge. The repository owner runs the following from a real interactive terminal:
+The coding agent reruns `npm run release:oauth-canary -- --allow-live-oauth-canary`, verifies the live stable candidate, and records its exact acceptance only after both succeed. Then commit, push with `npm run github:push`, and merge. The repository owner runs the following from a real interactive terminal:
 
 ```sh
 npm run release -- --owner-terminal-confirm

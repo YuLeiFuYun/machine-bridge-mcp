@@ -8,36 +8,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
-import { compareReleaseVersions, parseReleaseVersion } from "./release-channel.mjs";
+import { parseReleaseVersion } from "./release-channel.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { releaseCommandFailure } from "./release-diagnostic.mjs";
 
 export const ACCEPTANCE_SCHEMA_VERSION = 1;
-export const ACCEPTANCE_POLICY_VERSION = "1.2.8";
-export const AGENT_VERIFIED_ACCEPTANCE_VERSION = "1.2.9";
-export const AGENT_OPERATED_ACCEPTANCE_VERSION = "2.0.0";
-export const ACCEPTANCE_CONFIRMATION = "owner-authorized-agent-operated-local-candidate";
-export const PROMOTION_DIGEST_POLICY_VERSION = "3.0.0-beta.1";
-export const PERSISTENT_OWNER_ACTIVATED_ACCEPTANCE_VERSION = "3.0.0-beta.1";
-export const PERSISTENT_OWNER_ACTIVATED_CONFIRMATION = "owner-activated-agent-verified-persistent-candidate";
-export const OWNER_STARTED_ACCEPTANCE_CONFIRMATION = "owner-started-agent-verified-local-candidate";
-export const LEGACY_ACCEPTANCE_CONFIRMATION = "repository-owner-local-test";
+export const ACCEPTANCE_CONFIRMATION = "owner-activated-agent-verified-persistent-candidate";
 const MAX_ACCEPTANCE_BYTES = 64 * 1024;
 const MAX_RELEASE_TARBALL_BYTES = 64 * 1024 * 1024;
-
-export function requiresLocalAcceptance(version) {
-  return compareVersions(parseVersion(version), parseVersion(ACCEPTANCE_POLICY_VERSION)) >= 0;
-}
-
-export function acceptanceConfirmationForVersion(version) {
-  const parsed = parseVersion(version);
-  if (compareReleaseVersions(parseReleaseVersion(version), parseReleaseVersion(PERSISTENT_OWNER_ACTIVATED_ACCEPTANCE_VERSION)) >= 0) {
-    return PERSISTENT_OWNER_ACTIVATED_CONFIRMATION;
-  }
-  if (compareVersions(parsed, parseVersion(AGENT_OPERATED_ACCEPTANCE_VERSION)) >= 0) return ACCEPTANCE_CONFIRMATION;
-  if (compareVersions(parsed, parseVersion(AGENT_VERIFIED_ACCEPTANCE_VERSION)) >= 0) return OWNER_STARTED_ACCEPTANCE_CONFIRMATION;
-  return LEGACY_ACCEPTANCE_CONFIRMATION;
-}
 
 export function acceptancePath(root, version) {
   return join(root, "release-acceptance", `v${version}.json`);
@@ -128,8 +106,7 @@ export function verifyAcceptanceRecord(record, metadata) {
     throw new Error(`unsupported release acceptance schema: ${record.schema_version}`);
   }
   if (record.result !== "passed") throw new Error("local release acceptance result is not passed");
-  const expectedConfirmation = acceptanceConfirmationForVersion(metadata.package_version);
-  if (record.confirmation !== expectedConfirmation) {
+  if (record.confirmation !== ACCEPTANCE_CONFIRMATION) {
     throw new Error("local release acceptance confirmation is missing or does not match the active verification workflow");
   }
   const acceptedAt = Date.parse(String(record.accepted_at || ""));
@@ -137,8 +114,7 @@ export function verifyAcceptanceRecord(record, metadata) {
   if (!/^[0-9a-f]{64}$/.test(String(record.package_content_sha256 || ""))) {
     throw new Error("local release acceptance portable package-content digest is missing or invalid");
   }
-  if (compareReleaseVersions(parseReleaseVersion(metadata.package_version), parseReleaseVersion(PROMOTION_DIGEST_POLICY_VERSION)) >= 0
-    && !/^[0-9a-f]{64}$/.test(String(record.promotion_content_sha256 || ""))) {
+  if (!/^[0-9a-f]{64}$/.test(String(record.promotion_content_sha256 || ""))) {
     throw new Error("local release acceptance promotion-content digest is missing or invalid");
   }
   for (const key of ["package_name", "package_version", "filename", "shasum", "integrity"]) {
@@ -149,7 +125,7 @@ export function verifyAcceptanceRecord(record, metadata) {
   return Object.freeze({
     schema_version: ACCEPTANCE_SCHEMA_VERSION,
     result: "passed",
-    confirmation: expectedConfirmation,
+    confirmation: ACCEPTANCE_CONFIRMATION,
     package_name: metadata.package_name,
     package_version: metadata.package_version,
     filename: metadata.filename,
@@ -163,9 +139,6 @@ export function verifyAcceptanceRecord(record, metadata) {
 
 export function verifyCurrentReleaseAcceptance(root, options = {}) {
   const pkg = readPackage(root);
-  if (!requiresLocalAcceptance(pkg.version)) {
-    return { required: false, version: pkg.version };
-  }
   const temp = mkdtempSync(join(tmpdir(), "mbm-release-acceptance-"));
   let result = null;
   let primaryError = null;
@@ -222,7 +195,7 @@ export function normalizePackRecord(value, packageName) {
 function readPackage(root) {
   const value = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   if (typeof value.name !== "string" || !value.name) throw new Error("package.json name is invalid");
-  if (!parseVersion(value.version)) throw new Error("package.json version is invalid");
+  parseReleaseVersion(value.version);
   return value;
 }
 
@@ -232,18 +205,4 @@ function validatePackMetadata(metadata) {
   }
   if (!/^[0-9a-f]{40}$/.test(metadata.shasum)) throw new Error("npm pack returned an invalid SHA-1 shasum");
   if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(metadata.integrity)) throw new Error("npm pack returned an invalid SHA-512 integrity value");
-}
-
-function parseVersion(value) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(String(value || ""));
-  if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function compareVersions(left, right) {
-  if (!left || !right) throw new Error("version comparison requires semantic versions");
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] - right[index];
-  }
-  return 0;
 }

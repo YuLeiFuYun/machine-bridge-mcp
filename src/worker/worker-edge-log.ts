@@ -1,3 +1,5 @@
+import { sanitizePortableLogText } from "../shared/log-redaction.mjs";
+
 type EdgeLogLevel = "warn" | "error";
 type EdgeLogWriter = (level: EdgeLogLevel, text: string) => void;
 const SENSITIVE_FIELD = /(?:authorization|cookie|password|secret|token|key|credential|proof)/i;
@@ -43,7 +45,7 @@ function safeFields(fields: Record<string, unknown>): Record<string, unknown> {
       continue;
     }
     if (typeof value === "number" || typeof value === "boolean" || value === null) out[name] = value;
-    else if (typeof value === "string") out[name] = value.replace(/[\u0000-\u001f\u007f]/g, "_").slice(0, 160);
+    else if (typeof value === "string") out[name] = sanitizePortableLogText(value, { maxChars: 160 });
   }
   return out;
 }

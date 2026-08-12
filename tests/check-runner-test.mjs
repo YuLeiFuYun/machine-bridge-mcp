@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVerificationPlan } from "../scripts/check-runner.mjs";
+import { runWithStableGeneration } from "../scripts/verification-generation-guard.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-check-runner-test-"));
 try {
@@ -124,6 +125,32 @@ if (task === "noisy-success") {
   failFast.finish("in-flight", 0);
   await assert.rejects(() => failFastRun, /verification task failed/);
   assert(failFastErr.value.includes("failing"), "parallel failure diagnostics omitted the failing task");
+
+  await assert.rejects(() => runWithStableGeneration({ run: async () => 42 }), /captureGeneration must be a function/);
+  await assert.rejects(() => runWithStableGeneration({ captureGeneration: () => "stable" }), /run must be a function/);
+  let generation = "stable";
+  assert.equal(await runWithStableGeneration({
+    captureGeneration: () => generation,
+    run: async () => 42,
+  }), 42, "stable verification generation lost a successful result");
+  const stableFailure = new Error("stable task failed");
+  await assert.rejects(() => runWithStableGeneration({
+    captureGeneration: () => generation,
+    run: async () => { throw stableFailure; },
+  }), (error) => error === stableFailure, "stable verification generation replaced the task failure");
+  generation = "before";
+  await assert.rejects(() => runWithStableGeneration({
+    label: "test inputs",
+    captureGeneration: () => generation,
+    run: async () => { generation = "after"; },
+  }), /test inputs changed during verification; discard this run/);
+  generation = "before-failure";
+  const invalidatedFailure = new Error("must be discarded");
+  await assert.rejects(() => runWithStableGeneration({
+    captureGeneration: () => generation,
+    run: async () => { generation = "after-failure"; throw invalidatedFailure; },
+  }), (error) => error !== invalidatedFailure && /changed during verification; discard this run/.test(error.message),
+  "generation drift did not supersede a result produced from mixed verification inputs");
 
   await assert.rejects(() => runVerificationPlan({
     mode: "invalid-concurrency",
