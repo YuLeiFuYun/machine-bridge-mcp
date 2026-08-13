@@ -408,7 +408,7 @@ function assertNoForeignMaintenance(stateRoot) {
 
 export function acquireDaemonLock(state, metadata = {}) {
   assertNoForeignMaintenance(state?.paths?.stateRoot);
-  const details = { startupReady: false, startupReadyAt: null };
+  const details = { startupReady: false, startupReadyAt: null, nodeVersion: process.versions.node };
   if (metadata?.mode === "foreground" || metadata?.mode === "service") details.mode = metadata.mode;
   if (typeof metadata?.version === "string" && /^[0-9A-Za-z.+_-]{1,64}$/.test(metadata.version)) details.version = metadata.version;
   return acquireProcessLock(daemonLockPathForState(state), state, "daemon", details, { maxAgeMs: Number.POSITIVE_INFINITY });

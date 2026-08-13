@@ -399,7 +399,6 @@ async function testSessionAuthorityRevocation() {
     resolveCwd: async () => root,
     displayPath: (value) => value,
     throwIfCancelled() {},
-    terminationSettlementWaitMs: 100,
   });
   const accountId = `acct_${"p".repeat(32)}`;
   const clientId = `mcp_client_${"p".repeat(43)}`;
@@ -445,12 +444,18 @@ async function testSessionAuthorityRevocation() {
     };
     manager.sessions.set(unsettledTerminationId, unsettledSession);
     const originalTerminateTree = manager.terminateTree;
-    manager.terminateTree = () => true;
-    await assert.rejects(() => manager.revokeAuthority({ accountId, accountVersion: 4, clientId, familyId }),
-      (error) => error?.code === "unavailable" && error?.retryable === true,
-      "process-session authority revocation acknowledged a delivered-but-unsettled termination request");
-    assert(manager.sessions.has(unsettledTerminationId), "unsettled process-session revocation discarded the retained termination handle");
-    manager.terminateTree = originalTerminateTree;
+    const originalSettlementWaitMs = manager.terminationSettlementWaitMs;
+    try {
+      manager.terminateTree = () => true;
+      manager.terminationSettlementWaitMs = 100;
+      await assert.rejects(() => manager.revokeAuthority({ accountId, accountVersion: 4, clientId, familyId }),
+        (error) => error?.code === "unavailable" && error?.retryable === true,
+        "process-session authority revocation acknowledged a delivered-but-unsettled termination request");
+      assert(manager.sessions.has(unsettledTerminationId), "unsettled process-session revocation discarded the retained termination handle");
+    } finally {
+      manager.terminateTree = originalTerminateTree;
+      manager.terminationSettlementWaitMs = originalSettlementWaitMs;
+    }
     manager.sessions.delete(unsettledTerminationId);
 
     const failedKillId = `proc_${"y".repeat(24)}`;

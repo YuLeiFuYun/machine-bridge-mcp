@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   RELEASE_OAUTH_CANARY_CALLBACK,
   runReleaseOAuthCanaryFlow,
@@ -27,6 +29,8 @@ const OWNER_ACCOUNT = {
 };
 const SCOPE = "machine-bridge-mcp offline_access";
 
+testEntrypointRejectsUnrecordedOverrides();
+testEntrypointRejectsNodeStartupOptions();
 await testSuccessfulFlowAndCleanup();
 await testCanaryRequiresExistingOwner();
 await testStaleSyntheticStateIsReclaimed();
@@ -35,6 +39,34 @@ await testFailureStillCleansTemporaryState();
 await testCleanupFailureFailsClosed();
 testEvidenceBinding();
 console.log("Release OAuth canary test ok");
+
+function testEntrypointRejectsUnrecordedOverrides() {
+  const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+  const entry = fileURLToPath(new URL("../scripts/release-oauth-canary.mjs", import.meta.url));
+  for (const override of [["--state-dir", tmpdir()], ["--workspace", repositoryRoot]]) {
+    const result = spawnSync(process.execPath, [entry, "--allow-live-oauth-canary", ...override], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: process.env,
+    });
+    assert.equal(result.status, 1, `release OAuth canary accepted unrecorded ${override[0]} override`);
+    assert.match(result.stderr, /release OAuth canary requires exact argv/,
+      `release OAuth canary did not reject unrecorded ${override[0]} override before live state access`);
+  }
+}
+
+function testEntrypointRejectsNodeStartupOptions() {
+  const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+  const entry = fileURLToPath(new URL("../scripts/release-oauth-canary.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, ["--no-warnings", entry, "--allow-live-oauth-canary"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: process.env,
+  });
+  assert.equal(result.status, 1, "release OAuth canary accepted Node CLI startup options");
+  assert.match(result.stderr, /refuses Node CLI startup options/,
+    "release OAuth canary did not reject Node CLI startup options before live state access");
+}
 
 async function testSuccessfulFlowAndCleanup() {
   const admin = fakeAdmin();

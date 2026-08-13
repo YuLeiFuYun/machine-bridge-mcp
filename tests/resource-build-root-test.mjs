@@ -194,7 +194,7 @@ try {
     release: async () => { successfulReleases += 1; return true; },
   };
   const successfulCoordinator = { acquire: async () => successfulLease };
-  const preparedEcho = await acquireProcessResources(successfulCoordinator, "echo", ["ok"], { PATH: "/bin" }, { cwd: project });
+  const preparedEcho = await acquireProcessResources(successfulCoordinator, "/bin/echo", ["ok"], { PATH: "/bin" }, { cwd: project });
   assert.equal(preparedEcho.request.family, "light");
   await bindProcessResources(preparedEcho.lease, { pid: process.pid });
   assert.equal(binds, 1);

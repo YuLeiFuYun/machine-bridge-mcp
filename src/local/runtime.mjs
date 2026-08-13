@@ -55,7 +55,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = 2_000, resourceCoordinatorRoot = "" }) {
+  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "" }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
@@ -69,7 +69,10 @@ export class LocalRuntime {
     this.deviceRootStatus = deviceRootStatus && typeof deviceRootStatus === "object" ? Object.freeze({ ...deviceRootStatus }) : null;
     this.processTracker = new ProcessTracker();
     this.resourceCoordinator = new ResourceCoordinator(resourceCoordinatorRoot ? { root: resourceCoordinatorRoot } : {});
-    const resourceWaitMs = Number.isInteger(processResourceWaitMs) && processResourceWaitMs >= 0 ? Math.min(processResourceWaitMs, 30 * 60_000) : 2_000;
+    if (processResourceWaitMs !== undefined && (!Number.isInteger(processResourceWaitMs) || processResourceWaitMs < 0)) {
+      throw new TypeError("processResourceWaitMs must be a non-negative integer when configured");
+    }
+    const resourceWaitMs = processResourceWaitMs === undefined ? undefined : Math.min(processResourceWaitMs, 30 * 60_000);
     this.lifecycle = new LifecycleController("local runtime");
     this.observability = new RuntimeObservability();
     this.relayInstanceId = `daemon_${randomBytes(18).toString("base64url")}`;

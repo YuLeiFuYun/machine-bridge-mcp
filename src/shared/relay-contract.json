@@ -1,5 +1,6 @@
 {
   "reconnectGraceMs": 120000,
+  "newCallReconnectGraceMs": 10000,
   "streamHeartbeatMs": 10000,
   "maximumExecutionTimeoutMs": 600000,
   "maximumInteractiveExecutionTimeoutMs": 60000,

@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
+import { lstatSync, readlinkSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
+import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
 
 const DEFAULT_ROOTS = ["src", "scripts", "tests", "browser-extension", ".github/scripts"];
 const DEFAULT_FILES = ["package.json", "package-lock.json", "tsconfig.json", "tsconfig.local.json", "wrangler.jsonc"];
+const MAX_GENERATION_FILE_BYTES = 16 * 1024 * 1024;
 
 export function captureCoverageGeneration(root, options = {}) {
   const entries = [];
@@ -28,7 +30,10 @@ function collect(path, root, entries) {
     return;
   }
   if (info.isFile()) {
-    entries.push({ path: name, mode, content: readFileSync(path) });
+    const snapshot = readBoundedRegularFileWithInfoSync(path, MAX_GENERATION_FILE_BYTES, `verification input ${name}`, {
+      verifyPathIdentity: true,
+    });
+    entries.push({ path: name, mode: Number(snapshot.info.mode) & 0o777, content: snapshot.buffer });
     return;
   }
   if (!info.isDirectory()) return;

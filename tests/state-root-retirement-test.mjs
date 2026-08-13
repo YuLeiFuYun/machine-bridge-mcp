@@ -28,6 +28,19 @@ try {
     assert.throws(() => removeStateRoot(linkedProfiles.root), /state-root profiles must be a real directory/,
       "state-root removal followed a symbolic-link profiles directory during validation");
     assert.equal(existsSync(linkedProfiles.workspace), true, "state-root validation modified the symbolic-link profiles target");
+
+    const verifyRace = await validStateRoot("verify-race");
+    const verifyRaceIdentity = inspectStateRootGeneration(verifyRace.root);
+    let verifyRaceRetired = "";
+    const verifyRaceRemoved = removeStateRootGenerationIfCurrent(verifyRace.root, verifyRaceIdentity, (retired) => {
+      verifyRaceRetired = retired;
+      rmSync(retired, { recursive: true, force: true });
+      mkdirSync(retired, { mode: 0o700 });
+      writeFileSync(join(retired, "replacement-after-verify.txt"), "replacement generation\n", { mode: 0o600 });
+    });
+    assert.equal(verifyRaceRemoved, false, "state-root retirement deleted a generation installed during moved-root verification");
+    assert(existsSync(join(verifyRaceRetired, "replacement-after-verify.txt")),
+      "post-verification generation recheck did not retain replacement quarantine evidence");
   }
 
   const crash = await validStateRoot("crash");

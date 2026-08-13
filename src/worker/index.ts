@@ -2,11 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { PendingCallRegistrationError } from "./pending-call-contract.ts";
 import { PendingCallRegistry } from "./pending-calls.ts";
-import { MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission } from "./pending-call-capacity.ts";
+import { MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission, pendingCapacityProjection } from "./pending-call-capacity.ts";
 import { PendingAdmissionGate } from "./pending-admission.ts";
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import { daemonLivenessDeadlineMs, isFreshDaemonCandidate } from "./daemon-liveness.ts";
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import { notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "./daemon-ready-waiters.ts";
+import { daemonToolTimeoutBudgetAfterDelay } from "./daemon-recovery-budget.ts";
 import { daemonStatusSnapshot } from "./daemon-status.ts";
 import { sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
 import { sanitizeDaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
@@ -51,10 +53,10 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.62";
+const SERVER_VERSION = "3.0.0-beta.67";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
-const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
+const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
 export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS);
   private readonly observability = new WorkerObservability();
@@ -326,6 +328,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return;
       }
       this.observability.socketReady();
+      notifyReadyDaemon(this.daemonRegistry);
       for (const previous of previousSockets) {
         const cleanup = this.cleanupDaemonSocket(previous, "daemon connection replaced after verified handover");
         closeWebSocketQuietly(previous, 1012, "replaced by verified daemon");
@@ -438,10 +441,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
 
   private async serverInfoResult(base: string, authorized: AuthorizedToken, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const { daemon, effectiveTools, advertisedTools, authorization } = this.authorityContext(authorized);
+    const pendingSnapshot = pendingCapacityProjection(this.pending.snapshot(), readyDaemonWaiterSnapshot(this.daemonRegistry));
     return buildServerInfoResult({
       serverName: SERVER_NAME, serverVersion: SERVER_VERSION, base,
       oauth: authorizationServerMetadata(base, SERVER_NAME), authorization, daemon,
-      effectiveTools, advertisedTools, pendingSnapshot: this.pending.snapshot(),
+      effectiveTools, advertisedTools, pendingSnapshot,
       daemonRegistry: this.daemonRegistry, observability: this.observability,
     }, serverInfoDetail(args));
   }
@@ -488,14 +492,20 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     signal?: AbortSignal,
   ): Promise<unknown> {
     this.reclaimStaleDaemonSockets();
-    const socket = this.daemonRegistry.readySockets()[0];
-    if (!socket) throw new WorkerToolError("unavailable", "local daemon is not connected; keep the CLI start command running", true);
+    const timeoutBudget = daemonToolTimeoutBudget(name, args);
+    const recoveryStartedAt = performance.now();
+    const socket = await waitForReadyDaemon(this.daemonRegistry, {
+      graceMs: Math.min(NEW_CALL_RECONNECT_GRACE_MS, timeoutBudget.executionTimeoutMs),
+      signal,
+      tool: name,
+      pending: this.pending.snapshot(),
+    });
+    const dispatchBudget = daemonToolTimeoutBudgetAfterDelay(timeoutBudget, performance.now() - recoveryStartedAt);
     const daemonAttachment = this.daemonRegistry.readyAttachment(socket);
     const daemonInstanceId = daemonAttachment?.instanceId ?? "";
     if (!daemonInstanceId) throw new WorkerToolError("unavailable", "local daemon connection is missing its instance identity", true);
     if (!daemonAttachment?.tools?.includes(name)) throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
     const id = randomToken("call");
-    const timeoutBudget = daemonToolTimeoutBudget(name, args);
     let result!: Promise<unknown>;
     try {
       await this.pendingAdmission.run(async () => {
@@ -510,7 +520,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
             clientId: authorized.clientId, familyId: authorized.familyId,
           },
           tool: name,
-          timeoutMs: timeoutBudget.settlementTimeoutMs,
+          timeoutMs: dispatchBudget.settlementTimeoutMs,
           onTimeout: (record) => this.daemonCallTimeout(record, name),
           signal,
           onAbort: (record) => this.daemonCallCancellation(record),
@@ -526,7 +536,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     this.observability.callStarted(name);
     try {
       socket.send(JSON.stringify({
-          type: "tool_call", id, tool: name, arguments: args, timeout_ms: timeoutBudget.executionTimeoutMs,
+          type: "tool_call", id, tool: name, arguments: args, timeout_ms: dispatchBudget.executionTimeoutMs,
           authorization: {
             account_id: authorized.accountId,
             account_version: authorized.accountVersion,

@@ -1,5 +1,5 @@
 import { renameSync, writeFileSync } from "node:fs";
-import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chmodRegularFileIfIdentitySync, inspectPathIfPresentSync, openRegularFileSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "../src/local/secure-file.mjs";
@@ -67,8 +67,9 @@ try {
     await rm(chmodSource, { force: true });
     await writeFile(chmodSource, "replacement-before-chmod", { mode: 0o600 });
     expectThrow(() => chmodRegularFileIfIdentitySync(chmodSource, chmodSnapshot.identity, 0o644, "identity chmod test"), "changed before permission update");
-    const replacementMode = (await stat(chmodSource)).mode & 0o777;
-    if (replacementMode !== 0o600 || await readFile(chmodSource, "utf8") !== "replacement-before-chmod") {
+    const replacement = readBoundedRegularFileWithInfoSync(chmodSource, 1024, "identity chmod replacement", { verifyPathIdentity: true });
+    const replacementMode = replacement.info.mode & 0o777;
+    if (replacementMode !== 0o600 || replacement.buffer.toString("utf8") !== "replacement-before-chmod") {
       throw new Error("identity-checked chmod modified a replacement path");
     }
   }

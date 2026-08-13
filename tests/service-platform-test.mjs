@@ -81,6 +81,7 @@ await windowsUnknownStatusTest();
 await windowsStopTest();
 await windowsUninstallTest();
 await windowsLauncherRemovalTest();
+await windowsLauncherReplacementRemovalTest();
 await systemdRemovalDecisionTest();
 await systemdStopContractTest();
 await launchdStatusContractTest();
@@ -606,9 +607,15 @@ async function windowsLauncherRemovalTest() {
     });
     assert.equal(removed.ok, true, "Windows task removal did not settle after deleting its launcher");
     assert.equal(existsSync(launcher), false, "Windows service uninstall retained its unchanged launcher");
+  } finally { removeTestTree(root); }
+}
 
+async function windowsLauncherReplacementRemovalTest() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "mbm-windows-launcher-replace-"));
+  const launcher = path.join(root, "service-launcher.cmd");
+  try {
     writeFileSync(launcher, "second launcher\n", { mode: 0o600 });
-    deleted = false;
+    let deleted = false;
     const replaced = await uninstallWindowsTask(quietLogger(), {
       stateRoot: root,
       sleep: async () => {},

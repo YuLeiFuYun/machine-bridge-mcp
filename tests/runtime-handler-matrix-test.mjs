@@ -13,6 +13,9 @@ const runtime = new LocalRuntime({
   browserStateRoot: "",
   recoverJobs: false,
 });
+if (runtime.processExecutionService.resourceWaitMs !== undefined || runtime.processSessionManager.resourceWaitMs !== undefined) {
+  throw new Error("runtime composition pinned the old two-second resource-admission override instead of using dynamic defaults");
+}
 
 try {
   const routed = [];

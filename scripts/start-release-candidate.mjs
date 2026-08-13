@@ -21,18 +21,23 @@ import { withReleaseRuntimeLock } from "../src/local/release-runtime-lock.mjs";
 import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
 import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
+import { resolveNpmCli } from "../src/local/npm-cli.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateDirectory = join(root, ".release-candidate");
 const manifestPath = join(candidateDirectory, "manifest.json");
 const foregroundInstallPrefix = join(candidateDirectory, "runtime");
+const installOnly = process.argv.includes("--install-only");
+const activateService = process.argv.includes("--activate-service");
+const allowWorkerDeploy = process.argv.includes("--allow-worker-deploy");
 const lifecycleNpmCli = process.env.npm_execpath;
+let sourceNpmCli = lifecycleNpmCli;
 let npmCli = "";
 let npmSession = null;
 
-if (!lifecycleNpmCli) fail("candidate startup must run through npm so npm_execpath is available");
-
 try {
+  if (installOnly) sourceNpmCli = resolveNpmCli({ allowLifecycleNpmCli: false, allowFallbackLocations: false });
+  if (!sourceNpmCli) throw new Error("candidate live startup must run through npm so npm_execpath is available");
   const currentPackage = readJson(join(root, "package.json"), "current package");
   const manifest = validateCandidateManifest(
     readJson(manifestPath, "release candidate manifest"),
@@ -41,13 +46,10 @@ try {
   assertCandidateMatchesCurrentSource(manifest, {
     packageName: currentPackage.name,
     packageVersion: currentPackage.version,
-    promotionDigest: computePromotionContentDigest(root, { npmCli: lifecycleNpmCli }),
+    promotionDigest: computePromotionContentDigest(root, { npmCli: sourceNpmCli }),
   });
   const tarball = join(candidateDirectory, manifest.filename);
   verifyTarball(tarball, manifest);
-  const activateService = process.argv.includes("--activate-service");
-  const installOnly = process.argv.includes("--install-only");
-  const allowWorkerDeploy = process.argv.includes("--allow-worker-deploy");
   if (!installOnly && !allowWorkerDeploy) {
     throw new Error("candidate activation may update the configured same-name Worker; rerun with --allow-worker-deploy to authorize that live candidate deployment");
   }

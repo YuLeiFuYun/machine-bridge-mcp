@@ -853,6 +853,12 @@ function testRelayReconnectDelivery() {
   assert(cancelled === 1 && terminated === 1, "reconnect expiry did not cancel calls and terminate ordinary processes");
   assert(suppressed.get("call_expire") === "relay_reconnect_timeout", "reconnect expiry did not suppress the eventual result");
   assert(recovery.pendingResults.size === 0, "reconnect expiry retained queued results");
+  const reconnectExpired = events.find((event) => event.name === "relay.calls.reconnect_expired");
+  assert(reconnectExpired?.level === "warn"
+    && reconnectExpired.fields?.cancelled_calls === 1
+    && reconnectExpired.fields?.discarded_results === 1
+    && reconnectExpired.fields?.grace_ms === 30_000,
+  "reconnect expiry did not emit structured loss diagnostics");
 }
 
 

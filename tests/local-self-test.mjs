@@ -376,6 +376,31 @@ setInterval(() => {}, 2 ** 31 - 1);
     if (!serviceDaemon.alive || !serviceDaemon.verified_service_daemon || serviceDaemon.mode !== "service") {
       throw new Error("service daemon was not identified from current lock metadata");
     }
+    const exactRuntimeDaemon = inspectWorkspaceDaemon(state, {
+      expectedVersion: "0.18.0",
+      expectedEntryScript: fixture,
+      expectedNodeExecutable: process.execPath,
+      expectedNodeVersion: process.versions.node,
+    });
+    if (!exactRuntimeDaemon.verified_service_daemon) {
+      throw new Error("service daemon rejected its exact version, entrypoint, or Node executable identity");
+    }
+    const wrongNodeDaemon = inspectWorkspaceDaemon(state, { expectedNodeExecutable: fixture });
+    if (wrongNodeDaemon.verified_service_daemon || wrongNodeDaemon.identity_reason !== "node_executable_mismatch") {
+      throw new Error("service daemon accepted a mismatched Node executable identity");
+    }
+    const wrongNodeVersionDaemon = inspectWorkspaceDaemon(state, { expectedNodeVersion: `${process.versions.node}-mismatch` });
+    if (wrongNodeVersionDaemon.verified_service_daemon || wrongNodeVersionDaemon.identity_reason !== "node_version_mismatch") {
+      throw new Error("service daemon accepted a mismatched Node runtime version");
+    }
+    const wrongVersionDaemon = inspectWorkspaceDaemon(state, { expectedVersion: "0.18.1" });
+    if (wrongVersionDaemon.verified_service_daemon || wrongVersionDaemon.identity_reason !== "version_mismatch") {
+      throw new Error("service daemon accepted a mismatched expected version");
+    }
+    const wrongEntryDaemon = inspectWorkspaceDaemon(state, { expectedEntryScript: process.execPath });
+    if (wrongEntryDaemon.verified_service_daemon || wrongEntryDaemon.identity_reason !== "entrypoint_mismatch") {
+      throw new Error("service daemon accepted a mismatched expected entrypoint");
+    }
     if (!workspaceDaemonOwnsPlatformAutostart(serviceDaemon)) {
       throw new Error("verified workspace service daemon was not authorized for platform autostart takeover");
     }

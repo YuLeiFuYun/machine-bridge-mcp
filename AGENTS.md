@@ -35,6 +35,7 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
 - New package work uses `x.y.z-dev.n`, `x.y.z-beta.n`, or `x.y.z-rc.n`.
 - These channels publish only to npm dist-tags `dev`, `beta`, and `next`; none may become `latest`.
 - The exact candidate must be persistently activated on the owner machine before the first GitHub push.
+- Immediately before asking for that owner action, the coding agent runs `node scripts/start-release-candidate.mjs --install-only`; this non-live `--install-only` preflight must prove current source identity, package modes, exact tarball integrity, and disposable installability without Worker/service activation or activation evidence.
 - The owner executes the single printed command:
 
   ```sh
@@ -42,7 +43,7 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
   ```
 
   This is a live activation command, not a per-operation authorization prompt. It updates the same-name Worker, verifies candidate relay readiness, replaces the login daemon, verifies background handoff, and exits while the service remains active.
-- The coding agent then runs `npm run release:oauth-canary -- --allow-live-oauth-canary`. The candidate-bound canary creates only synthetic temporary reviewer/client state, proves authorization-code exchange, authenticated MCP, refresh rotation, refreshed MCP, and cleanup, and records no credential/token/client/account value.
+- The coding agent derives `<activated-runtime-package>` from the activation record `runtime_entry`, then runs `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv with the Git checkout as cwd. The canary code and imports therefore come from the exact activated package while the checkout is only candidate/evidence data. The candidate-bound canary creates only synthetic temporary reviewer/client state, proves authorization-code exchange, authenticated MCP, refresh rotation, refreshed MCP, and cleanup, and records no credential/token/client/account value.
 - The coding agent then verifies Worker version/hash, remote health, relay readiness, connected daemon/service identity, representative functionality, relevant failure paths, and log/privacy behavior through Machine Bridge.
 - Only after the candidate-bound OAuth canary evidence and observed live verification may the agent run `npm run release:accept`.
 - The accepted prerelease is reviewed and merged; the owner then creates its Git tag and GitHub Prerelease from a real interactive terminal with `npm run prerelease:release -- --owner-terminal-confirm`.
@@ -88,7 +89,7 @@ The coding agent prepares and prints the exact command. The owner runs live acti
 - Lock, state deletion, service lifecycle, release activation, detached process, credential, browser, or application changes require behavior, concurrency, and fault-injection tests; source-string checks alone are insufficient.
 - Run both dependency audits, Worker dry-run, registry signature verification, SBOM generation, package inspection, privacy history, and complete diff/status review for a versioned candidate.
 - Update tests, `CHANGELOG.md`, `docs/AUDIT.md`, release guidance, architecture, threat model, and operations whenever their contracts change.
-- `npm run release:candidate` creates the exact tarball consumed by `npm run release:candidate:activate -- --allow-worker-deploy`. Any packaged-file change invalidates acceptance.
+- `npm run release:candidate` creates the exact tarball. Before presenting activation, the coding agent must run `node scripts/start-release-candidate.mjs --install-only`; any packaged-file change or mode drift invalidates the candidate and requires regeneration. Only the repository owner then runs `npm run release:candidate:activate -- --allow-worker-deploy`.
 - Release evidence contains bounded synthetic metadata only; never put user names, machine paths, command output, credentials, or private content in it.
 
 ## Incident diagnosis and evidence hard gate
@@ -112,14 +113,15 @@ When the incident is closed, record the causal evidence and the disproved branch
 
 1. Finish implementation and review; use a `dev`, `beta`, or `rc` version.
 2. Run complete verification and `npm run release:candidate`.
-3. Present `npm run release:candidate:activate -- --allow-worker-deploy` to the owner and stop.
-4. After the owner runs it, run `npm run release:oauth-canary -- --allow-live-oauth-canary`, then verify the live candidate through Machine Bridge.
-5. Record exact candidate acceptance only after both candidate-bound canary evidence and observed live verification; commit and push only through `npm run github:push`.
-6. Complete the pull request and exact-commit checks.
-7. The owner runs `npm run prerelease:release -- --owner-terminal-confirm` from a real interactive terminal.
-8. The owner runs `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy`.
-9. Wait for real use. Do not assume successful soak; the owner reports the outcome.
-10. After explicit successful soak feedback, record the exact `prerelease:soak:accept` phrase.
+3. Run `node scripts/start-release-candidate.mjs --install-only`; if it fails, repair and regenerate the candidate instead of involving the owner.
+4. Present `npm run release:candidate:activate -- --allow-worker-deploy` to the owner and stop.
+5. After the owner runs it, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the live candidate through Machine Bridge.
+6. Record exact candidate acceptance only after both candidate-bound canary evidence and observed live verification; commit and push only through `npm run github:push`.
+7. Complete the pull request and exact-commit checks.
+8. The owner runs `npm run prerelease:release -- --owner-terminal-confirm` from a real interactive terminal.
+9. The owner runs `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy`.
+10. Wait for real use. Do not assume successful soak; the owner reports the outcome.
+11. After explicit successful soak feedback, record the exact `prerelease:soak:accept` phrase.
 
 ### Stable promotion
 

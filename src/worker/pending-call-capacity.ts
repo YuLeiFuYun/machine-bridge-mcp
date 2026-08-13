@@ -79,6 +79,22 @@ export function pendingCallAdmission(
   return toolCallAdmission(pending, config, tool);
 }
 
+export function pendingCapacityProjection(
+  pending: PendingRegistrySnapshot,
+  preDispatch: PendingCapacitySnapshot,
+): PendingRegistrySnapshot & Record<string, unknown> {
+  const byTool = { ...pending.by_tool };
+  for (const [tool, count] of Object.entries(preDispatch.by_tool)) byTool[tool] = (byTool[tool] ?? 0) + count;
+  const usage = toolCallCapacityUsage({ active: pending.active + preDispatch.active, byTool }, WORKER_PENDING_CALL_CAPACITY);
+  return Object.freeze({
+    ...pending,
+    pre_dispatch_waiters: preDispatch.active,
+    capacity_active: usage.active,
+    capacity_active_ordinary: usage.activeOrdinary,
+    capacity_active_reserved: usage.activeReserved,
+  });
+}
+
 export function assertWorkerPendingCallAdmission(
   pending: PendingCapacitySnapshot,
   tool: string,

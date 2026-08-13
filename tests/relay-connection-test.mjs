@@ -314,6 +314,48 @@ stalledHeartbeatScheduler.advance(5);
 assert(!stalledHeartbeatSockets[0].terminated, "fresh inbound traffic did not clear heartbeat recovery grace");
 stalledHeartbeatConnection.stop();
 
+const resumedAfterLongPauseScheduler = new ManualScheduler();
+const resumedAfterLongPauseSockets = [];
+const resumedAfterLongPauseEvents = [];
+const resumedAfterLongPauseConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  logger: captureLogger(resumedAfterLongPauseEvents),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      resumedAfterLongPauseSockets.push(this);
+    }
+  },
+  scheduler: resumedAfterLongPauseScheduler,
+  now: () => resumedAfterLongPauseScheduler.now,
+  reconnectDelay: () => 5,
+  heartbeatIntervalMs: 5,
+  heartbeatTimeoutMs: 10,
+  heartbeatStallThresholdMs: 5,
+  heartbeatRecoveryGraceMs: 10,
+  handshakeTimeoutMs: 20,
+  outageWarnAfterMs: 100,
+});
+resumedAfterLongPauseConnection.start();
+resumedAfterLongPauseSockets[0].open();
+resumedAfterLongPauseConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(resumedAfterLongPauseConnection, "test");
+resumedAfterLongPauseScheduler.now += 26;
+resumedAfterLongPauseSockets[0].emit("message", "fresh-after-pause");
+resumedAfterLongPauseScheduler.stall(0);
+assert(!resumedAfterLongPauseSockets[0].terminated,
+  "fresh inbound relay traffic after a long local pause did not preserve a proven-live socket");
+resumedAfterLongPauseScheduler.stall(26);
+assert(resumedAfterLongPauseSockets[0].terminated,
+  "relay retained a stale socket after a local pause exceeded both heartbeat timeout and recovery grace");
+assert(resumedAfterLongPauseEvents.some((event) => event.level === "warn"
+  && event.fields?.event === "runtime.event_loop.stall"
+  && event.fields?.relay_disconnect_deferred === false),
+"long local pause did not expose immediate relay recovery through structured diagnostics");
+resumedAfterLongPauseScheduler.advance(5);
+assert(resumedAfterLongPauseSockets.length === 2, "long local pause did not enter reconnect immediately");
+resumedAfterLongPauseConnection.stop();
+
 const readinessScheduler = new ManualScheduler();
 const readinessSockets = [];
 const readinessConnection = new RelayConnection({

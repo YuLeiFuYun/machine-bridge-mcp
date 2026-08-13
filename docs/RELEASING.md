@@ -75,6 +75,14 @@ npm run release:candidate
 
 The candidate manifest records npm SHA-1/SHA-512 values and a promotion-content digest. Any packaged-file change invalidates the candidate. Every candidate start or activation recomputes the current digest and compares package identity before tarball verification, npm installation, Worker deployment, or service mutation; a stale but internally self-consistent tarball cannot be installed. Preparing or testing a candidate never authorizes npm publication; only the repository owner may invoke a publication command. An existing tag, GitHub Release, or npm version is immutable and must never be reused after source changes.
 
+Immediately before asking the repository owner to cross the activation boundary, the coding agent must run the non-live candidate preflight:
+
+```sh
+node scripts/start-release-candidate.mjs --install-only
+```
+
+This direct-Node path deliberately bypasses npm lifecycle execution and reuses the activation wrapper with `--install-only`. It resolves a validated npm CLI only from the running Node installation layout (not lifecycle `npm_execpath` or unrelated fallback locations), recomputes current package identity and promotion content, verifies the exact tarball, performs a disposable local install, removes that install, and does not deploy the Worker, change the login service, or write prerelease activation evidence. It exists specifically to catch source drift, unexpected package file modes, and installability failures after candidate preparation without consuming an owner-terminal attempt. If it fails, fix the tree and regenerate `npm run release:candidate`; do not repair the old manifest/tarball in place. The verify command is still only a preflight and never substitutes for the real owner-terminal activation below.
+
 A blocking external CI or CodeQL result discovered after local acceptance is still a candidate defect. When its repair changes any packaged file, increment the prerelease number, remove the old acceptance record, regenerate the candidate, repeat owner activation, rerun the candidate-bound deployed OAuth canary, repeat observed live verification, and record a new acceptance before guarded push. Do not preserve an old acceptance or canary evidence merely because the runtime behavior under investigation is unchanged, and do not weaken a platform or security gate to keep the old candidate valid.
 
 Platform fidelity is evidence from the provider environment, not an inference from local success. In particular, Windows filesystem/process semantics and hosted security analyzers must pass on the exact candidate head; local simulations may diagnose or prevent regressions but cannot close those provider gates.
@@ -111,10 +119,12 @@ The private candidate runtime is not stored under the Git checkout, so cleaning 
 After the owner command completes, the coding agent first runs the candidate-bound synthetic canary:
 
 ```sh
-npm run release:oauth-canary -- --allow-live-oauth-canary
+node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary
 ```
 
-The command refuses stale source/candidate identity and the wrong recorded Worker version. For prereleases it also binds to the exact activation record. It creates one random temporary `reviewer` account and one DCR client, performs authorization-code exchange, an authenticated `server_info` MCP call, refresh-token rotation, and a second authenticated MCP call, then revokes the temporary client and removes the temporary account before it writes evidence. Credentials, authorization codes, client/account identifiers, and access/refresh tokens exist only in process memory and are never printed or stored in canary evidence. A main-path failure still attempts both cleanup operations; cleanup failure makes the canary fail closed and prevents evidence creation.
+`<activated-runtime-package>` is the package directory containing the activation record's absolute `runtime_entry` (take the parent of its `bin/` directory). The coding agent must execute that packaged canary path as direct Node argv while keeping the Git checkout as the child cwd. This makes the code and all relative imports come from the exact activated package; the checkout is only the candidate/evidence data root. A workspace-relative `node scripts/release-oauth-canary.mjs ...` command and the package script `npm run release:oauth-canary -- --allow-live-oauth-canary` remain source/developer entrypoints with ordinary accounting, but they are not valid prerelease-evidence paths. For prereleases the canary additionally canonicalizes its own package root and requires it to equal the package root containing the activation record's `runtime_entry`; a checkout copy therefore fails before live OAuth mutation even when its source bytes match. The npm form can also be redirected by `script-shell`, and the workspace form would otherwise execute mutable checkout imports before admission could prove their full transitive identity. The canary also refuses Node/native debugging, profiling, TLS, loader, key-log, and resource-startup environment overrides before candidate validation or live OAuth mutation; use a clean process environment.
+
+The command accepts exactly the single `--allow-live-oauth-canary` argument and requires empty `process.execArgv`; Node preload, loader, debugger, profiler, and other runtime CLI options are not valid release evidence. `--state-dir`, `--workspace`, and every other extra argv are refused before state access because canary evidence does not encode alternate local-state identity. It requires the current startup-ready service daemon to pass the hardened daemon-owner identity check with the candidate version, an `entryScript` canonically equal to the executing canary package's `bin/machine-mcp.mjs`, and a canonical Node executable equal to the canary's `process.execPath`, and private daemon-lock Node runtime metadata equal to `process.versions.node`; this requirement applies to stable candidates too. It refuses stale source/candidate identity and the wrong recorded Worker version. For prereleases it also binds to the exact activation record. It creates one random temporary `reviewer` account and one DCR client, performs authorization-code exchange, an authenticated `server_info` MCP call, refresh-token rotation, and a second authenticated MCP call, then revokes the temporary client and removes the temporary account before it writes evidence. Credentials, authorization codes, client/account identifiers, and access/refresh tokens exist only in process memory and are never printed or stored in canary evidence. A main-path failure still attempts both cleanup operations; cleanup failure makes the canary fail closed and prevents evidence creation.
 
 The coding agent then verifies through Machine Bridge:
 
@@ -227,6 +237,7 @@ Verify the promotion:
 npm run release:soak:verify
 npm run check
 npm run release:candidate
+node scripts/start-release-candidate.mjs --install-only
 ```
 
 The owner activates the exact stable candidate with the same persistent command:
@@ -235,7 +246,7 @@ The owner activates the exact stable candidate with the same persistent command:
 npm run release:candidate:activate -- --allow-worker-deploy
 ```
 
-The coding agent reruns `npm run release:oauth-canary -- --allow-live-oauth-canary`, verifies the live stable candidate, and records its exact acceptance only after both succeed. Then commit, push with `npm run github:push`, and merge. The repository owner runs the following from a real interactive terminal:
+The coding agent reruns `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary`, verifies the live stable candidate, and records its exact acceptance only after both succeed. Then commit, push with `npm run github:push`, and merge. The repository owner runs the following from a real interactive terminal:
 
 ```sh
 npm run release -- --owner-terminal-confirm

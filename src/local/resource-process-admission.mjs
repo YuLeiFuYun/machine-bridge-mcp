@@ -3,10 +3,11 @@ import { ResourceAdmissionError } from "./resource-admission.mjs";
 import { BridgeError } from "./errors.mjs";
 import { prepareResourceBuildCommand } from "./resource-build-root.mjs";
 import { applyResourceProcessPriority } from "./resource-process-priority.mjs";
+import { releaseControlWorkspaceForCommand } from "./resource-release-control-workspace.mjs";
 
 export async function acquireProcessResources(coordinator, command, args, environment, options = {}) {
   if (!coordinator) return { lease: null, environment, request: null };
-  const request = resourceCommandProfile(command, args, { priority: options.priority, environment });
+  const request = resourceCommandProfile(command, args, { priority: options.priority, environment, releaseControlWorkspace: await releaseControlWorkspaceForCommand(command, args, options.cwd, environment) });
   const resourceCwd = resourceCommandEffectiveCwd(command, args, options.cwd, request);
   let lease;
   try {

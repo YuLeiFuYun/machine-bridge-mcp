@@ -7,6 +7,8 @@ import { swiftJobPlan } from "./resource-swift-concurrency.mjs";
 import { xcodeResourcePlan } from "./resource-xcode-concurrency.mjs";
 import { xcodeIsLightCommand } from "./resource-xcode-command.mjs";
 import { xcodeNonBuildResourcePlan } from "./resource-xcode-non-build.mjs";
+import { isTrustedLightExecutable } from "./resource-light-command.mjs";
+import { releaseControlCommandIsLight } from "./resource-release-control-classification.mjs";
 import { commandHeadIn, commandHeadIs, commandTokens, heavyShellScript, pythonModuleHeadIs, pythonModuleTokens, shellPayload, shellSegments } from "./resource-shell-analysis.mjs";
 import { directInterpreterHeavyScript, packageManagerTokensHeavy, verificationPlanCommand } from "./resource-script-classification.mjs";
 const GIB = 1024 ** 3;
@@ -20,15 +22,16 @@ export function resourceCommandProfile(command, args = [], options = {}) {
   const priority = normalizePriority(options.priority);
 
   if (isTrustedDiskReclaimExecutable(rawCommand)) return profile("disk-reclaim", "io", 0.25, 0.75, 256, 0, priority);
-  if (isLightCommand(base, argv.slice(1), text)) return lightProfile(priority);
+  if (isTrustedLightExecutable(rawCommand)) return lightProfile(priority);
   if (base === "xcodebuild" && xcodeIsLightCommand(argv.slice(1))) return lightProfile(priority);
   if (base === "xcodebuild") { const plan = xcodeNonBuildResourcePlan(argv.slice(1));
     if (plan) return profile(plan.family, plan.resourceClass, plan.cpu, plan.io, plan.memoryMb, plan.diskBytes, priority, { unbounded: plan.unbounded, serializeProject: plan.serializeProject }); }
   const buildProfile = compilerBuildProfile(base, argv, text, shellTokens, priority, options.environment);
   if (buildProfile) return buildProfile;
-  return remainingCommandProfile(base, argv, text, shellTokens, priority, options.environment);
+  return remainingCommandProfile(base, argv, text, shellTokens, priority, options.environment, options.releaseControlWorkspace === true);
 }
-function remainingCommandProfile(base, argv, text, shellTokens, priority, environment) {
+function remainingCommandProfile(base, argv, text, shellTokens, priority, environment, releaseControlWorkspace) {
+  if (releaseControlWorkspace && releaseControlCommandIsLight(base, argv.slice(1))) return profile("release-control", "light", 0, 0, 0, 0, priority);
   if (/^pytest(?:-\d+(?:\.\d+)*)?$/.test(base) || commandHeadIs(text, base, "pytest") || pythonModuleHeadIs(text, base, "pytest")) {
     const plan = pytestWorkerPlan(argv, text);
     return profile("pytest", plan.unbounded ? "unbounded" : "cpu", plan.unbounded ? 6 : plan.jobs, 0.12,
@@ -170,10 +173,4 @@ function simpleCdPath(value, cwd) {
   if (raw === "~") return homedir();
   if (raw.startsWith("~/")) return resolve(homedir(), raw.slice(2));
   return isAbsolute(raw) ? resolve(raw) : resolve(cwd, raw);
-}
-function isLightCommand(base, args, text) {
-  if (["true", "false", "pwd", "echo", "printf", "cat", "head", "tail", "grep", "rg", "sed", "awk", "find", "ls", "stat", "wc", "ps", "uptime", "df", "sleep", "which", "open", "osascript"].includes(base)) return true;
-  if (base === "git" && ["status", "diff", "log", "show", "rev-parse", "ls-files"].includes(String(args[0] || "").toLowerCase())) return true;
-  return /^(?:\s*)(?:git\s+(?:status|diff|log|show|rev-parse|ls-files)|rg\b|grep\b|find\b|ls\b|pwd\b|echo\b|printf\b|cat\b|head\b|tail\b|sed\b|awk\b|stat\b|wc\b|ps\b|uptime\b|df\b|sleep\b)/i.test(text)
-    && !/[;&|]\s*(?:cargo|swift|xcodebuild|pytest|npm|pnpm|yarn|make|ninja)\b/i.test(text);
 }

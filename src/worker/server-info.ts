@@ -134,11 +134,15 @@ function compactDaemon(value: Record<string, unknown>): Record<string, unknown> 
 function compactPending(value: Record<string, unknown>): Record<string, unknown> {
   return {
     active: value.active ?? 0,
+    pre_dispatch_waiters: value.pre_dispatch_waiters ?? 0,
+    capacity_active: value.capacity_active ?? value.active ?? 0,
     maximum: value.maximum ?? 0,
     ordinary_capacity: value.ordinary_capacity ?? 0,
     reserved_capacity: value.reserved_capacity ?? 0,
     active_ordinary: value.active_ordinary ?? 0,
     active_reserved: value.active_reserved ?? 0,
+    capacity_active_ordinary: value.capacity_active_ordinary ?? value.active_ordinary ?? 0,
+    capacity_active_reserved: value.capacity_active_reserved ?? value.active_reserved ?? 0,
     detached: value.detached ?? 0,
     oldest_ms: value.oldest_ms ?? 0,
   };

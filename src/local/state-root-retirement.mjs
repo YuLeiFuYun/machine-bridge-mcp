@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { lstatSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
@@ -42,14 +42,22 @@ export function removeStateRootGenerationIfCurrent(root, expectedIdentity, verif
   try { current = inspectStateRootGeneration(root); }
   catch (error) { if (error?.code === "ENOENT") return false; throw error; }
   if (!sameFilesystemIdentity(expectedIdentity, current)) return false;
-  const retired = stateRootRetirementPath(options.retirementRoot || root, expectedIdentity);
-  try { rename(root, retired); }
+  let pinned;
+  try { pinned = pinDirectoryGeneration(root, expectedIdentity, options); }
   catch (error) { if (error?.code === "ENOENT") return false; throw error; }
-  const moved = inspectStateRootGeneration(retired, "retired state root");
-  if (moved.dev !== expectedIdentity.dev || moved.ino !== expectedIdentity.ino) return false;
-  verifyMovedRoot(retired);
-  rmSync(retired, { recursive: true, force: false });
-  return true;
+  if (String(options.platform || process.platform) !== "win32" && !pinned) return false;
+  const retired = stateRootRetirementPath(options.retirementRoot || root, expectedIdentity);
+  try {
+    try { rename(root, retired); }
+    catch (error) { if (error?.code === "ENOENT") return false; throw error; }
+    const moved = inspectStateRootGeneration(retired, "retired state root");
+    const stable = pinned?.identity || expectedIdentity;
+    if (moved.dev !== stable.dev || moved.ino !== stable.ino) return false;
+    verifyMovedRoot(retired);
+    const verified = inspectStateRootGeneration(retired, "verified retired state root"); if (verified.dev !== stable.dev || verified.ino !== stable.ino) return false;
+    rmSync(retired, { recursive: true, force: false });
+    return true;
+  } finally { pinned?.close(); }
 }
 
 export function pruneRetiredStateRootDirectories(root, verifyMovedRoot) {
@@ -65,4 +73,17 @@ function inspectDirectory(path, label) {
   const info = lstatSync(path, { bigint: true });
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`${label} must be a real directory`);
   return info;
+}
+
+function pinDirectoryGeneration(root, expectedIdentity, options) {
+  if (String(options.platform || process.platform) === "win32") return null;
+  const open = options.openSync || openSync;
+  const inspect = options.fstatSync || ((fd) => fstatSync(fd, { bigint: true }));
+  const close = options.closeSync || closeSync;
+  const fd = open(root, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY);
+  try {
+    const identity = filesystemIdentity(inspect(fd), "state root descriptor");
+    if (!sameFilesystemIdentity(expectedIdentity, identity)) { close(fd); return null; }
+    return { identity, close: () => close(fd) };
+  } catch (error) { close(fd); throw error; }
 }

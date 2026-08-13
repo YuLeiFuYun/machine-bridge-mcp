@@ -44,6 +44,7 @@ const boundaryModules = new Set([
   "capability-observer.mjs",
   "default-instructions.mjs",
   "network-proxy.mjs",
+  "npm-cli.mjs",
   "worker-health.mjs",
   "process-sessions.mjs",
   "process-output-stream.mjs",
@@ -65,6 +66,10 @@ const boundaryModules = new Set([
   "resource-project-key.mjs",
   "resource-process-admission.mjs",
   "resource-request-contract.mjs",
+  "resource-light-command.mjs",
+  "resource-release-control-classification.mjs",
+  "resource-release-control-executable.mjs",
+  "resource-release-control-workspace.mjs",
   "resource-script-classification.mjs",
   "resource-shell-analysis.mjs",
   "resource-waiters.mjs",
@@ -248,6 +253,11 @@ const lineLimits = Object.freeze({
   "src/local/resource-process-priority.mjs": 40,
   "src/local/resource-transaction-lock.mjs": 190,
   "src/local/resource-request-contract.mjs": 50,
+  "src/local/npm-cli.mjs": 55,
+  "src/local/resource-light-command.mjs": 20,
+  "src/local/resource-release-control-classification.mjs": 35,
+  "src/local/resource-release-control-executable.mjs": 80,
+  "src/local/resource-release-control-workspace.mjs": 45,
   "src/local/resource-script-classification.mjs": 45,
   "src/local/resource-shell-analysis.mjs": 80,
   "src/local/resource-waiters.mjs": 140,
@@ -364,6 +374,8 @@ const lineLimits = Object.freeze({
   "src/worker/tool-catalog.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
+  "src/worker/daemon-ready-waiters.ts": 80,
+  "src/worker/daemon-recovery-budget.ts": 30,
   "src/worker/daemon-socket-attachment.ts": 80,
   "src/worker/runtime-alarm.ts": 140,
   "src/worker/runtime-alarm-storage.ts": 60,
@@ -492,6 +504,13 @@ for (const required of ["heavyScriptName", "directInterpreterHeavyScript", "pack
 const resourceShellSource = readFileSync(join(localRoot, "resource-shell-analysis.mjs"), "utf8");
 for (const required of ["heavyShellScript", "shellSegments", "commandTokens", "pythonModuleTokens", "commandString", 'from "./resource-script-classification.mjs"']) {
   if (!resourceShellSource.includes(required)) throw new Error(`resource shell analysis lost bounded command-shape behavior: ${required}`);
+}
+for (const forbidden of ["isLightCommand", "LIGHT_COMMANDS", "LIGHT_GIT_COMMANDS"]) {
+  if (resourceShellSource.includes(forbidden)) throw new Error(`arbitrary shell regained a blanket light-resource bypass: ${forbidden}`);
+}
+const resourceLightCommandSource = readFileSync(join(localRoot, "resource-light-command.mjs"), "utf8");
+for (const required of ["TRUSTED_LIGHT_EXECUTABLES", "isTrustedLightExecutable", '"/bin/ps"', '"/usr/bin/uptime"']) {
+  if (!resourceLightCommandSource.includes(required)) throw new Error(`trusted light executable boundary lost identity rule: ${required}`);
 }
 if (resourceShellSource.includes("function heavyScriptName")) throw new Error("resource shell analysis regained script-name classification responsibility");
 const resourceConcurrencySource = readFileSync(join(localRoot, "resource-command-concurrency.mjs"), "utf8");
@@ -1236,7 +1255,10 @@ for (const required of [
 ]) {
   if (!workerIndexBoundary.includes(required)) throw new Error(`remote project_overview lost post-authority compact projection boundary: ${required}`);
 }
-for (const required of ["buildServerInfoResult", "buildServerInfoSummary", "compactPending", "compactDaemon", 'detail === "summary"']) {
+for (const required of [
+  "buildServerInfoResult", "buildServerInfoSummary", "compactPending", "compactDaemon", 'detail === "summary"',
+  "pre_dispatch_waiters", "capacity_active", "capacity_active_ordinary", "capacity_active_reserved",
+]) {
   if (!serverInfoBoundary.includes(required)) throw new Error(`Worker server_info lost compact/full projection boundary: ${required}`);
 }
 if (workerIndexBoundary.includes("function buildServerInfoSummary")) {
@@ -1249,6 +1271,10 @@ for (const required of ["projectRuntimeInfo", 'detail !== "summary"', "compactPr
 const pendingCallsBoundary = readFileSync(join(root, "src", "worker", "pending-calls.ts"), "utf8");
 for (const required of ["register(input", "detachSocket", "rebindInstance", "resultOwnership"]) {
   if (!pendingCallsBoundary.includes(required)) throw new Error(`pending-call registry lost bounded JSON-call semantics: ${required}`);
+}
+const pendingCapacityBoundary = readFileSync(join(root, "src", "worker", "pending-call-capacity.ts"), "utf8");
+for (const required of ["pendingCapacityProjection", "pre_dispatch_waiters", "capacity_active_ordinary", "capacity_active_reserved"]) {
+  if (!pendingCapacityBoundary.includes(required)) throw new Error(`pending-call capacity projection lost pre-dispatch accounting: ${required}`);
 }
 for (const forbidden of ["registerEvent", "settlement.kind", 'kind: "event"']) {
   if (pendingCallsBoundary.includes(forbidden)) throw new Error(`obsolete event settlement returned to the transient pending registry: ${forbidden}`);
@@ -1271,6 +1297,33 @@ const daemonSocketBoundary = readFileSync(join(root, "src", "worker", "daemon-so
 for (const required of ["class DaemonSocketRegistry", "beginProbe", "promote", "readySockets", "probingSockets"]) {
   if (!daemonSocketBoundary.includes(required)) throw new Error(`daemon socket registry lost lifecycle responsibility: ${required}`);
 }
+const daemonReadyWaiterBoundary = readFileSync(join(root, "src", "worker", "daemon-ready-waiters.ts"), "utf8");
+for (const required of [
+  "DEFAULT_GRACE_MS = 10_000", "waitForReadyDaemon", "notifyReadyDaemon", "readyDaemonWaiterSnapshot", "AbortSignal",
+  "PendingCapacitySnapshot", "assertWorkerPendingCallAdmission",
+]) {
+  if (!daemonReadyWaiterBoundary.includes(required)) throw new Error(`daemon reconnect admission lost shared-capacity new-call recovery: ${required}`);
+}
+const daemonRecoveryBudgetBoundary = readFileSync(join(root, "src", "worker", "daemon-recovery-budget.ts"), "utf8");
+for (const required of ["daemonToolTimeoutBudgetAfterDelay", "workerSettlementOverheadMs", "side_effects_started: false"]) {
+  if (!daemonRecoveryBudgetBoundary.includes(required)) throw new Error(`daemon recovery budget lost hosted-deadline accounting: ${required}`);
+}
+for (const required of [
+  "NEW_CALL_RECONNECT_GRACE_MS",
+  "waitForReadyDaemon(this.daemonRegistry",
+  "Math.min(NEW_CALL_RECONNECT_GRACE_MS, timeoutBudget.executionTimeoutMs)",
+  "pending: this.pending.snapshot()",
+  "tool: name",
+  "performance.now()",
+  "daemonToolTimeoutBudgetAfterDelay",
+  "pendingCapacityProjection(this.pending.snapshot(), readyDaemonWaiterSnapshot(this.daemonRegistry))",
+  "notifyReadyDaemon(this.daemonRegistry)",
+]) {
+  if (!workerIndexBoundary.includes(required)) throw new Error(`Worker composition lost shared-capacity deadline-bounded daemon recovery: ${required}`);
+}
+const readyAckSend = workerIndexBoundary.indexOf('ws.send(JSON.stringify({ type: "ready_ack"');
+const readyWaiterNotify = workerIndexBoundary.indexOf("notifyReadyDaemon(this.daemonRegistry)");
+if (readyAckSend < 0 || readyWaiterNotify < readyAckSend) throw new Error("new daemon calls may be released before ready acknowledgement is sent");
 for (const forbidden of ["serializeAttachment({ role: \"candidate\"", "serializeAttachment({ role: \"probing\"", "serializeAttachment({ role: \"daemon\""]) {
   if (workerIndexBoundary.includes(forbidden)) throw new Error(`Worker index regained daemon socket state mutation: ${forbidden}`);
 }

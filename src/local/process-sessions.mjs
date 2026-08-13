@@ -16,6 +16,7 @@ import { ProcessOutputStream } from "./process-output-stream.mjs";
 import { boundedErrorMessage, notifySessionWaiters, sessionHasOutputAfter, waitForSessionChange, waitForSpawn } from "./process-session-events.mjs";
 import { terminateProcessSessions } from "./process-session-termination.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
+import { processSessionResourceWaitMs } from "./resource-foreground-wait.mjs";
 import {
   MAX_PROCESS_SESSIONS, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_SESSION_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS,
 } from "./execution-limits.mjs";
@@ -23,7 +24,7 @@ import {
 const PROCESS_SESSION_TERMINATION_SETTLEMENT_MS = 5_000;
 
 export class ProcessSessionManager {
-  constructor({ workspace, policy, authorizeTool = null, policyForContext = null, runtimeDir, processTracker, resourceCoordinator = null, resourceWaitMs = 2_000, terminationSettlementWaitMs = PROCESS_SESSION_TERMINATION_SETTLEMENT_MS, resolveCwd, displayPath, throwIfCancelled, terminateTree = terminateProcessTree, spawnProcess = spawn, childSettlementOptions = {} }) {
+  constructor({ workspace, policy, authorizeTool = null, policyForContext = null, runtimeDir, processTracker, resourceCoordinator = null, resourceWaitMs = undefined, terminationSettlementWaitMs = PROCESS_SESSION_TERMINATION_SETTLEMENT_MS, resolveCwd, displayPath, throwIfCancelled, terminateTree = terminateProcessTree, spawnProcess = spawn, childSettlementOptions = {} }) {
     this.workspace = workspace;
     this.policy = policy;
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
@@ -107,7 +108,7 @@ export class ProcessSessionManager {
 
     const baseEnvironment = executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir });
     const admitted = await acquireProcessResources(this.resourceCoordinator, argv[0], argv.slice(1), baseEnvironment, {
-      cwd, priority: "interactive", waitMs: this.resourceWaitMs, signal: context.signal,
+      cwd, priority: "interactive", waitMs: processSessionResourceWaitMs(this.resourceWaitMs), signal: context.signal,
     });
     const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
     let child;

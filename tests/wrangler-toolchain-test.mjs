@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveNpmCli } from "../src/local/npm-cli.mjs";
 import {
   ensureWranglerToolchain,
-  resolveNpmCli,
   wranglerToolchainDescriptor,
 } from "../src/local/wrangler-toolchain.mjs";
 
@@ -16,6 +16,39 @@ try {
   const npmCli = join(root, "npm-cli.js");
   writeFileSync(npmCli, "// synthetic npm CLI\n", { mode: 0o644 });
   assert.equal(resolveNpmCli({ npmCli }), realpathSync(npmCli));
+
+  const nodeRoot = join(root, "node-dist");
+  const nodeExecutable = join(nodeRoot, "bin", process.platform === "win32" ? "node.exe" : "node");
+  const nodeNpmCli = join(nodeRoot, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  const lifecycleNpmCli = join(root, "lifecycle-npm-cli.js");
+  mkdirSync(join(nodeRoot, "bin"), { recursive: true });
+  mkdirSync(join(nodeRoot, "lib", "node_modules", "npm", "bin"), { recursive: true });
+  writeFileSync(nodeExecutable, "synthetic Node executable\n", { mode: 0o755 });
+  writeFileSync(nodeNpmCli, "// node-linked synthetic npm CLI\n", { mode: 0o644 });
+  writeFileSync(lifecycleNpmCli, "// lifecycle synthetic npm CLI\n", { mode: 0o644 });
+  assert.equal(resolveNpmCli({
+    nodeExecutable,
+    env: { npm_execpath: lifecycleNpmCli },
+    allowLifecycleNpmCli: false,
+    allowFallbackLocations: false,
+  }), realpathSync(nodeNpmCli), "restricted npm resolution trusted lifecycle npm_execpath instead of the running Node installation");
+  assert.throws(() => resolveNpmCli({
+    nodeExecutable: join(root, "missing-node", "bin", "node"),
+    env: { npm_execpath: lifecycleNpmCli },
+    allowLifecycleNpmCli: false,
+    allowFallbackLocations: false,
+  }), /npm 12 CLI could not be located/, "restricted npm resolution fell back outside the running Node installation");
+  if (process.platform !== "win32") {
+    const prefix = join(root, "package-manager-prefix");
+    const cellarNode = join(prefix, "Cellar", "node", "26.0.0", "bin", "node");
+    const prefixNpmCli = join(prefix, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+    mkdirSync(join(prefix, "Cellar", "node", "26.0.0", "bin"), { recursive: true });
+    mkdirSync(join(prefix, "lib", "node_modules", "npm", "bin"), { recursive: true });
+    writeFileSync(cellarNode, "synthetic Homebrew Node executable\n", { mode: 0o755 });
+    writeFileSync(prefixNpmCli, "// synthetic prefix npm CLI\n", { mode: 0o644 });
+    assert.equal(resolveNpmCli({ nodeExecutable: cellarNode, allowLifecycleNpmCli: false, allowFallbackLocations: false }), realpathSync(prefixNpmCli),
+      "restricted npm resolution missed the package-manager prefix associated with a Cellar Node runtime");
+  }
 
   let nowMs = Date.parse("2026-08-05T07:00:00.000Z");
   const stateRoot = toolchainState(root, "state");

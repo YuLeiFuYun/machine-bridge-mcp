@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { defaultStateRoot, expandHome } from "../src/local/state.mjs";
 import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
@@ -44,6 +45,28 @@ export function readPrereleaseActivation(version, stateRoot = defaultStateRoot()
   try { value = JSON.parse(bytes.toString("utf8")); }
   catch (error) { throw new Error("prerelease activation record is invalid", { cause: error }); }
   return validatePrereleaseActivation(value);
+}
+
+export function assertPrereleaseActivationRuntimeRoot(activation, runtimeRoot, options = {}) {
+  const runtimeEntry = String(activation?.runtime_entry || "");
+  if (!runtimeEntry || !isAbsolute(runtimeEntry)) throw new Error("prerelease activation runtime entry is missing");
+  const executingRoot = String(runtimeRoot || "");
+  if (!executingRoot || !isAbsolute(executingRoot)) throw new Error("executing canary runtime root is invalid");
+  const canonicalize = options.realpathSync || realpathSync;
+  let activatedRoot;
+  let canonicalExecutingRoot;
+  try {
+    activatedRoot = canonicalize(resolve(dirname(runtimeEntry), ".."));
+    canonicalExecutingRoot = canonicalize(resolve(executingRoot));
+  } catch (error) {
+    throw new Error("prerelease activation runtime package identity is unavailable", { cause: error });
+  }
+  const platform = String(options.platform || process.platform);
+  const same = platform === "win32"
+    ? activatedRoot.toLowerCase() === canonicalExecutingRoot.toLowerCase()
+    : activatedRoot === canonicalExecutingRoot;
+  if (!same) throw new Error("prerelease activation runtime package does not match the executing canary");
+  return canonicalExecutingRoot;
 }
 
 export function validatePrereleaseActivation(value) {

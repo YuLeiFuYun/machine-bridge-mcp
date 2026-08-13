@@ -8,9 +8,9 @@ export function resourceCoordinatorEvaluator(evaluate, processParents, fallbackP
   });
 }
 
-export function resourceCoordinatorAccounting(leases, processParents, now, requesterPid = 0) {
+export function resourceCoordinatorAccounting(leases, processParents, requesterPid = 0) {
   const accounting = resourceLeaseAccountingContext(leases, processParents, requesterPid);
-  const used = aggregateResourceLeases(leases, accounting, now);
+  const used = aggregateResourceLeases(leases, accounting);
   return {
     accounting,
     resources: {

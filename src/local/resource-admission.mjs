@@ -77,7 +77,7 @@ export class ResourceCoordinator {
           const previous = this.readJson(this.hostSampleFile, 32 * 1024, "resource host sample", true);
           const enrichedHost = deriveHostRates(host, previous);
           this.writeJson(this.hostSampleFile, enrichedHost);
-          const accounting = resourceCoordinatorAccounting(leases, processParents, this.now(), waiter.owner.pid);
+          const accounting = resourceCoordinatorAccounting(leases, processParents, waiter.owner.pid);
           const pressure = resourcePressureSnapshot(enrichedHost, leases, coordinatedRequest.priority, this.now(), accounting.accounting, coordinatedRequest);
           const effectiveRequest = fitElasticRequestToPressure(coordinatedRequest, pressure);
           if (waiter.request.cpu !== effectiveRequest.cpu || waiter.request.memory_mb !== effectiveRequest.memory_mb || waiter.request.compiler_jobs !== effectiveRequest.compiler_jobs) {
@@ -121,7 +121,7 @@ export class ResourceCoordinator {
       const previous = this.readJson(this.hostSampleFile, 32 * 1024, "resource host sample", true);
       const enrichedHost = deriveHostRates(host, previous);
       this.writeJson(this.hostSampleFile, enrichedHost);
-      const accounting = resourceCoordinatorAccounting(leases, processParents, this.now());
+      const accounting = resourceCoordinatorAccounting(leases, processParents);
       return {
         schema_version: SCHEMA,
         healthy: true,
@@ -204,16 +204,16 @@ export class ResourceCoordinator {
     const needsIo = resourceHostNeedsFreshIo(request);
     const pending = this.hostSamplesInFlight.get(scope);
     if (pending) {
-      const shared = await pending;
+      const shared = await pending.promise;
       if (!needsIo || shared?.io_sampled === true) return shared;
     }
-    const task = freshResourceHostSnapshot({
+    const flight = { promise: freshResourceHostSnapshot({
       cached: this.readJson(this.hostSampleFile, 32 * 1024, "resource host sample", true),
       current: this.now(), sampleHost: this.sampleHost, cwd, request, scope,
-    });
-    this.hostSamplesInFlight.set(scope, task);
-    try { return await task; }
-    finally { if (this.hostSamplesInFlight.get(scope) === task) this.hostSamplesInFlight.delete(scope); }
+    }) };
+    this.hostSamplesInFlight.set(scope, flight);
+    try { return await flight.promise; }
+    finally { if (this.hostSamplesInFlight.get(scope) === flight) this.hostSamplesInFlight.delete(scope); }
   }
 
   async withLock(callback, timeoutMs = undefined) {

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ResourceAdmissionError, ResourceCoordinator, ResourceLease } from "../src/local/resource-admission.mjs";
 import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } from "../src/local/resource-admission-policy.mjs";
 import { applyResourceProfileEnv, resourceCommandEffectiveCwd, resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
@@ -22,12 +23,26 @@ import { sampleResourceHost, sampleResourceHostAsync } from "../src/local/resour
 import { validateResourceRequest } from "../src/local/resource-request-contract.mjs";
 import { applyResourceProcessPriority } from "../src/local/resource-process-priority.mjs";
 import { currentProcessStartTimeMs } from "../src/local/process-identity.mjs";
+import { packageName, packageVersion } from "../src/local/package-identity.mjs";
 import { releaseProcessResourcesQuietly } from "../src/local/resource-process-admission.mjs";
+import { foregroundResourceWaitMs, processSessionResourceWaitMs } from "../src/local/resource-foreground-wait.mjs";
+import { releaseControlExecutableIsTrusted } from "../src/local/resource-release-control-executable.mjs";
+import { releaseControlWorkspaceForCommand, releaseControlWorkspaceMatches } from "../src/local/resource-release-control-workspace.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
 import { createResourceWaiter, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
 
 const GIB = 1024 ** 3;
+assert.equal(foregroundResourceWaitMs(60_000), 10_000, "default 60-second foreground work retained the interruption-prone two-second admission window");
+assert.equal(foregroundResourceWaitMs(30_000), 6_000, "foreground admission budget did not scale with the execution deadline");
+assert.equal(foregroundResourceWaitMs(10_000), 2_000, "short foreground work gained an excessive resource-admission delay");
+assert.equal(foregroundResourceWaitMs(1_000), 1_000, "resource admission exceeded the entire short execution deadline");
+assert.equal(foregroundResourceWaitMs(60_000, 300_000), 300_000, "explicit diagnostic resource wait was not preserved");
+assert.equal(processSessionResourceWaitMs(), 10_000, "process-session startup retained the interruption-prone two-second admission window");
+assert.equal(processSessionResourceWaitMs(1_234), 1_234, "explicit process-session admission wait was not preserved");
+assert.throws(() => foregroundResourceWaitMs(60_000, -1), /non-negative/, "negative explicit resource wait was accepted");
+const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const releaseControlOptions = { releaseControlWorkspace: true };
 const green = host();
 const cargo = resourceCommandProfile("cargo", ["test", "--workspace"]);
 let releaseAttempts = 0;
@@ -79,7 +94,8 @@ assert.equal(resourceCommandProfile("cargo", ["test", "-j64"]).cpu, 64, "explici
 assert.equal(resourceCommandProfile("cargo", ["test", "-j5000"]).unbounded, true, "oversized explicit Cargo fan-out was silently capped below reality");
 assert.equal(resourceCommandProfile("cargo", ["test"], { environment: { CARGO_BUILD_JOBS: "5000" } }).unbounded, true,
   "oversized CARGO_BUILD_JOBS was silently treated as an elastic default");
-assert.equal(resourceCommandProfile("git", ["status"]).heavy, false);
+assert.equal(resourceCommandProfile("git", ["status"]).resource_class, "adaptive",
+  "caller-controlled Git metadata was trusted as helper-free fixed control-plane work");
 const diskReclaim = resourceCommandProfile("/bin/rm", ["-rf", "/tmp/known-regenerable-cache"]);
 assert.equal(diskReclaim.family, "disk-reclaim", "trusted direct delete executable was not recognized as disk reclaim");
 assert.equal(diskReclaim.resource_class, "io");
@@ -88,11 +104,40 @@ assert.notEqual(resourceCommandProfile("rm", ["-rf", "/tmp/cache"]).family, "dis
   "PATH-resolved executable could spoof the disk-reclaim admission class");
 assert.notEqual(resourceCommandProfile("/bin/zsh", ["-c", "rm -rf /tmp/cache"]).family, "disk-reclaim",
   "shell payload was trusted as a proof that execution can only reclaim disk");
-for (const [command, args] of [["ps", ["-axo", "pid=,ppid="]], ["wc", ["-l", "README.md"]], ["uptime", []], ["df", ["-k", "."]]]) {
-  assert.equal(resourceCommandProfile(command, args).heavy, false, `${command} metadata probe should bypass heavy admission`);
+for (const [command, args] of [["/bin/ps", ["-axo", "pid=,ppid="]], ["/usr/bin/uptime", []], ["/bin/sleep", ["0"]]]) {
+  assert.equal(resourceCommandProfile(command, args).heavy, false, `${command} trusted absolute probe should bypass heavy admission`);
+}
+for (const [command, args] of [
+  ["ps", ["-axo", "pid=,ppid="]], ["uptime", []], ["sleep", ["0"]],
+  ["stat", ["README.md"]], ["df", ["-k", "."]], ["which", ["node"]], ["printf", ["%s", "x"]],
+  ["wc", ["-l", "README.md"]], ["rg", ["needle", "."]], ["grep", ["-R", "needle", "."]],
+  ["find", [".", "-type", "f"]], ["awk", ["BEGIN { system(\"make\") }"]],
+  ["osascript", ["-e", "do shell script \"make\""]], ["open", ["-a", "Xcode"]],
+]) {
+  assert.equal(resourceCommandProfile(command, args).resource_class, "adaptive",
+    `${command} retained a light bypass despite unbounded I/O or child-execution semantics`);
 }
 assert.equal(resourceCommandProfile("du", ["-sh", "."]).resource_class, "adaptive", "recursive disk walk was incorrectly treated as a light metadata probe");
-assert.equal(resourceCommandProfile("/bin/zsh", ["-f", "-c", "ps -axo pid=,ppid="]).heavy, false, "shell-wrapped process metadata probe should bypass heavy admission");
+assert.equal(resourceCommandProfile("/bin/zsh", ["-f", "-c", "/bin/ps -axo pid=,ppid="]).resource_class, "adaptive",
+  "arbitrary shell regained a zero-resource bypass from a trusted-looking inner executable");
+assert.equal(resourceCommandProfile("/bin/zsh", ["-f", "-c", "ps -axo pid=; uptime"]).resource_class, "adaptive",
+  "arbitrary shell composition regained a blanket zero-resource bypass");
+for (const payload of [
+  "echo ready; chmod 644 marker",
+  "echo ready & python3 -c pass",
+  "echo `python3 -c pass`",
+  "echo $(python3 -c pass)",
+  "echo <(python3 -c pass)",
+  "echo *.tar",
+  "echo ${PATH}",
+  "PATH=/tmp ps",
+  "env PATH=/tmp ps",
+  "echo ready;PATH=/tmp ps",
+  "printf -v PATH /tmp; ps",
+]) {
+  assert.notEqual(resourceCommandProfile("/bin/zsh", ["-f", "-c", payload]).resource_class, "light",
+    `arbitrary shell payload regained zero-resource admission: ${payload}`);
+}
 assert.equal(resourceCommandProfile("/bin/zsh", ["-f", "-c", "xcodebuild test"]).unbounded, true);
 for (const flag of ["-help", "-usage"]) assert.equal(resourceCommandProfile("xcodebuild", [flag]).heavy, false, `xcodebuild ${flag} was rewritten as a build`);
 const xcodeQuery = resourceCommandProfile("xcodebuild", ["-showBuildSettings"]);
@@ -455,12 +500,126 @@ assert.equal(resourceCommandProfile("/usr/bin/python3", ["-u", "verify-ios-examp
 assert.equal(resourceCommandProfile("/usr/bin/python3", ["-m", "coverage", "/tmp/release-notes.py"]).resource_class, "adaptive", "Python module mode treated an ordinary later argument as an executed script");
 assert.equal(resourceCommandProfile("npm", ["run", "check"]).family, "verification-plan", "npm check orchestration script was under-accounted");
 assert.equal(resourceCommandProfile("npm", ["test"]).family, "js-build", "ordinary npm test stopped using the bounded js-build profile");
+const runtimeReleaseCanaryEntry = join(repositoryRoot, "scripts", "release-oauth-canary.mjs");
+const directReleaseCanaryArgs = [runtimeReleaseCanaryEntry, "--allow-live-oauth-canary"];
+const releaseCanary = resourceCommandProfile("node", directReleaseCanaryArgs, releaseControlOptions);
+assert.equal(releaseCanary.heavy, false, "direct activated-runtime OAuth canary was charged as a local build workload");
+assert.equal(releaseCanary.family, "release-control", "direct activated-runtime OAuth canary lost its explicit release-control profile");
+assert.equal(resourceCommandProfile("npm", ["run", "release:oauth-canary", "--", "--allow-live-oauth-canary"], releaseControlOptions).family, "js-build",
+  "npm lifecycle invocation regained the release-control exception despite configurable script-shell execution");
+for (const [command, args, label] of [
+  ["node", [runtimeReleaseCanaryEntry], "missing live-canary flag"],
+  ["node", [...directReleaseCanaryArgs, "extra"], "extra argv"],
+  ["node", ["scripts/release-oauth-canary.mjs", "--allow-live-oauth-canary"], "workspace-relative entrypoint"],
+  ["node", [join(repositoryRoot, "scripts", "release-oauth-canary-extra.mjs"), "--allow-live-oauth-canary"], "lookalike entrypoint"],
+  ["npm", ["run", "release:oauth-canary"], "npm lifecycle"],
+  ["pnpm", ["run", "release:oauth-canary"], "alternate package manager"],
+]) {
+  assert.notEqual(resourceCommandProfile(command, args, releaseControlOptions).family, "release-control",
+    `${label} acquired release-control identity`);
+}
+assert.notEqual(resourceCommandProfile("/bin/zsh", ["-f", "-c", "node scripts/release-oauth-canary.mjs --allow-live-oauth-canary"], releaseControlOptions).family, "release-control",
+  "release-control exception broadened from direct Node argv into an arbitrary shell");
+assert.equal(resourceCommandProfile("", [], releaseControlOptions).family, "generic-process",
+  "empty command acquired release-control identity through default-token handling");
+const releaseExecutableRoot = mkdtempSync(join(tmpdir(), "mbm-release-control-exec-"));
+try {
+  const trustedDir = join(releaseExecutableRoot, "trusted");
+  const shadowDir = join(releaseExecutableRoot, "shadow");
+  const workDir = join(releaseExecutableRoot, "work");
+  mkdirSync(trustedDir); mkdirSync(shadowDir); mkdirSync(workDir);
+  const executableName = process.platform === "win32" ? "node.exe" : "node";
+  const trustedNode = join(trustedDir, executableName);
+  const shadowNode = join(shadowDir, executableName);
+  for (const filePath of [trustedNode, shadowNode]) writeFileSync(filePath, "synthetic node executable\n", { mode: 0o755 });
+  const trustedEnvironment = { PATH: trustedDir };
+  const shadowedEnvironment = { PATH: [shadowDir, trustedDir].join(delimiter) };
+  assert.equal(await releaseControlExecutableIsTrusted("node", trustedEnvironment, { cwd: workDir, runtimeExecutable: trustedNode }), true,
+    "trusted first PATH Node executable did not authorize release-control accounting");
+  assert.equal(await releaseControlExecutableIsTrusted("node", shadowedEnvironment, { cwd: workDir, runtimeExecutable: trustedNode }), false,
+    "shadowing first PATH Node was skipped in favor of the runtime executable");
+  assert.equal(await releaseControlExecutableIsTrusted(trustedNode, trustedEnvironment, { cwd: workDir, runtimeExecutable: trustedNode }), true,
+    "trusted absolute runtime Node executable lost release-control eligibility");
+  assert.equal(await releaseControlExecutableIsTrusted("node", { PATH: "../trusted" }, { cwd: workDir, runtimeExecutable: trustedNode }), true,
+    "relative PATH entry was not resolved from the child cwd");
+  assert.equal(await releaseControlExecutableIsTrusted("node", { PATH: join(releaseExecutableRoot, "missing") }, { cwd: workDir, runtimeExecutable: trustedNode }), false,
+    "missing Node executable received release-control eligibility");
+  assert.equal(await releaseControlExecutableIsTrusted("", trustedEnvironment, { cwd: workDir, runtimeExecutable: trustedNode }), false,
+    "empty executable received release-control eligibility");
+  for (const key of ["NODE_OPTIONS", "NODE_DEBUG", "NODE_PRESERVE_SYMLINKS", "NODE_TLS_REJECT_UNAUTHORIZED", "SSLKEYLOGFILE", "UV_THREADPOOL_SIZE", "NODE_V8_COVERAGE", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]) {
+    assert.equal(await releaseControlExecutableIsTrusted("node", { PATH: trustedDir, [key]: "synthetic" }, { cwd: workDir, runtimeExecutable: trustedNode }), false,
+      `${key} startup injection retained zero-resource release-control eligibility`);
+  }
+
+  const winFiles = new Map([
+    ["c:\\runtime\\node.exe", "C:\\runtime\\node.exe"],
+    ["c:\\shadow\\node.exe", "C:\\shadow\\node.exe"],
+  ]);
+  const winOptions = {
+    cwd: "C:\\work",
+    platform: "win32",
+    runtimeExecutable: "C:\\runtime\\node.exe",
+    realpath: async (candidate) => {
+      const canonical = winFiles.get(String(candidate).toLowerCase());
+      if (!canonical) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return canonical;
+    },
+    stat: async () => ({ isFile: () => true }),
+  };
+  assert.equal(await releaseControlExecutableIsTrusted("node", { Path: "C:\\runtime", PATHEXT: ".EXE;.CMD" }, winOptions), true,
+    "Windows PATH/PATHEXT resolution did not match the runtime Node executable");
+  assert.equal(await releaseControlExecutableIsTrusted("node", { Path: "C:\\shadow;C:\\runtime", PATHEXT: ".EXE;.CMD" }, winOptions), false,
+    "Windows resolver skipped a shadowing first Node executable");
+
+  const cleanRuntimeEnvironment = { PATH: process.env.PATH || "" };
+  assert.equal(await releaseControlWorkspaceForCommand(process.execPath, directReleaseCanaryArgs, repositoryRoot, cleanRuntimeEnvironment), true,
+    "exact activated-runtime canary path plus current workspace/runtime identity did not authorize the direct canary exception");
+  assert.equal(await releaseControlWorkspaceForCommand(process.execPath, ["scripts/release-oauth-canary.mjs", "--allow-live-oauth-canary"], repositoryRoot, cleanRuntimeEnvironment), false,
+    "workspace-relative canary entrypoint regained the release-control exception instead of requiring activated-runtime code");
+  assert.equal(await releaseControlWorkspaceForCommand("npm", ["run", "release:oauth-canary"], repositoryRoot, cleanRuntimeEnvironment), false,
+    "npm lifecycle invocation received the direct-Node release-control exception");
+  assert.equal(await releaseControlWorkspaceForCommand("echo", undefined, repositoryRoot, cleanRuntimeEnvironment), false,
+    "default release workspace command args were not fail-closed");
+  assert.equal(await releaseControlWorkspaceForCommand("/bin/zsh", ["-f", "-c", "node scripts/release-oauth-canary.mjs --allow-live-oauth-canary"], repositoryRoot, cleanRuntimeEnvironment), false,
+    "shell-wrapped canary triggered the direct-Node release workspace exception");
+} finally { rmSync(releaseExecutableRoot, { recursive: true, force: true }); }
+assert.equal(await releaseControlWorkspaceMatches(join(tmpdir(), "mbm-release-control-missing")), false,
+  "missing package metadata authorized a release-control workspace");
+const collisionRoot = mkdtempSync(join(tmpdir(), "mbm-release-control-collision-"));
+try {
+  mkdirSync(join(collisionRoot, "scripts"));
+  const exactManifest = { name: packageName, version: packageVersion };
+  const writeManifest = (value) => writeFileSync(join(collisionRoot, "package.json"), typeof value === "string" ? value : JSON.stringify(value));
+  assert.equal(await releaseControlWorkspaceMatches(""), false, "empty cwd authorized a release-control workspace");
+  assert.equal(await releaseControlWorkspaceMatches(null), false, "non-string cwd authorized a release-control workspace");
+  writeManifest("{");
+  assert.equal(await releaseControlWorkspaceMatches(collisionRoot), false, "invalid package JSON authorized a release-control workspace");
+  for (const manifest of [
+    { ...exactManifest, name: `${packageName}-collision` },
+    { ...exactManifest, version: `${packageVersion}.collision` },
+  ]) {
+    writeManifest(manifest);
+    assert.equal(await releaseControlWorkspaceMatches(collisionRoot), false, "non-canonical release package identity authorized a release-control workspace");
+  }
+  writeManifest(exactManifest);
+  const collisionCanary = join(collisionRoot, "scripts", "release-oauth-canary.mjs");
+  writeFileSync(collisionCanary, "console.log('different project');\n");
+  assert.equal(await releaseControlWorkspaceMatches(collisionRoot), false, "different canary entrypoint authorized a release-control workspace");
+  assert.notEqual(resourceCommandProfile("node", directReleaseCanaryArgs, { releaseControlWorkspace: await releaseControlWorkspaceMatches(collisionRoot) }).family, "release-control",
+    "same-name package with different canary bytes received the Machine Bridge release-control exception");
+  writeFileSync(collisionCanary, readFileSync(runtimeReleaseCanaryEntry, "utf8"));
+  assert.equal(await releaseControlWorkspaceMatches(collisionRoot), true,
+    "same-name/version workspace with exact canary bytes did not satisfy the workspace data check");
+  assert.equal(await releaseControlWorkspaceForCommand(process.execPath, [collisionCanary, "--allow-live-oauth-canary"], collisionRoot, { PATH: process.env.PATH || "" }), false,
+    "non-runtime canary path received release-control eligibility");
+} finally { rmSync(collisionRoot, { recursive: true, force: true }); }
 assert.equal(resourceCommandProfile("npm", ["exec", "echo", "test"]).resource_class, "adaptive", "ordinary npm argument triggered lifecycle classification");
 assert.equal(resourceCommandProfile("npm", ["run", "lint", "--", "test"]).resource_class, "adaptive", "ordinary npm script argument triggered lifecycle classification");
 assert.equal(resourceCommandProfile("/bin/zsh", ["-c", "npm run check"]).family, "verification-plan", "shell-wrapped npm check orchestration script was under-accounted");
 assert.equal(resourceCommandProfile("/bin/zsh", ["-c", "CI=1 env npm run check"]).family, "verification-plan", "env-wrapped npm check orchestration script was under-accounted");
 assert.equal(resourceCommandProfile("sh", ["scripts/info.sh", "/tmp/release-notes.md"]).resource_class, "adaptive", "ordinary argument after a harmless shell script triggered heavy classification");
-assert.equal(resourceCommandProfile("/bin/zsh", ["-c", "echo cargo test"]).heavy, false);
+assert.equal(resourceCommandProfile("/bin/zsh", ["-c", "echo cargo test"]).resource_class, "adaptive",
+  "quoted heavy-looking words inside an arbitrary shell payload should stay adaptive, not become zero-resource or heavy build work");
 assert.equal(resourceCommandProfile("/bin/zsh", ["-c", "cd /tmp && cargo test"]).family, "cargo");
 assert.equal(resourceCommandProfile("xcodebuild", ["-version"]).heavy, false);
 assert.equal(resourceCommandProfile("/bin/zsh", ["-c", "shasum -a 256 tests/resource-admission-test.mjs"]).resource_class, "adaptive", "test filename in an ordinary argument was misclassified as a heavy shell script");
@@ -710,18 +869,18 @@ assert.equal("requested" in resourcePressureSnapshot(green, [parentLease], "ordi
   "ordinary diagnostics exposed request-specific incremental accounting without an internal request");
 assert.equal(resourceRequestIncrement([parentLease], { ...parentEnvelope, cpu: 3 }, parentContext).cpu, 0.5, "larger nested request did not reserve only its delta");
 const equalHierarchy = resourceLeaseAccountingContext([parentLease, equalChild], processParents, 400);
-assert.equal(aggregateResourceLeases([parentLease, equalChild], equalHierarchy, hierarchyNow).cpu, 2.5, "equal child duplicated parent envelope");
+assert.equal(aggregateResourceLeases([parentLease, equalChild], equalHierarchy).cpu, 2.5, "equal child duplicated parent envelope");
 const siblingHierarchy = resourceLeaseAccountingContext([parentLease, equalChild, siblingChild], processParents, 400);
-assert.equal(aggregateResourceLeases([parentLease, { ...equalChild, request: { ...equalChild.request, cpu: 2 } }, siblingChild], siblingHierarchy, hierarchyNow).cpu, 4, "parallel children did not sum beneath parent envelope");
+assert.equal(aggregateResourceLeases([parentLease, { ...equalChild, request: { ...equalChild.request, cpu: 2 } }, siblingChild], siblingHierarchy).cpu, 4, "parallel children did not sum beneath parent envelope");
 const largerHierarchy = resourceLeaseAccountingContext([parentLease, largerChild], processParents, 400);
-const largerUsed = aggregateResourceLeases([parentLease, largerChild], largerHierarchy, hierarchyNow);
+const largerUsed = aggregateResourceLeases([parentLease, largerChild], largerHierarchy);
 assert.equal(largerUsed.cpu, 3);
 assert.equal(unobservedResourceCpu([parentLease, largerChild], largerHierarchy, hierarchyNow - 1), 0.5,
   "post-sample nested child charged its full CPU instead of incremental unobserved pressure");
 assert.equal(unobservedResourceCpu([parentLease, largerChild], largerHierarchy, hierarchyNow), 0,
   "lease already present in the CPU sample remained double-counted as unobserved pressure");
-assert.equal(aggregateResourceLeases([largerChild], resourceLeaseAccountingContext([largerChild], processParents, 400), hierarchyNow).cpu, 3, "child lost full reservation after parent removal");
-assert.equal(aggregateResourceLeases([parentLease, largerChild], {}, hierarchyNow).cpu, 5.5, "missing ancestry did not fall back to conservative full summation");
+assert.equal(aggregateResourceLeases([largerChild], resourceLeaseAccountingContext([largerChild], processParents, 400)).cpu, 3, "child lost full reservation after parent removal");
+assert.equal(aggregateResourceLeases([parentLease, largerChild], {}).cpu, 5.5, "missing ancestry did not fall back to conservative full summation");
 const nestedSameProject = evaluateResourceAdmission({ ...green, cpu_busy_cores: 0, load1: 0 }, [parentLease], parentEnvelope, hierarchyNow, { accounting: parentContext });
 assert.equal(nestedSameProject.admitted, true, "nested request self-blocked on ancestor project contention");
 assert.equal(nestedSameProject.requested.cpu, 0);
@@ -1105,7 +1264,7 @@ try {
   rmSync(legacyLock, { recursive: true, force: true });
   rmSync(join(root, retainedQuarantines[0]), { recursive: true, force: true });
 
-  const light = await coordinator.acquire(resourceCommandProfile("git", ["status"]));
+  const light = await coordinator.acquire(resourceCommandProfile("/bin/ps", ["-axo", "pid=,ppid="]));
   assert.equal(light.active, false);
   const lease = await coordinator.acquire(cargo, { cwd: root });
   assert.equal(lease.active, true);

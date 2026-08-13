@@ -177,7 +177,7 @@ export function inspectWorkspaceDaemon(state, options = {}) {
   if (!owner) return { present: false, alive: false, verified_service_daemon: false, startup_readiness_verified: false };
   const alive = Boolean(owner.pid && isPidAlive(owner.pid));
   let identity = alive
-    ? inspectWorkspaceDaemonOwner(state, owner)
+    ? inspectWorkspaceDaemonOwner(state, owner, options)
     : { verified_service_daemon: false, reason: "stale_lock" };
   if (identity.verified_service_daemon && options.expectedVersion
       && owner.version !== options.expectedVersion) {
@@ -197,7 +197,7 @@ export function inspectWorkspaceDaemon(state, options = {}) {
   };
 }
 
-function inspectWorkspaceDaemonOwner(state, owner) {
+function inspectWorkspaceDaemonOwner(state, owner, options = {}) {
   if (!owner || owner.purpose !== "daemon") return { verified_service_daemon: false, reason: "invalid_lock_owner" };
   const pid = Number(owner.pid);
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return { verified_service_daemon: false, reason: "invalid_pid" };
@@ -206,12 +206,18 @@ function inspectWorkspaceDaemonOwner(state, owner) {
   if (!sameCanonicalPath(owner.workspace, state.workspace.path)) return { verified_service_daemon: false, reason: "workspace_mismatch" };
   if (owner.mode === "foreground") return { verified_service_daemon: false, reason: "foreground_daemon" };
   if (owner.mode !== "service") return { verified_service_daemon: false, reason: "invalid_daemon_mode" };
+  if (options.expectedNodeVersion && owner.nodeVersion !== String(options.expectedNodeVersion)) {
+    return { verified_service_daemon: false, reason: "node_version_mismatch" };
+  }
 
   const command = processCommandLine(pid);
   if (!command) {
     return { verified_service_daemon: false, reason: "service_identity_unavailable" };
   }
   const argv = splitProcessCommandLine(command);
+  if (options.expectedNodeExecutable && !sameCanonicalFile(argv[0], options.expectedNodeExecutable)) {
+    return { verified_service_daemon: false, reason: "node_executable_mismatch" };
+  }
   const entryName = path.basename(String(owner.entryScript || "machine-mcp"));
   const workspaceArg = commandFlagValue(argv, "--workspace");
   const stateRootArg = commandFlagValue(argv, "--state-dir");

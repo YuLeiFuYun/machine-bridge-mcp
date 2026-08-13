@@ -1,6 +1,9 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
+import { pendingCapacityProjection } from "../src/worker/pending-call-capacity.ts";
 import { PendingAdmissionGate } from "../src/worker/pending-admission.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
+import { notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../src/worker/daemon-ready-waiters.ts";
+import { daemonToolTimeoutBudgetAfterDelay } from "../src/worker/daemon-recovery-budget.ts";
 import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
 import { respondWithoutDurableObject } from "../src/worker/worker-static-routes.ts";
@@ -81,6 +84,7 @@ await testEventBoundaryDeadlineSweep();
 await testRuntimeAlarmCoordinator();
 await testTimeoutCallbackFailure();
 await testPendingAdmissionGate();
+await testDaemonReadyWaiters();
 await testAbortSignalCleanup();
 await testDaemonSocketIsolation();
 testDaemonRelayDiagnostics();
@@ -587,6 +591,71 @@ async function testPendingAdmissionGate() {
   assert(recovered, "failed pending admission permanently blocked later calls");
 }
 
+async function testDaemonReadyWaiters() {
+  let readySockets = [];
+  const registry = { readySockets: () => readySockets };
+  const socket = { readyState: 1 };
+  const waiting = waitForReadyDaemon(registry, { graceMs: 100 });
+  await Promise.resolve();
+  readySockets = [socket];
+  assert(notifyReadyDaemon(registry) === 1 && await waiting === socket,
+    "brief daemon reconnect did not wake a waiting new call");
+  assert(await waitForReadyDaemon(registry, { graceMs: 1 }) === socket,
+    "ready daemon call admission unnecessarily waited");
+  readySockets = [];
+  let timeoutError = null;
+  try { await waitForReadyDaemon(registry, { graceMs: 5 }); } catch (error) { timeoutError = error; }
+  assert(timeoutError?.code === "unavailable", "daemon reconnect admission timeout did not remain retryable-unavailable");
+  const controller = new AbortController();
+  const aborted = waitForReadyDaemon(registry, { graceMs: 100, signal: controller.signal });
+  controller.abort();
+  let abortError = null;
+  try { await aborted; } catch (error) { abortError = error; }
+  assert(abortError?.code === "cancelled", "daemon reconnect admission ignored client cancellation");
+  const detachedPending = { active: 29, by_tool: { read_file: 29 } };
+  const ordinaryWaiter = waitForReadyDaemon(registry, {
+    graceMs: 1000, tool: "read_file", pending: detachedPending,
+  });
+  await Promise.resolve();
+  let ordinaryLimitError = null;
+  try {
+    await waitForReadyDaemon(registry, { graceMs: 1000, tool: "read_file", pending: detachedPending });
+  } catch (error) { ordinaryLimitError = error; }
+  assert(ordinaryLimitError?.code === "limit_exceeded",
+    "daemon reconnect ordinary waiters consumed reserved control-plane capacity");
+  const controlWaiters = [
+    waitForReadyDaemon(registry, { graceMs: 1000, tool: "diagnose_runtime", pending: detachedPending }),
+    waitForReadyDaemon(registry, { graceMs: 1000, tool: "list_roots", pending: detachedPending }),
+  ];
+  await Promise.resolve();
+  let totalLimitError = null;
+  try {
+    await waitForReadyDaemon(registry, { graceMs: 1000, tool: "diagnose_runtime", pending: detachedPending });
+  } catch (error) { totalLimitError = error; }
+  assert(totalLimitError?.code === "limit_exceeded", "daemon reconnect waiters exceeded the shared 30+2 call ceiling");
+  const waiterSnapshot = readyDaemonWaiterSnapshot(registry);
+  assert(waiterSnapshot.active === 3
+    && waiterSnapshot.by_tool.read_file === 1
+    && waiterSnapshot.by_tool.diagnose_runtime === 1
+    && waiterSnapshot.by_tool.list_roots === 1,
+  "daemon reconnect waiter diagnostics lost privacy-safe per-tool capacity counts");
+  const capacityProjection = pendingCapacityProjection({
+    active: 29, detached: 29, request_keys: 0, maximum: 32, ordinary_capacity: 30, reserved_capacity: 2,
+    active_reserved: 0, active_ordinary: 29, oldest_ms: 123, by_tool: { read_file: 29 },
+  }, waiterSnapshot);
+  assert(capacityProjection.active === 29
+    && capacityProjection.pre_dispatch_waiters === 3
+    && capacityProjection.capacity_active === 32
+    && capacityProjection.capacity_active_ordinary === 30
+    && capacityProjection.capacity_active_reserved === 2,
+  "Worker capacity diagnostics omitted pre-dispatch daemon waiters or reserved-control usage");
+  readySockets = [socket];
+  const boundedWaiters = [ordinaryWaiter, ...controlWaiters];
+  assert(notifyReadyDaemon(registry) === 3 && (await Promise.all(boundedWaiters)).every((value) => value === socket),
+    "daemon reconnect did not release the shared-capacity waiter batch exactly once");
+  assert(readyDaemonWaiterSnapshot(registry).active === 0, "ready notification retained stale waiter diagnostics");
+}
+
 async function testDaemonSocketIsolation() {
   const candidate = new TestWebSocket();
   candidate.serializeAttachment({ role: "candidate", connectedAt: new Date().toISOString() });
@@ -752,6 +821,7 @@ function testWorkerRuntimeConfig() {
 
 function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
+  assert(relayContract.newCallReconnectGraceMs === 10_000, "brief relay outages regained immediate new-call interruption");
   assert(relayContract.streamHeartbeatMs === 10_000, "SSE heartbeat interval drifted from the idle-connection contract");
   assert(!("streamResumeRetentionMs" in relayContract)
     && !("maximumResumableStreams" in relayContract)
@@ -774,6 +844,25 @@ function testRelayTimeoutContract() {
   const maximumExecBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 60 });
   assert(maximumExecBudget.executionTimeoutMs === 60_000 && maximumExecBudget.settlementTimeoutMs === 65_000,
     "maximum accepted foreground timeout did not reserve settlement time");
+  const recoveredMaximumBudget = daemonToolTimeoutBudgetAfterDelay(maximumExecBudget, 10_000);
+  assert(recoveredMaximumBudget.executionTimeoutMs === 50_000 && recoveredMaximumBudget.settlementTimeoutMs === 55_000,
+    "new-call daemon recovery extended the 65-second hosted settlement envelope");
+  for (const malformedElapsed of [-1, Number.NaN]) {
+    const unchanged = daemonToolTimeoutBudgetAfterDelay(maximumExecBudget, malformedElapsed);
+    assert(unchanged.executionTimeoutMs === 60_000 && unchanged.settlementTimeoutMs === 65_000,
+      "invalid daemon-recovery elapsed time enlarged or reduced the original timeout budget");
+  }
+  const oneSecondBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 1 });
+  const recoveredOneSecondBudget = daemonToolTimeoutBudgetAfterDelay(oneSecondBudget, 500);
+  assert(recoveredOneSecondBudget.executionTimeoutMs === 500 && recoveredOneSecondBudget.settlementTimeoutMs === 5_500,
+    "short foreground recovery did not consume its own execution window");
+  let exhaustedRecoveryError = null;
+  try { daemonToolTimeoutBudgetAfterDelay(oneSecondBudget, 1_000); } catch (error) { exhaustedRecoveryError = error; }
+  assert(exhaustedRecoveryError instanceof WorkerToolError
+    && exhaustedRecoveryError.code === "unavailable"
+    && exhaustedRecoveryError.retryable === true
+    && exhaustedRecoveryError.details?.side_effects_started === false,
+  "daemon recovery could dispatch after consuming the complete foreground execution window");
   for (const requested of [61, 85, 120, 600]) {
     let rejected;
     try { daemonToolTimeoutBudget("exec_command", { timeout_seconds: requested }); }
@@ -977,8 +1066,10 @@ function testDaemonAndServerInfoProjection() {
     "empty daemon status invented a connected daemon");
 
   const pendingSnapshot = {
-    active: 2, maximum: 8, ordinary_capacity: 7, reserved_capacity: 1,
-    active_ordinary: 1, active_reserved: 1, detached: 1, oldest_ms: 42,
+    active: 2, pre_dispatch_waiters: 1, capacity_active: 3,
+    maximum: 8, ordinary_capacity: 7, reserved_capacity: 1,
+    active_ordinary: 1, active_reserved: 1, capacity_active_ordinary: 2, capacity_active_reserved: 1,
+    detached: 1, oldest_ms: 42,
   };
   const observability = { snapshot() { return { requests: { total: 3 } }; } };
   const ownerAuthorization = {
@@ -998,15 +1089,22 @@ function testDaemonAndServerInfoProjection() {
     && serverInfoDetail() === "full",
     "server_info detail selector guessed an unsupported projection");
   const ownerFull = buildServerInfoResult(input, "full");
-  assert(ownerFull.worker.pending_calls.active === 2 && ownerFull.worker.daemon_candidates === 2
+  assert(ownerFull.worker.pending_calls.active === 2
+    && ownerFull.worker.pending_calls.pre_dispatch_waiters === 1
+    && ownerFull.worker.pending_calls.capacity_active === 3
+    && ownerFull.worker.daemon_candidates === 2
     && ownerFull.worker.observability.requests.total === 3 && ownerFull.tools.length === 2,
-  "owner server_info full projection lost current Worker activity");
+  "owner server_info full projection lost current Worker activity or pre-dispatch capacity");
   const ownerSummary = buildServerInfoResult(input, "summary");
   assert(ownerSummary.detail === "summary" && ownerSummary.authorization.account.role === "owner"
     && ownerSummary.authorization.account.id === undefined
     && ownerSummary.authorization.execution_model.private === undefined
-    && ownerSummary.worker.pending_calls.detached === 1,
-  "owner server_info summary did not compact identity/activity fields");
+    && ownerSummary.worker.pending_calls.detached === 1
+    && ownerSummary.worker.pending_calls.pre_dispatch_waiters === 1
+    && ownerSummary.worker.pending_calls.capacity_active === 3
+    && ownerSummary.worker.pending_calls.capacity_active_ordinary === 2
+    && ownerSummary.worker.pending_calls.capacity_active_reserved === 1,
+  "owner server_info summary did not compact identity/activity/capacity fields");
   const delegatedInput = {
     ...input,
     authorization: {

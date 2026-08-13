@@ -257,7 +257,9 @@ Version 3 and later use a mandatory prerelease and soak path. Package work start
 
 ```sh
 npm run release:candidate
-# The owner runs the exact persistent activation command printed above:
+# The coding agent rechecks source/package identity and disposable installability before involving the owner:
+node scripts/start-release-candidate.mjs --install-only
+# The owner then runs the exact persistent activation command printed above:
 npm run release:candidate:activate -- --allow-worker-deploy
 # Activation requires device-authenticated relay readiness. One explicit authentication rejection may
 # redeploy the same Worker once with the unchanged selected identity; it never rotates credentials.

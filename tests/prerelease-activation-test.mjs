@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTIVATION_SCHEMA_VERSION, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
+import { ACTIVATION_SCHEMA_VERSION, assertPrereleaseActivationRuntimeRoot, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
 import { discoverForegroundDaemonRecovery, foregroundPid } from "../scripts/foreground-daemon-recovery.mjs";
 import { persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
 import { inspectGlobalPackageInstallation } from "../scripts/global-package-installation.mjs";
@@ -56,6 +56,16 @@ try {
   assert(current.workspace_hash === "c".repeat(24)
     && current.global_package_rollback_baseline?.entry === globalPackageRollbackBaseline.entry,
   "activation record did not round-trip");
+  const runtimeBound = validatePrereleaseActivation({
+    ...base,
+    package_version: "3.0.0-beta.2",
+    runtime_entry: join(installedRoot, "bin", "machine-mcp.mjs"),
+  });
+  assert(assertPrereleaseActivationRuntimeRoot(runtimeBound, installedRoot) === realpathSync(installedRoot),
+    "prerelease canary runtime provenance did not match the activation package root");
+  expectThrow(() => assertPrereleaseActivationRuntimeRoot(validatePrereleaseActivation(base), installedRoot), "runtime entry is missing");
+  expectThrow(() => assertPrereleaseActivationRuntimeRoot(runtimeBound, externalRoot), "does not match the executing canary");
+  expectThrow(() => assertPrereleaseActivationRuntimeRoot(runtimeBound, "relative-runtime"), "runtime root is invalid");
   expectThrow(() => readPrereleaseActivation("3.0.0-beta.1", root, {
     readBoundedRegularFileSync() {
       throw Object.assign(new Error("synthetic permission failure"), { code: "EACCES" });

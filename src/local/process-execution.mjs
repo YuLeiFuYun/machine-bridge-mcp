@@ -12,6 +12,7 @@ import { ProcessOutputStream } from "./process-output-stream.mjs";
 import { processForegroundTimeoutSeconds, registeredCommandTimeoutSeconds } from "./process-foreground-timeout.mjs";
 import { processFailureMessage, publicProcessToolResult } from "./process-result-projection.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
+import { foregroundResourceWaitMs } from "./resource-foreground-wait.mjs";
 import { DEFAULT_PROCESS_OUTPUT_BYTES, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS, PUBLIC_PROCESS_INLINE_OUTPUT_BYTES } from "./execution-limits.mjs";
 const PROCESS_OUTPUT_CAPTURE = Symbol("process-output-capture"); const CONTINUATION_READ_BYTES = 64 * 1024;
 function spawnDirectProcess(command, args, options) {
@@ -26,7 +27,7 @@ function spawnDirectProcess(command, args, options) {
   });
 }
 export class ProcessExecutionService {
-  constructor({ workspace, policy, policyGate, policyForContext = null, runtimeDir, processTracker, resourceCoordinator = null, resourceWaitMs = 2_000, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, retainCompletedOutput = null, spawnProcess = spawnDirectProcess, terminateProcess = terminateProcessTreeWithEscalation, childSettlementOptions = {} }) {
+  constructor({ workspace, policy, policyGate, policyForContext = null, runtimeDir, processTracker, resourceCoordinator = null, resourceWaitMs = undefined, resolveExistingPath, resolveLocalCommand, displayPath, throwIfCancelled, retainCompletedOutput = null, spawnProcess = spawnDirectProcess, terminateProcess = terminateProcessTreeWithEscalation, childSettlementOptions = {} }) {
     this.workspace = workspace;
     this.policy = policy;
     this.policyGate = policyGate;
@@ -142,7 +143,7 @@ export class ProcessExecutionService {
     const admitted = internalFixed || !this.resourceCoordinator
       ? { lease: null, environment: baseEnvironment, command: cmd, args }
       : await acquireProcessResources(this.resourceCoordinator, cmd, args, baseEnvironment, {
-          cwd, priority: options.resourcePriority || "interactive", waitMs: options.resourceWaitMs ?? this.resourceWaitMs, signal: context.signal,
+          cwd, priority: options.resourcePriority || "interactive", waitMs: options.resourceWaitMs ?? foregroundResourceWaitMs(timeoutMs, this.resourceWaitMs), signal: context.signal,
         });
     return new Promise((resolvePromise, rejectPromise) => {
       const stdout = new BoundedOutput(maxOutputBytes);
@@ -165,7 +166,6 @@ export class ProcessExecutionService {
         void releaseProcessResourcesQuietly(admitted.lease).then(() => rejectPromise(error));
         return;
       }
-
       this.processTracker.track(child, context.callId);
       let resourceBindError = null; let childError = null;
       const resourceBinding = bindProcessResources(admitted.lease, child).catch((error) => { resourceBindError = error; this.terminateProcess(child); });

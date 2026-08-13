@@ -118,17 +118,25 @@ if (packageJson.scripts?.["runtime-boundaries:test"] !== "node tests/runtime-bou
 if (packageJson.scripts?.["release-publication-guard:test"] !== "node tests/release-publication-guard-test.mjs") throw new Error("GitHub publication ownership test is missing");
 if (packageJson.scripts?.["release-oauth-canary:test"] !== "node tests/release-oauth-canary-test.mjs") throw new Error("deployed OAuth canary regression test is missing");
 if (packageJson.scripts?.["release:oauth-canary"] !== "node scripts/release-oauth-canary.mjs") throw new Error("deployed OAuth canary release command is missing");
+if (packageJson.scripts?.["prerelease:oauth-canary"] || packageJson.scripts?.["postrelease:oauth-canary"]) {
+  throw new Error("release OAuth canary must not acquire implicit npm pre/post lifecycle work");
+}
 if (packageJson.scripts?.["worker-oauth-controller:test"] !== "node tests/worker-oauth-controller-test.mjs") throw new Error("Worker OAuth controller state-machine test is missing");
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
 if (packageJson.scripts?.["cli-service:test"] !== "node tests/cli-service-test.mjs") throw new Error("CLI service adapter regression test is missing");
 if (packageJson.scripts?.["service-restart:test"] !== "node tests/service-restart-handoff-test.mjs") throw new Error("service restart/status boundary regression test is missing");
 const stateSource = readFileSync(join(root, "src", "local", "state.mjs"), "utf8");
+const daemonProcessSource = readFileSync(join(root, "src", "local", "daemon-process.mjs"), "utf8");
 const stateInventorySource = readFileSync(join(root, "src", "local", "state-inventory.mjs"), "utf8");
 const stateOwnerLockInventorySource = readFileSync(join(root, "src", "local", "state-owner-lock-inventory.mjs"), "utf8");
 const stateOwnedNamespacesSource = readFileSync(join(root, "src", "local", "state-root-owned-namespaces.mjs"), "utf8");
 const releaseRuntimeLockSource = readFileSync(join(root, "src", "local", "release-runtime-lock.mjs"), "utf8");
 for (const required of ['"toolchains"', '"release-channels"', '"release-tasks"', "currentEntrypointInsideStateRoot", "canonicalizePotentialPath(entry)", "validateOwnedStateNamespaces(canonical)"]) {
   if (!stateSource.includes(required)) throw new Error(`state-root removal lost owned namespace/self-runtime guard: ${required}`);
+}
+for (const required of ["nodeVersion: process.versions.node", "expectedNodeVersion", "node_version_mismatch", "expectedNodeExecutable", "node_executable_mismatch"]) {
+  const source = required === "nodeVersion: process.versions.node" ? stateSource : daemonProcessSource;
+  if (!source.includes(required)) throw new Error(`daemon runtime provenance lost Node identity binding: ${required}`);
 }
 for (const required of ["TOOLCHAIN_DIRECTORY", "TOOLCHAIN_LOCK_TEMP", "ACTIVATION_RECORD", "ACTIVATION_TEMP", "RUNTIME_DIRECTORY", "LEGACY_RELEASE_TASK", '"wrangler-toolchain.lock"', '"activations"', '"runtimes"']) {
   if (!stateOwnedNamespacesSource.includes(required)) throw new Error(`state-root owned namespace validation lost required boundary: ${required}`);
@@ -230,6 +238,9 @@ const stateRootRetirementSource = readFileSync(join(root, "src", "local", "state
 for (const forbidden of ["restoreRetiredRoot", "renameSync(retired, root)", "could not be restored"]) {
   if (stateRootRetirementSource.includes(forbidden)) throw new Error(`state-root retirement regained unsafe pathname rollback: ${forbidden}`);
 }
+for (const required of ["pinDirectoryGeneration", "O_NOFOLLOW", "O_DIRECTORY", "fstatSync", "sameFilesystemIdentity(expectedIdentity, identity)", "verified retired state root"]) {
+  if (!stateRootRetirementSource.includes(required)) throw new Error(`state-root retirement lost POSIX descriptor generation pin: ${required}`);
+}
 for (const fixture of ["tests/coverage-range-merge-test.mjs", "tests/coverage-generation-test.mjs"]) {
   if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical coverage evidence lost self-test fixture: ${fixture}`);
 }
@@ -241,9 +252,9 @@ for (const fixture of ["tests/resource-admission-test.mjs", "tests/resource-buil
 }
 for (const threshold of [
   '"src/local/resource-admission.mjs"', '"src/local/resource-admission-policy.mjs"',
-  '"src/local/resource-waiters.mjs"', '"src/local/resource-cargo-concurrency.mjs"', '"src/local/resource-cmake-concurrency.mjs"', '"src/local/resource-go-concurrency.mjs"', '"src/local/resource-gradle-concurrency.mjs"', '"src/local/resource-swift-concurrency.mjs"', '"src/local/resource-xcode-concurrency.mjs"', '"src/local/resource-xcode-command.mjs"', '"src/local/resource-xcode-non-build.mjs"', '"src/local/resource-make-concurrency.mjs"', '"src/local/resource-ninja-command-concurrency.mjs"', '"src/local/resource-ninja-concurrency.mjs"', '"src/local/resource-command-profile.mjs"',
+  '"src/local/resource-waiters.mjs"', '"src/local/resource-cargo-concurrency.mjs"', '"src/local/resource-cmake-concurrency.mjs"', '"src/local/resource-go-concurrency.mjs"', '"src/local/resource-gradle-concurrency.mjs"', '"src/local/resource-swift-concurrency.mjs"', '"src/local/resource-xcode-concurrency.mjs"', '"src/local/resource-xcode-command.mjs"', '"src/local/resource-xcode-non-build.mjs"', '"src/local/resource-make-concurrency.mjs"', '"src/local/resource-ninja-command-concurrency.mjs"', '"src/local/resource-ninja-concurrency.mjs"', '"src/local/resource-command-profile.mjs"', '"src/local/resource-foreground-wait.mjs"',
   '"src/local/resource-command-concurrency.mjs"', '"src/local/resource-maven-concurrency.mjs"', '"src/local/resource-pytest-concurrency.mjs"', '"src/local/resource-elastic-memory.mjs"', '"src/local/resource-elastic-request.mjs"',
-  '"src/local/resource-script-classification.mjs"', '"src/local/resource-host-cache.mjs"',
+  '"src/local/npm-cli.mjs"', '"src/local/resource-light-command.mjs"', '"src/local/resource-release-control-classification.mjs"', '"src/local/resource-release-control-executable.mjs"', '"src/local/resource-release-control-workspace.mjs"', '"src/local/resource-script-classification.mjs"', '"src/local/resource-host-cache.mjs"',
   '"src/local/resource-host-darwin.mjs"', '"src/local/resource-host-linux.mjs"', '"src/local/resource-wait.mjs"',
   '"src/local/resource-lease-accounting.mjs"', '"src/local/resource-coordinator-accounting.mjs"',
   '"src/local/resource-probe-command.mjs"', '"src/local/resource-process-ancestry.mjs"',
@@ -252,6 +263,84 @@ for (const threshold of [
   '"src/local/resource-request-contract.mjs"',
 ]) {
   if (!coverageRunnerSource.includes(threshold)) throw new Error(`critical resource coverage lost scheduler threshold: ${threshold}`);
+}
+for (const threshold of [
+  '"src/worker/daemon-ready-waiters.ts"', '"src/worker/daemon-recovery-budget.ts"',
+]) {
+  if (!coverageRunnerSource.includes(threshold)) throw new Error(`critical Worker recovery coverage lost threshold: ${threshold}`);
+}
+const resourceReleaseControlSource = readFileSync(join(root, "src", "local", "resource-release-control-classification.mjs"), "utf8");
+const resourceReleaseExecutableSource = readFileSync(join(root, "src", "local", "resource-release-control-executable.mjs"), "utf8");
+const resourceReleaseWorkspaceSource = readFileSync(join(root, "src", "local", "resource-release-control-workspace.mjs"), "utf8");
+const resourceCommandProfileSource = readFileSync(join(root, "src", "local", "resource-command-profile.mjs"), "utf8");
+const resourceProcessAdmissionSource = readFileSync(join(root, "src", "local", "resource-process-admission.mjs"), "utf8");
+const resourceAdmissionTestSource = readFileSync(join(root, "tests", "resource-admission-test.mjs"), "utf8");
+const releaseControlCanarySource = readFileSync(join(root, "scripts", "release-oauth-canary.mjs"), "utf8");
+const npmCliSource = readFileSync(join(root, "src", "local", "npm-cli.mjs"), "utf8");
+for (const required of ["NODE_TARGET_NAMES", "CANARY_ENTRY_NAME", "CANARY_FLAG", "releaseControlCommandIsLight", "values.length !== 2", "path.isAbsolute(entry)", "path.basename(entry)", '"node.exe"']) {
+  if (!resourceReleaseControlSource.includes(required)) throw new Error(`release OAuth canary lost exact activated-runtime direct-Node classification: ${required}`);
+}
+for (const required of ["RELEASE_CONTROL_UNSAFE_ENVIRONMENT_KEYS", "releaseControlEnvironmentIsTrusted", "process.execPath", "resolveInvokedExecutable", "path.win32", "path.posix", "environment?.PATH", "fsConstants.X_OK", "if (result) return result", "samePath", '"NODE_OPTIONS"', '"NODE_DEBUG"', '"NODE_PRESERVE_SYMLINKS"', '"NODE_TLS_REJECT_UNAUTHORIZED"', '"SSLKEYLOGFILE"', '"UV_THREADPOOL_SIZE"', '"LD_PRELOAD"', '"DYLD_INSERT_LIBRARIES"']) {
+  if (!resourceReleaseExecutableSource.includes(required)) throw new Error(`release OAuth canary lost runtime-Node executable/environment proof: ${required}`);
+}
+for (const required of ["packageName", "packageVersion", "packageRoot", "CANARY_ENTRY", "readOptionalRegularUtf8", "target === runtime", "releaseControlWorkspaceForCommand", "releaseControlCommandIsLight", "releaseControlExecutableIsTrusted", "releaseControlRuntimeEntrypointMatches", "realpath(String(entry", "realpath(join(packageRoot, CANARY_ENTRY))"]) {
+  if (!resourceReleaseWorkspaceSource.includes(required)) throw new Error(`release OAuth canary lost activated-runtime code identity or workspace binding: ${required}`);
+}
+for (const required of ["nodeExecutable", "allowLifecycleNpmCli", "allowFallbackLocations", "npm-cli.js", "realpathSync", "statSync"]) {
+  if (!npmCliSource.includes(required)) throw new Error(`release OAuth canary lost bounded npm CLI resolution: ${required}`);
+}
+if (!releaseControlCanarySource.includes('from "../src/local/npm-cli.mjs"')
+    || !releaseControlCanarySource.includes('from "../src/local/resource-release-control-executable.mjs"')
+    || !releaseControlCanarySource.includes("releaseControlEnvironmentIsTrusted(process.env)")
+    || !releaseControlCanarySource.includes("const canaryArgs = process.argv.slice(2)")
+    || !releaseControlCanarySource.includes("canaryArgs.length !== 1")
+    || !releaseControlCanarySource.includes("canaryArgs[0] !== CANARY_FLAG")
+    || !releaseControlCanarySource.includes("process.execArgv.length !== 0")
+    || !releaseControlCanarySource.includes("refuses Node CLI startup options")
+    || !releaseControlCanarySource.includes("const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), \"..\")")
+    || !releaseControlCanarySource.includes("const root = resolve(process.cwd())")
+    || !releaseControlCanarySource.includes("runtime package.json")
+    || !releaseControlCanarySource.includes("source package identity does not match the activated runtime package")
+    || !releaseControlCanarySource.includes("assertPrereleaseActivationRuntimeRoot(activation, runtimeRoot)")
+    || !releaseControlCanarySource.includes("inspectWorkspaceDaemon(state")
+    || !releaseControlCanarySource.includes('expectedEntryScript: join(runtimeRoot, "bin", "machine-mcp.mjs")')
+    || !releaseControlCanarySource.includes("expectedNodeExecutable: process.execPath")
+    || !releaseControlCanarySource.includes("expectedNodeVersion: process.versions.node")
+    || !releaseControlCanarySource.includes("daemon.verified_service_daemon")
+    || !releaseControlCanarySource.includes("daemon.startup_readiness_verified")
+    || !releaseControlCanarySource.includes("allowLifecycleNpmCli: false")
+    || !releaseControlCanarySource.includes("allowFallbackLocations: false")
+    || releaseControlCanarySource.includes("process.env.npm_execpath")
+    || releaseControlCanarySource.includes("argumentValue(")
+    || releaseControlCanarySource.includes('"--state-dir"')
+    || releaseControlCanarySource.includes('"--workspace"')) {
+  throw new Error("release OAuth canary regained workspace-code, npm-lifecycle, or unsafe-process-environment dependence");
+}
+const canaryDaemonIdentityCheck = releaseControlCanarySource.indexOf("inspectWorkspaceDaemon(state");
+const canaryActivationCheck = releaseControlCanarySource.indexOf("verifyPrereleaseActivation(manifest, stateRoot)");
+const canaryPromotionDigestCheck = releaseControlCanarySource.indexOf("computePromotionContentDigest(root, { npmCli })");
+if ([canaryDaemonIdentityCheck, canaryActivationCheck, canaryPromotionDigestCheck].some((value) => value < 0)
+    || canaryDaemonIdentityCheck > canaryPromotionDigestCheck
+    || canaryActivationCheck > canaryPromotionDigestCheck) {
+  throw new Error("release OAuth canary must prove live daemon/activation identity before package-digest work");
+}
+if (!resourceCommandProfileSource.includes("releaseControlCommandIsLight")
+    || !resourceCommandProfileSource.includes("options.releaseControlWorkspace === true")
+    || !resourceProcessAdmissionSource.includes("await releaseControlWorkspaceForCommand(command, args, options.cwd, environment)")
+    || !resourceAdmissionTestSource.includes("runtimeReleaseCanaryEntry")
+    || !resourceAdmissionTestSource.includes("directReleaseCanaryArgs")
+    || !resourceAdmissionTestSource.includes("workspace-relative canary entrypoint")
+    || !resourceAdmissionTestSource.includes("non-runtime canary path received release-control eligibility")
+    || !resourceAdmissionTestSource.includes("shadowedEnvironment")
+    || !resourceAdmissionTestSource.includes('"NODE_OPTIONS"')
+    || !resourceAdmissionTestSource.includes('"NODE_DEBUG"')
+    || !resourceAdmissionTestSource.includes('"NODE_PRESERVE_SYMLINKS"')
+    || !resourceAdmissionTestSource.includes('"NODE_TLS_REJECT_UNAUTHORIZED"')
+    || !resourceAdmissionTestSource.includes('"SSLKEYLOGFILE"')
+    || !resourceAdmissionTestSource.includes('"LD_PRELOAD"')
+    || !resourceAdmissionTestSource.includes("winOptions")
+    || !resourceAdmissionTestSource.includes("npm lifecycle invocation regained the release-control exception")) {
+  throw new Error("release OAuth canary light profile lost its narrow direct-Node negative-regression boundary");
 }
 const agentContextTestSource = readFileSync(join(root, "tests", "agent-context-test.mjs"), "utf8");
 if (!agentContextTestSource.includes("processResourceWaitMs: 5 * 60_000")) {
@@ -284,8 +373,15 @@ if (!checkEntrypointSource.includes("runVerificationPlan")
   throw new Error("cross-platform check runner, frozen-input guard, or bounded concurrency contract drifted");
 }
 const localAcceptanceSource = readFileSync(join(root, "scripts", "local-release-acceptance.mjs"), "utf8");
-for (const required of ["GIT_INDEX_FILE", "resolveTrustedGitExecutable", "createHardenedNpmSession", "runWithHardenedNpm", "packProject(root, candidateDirectory, { npmCli", "verifyCurrentReleaseAcceptance(root, { npmCli", "readReleaseOAuthCanaryEvidence", 'git, ["read-tree", "HEAD"]', 'git, ["add", "--all"', "--print-digest", "package_content_sha256"]) {
-  if (!localAcceptanceSource.includes(required)) throw new Error(`local acceptance recorder lost portable digest boundary: ${required}`);
+const directCandidateVerifyCommand = "node scripts/start-release-candidate.mjs --install-only";
+const activatedRuntimeCanaryCommand = "node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary";
+for (const required of ["GIT_INDEX_FILE", "resolveTrustedGitExecutable", "createHardenedNpmSession", "runWithHardenedNpm", "packProject(root, candidateDirectory, { npmCli", "verifyCurrentReleaseAcceptance(root, { npmCli", "readReleaseOAuthCanaryEvidence", 'git, ["read-tree", "HEAD"]', 'git, ["add", "--all"', "--print-digest", "package_content_sha256", directCandidateVerifyCommand, activatedRuntimeCanaryCommand, "activation record runtime_entry"]) {
+  if (!localAcceptanceSource.includes(required)) throw new Error(`local acceptance recorder lost portable digest/runtime-canary boundary: ${required}`);
+}
+for (const file of ["AGENTS.md", "CONTRIBUTING.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md"]) {
+  if (!readFileSync(join(root, file), "utf8").includes(activatedRuntimeCanaryCommand)) {
+    throw new Error(`release workflow documentation lost the activated-runtime OAuth canary command: ${file}`);
+  }
 }
 const releaseOauthCanarySource = readFileSync(join(root, "scripts", "release-oauth-canary.mjs"), "utf8");
 const releaseOauthCanaryCore = readFileSync(join(root, "scripts", "release-oauth-canary-core.mjs"), "utf8");
@@ -412,7 +508,7 @@ if ([pushAcceptance, pushNpmDispose, pushRemoteMutation].some((value) => value <
   throw new Error("guarded GitHub push no longer verifies accepted bytes through hardened npm and disposes it before remote mutation");
 }
 const candidateStartSource = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
-for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"', "withReleaseRuntimeLock"]) {
+for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "resolveNpmCli", "allowLifecycleNpmCli: false", "allowFallbackLocations: false", "sourceNpmCli", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "--install-only", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"', "withReleaseRuntimeLock"]) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
 }
 const candidateSourceGuard = candidateStartSource.indexOf("assertCandidateMatchesCurrentSource(manifest");
@@ -428,6 +524,12 @@ if (candidateSourceGuard < 0 || candidateTarballVerification < 0 || candidateAut
     || candidatePersistentRuntime > candidateHardenedNpm
     || candidateHardenedNpm > candidateInstall) {
   throw new Error("candidate startup no longer rejects stale source and tarball bytes before hardened npm network/setup and installation");
+}
+const candidateInstallOnlyBranch = candidateStartSource.indexOf("if (installOnly) {");
+const candidateForegroundLaunch = candidateStartSource.indexOf("const child = spawn(process.execPath");
+if (candidateInstallOnlyBranch < 0 || candidateForegroundLaunch < 0 || candidateInstallOnlyBranch > candidateForegroundLaunch
+    || !candidateStartSource.includes("temporary runtime was removed and startup was skipped by --install-only")) {
+  throw new Error("candidate verify no longer exits through disposable install-only cleanup before foreground/live startup");
 }
 const candidateReleaseRuntimeLock = candidateStartSource.indexOf("await withReleaseRuntimeLock(stateRoot");
 const candidatePersistentPrefix = candidateStartSource.indexOf("const installPrefix = createCandidateRuntimePrefix");
@@ -538,7 +640,7 @@ for (const required of ["githubReleaseByTagEndpoint", "normalizeGithubReleaseAss
   if (!publishedReleaseSource.includes(required)) throw new Error(`published release verification lost GitHub asset digest boundary: ${required}`);
 }
 const prereleaseActivationSource = readFileSync(join(root, "scripts", "prerelease-activation.mjs"), "utf8");
-for (const required of ["ACTIVATION_SCHEMA_VERSION = 2", "ACTIVATION_FIELDS", "global_package_rollback_baseline", "unsupported prerelease activation schema", "unsupported fields"]) {
+for (const required of ["ACTIVATION_SCHEMA_VERSION = 2", "ACTIVATION_FIELDS", "global_package_rollback_baseline", "assertPrereleaseActivationRuntimeRoot", "realpathSync", "runtime_entry", "does not match the executing canary", "unsupported prerelease activation schema", "unsupported fields"]) {
   if (!prereleaseActivationSource.includes(required)) throw new Error(`prerelease activation schema lost current-only rollback-baseline semantics: ${required}`);
 }
 for (const removed of ["LEGACY_ACTIVATION_SCHEMA_VERSION", "value.previous", "hasLegacyBaseline", "legacy prerelease activation"]) {
@@ -1016,6 +1118,7 @@ for (const file of [
 ]) {
   const normalized = readFileSync(file, "utf8").replace(/\s+/g, " ");
   for (const required of [
+    directCandidateVerifyCommand,
     "release:candidate:activate -- --allow-worker-deploy",
     "prerelease:publish",
     "prerelease:install -- --allow-worker-deploy",
@@ -1079,11 +1182,11 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "npm run release:candidate", "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "real interactive terminal", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "real interactive terminal", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const releasingGuide = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
-for (const required of ["npm run prerelease:release -- --owner-terminal-confirm", "npm run release:backfill -- --owner-terminal-confirm", "npm run release -- --owner-terminal-confirm", "real interactive terminal"]) {
+for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-terminal-confirm", "npm run release:backfill -- --owner-terminal-confirm", "npm run release -- --owner-terminal-confirm", "real interactive terminal"]) {
   if (!releasingGuide.includes(required)) throw new Error(`release guide omitted owner-terminal publication contract: ${required}`);
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
@@ -1092,7 +1195,7 @@ if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || 
   throw new Error("generated MCP tool reference is missing or malformed");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
-for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
+for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
 }
 if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {
