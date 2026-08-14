@@ -1,8 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { candidateRuntimeContainer, createCandidateRuntimePrefix, isNonBlockingCandidateRuntimeCleanupError, pruneInactiveCandidateRuntimes } from "../scripts/candidate-runtime-store.mjs";
+import { publishReleaseBrowserExtension } from "../scripts/release-browser-extension-store.mjs";
+import { browserExtensionPathForRuntime, releaseBrowserExtensionPath } from "../src/local/browser-extension-path.mjs";
 import { withReleaseRuntimeLock } from "../src/local/release-runtime-lock.mjs";
+import { validateOwnedStateNamespaces } from "../src/local/state-root-owned-namespaces.mjs";
 
 const stateRoot = mkdtempSync(join(tmpdir(), "mbm-candidate-runtime-"));
 const container = candidateRuntimeContainer(stateRoot);
@@ -82,6 +85,8 @@ try {
   expectThrow(() => createCandidateRuntimePrefix({ stateRoot, version: "invalid", shasum: "a".repeat(40) }), "release version");
   expectThrow(() => createCandidateRuntimePrefix({ stateRoot, version: "3.0.0-beta.2", shasum: "short" }), "SHA-1");
 
+  testStableBrowserExtensionPublication(stateRoot, active);
+
   const controlRoot = mkdtempSync(join(tmpdir(), "mbm-release-runtime-control-"));
   let releaseFirst;
   let firstEntered;
@@ -107,6 +112,88 @@ try {
 }
 
 console.log("candidate runtime store test ok");
+
+function testStableBrowserExtensionPublication(stateRoot, activeRuntime) {
+  const packageDirectory = join(activeRuntime, "lib", "node_modules", "machine-bridge-mcp");
+  mkdirSync(packageDirectory, { recursive: true });
+  const stablePath = releaseBrowserExtensionPath(stateRoot);
+  assert(browserExtensionPathForRuntime({ stateRoot, packageDirectory }) === stablePath,
+    "versioned candidate runtime did not resolve the stable browser extension path");
+  const checkout = mkdtempSync(join(tmpdir(), "mbm-browser-extension-checkout-"));
+  try {
+    assert(browserExtensionPathForRuntime({ stateRoot, packageDirectory: checkout }) === join(checkout, "browser-extension"),
+      "ordinary package runtime was incorrectly redirected to release browser-extension state");
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+
+  const sourceOne = mkdtempSync(join(tmpdir(), "mbm-browser-extension-v1-"));
+  const sourceTwo = mkdtempSync(join(tmpdir(), "mbm-browser-extension-v2-"));
+  try {
+    writeFileSync(join(sourceOne, "manifest.json"), JSON.stringify({ version: "3.0.0", version_name: "3.0.0-beta.1" }));
+    writeFileSync(join(sourceOne, "service-worker.js"), "old-worker\n");
+    writeFileSync(join(sourceOne, "obsolete.js"), "obsolete\n");
+    const first = publishReleaseBrowserExtension({
+      stateRoot,
+      sourceDirectory: sourceOne,
+      expectedVersion: "3.0.0-beta.1",
+    });
+    assert(first.path === stablePath && first.version === "3.0.0-beta.1", "initial stable browser extension publication returned the wrong identity");
+    assert(readFileSync(join(stablePath, "service-worker.js"), "utf8") === "old-worker\n", "initial stable browser extension bytes were not published");
+
+    writeFileSync(join(sourceTwo, "manifest.json"), JSON.stringify({ version: "3.0.0", version_name: "3.0.0-beta.2" }));
+    writeFileSync(join(sourceTwo, "service-worker.js"), "new-worker\n");
+    writeFileSync(join(sourceTwo, "added.js"), "added\n");
+    let manifestCommittedLast = false;
+    const second = publishReleaseBrowserExtension({
+      stateRoot,
+      sourceDirectory: sourceTwo,
+      expectedVersion: "3.0.0-beta.2",
+      beforeManifestCommit: ({ destination }) => {
+        const previousManifest = JSON.parse(readFileSync(join(destination, "manifest.json"), "utf8"));
+        manifestCommittedLast = previousManifest.version_name === "3.0.0-beta.1"
+          && readFileSync(join(destination, "service-worker.js"), "utf8") === "new-worker\n"
+          && !existsSync(join(destination, "obsolete.js"));
+      },
+    });
+    assert(second.path === first.path && manifestCommittedLast, "stable browser extension did not preserve one path with manifest-last commit ordering");
+    assert(JSON.parse(readFileSync(join(stablePath, "manifest.json"), "utf8")).version_name === "3.0.0-beta.2",
+      "stable browser extension manifest did not converge on the new candidate");
+    assert(readFileSync(join(stablePath, "added.js"), "utf8") === "added\n", "stable browser extension omitted a new candidate file");
+    expectThrow(() => publishReleaseBrowserExtension({ stateRoot, sourceDirectory: sourceTwo, expectedVersion: "3.0.0-beta.3" }), "does not match");
+
+    const linkedSource = mkdtempSync(join(tmpdir(), "mbm-browser-extension-linked-"));
+    try {
+      writeFileSync(join(linkedSource, "manifest.json"), JSON.stringify({ version_name: "3.0.0-beta.2" }));
+      symlinkSync(join(sourceTwo, "service-worker.js"), join(linkedSource, "service-worker.js"));
+      expectThrow(() => publishReleaseBrowserExtension({ stateRoot, sourceDirectory: linkedSource }), "must not contain symbolic links");
+    } finally {
+      rmSync(linkedSource, { recursive: true, force: true });
+    }
+
+    const retirementState = mkdtempSync(join(tmpdir(), "mbm-browser-extension-retirement-"));
+    const retirementRuntime = createCandidateRuntimePrefix({
+      stateRoot: retirementState,
+      version: "3.0.0-beta.2",
+      shasum: "c".repeat(40),
+      random: () => "8".repeat(12),
+    });
+    try {
+      mkdirSync(retirementRuntime, { recursive: true });
+      publishReleaseBrowserExtension({ stateRoot: retirementState, sourceDirectory: sourceTwo, expectedVersion: "3.0.0-beta.2" });
+      validateOwnedStateNamespaces(retirementState);
+      const foreignTarget = join(retirementState, "foreign-target.js");
+      writeFileSync(foreignTarget, "foreign\n");
+      symlinkSync(foreignTarget, join(releaseBrowserExtensionPath(retirementState), "linked.js"));
+      expectThrow(() => validateOwnedStateNamespaces(retirementState), "unexpected entry");
+    } finally {
+      rmSync(retirementState, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(sourceOne, { recursive: true, force: true });
+    rmSync(sourceTwo, { recursive: true, force: true });
+  }
+}
 
 function expectThrow(callback, expected) {
   try {

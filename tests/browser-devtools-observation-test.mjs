@@ -8,6 +8,7 @@ const observationSource = await readFile(new URL("../browser-extension/devtools-
 await capturesAccessibilityGeometryAndScreenshot();
 await detectsNavigationDuringCapture();
 await componentFailuresPreserveAccessibility();
+await commandTimeoutReleasesQueue();
 await cancellationStopsBeforeFurtherCommands();
 console.log("browser DevTools observation test ok");
 
@@ -155,6 +156,35 @@ async function componentFailuresPreserveAccessibility() {
   assert.equal(result.accessibility.nodes[0]?.bounding_box, null, "AX node unexpectedly required DOMSnapshot geometry");
 }
 
+async function commandTimeoutReleasesQueue() {
+  let hangFirstCommand = true;
+  let attachCount = 0;
+  let detachCount = 0;
+  const context = createContext({
+    async attach() { attachCount += 1; },
+    async detach() { detachCount += 1; },
+    async sendCommand(_target, method) {
+      if (hangFirstCommand) {
+        hangFirstCommand = false;
+        return new Promise(() => {});
+      }
+      if (method === "Page.enable" || method === "Accessibility.enable") return {};
+      if (method === "Page.getFrameTree") return frameTree("loader-after-timeout");
+      if (method === "Page.getLayoutMetrics") return {};
+      if (method === "DOMSnapshot.captureSnapshot") return domSnapshot();
+      if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+      throw new Error(`unexpected CDP command ${method}`);
+    },
+  }, { fastTimers: true });
+  const timeout = await capturedError(() => context.__machineBridgeDevtoolsObservation.capture(12, { includeScreenshot: false }));
+  assert.equal(timeout.machineBridgeDevtoolsTimeout, true, "hung CDP observation lost its bounded timeout marker");
+  assert.match(String(timeout.message), /DevTools command Page\.enable timed out/);
+  const recovered = await context.__machineBridgeDevtoolsObservation.capture(12, { includeScreenshot: false });
+  assert.equal(recovered.navigation_coherent, true, "CDP observation queue did not recover after a timed-out command");
+  assert.equal(attachCount, 2, "timed-out CDP observation did not release the tab queue for a fresh debugger session");
+  assert.equal(detachCount, 2, "timed-out CDP observation did not detach before the next session");
+}
+
 async function cancellationStopsBeforeFurtherCommands() {
   const commands = [];
   const state = { cancelled: false };
@@ -174,16 +204,22 @@ async function cancellationStopsBeforeFurtherCommands() {
   assert.deepEqual(commands, ["Page.enable"], "cancelled observation continued issuing CDP commands");
 }
 
-function createContext(debuggerApi) {
+function createContext(debuggerApi, options = {}) {
+  const schedule = options.fastTimers === true ? (callback) => setTimeout(callback, 0) : setTimeout;
   const context = vm.createContext({
     chrome: { debugger: debuggerApi },
-    setTimeout,
+    setTimeout: schedule,
     clearTimeout,
     console,
   });
   vm.runInContext(sessionSource, context, { filename: "devtools-session.js" });
   vm.runInContext(observationSource, context, { filename: "devtools-observation.js" });
   return context;
+}
+
+async function capturedError(operation) {
+  try { await operation(); } catch (error) { return error; }
+  throw new Error("expected operation to reject");
 }
 
 function frameTree(loaderId) {

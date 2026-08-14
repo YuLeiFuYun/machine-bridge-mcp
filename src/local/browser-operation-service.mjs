@@ -129,7 +129,7 @@ export class BrowserOperationService {
         "Open the browser extensions page and enable developer mode.",
         "Load the unpacked extension from extension_path once.",
         "Run pair_browser_extension with opening enabled; the sanitized pairing_url alone contains no pairing grant.",
-        "After upgrades, reload the unpacked extension and accept any newly requested browser permission.",
+        "After upgrades, reload the same unpacked extension path and accept any newly requested browser permission; older local-candidate installs may need one Load unpacked migration to the current stable extension_path.",
       ],
     };
   }

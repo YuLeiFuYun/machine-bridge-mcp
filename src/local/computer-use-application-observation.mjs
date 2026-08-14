@@ -191,12 +191,7 @@ function windowLocalBox(screenBox, windowBounds) {
 }
 
 function sameBox(left, right) {
-  if (!left || !right) return false;
-  return ["x", "y", "width", "height"].every((key) => (
-    typeof left[key] === "number" && Number.isFinite(left[key])
-    && typeof right[key] === "number" && Number.isFinite(right[key])
-    && Math.abs(left[key] - right[key]) <= 1
-  ));
+  return ["x", "y", "width", "height"].every((key) => Math.abs(left[key] - right[key]) <= 1);
 }
 
 function normalizeBox(value) {

@@ -108,11 +108,12 @@ The command:
 - performs a controlled foreground-to-service handoff;
 - accepts the background runtime only after its matching daemon lock publishes the post-authentication, post-relay-probe `ready_ack` checkpoint;
 - verifies that both the Worker and verified background daemon report the candidate version;
+- publishes the exact installed candidate browser extension into the owner-only stable release-channel extension directory, with `manifest.json` committed last, before pruning any prior versioned candidate runtime or writing activation evidence;
 - exits while the background daemon continues running.
 
 It may request one macOS user-presence or Touch ID operation to certify the daemon session key. It does not ask for per-tool approval. The wrapper does not impose a transaction-wide hard kill: each internal deployment, health, relay, service-manager, and convergence stage is independently bounded so lock release and compensation cannot be skipped.
 
-The private candidate runtime is not stored under the Git checkout, so cleaning `.release-candidate/`, switching branches, or regenerating a candidate cannot delete the daemon currently under test. The activation wrapper checks `--allow-worker-deploy` before downloads/install, reads the previous global installation while hardened npm is still live, uses the persistent release-channel prefix only for an actual service activation, and prunes only canonical real contained inactive runtime directories before writing activation evidence. `--install-only` uses the disposable foreground prefix. The previous global installation remains available as recovery information.
+The private candidate runtime is not stored under the Git checkout, so cleaning `.release-candidate/`, switching branches, or regenerating a candidate cannot delete the daemon currently under test. The activation wrapper checks `--allow-worker-deploy` before downloads/install, reads the previous global installation while hardened npm is still live, uses the persistent release-channel prefix only for an actual service activation, and prunes only canonical real contained inactive runtime directories after the stable browser-extension copy has converged. `--install-only` uses the disposable foreground prefix. The stable browser-extension path is intentionally outside the versioned runtime directory so Chrome's unpacked-extension source path survives candidate pruning. The previous global installation remains available as recovery information.
 
 ## 3. Coding agent runs the deployed OAuth canary and verifies the live candidate
 

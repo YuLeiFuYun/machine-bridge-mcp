@@ -5,11 +5,11 @@ import { createLogger } from "./log.mjs";
 import { inspectResourceFile, loadManagedJobPlan, ManagedJobManager, publicResourceRegistry, validateResourceName } from "./managed-jobs.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
 import {
-  acquireStartupLockWithWait, expandHome, loadState, saveState,
+  acquireStartupLockWithWait, defaultStateRoot, expandHome, loadState, saveState,
 } from "./state.mjs";
-import { packageRoot } from "./package-identity.mjs";
 import { readBrowserPairing, readBrowserPairingPort } from "./browser-pairing-store.mjs";
 import { startBrowserPairingLaunch } from "./browser-pairing-launch.mjs";
+import { browserExtensionPathForRuntime } from "./browser-extension-path.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
 import { readLoopbackJson } from "./loopback-health.mjs";
 
@@ -198,7 +198,8 @@ async function browserCommand(args, dependencies) {
 }
 
 function browserPathAction(args) {
-  const extensionPath = resolve(packageRoot, "browser-extension");
+  const stateRoot = resolve(expandHome(args.stateDir || defaultStateRoot()));
+  const extensionPath = browserExtensionPathForRuntime({ stateRoot });
   if (args.json) console.log(JSON.stringify({ extension_path: extensionPath }, null, 2));
   else console.log(extensionPath);
 }
@@ -221,14 +222,14 @@ async function browserPairAction(args, { chooseWorkspace, openExternal: openTarg
   }
   console.log(`Extension path: ${context.extensionPath}`);
   console.log("Load this directory in the Chromium profile you use every day; Machine Bridge does not install it into Playwright or a separate automation profile.");
-  console.log("Enable Developer mode, choose Load unpacked, and reload the extension after each Machine Bridge upgrade.");
+  console.log("Enable Developer mode, choose Load unpacked once, and reload the same path after each Machine Bridge upgrade. Older local-candidate installs may need one Load unpacked migration to this stable path.");
   console.log(`Pairing page opened: ${context.pairingUrl}`);
 }
 
 async function browserCommandContext(args, chooseWorkspace) {
-  const extensionPath = resolve(packageRoot, "browser-extension");
   const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
   const state = loadState(workspace, { stateDir: args.stateDir });
+  const extensionPath = browserExtensionPathForRuntime({ stateRoot: state.paths.stateRoot });
   const port = readBrowserPairingPort(state.paths.stateRoot);
   if (port === null) throw new Error("browser bridge is not initialized; start machine-mcp once, then run this command again");
   const pairingUrl = `http://127.0.0.1:${port}/pair`;

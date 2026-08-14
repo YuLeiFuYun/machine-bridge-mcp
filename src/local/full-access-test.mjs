@@ -185,7 +185,7 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
         removeRoot = false;
       }
     }
-    runtime?.stop();
+    await runtime?.stop();
     if (previousSentinel === undefined) delete process.env[sentinelKey];
     else process.env[sentinelKey] = previousSentinel;
     if (removeRoot) await rm(root, { recursive: true, force: true });

@@ -22,6 +22,7 @@ import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from
 import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
 import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
 import { resolveNpmCli } from "../src/local/npm-cli.mjs";
+import { publishReleaseBrowserExtension } from "./release-browser-extension-store.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateDirectory = join(root, ".release-candidate");
@@ -184,6 +185,20 @@ function activatePersistentCandidate({
   }
   const recovery = validateActivationRecoveryPayload(activation);
 
+  let publishedBrowserExtension;
+  try {
+    publishedBrowserExtension = publishReleaseBrowserExtension({
+      stateRoot,
+      sourceDirectory: join(installedPackage, "browser-extension"),
+      expectedVersion: manifest.package_version,
+    });
+  } catch (error) {
+    throw new Error(
+      "persistent candidate activation converged, but the stable browser extension could not be published; the candidate Worker/service is live and must be inspected before retrying",
+      { cause: error },
+    );
+  }
+
   let removedRuntimes = [];
   let runtimeCleanupWarning = "";
   try {
@@ -217,6 +232,7 @@ function activatePersistentCandidate({
     console.warn(`Persistent activation used verified candidate-service recovery (${recovery.reason}): ${recovery.detail}`);
   }
   console.log(`Persistent release candidate activated: ${manifest.package_version}`);
+  console.log(`Stable browser extension published: ${publishedBrowserExtension.path}`);
   if (recordPath) console.log(`Activation record: ${recordPath}`);
   if (removedRuntimes.length) console.log(`Removed ${removedRuntimes.length} inactive candidate runtime(s).`);
   if (runtimeCleanupWarning) console.warn(`Candidate activation succeeded but inactive runtime cleanup was incomplete: ${runtimeCleanupWarning}`);

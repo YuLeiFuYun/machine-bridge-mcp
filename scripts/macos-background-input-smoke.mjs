@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { AppAutomationManager } from "../src/local/app-automation.mjs";
@@ -415,10 +415,15 @@ async function waitForJson(file, timeoutMs, predicate = () => true) {
   let lastError = null;
   while (Date.now() < deadline) {
     try {
-      const info = await stat(file);
-      if (info.isFile() && info.size > 0 && info.size < 64 * 1024) {
-        const parsed = JSON.parse(await readFile(file, "utf8"));
-        if (predicate(parsed)) return parsed;
+      const handle = await open(file, "r");
+      try {
+        const info = await handle.stat();
+        if (info.isFile() && info.size > 0 && info.size < 64 * 1024) {
+          const parsed = JSON.parse(await handle.readFile("utf8"));
+          if (predicate(parsed)) return parsed;
+        }
+      } finally {
+        await handle.close();
       }
     } catch (error) { lastError = error; }
     await delay(50);

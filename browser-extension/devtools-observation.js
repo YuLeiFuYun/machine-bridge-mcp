@@ -35,7 +35,10 @@
       const frames = allFramesBefore.slice(0, maxFrames);
       const rootBefore = frames[0] || null;
       const rootFrameId = protocolString(frameTree?.frame?.id);
-      const metrics = await send("Page.getLayoutMetrics").catch(() => null);
+      const metrics = await send("Page.getLayoutMetrics").catch((error) => {
+        if (error?.machineBridgeDevtoolsTimeout === true) throw error;
+        return null;
+      });
       throwIfCancelled(state);
 
       let domSnapshot = null;
@@ -45,7 +48,9 @@
           includePaintOrder: true,
           includeDOMRects: false,
         });
-      } catch {}
+      } catch (error) {
+        if (error?.machineBridgeDevtoolsTimeout === true) throw error;
+      }
       throwIfCancelled(state);
 
       const axRaw = [];
@@ -60,7 +65,8 @@
         try {
           const response = await send("Accessibility.getFullAXTree", { depth, frameId });
           for (const node of Array.isArray(response?.nodes) ? response.nodes : []) axRaw.push(node);
-        } catch {
+        } catch (error) {
+          if (error?.machineBridgeDevtoolsTimeout === true) throw error;
           axFrameFailures.push(frameId);
         }
       }
@@ -75,7 +81,9 @@
             captureBeyondViewport: false,
             optimizeForSpeed: true,
           });
-        } catch {}
+        } catch (error) {
+          if (error?.machineBridgeDevtoolsTimeout === true) throw error;
+        }
       }
       throwIfCancelled(state);
 

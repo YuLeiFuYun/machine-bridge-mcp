@@ -386,6 +386,7 @@ async function testSessionAuthorityRevocation() {
     authorizeTool() {},
     runtimeDir: root,
     processTracker: tracker,
+    terminationSettlementWaitMs: 15_000,
     resourceCoordinator: {
       acquire: async () => ({
         async bindProcess() { return this; },

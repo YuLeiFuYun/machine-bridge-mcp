@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, opendir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, opendir, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -483,11 +483,16 @@ export class AppAutomationManager {
     const outputPath = join(directory, "window.png");
     try {
       await this.runProcess("/usr/sbin/screencapture", ["-x", "-o", "-l", String(window.window_id), outputPath], timeoutSeconds * 1000, false, 64 * 1024, context, undefined, null);
-      const info = await stat(outputPath);
-      if (!info.isFile() || info.size < 8 || info.size > MAX_APPLICATION_SCREENSHOT_BYTES) throw new Error("application screenshot size is invalid");
-      const bytes = await readFile(outputPath);
-      if (!isPng(bytes)) throw new Error("application screenshot is not a PNG image");
-      return { window, bytes };
+      const handle = await open(outputPath, "r");
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.size < 8 || info.size > MAX_APPLICATION_SCREENSHOT_BYTES) throw new Error("application screenshot size is invalid");
+        const bytes = await handle.readFile();
+        if (!isPng(bytes)) throw new Error("application screenshot is not a PNG image");
+        return { window, bytes };
+      } finally {
+        await handle.close();
+      }
     } finally {
       await rm(directory, { recursive: true, force: true }).catch(() => {});
     }

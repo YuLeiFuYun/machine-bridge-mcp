@@ -521,7 +521,7 @@ if ([pushAcceptance, pushNpmDispose, pushRemoteMutation].some((value) => value <
   throw new Error("guarded GitHub push no longer verifies accepted bytes through hardened npm and disposes it before remote mutation");
 }
 const candidateStartSource = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
-for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "resolveNpmCli", "allowLifecycleNpmCli: false", "allowFallbackLocations: false", "sourceNpmCli", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "--install-only", "createCandidateRuntimePrefix", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"', "withReleaseRuntimeLock"]) {
+for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "resolveNpmCli", "allowLifecycleNpmCli: false", "allowFallbackLocations: false", "sourceNpmCli", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "--install-only", "createCandidateRuntimePrefix", "publishReleaseBrowserExtension", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"', "withReleaseRuntimeLock"]) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
 }
 const candidateSourceGuard = candidateStartSource.indexOf("assertCandidateMatchesCurrentSource(manifest");
@@ -564,13 +564,23 @@ if (!candidateStartSource.includes("persistentActivationSpawnOptions")
 const candidateBaselineRead = candidateStartSource.indexOf("const previousInstallation = persistentActivation");
 const candidateNpmDispose = candidateStartSource.indexOf("disposeNpmSession();");
 const candidateActivationCall = candidateStartSource.indexOf("activatePersistentCandidate({");
+const candidateActivationVerified = candidateStartSource.indexOf("const recovery = validateActivationRecoveryPayload(activation);");
+const candidateBrowserExtensionPublish = candidateStartSource.indexOf("publishedBrowserExtension = publishReleaseBrowserExtension({");
 const candidateRuntimePrune = candidateStartSource.indexOf("removedRuntimes = pruneInactiveCandidateRuntimes");
 const candidateActivationRecord = candidateStartSource.indexOf("recordPath = writePrereleaseActivation");
-if ([candidateBaselineRead, candidateNpmDispose, candidateActivationCall, candidateRuntimePrune, candidateActivationRecord].some((value) => value < 0)
+if ([candidateBaselineRead, candidateNpmDispose, candidateActivationCall, candidateActivationVerified, candidateBrowserExtensionPublish, candidateRuntimePrune, candidateActivationRecord].some((value) => value < 0)
     || candidateBaselineRead > candidateNpmDispose
     || candidateNpmDispose > candidateActivationCall
+    || candidateActivationVerified > candidateBrowserExtensionPublish
+    || candidateBrowserExtensionPublish > candidateRuntimePrune
     || candidateRuntimePrune > candidateActivationRecord) {
-  throw new Error("candidate activation no longer reads rollback evidence before hardened npm disposal or completes blocking runtime cleanup before writing activation evidence");
+  throw new Error("candidate activation no longer verifies live convergence, publishes the stable browser extension, and completes runtime cleanup before writing activation evidence");
+}
+const browserBridgeSource = readFileSync(join(root, "src", "local", "browser-bridge.mjs"), "utf8");
+const browserAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
+if (!browserBridgeSource.includes("browserExtensionPathForRuntime({ stateRoot: this.stateRoot, packageDirectory: packageRoot })")
+    || !browserAdminSource.includes("browserExtensionPathForRuntime({ stateRoot")) {
+  throw new Error("browser bridge/setup no longer routes versioned release runtimes through the stable unpacked-extension path");
 }
 const npmPublishSource = readFileSync(join(root, "scripts", "publish-npm.mjs"), "utf8");
 for (const required of [

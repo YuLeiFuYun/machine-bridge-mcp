@@ -33,12 +33,27 @@ function validateToolchains(directory) {
 function validateReleaseChannels(directory) {
   if (!realDirectoryIfPresent(directory, "release-channel state namespace")) return;
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !["activations", "runtimes"].includes(entry.name)) {
+    if (!entry.isDirectory() || !["activations", "runtimes", "browser-extension"].includes(entry.name)) {
       throw new Error("release-channel state namespace contains an unexpected entry; state was kept for inspection");
     }
   }
   validateNamedChildren(join(directory, "activations"), "activation record", [ACTIVATION_RECORD, ACTIVATION_TEMP], "file");
   validateNamedChildren(join(directory, "runtimes"), "candidate runtime", [RUNTIME_DIRECTORY], "directory");
+  validateBrowserExtension(join(directory, "browser-extension"));
+}
+
+function validateBrowserExtension(directory) {
+  if (!realDirectoryIfPresent(directory, "release browser-extension namespace")) return;
+  let visited = 0;
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      visited += 1;
+      if (visited > 512) throw new Error("release browser-extension namespace contains too many entries; state was kept for inspection");
+      if (entry.isDirectory()) { walk(join(current, entry.name)); continue; }
+      if (!entry.isFile()) throw new Error("release browser-extension namespace contains an unexpected entry; state was kept for inspection");
+    }
+  };
+  walk(directory);
 }
 
 function validateLegacyReleaseTasks(directory) {

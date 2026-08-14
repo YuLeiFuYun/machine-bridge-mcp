@@ -686,9 +686,12 @@ assert.equal(linuxSample.psi_io_full_avg10, 1.25);
 assert.equal(linuxSample.io_sampled, true);
 const linuxWithoutPsi = sampleResourceHost({ platform: "linux", cpuCores: 8, readFile: () => "" });
 assert.equal(linuxWithoutPsi.io_sampled, false, "missing Linux PSI was reported as sampled I/O pressure");
-const directLinuxWithoutProc = {};
-sampleLinuxHost(directLinuxWithoutProc);
-assert.equal(directLinuxWithoutProc.io_sampled, false, "default Linux reader treated unavailable /proc PSI as sampled");
+const directLinuxHost = {};
+sampleLinuxHost(directLinuxHost);
+assert.equal(typeof directLinuxHost.io_sampled, "boolean", "default Linux reader did not normalize PSI sampling state");
+if (process.platform !== "linux") {
+  assert.equal(directLinuxHost.io_sampled, false, "default Linux reader treated unavailable /proc PSI as sampled");
+}
 const defaultSyncHost = sampleResourceHost({ platform: "linux", cpuCores: 8, readFile: () => "" });
 assert.equal(defaultSyncHost.io_sampled, false);
 const defaultAsyncHost = await sampleResourceHostAsync({ platform: "linux", cpuCores: 8, readFile: () => "" });

@@ -1256,7 +1256,7 @@ function validateExpectationPrerequisites(expectation, observation, postScreensh
 function normalizeExpectation(surface, action, target, raw) {
   let value = raw === undefined || raw === null ? defaultExpectation(surface, action, target) : raw;
   if (!value) return null;
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new BridgeError("invalid_request", "expect must be an object");
+  if (typeof value !== "object" || Array.isArray(value)) throw new BridgeError("invalid_request", "expect must be an object");
   value = enforceRequiredActionExpectation(surface, action, target, value);
   const output = surface === "browser" ? normalizeBrowserExpectation(value, target) : normalizeApplicationExpectation(value, target);
   if (!Object.keys(output).length) throw new BridgeError("invalid_request", "expect must contain at least one condition");

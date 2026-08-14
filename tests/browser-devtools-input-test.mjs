@@ -310,6 +310,27 @@ const scrollFailure = await capturedError(() => scrollFailureContext.__machineBr
 assert(scrollFailure.machineBridgeTrustedInput === true && scrollFailure.safeToFallback === false && scrollFailure.dispatchStarted === true,
   "wheel response loss was incorrectly classified as safe to replay through another scroll mechanism");
 
+let detachedAfterTimedOutCommand = false;
+const timedOutCommandContext = vm.createContext({
+  setTimeout: (callback) => setTimeout(callback, 0),
+  clearTimeout,
+  chrome: { debugger: {
+    async attach() {},
+    async sendCommand() { return new Promise(() => {}); },
+    async detach() { detachedAfterTimedOutCommand = true; },
+  } },
+});
+vm.runInContext(sessionSource, timedOutCommandContext, { filename: "devtools-session.js" });
+vm.runInContext(source, timedOutCommandContext, { filename: "devtools-input.js" });
+const timedOutCommand = await capturedError(() => timedOutCommandContext.__machineBridgeDevtoolsInput.perform(15, "hover", { point: { x: 1, y: 1 } }));
+assert(timedOutCommand.machineBridgeTrustedInput === true
+  && timedOutCommand.safeToFallback === false
+  && timedOutCommand.dispatchStarted === true,
+"timed-out trusted Input command was incorrectly classified as pre-dispatch or fallback-safe");
+assert(timedOutCommand.message.includes("DevTools command Input.dispatchMouseEvent timed out"),
+  "timed-out trusted Input command lost its bounded DevTools settlement reason");
+assert(detachedAfterTimedOutCommand, "timed-out trusted Input command did not release its debugger session");
+
 let detachedAfterCommandFailure = false;
 const commandFailureContext = vm.createContext({
   chrome: { debugger: {

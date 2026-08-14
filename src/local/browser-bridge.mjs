@@ -17,6 +17,7 @@ import { startBrowserBrokerServer } from "./browser-broker-server.mjs";
 import { EXPECTED_EXTENSION_ID } from "./browser-extension-identity.mjs";
 import { BROKER_AUTH_REQUEST_HEADER, BROKER_AUTH_REQUEST_VALUE, createBrokerAuthChallenge, createBrokerClientProtocol, createBrokerInitProof, parseBrokerAuthResponse, verifyBrokerServerProof } from "./browser-broker-auth.mjs";
 import { startBrowserPairingLaunch } from "./browser-pairing-launch.mjs";
+import { browserExtensionPathForRuntime } from "./browser-extension-path.mjs";
 
 const MAX_PORT_ATTEMPTS = 10;
 const MAX_PENDING = 32;
@@ -58,7 +59,7 @@ export class BrowserBridgeManager {
     this.port = 0;
     this.extensionToken = "";
     this.runtimeToken = "";
-    this.extensionPath = resolve(packageRoot, "browser-extension");
+    this.extensionPath = browserExtensionPathForRuntime({ stateRoot: this.stateRoot, packageDirectory: packageRoot });
     this.operationService = new BrowserOperationService({
       authorizeTool: (tool) => this.authorizeTool(tool),
       ensureStarted: (context) => this.ensureStarted(context),

@@ -552,9 +552,7 @@
         if (index > 0 || String(error?.message || error).includes("outcome is unknown")) {
           throw domMutationUnknown("fill_form", error);
         }
-        const prefix = index > 0
-          ? `form field ${index} (${field.action}) failed after ${index} earlier field(s) may have changed`
-          : `form field 0 (${field.action}) failed before any earlier field changed`;
+        const prefix = `form field 0 (${field.action}) failed before any earlier field changed`;
         throw new Error(`${prefix}: ${boundedPageText(error?.message || error, 500)}`);
       }
     }

@@ -184,11 +184,8 @@
     const source = normalizePoint(sourcePoint);
     const destination = normalizePoint(destinationPoint);
     await mouseMove(send, source);
-    let pressAttempted = false;
-    let released = false;
     let lastPoint = source;
     try {
-      pressAttempted = true;
       await send("Input.dispatchMouseEvent", {
         type: "mousePressed", x: source.x, y: source.y, button: "left", buttons: 1, clickCount: 1,
       });
@@ -205,15 +202,12 @@
       await send("Input.dispatchMouseEvent", {
         type: "mouseReleased", x: destination.x, y: destination.y, button: "left", buttons: 0, clickCount: 1,
       });
-      released = true;
     } catch (error) {
-      if (pressAttempted && !released) {
-        try {
-          await send("Input.dispatchMouseEvent", {
-            type: "mouseReleased", x: lastPoint.x, y: lastPoint.y, button: "left", buttons: 0, clickCount: 1,
-          });
-        } catch {}
-      }
+      try {
+        await send("Input.dispatchMouseEvent", {
+          type: "mouseReleased", x: lastPoint.x, y: lastPoint.y, button: "left", buttons: 0, clickCount: 1,
+        });
+      } catch {}
       throw error;
     }
   }
