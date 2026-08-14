@@ -40,6 +40,14 @@ const boundaryModules = new Set([
   "app-automation.mjs",
   "browser-command.mjs",
   "browser-operation-service.mjs",
+  "computer-use.mjs",
+  "computer-use-observation.mjs",
+  "computer-use-application-observation.mjs",
+  "computer-use-recovery.mjs",
+  "computer-use-snapshot-store.mjs",
+  "computer-use-result-budget.mjs",
+  "browser-computer-observation-service.mjs",
+  "macos-background-input.mjs",
   "bounded-output.mjs",
   "capability-observer.mjs",
   "default-instructions.mjs",
@@ -49,6 +57,7 @@ const boundaryModules = new Set([
   "process-sessions.mjs",
   "process-output-stream.mjs",
   "process-result-projection.mjs",
+  "process-nonreplayable-settlement.mjs",
   "process-contract.mjs",
   "process-tree.mjs",
   "process-tree-ownership.mjs",
@@ -86,6 +95,14 @@ const boundaryModules = new Set([
   "process-tracker.mjs",
   "process-execution.mjs",
   "git-service.mjs",
+  "git-config-safety.mjs",
+  "git-metadata-boundary.mjs",
+  "git-metadata-tree-safety.mjs",
+  "git-operation-state.mjs",
+  "git-commit.mjs",
+  "git-log-parser.mjs",
+  "fixed-process-environment.mjs",
+  "support-state-projection.mjs",
   "file-mutation-coordinator.mjs",
   "file-snapshot-preservation.mjs",
   "directory-metadata.mjs",
@@ -133,6 +150,7 @@ const boundaryModules = new Set([
   "relay-call-recovery.mjs",
   "relay-connection-classification.mjs",
   "browser-request-registry.mjs",
+  "browser-request-settlement.mjs",
   "browser-bridge-http.mjs",
   "browser-broker-routes.mjs",
   "browser-broker-auth.mjs",
@@ -201,6 +219,7 @@ const lineLimits = Object.freeze({
   "src/worker/oauth-tokens.ts": 260,
   "src/local/bounded-output.mjs": 80,
   "src/local/process-execution.mjs": 285,
+  "src/local/process-nonreplayable-settlement.mjs": 60,
   "src/local/process-foreground-timeout.mjs": 60,
   "src/local/process-output-stream.mjs": 110,
   "src/local/process-result-projection.mjs": 60,
@@ -265,6 +284,14 @@ const lineLimits = Object.freeze({
   "src/shared/project-overview-projection.mjs": 110,
   "src/local/call-capacity.mjs": 70,
   "src/local/git-service.mjs": 220,
+  "src/local/git-config-safety.mjs": 65,
+  "src/local/git-metadata-boundary.mjs": 85,
+  "src/local/git-metadata-tree-safety.mjs": 60,
+  "src/local/git-operation-state.mjs": 30,
+  "src/local/git-commit.mjs": 80,
+  "src/local/git-log-parser.mjs": 50,
+  "src/local/fixed-process-environment.mjs": 25,
+  "src/local/support-state-projection.mjs": 35,
   "src/local/file-mutation-coordinator.mjs": 80,
   "src/local/file-snapshot-preservation.mjs": 40,
   "src/local/directory-metadata.mjs": 60,
@@ -328,6 +355,7 @@ const lineLimits = Object.freeze({
   "src/local/wrangler-toolchain-verification.mjs": 140,
   "src/local/browser-bridge.mjs": 560,
   "src/local/browser-request-registry.mjs": 100,
+  "src/local/browser-request-settlement.mjs": 80,
   "src/local/browser-bridge-http.mjs": 80,
   "src/local/browser-broker-routes.mjs": 180,
   "src/local/browser-broker-auth.mjs": 100,
@@ -336,6 +364,15 @@ const lineLimits = Object.freeze({
   "src/local/browser-pairing-launch.mjs": 80,
   "src/local/browser-broker-server.mjs": 90,
   "src/local/browser-operation-service.mjs": 360,
+  "src/local/computer-use.mjs": 2670,
+  "src/local/computer-use-observation.mjs": 780,
+  "src/local/computer-use-application-observation.mjs": 240,
+  "src/local/computer-use-recovery.mjs": 90,
+  "src/local/computer-use-snapshot-store.mjs": 70,
+  "src/local/computer-use-result-budget.mjs": 150,
+  "src/local/browser-computer-observation-service.mjs": 280,
+  "src/local/macos-background-input.mjs": 410,
+  "src/local/app-automation.mjs": 1480,
   "src/local/browser-extension-protocol.mjs": 130,
   "src/local/browser-pairing-store.mjs": 120,
   "src/local/browser-pairing-http.mjs": 80,
@@ -375,6 +412,7 @@ const lineLimits = Object.freeze({
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
   "src/worker/daemon-ready-waiters.ts": 80,
+  "src/worker/daemon-ready-dispatch.ts": 30,
   "src/worker/daemon-recovery-budget.ts": 30,
   "src/worker/daemon-socket-attachment.ts": 80,
   "src/worker/runtime-alarm.ts": 140,
@@ -409,6 +447,22 @@ for (const name of ["app-automation.mjs", "browser-bridge.mjs", "managed-jobs.mj
     throw new Error(`${name} reimplements tool authorization instead of using PolicyGate`);
   }
   if (!source.includes("authorizeTool")) throw new Error(`${name} lost the shared authorization gate`);
+}
+
+const computerUseSource = readFileSync(join(localRoot, "computer-use.mjs"), "utf8");
+const computerUseSnapshotStoreSource = readFileSync(join(localRoot, "computer-use-snapshot-store.mjs"), "utf8");
+const appAutomationDurationSource = readFileSync(join(localRoot, "app-automation.mjs"), "utf8");
+if (!computerUseSource.includes('from "./computer-use-snapshot-store.mjs"')
+    || !computerUseSource.includes('from "./monotonic-deadline.mjs"')
+    || !computerUseSource.includes("now = () => performance.now()")
+    || computerUseSource.includes("now = () => Date.now()")
+    || !computerUseSnapshotStoreSource.includes("performance.now()")) {
+  throw new Error("Computer Use snapshot/verification duration state lost its monotonic clock boundary");
+}
+if (!appAutomationDurationSource.includes("expires_at: this.now() + VALUE_VERIFICATION_TTL_MS")
+    || !appAutomationDurationSource.includes("const now = this.now()")
+    || appAutomationDurationSource.includes("Date.now()")) {
+  throw new Error("application exact-value retention or discovery duration state regained wall-clock timing");
 }
 
 const resourceAdmissionSource = readFileSync(join(localRoot, "resource-admission.mjs"), "utf8");
@@ -944,9 +998,12 @@ if (!workspaceTransactionSource.includes("async function writeFlushedText")
     || (workspaceTransactionSource.match(/await writeFlushedText\(/g) || []).length !== 2) {
   throw new Error("workspace transaction boundary no longer flushes whole-file and patch staging files before commit");
 }
-if (!workspaceTransactionSource.includes("patch transaction failed and recovery was incomplete")
+if (!workspaceTransactionSource.includes("patch transaction may have partially modified files because recovery was incomplete; inspect affected paths before retrying")
+    || !workspaceTransactionSource.includes("patch transaction failed and staging cleanup was incomplete")
+    || !workspaceTransactionSource.includes('details: { reason: "patch_recovery_incomplete" }')
     || !workspaceTransactionSource.includes("Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed")
     || !workspaceTransactionSource.includes("file mutation failed and staging cleanup was incomplete")
+    || !workspaceTransactionSource.includes("new AggregateError([primary, ...recoveryFailures]")
     || !workspaceTransactionSource.includes("new AggregateError([primary, ...cleanupFailures]")
     || !workspaceTransactionSource.includes("await createTarget(stage.temp, operation.target)")
     || !workspaceTransactionSource.includes("reason: \"target_appeared\"")
@@ -1308,13 +1365,16 @@ const daemonRecoveryBudgetBoundary = readFileSync(join(root, "src", "worker", "d
 for (const required of ["daemonToolTimeoutBudgetAfterDelay", "workerSettlementOverheadMs", "side_effects_started: false"]) {
   if (!daemonRecoveryBudgetBoundary.includes(required)) throw new Error(`daemon recovery budget lost hosted-deadline accounting: ${required}`);
 }
+const daemonReadyDispatchBoundary = readFileSync(join(root, "src", "worker", "daemon-ready-dispatch.ts"), "utf8");
+for (const required of ["readyDaemonForDispatch", "recoveryDelayMs: 0", "waitForReadyDaemon", "performance.now()"]) {
+  if (!daemonReadyDispatchBoundary.includes(required)) throw new Error(`daemon ready dispatch lost zero-cost ready-path accounting: ${required}`);
+}
 for (const required of [
   "NEW_CALL_RECONNECT_GRACE_MS",
-  "waitForReadyDaemon(this.daemonRegistry",
+  "readyDaemonForDispatch(this.daemonRegistry",
   "Math.min(NEW_CALL_RECONNECT_GRACE_MS, timeoutBudget.executionTimeoutMs)",
   "pending: this.pending.snapshot()",
   "tool: name",
-  "performance.now()",
   "daemonToolTimeoutBudgetAfterDelay",
   "pendingCapacityProjection(this.pending.snapshot(), readyDaemonWaiterSnapshot(this.daemonRegistry))",
   "notifyReadyDaemon(this.daemonRegistry)",

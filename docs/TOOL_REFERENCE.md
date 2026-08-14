@@ -4,7 +4,7 @@
 
 This catalog is the authoritative public tool contract for names, local-daemon availability classes, behavior annotations, and JSON input schemas. An availability value describes the daemon policy ceiling, not authenticated remote-account entitlement. Remote account-role ceilings (including owner-only tools) and the effective-authority intersection are generated in [POLICY_REFERENCE.md](POLICY_REFERENCE.md).
 
-Tool count: **51**.
+Tool count: **54**.
 
 ## Index
 
@@ -18,6 +18,8 @@ Tool count: **51**.
 | [`open_local_application`](#open_local_application) | `full` | no | no | no | yes |
 | [`inspect_local_application`](#inspect_local_application) | `full` | yes | no | yes | yes |
 | [`operate_local_application`](#operate_local_application) | `full` | no | yes | no | yes |
+| [`computer_observe`](#computer_observe) | `full` | no | no | no | yes |
+| [`computer_act`](#computer_act) | `full` | no | yes | no | yes |
 | [`browser_status`](#browser_status) | `full` | no | no | yes | yes |
 | [`pair_browser_extension`](#pair_browser_extension) | `full` | no | no | no | yes |
 | [`browser_list_tabs`](#browser_list_tabs) | `full` | yes | no | yes | yes |
@@ -47,6 +49,7 @@ Tool count: **51**.
 | [`git_diff`](#git_diff) | `always` | yes | no | yes | no |
 | [`git_log`](#git_log) | `always` | yes | no | yes | no |
 | [`git_show`](#git_show) | `always` | yes | no | yes | no |
+| [`git_commit`](#git_commit) | `direct-exec` | no | no | no | no |
 | [`run_process`](#run_process) | `direct-exec` | no | yes | no | yes |
 | [`start_process`](#start_process) | `direct-exec` | no | yes | no | yes |
 | [`read_process`](#read_process) | `direct-exec` | yes | no | yes | no |
@@ -254,7 +257,7 @@ Discover installed local applications and launchers without reading their docume
 
 **Open local application**
 
-Open a named local application, optionally with a document or URL target, using the operating system launcher. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Open a named local application, optionally with a document or URL target, using the operating system launcher. Launch is non-idempotent: cancellation is checked immediately before invoking the launcher, but once the launcher process invocation is attempted, timeout, cancellation, or response loss is an unknown launch outcome and callers should inspect application state before retrying. That fixed ambiguous settlement is returned as a public, non-retryable MCP error. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -361,7 +364,7 @@ Inspect a bounded macOS Accessibility tree for a running application. Requires l
 
 **Operate local application UI**
 
-Perform a structured macOS Accessibility action on a matched UI element. Text can be supplied through a registered local resource so secret values do not enter MCP arguments. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Perform a structured macOS Accessibility action on a matched UI element. check/uncheck are desired-state operations: they read the current checkbox/radio state at dispatch time, skip input when already satisfied, and otherwise issue at most one AXPress (uncheck is checkbox-only). Text can be supplied through a registered local resource so secret values do not enter MCP arguments. keystroke focuses the matched AX target and delivers surrogate-safe Unicode chunks with public PID-scoped CoreGraphics keyboard events; key_press delivers a layout-independent special key (Enter, Tab, Escape, Backspace, Delete, arrows, Home/End, PageUp/PageDown, or Space) with optional Shift+, likewise PID-scoped and without making the application frontmost. Both return input_transport=public-cgevent-pid; Meta/Control/Alt and character shortcuts are deliberately unsupported because inactive-AppKit validation did not establish reliable command-shortcut semantics. Cancellation is re-checked after asynchronous local-resource resolution and before invoking the fixed JXA mutation helper. Explicit JXA selector/geometry/action preflight errors remain definite, but once the mutating osascript invocation is attempted, timeout, cancellation, missing output, or malformed helper settlement is an unknown action outcome and must not be replayed blindly. Fixed launch/Accessibility/visual ambiguous settlements are returned as public, non-retryable MCP errors. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -385,13 +388,17 @@ Perform a structured macOS Accessibility action on a matched UI element. Text ca
     },
     "action": {
       "type": "string",
+      "description": "Structured Accessibility action. check/uncheck are idempotent desired-state actions; check accepts checkbox or radio-button targets, while uncheck accepts checkbox targets.",
       "enum": [
         "activate",
         "click",
+        "check",
+        "uncheck",
         "set_value",
         "focus",
         "press",
-        "keystroke"
+        "keystroke",
+        "key_press"
       ]
     },
     "selector": {
@@ -437,6 +444,11 @@ Perform a structured macOS Accessibility action on a matched UI element. Text ca
       "type": "string",
       "pattern": "^[a-z][a-z0-9._-]{0,63}$"
     },
+    "key": {
+      "type": "string",
+      "maxLength": 100,
+      "description": "Required for key_press. One layout-independent special key: Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, or Space, optionally prefixed with Shift+."
+    },
     "include_menus": {
       "type": "boolean",
       "default": false,
@@ -462,11 +474,504 @@ Perform a structured macOS Accessibility action on a matched UI element. Text ca
 }
 ```
 
+## `computer_observe`
+
+**Observe computer surface**
+
+Create a snapshot-bound browser or desktop observation. Browser mode combines executable DOM refs with a real Chromium Accessibility snapshot, layout geometry, document epoch, and an optional screenshot captured through the same bounded CDP session when available; high-confidence AX nodes are fused back to executable action_ref values, while executable DOM candidates are salience-ranked globally across accessible frames. Cancellation is checked again after asynchronous capture and before snapshot publication, so a cancelled observe cannot leave an actionable snapshot_id in the bounded store. Use computer_act with the exact snapshot_id instead of carrying selectors across changing UI state.
+
+| Contract field | Value |
+|---|---|
+| Availability | `full` |
+| Read-only hint | no |
+| Destructive hint | no |
+| Idempotent hint | no |
+| Open-world hint | yes |
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "surface": {
+      "type": "string",
+      "enum": [
+        "browser",
+        "application"
+      ]
+    },
+    "tab_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Browser tab to observe. Omit to use the active tab."
+    },
+    "application": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "description": "Required when surface=application."
+    },
+    "include_screenshot": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include a browser viewport screenshot or, for macOS application observations, a best-effort target-window screenshot. Application screenshot failure does not discard Accessibility state."
+    },
+    "screenshot_format": {
+      "type": "string",
+      "enum": [
+        "png",
+        "jpeg"
+      ],
+      "default": "png"
+    },
+    "screenshot_quality": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 90
+    },
+    "max_elements": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 300
+    },
+    "max_ax_nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2000,
+      "default": 600,
+      "description": "Browser only. Maximum Chromium Accessibility nodes retained after salience ranking."
+    },
+    "max_frames": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64,
+      "default": 32,
+      "description": "Browser only. Maximum CDP frame documents considered for the Accessibility snapshot."
+    },
+    "ax_depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16,
+      "default": 12,
+      "description": "Browser only. Maximum Chromium Accessibility tree depth requested per frame."
+    },
+    "focus_query": {
+      "type": "string",
+      "maxLength": 1000,
+      "description": "Optional task/target hint used only to rank bounded browser DOM/Chromium Accessibility or macOS application Accessibility observations; it never becomes a selector or action. Observation metadata reports whether the bounded scan matched the query and whether absence was searched exhaustively."
+    },
+    "max_depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 12,
+      "default": 6,
+      "description": "Application accessibility traversal depth."
+    },
+    "include_values": {
+      "type": "boolean",
+      "default": false
+    },
+    "include_menus": {
+      "type": "boolean",
+      "default": false,
+      "description": "Application only. Include menu subtrees."
+    },
+    "all_frames": {
+      "type": "boolean",
+      "default": true,
+      "description": "Browser only. Inspect accessible frames within the aggregate element budget."
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 30
+    }
+  },
+  "required": [
+    "surface"
+  ]
+}
+```
+
+## `computer_act`
+
+**Act on computer snapshot**
+
+Perform one snapshot-bound browser or desktop action and then observe/verify the effect. Semantic targets use refs from computer_observe. Browser click/double-click/hover/scroll may use normalized_viewport coordinates from the same navigation-coherent CDP screenshot; browser drag uses a source target plus destination from that same snapshot and requires ref-to-ref or point-to-point evidence. macOS application drag uses two normalized points from the same window screenshot, and application scroll uses one normalized point plus bounded wheel deltas; both require the opt-in snapshot-bound native pixel backend and do not guess Accessibility fallbacks. Point dispatch revalidates the exact screenshot immediately before native/trusted input; browser ref drag revalidates both trusted backend identities and in-viewport geometry before any drag input; browser ref scroll revalidates the anchor identity and requires its content quad to remain in viewport before one trusted wheel event. Browser reload/back/forward also bind the observed tab URL, document epoch, and current history-list slot and revalidate those authorities immediately before the navigation mutation; stale or unavailable history authority fails before dispatch. Results distinguish dispatch_status from effect_status; unknown outcomes must be inspected before retrying. dispatch_status=unknown is driven only by fixed lower-layer mutation-settlement markers, so a resource or preflight timeout before mutation remains a definite failure. Deterministic post-observation checks expose `verification.post_checks[].evidence_source` (`browser_tab_state`, `browser_semantic`, `application_process`, `application_workspace`, `application_accessibility`, or `screenshot`) so callers can distinguish state evidence from pixel evidence. Browser post-state defaults to a compact summary plus bounded semantic delta; post_screenshot=auto avoids redundant images unless visual evidence or ambiguous dispatch requires one. Request post_observation_detail=full only when the full tree is needed.
+
+| Contract field | Value |
+|---|---|
+| Availability | `full` |
+| Read-only hint | no |
+| Destructive hint | yes |
+| Idempotent hint | no |
+| Open-world hint | yes |
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "surface": {
+      "type": "string",
+      "enum": [
+        "browser",
+        "application"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^cu_[A-Za-z0-9_-]{8,80}$"
+    },
+    "action": {
+      "type": "string",
+      "description": "Surface action. For application refs, check/uncheck are idempotent desired-state actions verified by post-observation checked state; their required target state cannot be weakened by expect. Application key_press is ref-only and sends one layout-independent special key, optionally Shift-modified, through PID-scoped CoreGraphics without activating the app.",
+      "enum": [
+        "navigate",
+        "reload",
+        "back",
+        "forward",
+        "click",
+        "double_click",
+        "hover",
+        "drag",
+        "scroll",
+        "fill",
+        "type_text",
+        "select",
+        "check",
+        "uncheck",
+        "focus",
+        "press",
+        "submit",
+        "scroll_into_view",
+        "activate",
+        "set_value",
+        "keystroke",
+        "key_press"
+      ]
+    },
+    "target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          "required": [
+            "ref"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "point": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "x": {
+                  "type": "number",
+                  "minimum": 0,
+                  "exclusiveMaximum": 1
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": 0,
+                  "exclusiveMaximum": 1
+                },
+                "space": {
+                  "type": "string",
+                  "enum": [
+                    "normalized_viewport"
+                  ],
+                  "default": "normalized_viewport"
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ]
+            }
+          },
+          "required": [
+            "point"
+          ]
+        }
+      ],
+      "description": "Snapshot-bound semantic ref; a normalized point is also allowed for browser click/double-click/hover/drag/scroll against the exact navigation-coherent CDP screenshot, and for macOS application click/double-click/drag/scroll against the exact window screenshot. Application click point delivery may prefer one unique addressable Accessibility control under the point. Application double_click is deliberately point-only and always uses one snapshot-bound native pixel settlement; it is never approximated by repeated AXPress. Arbitrary/custom-drawn single-click pixels plus all application double-click, drag, and scroll points require the snapshot's opt-in native pixel backend. For drag this is the source endpoint; for scroll this is the wheel anchor. Omit only for targetless actions."
+    },
+    "destination": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          "required": [
+            "ref"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "point": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "x": {
+                  "type": "number",
+                  "minimum": 0,
+                  "exclusiveMaximum": 1
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": 0,
+                  "exclusiveMaximum": 1
+                },
+                "space": {
+                  "type": "string",
+                  "enum": [
+                    "normalized_viewport"
+                  ],
+                  "default": "normalized_viewport"
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ]
+            }
+          },
+          "required": [
+            "point"
+          ]
+        }
+      ],
+      "description": "Drag destination from the same computer snapshot. Browser drag requires ref-to-ref or normalized-point-to-point evidence; mixed evidence types are rejected. macOS application drag currently requires normalized point source and destination from the same window screenshot and the snapshot-bound native pixel backend."
+    },
+    "delta_x": {
+      "type": "number",
+      "minimum": -10000,
+      "maximum": 10000,
+      "default": 0,
+      "description": "Browser or macOS application scroll only. Horizontal trusted wheel delta in logical pixels; positive values scroll right. At least one of delta_x or delta_y must be non-zero."
+    },
+    "delta_y": {
+      "type": "number",
+      "minimum": -10000,
+      "maximum": 10000,
+      "default": 0,
+      "description": "Browser or macOS application scroll only. Vertical trusted wheel delta in logical pixels; positive values scroll down. At least one of delta_x or delta_y must be non-zero."
+    },
+    "url": {
+      "type": "string",
+      "maxLength": 32768,
+      "description": "Required for browser navigate."
+    },
+    "value": {
+      "type": "string",
+      "maxLength": 131072
+    },
+    "value_resource": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+    },
+    "key": {
+      "type": "string",
+      "maxLength": 100,
+      "description": "Browser press key, or application key_press special key. Application supports Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Space, with optional Shift+."
+    },
+    "wait_for": {
+      "type": "string",
+      "enum": [
+        "none",
+        "domcontentloaded",
+        "complete"
+      ],
+      "default": "none"
+    },
+    "input_mode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "trusted",
+        "dom"
+      ],
+      "default": "auto",
+      "description": "Browser only."
+    },
+    "element_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 10
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 30
+    },
+    "verify_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 5,
+      "description": "Bounded effect-verification window. Browser conditions use the browser wait backend; application expectations may retry at most nine read-only post-action observations with bounded backoff, and each retry capture is capped by the remaining verification budget. Verification retries never replay the dispatched action; post-dispatch cancellation or incomplete readback makes unsettled effect evidence unknown rather than retryable."
+    },
+    "include_post_screenshot": {
+      "type": "boolean",
+      "description": "Legacy explicit boolean override for post_screenshot: true maps to always and false maps to never. Mutually exclusive with post_screenshot."
+    },
+    "post_screenshot": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "always",
+        "never"
+      ],
+      "default": "auto",
+      "description": "auto includes the post-action screenshot only for snapshot-bound visual-point actions, explicit expect.visual_change, or an unknown dispatch outcome on either browser or application surfaces; always/never force the choice. Mutually exclusive with include_post_screenshot."
+    },
+    "post_max_elements": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 180
+    },
+    "post_max_ax_nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2000,
+      "default": 180,
+      "description": "Browser only. Bound Chromium Accessibility nodes in the automatic post-action observation."
+    },
+    "post_max_depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 12,
+      "default": 6,
+      "description": "Application only. Accessibility depth for the new post-action observation. It does not change target dispatch identity; dispatch and preflight reuse the source snapshot's max_depth."
+    },
+    "post_observation_detail": {
+      "type": "string",
+      "enum": [
+        "summary",
+        "full"
+      ],
+      "description": "Return a compact post-state summary or the full post-action semantic observation. Both browser and application surfaces default to summary; application summaries retain a bounded set of actionable post-snapshot refs. Request full only when the complete tree is required."
+    },
+    "include_menus": {
+      "type": "boolean",
+      "default": false,
+      "description": "Application only. Include menu trees in the new post-action observation. It does not change target dispatch identity; observe with include_menus=true when the source target itself is in a menu."
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url_contains": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "url_changed": {
+          "type": "boolean"
+        },
+        "semantic_change": {
+          "type": "boolean",
+          "description": "Explicitly require the bounded semantic observation fingerprint to change or remain unchanged."
+        },
+        "visual_change": {
+          "type": "boolean",
+          "description": "Explicitly require the screenshot SHA-256 fingerprint to change or remain unchanged. Requires screenshots in both the referenced and post-action observations; animations can satisfy this condition, so use it only when visual change is the intended effect."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "load_state": {
+          "type": "string",
+          "enum": [
+            "domcontentloaded",
+            "complete"
+          ]
+        },
+        "target_state": {
+          "type": "string",
+          "enum": [
+            "attached",
+            "detached",
+            "visible",
+            "hidden",
+            "enabled",
+            "editable",
+            "checked",
+            "unchecked"
+          ]
+        },
+        "frontmost": {
+          "type": "boolean"
+        },
+        "target_exists": {
+          "type": "boolean"
+        },
+        "target_enabled": {
+          "type": "boolean"
+        },
+        "target_focused": {
+          "type": "boolean"
+        },
+        "target_checked": {
+          "type": "boolean"
+        },
+        "target_selected": {
+          "type": "boolean"
+        },
+        "target_expanded": {
+          "type": "boolean"
+        },
+        "target_value_matches": {
+          "type": "boolean",
+          "description": "Application set_value only. Compare the post-action AXValue with the value being written inside the local application backend and return only a Boolean result. Non-sensitive set_value actions require this to remain true; sensitive targets do not support this readback."
+        }
+      },
+      "description": "Browser expectations use url/text/load/target_state and optional explicit semantic_change/visual_change checks; application expectations use frontmost and semantic target state fields including enabled/focused/checked/selected/expanded, plus private target_value_matches readback for non-sensitive set_value actions."
+    }
+  },
+  "required": [
+    "surface",
+    "snapshot_id",
+    "action"
+  ]
+}
+```
+
 ## `browser_status`
 
 **Browser bridge status**
 
-Start or inspect the loopback bridge for the Chromium profile where the extension is installed. Machine Bridge does not launch Playwright or another browser process, but cannot infer whether that profile is the user's daily or isolated profile; status reports authenticated extension version, protocol, capabilities, and reload state.
+Start or inspect the loopback bridge for the Chromium profile where the extension is installed. Machine Bridge does not launch Playwright or another browser process, but cannot infer whether that profile is the user's daily or isolated profile; status reports authenticated extension version, protocol, capabilities, and reload state. Concurrent callers may share one broker-startup operation, but each caller re-checks its own cancellation after shared startup settles, so cancelling one request does not cancel startup for another waiter or return completion to the cancelled caller.
 
 | Contract field | Value |
 |---|---|
@@ -489,7 +994,7 @@ Start or inspect the loopback bridge for the Chromium profile where the extensio
 
 **Pair browser extension**
 
-Open the local pairing page and return the packaged unpacked-extension path for installation in the user's intended Chromium profile. Pairing is persisted only after an acknowledged version/capability handshake.
+Open the local pairing page and return the packaged unpacked-extension path for installation in the user's intended Chromium profile. Pairing is persisted only after an acknowledged version/capability handshake. Opening the pairing page is non-idempotent: cancellation is checked immediately before the OS launcher, but once that launcher invocation is attempted, timeout/cancellation/response loss is an unknown launch outcome and callers should inspect the browser before opening it again. That fixed ambiguous settlement is returned as a public, non-retryable MCP error.
 
 | Contract field | Value |
 |---|---|
@@ -557,7 +1062,7 @@ Read the tab inventory from the paired existing Chromium profile without creatin
 
 **Manage browser tabs**
 
-Create, activate, or close tabs in the paired existing Chromium profile. Use browser_list_tabs when only a read-only tab inventory is needed. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Create, activate, or close tabs in the paired existing Chromium profile. Tab mutations are non-idempotent: if Chrome rejects a mutation request after invocation, or the broker loses the extension response after attempting dispatch, the outcome is reported as unknown and callers should inspect browser_list_tabs before retrying. If a completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and must not be used as evidence that activation/close/create did not run. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Activation is verified between its two mutation stages: after tab activation resolves, the target is re-read and must still be active before its freshly observed current window is focused; after focus resolves, the target is re-read again and success returns only the final verified tab provenance. Concurrent tab/window moves or user tab switches are reported as partial completion with inspection guidance and are never automatically re-activated or re-focused. Cancellation is re-checked after asynchronous tab lookup and before each later mutation stage; a stage not yet started is skipped, while an earlier completed stage is not rolled back. Use browser_list_tabs when only a read-only tab inventory is needed. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -662,7 +1167,7 @@ Read bounded raw serialized DOM HTML from the active or selected tab when source
 
 **Inspect browser page**
 
-Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. Candidates are salience-ranked globally across accessible frames instead of consuming the aggregate budget in frame traversal order. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -827,7 +1332,7 @@ Wait until all supplied URL, load, text, and element-state conditions are satisf
 
 **Operate browser page**
 
-Perform one structured navigation or page action in the user's existing browser tab without arbitrary JavaScript. Automatic trusted-input fallback occurs only before any DevTools Input command starts; ambiguous post-dispatch failures require inspection before retry. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Perform one structured navigation or page action in the user's existing browser tab without arbitrary JavaScript. Automatic trusted-input fallback occurs only before any trusted preparation (including DOM focus/scroll) or DevTools Input mutation starts; ambiguous post-dispatch failures require inspection before retry. Broker timeout, disconnect, extension replacement, or response loss after WebSocket dispatch is attempted is also an unknown mutation outcome, not proof that the action did not run. If the mutating extension call completes but its success result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown and callers must inspect state rather than replay. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. DOM/trusted-preparation page calls use a structured settlement envelope: an explicit page preflight error remains definite, while loss of the mutating scripting invocation response after that invocation is attempted is an unknown action outcome and must not be replayed blindly. Cancellation is re-checked after asynchronous target/preparation steps and before each later mutation stage; a stage not yet started is skipped, while earlier focus/scroll/input effects are not rolled back. A successful action is not converted to failure by a later tab-metadata read: current tab provenance is returned only when verified, otherwise tab_metadata_verified is false and stale pre-action title/URL metadata is omitted. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -975,7 +1480,7 @@ Perform one structured navigation or page action in the user's existing browser 
 
 **Fill complex browser form**
 
-Fill multiple fields and optionally submit a complex form. Sensitive values can come from registered local resources; errors identify possible earlier mutations without returning field values. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Fill multiple fields and optionally submit a complex form. Sensitive values can come from registered local resources; errors identify possible earlier mutations without returning field values. If the broker has attempted extension dispatch and the response is then lost, times out, disconnects, or is interrupted by extension replacement, the mutation outcome is unknown and browser state must be inspected before retrying. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and the form must not be replayed blindly. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. The mutating page-world scripting call also uses a structured settlement envelope: explicit selector/field preflight errors remain definite, but loss of the scripting invocation response after the invocation is attempted is an unknown form outcome and must be inspected before retrying. Cancellation observed after asynchronous target lookup but before page mutation skips the fill stage; once page mutation starts, earlier field changes are not rolled back. Successful results attach current tab title/URL only when a fresh metadata read verifies them; otherwise tab_metadata_verified is false and stale pre-fill provenance is omitted. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -1161,7 +1666,7 @@ Fill multiple fields and optionally submit a complex form. Sensitive values can 
 
 **Capture browser screenshot**
 
-Capture the visible area of the active or selected tab from the paired existing browser profile, restore the previous active tab when safe, avoid focusing another window, and return native MCP image content. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Capture the visible area of the active or selected tab from the paired existing browser profile and return native MCP image content without focusing another window. Selecting an inactive tab may temporarily activate it. Immediately before activation, the extension revalidates that the same restore-baseline tab is still active in that window; a concurrent user tab switch fails definite pre-dispatch without activating anything. If the activation response is then lost, or if the resolved activation no longer verifies the same target tab in the restore-baseline window, the outcome is unknown, no capture or automatic rollback is attempted, and callers should inspect browser_list_tabs before retrying. Broker response loss after extension dispatch is attempted is also reported as unknown because the temporary activation/capture lifecycle may already have run. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown because temporary tab activation/restoration may already have occurred. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Cancellation observed before temporary activation prevents activation; if it arrives after confirmed temporary activation but before capture, capture is skipped and the previous active tab is restored when safely verifiable. After confirmed temporary activation, later capture or verification failures restore the previous active tab when safe while preserving a concurrent user tab switch; restoration revalidates that the baseline tab still belongs to the capture window before activating it. Once the restore activation API is invoked, a rejected response, returned window mismatch, or failed post-restore verification is an unknown active-tab outcome and callers must inspect browser_list_tabs before retrying; no same screenshot is replayed automatically. Successful results use the verified post-capture active-tab observation for title/URL provenance and report tab_metadata_verified=true. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -1210,7 +1715,7 @@ Capture the visible area of the active or selected tab from the paired existing 
 
 **Upload browser files**
 
-Populate a browser file input from registered local resource files without returning file contents through MCP results. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Populate a browser file input from registered local resource files without returning file contents through MCP results. If the broker has attempted extension dispatch and the response is then lost, times out, disconnects, or is interrupted by extension replacement, the mutation outcome is unknown and browser state must be inspected before retrying. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and the upload must not be replayed blindly. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. The mutating page-world scripting call also uses a structured settlement envelope: explicit selector/file-input preflight errors remain definite, but loss of the scripting invocation response after the invocation is attempted is an unknown upload outcome and must be inspected before retrying. Cancellation observed after asynchronous target lookup but before the file-input mutation skips that stage; once the page mutation starts, resulting input/change handlers are not rolled back. Successful results attach current tab title/URL only when a fresh metadata read verifies them; otherwise tab_metadata_verified is false and stale pre-upload provenance is omitted. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -1483,7 +1988,7 @@ List effective direct-argv commands from project manifests and safe automatic pa
 
 **Run registered local command**
 
-Prefer this when the repository already defines the desired operation as a registered command or package script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation; use exec_command for ad hoc pipelines or run_process for an unregistered executable argv. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Prefer this when the repository already defines the desired operation as a registered command or package script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation; use exec_command for ad hoc pipelines or run_process for an unregistered executable argv. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -1790,7 +2295,7 @@ Atomically replace an exact text fragment in one UTF-8 file. Missing text return
 
 **Apply structured patch**
 
-Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional.
+Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying.
 
 | Contract field | Value |
 |---|---|
@@ -1889,7 +2394,8 @@ Return bounded Git porcelain status for the repository containing a workspace pa
   "properties": {
     "path": {
       "type": "string",
-      "default": "."
+      "default": ".",
+      "maxLength": 32768
     }
   },
   "additionalProperties": false
@@ -1918,7 +2424,8 @@ Return bounded unified Git diff with external diff, text conversion, and filesys
   "properties": {
     "path": {
       "type": "string",
-      "default": "."
+      "default": ".",
+      "maxLength": 32768
     },
     "staged": {
       "type": "boolean",
@@ -1957,7 +2464,8 @@ Return recent commits in a bounded, machine-readable format. Author email addres
   "properties": {
     "path": {
       "type": "string",
-      "default": "."
+      "default": ".",
+      "maxLength": 32768
     },
     "max_count": {
       "type": "integer",
@@ -1996,11 +2504,13 @@ Return bounded metadata and patch output for one revision without running reposi
   "properties": {
     "path": {
       "type": "string",
-      "default": "."
+      "default": ".",
+      "maxLength": 32768
     },
     "revision": {
       "type": "string",
-      "default": "HEAD"
+      "default": "HEAD",
+      "maxLength": 256
     },
     "max_bytes": {
       "type": "integer",
@@ -2013,11 +2523,49 @@ Return bounded metadata and patch output for one revision without running reposi
 }
 ```
 
+## `git_commit`
+
+**Create Git commit**
+
+Create one local Git commit from the repository's existing staged index. This tool refuses repositories with an in-progress merge, rebase, cherry-pick, revert, bisect, or sequencer operation. It never stages files, amends history, signs, runs Git hooks, launches an editor, or pushes. The commit message is delivered over stdin rather than process argv; repository-local Git author identity must already be configured.
+
+| Contract field | Value |
+|---|---|
+| Availability | `direct-exec` |
+| Read-only hint | no |
+| Destructive hint | no |
+| Idempotent hint | no |
+| Open-world hint | no |
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "default": ".",
+      "maxLength": 32768
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    }
+  },
+  "required": [
+    "message"
+  ],
+  "additionalProperties": false
+}
+```
+
 ## `run_process`
 
 **Run process directly**
 
-Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -2063,7 +2611,7 @@ Run an explicit executable plus argv when no shell syntax is needed and no regis
 
 **Start process session**
 
-Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls.
+Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls. Cancellation before spawn is definite. If cancellation or deadline arrives after the child has spawned but before the start result settles, the server requests termination and returns a public non-retryable unknown outcome with the allocated session_id; the retained session remains inspectable so callers can verify its state instead of starting the command again blindly.
 
 | Contract field | Value |
 |---|---|
@@ -2160,7 +2708,7 @@ Read bounded stdout and stderr deltas from a running process session or a recent
 
 **Write process stdin**
 
-Write bounded UTF-8 data to a live process session and optionally close its stdin stream.
+Write bounded UTF-8 data to a live process session and optionally close its stdin stream. Cancellation before any stdin mutation is definite. Once stdin.write or stdin.end has been invoked, callback/error/cancellation ambiguity is returned as a public non-retryable unknown outcome with the session_id; inspect the session before writing the same data again because the child may already have consumed it.
 
 | Contract field | Value |
 |---|---|
@@ -2829,7 +3377,7 @@ Request cancellation of a detached managed job. The runner terminates the active
 
 **Execute shell command**
 
-Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|

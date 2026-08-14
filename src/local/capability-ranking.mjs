@@ -67,9 +67,10 @@ export function recommendTools(task, { commandsAvailable, commandRelevant, skill
   const tools = ["agent_context"];
   if (skillRelevant) tools.push("load_local_skill");
   if (commandRelevant) tools.push("run_local_command");
-  if (/browser|chrome|edge|brave|网页|浏览器|表单|网站/.test(lower)) tools.push("browser_status", "browser_list_tabs", "browser_manage_tabs", "browser_inspect_page", "browser_wait", "browser_action", "browser_fill_form");
-  if (/app|application|gui|window|应用|软件|窗口|界面/.test(lower)) tools.push("list_local_applications", "inspect_local_application", "operate_local_application");
+  if (/browser|chrome|edge|brave|网页|浏览器|表单|网站/.test(lower)) tools.push("computer_observe", "computer_act", "browser_status", "browser_list_tabs", "browser_manage_tabs", "browser_inspect_page", "browser_wait", "browser_action", "browser_fill_form");
+  if (/app|application|gui|window|应用|软件|窗口|界面/.test(lower)) tools.push("computer_observe", "computer_act", "list_local_applications", "inspect_local_application", "operate_local_application");
   if (/git|commit|branch|diff|仓库|提交|分支/.test(lower)) tools.push("git_status", "git_diff");
+  if (/commit|提交/.test(lower)) tools.push("git_commit");
   if (/test|build|lint|command|terminal|测试|构建|命令|终端/.test(lower)) tools.push(commandsAvailable ? "run_local_command" : "run_process");
   if (/file|code|source|edit|write|文件|代码|源码|修改|写入/.test(lower)) tools.push("read_file", "search_text", "edit_file", "apply_patch");
   return [...new Set(tools)];

@@ -68,10 +68,29 @@ const review = buildExecutionRouting("Use bash and the browser to modify files",
   browserAvailable: false,
 });
 const reviewTools = new Set(review.recommended_tools);
-assert(!reviewTools.has("exec_command") && !reviewTools.has("browser_action") && !reviewTools.has("write_file"),
+assert(!reviewTools.has("exec_command") && !reviewTools.has("browser_action") && !reviewTools.has("write_file") && !reviewTools.has("git_commit"),
   "advisory routing recommended tools outside the effective review policy");
-assert(review.routes.every((route) => route.tools.every((tool) => !["exec_command", "browser_action", "write_file"].includes(tool))),
+assert(review.routes.every((route) => route.tools.every((tool) => !["exec_command", "browser_action", "write_file", "git_commit"].includes(tool))),
   "route bundles leaked tools outside the effective policy");
+const editorCommit = buildExecutionRouting("Commit the staged Git changes", {
+  policy: policyProfile("edit"),
+});
+assert(!editorCommit.recommended_tools.includes("git_commit")
+  && editorCommit.routes.every((route) => !route.tools.includes("git_commit")),
+"edit-only policy exposed non-idempotent Git history mutation");
+const operatorCommit = buildExecutionRouting("Commit the staged Git changes", {
+  policy: policyProfile("agent"),
+});
+assert(operatorCommit.recommended_tools.includes("git_commit"),
+  "direct-exec policy lost the bounded Git commit surface");
+
+const commit = buildExecutionRouting("Commit the staged Git changes with a Conventional Commit message", {
+  policy: policyProfile("full"),
+});
+const commitRoute = commit.routes.find((route) => route.id === "git-review");
+assert(commitRoute?.tools.includes("git_commit") && commit.recommended_tools.includes("git_commit"),
+  "Git commit intent did not expose the bounded structured commit surface");
+assert(commitRoute.guidance.includes("prefer git_commit"), "Git route no longer prefers the narrow commit surface over generic process execution");
 
 const regressionCases = [
   { task: "Inspect the Git diff and recent commit history", primary: "git-review" },

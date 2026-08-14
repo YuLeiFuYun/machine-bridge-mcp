@@ -156,7 +156,7 @@ async function stateSelfTest() {
     startupAgain.release();
 
     const redacted = redactState(state);
-    if (redacted.worker.deviceIdentity?.privateJwk?.d !== "<redacted>") throw new Error("device private key was not fully redacted");
+    if (redacted.worker.deviceIdentity?.privateJwk || redacted.worker.deviceIdentity?.publicJwk) throw new Error("redacted state exposed device JWK material");
     if (redacted.worker.oauthTokenVersion !== "<redacted>") throw new Error("oauthTokenVersion was not fully redacted");
     state.resources = { "private-key": { kind: "file", path: join(workspace, "private-key"), size: 10, mode: "0600" } };
     const resourceRedacted = redactState(state);

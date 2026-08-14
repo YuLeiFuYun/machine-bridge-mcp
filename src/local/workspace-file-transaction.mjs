@@ -109,17 +109,18 @@ export async function commitPatchTransaction(operations, options = {}) {
       record.targetCreated = true;
     }
   } catch (error) {
-    const recoveryFailures = [];
+    const rollbackFailures = [];
     for (const item of [...committed].reverse()) {
       if (item.targetCreated) {
-        try { await remove(item.operation.target, { force: true }); } catch (failure) { recoveryFailures.push(failure); }
+        try { await remove(item.operation.target, { force: true }); } catch (failure) { rollbackFailures.push(failure); }
       }
       if (item.backup) {
-        try { await move(item.backup, item.operation.source); } catch (failure) { recoveryFailures.push(failure); }
+        try { await move(item.backup, item.operation.source); } catch (failure) { rollbackFailures.push(failure); }
       }
     }
-    recoveryFailures.push(...await removeArtifacts(staged.map((item) => item.temp), remove));
-    if (recoveryFailures.length) throw incompleteMutationError("patch transaction failed and recovery was incomplete", error, recoveryFailures);
+    const stagingCleanupFailures = await removeArtifacts(staged.map((item) => item.temp), remove);
+    if (rollbackFailures.length) throw patchRecoveryIncompleteError(error, [...rollbackFailures, ...stagingCleanupFailures]);
+    if (stagingCleanupFailures.length) throw incompleteMutationError("patch transaction failed and staging cleanup was incomplete", error, stagingCleanupFailures);
     throw error;
   }
 
@@ -162,6 +163,16 @@ async function removeArtifacts(paths, remove) {
     try { await remove(path, { force: true }); } catch (error) { failures.push(error); }
   }
   return failures;
+}
+
+function patchRecoveryIncompleteError(primary, recoveryFailures) {
+  const message = "patch transaction may have partially modified files because recovery was incomplete; inspect affected paths before retrying";
+  return new BridgeError("execution_failed", message, {
+    cause: new AggregateError([primary, ...recoveryFailures], message),
+    expose: true,
+    retryable: false,
+    details: { reason: "patch_recovery_incomplete" },
+  });
 }
 
 function incompleteMutationError(message, primary, cleanupFailures) {

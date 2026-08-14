@@ -912,8 +912,7 @@ function randomToken(prefix) {
 
 export function redactState(state) {
   const clone = redactHomeInValue(JSON.parse(JSON.stringify(state)));
-  if (clone.worker?.deviceIdentity?.privateJwk?.d) clone.worker.deviceIdentity.privateJwk.d = "<redacted>";
-  redactBrokerPaths(clone.worker);
+  redactDeviceIdentityState(clone.worker);
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = "<redacted>";
   if (clone.resources && typeof clone.resources === "object") {
     for (const value of Object.values(clone.resources)) {
@@ -926,14 +925,18 @@ export function redactState(state) {
 }
 
 
-function redactBrokerPaths(worker) {
+function redactDeviceIdentityState(worker) {
   if (!worker || typeof worker !== "object") return;
   for (const identity of [
     worker.deviceIdentity,
     worker.pendingDeviceIdentity,
     ...(Array.isArray(worker.previousDeviceIdentities) ? worker.previousDeviceIdentities : []),
   ]) {
-    if (identity?.brokerPath) identity.brokerPath = "<local-broker-path>";
+    if (!identity || typeof identity !== "object") continue;
+    delete identity.privateJwk;
+    delete identity.publicJwk;
+    if (identity.brokerPath) identity.brokerPath = "<local-broker-path>";
+    if (identity.keyTag) identity.keyTag = "<local-key-tag>";
   }
 }
 

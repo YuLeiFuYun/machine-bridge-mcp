@@ -80,7 +80,7 @@ function pinDirectoryGeneration(root, expectedIdentity, options) {
   const open = options.openSync || openSync;
   const inspect = options.fstatSync || ((fd) => fstatSync(fd, { bigint: true }));
   const close = options.closeSync || closeSync;
-  const fd = open(root, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY);
+  const fd = open(root, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_DIRECTORY, 0o700);
   try {
     const identity = filesystemIdentity(inspect(fd), "state root descriptor");
     if (!sameFilesystemIdentity(expectedIdentity, identity)) { close(fd); return null; }

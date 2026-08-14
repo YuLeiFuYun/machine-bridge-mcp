@@ -78,6 +78,7 @@ export class BrowserBridgeManager {
       runProcess: (...args) => this.runProcess(...args),
       readResourceText: (name) => this.readResourceText(name),
       readResourceBinary: (name) => this.readResourceBinary(name),
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
   }
 
@@ -96,6 +97,14 @@ export class BrowserBridgeManager {
   getSource(args = {}, context = {}) { return this.operationService.getSource(args, context); }
 
   inspectPage(args = {}, context = {}) { return this.operationService.inspectPage(args, context); }
+
+  observeComputer(args = {}, context = {}) { return this.operationService.observeComputer(args, context); }
+
+  documentState(args = {}, context = {}) { return this.operationService.documentState(args, context); }
+
+  pointAction(args = {}, context = {}) { return this.operationService.pointAction(args, context); }
+
+  backendNodeAction(args = {}, context = {}) { return this.operationService.backendNodeAction(args, context); }
 
   act(args = {}, context = {}) { return this.operationService.act(args, context); }
 
@@ -134,6 +143,7 @@ export class BrowserBridgeManager {
     try { await pending; } finally {
       if (this.startPromise === pending) this.startPromise = null;
     }
+    this.throwIfCancelled(context);
   }
 
   async start(generation = this.startGeneration) {

@@ -18,6 +18,7 @@ const docs = [
   ...readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => join(root, "docs", name)),
 ];
 for (const file of docs) validateRelativeLinks(file);
+validateCurrentMcpDeliveryDocumentation();
 
 const repositoryFiles = execFileSync(resolveTrustedGitExecutable({ workspace: root }), ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root })
   .toString("utf8")
@@ -82,6 +83,38 @@ for (const [name, value] of [
     () => validateExactlyOneFinalLf(Buffer.from(value), name),
     /must not end with a blank line/,
   );
+}
+
+function validateCurrentMcpDeliveryDocumentation() {
+  const security = readFileSync(join(root, "SECURITY.md"), "utf8");
+  for (const obsolete of [
+    "## Resumable Streamable HTTP delivery",
+    "SSE event identifiers are cursors",
+    "The Worker stores bounded stream and call state to bridge transport loss",
+  ]) {
+    if (security.includes(obsolete)) throw new Error(`SECURITY.md regained obsolete MCP replay semantics: ${obsolete}`);
+  }
+  for (const required of ["## Request-scoped Streamable HTTP delivery", "request-scoped and non-resumable", "does not restore the removed session model"]) {
+    if (!security.includes(required)) throw new Error(`SECURITY.md lost current MCP delivery semantics: ${required}`);
+  }
+
+  const readme = readFileSync(join(root, "README.md"), "utf8");
+  for (const obsolete of ["there is no `initialize` handshake", "upgrade guidance for an obsolete `initialize`"]) {
+    if (readme.includes(obsolete)) throw new Error(`README.md regained obsolete all-initialize-rejected semantics: ${obsolete}`);
+  }
+  for (const required of [
+    "MCP `2026-07-28` as its native protocol",
+    "stateless initialization compatibility",
+    "`2025-06-18` and `2025-11-25`",
+    "does not create or accept `Mcp-Session-Id`",
+  ]) {
+    if (!readme.includes(required)) throw new Error(`README.md lost current native/stateless-compatibility semantics: ${required}`);
+  }
+
+  const overview = readFileSync(join(root, "docs", "OVERVIEW.md"), "utf8");
+  if (!overview.includes("organized around four independent questions") || overview.includes("MCP session state")) {
+    throw new Error("OVERVIEW.md drifted from the current request-scoped MCP authority model");
+  }
 }
 
 function validateRelativeLinks(file) {

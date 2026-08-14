@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { lstatSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
+import { withPinnedManagedJobDirectory } from "./managed-job-directory.mjs";
 const RETIRED_JOB_DIRECTORY = /^retired_job_([A-Za-z0-9_-]{24})_d([0-9]+)_i([0-9]+)$/;
 export function inspectManagedJobDirectoryGeneration(dir, label = "managed job directory") {
   const info = inspectDirectory(dir, label);
@@ -27,21 +28,18 @@ export function retiredManagedJobDirectories(jobRoot) {
 }
 export function removeManagedJobDirectoryIfCurrent(dir, expectedIdentity, label = "managed job directory", options = {}) {
   const rename = typeof options.renameSync === "function" ? options.renameSync : renameSync;
-  let current;
-  try { current = inspectDirectory(dir, label); }
-  catch (error) { if (error?.code === "ENOENT") return false; throw error; }
-  if (!sameFilesystemIdentity(expectedIdentity, filesystemIdentity(current, label))) return false;
-  const quarantine = join(dirname(dir), `retired_job_${randomBytes(18).toString("base64url")}_d${expectedIdentity.dev}_i${expectedIdentity.ino}`);
-  try { rename(dir, quarantine); }
-  catch (error) { if (error?.code === "ENOENT") return false; throw error; }
-  let movedError = null, movedMatches = false;
-  try {
+  const result = withPinnedManagedJobDirectory(dir, label, options, true, (pinned) => {
+    const pinnedIdentity = filesystemIdentity(pinned, label);
+    if (!sameFilesystemIdentity(expectedIdentity, pinnedIdentity)) return false;
+    const quarantine = join(dirname(dir), `retired_job_${randomBytes(18).toString("base64url")}_d${pinnedIdentity.dev}_i${pinnedIdentity.ino}`);
+    try { rename(dir, quarantine); }
+    catch (error) { if (error?.code === "ENOENT") return false; throw error; }
     const moved = filesystemIdentity(inspectDirectory(quarantine, label), label);
-    movedMatches = moved.dev === expectedIdentity.dev && moved.ino === expectedIdentity.ino;
-  } catch (error) { movedError = error; }
-  if (!movedMatches) { if (movedError) throw movedError; return false; }
-  rmSync(quarantine, { recursive: true, force: false });
-  return true;
+    if (moved.dev !== pinnedIdentity.dev || moved.ino !== pinnedIdentity.ino) return false;
+    rmSync(quarantine, { recursive: true, force: false });
+    return true;
+  });
+  return result === true;
 }
 export function pruneRetiredManagedJobDirectories(jobRoot, logger = console) {
   for (const retired of retiredManagedJobDirectories(jobRoot)) {

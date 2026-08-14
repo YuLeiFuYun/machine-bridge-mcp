@@ -48,7 +48,7 @@ export async function terminateProcessSessions({
 async function settleProcessSession(sessions, id, session, waitMs) {
   const deadline = createMonotonicDeadline(waitMs);
   while (session.closedAt === null && !deadline.expired()) {
-    await waitForSessionChange(session, Math.max(1, deadline.remainingMs()), () => {});
+    await waitForSessionChange(session, Math.max(1, deadline.remainingMs()), () => {}, { keepAlive: true });
   }
   if (session.closedAt === null) return false;
   if (sessions.get(id) === session) sessions.delete(id);

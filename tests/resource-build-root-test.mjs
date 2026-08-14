@@ -186,6 +186,17 @@ try {
       && error?.details?.pressure_state === "yellow"
       && error?.details?.admission_reason === "cpu_reservation",
   );
+  for (const code of ["MBM_RESOURCE_TRANSACTION_BUSY", "MBM_RESOURCE_STAGING_BUSY"]) {
+    const busyCoordinator = { acquire: async () => { throw Object.assign(new Error("coordinator busy"), { code }); } };
+    await assert.rejects(
+      () => acquireProcessResources(busyCoordinator, "cargo", ["test"], {}, { cwd: project }),
+      (error) => error?.code === "unavailable" && error?.retryable === true
+        && error?.details?.reason === "resource_admission"
+        && error?.details?.pressure_state === "unknown"
+        && error?.details?.admission_reason === "coordinator_busy",
+      `resource coordinator transient ${code} escaped as an internal error`,
+    );
+  }
 
   let binds = 0;
   let successfulReleases = 0;

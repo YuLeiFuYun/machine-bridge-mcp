@@ -1,4 +1,4 @@
-importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-input.js", "browser-operations.js");
+importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-session.js", "devtools-input.js", "devtools-observation.js", "browser-operations.js");
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
@@ -14,7 +14,17 @@ chrome.runtime.onStartup.addListener(() => { ensureReconnectAlarm(); void connec
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "machine-bridge-reconnect") void connectFromStorage();
 });
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "machine_bridge_internal_delay") {
+    if (sender?.id !== chrome.runtime.id) return false;
+    const delayMs = message.delay_ms;
+    if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 250) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    setTimeout(() => sendResponse({ ok: true }), delayMs);
+    return true;
+  }
   if (message?.type !== "pair_bootstrap") return false;
   pairFromBootstrap(message.port, message.grant, { replace: false })
     .then(sendResponse)
@@ -238,9 +248,8 @@ async function handleMessage(ws, raw, onReady = () => {}) {
       protocol: BROWSER_EXTENSION_PROTOCOL,
       version: manifest.version_name || manifest.version,
       extension_id: chrome.runtime.id,
-      capabilities: [
-        "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
-      ],
+      capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
+        "cdp_accessibility_snapshot", "cdp_surface_screenshot", "computer_observation_v1", "backend_node_trusted_input"],
     }));
     if (!helloSent) closeSocketQuietly(ws, 1011, "browser extension hello failed");
     return;
@@ -290,7 +299,7 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     throwIfCancelled(state);
     const result = await dispatch(message.method, message.params || {}, state);
     throwIfCancelled(state);
-    if (!sendResponse(ws, message.id, true, result)) {
+    if (!sendResponse(ws, message.id, true, result, "", message.method)) {
       closeSocketQuietly(ws, 1011, "browser response delivery failed");
     }
   } catch (error) {
@@ -312,18 +321,17 @@ function throwIfCancelled(state) {
   if (state.cancelled) throw new Error("browser request cancelled");
 }
 
-function sendResponse(ws, id, ok, result, error = "") {
+function sendResponse(ws, id, ok, result, error = "", method = "") {
   if (ws.readyState !== WebSocket.OPEN) return false;
-  let payload = JSON.stringify({ type: "response", id, ok, ...(ok ? { result } : { error }) });
-  if (new TextEncoder().encode(payload).byteLength > MAX_RESULT_BYTES) {
-    payload = JSON.stringify({ type: "response", id, ok: false, error: "browser result exceeds maximum size" });
-  }
+  const payload = browserOperations().responsePayload({ id, ok, result, error, method, maxBytes: MAX_RESULT_BYTES });
   return sendSocketQuietly(ws, payload);
 }
 
 function browserOperations() {
   const api = globalThis.__machineBridgeBrowserOperations;
-  if (!api || typeof api.dispatch !== "function") throw new Error("browser operations module is unavailable");
+  if (!api || typeof api.dispatch !== "function" || typeof api.methodMayMutate !== "function" || typeof api.responsePayload !== "function") {
+    throw new Error("browser operations module is unavailable");
+  }
   return api;
 }
 

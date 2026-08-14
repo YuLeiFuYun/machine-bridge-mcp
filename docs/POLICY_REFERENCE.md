@@ -44,10 +44,13 @@ This table describes the local daemon policy ceiling. Remote account roles apply
 | `browser_upload_files` | `full` | no | no | no | yes |
 | `browser_wait` | `full` | no | no | no | yes |
 | `cancel_job` | `write` | no | yes | yes | yes |
+| `computer_act` | `full` | no | no | no | yes |
+| `computer_observe` | `full` | no | no | no | yes |
 | `diagnose_runtime` | `always` | yes | yes | yes | yes |
 | `edit_file` | `write` | no | yes | yes | yes |
 | `exec_command` | `shell-exec` | no | no | no | yes |
 | `generate_ssh_key_resource` | `full` | no | no | no | yes |
+| `git_commit` | `direct-exec` | no | no | yes | yes |
 | `git_diff` | `always` | yes | yes | yes | yes |
 | `git_log` | `always` | yes | yes | yes | yes |
 | `git_show` | `always` | yes | yes | yes | yes |
@@ -102,10 +105,13 @@ Account-access revision: **3**. Default role: **reviewer**. Remote effective aut
 | `browser_upload_files` | no | no | no | yes |
 | `browser_wait` | no | no | no | yes |
 | `cancel_job` | no | yes | yes | yes |
+| `computer_act` | no | no | no | yes |
+| `computer_observe` | no | no | no | yes |
 | `diagnose_runtime` | no | no | no | yes |
 | `edit_file` | no | yes | yes | yes |
 | `exec_command` | no | no | no | yes |
 | `generate_ssh_key_resource` | no | no | no | yes |
+| `git_commit` | no | no | yes | yes |
 | `git_diff` | yes | yes | yes | yes |
 | `git_log` | yes | yes | yes | yes |
 | `git_show` | yes | yes | yes | yes |

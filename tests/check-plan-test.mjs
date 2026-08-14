@@ -35,7 +35,7 @@ for (const task of ["coverage:test", "browser-bridge:test", "package:test", "sbo
 for (const task of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
   assert(PLATFORM_ONLY_CHECK_TASKS.includes(task), `cross-platform behavior task is not platform-only: ${task}`);
 }
-for (const task of ["architecture:test", "lint", "typecheck", "syntax", "policy:test", "runtime-infrastructure:test", "control-plane-resilience:test", "service-restart:test", "browser-identity:test", "check-runner:test", "release-channel:test", "release-soak:test", "runtime-activation:test", "release-publication-guard:test", "sbom-check:test", "npm-environment:test", "hardened-npm:test", "consumer-package-security:test", "wrangler-toolchain:test", "worker-types-generator:test", "workflow-policy:test", "managed-job-boundary:test", "release-diagnostic:test"]) {
+for (const task of ["architecture:test", "lint", "typecheck", "syntax", "policy:test", "runtime-infrastructure:test", "control-plane-resilience:test", "service-restart:test", "browser-identity:test", "check-runner:test", "release-channel:test", "release-soak:test", "runtime-activation:test", "release-publication-guard:test", "sbom-check:test", "npm-environment:test", "hardened-npm:test", "consumer-package-security:test", "wrangler-toolchain:test", "worker-types-generator:test", "workflow-policy:test", "managed-job-boundary:test", "release-diagnostic:test", "browser-devtools-input:test", "browser-devtools-observation:test", "browser-computer-observation:test", "browser-service-worker:test", "app-automation:test"]) {
   assert(FAST_CHECK_TASKS.includes(task), `fast plan omits required development gate: ${task}`);
 }
 assert.equal(scripts.check, "npm run check:full");

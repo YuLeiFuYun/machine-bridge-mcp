@@ -7,7 +7,8 @@ import { PendingAdmissionGate } from "./pending-admission.ts";
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import { daemonLivenessDeadlineMs, isFreshDaemonCandidate } from "./daemon-liveness.ts";
 import { DaemonSocketRegistry } from "./daemon-sockets.ts";
-import { notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "./daemon-ready-waiters.ts";
+import { notifyReadyDaemon, readyDaemonWaiterSnapshot } from "./daemon-ready-waiters.ts";
+import { readyDaemonForDispatch } from "./daemon-ready-dispatch.ts";
 import { daemonToolTimeoutBudgetAfterDelay } from "./daemon-recovery-budget.ts";
 import { daemonStatusSnapshot } from "./daemon-status.ts";
 import { sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
@@ -53,7 +54,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.67";
+const SERVER_VERSION = "3.0.0-beta.71";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -493,14 +494,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   ): Promise<unknown> {
     this.reclaimStaleDaemonSockets();
     const timeoutBudget = daemonToolTimeoutBudget(name, args);
-    const recoveryStartedAt = performance.now();
-    const socket = await waitForReadyDaemon(this.daemonRegistry, {
+    const ready = await readyDaemonForDispatch(this.daemonRegistry, {
       graceMs: Math.min(NEW_CALL_RECONNECT_GRACE_MS, timeoutBudget.executionTimeoutMs),
       signal,
       tool: name,
       pending: this.pending.snapshot(),
     });
-    const dispatchBudget = daemonToolTimeoutBudgetAfterDelay(timeoutBudget, performance.now() - recoveryStartedAt);
+    const socket = ready.socket;
+    const dispatchBudget = daemonToolTimeoutBudgetAfterDelay(timeoutBudget, ready.recoveryDelayMs);
     const daemonAttachment = this.daemonRegistry.readyAttachment(socket);
     const daemonInstanceId = daemonAttachment?.instanceId ?? "";
     if (!daemonInstanceId) throw new WorkerToolError("unavailable", "local daemon connection is missing its instance identity", true);

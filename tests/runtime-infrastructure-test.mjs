@@ -998,11 +998,22 @@ async function testFixedInternalProcessBoundary() {
       1024,
       { callId: "fixed-internal", authority: { principal: { kind: "account", role: "reviewer" } } },
       temp,
+      null,
+      { GIT_OPTIONAL_LOCKS: "0" },
     );
     assert(result.code === 0, "fixed internal process did not complete");
     assert(spawnInvocation?.cmd === "git" && spawnInvocation?.args?.[0] === "status", "fixed internal process was wrapped as delegated arbitrary execution");
     assert(spawnInvocation?.options?.shell === false, "fixed internal process enabled shell interpretation");
     assert(spawnInvocation?.options?.env?.HOME === join(temp, "home"), "fixed internal process did not use an isolated minimal environment");
+    assert(spawnInvocation?.options?.env?.GIT_OPTIONAL_LOCKS === "0", "fixed internal process lost an approved implementation-owned environment override");
+    await expectReject(
+      () => service.runFixedInternal("git", ["status"], 5000, true, 1024, {}, temp, null, { NODE_OPTIONS: "--require=fixture" }),
+      "invalid_request", "internal process environment override is not approved",
+    );
+    await expectReject(
+      () => service.runFixedInternal("git", ["status"], 5000, true, 1024, {}, temp, null, { GIT_OPTIONAL_LOCKS: "1" }),
+      "invalid_request", "internal process environment override is not approved",
+    );
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

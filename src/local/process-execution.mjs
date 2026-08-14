@@ -11,8 +11,10 @@ import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
 import { processForegroundTimeoutSeconds, registeredCommandTimeoutSeconds } from "./process-foreground-timeout.mjs";
 import { processFailureMessage, publicProcessToolResult } from "./process-result-projection.mjs";
+import { processCancellationFailure, processChildErrorFailure, processPostSpawnFailure, processPreSpawnFailure, processTimeoutFailure } from "./process-nonreplayable-settlement.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
 import { foregroundResourceWaitMs } from "./resource-foreground-wait.mjs";
+import { validateFixedProcessEnvironment } from "./fixed-process-environment.mjs";
 import { DEFAULT_PROCESS_OUTPUT_BYTES, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS, PUBLIC_PROCESS_INLINE_OUTPUT_BYTES } from "./execution-limits.mjs";
 const PROCESS_OUTPUT_CAPTURE = Symbol("process-output-capture"); const CONTINUATION_READ_BYTES = 64 * 1024;
 function spawnDirectProcess(command, args, options) {
@@ -69,9 +71,9 @@ export class ProcessExecutionService {
     const shell = workspaceShellCommand(process.platform === "win32" ? "cd" : "pwd");
     return this.run(shell.cmd, shell.args, timeoutMs, true, 64 * 1024, context);
   }
-  async runFixedInternal(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace) {
+  async runFixedInternal(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace, stdin = null, environment = {}) {
     const argv = validateArgv([cmd, ...args]);
-    return this.run(argv[0], argv.slice(1), timeoutMs, allowFailure, maxOutputBytes, context, cwd, null, { internalFixed: true });
+    return this.run(argv[0], argv.slice(1), timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin, { internalFixed: true, internalEnvironment: validateFixedProcessEnvironment(environment) });
   }
   async runShell(command, timeoutSeconds, context = {}) {
     this.policyGate.assert("exec_command");
@@ -137,9 +139,9 @@ export class ProcessExecutionService {
     }
     const internalFixed = options.internalFixed === true;
     const baseEnvironment = executionEnv(this.workspace, {
-      fullEnv: internalFixed ? false : this.policyForContext(context).minimalEnv === false,
-      runtimeDir: this.runtimeDir,
+      fullEnv: internalFixed ? false : this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir,
     });
+    if (internalFixed) Object.assign(baseEnvironment, options.internalEnvironment || {});
     const admitted = internalFixed || !this.resourceCoordinator
       ? { lease: null, environment: baseEnvironment, command: cmd, args }
       : await acquireProcessResources(this.resourceCoordinator, cmd, args, baseEnvironment, {
@@ -163,7 +165,9 @@ export class ProcessExecutionService {
           shell: false,
         });
       } catch (error) {
-        void releaseProcessResourcesQuietly(admitted.lease).then(() => rejectPromise(error));
+        void releaseProcessResourcesQuietly(admitted.lease).then(() => rejectPromise(
+          processPreSpawnFailure(error, options.nonReplayableMutation === true),
+        ));
         return;
       }
       this.processTracker.track(child, context.callId);
@@ -173,13 +177,12 @@ export class ProcessExecutionService {
         child.stdin?.on?.("error", () => {});
         child.stdin?.end?.(String(stdin));
       }
-
       let settled = false;
       let processClosed = false;
       let terminationTimer = null;
       let timeoutTimer = null;
       const signal = context.signal;
-
+      const nonReplayableMutation = options.nonReplayableMutation === true;
       const cleanupAfterClose = async () => {
         if (processClosed) return;
         processClosed = true;
@@ -189,39 +192,26 @@ export class ProcessExecutionService {
         await resourceBinding;
         await releaseProcessResources(admitted.lease);
       };
-
       const settle = (callback) => {
         if (settled) return false;
         settled = true;
         callback();
         return true;
       };
-
       const terminate = () => {
         if (terminationTimer || processClosed) return;
         terminationTimer = this.terminateProcess(child);
       };
-
       const rejectCancelled = () => {
         terminate();
-        const reason = signal?.reason; const code = reason instanceof BridgeError && reason.code === "timeout" ? "timeout" : "cancelled";
-        settle(() => rejectPromise(new BridgeError(code, reason instanceof Error ? reason.message : "tool call cancelled", {
-          retryable: false, cause: reason instanceof Error ? reason : undefined, details: { side_effects_started: true, termination_requested: true, effect_settlement: "pending" },
-        })));
+        settle(() => rejectPromise(processCancellationFailure(nonReplayableMutation, signal)));
       };
       const onAbort = () => rejectCancelled();
       signal?.addEventListener?.("abort", onAbort, { once: true });
 
       timeoutTimer = setTimeout(() => {
         terminate();
-        settle(() => rejectPromise(new BridgeError("timeout", `command timed out after ${timeoutMs}ms`, {
-          retryable: false,
-          details: {
-            side_effects_started: true,
-            termination_requested: true,
-            effect_settlement: "pending",
-          },
-        })));
+        settle(() => rejectPromise(processTimeoutFailure(nonReplayableMutation, timeoutMs)));
       }, timeoutMs);
       timeoutTimer.unref?.();
 
@@ -240,18 +230,28 @@ export class ProcessExecutionService {
         onSettle: (code) => {
           void cleanupAfterClose().then(() => {
           if (settled) return;
-          if (resourceBindError) { settle(() => rejectPromise(resourceBindError)); return; }
+          if (resourceBindError) {
+            settle(() => rejectPromise(processPostSpawnFailure(nonReplayableMutation, "resource_binding", resourceBindError)));
+            return;
+          }
           if (childError) {
             const failure = processResult(127, stdout, childError.message || stderr.text(), retainedStdout, retainedStderr);
-            settle(() => allowFailure ? resolvePromise(failure) : rejectPromise(childError)); return;
+            settle(() => {
+              if (nonReplayableMutation) rejectPromise(processChildErrorFailure(true, childError, Boolean(child?.pid)));
+              else if (allowFailure) resolvePromise(failure);
+              else rejectPromise(childError);
+            });
+            return;
           }
           try { this.throwIfCancelled(context); } catch (error) {
-            settle(() => rejectPromise(error));
+            const trigger = signal?.reason instanceof BridgeError && signal.reason.code === "timeout" ? "timeout" : "cancelled";
+            settle(() => rejectPromise(processPostSpawnFailure(nonReplayableMutation, trigger, error)));
             return;
           }
           const result = processResult(code, stdout, stderr, retainedStdout, retainedStderr);
           if (code === 0 || allowFailure) settle(() => resolvePromise(result));
-          else settle(() => rejectPromise(new BridgeError("execution_failed", processFailureMessage(result), { details: { process: result } })));
+          else settle(() => rejectPromise(processPostSpawnFailure(nonReplayableMutation, "nonzero_exit",
+            new BridgeError("execution_failed", processFailureMessage(result), { details: { process: result } }), { process: result })));
           }, rejectPromise);
         },
       });
@@ -260,7 +260,6 @@ export class ProcessExecutionService {
     });
   }
 }
-
 function processResult(code, stdout, stderr, retainedStdout = null, retainedStderr = null) {
   const stderrBuffer = stderr instanceof BoundedOutput ? stderr : null;
   const result = {

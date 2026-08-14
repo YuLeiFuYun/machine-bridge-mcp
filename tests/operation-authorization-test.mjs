@@ -44,10 +44,19 @@ try {
   const ownerShell = await authorizer.authorize(operation("exec_command", { command: "printf owner" }, "owner"));
   assert(ownerShell.source === "trusted-owner", "owner operation did not remain interruption-free");
   assert(ownerShell.scopes.includes("shell"), "owner operation was not risk-classified");
+  const ownerCommit = await authorizer.authorize(operation("git_commit", { path: workspace, message: "fix: bounded commit" }, "owner"));
+  assert(ownerCommit.source === "trusted-owner" && ownerCommit.scopes.length === 0,
+    "workspace Git commit inherited generic shell risk instead of the bounded write surface");
 
   const reviewerRead = await authorizer.authorize(operation("read_file", { path: "README.md" }, "reviewer"));
   assert(reviewerRead.source === "role-ceiling", "ordinary reviewer read was not automatic");
   assert(reviewerRead.scopes.length === 0, "ordinary workspace read was misclassified");
+  const reviewerGitConfig = await rejected(() => authorizer.authorize(operation("read_file", { path: ".git/config" }, "reviewer")));
+  assert(reviewerGitConfig.details?.reason === "account_role_sensitive_ceiling",
+    "reviewer could read credential-bearing Git control-plane metadata directly");
+  const editorGitMetadata = await rejected(() => authorizer.authorize(operation("write_file", { path: ".git/objects/info/alternates", content: "../outside\n" }, "editor")));
+  assert(editorGitMetadata.details?.reason === "account_role_sensitive_ceiling",
+    "editor could write Git control-plane metadata directly");
 
   const operatorProcess = await authorizer.authorize(operation("run_process", { argv: ["printf", "ok"] }, "operator"));
   assert(operatorProcess.source === "role-ceiling" && operatorProcess.scopes.includes("shell"), "operator direct process was not allowed inside its role ceiling");
@@ -74,6 +83,11 @@ try {
 
   const editorExternal = await rejected(() => authorizer.authorize(operation("write_file", { path: outside, content: "x" }, "editor")));
   assert(editorExternal.details?.reason === "account_role_path_ceiling", "editor external write was not denied by the role path ceiling");
+  const externalCommit = await classifyOperation("git_commit", { path: outside, message: "fix: outside" }, {
+    workspace,
+    resolveWritePath: async (value) => path.resolve(workspace, String(value)),
+  });
+  assert(externalCommit?.scopes.includes("external-write"), "Git commit path escaped external-write classification");
 
   const reviewerSensitive = await rejected(() => authorizer.authorize(operation("read_file", { path: sensitive }, "reviewer")));
   assert(reviewerSensitive.details?.reason === "account_role_path_ceiling" || reviewerSensitive.details?.reason === "account_role_sensitive_ceiling", "reviewer sensitive read was not denied");
@@ -128,6 +142,18 @@ try {
     protectedRoots: [securityStateRoot],
   });
   assert(hookWrite?.scopes.includes("sensitive-write"), "workspace Git hook write bypassed the persistence boundary");
+  const gitMetadataWrite = await classifyOperation("write_file", { path: ".git/objects/info/alternates", content: "../outside\n" }, {
+    workspace,
+    resolveWritePath: async (value) => path.resolve(workspace, String(value)),
+    protectedRoots: [securityStateRoot],
+  });
+  assert(gitMetadataWrite?.scopes.includes("sensitive-write"), "workspace Git object metadata write bypassed the sensitive boundary");
+  const gitConfigRead = await classifyOperation("read_file", { path: ".git/config" }, {
+    workspace,
+    resolveExistingPath: async (value) => path.resolve(workspace, String(value)),
+    protectedRoots: [securityStateRoot],
+  });
+  assert(gitConfigRead?.scopes.includes("sensitive-read"), "workspace Git configuration read bypassed the sensitive boundary");
 
   const envWrite = await classifyOperation("apply_patch", { patch: "*** Add File: .env.local\n+SECRET=value" }, { workspace });
   assert(envWrite?.scopes.includes("sensitive-write"), "workspace environment write bypassed the sensitive-write boundary");

@@ -3,6 +3,7 @@ import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isTransientReplaceError, replaceFileSync } from "../src/local/atomic-fs.mjs";
+import { publicError } from "../src/local/errors.mjs";
 import { assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-atomic-replace-test-"));
@@ -115,11 +116,37 @@ try {
       return rename(from, to);
     },
     async link() { throw new Error("simulated commit failure"); },
-  }), "recovery was incomplete", "internal_error", false);
+  }), "recovery was incomplete", "execution_failed", true);
+  const publicRollbackFailure = publicError(rollbackFailure);
+  assert(rollbackFailure.retryable === false
+    && rollbackFailure.details?.reason === "patch_recovery_incomplete"
+    && publicRollbackFailure.retryable === false
+    && publicRollbackFailure.message.includes("may have partially modified files")
+    && publicRollbackFailure.message.includes("inspect affected paths before retrying"),
+  "incomplete patch rollback was not exposed as a stable non-retryable unknown filesystem settlement");
   assert(rollbackFailure.cause instanceof AggregateError
     && rollbackFailure.cause.errors?.[0]?.message === "simulated commit failure"
     && rollbackFailure.cause.errors?.[1]?.message === "simulated rollback failure",
   "incomplete patch rollback did not preserve primary and cleanup causes in order");
+
+  const rollbackCleanupTarget = join(root, "rollback-cleanup-only.txt");
+  await writeFile(rollbackCleanupTarget, "old", { encoding: "utf8", mode: 0o600 });
+  const rollbackCleanupFailure = await expectAsyncThrow(() => commitPatchTransaction([{
+    kind: "update", source: rollbackCleanupTarget, target: rollbackCleanupTarget,
+    content: "new", originalHash: sha256("old"), mode: 0o600,
+  }], {
+    async link() { throw new Error("simulated commit failure before target creation"); },
+    async remove(path, options) {
+      if (path.includes(".mbm-patch-")) throw new Error("simulated staging cleanup failure");
+      return rm(path, options);
+    },
+  }), "staging cleanup was incomplete", "internal_error", false);
+  assert(await readFile(rollbackCleanupTarget, "utf8") === "old"
+    && rollbackCleanupFailure.details?.reason !== "patch_recovery_incomplete"
+    && rollbackCleanupFailure.cause instanceof AggregateError
+    && rollbackCleanupFailure.cause.errors?.[0]?.message === "simulated commit failure before target creation"
+    && rollbackCleanupFailure.cause.errors?.[1]?.message === "simulated staging cleanup failure",
+  "staging-artifact cleanup failure was incorrectly reported as ambiguous user-file rollback");
 
   const atomicCleanupTarget = join(root, "atomic-cleanup.txt");
   await writeFile(atomicCleanupTarget, "current", { encoding: "utf8", mode: 0o600 });

@@ -3,6 +3,7 @@ import { pendingCapacityProjection } from "../src/worker/pending-call-capacity.t
 import { PendingAdmissionGate } from "../src/worker/pending-admission.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
 import { notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../src/worker/daemon-ready-waiters.ts";
+import { readyDaemonForDispatch } from "../src/worker/daemon-ready-dispatch.ts";
 import { daemonToolTimeoutBudgetAfterDelay } from "../src/worker/daemon-recovery-budget.ts";
 import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
@@ -602,6 +603,34 @@ async function testDaemonReadyWaiters() {
     "brief daemon reconnect did not wake a waiting new call");
   assert(await waitForReadyDaemon(registry, { graceMs: 1 }) === socket,
     "ready daemon call admission unnecessarily waited");
+  let immediateClockReads = 0;
+  const immediateDispatch = await readyDaemonForDispatch(registry, { graceMs: 1 }, () => {
+    immediateClockReads += 1;
+    return 100;
+  });
+  assert(immediateDispatch.socket === socket && immediateDispatch.recoveryDelayMs === 0 && immediateClockReads === 0,
+    "already-ready daemon dispatch consumed recovery budget or sampled the recovery clock");
+  readySockets = [];
+  let recoveryClock = 100;
+  const delayedDispatch = readyDaemonForDispatch(registry, { graceMs: 100 }, () => {
+    const value = recoveryClock;
+    recoveryClock += 50;
+    return value;
+  });
+  await Promise.resolve();
+  readySockets = [socket];
+  assert(notifyReadyDaemon(registry) === 1, "recovered daemon dispatch did not wake its waiter");
+  const recoveredDispatch = await delayedDispatch;
+  assert(recoveredDispatch.socket === socket && recoveredDispatch.recoveryDelayMs === 50,
+    "daemon recovery wait did not report only the actual recovery interval");
+  readySockets = [];
+  const defaultClockDispatch = readyDaemonForDispatch(registry, { graceMs: 100 });
+  await Promise.resolve();
+  readySockets = [socket];
+  assert(notifyReadyDaemon(registry) === 1, "default recovery clock case did not wake its waiter");
+  const defaultClockRecovered = await defaultClockDispatch;
+  assert(defaultClockRecovered.socket === socket && defaultClockRecovered.recoveryDelayMs >= 0,
+    "default monotonic recovery clock did not produce a bounded interval");
   readySockets = [];
   let timeoutError = null;
   try { await waitForReadyDaemon(registry, { graceMs: 5 }); } catch (error) { timeoutError = error; }

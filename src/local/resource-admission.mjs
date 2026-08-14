@@ -11,7 +11,7 @@ import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMsAs
 import { freshResourceHostSnapshot, resourceHostNeedsFreshIo } from "./resource-host-cache.mjs";
 import { sampleResourceHostAsync } from "./resource-host-snapshot.mjs";
 import { validateResourceRequest } from "./resource-request-contract.mjs";
-import { recoverResourceDirectoryStaging } from "./resource-staging-recovery.mjs";
+import { recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "./resource-staging-recovery.mjs";
 import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } from "./resource-admission-policy.mjs";
 import { fitElasticRequestToPressure } from "./resource-elastic-request.mjs";
 import { resourceCoordinatorAccounting, resourceCoordinatorEvaluator } from "./resource-coordinator-accounting.mjs";
@@ -215,18 +215,18 @@ export class ResourceCoordinator {
     try { return await flight.promise; }
     finally { if (this.hostSamplesInFlight.get(scope) === flight) this.hostSamplesInFlight.delete(scope); }
   }
-
   async withLock(callback, timeoutMs = undefined) {
     this.ensureRoot();
-    return withResourceTransactionLock(this.root, callback, { now: this.now, sleep: this.sleep, random: this.random, timeoutMs });
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      try { return await withResourceTransactionLock(this.root, callback, { now: this.now, sleep: this.sleep, random: this.random, timeoutMs }); }
+      catch (error) { if (error?.code !== RESOURCE_STAGING_BUSY_CODE || attempt === 4) throw error; await this.sleep(5); }
+    }
   }
-
   pruneAndReadWaiters() {
     let entries = readdirSync(this.waitersDir, { withFileTypes: true });
     if (recoverResourceDirectoryStaging(this.waitersDir, entries, "wait")) entries = readdirSync(this.waitersDir, { withFileTypes: true });
     const waiters = pruneAndReadResourceWaiters(this.waitersDir, entries, this.now()); if (waiters.length < entries.length) signalResourceChange(this); return waiters;
   }
-
   pruneAndReadLeases() {
     const leases = []; let pruned = false;
     let entries = readdirSync(this.leasesDir, { withFileTypes: true });

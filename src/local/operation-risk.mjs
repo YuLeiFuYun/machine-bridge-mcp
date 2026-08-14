@@ -18,6 +18,7 @@ export const OPERATION_APPROVAL_SCOPES = Object.freeze([
 const SHELL_TOOLS = new Set(["exec_command", "run_process", "start_process", "run_local_command", "read_process", "write_process", "kill_process"]);
 const PERSISTENT_TOOLS = new Set(["stage_job", "start_job", "list_jobs", "read_job", "cancel_job"]);
 const APPLICATION_CONTROL_TOOLS = new Set(["open_local_application", "inspect_local_application", "operate_local_application"]);
+const COMPUTER_USE_TOOLS = new Set(["computer_observe", "computer_act"]);
 const CREDENTIAL_TOOLS = new Set(["generate_ssh_key_resource"]);
 const BROWSER_PROFILE_TOOLS = new Set([
   "pair_browser_extension", "browser_list_tabs", "browser_manage_tabs", "browser_get_source",
@@ -27,14 +28,14 @@ const AUTOMATIC_TOOLS = new Set([
   "server_info", "project_overview", "list_local_applications", "browser_status", "list_roots",
   "diagnose_runtime", "list_local_resources",
 ]);
-const FILE_WRITE_TOOLS = new Set(["write_file", "edit_file"]);
+const FILE_WRITE_TOOLS = new Set(["write_file", "edit_file", "git_commit"]);
 const FILE_READ_TOOLS = new Set([
   "session_bootstrap", "resolve_task_capabilities", "agent_context", "list_local_skills", "load_local_skill", "list_local_commands",
   "list_dir", "list_files", "read_file", "view_image", "search_text",
   "git_status", "git_diff", "git_log", "git_show",
 ]);
 const SENSITIVE_SEGMENTS = new Set([
-  ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker", ".npmrc", ".pypirc",
+  ".git", ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker", ".npmrc", ".pypirc",
   "keychains", "cookies", "login data", "credentials", "secrets",
 ]);
 const RESOURCE_TOKEN = /\{\{resource:[a-z][a-z0-9._-]{0,63}\}\}/;
@@ -45,6 +46,7 @@ export function reviewedOperationToolNames() {
     ...SHELL_TOOLS,
     ...PERSISTENT_TOOLS,
     ...APPLICATION_CONTROL_TOOLS,
+    ...COMPUTER_USE_TOOLS,
     ...CREDENTIAL_TOOLS,
     ...BROWSER_PROFILE_TOOLS,
     ...FILE_WRITE_TOOLS,
@@ -62,6 +64,18 @@ export async function classifyOperation(tool, args = {}, options = {}) {
     return requirement(["persistent-job", "sensitive-read"], "managed job using protected local resources", name, protectedJobProjection(args));
   }
   if (PERSISTENT_TOOLS.has(name)) return requirement("persistent-job", "persistent managed job", name, args);
+  if (COMPUTER_USE_TOOLS.has(name)) {
+    const surface = String(args.surface || "");
+    const scopes = surface === "browser" ? ["browser-session"] : surface === "application" ? ["application-control"] : [];
+    if (!scopes.length) return null;
+    if (name === "computer_act" && args.value_resource) scopes.push("data-export");
+    return requirement(scopes, surface === "browser" ? "verified computer use in the existing browser profile" : "verified desktop computer use", name, {
+      surface,
+      snapshot_id: args.snapshot_id,
+      action: args.action,
+      value_resource: args.value_resource,
+    });
+  }
   if (name === "operate_local_application" && args.value_resource) {
     return requirement(["application-control", "data-export"], "desktop application control using protected local data", name, {
       application: args.application,

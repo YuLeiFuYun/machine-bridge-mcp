@@ -3,11 +3,13 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writ
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runStateRedactionPrivacyTest } from "./state-redaction-test.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temp = mkdtempSync(join(tmpdir(), "mbm-privacy-test-"));
 const privateName = ["private", "alias+fixture"].join(".");
 try {
+  runStateRedactionPrivacyTest();
   mkdirSync(join(temp, "scripts"), { recursive: true });
   mkdirSync(join(temp, "src", "local"), { recursive: true });
   const privacyCheckerSource = join(root, "scripts", "privacy-check.mjs");

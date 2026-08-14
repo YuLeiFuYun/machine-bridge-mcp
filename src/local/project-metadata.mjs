@@ -33,7 +33,7 @@ export async function readOptionalRegularUtf8(filePath, maxBytes, options = {}) 
   if (!Number.isSafeInteger(limit) || limit < 0) throw new TypeError("project metadata byte limit must be a non-negative safe integer");
   const openFile = options.openFile || open;
   const inspectPath = options.inspectPath || lstat;
-  const handle = await openFile(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0))
+  const handle = await openFile(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0), 0o600)
     .catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
   if (!handle) return null;
   try {

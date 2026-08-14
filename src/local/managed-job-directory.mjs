@@ -10,7 +10,7 @@ export function resolveManagedJobDirectory(jobRoot, value, options = {}) {
   const root = resolveManagedJobRootIfPresent(jobRoot, options);
   if (!root) throw new Error("job not found or expired");
   const candidate = join(root, id);
-  return withPinnedDirectory(candidate, "managed job directory", options, false, (pinned, verify) => {
+  return withPinnedManagedJobDirectory(candidate, "managed job directory", options, false, (pinned, verify) => {
     const canonical = (options.realpathSync || realpathSync)(candidate);
     requireContained(root, canonical);
     if (!sameDirectory(pinned, verify(candidate)) || !sameDirectory(pinned, verify(canonical))) {
@@ -22,7 +22,7 @@ export function resolveManagedJobDirectory(jobRoot, value, options = {}) {
 
 export function resolveManagedJobRootIfPresent(jobRoot, options = {}) {
   const target = resolve(String(jobRoot || ""));
-  return withPinnedDirectory(target, "managed job root", options, true, (pinned, verify) => {
+  return withPinnedManagedJobDirectory(target, "managed job root", options, true, (pinned, verify) => {
     const canonical = (options.realpathSync || realpathSync)(target);
     if (!sameDirectory(pinned, verify(target))) throw new Error("managed job root identity changed during inspection");
     if (!sameDirectory(pinned, verify(canonical))) {
@@ -32,7 +32,7 @@ export function resolveManagedJobRootIfPresent(jobRoot, options = {}) {
   });
 }
 
-function withPinnedDirectory(target, label, options, missingAllowed, callback) {
+export function withPinnedManagedJobDirectory(target, label, options, missingAllowed, callback) {
   const verify = options.lstatSync || ((value) => lstatSync(value, { bigint: true }));
   const platform = String(options.platform || process.platform);
   if (platform === "win32") {

@@ -1,5 +1,4 @@
 // @ts-check
-
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { packageRoot } from "./package-identity.mjs";
@@ -11,7 +10,21 @@ const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
   "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
 ]);
 export const MAX_BROWSER_MESSAGE_BYTES = 8 * 1024 * 1024;
+const MUTATING_BROWSER_METHODS = new Set([
+  "manage_tabs", "point_action", "backend_node_action", "action", "fill_form", "upload_files", "screenshot",
+]);
+const BROWSER_MUTATION_TRANSPORT_UNKNOWN = "browser mutation request may have been dispatched; the outcome is unknown because its response was not observed. Inspect browser state before retrying.";
 
+/** @param {unknown} method */
+export function browserMethodMayMutate(method) {
+  return typeof method === "string" && MUTATING_BROWSER_METHODS.has(method);
+}
+
+/** @param {unknown} method @param {unknown} fallback */
+export function browserPostDispatchTransportFailure(method, fallback) {
+  if (browserMethodMayMutate(method)) return BROWSER_MUTATION_TRANSPORT_UNKNOWN;
+  return typeof fallback === "string" && fallback ? fallback.slice(0, 2000) : "browser transport failed";
+}
 /** @typedef {{protocol: number, version: string, extension_id: string, capabilities: string[]}} ExtensionInfo */
 /** @typedef {{readyState: number, close: (code?: number, reason?: string) => unknown, send: (value: string) => unknown}} ProtocolSocket */
 
@@ -40,7 +53,6 @@ export function parseExtensionHello(message) {
   if (missing.length) throw new Error(`extension capability mismatch; reload the extension (${missing.join(",")})`);
   return info;
 }
-
 /**
  * @param {string | Buffer | Uint8Array} data
  * @returns {{ok: true, message: Record<string, unknown>} | {ok: false, code: number, reason: string}}
@@ -58,7 +70,24 @@ export function parseBrowserSocketMessage(data) {
   }
   return { ok: true, message };
 }
-
+/** @param {unknown} value */
+export function normalizeRuntimeBrowserRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const message = /** @type {Record<string, unknown>} */ (value);
+  const id = boundedProtocolString(message.id, 200);
+  const method = typeof message.method === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(message.method) ? message.method : "";
+  const params = message.params === undefined ? {} : message.params;
+  const timeoutMs = message.timeout_ms === undefined ? 30_000 : message.timeout_ms;
+  const callId = message.call_id === undefined ? "" : boundedProtocolString(message.call_id, 200);
+  if (message.type !== "request" || !id || !method || !params || typeof params !== "object" || Array.isArray(params)
+      || !Number.isSafeInteger(timeoutMs)
+      || (message.call_id !== undefined && !callId)) return null;
+  return { type: "request", id, method, params, timeout_ms: timeoutMs, ...(callId ? { call_id: callId } : {}) };
+}
+/** @param {unknown} value @param {number} maximum */
+function boundedProtocolString(value, maximum) {
+  return typeof value === "string" && value && value.length <= maximum && !value.includes("\0") ? value : "";
+}
 /** @param {ProtocolSocket} socket @param {number} code @param {string} reason */
 export function closeProtocolSocket(socket, code, reason) {
   try { socket.close(code, reason); }
@@ -80,17 +109,21 @@ export function safeSocketSend(socket, value) {
 function normalizeExtensionInfo(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = /** @type {Record<string, unknown>} */ (value);
-  const protocol = Number(record.protocol);
+  const protocol = record.protocol;
   const version = typeof record.version === "string" && record.version.length <= 100 ? record.version : "";
   const extension_id = normalizeExtensionId(record.extension_id);
   const capabilities = Array.isArray(record.capabilities)
     ? [...new Set(record.capabilities.filter((entry) => typeof entry === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(entry)))].slice(0, 32)
     : [];
-  if (!Number.isInteger(protocol) || protocol < 1 || !version || !extension_id) return null;
+  if (typeof protocol !== "number" || !Number.isInteger(protocol) || protocol < 1 || !version || !extension_id) return null;
   return { protocol, version, extension_id, capabilities };
 }
 
 function extensionVersion() {
   const manifest = JSON.parse(readFileSync(resolve(packageRoot, "browser-extension", "manifest.json"), "utf8"));
-  return String(manifest.version_name || manifest.version || "");
+  const version = manifest.version_name === undefined ? manifest.version : manifest.version_name;
+  if (typeof version !== "string" || !version || version.length > 100 || version.includes("\0")) {
+    throw new Error("browser extension manifest version is invalid");
+  }
+  return version;
 }

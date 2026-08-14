@@ -25,7 +25,9 @@ import { classifyOperationalError } from "./log.mjs";
 import { ManagedJobManager } from "./managed-jobs.mjs";
 import { AgentContextManager } from "./agent-context.mjs";
 import { AppAutomationManager } from "./app-automation.mjs";
+import { applicationBackgroundInputConfiguration } from "./macos-background-input.mjs";
 import { BrowserBridgeManager } from "./browser-bridge.mjs";
+import { ComputerUseManager } from "./computer-use.mjs";
 import { CapabilityObserver } from "./capability-observer.mjs";
 import { isPlainRecord } from "./records.mjs";
 import { AccountAccessGate } from "./account-access.mjs";
@@ -165,6 +167,7 @@ export class LocalRuntime {
     });
     this.gitService = new GitService({
       resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
+      resolveWritePath: (value, context) => this.resolveWritePath(value, context),
       displayPath: (value, context) => this.displayPath(value, context),
       runInternalProcess: (...args) => this.processExecutionService.runFixedInternal(...args),
       gitExecutable: () => this.resolveGitExecutable(),
@@ -176,18 +179,10 @@ export class LocalRuntime {
       currentResources: () => this.managedJobManager.currentResources(),
       authorizeTool: (tool) => this.policyGate.assert(tool),
     });
-    const runProcess = (cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin) => this.runProcess(cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin);
+    const runProcess = (cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin, options) => this.runProcess(cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin, options);
     const readResourceText = (name) => this.runtimeResourceService.readText(name);
     const readResourceBinary = (name) => this.runtimeResourceService.readBinary(name);
-    this.appAutomationManager = new AppAutomationManager({
-      ...applicationAutomation,
-      policy: this.policy,
-      authorizeTool: (tool) => this.policyGate.assert(tool),
-      displayPath: (value, context) => this.displayPath(value, context),
-      runProcess,
-      readResourceText,
-      throwIfCancelled: (context) => this.throwIfCancelled(context),
-    });
+    this.appAutomationManager = createAppAutomationManager(this, applicationAutomation, runProcess, readResourceText);
     this.securityAudit = new SecurityAuditLog({ root: securityStateRoot });
     this.operationAuthorizer = new OperationAuthorizer({
       workspace: this.workspace,
@@ -205,6 +200,12 @@ export class LocalRuntime {
       readResourceBinary,
       throwIfCancelled: (context) => this.throwIfCancelled(context),
       logger: this.logger,
+    });
+    this.computerUseManager = new ComputerUseManager({
+      authorizeTool: (tool) => this.policyGate.assert(tool),
+      browserBridgeManager: this.browserBridgeManager,
+      appAutomationManager: this.appAutomationManager,
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
     this.toolExecutor = new ToolExecutor({
       handlers: bindRuntimeToolHandlers(this),
@@ -461,8 +462,7 @@ export class LocalRuntime {
       daemonToolNames: this.tools(),
       capabilityObserver: this.capabilityObserver,
       listTopLevel: (callContext) => this.listDir(".", callContext),
-      runInternalProcess: (...args) => this.processExecutionService.runFixedInternal(...args),
-      gitExecutable: () => this.resolveGitExecutable(),
+      resolveGitRoot: async (callContext) => (await this.gitService.context(".", callContext)).root || "",
       safeErrorMessage: (error) => this.safeErrorMessage(error, {}, context),
       throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
     }, context);
@@ -501,6 +501,10 @@ export class LocalRuntime {
 
   gitShow(args = {}, context = {}) {
     return this.gitService.show(args, context);
+  }
+
+  gitCommit(args = {}, context = {}) {
+    return this.gitService.commit(args, context);
   }
 
   async diagnoseRuntime(context = {}) {
@@ -588,8 +592,8 @@ export class LocalRuntime {
     return { calls_cancelled: calls, process_sessions_revoked: sessions, managed_jobs_cancelled: jobs };
   }
 
-  runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024, context = {}, cwd = this.workspace, stdin = null) {
-    return this.processExecutionService.run(cmd, args, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin);
+  runProcess(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = 512 * 1024, context = {}, cwd = this.workspace, stdin = null, options = {}) {
+    return this.processExecutionService.run(cmd, args, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin, options);
   }
 
   effectivePolicy(context = {}) {
@@ -667,6 +671,23 @@ export class LocalRuntime {
   throwIfCancelled(context = {}) {
     this.callRegistry.throwIfCancelled(context);
   }
+}
+
+function createAppAutomationManager(runtime, applicationAutomation, runProcess, readResourceText) {
+  const { backgroundVisualBackend, backgroundInputService } = applicationBackgroundInputConfiguration(
+    applicationAutomation, runProcess, runtime.runtimeDir,
+  );
+  return new AppAutomationManager({
+    ...applicationAutomation,
+    backgroundVisualBackend,
+    backgroundInputService,
+    policy: runtime.policy,
+    authorizeTool: (tool) => runtime.policyGate.assert(tool),
+    displayPath: (value, context) => runtime.displayPath(value, context),
+    runProcess,
+    readResourceText,
+    throwIfCancelled: (context) => runtime.throwIfCancelled(context),
+  });
 }
 
 function shortCallId(value) {

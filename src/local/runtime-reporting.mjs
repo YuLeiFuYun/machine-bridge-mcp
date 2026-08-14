@@ -95,28 +95,20 @@ export async function buildProjectOverview({
   daemonToolNames = toolNames,
   capabilityObserver,
   listTopLevel,
-  runInternalProcess,
-  gitExecutable,
+  resolveGitRoot,
   safeErrorMessage,
   throwIfCancelled,
 }, context = {}) {
   throwIfCancelled(context);
   const topPromise = listTopLevel(context).catch((error) => ({ error: safeErrorMessage(error), entries: [] }));
-  const gitPromise = runInternalProcess(
-    gitExecutable(),
-    ["-c", "core.fsmonitor=false", "-C", workspace, "rev-parse", "--show-toplevel"],
-    10_000,
-    true,
-    512 * 1024,
-    context,
-  );
-  const [top, git] = await Promise.all([topPromise, gitPromise]);
+  const gitPromise = resolveGitRoot(context);
+  const [top, gitRoot] = await Promise.all([topPromise, gitPromise]);
   const topEntries = Array.isArray(top.entries) ? top.entries : [];
   const topLevel = topEntries.slice(0, MAX_PROJECT_OVERVIEW_TOP_LEVEL_ENTRIES);
   return {
     workspace: displayPath(workspace),
     workspaceName: policy.exposeAbsolutePaths ? basename(workspace) : "workspace",
-    gitRoot: git.code === 0 ? displayPath(git.stdout.trim()) : "",
+    gitRoot: gitRoot ? displayPath(gitRoot) : "",
     policy,
     tools: ["server_info", ...toolNames],
     daemonPolicy,

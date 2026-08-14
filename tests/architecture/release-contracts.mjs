@@ -234,6 +234,19 @@ for (const fixture of ["tests/secure-file-test.mjs", "tests/worker-secret-file-t
   if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical filesystem coverage lost direct fault fixture: ${fixture}`);
 }
 if (!coverageRunnerSource.includes('"src/local/state-root-retirement.mjs"')) throw new Error("critical state-root generation-removal coverage threshold is missing");
+for (const fixture of [
+  "tests/process-nonreplayable-test.mjs", "tests/browser-bridge-test.mjs", "tests/browser-request-settlement-test.mjs",
+  "tests/browser-operation-service-test.mjs", "tests/browser-computer-observation-test.mjs", "tests/computer-use-test.mjs", "tests/computer-use-result-budget-test.mjs",
+]) {
+  if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical Computer Use settlement coverage lost direct fixture: ${fixture}`);
+}
+for (const threshold of [
+  '"src/local/process-nonreplayable-settlement.mjs"',
+  '"src/local/browser-request-settlement.mjs"',
+  '"src/local/computer-use-result-budget.mjs"',
+]) {
+  if (!coverageRunnerSource.includes(threshold)) throw new Error(`critical Computer Use settlement coverage lost threshold: ${threshold}`);
+}
 const stateRootRetirementSource = readFileSync(join(root, "src", "local", "state-root-retirement.mjs"), "utf8");
 for (const forbidden of ["restoreRetiredRoot", "renameSync(retired, root)", "could not be restored"]) {
   if (stateRootRetirementSource.includes(forbidden)) throw new Error(`state-root retirement regained unsafe pathname rollback: ${forbidden}`);

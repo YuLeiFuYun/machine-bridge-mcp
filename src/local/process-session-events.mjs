@@ -19,7 +19,7 @@ export function notifySessionWaiters(session) {
   for (const waiter of [...session.waiters]) waiter();
 }
 
-export function waitForSessionChange(session, waitMs, cancellationCheck) {
+export function waitForSessionChange(session, waitMs, cancellationCheck, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
     let timer;
     const done = () => {
@@ -37,7 +37,7 @@ export function waitForSessionChange(session, waitMs, cancellationCheck) {
     };
     session.waiters.add(done);
     timer = setTimeout(done, waitMs);
-    timer.unref?.();
+    if (options.keepAlive !== true) timer.unref?.();
   });
 }
 

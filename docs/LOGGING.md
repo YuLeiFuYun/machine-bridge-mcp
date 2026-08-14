@@ -111,9 +111,9 @@ Unexpected infrastructure failures are reduced to coarse error classes in normal
 
 ## Local automation events
 
-Browser broker ownership, extension connection, and persistent unavailability are infrastructure state. Ordinary tab/source/action/form/upload/screenshot calls remain per-tool debug events and never log their arguments or results. Pairing tokens are excluded from all structured fields.
+Browser broker ownership, extension connection, and persistent unavailability are infrastructure state. Ordinary tab/source/action/form/upload/screenshot calls remain per-tool debug events and never log their arguments or results. Pairing tokens are excluded from all structured fields. Computer Use observation/action logs follow the same rule: snapshot IDs, semantic refs, Accessibility/DOM evidence, screenshots, diffs, continuation mappings, target identity, coordinates, and verification content are tool-result data, not operational log fields. A post-dispatch transport/process ambiguity may contribute only its tool name, bounded error code/retryability, duration, and the existing coarse audit risk projection.
 
-Application discovery and Accessibility operations follow the same rule: permission or runtime failures are classified, while app names, UI trees, selectors, and values are not operational log data.
+Application discovery and Accessibility operations follow the same rule: permission or runtime failures are classified, while app names, UI trees, selectors, values, captured window bytes, window identifiers/bounds, process generations, and native-input coordinates are not operational log data. The experimental macOS visual backend may expose only coarse configured/probed/error-class state through the requested Computer Use result; native helper stdout/stderr and private WindowServer details are never copied into daemon logs.
 
 ## Bounding and redaction
 

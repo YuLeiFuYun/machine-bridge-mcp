@@ -17,6 +17,8 @@ npm run privacy:history
 
 Git author and committer identity headers are canonical Git metadata rather than blob or commit-message content and are not automatically rejected. Audit them separately with `git log`; changing historical identity metadata requires a coordinated history rewrite and force-update of affected refs.
 
+Delegated callers obtain Git metadata through the structured Git surface rather than direct control-directory file access. Author email remains opt-in, structured log framing is validated before projection, and restricted repository discovery rejects metadata redirection outside the effective path boundary.
+
 Maintain machine-specific names in an ignored owner-only file:
 
 ```sh
@@ -31,6 +33,8 @@ Add one identifier per line. The denylist is deliberately local and must never b
 Machine-specific operational notes may be kept under the ignored `.project-local/` directory. Use it for temporary environment state and one-machine recovery observations, not for reusable engineering decisions. General lessons belong in tracked documentation such as `ENGINEERING.md`.
 
 Ignored does not mean safe for secrets: do not store passwords, tokens, private keys, authorization URLs, or copied secret-bearing logs there. Treat live Worker endpoints, absolute home paths, downloaded toolchains, browser captures, and other machine identifiers as retention-sensitive metadata even when they are not credentials. Prune reconstructible dependency/toolchain experiments, stale live-endpoint probes, obsolete candidate logs, and superseded workflow snapshots once their reusable conclusions have moved into tracked documentation; retain only the minimum one-machine evidence needed for an active release/recovery investigation. `.privacy-denylist` remains the dedicated local vocabulary gate.
+
+`machine-mcp doctor` is the support-report path and projects bounded configuration facts instead of the complete local state. Successful Worker health is reported as reachability, while endpoint/name, workspace identity, device key material and stable key identifiers, resource paths, and similar local correlation values are omitted from its state summary. `machine-mcp status` is an owner-local diagnostic and intentionally remains more detailed. Review support output before publication because operating-system/version context and failure timing can still be identifying metadata.
 
 ## Runtime instruction context
 
@@ -53,6 +57,14 @@ Modern Streamable HTTP mirrors protocol version, method, tool/resource/prompt na
 Modern response closure is conveyed by a random internal stream capability. Public requests cannot set it because the outer Worker removes both internal headers, and the credential-free cancel control forwards no access token or DPoP proof. The capability is used only to remove one active pending call and is never logged or persisted as user-visible evidence.
 
 Tool schemas are compiled locally. Network `$ref` dereference is unsupported, so schema validation cannot turn a catalog entry into an outbound metadata request or SSRF channel. Runtime validation also has a total step budget: each array item and own object property consumes work without first allocating an unbounded key list. Open `_meta`, capability-extension, and subscription-filter JSON has an independent 4,096-node/32-level/bounded-key limit; resource subscription lists are count/length bounded. Failures report only JSON Pointer path, keyword, and constraint text; the rejected value is never copied into an error or log, even when it resembles a credential.
+
+## Computer Use privacy
+
+`computer_observe` may return browser screenshots, macOS window screenshots, Accessibility semantics, page labels/text, URLs, control metadata, and bounded post-action diffs. These are requested tool results and can contain personal or secret-bearing information even when value fields are suppressed. They are never copied into operational logs, audit payloads, release evidence, or repository fixtures. Private backend-node IDs, application process generations, owner-window screen bounds, exact-value verification handles, and native input coordinates remain daemon-local snapshot state and are not projected in the public observation.
+
+Computer Use snapshots are process-local, bounded, and expire after ten monotonic minutes; wall-clock changes do not extend the authority lifetime, and they are not durable managed-job state or MCP replay/session state. Resource-backed non-sensitive application values retained solely for exact post-write verification use one-shot opaque handles, a maximum of 32 live records, and a 60-second monotonic fallback lifetime; normal `computer_act` cleanup removes them earlier whenever possible. An observation screenshot that would make the native MCP result exceed the ordinary 7 MiB result boundary is omitted before the snapshot ID is published. A post-action screenshot that would overflow the same boundary is omitted from the returned result and stored continuation snapshot while the already-established dispatch/effect settlement and bounded `post_snapshot_id` are preserved. In either case the semantic snapshot may still be returned, but screenshot-bound pixel authority is removed. This is a delivery/retention bound, not image-content classification: the local capture can still have existed transiently in memory before the size decision, so callers must treat the operation as having observed that surface.
+
+The experimental macOS visual backend compiles a fixed native helper into the owner-local runtime cache only after explicit opt-in. It does not persist captured screenshot bytes or user-entered text as part of the backend cache. The manual smoke test uses a synthetic temporary application fixture and must not be repurposed to capture ordinary user applications or real private content for repository evidence.
 
 ## Review rules
 

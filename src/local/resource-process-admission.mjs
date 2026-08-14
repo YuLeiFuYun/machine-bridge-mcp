@@ -18,8 +18,8 @@ export async function acquireProcessResources(coordinator, command, args, enviro
       cancelCheck: options.cancelCheck,
     });
   } catch (error) {
-    const transactionBusy = error?.code === "MBM_RESOURCE_TRANSACTION_BUSY";
-    if (!(error instanceof ResourceAdmissionError) && !transactionBusy) throw error;
+    const coordinatorBusy = ["MBM_RESOURCE_TRANSACTION_BUSY", "MBM_RESOURCE_STAGING_BUSY"].includes(error?.code);
+    if (!(error instanceof ResourceAdmissionError) && !coordinatorBusy) throw error;
     const decision = error instanceof ResourceAdmissionError ? error.decision : { state: "unknown", reason: "coordinator_busy" };
     throw new BridgeError("unavailable", "local heavy-resource capacity is temporarily unavailable", {
       retryable: true,

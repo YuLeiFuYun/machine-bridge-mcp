@@ -46,6 +46,7 @@ try {
   runtime.gitDiff = route("git_diff");
   runtime.gitLog = route("git_log");
   runtime.gitShow = route("git_show");
+  runtime.gitCommit = route("git_commit");
   runtime.diagnoseRuntime = route("diagnose_runtime");
   runtime.generateSshKeyResource = route("generate_ssh_key_resource");
   runtime.runDirectProcess = route("run_process");
@@ -62,6 +63,10 @@ try {
     openApplication: route("open_local_application"),
     inspectApplication: route("inspect_local_application"),
     operateApplication: route("operate_local_application"),
+  };
+  runtime.computerUseManager = {
+    observe: route("computer_observe"),
+    act: route("computer_act"),
   };
   runtime.browserBridgeManager = {
     status: route("browser_status"),
@@ -100,6 +105,8 @@ try {
     open_local_application: { application: "Example" },
     inspect_local_application: { application: "Example" },
     operate_local_application: { application: "Example", action: "activate" },
+    computer_observe: { surface: "browser" },
+    computer_act: { surface: "browser", snapshot_id: "cu_matrix00000001", action: "reload" },
     browser_manage_tabs: { action: "new" },
     browser_action: { action: "reload" },
     browser_fill_form: { fields: [{ selector: { css: "#field" }, value: "value" }] },
@@ -113,6 +120,7 @@ try {
     edit_file: { path: "file.txt", old_text: "a", new_text: "b" },
     apply_patch: { patch: "*** Begin Patch\n*** End Patch" },
     search_text: { path: ".", query: "value" },
+    git_commit: { path: ".", message: "matrix commit" },
     run_process: { argv: [process.execPath, "--version"], timeout_seconds: 1 },
     start_process: { argv: [process.execPath, "--version"] },
     read_process: { session_id: "matrix-session" },

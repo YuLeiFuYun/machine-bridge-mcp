@@ -50,11 +50,12 @@ The complete component and trust-boundary diagram is in [docs/OVERVIEW.md](docs/
 
 ## MCP protocol model
 
-Machine Bridge executes one MCP protocol version: `2026-07-28`.
+Machine Bridge uses MCP `2026-07-28` as its native protocol. Stdio is current-only. Remote HTTP also accepts bounded, stateless initialization compatibility for `2025-06-18` and `2025-11-25` so older hosts can migrate without restoring the removed session model.
 
-- **Every request is self-describing.** Protocol version and client capabilities travel in `_meta`; HTTP requests also mirror the version, method, and applicable name/parameter values into validated headers. Clients use `server/discover`; there is no `initialize` handshake or MCP protocol session.
+- **Native current requests are self-describing.** Protocol version and client capabilities travel in `_meta`; HTTP requests also mirror the version, method, and applicable name/parameter values into validated headers. Native `2026-07-28` clients use `server/discover` and do not create an MCP protocol session.
+- **Remote initialization compatibility is stateless.** Compatible HTTP clients may use `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`; tool calls still execute through the current request-scoped controller. Compatibility does not create or accept `Mcp-Session-Id`, recovery GET, `Last-Event-ID`, persisted replay/delivery state, or initialization-owned authorization state.
 - **HTTP streams are request-scoped and non-resumable.** Closing the response stream cancels that request. There is no recovery GET, SSE event-ID replay, or session-bound delivery store.
-- **Removed session-protocol traffic never executes.** A bounded detector may return upgrade guidance for an obsolete `initialize` or session-header request, but it does not create legacy state or dispatch a tool.
+- **Removed session/replay semantics never execute.** Unsupported protocol dates and requests for the retired session/recovery model receive bounded rejection or upgrade guidance rather than legacy state or replay behavior.
 - **Transport identity is not conversation identity.** Stdio and HTTP processes/connections may interleave unrelated requests; state that spans calls must use an explicit tool, job, process-session, or resource identifier.
 
 The Worker validates the actual `/mcp` Origin, mirrored headers, role-filtered tool visibility, and raw arguments before routing or daemon dispatch. Tool arguments use one bounded JSON Schema 2020-12 contract in both Worker and local runtime; validation has fixed schema and runtime-work budgets and never echoes rejected values. Request-stream cancellation uses a private random capability stripped from public requests and forwards no OAuth/DPoP credential.
@@ -188,6 +189,8 @@ Load the printed unpacked-extension directory into the intended Chromium profile
 
 Machine Bridge does not launch or identify a separate browser profile. It controls whichever profile contains the extension, including that profile's tabs and login state. Read [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md) before enabling it.
 
+For stateful GUI trajectories, owner/full callers can use the higher-level `computer_observe` / `computer_act` pair. `computer_observe` creates one bounded browser or application snapshot with semantic evidence and native MCP image content when available; `computer_act` consumes the exact snapshot as one-shot mutation authority, dispatches at most once, observes post-state, and reports dispatch/effect settlement separately so ambiguous mutations are not automatically replayed. See [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md).
+
 ## Durable work and local resources
 
 Remote foreground process, shell, browser, and application calls are bounded to 60 seconds of daemon execution. The Worker retains separate settlement ownership for five additional seconds, but neither that margin nor its internal stream metrics prove that an external MCP host consumed the terminal frame. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; a remote owner can inspect `diagnose_runtime.runtime.processes`, while local stdio exposes `server_info.runtime.processes`. Non-owner accounts receive authority-scoped readiness rather than machine-wide process activity. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
@@ -229,11 +232,11 @@ The exact tool set depends on the effective policy and account role. Both transp
 Major groups include:
 
 - workspace reads, writes, exact edits, and transactional patches;
-- Git status, diff, log, and show with helper suppression and privacy bounds;
+- Git status, diff, log, and show with helper suppression and privacy bounds, plus structured staged-only `git_commit`;
 - direct argv execution, shell execution, and interactive process sessions;
 - runtime diagnostics and structured project/capability discovery;
 - managed jobs and registered local resources;
-- supported application and browser operations.
+- supported application/browser operations and snapshot-bound Computer Use.
 
 ## Development and verification
 

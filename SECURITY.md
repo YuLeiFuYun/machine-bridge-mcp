@@ -184,13 +184,17 @@ The extension independently caps active operations at 32. Its public error bound
 
 After trusted input dispatch begins, an ambiguous failure is reported as unknown outcome and is not automatically replayed.
 
+`computer_observe` / `computer_act` add snapshot binding, not new authority. Browser targets are tied to the observed tab/document/frame/semantic identity and optional screenshot; macOS application targets are tied to the exact process generation and, when available, owner-window evidence. A snapshot is one-shot mutation authority and is consumed before backend mutation handoff. Raw backend-node IDs, arbitrary CDP calls, unbound screen coordinates, or caller-provided JXA/native code are not accepted. If a browser transport or fixed local UI helper may already have started a mutation, the result is explicitly non-retryable and the caller must inspect post-state before any new action.
+
+Computer Use screenshots share the ordinary MCP result-size boundary. When an image would make an observation result too large, the image is omitted before the snapshot ID is published and pixel-action authority is disabled. When a post-action image would overflow the same boundary, it is removed from the returned/stored post snapshot while the already-established mutation settlement and bounded continuation handle are preserved; the result never turns that dispatched action into a generic retryable size failure. Semantic state may still be returned. The experimental macOS background visual backend is disabled unless explicitly configured and successfully probed; Accessibility, Automation, Screen Recording, and the operating system remain independent enforcement boundaries.
+
 Local resources may be injected without returning their bytes through MCP, but the destination page or application still receives them. Screenshots and page source can themselves contain secrets.
 
 ## Filesystem and mutation integrity
 
 Workspace-confined profiles canonicalize existing paths and write ancestors. Final symbolic-link writes are rejected. Patch add, update, delete, and move destinations are classified before mutation.
 
-Writes use bounded same-directory staging and atomic replacement. Expected hashes and exact edits reduce stale overwrites. Patch transactions prevalidate all operations, serialize mutation, maintain backups, and roll back ordinary commit errors.
+Writes use bounded same-directory staging and atomic replacement. Expected hashes and exact edits reduce stale overwrites. Patch transactions prevalidate all operations, serialize mutation, maintain backups, and roll back ordinary commit errors. If rollback of an already-committed user-file step itself fails, Machine Bridge returns a public non-retryable `patch_recovery_incomplete` settlement directing the caller to inspect affected paths instead of hiding the potentially partial mutation behind a generic internal error.
 
 On systems without descriptor-relative traversal, a malicious same-user process can still race parent-directory replacement between validation and open. Machine Bridge does not claim protection from a hostile process with equivalent OS-user authority.
 
@@ -265,8 +269,8 @@ No logging policy prevents data from being returned to an authorized client that
 Machine Bridge cannot make arbitrary local executables safe, identify all sensitive data, guarantee cleanup across every power/storage/security failure, override MCP-host or endpoint-security policy, neutralize prompt injection, protect against root or a fully compromised same-user account, or manufacture production signing and governance controls.
 
 See [docs/AUDIT.md](docs/AUDIT.md) for historical findings and residual limitations.
-## Resumable Streamable HTTP delivery
+## Request-scoped Streamable HTTP delivery
 
-SSE event identifiers are cursors, not bearer credentials. Recovery requires a valid OAuth Bearer/DPoP request and the original signed `MCP-Session-Id`; a cursor from another token or session is reported as not found. `GET /mcp` only replays an existing stream, while POST always represents new work.
+MCP `2026-07-28` response streams are request-scoped and non-resumable. SSE frames carry no event IDs, `GET /mcp` is not a recovery channel, and `Mcp-Session-Id` / `Last-Event-ID` do not create protocol-session or replay state. Closing the public response stream cancels that request through a random internal capability that carries neither Authorization nor DPoP credentials.
 
-The Worker stores bounded stream and call state to bridge transport loss. Active streamed-call records contain opaque ownership/generation identifiers, request correlation, deadlines, and no tool arguments; terminal records retain at most 1.5 MiB for two minutes and include SHA-256 integrity metadata. The index is limited to 64 streams. This protects continuity and detects accidental storage corruption, not compromise of the Worker account or Durable Object. A valid persisted call remains pending after Worker restart. Only a pending stream record with no durable call owner is reported as an ambiguous execution outcome; clients must reconcile before retrying a non-idempotent tool in that case.
+A brief relay interruption may rebind an already-dispatched pending call only to the same verified daemon instance within the bounded reconnect grace period. That continuity is in memory and remains owned by the initiating HTTP response; it does not persist a terminal result, create client-visible replay state, or authorize retry after the response has ended. Remote compatibility for the declared older initialization dates is likewise stateless and does not restore the removed session model.

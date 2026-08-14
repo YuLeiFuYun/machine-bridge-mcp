@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-reporting.mjs";
 import { runtimeActivityVisible } from "../src/local/runtime-activity-projection.mjs";
 import { projectOverviewDetail, projectProjectOverview } from "../src/shared/project-overview-projection.mjs";
-import { GitService, GIT_METADATA_TIMEOUT_MS } from "../src/local/git-service.mjs";
+import { GitService } from "../src/local/git-service.mjs";
 import { diagnoseRuntime, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/local/runtime-diagnostics.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "../src/local/doctor-reporting.mjs";
 import { classifySystemRouteInterface, inspectSystemNetworkRoute, systemNetworkRouteCheck } from "../src/local/system-network-route.mjs";
@@ -18,7 +18,7 @@ await testRuntimeReporting();
 testProcessSessionStatusAuthority();
 await testRuntimeDiagnostics();
 testDoctorReportingScope();
-await testGitServiceMetadataTimeout();
+await testGitServiceDiscoveryBoundary();
 await testRuntimeCapabilities();
 await testRuntimeResourceService();
 await testPathInspectionFailures();
@@ -121,8 +121,7 @@ async function testRuntimeReporting() {
     toolNames: ["read_file"],
     capabilityObserver: { snapshot: () => ({ resolutions: 1 }) },
     listTopLevel: async () => ({ entries: [{ name: "README.md" }] }),
-    gitExecutable: () => "/usr/bin/git",
-    runInternalProcess: async () => ({ code: 0, stdout: "/workspace/project\n" }),
+    resolveGitRoot: async () => "/workspace/project",
     safeErrorMessage: (error) => String(error?.message || error),
     throwIfCancelled() {},
   });
@@ -133,8 +132,8 @@ async function testRuntimeReporting() {
     workspace: "/workspace/project", displayPath: (value) => value, policy: review, toolNames: ["read_file"],
     daemonPolicy: full, daemonToolNames: ["read_file", "exec_command"],
     capabilityObserver: { snapshot: () => ({ last_task_resolution: { selected_skill: "private-skill" } }) },
-    listTopLevel: async () => ({ entries: [] }), gitExecutable: () => "/usr/bin/git",
-    runInternalProcess: async () => ({ code: 0, stdout: "/workspace/project\n" }), safeErrorMessage: () => "safe", throwIfCancelled() {},
+    listTopLevel: async () => ({ entries: [] }), resolveGitRoot: async () => "/workspace/project",
+    safeErrorMessage: () => "safe", throwIfCancelled() {},
   }, editorContext);
   assert(nonOwnerOverview.capabilityRouting.activity_hidden_by_authority === true
     && nonOwnerOverview.daemonTools.includes("exec_command"),
@@ -154,10 +153,9 @@ async function testRuntimeReporting() {
       await topLevelGate;
       return { entries: Array.from({ length: 55 }, (_value, index) => ({ name: `entry-${index}` })) };
     },
-    gitExecutable: () => "/usr/bin/git",
-    runInternalProcess: async () => {
+    resolveGitRoot: async () => {
       starts.push("git");
-      return { code: 0, stdout: "/workspace/project\n" };
+      return "/workspace/project";
     },
     safeErrorMessage: () => "safe",
     throwIfCancelled() {},
@@ -176,8 +174,7 @@ async function testRuntimeReporting() {
     toolNames: [],
     capabilityObserver: { snapshot: () => ({}) },
     listTopLevel: async () => { throw new Error("unreadable"); },
-    gitExecutable: () => "/usr/bin/git",
-    runInternalProcess: async () => ({ code: 1, stdout: "" }),
+    resolveGitRoot: async () => "",
     safeErrorMessage: () => "safe",
     throwIfCancelled() {},
   });
@@ -456,24 +453,26 @@ function testDoctorReportingScope() {
   "doctor reporting scope falsely claims service relay inspection");
 }
 
-async function testGitServiceMetadataTimeout() {
-  const root = await mkdtemp(join(tmpdir(), "mbm-git-metadata-timeout-"));
+async function testGitServiceDiscoveryBoundary() {
+  const root = await mkdtemp(join(tmpdir(), "mbm-git-discovery-boundary-"));
   try {
-    let observedTimeoutMs = 0;
+    let processCalls = 0;
     const service = new GitService({
-      resolveExistingPath: async () => root,
+      resolveExistingPath: async (value) => {
+        if (value !== root) throw Object.assign(new Error("outside"), { code: "path_boundary" });
+        return value;
+      },
       displayPath: (value) => value,
-      runInternalProcess: async (_command, _args, timeoutMs) => {
-        observedTimeoutMs = timeoutMs;
-        return { code: 128, stdout: "", stderr: "not a repository" };
+      runInternalProcess: async () => {
+        processCalls += 1;
+        return { code: 128, stdout: "", stderr: "unexpected Git process" };
       },
       gitExecutable: () => "/usr/bin/git",
       maximumBytes: 1024 * 1024,
     });
     const result = await service.context(root);
-    assert(result.ok === false, "Git metadata fixture unexpectedly found a repository");
-    assert(observedTimeoutMs === GIT_METADATA_TIMEOUT_MS && GIT_METADATA_TIMEOUT_MS === 30_000,
-      "Git repository metadata probe did not use the bounded scheduler-tolerant timeout");
+    assert(result.ok === false, "Git discovery fixture unexpectedly found a repository");
+    assert(processCalls === 0, "Git repository discovery executed Git before establishing the local metadata boundary");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

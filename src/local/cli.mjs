@@ -25,6 +25,7 @@ import { createDeviceSessionForRoot, deviceRootProviderStatus, ensurePreferredDe
 import { convergeRemoteConfiguration } from "./remote-configuration.mjs";
 import { workerHealth } from "./worker-health.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "./doctor-reporting.mjs";
+import { supportStateProjection } from "./support-state-projection.mjs";
 export { workerHealthUserReason } from "./worker-health.mjs";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
 import { pruneRetiredManagedJobDirectories } from "./managed-job-directory-generation.mjs";
@@ -590,7 +591,7 @@ async function doctorCommand(args) {
     }
   }
   const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion(), { expectedWorkerName: state.worker.name }) : { ok: false, error: "no worker url" };
-  checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
+  checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? "reachable" : health.error });
   const diagnosticRuntime = new LocalRuntime({
     workspace,
     policy: state.policy,
@@ -611,8 +612,7 @@ async function doctorCommand(args) {
     ok: checks.every(check => check.ok),
     checks,
     diagnosticScope: DOCTOR_RUNTIME_SCOPE,
-    runtimeDiagnostics,
-    state: redactState(state),
+    state: supportStateProjection(state),
   }, null, 2));
 }
 

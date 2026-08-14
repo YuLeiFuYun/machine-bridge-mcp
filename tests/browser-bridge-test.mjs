@@ -6,7 +6,8 @@ import { WebSocket } from "ws";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { BrowserBrokerRoutes } from "../src/local/browser-broker-routes.mjs";
 import { BrowserRequestRegistry } from "../src/local/browser-request-registry.mjs";
-import { BridgeError } from "../src/local/errors.mjs";
+import { browserMethodMayMutate } from "../src/local/browser-extension-protocol.mjs";
+import { BridgeError, publicError } from "../src/local/errors.mjs";
 import { EXPECTED_EXTENSION_ID } from "../src/local/browser-extension-identity.mjs";
 import { BROKER_AUTH_REQUEST_HEADER, BROKER_AUTH_REQUEST_VALUE, createBrokerAuthChallenge, createBrokerClientProtocol, createBrokerInitProof, parseBrokerAuthResponse, verifyBrokerServerProof } from "../src/local/browser-broker-auth.mjs";
 import { createPairingBootstrapInitProof, createPairingBootstrapProof, parseBrowserPairingGrant } from "../src/local/browser-pairing-grant.mjs";
@@ -313,6 +314,35 @@ try {
 
 
 async function testBrowserRequestSettlementEvidence() {
+  for (const method of ["manage_tabs", "point_action", "backend_node_action", "action", "fill_form", "upload_files", "screenshot"]) {
+    assert(browserMethodMayMutate(method), `${method} lost browser mutation classification`);
+  }
+  for (const method of ["list_tabs", "wait", "get_source", "inspect_page", "observe_computer", "document_state"]) {
+    assert(!browserMethodMayMutate(method), `${method} was incorrectly classified as a browser mutation`);
+  }
+  assert(!browserMethodMayMutate(["action"]), "coercible browser method acquired mutation classification");
+
+  const invalidMethodRegistry = new BrowserRequestRegistry();
+  await expectReject(
+    Promise.resolve().then(() => invalidMethodRegistry.request({ transport: { send() {} }, method: ["action"], params: {}, timeoutSeconds: 30 })),
+    "browser request method is invalid",
+  );
+  await expectReject(
+    Promise.resolve().then(() => invalidMethodRegistry.request({ transport: { send() {} }, method: "action", params: {}, timeoutSeconds: "30" })),
+    "browser request timeout is invalid",
+  );
+
+  const sendFailureRegistry = new BrowserRequestRegistry();
+  const sendFailure = sendFailureRegistry.request({
+    transport: { send() { throw new Error("injected transport send failure"); } },
+    method: "upload_files", params: {}, timeoutSeconds: 30,
+  });
+  let sendFailureError;
+  try { await sendFailure; } catch (error) { sendFailureError = error; }
+  assert(publicError(sendFailureError).message.includes("outcome is unknown") && publicError(sendFailureError).retryable === false,
+    "mutating transport send failure lost unknown non-replayable settlement");
+  assert(sendFailureRegistry.pending.size === 0, "failed mutating transport send left a pending browser request");
+
   const sent = [];
   const transport = { send(value) { sent.push(JSON.parse(value)); } };
   const registry = new BrowserRequestRegistry();
@@ -353,6 +383,30 @@ async function testBrowserRequestSettlementEvidence() {
     && partialError.details?.side_effects_started === true && partialError.details?.effect_settlement === "unknown",
   "extension-proven partial browser input lost its structured side-effect evidence");
 
+  for (const malformedResponse of [
+    { ok: "false", error: "browser operation failed" },
+    { ok: 1, result: { ok: true } },
+    { error: "browser operation failed" },
+    { ok: false, error: ["browser operation failed"] },
+    { ok: false, error: "" },
+    { ok: true, result: ["completed"] },
+    { ok: true, result: "completed" },
+    { ok: true, result: null },
+  ]) {
+    const malformedRegistry = new BrowserRequestRegistry();
+    let requestId = "";
+    const malformed = malformedRegistry.request({
+      transport: { send(value) { requestId = JSON.parse(value).id; } },
+      method: "action", params: {}, timeoutSeconds: 30,
+    });
+    assert(malformedRegistry.settle({ type: "response", id: requestId, ...malformedResponse }),
+      "malformed extension response did not settle its pending request");
+    let malformedError;
+    try { await malformed; } catch (error) { malformedError = error; }
+    assert(publicError(malformedError).message.includes("outcome is unknown") && publicError(malformedError).retryable === false,
+      "malformed mutating response was accepted or downgraded to a definite failure");
+  }
+
   const clientMessages = [];
   const extensionMessages = [];
   const clientSocket = { readyState: 1, send(value) { clientMessages.push(JSON.parse(value)); }, close() {} };
@@ -381,6 +435,60 @@ async function testBrowserRequestSettlementEvidence() {
   assert(proxyError instanceof BridgeError && proxyError.code === "unavailable" && proxyError.retryable === false
     && proxyError.details?.effect_settlement === "unknown",
   "current browser proxy client lost the broker's ambiguous-mutation semantics");
+
+  const brokerClient = () => ({
+    readyState: 1,
+    responses: [],
+    send(value) { this.responses.push(JSON.parse(value)); },
+    close() {},
+  });
+  const brokerRoutes = (extensionSocket) => new BrowserBrokerRoutes({
+    maximum: 8,
+    getExtensionSocket: () => extensionSocket,
+    extensionConnected: () => true,
+    extensionStatusInfo: () => null,
+    extensionReloadRequired: () => false,
+  });
+  const brokerRequest = (id, method, extra = {}) => Buffer.from(JSON.stringify({
+    type: "request", id, method, params: {}, timeout_ms: 30000, ...extra,
+  }));
+
+  const preSendClient = brokerClient();
+  brokerRoutes({ readyState: 3, send() { throw new Error("must not send"); } })
+    .handleClientMessage(preSendClient, brokerRequest("pre-send", "action"));
+  assert(preSendClient.responses[0]?.error === "browser extension send failed",
+    "pre-send broker failure was incorrectly classified as an ambiguous mutation");
+
+  const sendThrowClient = brokerClient();
+  brokerRoutes({ readyState: 1, send() { throw new Error("injected send failure"); } })
+    .handleClientMessage(sendThrowClient, brokerRequest("send-throw", "upload_files"));
+  assert(String(sendThrowClient.responses[0]?.error || "").includes("outcome is unknown"),
+    "broker send failure after invoking transport lost mutation uncertainty");
+
+  const normalizedRequests = [];
+  const normalizedClient = brokerClient();
+  const normalizedRoutes = brokerRoutes({ readyState: 1, send(value) { normalizedRequests.push(JSON.parse(value)); } });
+  normalizedRoutes.handleClientMessage(normalizedClient, brokerRequest("normalized", "list_tabs", {
+    call_id: "call-1", secret_extra: "must-not-cross-broker",
+  }));
+  assert(normalizedRequests[0]?.call_id === "call-1" && !Object.hasOwn(normalizedRequests[0], "secret_extra"),
+    "broker forwarded runtime-controlled top-level fields outside the fixed request schema");
+  normalizedRoutes.rejectAll("test cleanup");
+
+  for (const malformedRequest of [
+    { id: ["bad"], method: "list_tabs", params: {}, timeout_ms: 30000 },
+    { id: "bad-method", method: ["list_tabs"], params: {}, timeout_ms: 30000 },
+    { id: "bad-params", method: "list_tabs", params: [], timeout_ms: 30000 },
+    { id: "bad-timeout", method: "list_tabs", params: {}, timeout_ms: "30000" },
+    { id: "bad-call-id", method: "list_tabs", params: {}, timeout_ms: 30000, call_id: ["call-1"] },
+  ]) {
+    const extensionRequests = [];
+    const malformedClient = { ...brokerClient(), closed: [], close(code, reason) { this.closed.push({ code, reason }); } };
+    const malformedRoutes = brokerRoutes({ readyState: 1, send(value) { extensionRequests.push(JSON.parse(value)); } });
+    malformedRoutes.handleClientMessage(malformedClient, Buffer.from(JSON.stringify({ type: "request", ...malformedRequest })));
+    assert(extensionRequests.length === 0 && malformedRoutes.snapshot().routed_requests === 0 && malformedClient.closed[0]?.code === 1002,
+      "coercible/malformed runtime request crossed the broker dispatch boundary");
+  }
 }
 
 async function testStopDuringStart() {

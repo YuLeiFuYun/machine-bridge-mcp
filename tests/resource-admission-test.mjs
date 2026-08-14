@@ -28,6 +28,7 @@ import { releaseProcessResourcesQuietly } from "../src/local/resource-process-ad
 import { foregroundResourceWaitMs, processSessionResourceWaitMs } from "../src/local/resource-foreground-wait.mjs";
 import { releaseControlExecutableIsTrusted } from "../src/local/resource-release-control-executable.mjs";
 import { releaseControlWorkspaceForCommand, releaseControlWorkspaceMatches } from "../src/local/resource-release-control-workspace.mjs";
+import { RESOURCE_STAGING_BUSY_CODE } from "../src/local/resource-staging-recovery.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
 import { createResourceWaiter, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
@@ -1402,8 +1403,35 @@ try {
   const liveStagingId = "9".repeat(32);
   const liveStaging = join(root, "leases", `.lease_${liveStagingId}.json.${process.pid}.${"1".repeat(16)}.tmp`);
   writeFileSync(liveStaging, "publisher-still-live", { mode: 0o600 });
-  await assert.rejects(() => coordinator.snapshot({ cwd: root }), /staging file is still owned by a live publisher/, "live publisher staging was reclaimed as a crash artifact");
+  await assert.rejects(
+    () => coordinator.snapshot({ cwd: root }),
+    (error) => error?.code === RESOURCE_STAGING_BUSY_CODE && /staging file is still owned by a live publisher/.test(error.message),
+    "live publisher staging was reclaimed as a crash artifact",
+  );
   rmSync(liveStaging, { force: true });
+
+  const transientRoot = `${root}-live-staging-retry`;
+  let transientStaging = "";
+  let transientStagingWaits = 0;
+  const transientCoordinator = new ResourceCoordinator({
+    root: transientRoot,
+    now: () => now,
+    sampleHost: () => ({ ...green, sampled_at_ms: now }),
+    random: () => 0,
+    sleep: async () => {
+      transientStagingWaits += 1;
+      if (transientStaging) rmSync(transientStaging, { force: true });
+    },
+  });
+  await transientCoordinator.snapshot({ cwd: transientRoot });
+  const transientId = "7".repeat(32);
+  transientStaging = join(transientRoot, "leases", `.lease_${transientId}.json.${process.pid}.${"6".repeat(16)}.tmp`);
+  writeFileSync(transientStaging, "publisher-settling", { mode: 0o600 });
+  const transientSnapshot = await transientCoordinator.snapshot({ cwd: transientRoot });
+  assert.equal(transientSnapshot.active_leases, 0, "transient live publisher became an admitted lease");
+  assert.equal(transientStagingWaits, 1, "resource coordinator did not perform one bounded retry for transient live staging");
+  assert.equal((await import("node:fs")).existsSync(transientStaging), false, "transient publisher staging survived its simulated settlement");
+  rmSync(transientRoot, { recursive: true, force: true });
 
   const reusedPublisherId = "8".repeat(32);
   const reusedPublisherStaging = join(root, "leases", `.lease_${reusedPublisherId}.json.${process.pid}.${"7".repeat(16)}.tmp`);

@@ -150,7 +150,7 @@ Available placeholders are:
 {{job:workspace}}
 ```
 
-Temporary files live only below the private job runtime and are removed in the runner's final cleanup path. This is preferable to writing into `Codex/daily/ops`, `/tmp`, or a remote home directory and relying on a later MCP call to delete the file.
+Temporary files live only below the private job runtime and are removed in the runner's final cleanup path. This is preferable to writing into a workspace-local scratch tree, `/tmp`, or a remote home directory and relying on a later MCP call to delete the file.
 
 For a remote shell program, avoid a remote helper entirely when possible:
 

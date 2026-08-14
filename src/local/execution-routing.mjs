@@ -41,10 +41,15 @@ const ROUTES = Object.freeze([
     "file", "source", "code", "edit", "write", "patch", "refactor", "search", "inspect", "repository",
     "文件", "源码", "代码", "修改", "写入", "补丁", "重构", "搜索", "仓库",
   ]),
-  route("git-review", "Git inspection", [
-    "git_status", "git_diff", "git_log", "git_show",
-  ], "Use Git-specific read surfaces for bounded status, diffs, history, and revision inspection.", [
+  route("git-review", "Git repository", [
+    "git_status", "git_diff", "git_log", "git_show", "git_commit",
+  ], "Use Git-specific structured surfaces for bounded inspection and local commits from an already-staged index; prefer git_commit over generic process execution when creating a commit.", [
     "git", "commit", "diff", "branch", "history", "revision", "提交", "分支", "差异", "历史", "版本",
+  ]),
+  route("computer-use", "Verified computer use", [
+    "computer_observe", "computer_act",
+  ], "Use snapshot-bound observe-act-verify for GUI work. Prefer this over separate low-level browser/application calls when the task needs state validation or recovery from ambiguous outcomes.", [
+    "computer use", "gui agent", "screen grounding", "verify action", "电脑操作", "界面操作", "视觉定位", "验证结果",
   ]),
   route("browser", "Existing browser profile", [
     "browser_status", "browser_list_tabs", "browser_manage_tabs", "browser_get_source", "browser_inspect_page",
@@ -77,8 +82,9 @@ const ROUTE_FALLBACKS = Object.freeze({
   "managed-job": ["process-session", "shell"],
   "workspace-edit": ["shell", "git-review"],
   "git-review": ["workspace-edit", "shell"],
-  browser: ["diagnostics", "shell"],
-  application: ["diagnostics", "shell"],
+  "computer-use": ["browser", "application", "diagnostics"],
+  browser: ["computer-use", "diagnostics", "shell"],
+  application: ["computer-use", "diagnostics", "shell"],
   "protected-resource": ["diagnostics"],
   diagnostics: ["shell"],
 });
@@ -140,7 +146,7 @@ export function buildExecutionRouting(task, options = {}) {
         : "low";
 
   const recommendedTools = unique([
-    ...routes.slice(0, 3).flatMap((item) => item.tools.slice(0, 5)),
+    ...routes.slice(0, 3).flatMap((item) => rankedRouteTools(item, scoreByTool, 5)),
     ...(Array.isArray(options.seedTools) ? options.seedTools : []),
     ...toolScores.slice(0, MAX_RANKED_TOOLS).map((item) => item.tool),
   ]).filter((tool) => availableNames.has(tool)).slice(0, MAX_RECOMMENDED_TOOLS);
@@ -167,6 +173,14 @@ export function buildExecutionRouting(task, options = {}) {
     ],
     enforcement: "advisory_only; the MCP host may choose only tools allowed by the effective authority",
   };
+}
+
+function rankedRouteTools(routeValue, scoreByTool, maximum) {
+  return routeValue.tools
+    .map((tool, index) => ({ tool, index, score: scoreByTool.get(tool) || 0 }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, maximum)
+    .map((item) => item.tool);
 }
 
 function route(id, title, tools, guidance, keywords) {
@@ -217,6 +231,7 @@ function dynamicBoost(id, task, options) {
   if (id === "guided-workflow" && options.skillRelevant === true) add(18, "relevant_skill_found");
   if (id === "registered-command" && options.commandRelevant === true) add(20, "relevant_registered_command_found");
   if (id === "application" && Array.isArray(options.applicationMatches) && options.applicationMatches.length > 0) add(20, "installed_application_match");
+  if (id === "computer-use" && /computer use|gui agent|screen grounding|电脑操作|界面操作|视觉定位/.test(lower)) add(18, "computer_use_intent");
   if (id === "browser" && options.browserAvailable === true && /browser|chrome|edge|brave|网页|浏览器|表单|网站|登录/.test(lower)) add(14, "browser_intent");
   if (id === "managed-job" && /background|detached|durable|long[- ]?running|resume|cleanup|finally|overnight|continuous|后台|持久|断线|清理|长时间|持续|重试|多步骤/.test(lower)) add(14, "durability_or_cleanup_intent");
   if (id === "process-session" && /interactive|stdin|repl|watch|tail|stream|dev server|交互|实时日志|输入|常驻进程/.test(lower)) add(12, "interactive_process_intent");

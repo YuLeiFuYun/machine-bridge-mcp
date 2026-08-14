@@ -28,14 +28,17 @@ try {
     isSymbolicLink: () => false,
   });
   const precisionMismatch = await readOptionalRegularUtf8("virtual-metadata", 32, {
-    openFile: async () => ({
-      stat: async (options) => {
-        assert.equal(options?.bigint, true);
-        return identityStats(9007199254740993n);
-      },
-      read: async () => { metadataReadAttempted = true; return { bytesRead: 0 }; },
-      close: async () => { metadataHandleClosed = true; },
-    }),
+    openFile: async (_path, _flags, mode) => {
+      assert.equal(mode, 0o600, "project metadata descriptor open omitted the explicit private mode");
+      return {
+        stat: async (options) => {
+          assert.equal(options?.bigint, true);
+          return identityStats(9007199254740993n);
+        },
+        read: async () => { metadataReadAttempted = true; return { bytesRead: 0 }; },
+        close: async () => { metadataHandleClosed = true; },
+      };
+    },
     inspectPath: async (_path, options) => {
       assert.equal(options?.bigint, true);
       return identityStats(9007199254740992n);

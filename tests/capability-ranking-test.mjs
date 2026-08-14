@@ -12,7 +12,9 @@ const command = commandMatchText({ name: "package.test", description: "Run tests
 assert(command.includes("package.test") && command.includes("测试"), "command search text lost metadata");
 const tools = recommendTools("在浏览器填写表单并检查 git diff", { commandsAvailable: true, commandRelevant: false, skillRelevant: false });
 assert(tools.includes("browser_fill_form") && tools.includes("git_diff"), "tool recommendation lost browser or Git intent");
-assert(new Set(tools).size === tools.length, "tool recommendation returned duplicates");
+const commitTools = recommendTools("提交已经 staged 的 Git 修改", { commandsAvailable: true, commandRelevant: false, skillRelevant: false });
+assert(commitTools.includes("git_commit") && commitTools.includes("git_status"), "commit intent did not recommend the structured Git commit surface");
+assert(new Set(tools).size === tools.length && new Set(commitTools).size === commitTools.length, "tool recommendation returned duplicates");
 console.log("capability ranking test ok");
 
 function assert(condition, message) { if (!condition) throw new Error(message); }

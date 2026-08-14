@@ -14,7 +14,9 @@ const localAutomationFiles = [
   join(root, "browser-extension", "pairing-bootstrap.js"),
   join(root, "browser-extension", "browser-error-boundary.js"),
   join(root, "browser-extension", "browser-operations.js"),
+  join(root, "browser-extension", "devtools-session.js"),
   join(root, "browser-extension", "devtools-input.js"),
+  join(root, "browser-extension", "devtools-observation.js"),
   join(root, "browser-extension", "page-automation.js"),
   join(root, "browser-extension", "pairing.js"),
 ];
@@ -51,6 +53,20 @@ const pairingContentSource = readFileSync(join(root, "browser-extension", "pairi
 const browserErrorBoundarySource = readFileSync(join(root, "browser-extension", "browser-error-boundary.js"), "utf8");
 const browserOperationsSource = readFileSync(join(root, "browser-extension", "browser-operations.js"), "utf8");
 const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
+const devtoolsInputSource = readFileSync(join(root, "browser-extension", "devtools-input.js"), "utf8");
+const devtoolsObservationSource = readFileSync(join(root, "browser-extension", "devtools-observation.js"), "utf8");
+const devtoolsSessionSource = readFileSync(join(root, "browser-extension", "devtools-session.js"), "utf8");
+const localToolResultBoundarySource = readFileSync(join(root, "src", "local", "tool-result-boundary.mjs"), "utf8");
+const browserRequestSettlementSource = readFileSync(join(root, "src", "local", "browser-request-settlement.mjs"), "utf8");
+const localAutomationDocsSource = readFileSync(join(root, "docs", "LOCAL_AUTOMATION.md"), "utf8");
+const architectureDocsSource = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
+if (!pageAutomationSource.includes("snapshot_version: 3")
+    || !localAutomationDocsSource.includes("`browser_inspect_page` returns snapshot version 3")
+    || localAutomationDocsSource.includes("`browser_inspect_page` returns snapshot version 2")
+    || !architectureDocsSource.includes("snapshot-version-3 semantics")
+    || architectureDocsSource.includes("snapshot-version-2 semantics")) {
+  throw new Error("browser snapshot version and architecture/local-automation documentation drifted apart");
+}
 const appAutomationSource = readFileSync(join(root, "src", "local", "app-automation.mjs"), "utf8");
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
@@ -125,7 +141,13 @@ if (!appAutomationSource.includes("matchesList[payload.selector.index]")) {
 if (!appAutomationSource.includes("item.role === 'AXSecureTextField'") || !appAutomationSource.includes("includeValues && !item.sensitive")) {
   throw new Error("application UI inspection does not suppress secure field values");
 }
-if (!serviceWorkerSource.includes('importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-input.js", "browser-operations.js")')) {
+const fixedWorkerModules = [
+  "browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-session.js",
+  "devtools-input.js", "devtools-observation.js", "browser-operations.js",
+];
+const importScriptsCall = serviceWorkerSource.match(/importScripts\(([^;]+)\);/)?.[0] || "";
+if (!fixedWorkerModules.every((name) => importScriptsCall.includes(`"${name}"`))
+    || /importScripts\([^"']/.test(importScriptsCall)) {
   throw new Error("browser service worker lost fixed browser module loading");
 }
 const stripIndex = pairingContentSource.indexOf("history.replaceState");
@@ -139,7 +161,20 @@ if (!browserErrorBoundarySource.includes("__machineBridgeBrowserErrorBoundary")
 if (!browserOperationsSource.includes('files: ["page-automation.js"]')) {
   throw new Error("browser operations module does not inject the fixed page automation module");
 }
+if (!localToolResultBoundarySource.includes("MAX_TOOL_RESULT_BYTES = 7 * 1024 * 1024")
+    || !serviceWorkerSource.includes("MAX_RESULT_BYTES = 7 * 1024 * 1024")) {
+  throw new Error("local and browser-extension tool-result byte ceilings drifted apart");
+}
+if (!browserOperationsSource.includes("browser mutation may have completed; the action outcome is unknown because its result could not be delivered")
+    || !browserRequestSettlementSource.includes('message.startsWith("browser mutation may have completed;")')) {
+  throw new Error("browser mutation result-undeliverable settlement drifted across extension and broker layers");
+}
 if (serviceWorkerSource.split(/\r?\n/).length > 350) throw new Error("browser service worker regained page-operation responsibilities");
+if (browserOperationsSource.split(/\r?\n/).length > 1900) throw new Error("browser operations exceeded its protocol/dispatch responsibility boundary");
+if (pageAutomationSource.split(/\r?\n/).length > 1200) throw new Error("browser page automation exceeded its page-world responsibility boundary");
+if (devtoolsInputSource.split(/\r?\n/).length > 330) throw new Error("browser DevTools input exceeded its trusted-input responsibility boundary");
+if (devtoolsObservationSource.split(/\r?\n/).length > 440) throw new Error("browser DevTools observation exceeded its observation responsibility boundary");
+if (devtoolsSessionSource.split(/\r?\n/).length > 50) throw new Error("browser DevTools session helper exceeded its serialization responsibility boundary");
 if (extensionBrokerAuthSource.split(/\r?\n/).length > 110) throw new Error("browser extension broker auth helper exceeded its transport/authentication responsibility");
 if (pairingBootstrapSource.split(/\r?\n/).length > 70) throw new Error("browser extension pairing bootstrap helper exceeded its authentication responsibility");
 for (const obsolete of ["func: inspectDocument", "func: performAction", "func: performFormFill", "func: performFileUpload"]) {

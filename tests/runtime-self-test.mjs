@@ -536,10 +536,14 @@ export async function runtimeSelfTest() {
     await expectReject(() => restricted.execCommand("printf 'x\0y'", 5), "NUL byte");
     if (process.platform !== "win32") {
       await expectReject(() => restricted.execCommand("sleep 5", 1), "command timed out");
-      const interrupted = restricted.runProcess("sleep", ["30"], 60_000);
-      await new Promise(resolvePromise => { setTimeout(resolvePromise, 50); });
+      await waitForProcessTrackerIdle(restricted, PROCESS_TREE_ESCALATION_WAIT_MS);
+      const trackedBeforeInterruption = restricted.processTracker.snapshot().active_processes;
+      const interrupted = restricted.runProcess("sleep", ["30"], 60_000)
+        .then((value) => ({ value, error: null }), (error) => ({ value: null, error }));
+      await waitForTrackedProcessIncrease(restricted, trackedBeforeInterruption, 5_000);
       restricted.terminateActiveProcesses("SIGTERM");
-      await expectReject(() => interrupted, "exited");
+      const interruption = await interrupted;
+      if (!String(interruption.error?.message || "").includes("exited")) throw new Error("terminated process did not reject with an exit failure");
       if (restricted.processTracker.snapshot().active_processes !== 0) throw new Error("terminated process remained tracked");
 
       const descendantPidFile = join(workspace, "timeout-descendant.pid");
@@ -620,6 +624,22 @@ async function waitForFileText(file, timeoutMs) {
     }
   }
   throw lastError || new Error(`timed out waiting for file: ${file}`);
+}
+
+async function waitForProcessTrackerIdle(runtime, timeoutMs) {
+  const deadline = performance.now() + timeoutMs;
+  while (runtime.processTracker.snapshot().active_processes > 0 && performance.now() < deadline) {
+    await new Promise(resolvePromise => { setTimeout(resolvePromise, 10); });
+  }
+  if (runtime.processTracker.snapshot().active_processes > 0) throw new Error("timed-out process did not leave the tracker before the next lifecycle test");
+}
+
+async function waitForTrackedProcessIncrease(runtime, baseline, timeoutMs) {
+  const deadline = performance.now() + timeoutMs;
+  while (runtime.processTracker.snapshot().active_processes <= baseline && performance.now() < deadline) {
+    await new Promise(resolvePromise => { setTimeout(resolvePromise, 10); });
+  }
+  if (runtime.processTracker.snapshot().active_processes <= baseline) throw new Error("new process did not reach tracker before termination test");
 }
 
 async function waitForProcessExit(pid, timeoutMs) {

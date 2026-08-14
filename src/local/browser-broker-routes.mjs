@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { browserMethodMayMutate, clampInt } from "./browser-command.mjs";
-import { closeProtocolSocket, parseBrowserSocketMessage, safeSocketSend } from "./browser-extension-protocol.mjs";
-
+import { clampInt } from "./browser-command.mjs";
+import { browserPostDispatchTransportFailure, closeProtocolSocket, normalizeRuntimeBrowserRequest, parseBrowserSocketMessage, safeSocketSend } from "./browser-extension-protocol.mjs";
 export class BrowserBrokerRoutes {
   constructor({ maximum, getExtensionSocket, extensionConnected, extensionStatusInfo, extensionReloadRequired }) {
     this.maximum = maximum;
@@ -12,11 +11,9 @@ export class BrowserBrokerRoutes {
     this.clients = new Set();
     this.routes = new Map();
   }
-
   snapshot() {
     return Object.freeze({ runtime_clients: this.clients.size, routed_requests: this.routes.size });
   }
-
   acceptClient(socket) {
     this.clients.add(socket);
     socket.on("message", (data) => this.handleClientMessage(socket, data));
@@ -48,16 +45,14 @@ export class BrowserBrokerRoutes {
       closeProtocolSocket(socket, parsed.code, parsed.reason);
       return;
     }
-    const message = parsed.message;
-    if (message.type === "ping") return;
-    if (message.type === "cancel" && typeof message.id === "string") {
-      this.cancelClientRequest(socket, message.id);
+    const incoming = parsed.message;
+    if (incoming.type === "ping") return;
+    if (incoming.type === "cancel" && typeof incoming.id === "string") {
+      this.cancelClientRequest(socket, incoming.id);
       return;
     }
-    if (message.type !== "request" || typeof message.id !== "string" || typeof message.method !== "string") {
-      closeProtocolSocket(socket, 1002, "invalid runtime protocol message");
-      return;
-    }
+    const message = normalizeRuntimeBrowserRequest(incoming);
+    if (!message) { closeProtocolSocket(socket, 1002, "invalid runtime protocol message"); return; }
     if (!this.extensionConnected()) {
       safeSocketSend(socket, { type: "response", id: message.id, ok: false, error: "browser extension is not connected" });
       return;
@@ -77,18 +72,24 @@ export class BrowserBrokerRoutes {
       const route = this.routes.get(routedId);
       if (!route) return;
       this.routes.delete(routedId);
-      const cancellationRequested = this.sendExtension({ type: "cancel", id: routedId });
-      const error = browserMethodMayMutate(route.method)
-        ? `browser broker request timed out after dispatch; ${cancellationRequested ? "cancellation requested but effect settlement is pending" : "cancellation delivery failed and effect settlement is unknown"}; inspect browser state before retrying`
-        : "browser broker request timed out";
-      safeSocketSend(socket, { type: "response", id: message.id, ok: false, error });
+      safeSocketSend(socket, {
+        type: "response", id: message.id, ok: false,
+        error: postDispatchRouteFailure(route, "browser broker request timed out"),
+      });
+      this.sendExtension({ type: "cancel", id: routedId });
     }, timeoutMs);
     timeout.unref?.();
-    this.routes.set(routedId, { socket, id: message.id, method: message.method, timeout });
-    if (this.sendExtension({ ...message, id: routedId, timeout_ms: timeoutMs })) return;
+    const route = { socket, id: message.id, timeout, method: message.method, dispatchAttempted: false };
+    this.routes.set(routedId, route);
+    const send = this.sendExtensionRequest({ ...message, id: routedId, timeout_ms: timeoutMs });
+    route.dispatchAttempted = send.attempted;
+    if (send.ok) return;
     clearTimeout(timeout);
     this.routes.delete(routedId);
-    safeSocketSend(socket, { type: "response", id: message.id, ok: false, error: "browser extension send failed" });
+    safeSocketSend(socket, {
+      type: "response", id: message.id, ok: false,
+      error: postDispatchRouteFailure(route, "browser extension send failed"),
+    });
   }
 
   cancelClientRequest(socket, requestId) {
@@ -105,7 +106,16 @@ export class BrowserBrokerRoutes {
     if (!route) return false;
     clearTimeout(route.timeout);
     this.routes.delete(message.id);
-    safeSocketSend(route.socket, { ...message, id: route.id });
+    if (message.ok === true && message.result && typeof message.result === "object" && !Array.isArray(message.result)) {
+      safeSocketSend(route.socket, { type: "response", id: route.id, ok: true, result: message.result });
+    } else if (message.ok === false && typeof message.error === "string" && message.error && !message.error.includes("\0") && message.error.length <= 2000) {
+      safeSocketSend(route.socket, { type: "response", id: route.id, ok: false, error: message.error });
+    } else {
+      safeSocketSend(route.socket, {
+        type: "response", id: route.id, ok: false,
+        error: postDispatchRouteFailure(route, "browser extension response was malformed"),
+      });
+    }
     return true;
   }
 
@@ -122,10 +132,10 @@ export class BrowserBrokerRoutes {
   rejectAll(message) {
     for (const [id, route] of this.routes) {
       clearTimeout(route.timeout);
-      const error = browserMethodMayMutate(route.method)
-        ? "browser connection changed after request dispatch; outcome is unknown; inspect browser state before retrying"
-        : message;
-      safeSocketSend(route.socket, { type: "response", id: route.id, ok: false, error });
+      safeSocketSend(route.socket, {
+        type: "response", id: route.id, ok: false,
+        error: postDispatchRouteFailure(route, message),
+      });
       this.routes.delete(id);
     }
   }
@@ -133,8 +143,7 @@ export class BrowserBrokerRoutes {
   close(message) {
     this.rejectAll(message);
     for (const client of this.clients) {
-      try { client.close(1001, "runtime stopped"); }
-      catch { /* Runtime shutdown is idempotent and the client may already be closed. */ }
+      try { client.close(1001, "runtime stopped"); } catch {}
     }
     this.clients.clear();
   }
@@ -144,4 +153,24 @@ export class BrowserBrokerRoutes {
     if (!socket || socket.readyState !== 1) return false;
     return safeSocketSend(socket, message);
   }
+
+  sendExtensionRequest(message) {
+    const socket = this.getExtensionSocket();
+    if (!socket || socket.readyState !== 1) return { ok: false, attempted: false };
+    let payload;
+    try { payload = JSON.stringify(message); }
+    catch { return { ok: false, attempted: false }; }
+    try {
+      socket.send(payload);
+      return { ok: true, attempted: true };
+    } catch {
+      return { ok: false, attempted: true };
+    }
+  }
+}
+
+function postDispatchRouteFailure(route, fallback) {
+  return route?.dispatchAttempted
+    ? browserPostDispatchTransportFailure(route.method, fallback)
+    : String(fallback || "browser transport failed");
 }
