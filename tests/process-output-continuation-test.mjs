@@ -386,7 +386,6 @@ async function testSessionAuthorityRevocation() {
     authorizeTool() {},
     runtimeDir: root,
     processTracker: tracker,
-    terminationSettlementWaitMs: 15_000,
     resourceCoordinator: {
       acquire: async () => ({
         async bindProcess() { return this; },
@@ -419,20 +418,28 @@ async function testSessionAuthorityRevocation() {
     await assert.rejects(() => manager.read({ session_id: oldVersion.session_id }, context(4)), /process session not found/,
       "revoked process session remained addressable");
 
+    const originalTerminateTree = manager.terminateTree;
+    // Delivery-failure fixtures must not depend on the host process-tree implementation. On Windows,
+    // successfully spawning taskkill means the request was accepted even when a synthetic PID is invalid.
     const failedTerminationId = `proc_${"z".repeat(24)}`;
     manager.sessions.set(failedTerminationId, {
       id: failedTerminationId,
-      child: { pid: 99_999_999, kill() { return false; } },
+      child: { pid: 99_999_999 },
       closedAt: null,
       waiters: new Set(),
       owner_kind: "account", owner_account_id: accountId, owner_account_version: 4,
       owner_client_id: clientId, owner_family_id: familyId, owner_role: "owner",
     });
-    await assert.rejects(() => manager.revokeAuthority({ accountId, accountVersion: 4, clientId, familyId }),
-      (error) => error?.code === "unavailable" && error?.retryable === true,
-      "process-session authority revocation acknowledged a failed termination request");
-    assert(manager.sessions.has(failedTerminationId), "failed process-session revocation discarded the only retained termination handle");
-    manager.sessions.delete(failedTerminationId);
+    try {
+      manager.terminateTree = () => false;
+      await assert.rejects(() => manager.revokeAuthority({ accountId, accountVersion: 4, clientId, familyId }),
+        (error) => error?.code === "unavailable" && error?.retryable === true,
+        "process-session authority revocation acknowledged a failed termination request");
+      assert(manager.sessions.has(failedTerminationId), "failed process-session revocation discarded the only retained termination handle");
+    } finally {
+      manager.terminateTree = originalTerminateTree;
+      manager.sessions.delete(failedTerminationId);
+    }
 
     const unsettledTerminationId = `proc_${"x".repeat(24)}`;
     const unsettledSession = {
@@ -444,7 +451,6 @@ async function testSessionAuthorityRevocation() {
       owner_client_id: clientId, owner_family_id: familyId, owner_role: "owner",
     };
     manager.sessions.set(unsettledTerminationId, unsettledSession);
-    const originalTerminateTree = manager.terminateTree;
     const originalSettlementWaitMs = manager.terminationSettlementWaitMs;
     try {
       manager.terminateTree = () => true;
@@ -456,23 +462,28 @@ async function testSessionAuthorityRevocation() {
     } finally {
       manager.terminateTree = originalTerminateTree;
       manager.terminationSettlementWaitMs = originalSettlementWaitMs;
+      manager.sessions.delete(unsettledTerminationId);
     }
-    manager.sessions.delete(unsettledTerminationId);
 
     const failedKillId = `proc_${"y".repeat(24)}`;
     manager.sessions.set(failedKillId, {
       id: failedKillId,
-      child: { pid: 99_999_998, kill() { return false; } },
+      child: { pid: 99_999_998 },
       closedAt: null,
       lastActivity: Date.now(),
       waiters: new Set(),
       owner_kind: "local",
     });
-    await assert.rejects(() => manager.kill({ session_id: failedKillId, force: true }),
-      (error) => error?.code === "unavailable" && error?.retryable === true,
-      "forced process-session termination falsely reported a delivered request");
-    assert(manager.sessions.has(failedKillId), "failed forced termination discarded the live process-session handle");
-    manager.sessions.delete(failedKillId);
+    try {
+      manager.terminateTree = () => false;
+      await assert.rejects(() => manager.kill({ session_id: failedKillId, force: true }),
+        (error) => error?.code === "unavailable" && error?.retryable === true,
+        "forced process-session termination falsely reported a delivered request");
+      assert(manager.sessions.has(failedKillId), "failed forced termination discarded the live process-session handle");
+    } finally {
+      manager.terminateTree = originalTerminateTree;
+      manager.sessions.delete(failedKillId);
+    }
   } finally {
     await manager.clearAndWait();
     await waitFor(() => tracker.snapshot().active_processes === 0, 5_000,
