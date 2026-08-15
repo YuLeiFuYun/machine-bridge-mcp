@@ -22,10 +22,11 @@ const MAX_VALUE_VERIFICATION_HANDLES = 32;
 const APPLICATION_KEY_PRESS_KEYS = new Set(["Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown", "Home", "End", "PageUp", "PageDown", "Space"]);
 
 export class AppAutomationManager {
-  constructor({ policy, authorizeTool = null, displayPath, runProcess, readResourceText, throwIfCancelled = () => {}, platform = process.platform, home = homedir(), applicationRoots = null, applicationCacheMs = DEFAULT_APPLICATION_CACHE_MS, now = () => performance.now(), backgroundVisualBackend = process.env.MBM_MACOS_BACKGROUND_VISUAL_BACKEND || "disabled", backgroundInputService = null }) {
+  constructor({ policy, authorizeTool = null, displayPath, projectCapabilities = (capabilities) => capabilities, runProcess, readResourceText, throwIfCancelled = () => {}, platform = process.platform, home = homedir(), applicationRoots = null, applicationCacheMs = DEFAULT_APPLICATION_CACHE_MS, now = () => performance.now(), backgroundVisualBackend = process.env.MBM_MACOS_BACKGROUND_VISUAL_BACKEND || "disabled", backgroundInputService = null }) {
     this.policy = policy || {};
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.displayPath = displayPath;
+    this.projectCapabilities = projectCapabilities;
     this.runProcess = runProcess;
     this.readResourceText = readResourceText;
     this.throwIfCancelled = throwIfCancelled;
@@ -90,16 +91,16 @@ export class AppAutomationManager {
       .sort((left, right) => left.name.localeCompare(right.name));
     const filtered = matched
       .slice(0, limit)
-      .map((item) => ({ ...item, path: item.path ? this.displayPath(item.path) : "" }));
+      .map((item) => ({ ...item, path: item.path ? this.displayPath(item.path, context) : "" }));
     return {
       platform: this.platform,
       applications: filtered,
       truncated: discovery.truncated || matched.length > limit,
       scanned_entries: discovery.visitedEntries,
       warnings: discovery.warnings.map((warning) => ({
-        path: this.displayPath(warning.path), error_class: warning.error_class,
+        path: this.displayPath(warning.path, context), error_class: warning.error_class,
       })),
-      capabilities: this.capabilities(),
+      capabilities: this.projectCapabilities(this.capabilities(), context),
     };
   }
 
@@ -166,7 +167,7 @@ export class AppAutomationManager {
       }
       throw error;
     }
-    const publicResolvedApplication = /[\\/]/.test(resolvedApplication) ? this.displayPath(resolvedApplication) : resolvedApplication;
+    const publicResolvedApplication = /[\\/]/.test(resolvedApplication) ? this.displayPath(resolvedApplication, context) : resolvedApplication;
     return { application, resolved_application: publicResolvedApplication, target, platform: this.platform, ...result };
   }
 

@@ -6,7 +6,7 @@ import { isRelayReadyContext } from "./relay-connection-classification.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
 import { CONTROL_PLANE_TOOL_NAMES, MAX_CONCURRENT_TOOL_CALLS, RESERVED_CONTROL_TOOL_CALLS, executionGuardrailsSnapshot } from "./execution-limits.mjs";
 export { MAX_COMMAND_BYTES } from "./process-contract.mjs";
-import { normalizePolicy, PolicyGate, toolNamesForPolicy } from "./tools.mjs";
+import { normalizePolicy, PolicyGate } from "./tools.mjs";
 import { BridgeError, publicError } from "./errors.mjs";
 import { ProcessTracker } from "./process-tracker.mjs";
 import { CallRegistry } from "./call-registry.mjs";
@@ -25,6 +25,7 @@ import { classifyOperationalError } from "./log.mjs";
 import { ManagedJobManager } from "./managed-jobs.mjs";
 import { AgentContextManager } from "./agent-context.mjs";
 import { AppAutomationManager } from "./app-automation.mjs";
+import { projectApplicationCapabilities } from "./application-capability-projection.mjs";
 import { applicationBackgroundInputConfiguration } from "./macos-background-input.mjs";
 import { BrowserBridgeManager } from "./browser-bridge.mjs";
 import { ComputerUseManager } from "./computer-use.mjs";
@@ -236,8 +237,7 @@ export class LocalRuntime {
   tools() { return this.policyGate.names().filter((name) => name !== "server_info"); }
 
   effectiveToolNames(context = {}) {
-    const effectivePolicy = this.effectivePolicy(context);
-    const policyNames = toolNamesForPolicy(effectivePolicy);
+    const policyNames = this.policyGate.names();
     const principal = context?.authority?.principal;
     if (principal?.kind !== "account") return policyNames;
     const accountNames = new Set(this.accountAccessGate.names(principal.role));
@@ -684,11 +684,14 @@ function createAppAutomationManager(runtime, applicationAutomation, runProcess, 
     policy: runtime.policy,
     authorizeTool: (tool) => runtime.policyGate.assert(tool),
     displayPath: (value, context) => runtime.displayPath(value, context),
+    projectCapabilities: (capabilities, context) => projectRuntimeApplicationCapabilities(runtime, capabilities, context),
     runProcess,
     readResourceText,
     throwIfCancelled: (context) => runtime.throwIfCancelled(context),
   });
 }
+
+function projectRuntimeApplicationCapabilities(runtime, capabilities, context) { const available = new Set(runtime.effectiveToolNames(context)); return projectApplicationCapabilities(capabilities, (tool) => available.has(tool)); }
 
 function shortCallId(value) {
   return String(value || "").slice(0, 20);

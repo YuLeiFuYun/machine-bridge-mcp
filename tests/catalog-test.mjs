@@ -52,7 +52,9 @@ const full = new Set(toolsForPolicy({ profile: "full", origin: "explicit", revis
 assert(review.has("read_file") && review.has("list_jobs") && review.has("read_job") && review.has("list_local_resources") && !review.has("write_file") && !review.has("run_process"), "review profile inventory is invalid");
 assert(edit.has("apply_patch") && !edit.has("run_process"), "edit profile inventory is invalid");
 assert(agent.has("run_process") && agent.has("start_job") && !agent.has("exec_command") && !agent.has("generate_ssh_key_resource"), "agent profile inventory is invalid");
-for (const fullOnly of ["list_local_applications", "operate_local_application", "browser_status", "browser_manage_tabs", "browser_wait", "browser_action", "browser_fill_form", "browser_upload_files"]) {
+assert(review.has("list_local_applications") && edit.has("list_local_applications") && agent.has("list_local_applications"),
+  "read-only application discovery did not remain available across policy profiles");
+for (const fullOnly of ["open_local_application", "inspect_local_application", "operate_local_application", "browser_status", "browser_manage_tabs", "browser_wait", "browser_action", "browser_fill_form", "browser_upload_files"]) {
   assert(!review.has(fullOnly) && !edit.has(fullOnly) && !agent.has(fullOnly), `${fullOnly} escaped full-only policy`);
 }
 assert(full.has("run_process") && full.has("exec_command") && full.has("generate_ssh_key_resource"), "full profile inventory is invalid");

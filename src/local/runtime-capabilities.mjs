@@ -1,6 +1,7 @@
 import { classifyOperationalError } from "./log.mjs";
 import { buildExecutionRouting } from "./execution-routing.mjs";
 import { policyAllowsTool } from "./policy.mjs";
+import { projectApplicationCapabilities } from "./application-capability-projection.mjs";
 const APPLICATION_TOOLS = ["list_local_applications", "open_local_application", "inspect_local_application", "operate_local_application"];
 export async function sessionBootstrap({
   agentContextManager,
@@ -11,10 +12,10 @@ export async function sessionBootstrap({
 }, args = {}, context = {}) {
   const bootstrap = await agentContextManager.sessionBootstrap(args, context);
   const availableNames = availableToolSet(availableTools);
-  const applicationAllowed = availableNames ? availableNames.has("list_local_applications") : policyAllowsTool(policy, "list_local_applications");
+  const allows = (name) => availableNames ? availableNames.has(name) : policyAllowsTool(policy, name);
   const browserAllowed = availableNames ? availableNames.has("browser_status") : policyAllowsTool(policy, "browser_status");
   bootstrap.local_automation = {
-    applications: applicationAllowed ? appAutomationManager.capabilities() : null,
+    applications: allows("list_local_applications") ? projectApplicationCapabilities(appAutomationManager.capabilities(), allows) : null,
     browser: browserAllowed ? {
       existing_profile: true,
       extension_bridge: true,
@@ -35,9 +36,9 @@ export async function resolveTaskCapabilities({
   const result = await agentContextManager.resolveTaskCapabilities(args, context);
   const task = String(args.task || "");
   const availableNames = availableToolSet(availableTools);
-  const applicationAllowed = availableNames ? availableNames.has("list_local_applications") : policyAllowsTool(policy, "list_local_applications");
+  const allows = (name) => availableNames ? availableNames.has(name) : policyAllowsTool(policy, name);
   const browserAllowed = availableNames ? availableNames.has("browser_status") : policyAllowsTool(policy, "browser_status");
-  if (applicationAllowed) {
+  if (allows("list_local_applications")) {
     let applications;
     try {
       applications = await appAutomationManager.listApplications({ query: "", max_results: 500 }, context);
@@ -88,7 +89,6 @@ export async function resolveTaskCapabilities({
 }
 
 function availableToolSet(value) { if (value === null || value === undefined) return null; if (!Array.isArray(value) && !(value instanceof Set)) throw new TypeError("availableTools must be an array or set"); return new Set([...value].map((tool) => String(tool || "")).filter(Boolean)); }
-
 function applicationMatchScore(task, application) {
   const name = String(application.name || "").toLowerCase();
   const id = String(application.id || "").toLowerCase();

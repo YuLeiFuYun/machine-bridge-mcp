@@ -260,25 +260,25 @@ Version 3 and later use a mandatory prerelease and soak path. Package work start
 
 ```sh
 npm run release:candidate
-# The coding agent rechecks source/package identity and disposable installability before involving the owner:
+# The coding agent rechecks source/package identity and disposable installability before live activation:
 node scripts/start-release-candidate.mjs --install-only
-# The owner then runs the exact persistent activation command printed above:
+# After explicit owner authorization, the owner or authorized agent runs the exact persistent activation command:
 npm run release:candidate:activate -- --allow-worker-deploy
 # Activation requires device-authenticated relay readiness. One explicit authentication rejection may
 # redeploy the same Worker once with the unchanged selected identity; it never rotates credentials.
 # The login service is accepted only after a committed machine owner and the matching daemon
 # publish the post-authentication, post-relay-probe readiness checkpoint.
 # After the coding agent verifies the live Worker/daemon and records acceptance,
-# the owner runs this from a real interactive terminal:
-npm run prerelease:release -- --owner-terminal-confirm
-# Explicit owner registry and live-install steps:
+# source publication requires explicit owner authorization; a TTY is optional:
+npm run prerelease:release -- --owner-confirm
+# Registry publication and live install are separately authorized operations:
 npm run prerelease:publish
 npm run prerelease:install -- --allow-worker-deploy
 ```
 
 Formal soak begins only after the exact published prerelease is installed and activated. Minimum soak is seven days for a major release, three days for a minor release, and one day for a patch. Every blocking fix creates a new prerelease and restarts the clock.
 
-Stable promotion must retain the soaked package's functional digest. After the owner reports successful soak, the agent records the soak result and prepares and verifies the stable candidate. The owner then creates the final GitHub tag and Release from a real interactive terminal with `npm run release -- --owner-terminal-confirm`; npm stable publication is the separate explicit `npm run stable:publish` operation.
+Stable promotion must retain the soaked package's functional digest. After the owner reports successful soak, the agent records the soak result and prepares and verifies the stable candidate. Final GitHub tag/Release publication requires explicit owner authorization and uses `npm run release -- --owner-confirm`; npm stable publication is the separate explicitly authorized `npm run stable:publish` operation.
 
 See [docs/RELEASING.md](docs/RELEASING.md).
 

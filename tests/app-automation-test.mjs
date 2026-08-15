@@ -779,7 +779,7 @@ try {
     applicationAutomation: {
       platform: "darwin",
       home: root,
-      applicationRoots: [applications],
+      applicationRoots: [applications, invalidApplicationRoot],
       applicationCacheMs: 0,
     },
   });
@@ -793,10 +793,7 @@ try {
     assert(routed.execution_routing?.primary_route?.id === "application", "installed application match did not become the primary execution route");
     assert(routed.execution_routing?.routes?.some((route) => route.id === "shell"), "application routing removed the direct shell escape hatch");
 
-    const reviewerRouted = await routingRuntime.executeTool("resolve_task_capabilities", {
-      path: ".",
-      task: "Use Late Arrival and the browser to complete this task",
-    }, {
+    const reviewerContext = {
       origin: "relay",
       authorization: {
         account_id: `acct_${"A".repeat(32)}`,
@@ -805,11 +802,57 @@ try {
         family_id: `mcp_family_${"C".repeat(43)}`,
         role: "reviewer",
       },
+    };
+    const reviewerInventory = await routingRuntime.executeTool("list_local_applications", {
+      query: "Late Arrival",
+      max_results: 10,
+    }, reviewerContext);
+    assert(reviewerInventory.applications.some((application) => application.name === "Late Arrival"
+      && !String(application.path || "").includes(root)),
+    "reviewer application inventory leaked a raw application path");
+    assert(reviewerInventory.warnings.every((warning) => !String(warning.path || "").includes(root)),
+      "reviewer application inventory leaked a raw discovery-warning path");
+    assert(reviewerInventory.capabilities.discovery === true
+      && reviewerInventory.capabilities.open === false
+      && reviewerInventory.capabilities.accessibility_inspection === false
+      && reviewerInventory.capabilities.structured_accessibility_actions === false
+      && reviewerInventory.capabilities.window_screenshot === false
+      && reviewerInventory.capabilities.background_visual_point?.available === false,
+    "reviewer application inventory advertised backend capabilities outside effective authority");
+
+    const ownerInventory = await routingRuntime.executeTool("list_local_applications", {
+      query: "Late Arrival",
+      max_results: 10,
+    }, {
+      origin: "relay",
+      authorization: {
+        account_id: `acct_${"D".repeat(32)}`,
+        account_version: 1,
+        client_id: `mcp_client_${"E".repeat(43)}`,
+        family_id: `mcp_family_${"F".repeat(43)}`,
+        role: "owner",
+      },
     });
-    assert(reviewerRouted.application_matches.length === 0 && reviewerRouted.browser_backend === null,
-      "reviewer task resolution leaked application discovery or browser metadata from the daemon's full policy");
-    assert(!reviewerRouted.execution_routing.routes.some((route) => ["application", "browser", "shell"].includes(route.id)),
-      "reviewer task resolution recommended execution surfaces outside the account's effective policy");
+    assert(ownerInventory.capabilities.discovery === true
+      && ownerInventory.capabilities.open === true
+      && ownerInventory.capabilities.accessibility_inspection === true
+      && ownerInventory.capabilities.structured_accessibility_actions === true
+      && ownerInventory.capabilities.window_screenshot === true,
+    "owner application inventory lost full capabilities through synthetic effective-policy projection");
+
+    const reviewerRouted = await routingRuntime.executeTool("resolve_task_capabilities", {
+      path: ".",
+      task: "Use Late Arrival and the browser to complete this task",
+    }, reviewerContext);
+    const reviewerApplication = reviewerRouted.application_matches.find((application) => application.name === "Late Arrival");
+    assert(reviewerApplication && !String(reviewerApplication.path || "").includes(root) && reviewerRouted.browser_backend === null,
+      "reviewer task resolution did not preserve read-only projected application discovery while hiding browser metadata");
+    assert((reviewerRouted.application_discovery?.warning_count || 0) >= 1,
+      "reviewer application discovery lost the bounded unreadable-root warning fixture");
+    assert(reviewerRouted.execution_routing.routes.some((route) => route.id === "application-discovery"
+      && route.tools.length === 1 && route.tools[0] === "list_local_applications")
+      && !reviewerRouted.execution_routing.routes.some((route) => ["application", "browser", "shell"].includes(route.id)),
+    "reviewer task resolution did not isolate application inventory from unavailable execution surfaces");
   } finally {
     routingRuntime.stop();
   }

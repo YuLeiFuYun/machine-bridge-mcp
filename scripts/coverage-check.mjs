@@ -243,6 +243,7 @@ try {
     "src/local/agent-skill-discovery.mjs": [85, 60],
     "src/local/agent-text-file.mjs": [90, 60],
     "src/local/capability-ranking.mjs": [95, 70],
+    "src/local/application-capability-projection.mjs": [100, 100],
     "src/local/execution-routing.mjs": [95, 70],
     "src/local/browser-extension-protocol.mjs": [95, 35],
     "src/local/browser-operation-service.mjs": [80, 50],

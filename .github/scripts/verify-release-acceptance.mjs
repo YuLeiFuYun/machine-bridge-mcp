@@ -58,26 +58,26 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
   if (acceptance.schema_version !== ACCEPTANCE_SCHEMA_VERSION
       || acceptance.result !== "passed"
       || acceptance.confirmation !== ACCEPTANCE_CONFIRMATION) {
-    throw new Error("interactive local candidate acceptance marker is invalid");
+    throw new Error("local candidate acceptance marker is invalid");
   }
   if (acceptance.package_name !== pkg.name
       || acceptance.package_version !== pkg.version
       || acceptance.filename !== pack.filename) {
-    throw new Error("interactive local candidate acceptance package identity does not match npm pack");
+    throw new Error("local candidate acceptance package identity does not match npm pack");
   }
   if (!/^[0-9a-f]{40}$/.test(String(acceptance.shasum || ""))
       || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(String(acceptance.integrity || ""))) {
-    throw new Error("interactive local candidate acceptance tarball hashes are malformed");
+    throw new Error("local candidate acceptance tarball hashes are malformed");
   }
   if (!Number.isFinite(Date.parse(String(acceptance.accepted_at || "")))) {
-    throw new Error("interactive local candidate acceptance timestamp is invalid");
+    throw new Error("local candidate acceptance timestamp is invalid");
   }
   if (acceptance.package_content_sha256 !== expectedDigest) {
-    throw new Error(`interactive local candidate acceptance content digest does not match the current npm package (expected ${expectedDigest})`);
+    throw new Error(`local candidate acceptance content digest does not match the current npm package (expected ${expectedDigest})`);
   }
   const promotionDigest = computePromotionContentDigest(projectRoot, { packageJson: pkg, packRecord: pack });
   if (acceptance.promotion_content_sha256 !== promotionDigest) {
-    throw new Error(`interactive local candidate promotion digest does not match the current npm package (expected ${promotionDigest})`);
+    throw new Error(`local candidate promotion digest does not match the current npm package (expected ${promotionDigest})`);
   }
   return { acceptance, digest: expectedDigest, pack };
 }

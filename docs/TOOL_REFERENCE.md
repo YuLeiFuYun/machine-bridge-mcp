@@ -14,7 +14,7 @@ Tool count: **54**.
 | [`project_overview`](#project_overview) | `always` | yes | no | yes | no |
 | [`session_bootstrap`](#session_bootstrap) | `always` | yes | no | yes | no |
 | [`resolve_task_capabilities`](#resolve_task_capabilities) | `always` | yes | no | yes | no |
-| [`list_local_applications`](#list_local_applications) | `full` | yes | no | yes | yes |
+| [`list_local_applications`](#list_local_applications) | `always` | yes | no | yes | yes |
 | [`open_local_application`](#open_local_application) | `full` | no | no | no | yes |
 | [`inspect_local_application`](#inspect_local_application) | `full` | yes | no | yes | yes |
 | [`operate_local_application`](#operate_local_application) | `full` | no | yes | no | yes |
@@ -225,7 +225,7 @@ Discover installed local applications and launchers without reading their docume
 
 | Contract field | Value |
 |---|---|
-| Availability | `full` |
+| Availability | `always` |
 | Read-only hint | yes |
 | Destructive hint | no |
 | Idempotent hint | yes |

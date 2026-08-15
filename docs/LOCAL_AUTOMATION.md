@@ -86,7 +86,7 @@ Then use `value_resource` for a text field or `resources` for `browser_upload_fi
 
 ## Application tools
 
-- `list_local_applications` discovers installed applications or launchers.
+- `list_local_applications` discovers installed applications or launchers. It is read-only and available across policy profiles; restricted profiles still receive projected external paths rather than raw absolute paths.
 - `open_local_application` opens an application, URL, or document through the OS launcher. Cancellation is checked immediately before launch; once the process invocation is attempted, timeout/cancellation/response loss is an unknown launch outcome and must be inspected before retrying.
 - `inspect_local_application` returns a bounded macOS Accessibility tree.
 - `operate_local_application` performs a structured Accessibility action. Local-resource resolution remains pre-dispatch, while mutating JXA/native helpers classify response loss after process start as a non-replayable unknown outcome.
@@ -99,7 +99,7 @@ Menu-bar and menu subtrees are not recursively expanded by default. This keeps m
 
 `resolve_task_capabilities` rescans instruction files, skills, explicit/automatic package commands, policy-visible tool definitions, and relevant local automation metadata on every call. It ranks matching skills and commands, optionally loads the best skill, and returns set-level route advice across direct Bash/argv, process sessions, managed jobs, files/Git, browser, applications, protected resources, and diagnostics. This is not a restriction layer: `exec_command` remains the general shell escape hatch under an effective shell-capable policy.
 
-Application inventory is consulted only when the request's effective account/daemon policy permits application discovery, then cached briefly and refreshed after a bounded interval. A refresh enters that cache only after a final cancellation check, so a caller cancelled at the end of an asynchronous scan cannot publish stale discovery for later requests. A task that directly names an installed app does not need generic “app/window” wording. Per-root discovery failures are returned as bounded `warnings`, and capability resolution reports `application_discovery.available`, warning count, truncation, and a coarse error class instead of silently treating an unreadable inventory as an empty successful scan. A matching `known_refresh_fingerprint` can omit unchanged static context without skipping the fresh capability scan.
+Application inventory is a baseline read-only discovery capability and is consulted for every authenticated policy profile. The inventory is cached briefly and refreshed after a bounded interval. A refresh enters that cache only after a final cancellation check, so a caller cancelled at the end of an asynchronous scan cannot publish stale discovery for later requests. A task that directly names an installed app does not need generic “app/window” wording. Per-root discovery failures are returned as bounded `warnings`, and capability resolution reports `application_discovery.available`, warning count, truncation, and a coarse error class instead of silently treating an unreadable inventory as an empty successful scan. Restricted profiles may discover names/launcher identifiers, but raw external absolute paths remain projected and open/inspect/operate capabilities remain independently gated. A matching `known_refresh_fingerprint` can omit unchanged static context without skipping the fresh capability scan.
 
 This is the strongest reliable server-side automation boundary available through MCP: discovery, refresh, ranking, route-set construction, and progressive skill loading are automatic. The MCP host still owns the model loop and decides whether a recommended tool is exposed, approved, or invoked. Machine Bridge cannot force ChatGPT web or another host to make a call that the host declines.
 
@@ -109,7 +109,7 @@ The browser extension has broad page access because generic source inspection an
 
 The implementation reduces avoidable risk as follows:
 
-- all browser/app tools are `full`-only;
+- `list_local_applications` is read-only baseline inventory; application launch, Accessibility inspection/actions, computer-use UI control, and browser tools remain independently gated and currently require `full` authority;
 - no arbitrary evaluation, caller-provided script source, or caller-selected DevTools method is accepted; trusted input exposes only fixed `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, and `Input.insertText` sequences;
 - loopback HTTP validates `Host`; broker-auth challenge issuance also requires a fixed internal request header, so ordinary cross-origin web requests cannot consume the bounded challenge registry without a preflight the broker does not authorize;
 - extension and runtime WebSockets use separate role-bound HMAC exchanges: clients verify a broker server proof before upgrade, then send a one-time client proof under a five-second monotonic deadline; the long-lived owner-only tokens are HMAC keys and never WebSocket bearer subprotocols; extension sockets additionally require the canonical `chrome-extension://` origin for the pinned 32-character Chromium extension ID;

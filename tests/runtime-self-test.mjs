@@ -207,8 +207,9 @@ export async function runtimeSelfTest() {
         || operatorDurableRouting.routing_observability?.includes("effective policy")) {
       throw new Error("task routing observability mislabeled account-attenuated authority as policy-only availability");
     }
-    if (operatorDurableRouting.application_discovery?.reason !== "effective_authority") {
-      throw new Error("application capability discovery mislabeled delegated-account attenuation as a policy-only denial");
+    if (operatorDurableRouting.application_discovery?.reason
+        || !Number.isInteger(operatorDurableRouting.application_discovery?.warning_count)) {
+      throw new Error("read-only application discovery remained authority-disabled for the operator account");
     }
     const compactEditorOverview = await fullAuthority.executeTool("project_overview", { detail: "summary" }, relayContext(editorAuthorization));
     const compactEditorOverviewJson = JSON.stringify(compactEditorOverview);
