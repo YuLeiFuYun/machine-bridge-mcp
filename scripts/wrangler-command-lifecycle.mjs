@@ -18,6 +18,7 @@ export async function runCompletedWranglerCommand(options = {}) {
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
   const env = options.env || process.env;
+  const killChild = typeof options.killChild === "function" ? options.killChild : null;
   const child = spawn(process.execPath, [wranglerPath, ...args], {
     cwd,
     env,
@@ -54,13 +55,17 @@ export async function runCompletedWranglerCommand(options = {}) {
     const requestTermination = () => {
       if (cleanupRequested) return;
       cleanupRequested = true;
-      try { child.kill("SIGTERM"); }
+      try {
+        if (killChild) killChild(child, "SIGTERM");
+        else child.kill("SIGTERM");
+      }
       catch (error) { finish(new Error(`${label} could not request graceful cleanup`, { cause: error })); return; }
       forceTimer = setTimeout(() => {
         if (child.exitCode !== null || child.signalCode !== null) return;
         forceKillUsed = true;
         try {
-          if (child.kill("SIGKILL") !== true) finish(new Error(`${label} could not force cleanup`));
+          const killed = killChild ? killChild(child, "SIGKILL") : child.kill("SIGKILL");
+          if (killed !== true) finish(new Error(`${label} could not force cleanup`));
         } catch (error) { finish(new Error(`${label} could not force cleanup`, { cause: error })); }
       }, terminationGraceMs);
     };

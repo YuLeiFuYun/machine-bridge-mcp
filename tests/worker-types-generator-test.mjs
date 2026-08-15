@@ -23,9 +23,6 @@ if (mode === "fail") process.exit(7);
 if (mode === "hang-before") setInterval(() => {}, 1000);
 else {
   if (command === "types") writeFileSync(process.argv[3], "interface Env {}\\n");
-  if (mode === "normal-cleanup-race") process.on("SIGTERM", () => {
-    process.stderr.write("fixture observed cleanup SIGTERM\\n");
-  });
   process.stdout.write(marker);
   if (mode === "hang-after") setInterval(() => {}, 1000);
   else if (mode === "normal-cleanup-race") setTimeout(() => process.exit(0), 250);
@@ -60,12 +57,18 @@ else {
   assert(!normalDryRun.stderr.includes("did not exit"), "normal Wrangler dry-run exit was misclassified as a cleanup hang");
 
   const racedNormalDryRun = capture();
+  const cleanupSignals = [];
   await runWorkerDryRun(commandOptions("normal-cleanup-race", racedNormalDryRun, {
     completionExitGraceMs: 20,
     terminationGraceMs: 500,
+    killChild(child, signal) {
+      cleanupSignals.push(signal);
+      if (signal === "SIGTERM") return true;
+      return child.kill(signal);
+    },
   }));
-  assert(racedNormalDryRun.stderr.includes("fixture observed cleanup SIGTERM"),
-    "Wrangler cleanup-race fixture did not cross the completion grace");
+  assert.deepEqual(cleanupSignals, ["SIGTERM"],
+    "Wrangler cleanup-race fixture did not request cleanup after the completion grace");
   assert(!racedNormalDryRun.stderr.includes("did not exit"),
     "successful Wrangler dry-run exit lost to a raced cleanup request");
 
