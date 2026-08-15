@@ -75,25 +75,27 @@ npm run release:candidate
 
 The candidate manifest records npm SHA-1/SHA-512 values and a promotion-content digest. Any packaged-file change invalidates the candidate. Every candidate start or activation recomputes the current digest and compares package identity before tarball verification, npm installation, Worker deployment, or service mutation; a stale but internally self-consistent tarball cannot be installed. Preparing or testing a candidate never authorizes npm publication; only the repository owner may invoke a publication command. An existing tag, GitHub Release, or npm version is immutable and must never be reused after source changes.
 
-Immediately before asking the repository owner to cross the activation boundary, the coding agent must run the non-live candidate preflight:
+Immediately before crossing the live activation boundary, the coding agent must run the non-live candidate preflight:
 
 ```sh
 node scripts/start-release-candidate.mjs --install-only
 ```
 
-This direct-Node path deliberately bypasses npm lifecycle execution and reuses the activation wrapper with `--install-only`. It resolves a validated npm CLI only from the running Node installation layout (not lifecycle `npm_execpath` or unrelated fallback locations), recomputes current package identity and promotion content, verifies the exact tarball, performs a disposable local install, removes that install, and does not deploy the Worker, change the login service, or write prerelease activation evidence. It exists specifically to catch source drift, unexpected package file modes, and installability failures after candidate preparation without consuming an owner-terminal attempt. If it fails, fix the tree and regenerate `npm run release:candidate`; do not repair the old manifest/tarball in place. The verify command is still only a preflight and never substitutes for the real owner-terminal activation below.
+This direct-Node path deliberately bypasses npm lifecycle execution and reuses the activation wrapper with `--install-only`. It resolves a validated npm CLI only from the running Node installation layout (not lifecycle `npm_execpath` or unrelated fallback locations), recomputes current package identity and promotion content, verifies the exact tarball, performs a disposable local install, removes that install, and does not deploy the Worker, change the login service, or write prerelease activation evidence. It exists specifically to catch source drift, unexpected package file modes, and installability failures after candidate preparation without mutating live state. If it fails, fix the tree and regenerate `npm run release:candidate`; do not repair the old manifest/tarball in place. The verify command is only a preflight and does not itself authorize live activation.
 
 A blocking external CI or CodeQL result discovered after local acceptance is still a candidate defect. When its repair changes any packaged file, increment the prerelease number, remove the old acceptance record, regenerate the candidate, repeat owner activation, rerun the candidate-bound deployed OAuth canary, repeat observed live verification, and record a new acceptance before guarded push. Do not preserve an old acceptance or canary evidence merely because the runtime behavior under investigation is unchanged, and do not weaken a platform or security gate to keep the old candidate valid.
 
 Platform fidelity is evidence from the provider environment, not an inference from local success. In particular, Windows filesystem/process semantics and hosted security analyzers must pass on the exact candidate head; local simulations may diagnose or prevent regressions but cannot close those provider gates.
 
-## 2. Owner activates the exact candidate
+## 2. Owner authorizes activation of the exact candidate
 
-The coding agent must stop and present this command. The repository owner executes it:
+After the repository owner explicitly authorizes live activation for the current task, the owner or an authorized agent runs exactly:
 
 ```sh
 npm run release:candidate:activate -- --allow-worker-deploy
 ```
+
+A TTY is not required. Conversational authorization is sufficient when it is explicit and current-task-specific. If the owner says they will execute the command themselves, the agent must not race that operation.
 
 The command:
 
@@ -117,7 +119,7 @@ The private candidate runtime is not stored under the Git checkout, so cleaning 
 
 ## 3. Coding agent runs the deployed OAuth canary and verifies the live candidate
 
-After the owner command completes, the coding agent first runs the candidate-bound synthetic canary:
+After the authorized activation command completes, the coding agent first runs the candidate-bound synthetic canary:
 
 ```sh
 node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary

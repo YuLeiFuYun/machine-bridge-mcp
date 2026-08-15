@@ -1141,6 +1141,13 @@ const githubPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), 
 for (const required of ["verifyCurrentReleaseAcceptance", "verifyCurrentStableSoak", "working tree is not clean", "direct pushes to main are prohibited", "--set-upstream", "release-acceptance/v", "release-soak/v"]) {
   if (!githubPushSource.includes(required)) throw new Error(`guarded GitHub push lost required boundary: ${required}`);
 }
+if (githubPushSource.includes("interactive local candidate")) {
+  throw new Error("guarded GitHub push retained obsolete interactive-acceptance wording");
+}
+const portableAcceptanceVerifier = readFileSync(join(root, ".github", "scripts", "verify-release-acceptance.mjs"), "utf8");
+if (portableAcceptanceVerifier.includes("interactive local candidate")) {
+  throw new Error("portable release-acceptance verification retained obsolete interactive-acceptance wording");
+}
 for (const [name, command] of Object.entries(packageJson.scripts || {})) {
   const match = /^node\s+([^\s]+\.mjs)(?:\s|$)/.exec(String(command));
   if (match && !existsSync(join(root, match[1]))) throw new Error(`package script ${name} references missing ${match[1]}`);
@@ -1228,6 +1235,9 @@ for (const required of [
 ]) {
   if (!engineering.includes(required)) throw new Error(`engineering incident invariant omitted: ${required}`);
 }
+for (const stale of ["owner-terminal ceremony", "real TTY streams", "Background agents and managed jobs may verify state but may not publish"]) {
+  if (engineering.includes(stale)) throw new Error(`engineering guide retained obsolete terminal-gated publication contract: ${stale}`);
+}
 const architectureGuide = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
 if (architectureGuide.includes("All bridge mutations are serialized in one runtime queue.")
     || !architectureGuide.includes("Operations touching the same canonical path serialize; independent paths may proceed concurrently")) {
@@ -1253,8 +1263,15 @@ for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const releasingGuide = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
-for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-confirm", "npm run release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "A TTY is optional"]) {
+for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-confirm", "npm run release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "A TTY is optional", "Conversational authorization is sufficient", "owner or an authorized agent runs exactly"]) {
   if (!releasingGuide.includes(required)) throw new Error(`release guide omitted explicit-authorization publication contract: ${required}`);
+}
+for (const stale of ["owner-terminal attempt", "real owner-terminal activation", "The coding agent must stop and present this command", "After the owner command completes"]) {
+  if (releasingGuide.includes(stale)) throw new Error(`release guide retained obsolete owner-terminal activation contract: ${stale}`);
+}
+const operationsGuide = readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8");
+if (operationsGuide.includes("failed owner-terminal command")) {
+  throw new Error("operations guide retained obsolete owner-terminal activation wording");
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
 const sharedToolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
