@@ -134,6 +134,8 @@ npm run app-automation:live-test
 
 It opens Calculator, activates it through the fixed JXA helper, verifies structured JSON output, inspects main-window Accessibility controls with menu recursion disabled, clicks the `One` control, and quits the application. It is intentionally excluded from CI because macOS TCC permission and a graphical login session are host state.
 
+The deterministic `macos-background-input:test` forces the macOS helper state machine on every CI host so payload validation, mutation settlement, probe caching, and helper-result projection stay cross-platform. Its exact compile-once cache-reuse assertion is POSIX/macOS-only because the production cache trust predicate requires POSIX executable mode bits; Windows cannot supply that permission evidence through `chmod`, so the Windows fixture must not reinterpret a synthetic cache file as a trusted macOS executable.
+
 Changes to the experimental snapshot-bound native macOS input path have a stronger opt-in fixture. It compiles a temporary owner-local AppKit application, proves that the fixture never becomes frontmost, then exercises Computer Use Accessibility state, exact private value readback, PID-scoped Unicode/special-key input, semantic focus, raw visual click, exact-once double-click/drag, and native scroll with visual effect confirmation. The command refuses to run unless both the explicit flag and experimental backend setting are present:
 
 ```sh
