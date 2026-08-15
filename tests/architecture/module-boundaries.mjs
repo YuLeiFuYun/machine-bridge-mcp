@@ -364,7 +364,8 @@ const lineLimits = Object.freeze({
   "src/local/browser-pairing-launch.mjs": 80,
   "src/local/browser-broker-server.mjs": 90,
   "src/local/browser-operation-service.mjs": 360,
-  "src/local/computer-use.mjs": 2670,
+  "src/local/computer-use.mjs": 2450,
+  "src/local/computer-use-arguments.mjs": 310,
   "src/local/computer-use-observation.mjs": 780,
   "src/local/computer-use-application-observation.mjs": 240,
   "src/local/computer-use-recovery.mjs": 90,
@@ -372,7 +373,8 @@ const lineLimits = Object.freeze({
   "src/local/computer-use-result-budget.mjs": 150,
   "src/local/browser-computer-observation-service.mjs": 280,
   "src/local/macos-background-input.mjs": 410,
-  "src/local/app-automation.mjs": 1480,
+  "src/local/app-automation.mjs": 1180,
+  "src/local/app-automation-macos-jxa.mjs": 380,
   "src/local/browser-extension-protocol.mjs": 130,
   "src/local/browser-pairing-store.mjs": 120,
   "src/local/browser-pairing-http.mjs": 80,
@@ -424,6 +426,10 @@ const lineLimits = Object.freeze({
   "src/worker/pending-call-deadlines.ts": 80,
   "src/worker/mcp-jsonrpc.ts": 130,
   "src/worker/websocket-protocol.ts": 60,
+  "browser-extension/browser-operations.js": 1920,
+  "browser-extension/page-automation.js": 1200,
+  "browser-extension/devtools-observation.js": 460,
+  "browser-extension/service-worker.js": 370,
 });
 for (const [name, maximum] of Object.entries(lineLimits)) {
   const lines = readFileSync(join(root, name), "utf8").split(/\r?\n/).length;

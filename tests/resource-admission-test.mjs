@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ResourceAdmissionError, ResourceCoordinator, ResourceLease } from "../src/local/resource-admission.mjs";
 import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } from "../src/local/resource-admission-policy.mjs";
@@ -627,9 +627,9 @@ assert.equal(resourceCommandProfile("/bin/zsh", ["-c", "shasum -a 256 tests/reso
 assert.equal(resourceCommandProfile("bash", ["-x", "scripts/release_gate.sh"]).family, "script-heavy", "direct shell script with interpreter options was not classified as heavy");
 const scopedScriptArgs = ["-c", "cd /tmp/project-a && ./scripts/release_gate.sh"];
 const scopedScript = resourceCommandProfile("/bin/zsh", scopedScriptArgs);
-assert.equal(resourceCommandEffectiveCwd("/bin/zsh", scopedScriptArgs, "/tmp/shared", scopedScript), "/tmp/project-a", "literal shell cwd did not narrow project contention scope");
+assert.equal(resourceCommandEffectiveCwd("/bin/zsh", scopedScriptArgs, "/tmp/shared", scopedScript), resolve("/tmp/project-a"), "literal shell cwd did not narrow project contention scope");
 const uncertainScriptArgs = ["-c", "cd $PROJECT && ./scripts/release_gate.sh"];
-assert.equal(resourceCommandEffectiveCwd("/bin/zsh", uncertainScriptArgs, "/tmp/shared", scopedScript), "/tmp/shared", "dynamic shell cwd was trusted for contention scope");
+assert.equal(resourceCommandEffectiveCwd("/bin/zsh", uncertainScriptArgs, "/tmp/shared", scopedScript), resolve("/tmp/shared"), "dynamic shell cwd was trusted for contention scope");
 
 const fittedCargo = fitElasticRequestToPressure(cargo, {
   state: "green", used: { cpu: 0 }, requested: { cpu: 3 }, limits: { cpu: 6.5, cpu_overcommit: 1.35 },

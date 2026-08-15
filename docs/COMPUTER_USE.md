@@ -94,7 +94,7 @@ Action results also return `retry_guidance`. It is deliberately conservative: `s
 - `not_observed`: dispatch completed, but the requested effect was not observed within the verification window;
 - `unknown`: there was no verifiable post-condition, dispatch itself was ambiguous without confirming evidence, or post-state could not be observed.
 
-An `unknown` result must not be automatically replayed. Re-observe before deciding whether another action is safe.
+An `unknown` result must not be automatically replayed. Re-observe before deciding whether another action is safe. When `dispatch_status=unknown`, the public `dispatch_error` is deliberately coarse: it identifies the surface and a bounded `error_class` but does not echo lower-layer exception text, paths, account-shaped data, or other backend diagnostics. Detailed causes remain local debugging evidence rather than part of a successful Computer Use result.
 
 Post-observation verifier checks expose their deterministic evidence channel as `verification.post_checks[].evidence_source`. Stable values are `browser_tab_state`, `browser_semantic`, `application_process`, `application_workspace`, `application_accessibility`, and `screenshot`. The field identifies where the check was grounded; it does not increase confidence by itself, and screenshot evidence is not allowed to substitute for available semantic/process state. This keeps state-based verification distinguishable from visual fallback evidence when an agent decides how much trust to place in an observed effect.
 

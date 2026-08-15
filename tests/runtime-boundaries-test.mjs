@@ -327,6 +327,10 @@ async function testRuntimeDiagnostics() {
       throwIfCancelled() {},
     });
     assert(shell.request_reached_local_runtime === true, "runtime diagnostic lost local reachability evidence");
+    assert(shell.interpretation?.current_request_delivery?.includes("blanket current platform disable")
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("not observable by Machine Bridge")
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("host-side evidence"),
+    "runtime diagnostic overclaimed an unobservable host/platform refusal");
     assert(shell.runtime.lifecycle.state === "running"
       && shell.runtime.processes.draining_calls === 1
       && shell.runtime.execution_guardrails.tool_calls.maximum_concurrent === 16

@@ -7,6 +7,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // These source-shape checks are supplemental architecture guards. Behavior and failure semantics are tested separately.
 const localAutomationFiles = [
   join(root, "src", "local", "app-automation.mjs"),
+  join(root, "src", "local", "app-automation-macos-jxa.mjs"),
   join(root, "src", "local", "browser-bridge.mjs"),
   join(root, "src", "local", "browser-operation-service.mjs"),
   join(root, "browser-extension", "service-worker.js"),
@@ -68,6 +69,7 @@ if (!pageAutomationSource.includes("snapshot_version: 3")
   throw new Error("browser snapshot version and architecture/local-automation documentation drifted apart");
 }
 const appAutomationSource = readFileSync(join(root, "src", "local", "app-automation.mjs"), "utf8");
+const appAutomationJxaSource = readFileSync(join(root, "src", "local", "app-automation-macos-jxa.mjs"), "utf8");
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const workerWebSocketProtocolSource = readFileSync(join(root, "src", "worker", "websocket-protocol.ts"), "utf8");
@@ -135,10 +137,13 @@ const pairingStoreSource = readFileSync(join(root, "src", "local", "browser-pair
 for (const required of ["export function readBrowserPairingPort", "readPairing(file)", "verifyPathIdentity: true", "rejectMultipleLinks: true"]) {
   if (!pairingStoreSource.includes(required)) throw new Error(`browser pairing-store projection lost secure bounded-state ownership: ${required}`);
 }
-if (!appAutomationSource.includes("matchesList[payload.selector.index]")) {
+if (!appAutomationSource.includes('from "./app-automation-macos-jxa.mjs"')) {
+  throw new Error("application automation orchestration lost its dedicated macOS JXA implementation boundary");
+}
+if (!appAutomationJxaSource.includes("matchesList[payload.selector.index]")) {
   throw new Error("application UI selector index is not applied to the filtered match list");
 }
-if (!appAutomationSource.includes("item.role === 'AXSecureTextField'") || !appAutomationSource.includes("includeValues && !item.sensitive")) {
+if (!appAutomationJxaSource.includes("item.role === 'AXSecureTextField'") || !appAutomationJxaSource.includes("includeValues && !item.sensitive")) {
   throw new Error("application UI inspection does not suppress secure field values");
 }
 const fixedWorkerModules = [

@@ -473,7 +473,7 @@ async function postObservationCancellationPreservesCompletedDispatch() {
     browser,
     throwIfCancelled() {
       if (calls.filter((entry) => entry.kind === "observe").length >= 2) {
-        throw new BridgeError("cancelled", "computer post-observation cancelled before snapshot publication");
+        throw new BridgeError("cancelled", "computer post-observation cancelled before snapshot publication at /private/tmp/operator-secret");
       }
     },
   });
@@ -490,7 +490,9 @@ async function postObservationCancellationPreservesCompletedDispatch() {
   assert.equal(acted.effect_status, "unknown");
   assert.equal(acted.post_snapshot_id, null, "cancelled post-observation published a continuation snapshot");
   assert.equal(acted.post_observation, null);
-  assert.match(acted.post_observation_error, /post-observation cancelled before snapshot publication/);
+  assert.match(acted.post_observation_error, /browser post observation unavailable \(error_class=cancelled\)/);
+  assert.equal(acted.post_observation_error.includes("/private/tmp/operator-secret"), false,
+    "cancelled post-observation leaked lower-layer private error detail");
   assert.equal(acted.retry_guidance.same_action_retry_allowed, false,
     "post-observation cancellation incorrectly made the completed action automatically retryable");
   assert.equal(manager.snapshots.items.size, 0, "completed dispatch retained its consumed input snapshot after post-observation cancellation");
@@ -811,7 +813,7 @@ async function backendPostFocusFailureNeverFallsBackInAutoMode() {
   before.frames[0].elements[0]._machine_cdp_frame_id = "cdp-main";
   const browser = browserStub({
     inspectQueue: [before, structuredClone(before)], calls,
-    backendNodeActionError: new Error("trusted browser input may have been partially dispatched; the action outcome is unknown. Inspect the page before retrying. (snapshot_backend_focus_outcome_unknown)"),
+    backendNodeActionError: new Error("trusted browser input may have been partially dispatched; the action outcome is unknown. Inspect the page before retrying. (snapshot_backend_focus_outcome_unknown /private/tmp/operator-secret)"),
   });
   const manager = managerWith({ browser });
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
@@ -821,6 +823,9 @@ async function backendPostFocusFailureNeverFallsBackInAutoMode() {
   });
   assert.equal(acted.dispatch_status, "unknown");
   assert.equal(acted.effect_status, "unknown");
+  assert.equal(acted.dispatch_error.includes("/private/tmp/operator-secret"), false,
+    "unknown Computer Use dispatch leaked lower-layer private error detail");
+  assert.match(acted.dispatch_error, /error_class=execution_failed/);
   assert.equal(calls.some((entry) => entry.kind === "backend-act"), true);
   assert.equal(calls.some((entry) => entry.kind === "act"), false,
     "auto mode replayed a DOM action after the trusted backend had already applied focus");
@@ -834,7 +839,7 @@ async function backendPostDispatchWaitFailureNeverFallsBackInAutoMode() {
   before.frames[0].elements[0]._machine_cdp_frame_id = "cdp-main";
   const browser = browserStub({
     inspectQueue: [before, structuredClone(before)], calls,
-    postDispatchWaitError: new Error("browser wait timed out after trusted dispatch"),
+    postDispatchWaitError: Object.assign(new Error("browser wait timed out after trusted dispatch at /private/tmp/operator-secret"), { code: "ETIMEDOUT" }),
   });
   const manager = managerWith({ browser });
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
@@ -844,6 +849,9 @@ async function backendPostDispatchWaitFailureNeverFallsBackInAutoMode() {
   });
   assert.equal(acted.dispatch_status, "unknown", "post-dispatch wait failure was not classified as an unknown dispatch");
   assert.equal(acted.effect_status, "unknown");
+  assert.equal(acted.dispatch_error.includes("/private/tmp/operator-secret"), false,
+    "post-dispatch wait failure leaked lower-layer private error detail");
+  assert.match(acted.dispatch_error, /error_class=timeout/);
   assert.equal(calls.filter((entry) => entry.kind === "backend-act").length, 1);
   assert.equal(calls.some((entry) => entry.kind === "act"), false,
     "auto mode replayed the browser action after the trusted backend had already returned successfully and only wait_for failed");
@@ -1131,7 +1139,7 @@ async function missingPostObservationRequiresReobserve() {
   assert.equal(acted.retry_guidance.disposition, "do_not_retry");
   assert.equal(acted.retry_guidance.next_step, "computer_observe");
   assert.equal(acted.retry_guidance.same_action_retry_allowed, false);
-  assert.match(acted.post_observation_error, /unexpected browser observe/);
+  assert.match(acted.post_observation_error, /browser post observation unavailable \(error_class=execution_failed\)/);
 }
 
 async function postOnlyBrowserExpectationWithoutPostStateStaysUnknown() {
@@ -1398,7 +1406,7 @@ async function targetlessHistoryActionsRequireDocumentPreflight() {
     const calls = [];
     const browser = browserStub({
       inspectQueue: [browserSnapshot(`https://example.test/${action}`, `e-${action}`, `doc-${action}`)],
-      documentStateError: new Error("document state unavailable"),
+      documentStateError: Object.assign(new Error("document state unavailable at /private/tmp/operator-secret"), { code: "ETIMEDOUT" }),
       calls,
     });
     const manager = managerWith({ browser });
@@ -1407,7 +1415,10 @@ async function targetlessHistoryActionsRequireDocumentPreflight() {
       () => manager.act({ surface: "browser", snapshot_id: observed.snapshot_id, action, post_screenshot: "never" }),
       (error) => error instanceof BridgeError
         && error.code === "unavailable"
-        && error.details?.reason === "browser_document_preflight_unavailable",
+        && error.details?.reason === "browser_document_preflight_unavailable"
+        && error.details?.error_class === "timeout"
+        && !JSON.stringify(error.details).includes("/private/tmp/operator-secret")
+        && !Object.hasOwn(error.details || {}, "detail"),
     );
     assert.equal(calls.some((entry) => entry.kind === "act"), false,
       `${action} reached browser mutation without a verified snapshot document epoch`);
@@ -3263,7 +3274,7 @@ async function applicationVerificationCancellationPreservesCompletedDispatch() {
     applications,
     throwIfCancelled() {
       if (calls.some((entry) => entry.kind === "operate")) {
-        throw new BridgeError("cancelled", "application post-verification cancelled after dispatch");
+        throw new BridgeError("cancelled", "application post-verification cancelled after dispatch at /private/tmp/operator-secret");
       }
     },
   });
@@ -3276,7 +3287,9 @@ async function applicationVerificationCancellationPreservesCompletedDispatch() {
   assert.equal(acted.effect_status, "unknown");
   assert.equal(acted.verification.inconclusive, true);
   assert.equal(acted.post_snapshot_id, null);
-  assert.match(acted.post_observation_error, /post-verification cancelled after dispatch/);
+  assert.match(acted.post_observation_error, /application post observation unavailable \(error_class=cancelled\)/);
+  assert.equal(acted.post_observation_error.includes("/private/tmp/operator-secret"), false,
+    "application verification cancellation leaked lower-layer private error detail");
   assert.equal(acted.retry_guidance.same_action_retry_allowed, false,
     "post-dispatch verification cancellation made an already-issued mutation retryable");
   assert.equal(calls.filter((entry) => entry.kind === "operate").length, 1, "verification cancellation replayed application input");
@@ -3303,7 +3316,7 @@ async function applicationVerificationLateCaptureFailureIsInconclusive() {
   assert.equal(acted.effect_status, "unknown",
     "a stale early post snapshot was treated as definitive after later verification captures became unavailable");
   assert.equal(acted.verification.inconclusive, true);
-  assert.match(acted.post_observation_error, /application inspect|verification read failed/);
+  assert.match(acted.post_observation_error, /application post observation unavailable \(error_class=execution_failed\)/);
   assert.match(acted.post_snapshot_id || "", /^cu_/, "last valid post snapshot was not retained as continuation evidence");
   assert.equal(calls.filter((entry) => entry.kind === "operate").length, 1, "late verification failure replayed application input");
 }
@@ -3633,7 +3646,7 @@ async function applicationSetValuePostCaptureFailureDiscardsRetainedValue() {
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(acted.effect_status, "unknown");
-  assert.match(acted.post_observation_error, /unexpected application inspect/);
+  assert.match(acted.post_observation_error, /application post observation unavailable \(error_class=execution_failed\)/);
   assert.equal(calls.some((entry) => entry.kind === "verify-value"), false, "value readback unexpectedly ran without a post snapshot");
   const discarded = calls.find((entry) => entry.kind === "discard-value");
   assert.match(discarded?.handle || "", /^av_[A-Za-z0-9_-]{24,80}$/, "post-capture failure left the retained exact value waiting for TTL cleanup");

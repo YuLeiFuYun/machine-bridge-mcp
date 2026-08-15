@@ -10,19 +10,17 @@ Version 3 is a coordinated Worker, daemon, CLI, and browser-extension system. Co
 
 State migration is different from protocol compatibility. A narrowly bounded reader may still be required when valid state produced by the immediately preceding/live version must be transformed in place without deleting user credentials or creating split-brain ownership. Such migration must be one-way, fail closed on ambiguous state, and must not recreate the removed runtime behavior. beta.61's OAuth refresh persistence is one such forward migration: legacy schema-2/schema-3 main values are reconstructed in memory, consumed replay markers are moved into bounded hash shards, and the main value plus shards are committed atomically. An older runtime is not a supported reader for that migrated state; formal rollback therefore restores the complete pre-upgrade state-root backup together with the prior package, Worker, service definition, and browser extension as described below.
 
-## Current beta.61 transition
+## Historical beta.61 migration invariant retained by current readers
 
-`3.0.0-beta.61` supersedes the live beta.60 owner-machine baseline described in the changelog. The important transition boundary is the machine-user resource transaction lock:
+This section records the origin of one persisted-state compatibility boundary; **beta.61 is not the current upgrade target**. During the beta.60 → beta.61 transition, the machine-user resource transaction lock established the wire shape that later runtimes may still need to recognize when migrating valid persisted state:
 
-- beta.60 uses `transaction.lock/` plus `owner.json` as the cross-process mutex;
-- beta.61 deliberately keeps that directory wire shape while beta.60 may still be live, so the final-name `mkdir` remains the cross-version atomic exclusion point;
-- an incomplete directory generation is not reclaimed until the bounded orphan grace has elapsed and the exact filesystem generation is revalidated;
-- beta.61 can also wait for or reclaim the short-lived regular-file lock generation created by an earlier beta.61 implementation during this same candidate cycle;
+- beta.60 used `transaction.lock/` plus `owner.json` as the cross-process mutex;
+- beta.61 deliberately kept that directory wire shape while beta.60 could still be live, so the final-name `mkdir` remained the cross-version atomic exclusion point;
+- an incomplete directory generation was not reclaimed until the bounded orphan grace elapsed and the exact filesystem generation was revalidated;
+- beta.61 also accepted the short-lived regular-file lock generation created by an earlier beta.61 implementation during that candidate cycle;
 - do **not** delete, rename, or hand-edit `transaction.lock` to force progress. Let the owner-identity and stale-recovery checks converge or stop and inspect the state.
 
-This transition is intentionally narrow. It does not restore an older MCP implementation or make mixed Worker/daemon versions a supported steady state.
-
-At the beta.61 source cutoff, the public npm channels are `latest=2.0.0` and `beta=3.0.0-beta.38`; the owner machine also has the explicitly recorded live beta.60 candidate. Migration-only readers are therefore retained only where persisted state from those real upgrade sources can reach beta.61. They are one-way readers: successful migration writes only the current schema and does not make the producing runtime/protocol executable again. Do not infer support for arbitrary historical prerelease state from the presence of a bounded migration parser.
+The historical channel/version snapshot that justified those migration readers belongs in the changelog and audit history, not in this live upgrade contract. Current code may retain only the bounded readers still required to consume reachable persisted state; those readers are one-way and do not make the producing runtime or protocol executable again. Do not infer support for arbitrary historical prerelease state from the presence of a migration parser, and do not treat this historical section as permission for mixed-version Worker/daemon operation.
 
 Existing browser pairing and OAuth state should be left in place. Machine Bridge rotates or normalizes supported persisted state when the relevant subsystem is first used and fails closed when the stored state cannot be validated. Do not delete pairing or OAuth state merely to make an upgrade succeed; doing so can force unnecessary re-pairing or reauthorization and can hide an ownership problem that should be diagnosed.
 
