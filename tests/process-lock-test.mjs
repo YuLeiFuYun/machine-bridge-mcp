@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join, resolve } from "node:path";
@@ -9,7 +9,7 @@ import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { inspectProcessInstance } from "../src/local/process-identity.mjs";
-import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath } from "../src/local/state.mjs";
+import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath, readDaemonLockOwner } from "../src/local/state.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const MAINTENANCE_HOLDER_READY_MS = 30_000;
@@ -27,6 +27,11 @@ try {
   assert(defaultFirstRunWorkspace({ platform: "darwin", cwd: temp }) === resolve(temp),
     "default first-run workspace did not use the supplied POSIX cwd");
   stateRootSeparationTest();
+  expectThrow(() => loadGlobalConfig(temp, {
+    inspectPathIfPresentSync() {
+      throw Object.assign(new Error("synthetic global configuration storage failure"), { code: "EIO" });
+    },
+  }), "synthetic global configuration storage failure");
   await daemonReadinessLockTest();
   await startupWaitTest();
   await startupWaitUsesBoundedDeadlineTest();
@@ -34,6 +39,7 @@ try {
   await machineServiceLockTest();
   await malformedAndReusedPidLockTest();
   await symbolicLinkLockTest();
+  await hardLinkLockTest();
   console.log("process identity/lock test ok");
 } finally {
   await rm(temp, { recursive: true, force: true });
@@ -77,7 +83,6 @@ async function atomicExclusiveCreateTest() {
     windowsHide: true,
   }));
   const childResults = children.map(waitForChild);
-  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 30); });
   await writeFile(barrier, "go\n", "utf8");
   const results = await Promise.all(childResults);
   const winners = results.filter((result) => result.code === 0);
@@ -94,6 +99,36 @@ async function atomicExclusiveCreateTest() {
   try { createExclusiveFileSync(direct, "other\n"); } catch (error) { duplicate = error; }
   assert(duplicate?.code === "EEXIST", "exclusive create did not preserve existing target");
   assert(await readFile(direct, "utf8") === "complete\n", "duplicate exclusive create changed the target");
+
+  let legacyCleanupFlagFailure = null;
+  try { createExclusiveFileSync(direct, "other\n", { cleanupTargetOnFailure: true }); } catch (error) { legacyCleanupFlagFailure = error; }
+  assert(legacyCleanupFlagFailure?.code === "EEXIST" && await readFile(direct, "utf8") === "complete\n",
+    "legacy cleanupTargetOnFailure semantics deleted a pre-existing exclusive target after EEXIST");
+
+  const causalTarget = join(directory, "causal-cleanup.txt");
+  let causalFailure = null;
+  try {
+    createExclusiveFileSync(causalTarget, "private\n", {
+      link() { throw new Error("synthetic exclusive commit failure"); },
+      unlink() { throw new Error("synthetic exclusive staging cleanup failure"); },
+    });
+  } catch (error) { causalFailure = error; }
+  assert(causalFailure instanceof AggregateError
+    && causalFailure.errors?.[0]?.message === "synthetic exclusive commit failure"
+    && causalFailure.errors?.[1]?.message === "synthetic exclusive staging cleanup failure",
+  "exclusive create lost primary and staging-cleanup causes");
+
+  const warningTarget = join(directory, "cleanup-warning.txt");
+  const warningResult = createExclusiveFileSync(warningTarget, "committed\n", {
+    unlink() { throw new Error("synthetic post-commit staging cleanup failure"); },
+  });
+  assert(await readFile(warningTarget, "utf8") === "committed\n"
+    && warningResult.warnings.length === 1
+    && warningResult.cleanupError?.message.includes("post-commit")
+    && typeof warningResult.cleanupArtifact === "string"
+    && !JSON.stringify(warningResult).includes(warningResult.cleanupArtifact),
+  "exclusive create hid post-commit cleanup failure or exposed its private staging path in serialization");
+  await rm(warningResult.cleanupArtifact, { force: true });
 }
 
 async function atomicReplacementTest() {
@@ -115,6 +150,19 @@ async function atomicReplacementTest() {
   assert(result.code === 0, `atomic replacement fixture failed: ${result.stderr}`);
   const final = JSON.parse(await readFile(target, "utf8"));
   assert(final.revision === 250, "atomic replacement lost the final update");
+
+  const causalTarget = join(directory, "causal-replacement.json");
+  let causalFailure = null;
+  try {
+    replaceFileAtomicallySync(causalTarget, "private\n", {
+      replace() { throw new Error("synthetic replacement commit failure"); },
+      unlink() { throw new Error("synthetic replacement staging cleanup failure"); },
+    });
+  } catch (error) { causalFailure = error; }
+  assert(causalFailure instanceof AggregateError
+    && causalFailure.errors?.[0]?.message === "synthetic replacement commit failure"
+    && causalFailure.errors?.[1]?.message === "synthetic replacement staging cleanup failure",
+  "atomic replacement lost primary and staging-cleanup causes");
 }
 
 function processIdentityTest() {
@@ -205,6 +253,7 @@ async function startupWaitTest() {
   assert(lock.acquired, "startup wait did not acquire the released lock");
   assert(Date.now() - started >= 100, "startup wait returned before the competing operation released its lock");
   assert(messages.some((message) => message.includes("waiting for")) && messages.some((message) => message.includes("continuing")), "startup wait progress messages are incomplete");
+  assert(!messages.some((message) => /\bpid\s+\d+\b/i.test(message)), "default startup wait log exposed the competing process identifier");
   lock.release();
   const result = await childResult;
   assert(result.code === 0, `startup lock fixture failed: ${result.stderr}`);
@@ -352,6 +401,17 @@ async function malformedAndReusedPidLockTest() {
   assert(reclaimed.acquired, "old malformed lock was not reclaimed");
   reclaimed.release();
 
+  await writeFile(file, "x".repeat(64 * 1024 + 1), { mode: 0o600 });
+  await utimes(file, old, old);
+  let oversizedFailure = null;
+  try { acquireStartupLock(state, { operation: "must-not-reclaim-oversized" }); } catch (error) { oversizedFailure = error; }
+  assert(String(oversizedFailure?.message || "").includes("file exceeds 65536 bytes") && existsSync(file),
+    "oversized process lock was treated as reclaimable malformed JSON instead of a read failure");
+  let ownerReadFailure = null;
+  try { readDaemonLockOwner(file); } catch (error) { ownerReadFailure = error; }
+  assert(String(ownerReadFailure?.message || "").includes("file exceeds 65536 bytes") && existsSync(file),
+    "daemon lock owner reader converted an oversized/unreliable lock into null owner metadata");
+
   await writeFile(file, `${JSON.stringify({
     pid: process.pid,
     token: "fixture-token",
@@ -387,6 +447,30 @@ async function symbolicLinkLockTest() {
   await symlink(outside, file);
   owned.release();
   assert(await readFile(outside, "utf8") === "outside\n", "lock release followed a replacement symbolic link");
+}
+
+async function hardLinkLockTest() {
+  const workspace = join(temp, "hardlink-workspace");
+  const stateRoot = join(temp, "hardlink-state");
+  await mkdir(workspace, { recursive: true });
+  const state = loadState(workspace, { stateDir: stateRoot });
+  const file = join(state.paths.profileDir, "startup.lock");
+  const alias = join(temp, "hardlink-startup-lock-alias");
+  await writeFile(file, "{partial", { mode: 0o600 });
+  try {
+    await link(file, alias);
+  } catch (error) {
+    if (["EPERM", "EACCES", "EXDEV", "ENOTSUP"].includes(error?.code)) return;
+    throw error;
+  }
+  let acquireFailure = null;
+  try { acquireStartupLock(state, { operation: "hardlink-rejection" }); } catch (error) { acquireFailure = error; }
+  assert(String(acquireFailure?.message || "").includes("multiple hard links") && existsSync(file) && existsSync(alias),
+    "multiply-linked process lock was read or reclaimed instead of failing closed");
+  let ownerFailure = null;
+  try { readDaemonLockOwner(file); } catch (error) { ownerFailure = error; }
+  assert(String(ownerFailure?.message || "").includes("multiple hard links") && existsSync(file) && existsSync(alias),
+    "daemon lock owner reader accepted a multiply-linked lock");
 }
 
 function waitForChild(child) {

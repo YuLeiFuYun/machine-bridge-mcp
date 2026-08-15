@@ -1,24 +1,17 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
 import { buildAuthorityContext } from "../src/local/authority-context.mjs";
-import {
-  OperationAuthorizer,
-  clearOperationLeases,
-  classifyOperation,
-  listOperationApprovals,
-  revokeOperationLease,
-} from "../src/local/operation-authorization.mjs";
+import { OperationAuthorizer, classifyOperation } from "../src/local/operation-authorization.mjs";
 import { reviewedOperationToolNames } from "../src/local/operation-risk.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
-import { withOperationStateLock } from "../src/local/operation-state-lock.mjs";
 
 const root = mkdtempSync(path.join(tmpdir(), "mbm-authority-test-"));
 const workspace = path.join(root, "workspace");
-const approvalRoot = path.join(root, "state");
+const securityStateRoot = path.join(root, "state");
 mkdirSync(workspace, { recursive: true });
-mkdirSync(approvalRoot, { recursive: true });
+mkdirSync(securityStateRoot, { recursive: true });
 writeFileSync(path.join(workspace, "README.md"), "ok\n");
 const outside = path.join(root, "ordinary.txt");
 writeFileSync(outside, "outside\n");
@@ -40,60 +33,127 @@ try {
 
   const authorizer = new OperationAuthorizer({
     workspace,
-    root: approvalRoot,
+    root: securityStateRoot,
     now: () => now,
     resolveExistingPath: async (value) => path.resolve(workspace, String(value)),
     resolveWritePath: async (value) => path.resolve(workspace, String(value)),
-    protectedRoots: [approvalRoot],
+    protectedRoots: [securityStateRoot],
+    auditTargetKey: Buffer.alloc(32, 7),
   });
 
   const ownerShell = await authorizer.authorize(operation("exec_command", { command: "printf owner" }, "owner"));
   assert(ownerShell.source === "trusted-owner", "owner operation did not remain interruption-free");
   assert(ownerShell.scopes.includes("shell"), "owner operation was not risk-classified");
-  assert(listOperationApprovals(approvalRoot, now).pending.length === 0, "runtime authorization created terminal approval state");
+  const ownerCommit = await authorizer.authorize(operation("git_commit", { path: workspace, message: "fix: bounded commit" }, "owner"));
+  assert(ownerCommit.source === "trusted-owner" && ownerCommit.scopes.length === 0,
+    "workspace Git commit inherited generic shell risk instead of the bounded write surface");
 
   const reviewerRead = await authorizer.authorize(operation("read_file", { path: "README.md" }, "reviewer"));
   assert(reviewerRead.source === "role-ceiling", "ordinary reviewer read was not automatic");
   assert(reviewerRead.scopes.length === 0, "ordinary workspace read was misclassified");
+  const reviewerGitConfig = await rejected(() => authorizer.authorize(operation("read_file", { path: ".git/config" }, "reviewer")));
+  assert(reviewerGitConfig.details?.reason === "account_role_sensitive_ceiling",
+    "reviewer could read credential-bearing Git control-plane metadata directly");
+  const editorGitMetadata = await rejected(() => authorizer.authorize(operation("write_file", { path: ".git/objects/info/alternates", content: "../outside\n" }, "editor")));
+  assert(editorGitMetadata.details?.reason === "account_role_sensitive_ceiling",
+    "editor could write Git control-plane metadata directly");
 
   const operatorProcess = await authorizer.authorize(operation("run_process", { argv: ["printf", "ok"] }, "operator"));
   assert(operatorProcess.source === "role-ceiling" && operatorProcess.scopes.includes("shell"), "operator direct process was not allowed inside its role ceiling");
+  const operatorPersistentOperation = operation("start_job", {
+    steps: [{ argv: ["printf", "ok"] }],
+  }, "operator");
+  const operatorPersistentJob = await rejected(() => authorizer.authorize(operatorPersistentOperation));
+  assert(operatorPersistentJob.details?.reason === "account_role_owner_only_tool_ceiling",
+    "operation authorization drifted from the shared owner-only tool contract");
+  assert(operatorPersistentOperation.context.operationAuthorization?.allowed === false
+      && operatorPersistentOperation.context.operationAuthorization.category === "owner-only tool",
+  "owner-only denial lost bounded authorization-attempt evidence for audit");
+  const reviewerDiagnostics = await rejected(() => authorizer.authorize(operation("diagnose_runtime", {}, "reviewer")));
+  assert(reviewerDiagnostics.details?.reason === "account_role_owner_only_tool_ceiling",
+    "automatic-risk classification bypassed the shared owner-only diagnostics contract");
 
-  const reviewerExternal = await rejected(() => authorizer.authorize(operation("read_file", { path: outside }, "reviewer")));
+  const reviewerExternalOperation = operation("read_file", { path: outside }, "reviewer");
+  const reviewerExternal = await rejected(() => authorizer.authorize(reviewerExternalOperation));
   assert(reviewerExternal.details?.reason === "account_role_path_ceiling", "reviewer external read was not denied by the role path ceiling");
+  assert(reviewerExternalOperation.context.operationAuthorization?.allowed === false
+      && reviewerExternalOperation.context.operationAuthorization.category !== "ordinary operation"
+      && /^[a-f0-9]{64}$/.test(reviewerExternalOperation.context.operationAuthorization.targetHash),
+  "external-read denial lost privacy-bounded risk/target evidence for audit");
 
   const editorExternal = await rejected(() => authorizer.authorize(operation("write_file", { path: outside, content: "x" }, "editor")));
   assert(editorExternal.details?.reason === "account_role_path_ceiling", "editor external write was not denied by the role path ceiling");
+  const externalCommit = await classifyOperation("git_commit", { path: outside, message: "fix: outside" }, {
+    workspace,
+    resolveWritePath: async (value) => path.resolve(workspace, String(value)),
+  });
+  assert(externalCommit?.scopes.includes("external-write"), "Git commit path escaped external-write classification");
 
   const reviewerSensitive = await rejected(() => authorizer.authorize(operation("read_file", { path: sensitive }, "reviewer")));
   assert(reviewerSensitive.details?.reason === "account_role_path_ceiling" || reviewerSensitive.details?.reason === "account_role_sensitive_ceiling", "reviewer sensitive read was not denied");
 
   const ownerSensitive = await authorizer.authorize(operation("read_file", { path: sensitive }, "owner"));
   assert(ownerSensitive.scopes.includes("sensitive-read"), "owner sensitive read was not classified");
+  const rawSensitive = await classifyOperation("read_file", { path: sensitive }, {
+    workspace,
+    resolveExistingPath: async (value) => path.resolve(workspace, String(value)),
+  });
+  const repeatedOwnerSensitive = await authorizer.authorize(operation("read_file", { path: sensitive }, "owner"));
+  assert(/^[a-f0-9]{64}$/.test(ownerSensitive.targetHash)
+    && ownerSensitive.targetHash === repeatedOwnerSensitive.targetHash
+    && ownerSensitive.targetHash !== rawSensitive?.targetHash,
+  "persisted audit target fingerprint was not runtime-keyed or stable within one runtime");
 
-  const controlState = path.join(approvalRoot, "state.json");
+  const controlState = path.join(securityStateRoot, "state.json");
   writeFileSync(controlState, "{}\n", { mode: 0o600 });
-  const ownerControlPlane = await rejected(() => authorizer.authorize(operation("read_file", { path: controlState }, "owner")));
+  const ownerControlPlaneOperation = operation("read_file", { path: controlState }, "owner");
+  const ownerControlPlane = await rejected(() => authorizer.authorize(ownerControlPlaneOperation));
   assert(ownerControlPlane.details?.reason === "control_plane_state_protected", "owner path-based file access could export Machine Bridge control-plane state");
+  assert(ownerControlPlaneOperation.context.operationAuthorization?.allowed === false
+      && /^[a-f0-9]{64}$/.test(ownerControlPlaneOperation.context.operationAuthorization.targetHash),
+  "control-plane denial lost its privacy-bounded classified target evidence for audit");
 
   const ownerBrowser = await authorizer.authorize(operation("browser_action", { action: "navigate", url: "https://example.com" }, "owner"));
   assert(ownerBrowser.scopes.includes("browser-session"), "owner browser session was not classified");
+
+  const prototypeTarget = await classifyOperation("exec_command", JSON.parse('{"command":"echo protected","__proto__":"distinct-target"}'));
+  const ordinaryTarget = await classifyOperation("exec_command", { command: "echo protected" });
+  assert(prototypeTarget?.targetHash !== ordinaryTarget?.targetHash,
+    "operation-risk redaction collapsed a prototype-shaped own field out of the audit target hash");
 
   const protectedJob = await classifyOperation("start_job", {
     steps: [{ argv: ["cat"], stdin_resource: "private-value" }],
   }, { workspace });
   assert(protectedJob.scopes.join(",") === "sensitive-read,persistent-job" || protectedJob.scopes.join(",") === "persistent-job,sensitive-read", "protected job resource use was not classified");
+  const argvProtectedJob = await classifyOperation("start_job", {
+    steps: [{ argv: ["cat", "{{resource:private-value}}", "prefix={{resource:second-value}}"] }],
+  }, { workspace });
+  assert(argvProtectedJob?.scopes.includes("sensitive-read") && argvProtectedJob.scopes.includes("persistent-job"),
+    "managed-job argv resource injection was omitted from the sensitive-data effect classification");
   const operatorProtectedJob = await rejected(() => authorizer.authorize(operation("start_job", {
     steps: [{ argv: ["cat"], stdin_resource: "private-value" }],
   }, "operator")));
-  assert(operatorProtectedJob.details?.reason === "account_role_sensitive_ceiling", "operator could use owner-protected resources in a managed job");
+  assert(operatorProtectedJob.details?.reason === "account_role_owner_only_tool_ceiling",
+    "owner-only managed-job creation did not short-circuit before narrower protected-resource checks");
 
   const hookWrite = await classifyOperation("write_file", { path: ".git/hooks/pre-commit", content: "#!/bin/sh" }, {
     workspace,
     resolveWritePath: async (value) => path.resolve(workspace, String(value)),
-    protectedRoots: [approvalRoot],
+    protectedRoots: [securityStateRoot],
   });
   assert(hookWrite?.scopes.includes("sensitive-write"), "workspace Git hook write bypassed the persistence boundary");
+  const gitMetadataWrite = await classifyOperation("write_file", { path: ".git/objects/info/alternates", content: "../outside\n" }, {
+    workspace,
+    resolveWritePath: async (value) => path.resolve(workspace, String(value)),
+    protectedRoots: [securityStateRoot],
+  });
+  assert(gitMetadataWrite?.scopes.includes("sensitive-write"), "workspace Git object metadata write bypassed the sensitive boundary");
+  const gitConfigRead = await classifyOperation("read_file", { path: ".git/config" }, {
+    workspace,
+    resolveExistingPath: async (value) => path.resolve(workspace, String(value)),
+    protectedRoots: [securityStateRoot],
+  });
+  assert(gitConfigRead?.scopes.includes("sensitive-read"), "workspace Git configuration read bypassed the sensitive boundary");
 
   const envWrite = await classifyOperation("apply_patch", { patch: "*** Add File: .env.local\n+SECRET=value" }, { workspace });
   assert(envWrite?.scopes.includes("sensitive-write"), "workspace environment write bypassed the sensitive-write boundary");
@@ -111,49 +171,6 @@ try {
     patch: "*** Add File: linked-outside/escaped.txt\n+escaped",
   }, { workspace, resolveWritePath: canonicalWritePath });
   assert(symlinkPatch?.scopes.includes("external-write"), "patch through a workspace symlink bypassed canonical classification");
-
-  const leaseFile = path.join(approvalRoot, "operation-leases.json");
-  const lease = {
-    id: `lease_${"l".repeat(24)}`,
-    account_id: accountId,
-    account_version: 1,
-    client_id: clientId,
-    scopes: ["shell"],
-    created_at: Math.floor(now / 1000),
-    expires_at: Math.floor(now / 1000) + 1800,
-  };
-  writeFileSync(leaseFile, `${JSON.stringify({ schemaVersion: 2, leases: [lease] }, null, 2)}
-`, { mode: 0o600 });
-  assert(listOperationApprovals(approvalRoot, now).leases.some((entry) => entry.id === lease.id), "legacy lease was not readable for migration cleanup");
-
-  let releaseLock;
-  let markLockEntered;
-  const lockEntered = new Promise((resolvePromise) => { markLockEntered = resolvePromise; });
-  const holdLock = withOperationStateLock(approvalRoot, async () => {
-    markLockEntered();
-    await new Promise((resolvePromise) => { releaseLock = resolvePromise; });
-  });
-  await lockEntered;
-  const operationLockPath = path.join(approvalRoot, "operation-authorization.lock");
-  if (process.platform !== "win32") assert(statSync(operationLockPath).mode.toString(8).endsWith("600"), "operation-state lock is not owner-only");
-  let revokeSettled = false;
-  const concurrentRevoke = revokeOperationLease(approvalRoot, lease.id, now).then((value) => { revokeSettled = true; return value; });
-  await delay(75);
-  assert(!revokeSettled, "legacy lease cleanup ignored the cross-process lock");
-  releaseLock();
-  await holdLock;
-  assert(!existsSync(operationLockPath), "operation-state lock remained after release");
-  assert(await concurrentRevoke, "legacy lease could not be revoked");
-
-  writeFileSync(leaseFile, `${JSON.stringify({ schemaVersion: 2, leases: [lease] }, null, 2)}
-`, { mode: 0o600 });
-  await clearOperationLeases(approvalRoot);
-  assert(listOperationApprovals(approvalRoot, now).leases.length === 0, "legacy leases were not cleared");
-
-  const validLeaseState = JSON.parse(readFileSync(leaseFile, "utf8"));
-  validLeaseState.leases.push({ id: `lease_${"z".repeat(24)}`, account_id: accountId, account_version: 0, client_id: clientId, scopes: ["shell"], created_at: 1, expires_at: 2 });
-  writeFileSync(leaseFile, `${JSON.stringify(validLeaseState)}\n`, { mode: 0o600 });
-  assertThrows(() => listOperationApprovals(approvalRoot, now), "malformed persisted lease was accepted");
 
   console.log("request authority and operation classification test ok");
 } finally {
@@ -193,15 +210,6 @@ async function canonicalWritePath(value) {
 async function rejected(callback) {
   try { await callback(); } catch (error) { return error; }
   throw new Error("expected operation to be rejected");
-}
-
-function assertThrows(callback, message) {
-  try { callback(); } catch { return; }
-  throw new Error(message);
-}
-
-function delay(milliseconds) {
-  return new Promise((resolvePromise) => { setTimeout(resolvePromise, milliseconds); });
 }
 
 function assert(condition, message) {

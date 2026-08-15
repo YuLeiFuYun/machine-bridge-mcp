@@ -46,6 +46,12 @@ Trusted components are:
 
 The Worker authenticates and filters remote requests. The local runtime owns filesystem, process, browser, application, resource, and job authority. Stdio bypasses the Worker and relies on local process and configuration trust.
 
+The repository Workflow Policy Gate independently validates the complete GitHub workflow set: approved triggers, least-privilege permissions, bounded jobs, workflow/ref concurrency, immutable reviewed Actions, disabled checkout credentials, and safe event-data handling. Release creation requires its successful push run for the exact commit.
+
+The final published consumer tree is audited separately from the source workspace. Deployment-only Wrangler/Miniflare packages are installed from a package-owned lock into an owner-only private toolchain, not shipped as runtime dependencies. Before use, that toolchain must match exact patched versions, pass a zero-vulnerability audit, and pass registry-signature verification. Installation and release mutation use a separately integrity-pinned hardened npm CLI rather than the ambient global npm bundle. Critical npm commands remove inherited execution modes case-insensitively and explicitly disable dry-run/workspace behavior. GitHub and npm publication upload private staged copies of the exact accepted tarball; after every irreversible command, bounded remote reconciliation requires GitHub REST SHA-256 or npm version/SHA-1/SRI/dist-tag evidence before success is reported. An unresolved outcome is explicitly ambiguous and must not be blindly retried. Release Git/gh operations use trusted absolute executables outside workspace/state/home roots and retain bounded network deadlines. Private toolchain reconstruction is limited to positively identified integrity corruption; permission, I/O, quota, memory, retry, stale-handle, storage, and timeout failures preserve existing state and fail closed. A root npm override in the source checkout is not considered consumer security evidence.
+
+Candidate activation treats Worker deployment and local service replacement as separate evidence boundaries. Authorization is checked before candidate downloads or installation, rollback evidence is captured before temporary npm disposal, and inactive runtime cleanup may touch only canonical real directories contained below the state root. One explicit current-version device-authentication rejection permits one same-name, unchanged-identity repair deployment and bounded fresh-session convergence; other ambiguous failures do not authorize a repeated remote write. Worker deployment fingerprints use length-framed normalized paths and bounded no-follow file reads; missing, inaccessible, symlinked, hard-linked, special, or changing source paths stop before deployment. After the Worker advances, compatible-service recovery is successful only when the exact service daemon completes authenticated relay readiness and matches the Worker. Provider-active state alone is insufficient, and incomplete compensation preserves both the primary failure and recovery error.
+
 ## Effective remote authority
 
 Remote authority is an intersection:
@@ -119,7 +125,7 @@ The prompt frequency is therefore:
 
 The packaged Swift source and ad-hoc build are development/protocol fixtures. The production validator deliberately rejects them because ad-hoc code has no provisioning-profile-validated data-protection Keychain access group.
 
-The broker path, signing identifier, Team ID, and capability are revalidated before use, but those checks cannot distinguish a malicious replacement signed by the same trusted Apple team and identifier. Install production brokers in a root-owned or otherwise daemon-user-non-writable location and protect the signing identity and update channel.
+The optional source-built development broker is cached only when a versioned marker matches both source and compiled-binary SHA-256 and the executable remains regular, single-link, owner-only, and executable. The broker path, signing identifier, Team ID, and capability are revalidated before use, but those checks cannot distinguish a malicious replacement signed by the same trusted Apple team and identifier. Install production brokers in a root-owned or otherwise daemon-user-non-writable location and protect the signing identity and update channel.
 
 ## Account administration
 
@@ -178,13 +184,17 @@ The extension independently caps active operations at 32. Its public error bound
 
 After trusted input dispatch begins, an ambiguous failure is reported as unknown outcome and is not automatically replayed.
 
-Local resources may be injected without returning their bytes through MCP, but the destination page or application still receives them. Screenshots and page source can themselves contain secrets.
+`computer_observe` / `computer_act` add snapshot binding, not new authority. Browser targets are tied to the observed tab/document/frame/semantic identity and optional screenshot; macOS application targets are tied to the exact process generation and, when available, owner-window evidence. A snapshot is one-shot mutation authority and is consumed before backend mutation handoff. Raw backend-node IDs, arbitrary CDP calls, unbound screen coordinates, or caller-provided JXA/native code are not accepted. If a browser transport or fixed local UI helper may already have started a mutation, the result is explicitly non-retryable and the caller must inspect post-state before any new action.
+
+Computer Use screenshots share the ordinary MCP result-size boundary. When an image would make an observation result too large, the image is omitted before the snapshot ID is published and pixel-action authority is disabled. When a post-action image would overflow the same boundary, it is removed from the returned/stored post snapshot while the already-established mutation settlement and bounded continuation handle are preserved; the result never turns that dispatched action into a generic retryable size failure. Semantic state may still be returned. The experimental macOS background visual backend is disabled unless explicitly configured and successfully probed; Accessibility, Automation, Screen Recording, and the operating system remain independent enforcement boundaries.
+
+Local resources may be injected without returning their bytes through MCP, but the destination page or application still receives them. Screenshots and page source can themselves contain secrets. In particular, raw serialized HTML may contain hidden bootstrap/session/account/authentication values that are not visible in the rendered page; `browser_get_source` therefore should be used only when raw markup is required, with semantic inspection preferred for routine browser work.
 
 ## Filesystem and mutation integrity
 
 Workspace-confined profiles canonicalize existing paths and write ancestors. Final symbolic-link writes are rejected. Patch add, update, delete, and move destinations are classified before mutation.
 
-Writes use bounded same-directory staging and atomic replacement. Expected hashes and exact edits reduce stale overwrites. Patch transactions prevalidate all operations, serialize mutation, maintain backups, and roll back ordinary commit errors.
+Writes use bounded same-directory staging and atomic replacement. Expected hashes and exact edits reduce stale overwrites. Patch transactions prevalidate all operations, serialize mutation, maintain backups, and roll back ordinary commit errors. If rollback of an already-committed user-file step itself fails, Machine Bridge returns a public non-retryable `patch_recovery_incomplete` settlement directing the caller to inspect affected paths instead of hiding the potentially partial mutation behind a generic internal error.
 
 On systems without descriptor-relative traversal, a malicious same-user process can still race parent-directory replacement between validation and open. Machine Bridge does not claim protection from a hostile process with equivalent OS-user authority.
 
@@ -206,7 +216,7 @@ Registered resources store canonical paths and bounded metadata, not file conten
 
 At job acceptance, referenced resources are reopened, bounded, hashed, and copied into a private runtime area. Changed or unavailable resources fail closed. Environment injection may be visible to same-user process inspection; private file-path substitution or stdin is generally safer.
 
-Managed jobs are durability, not sandboxing. Only `owner` may create remote persistent plans. Long-lived jobs bind to account, account version, OAuth client, and refresh family.
+Managed jobs are durability, not sandboxing. Only `owner` may create remote persistent plans. Long-lived jobs bind to account, account version, OAuth client, and refresh family. Job directories must remain canonical real children of the owner-only job root. Cancellation markers are atomically replaced owner-only timestamp files; unreadable, malformed, symlinked, or hard-linked markers fail closed instead of being treated as no cancellation.
 
 `stage_job` is non-executing and cannot be promoted by a terminal approval command. `machine-mcp job approve` was removed. Execution requires trusted `start_job` authority or an explicit local `machine-mcp job submit PLAN.json` action.
 
@@ -234,7 +244,7 @@ Request bodies, messages, traversals, files, output, OAuth stores, nonce stores,
 
 Operational logs omit tool arguments, command text, stdin, file/patch contents, form values, and outputs. Known credential forms, private-key material, embedded-credential URLs, user-home paths, email addresses, and control characters are recursively redacted as defense in depth.
 
-The local security audit is a bounded SHA-256 hash chain. It records operation type, risk category, outcome, duration, byte counts, target digest, and salted principal references. It does not record commands, paths, contents, fields, or results.
+The local security audit is a bounded SHA-256 hash chain. It records operation type, risk category, outcome, duration, byte counts, and pseudonymous target/principal references. Risky target correlation and account/client/family identity are HMAC-keyed with fresh per-daemon runtime keys before persistent audit state applies its existing per-file salt, so the public salt stored beside the chain is not sufficient to recompute references from guessed paths, short commands, or account identifiers. Those references are intentionally not stable cross-restart identities. The audit does not record commands, paths, contents, fields, or results.
 
 No logging policy prevents data from being returned to an authorized client that explicitly invokes an enabled tool. Remote arguments and results necessarily traverse the user's Worker and MCP host.
 
@@ -259,8 +269,8 @@ No logging policy prevents data from being returned to an authorized client that
 Machine Bridge cannot make arbitrary local executables safe, identify all sensitive data, guarantee cleanup across every power/storage/security failure, override MCP-host or endpoint-security policy, neutralize prompt injection, protect against root or a fully compromised same-user account, or manufacture production signing and governance controls.
 
 See [docs/AUDIT.md](docs/AUDIT.md) for historical findings and residual limitations.
-## Resumable Streamable HTTP delivery
+## Request-scoped Streamable HTTP delivery
 
-SSE event identifiers are cursors, not bearer credentials. Recovery requires a valid OAuth Bearer/DPoP request and the original signed `MCP-Session-Id`; a cursor from another token or session is reported as not found. `GET /mcp` only replays an existing stream, while POST always represents new work.
+MCP `2026-07-28` response streams are request-scoped and non-resumable. SSE frames carry no event IDs, `GET /mcp` is not a recovery channel, and `Mcp-Session-Id` / `Last-Event-ID` do not create protocol-session or replay state. Closing the public response stream cancels that request through a random internal capability that carries neither Authorization nor DPoP credentials.
 
-The Worker stores bounded stream and call state to bridge transport loss. Active streamed-call records contain opaque ownership/generation identifiers, request correlation, deadlines, and no tool arguments; terminal records retain at most 1.5 MiB for two minutes and include SHA-256 integrity metadata. The index is limited to 64 streams. This protects continuity and detects accidental storage corruption, not compromise of the Worker account or Durable Object. A valid persisted call remains pending after Worker restart. Only a pending stream record with no durable call owner is reported as an ambiguous execution outcome; clients must reconcile before retrying a non-idempotent tool in that case.
+A brief relay interruption may rebind an already-dispatched pending call only to the same verified daemon instance within the bounded reconnect grace period. That continuity is in memory and remains owned by the initiating HTTP response; it does not persist a terminal result, create client-visible replay state, or authorize retry after the response has ended. Remote compatibility for the declared older initialization dates is likewise stateless and does not restore the removed session model.

@@ -70,11 +70,17 @@ process.stderr.write(`privacy check ok (${candidates.length} tracked/unignored f
 
 function collectCandidateFiles(directory) {
   try {
-    return execFileSync(gitExecutable(), ["-C", directory, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+    const listed = execFileSync(gitExecutable(), ["-C", directory, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
       encoding: "buffer",
       maxBuffer: 32 * 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
-    }).toString("utf8").split("\0").filter(Boolean).sort();
+    }).toString("utf8").split("\0").filter(Boolean);
+    const deleted = new Set(execFileSync(gitExecutable(), ["-C", directory, "ls-files", "-z", "--deleted"], {
+      encoding: "buffer",
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString("utf8").split("\0").filter(Boolean));
+    return listed.filter((relativePath) => !deleted.has(relativePath)).sort();
   } catch {
     const excluded = new Set([".git", ".wrangler", "node_modules"]);
     const files = [];

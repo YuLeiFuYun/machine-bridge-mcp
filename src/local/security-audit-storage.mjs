@@ -3,6 +3,7 @@ import path from "node:path";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { withOwnerStateLock } from "./owner-state-lock.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
+import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 import {
   appendAuditRecords,
   boundedAuditStateContent,
@@ -96,7 +97,7 @@ function readVerifiedAuditStateWithIdentity(root) {
   }
   return {
     state: decodeAndVerifyAuditState(loaded.buffer, SECURITY_AUDIT_SCHEMA_VERSION, SECURITY_AUDIT_MAX_EVENTS),
-    identity: fileIdentity(loaded.info),
+    identity: fileIdentity(loaded.info, loaded.identity),
   };
 }
 
@@ -108,7 +109,7 @@ function writeState(file, content) {
 
 function inspectAuditFile(file) {
   let info;
-  try { info = lstatSync(file); } catch (error) {
+  try { info = lstatSync(file, { bigint: true }); } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
@@ -117,16 +118,18 @@ function inspectAuditFile(file) {
   return fileIdentity(info);
 }
 
-function fileIdentity(info) {
+function fileIdentity(info, exactIdentity = filesystemIdentity(info, "security audit state")) {
   return {
-    dev: Number(info.dev), ino: Number(info.ino), size: Number(info.size),
-    mtime_ms: Number(info.mtimeMs), ctime_ms: Number(info.ctimeMs),
+    ...exactIdentity,
+    size: exactFilesystemInteger(info.size, "security audit state size"),
+    mtime_ms: filesystemTimeMs(info.mtimeMs, "security audit modification time"),
+    ctime_ms: filesystemTimeMs(info.ctimeMs, "security audit change time"),
   };
 }
 
 function sameFileIdentity(left, right) {
   if (left === null || right === null) return left === right;
   return Boolean(left && right)
-    && left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && sameFilesystemIdentity(left, right) && left.size === right.size
     && left.mtime_ms === right.mtime_ms && left.ctime_ms === right.ctime_ms;
 }

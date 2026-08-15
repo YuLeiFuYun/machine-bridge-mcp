@@ -14,6 +14,7 @@ const TRANSPORT_ERROR_CLASSES = new Set([
 ]);
 const CLOSE_CATEGORIES = new Set([
   "connection_interrupted",
+  "local_authority_revocation_retry",
   "relay_restarting_or_unavailable",
   "relay_policy_rejected",
   "relay_internal_error",

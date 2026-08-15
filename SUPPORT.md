@@ -21,7 +21,7 @@ A useful report includes:
 - whether the transport is remote OAuth relay or local stdio;
 - the active policy profile;
 - the exact command or MCP operation that failed;
-- sanitized output from `machine-mcp doctor` and, when available, `diagnose_runtime`;
+- output from `machine-mcp doctor` (which uses the support-safe state projection) and, when available, a reviewed/sanitized `diagnose_runtime` result;
 - a minimal reproduction and whether the failure persists in a fresh disposable workspace.
 
 Never include passwords, bearer tokens, private keys, browser pairing material, raw state files, real home/workspace paths, or unredacted logs. Replace them with synthetic values before posting.

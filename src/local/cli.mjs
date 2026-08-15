@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
@@ -10,7 +9,6 @@ import { assertCanonicalFullPolicy, POLICY_PROFILES, toolsForPolicy } from "./to
 import { resolvePolicy } from "./cli-policy.mjs";
 import { effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
 import { createLocalAdminCommands } from "./cli-local-admin.mjs";
-import { createApprovalCommand } from "./cli-approval.mjs";
 import { createServiceCommand } from "./cli-service.mjs";
 import { createActivateCommand } from "./cli-activate.mjs";
 import { generateAccountPassword } from "./account-admin.mjs";
@@ -27,8 +25,11 @@ import { createDeviceSessionForRoot, deviceRootProviderStatus, ensurePreferredDe
 import { convergeRemoteConfiguration } from "./remote-configuration.mjs";
 import { workerHealth } from "./worker-health.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "./doctor-reporting.mjs";
+import { supportStateProjection } from "./support-state-projection.mjs";
 export { workerHealthUserReason } from "./worker-health.mjs";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
+import { pruneRetiredManagedJobDirectories } from "./managed-job-directory-generation.mjs";
+import { withReleaseRuntimeLock } from "./release-runtime-lock.mjs";
 import {
   acquireMachineServiceLockWithWait,
   acquireMaintenanceLock,
@@ -41,7 +42,6 @@ import {
   expandHome,
   loadGlobalConfig,
   loadState,
-  packageRoot,
   readDaemonLockOwner,
   redactState,
   removeStateRoot,
@@ -52,10 +52,10 @@ import {
   selectedWorkspace,
   setSelectedWorkspace,
 } from "./state.mjs";
+import { packageName, packageVersion } from "./package-identity.mjs";
 
 const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm });
 const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
-const approvalCommand = createApprovalCommand({ chooseWorkspace, confirm });
 const serviceCommand = createServiceCommand({ chooseWorkspace, stateRootFromArgs, structuredLogger, acquireMachineServiceLockWithWait, currentPackageVersion });
 const activateCommand = createActivateCommand({
   chooseWorkspace,
@@ -80,7 +80,6 @@ const COMMAND_HANDLERS = new Map([
   ["rotate-secrets", rotateSecretsCommand],
   ["resource", localAdminCommands.resourceCommand],
   ["account", accountCommand],
-  ["approval", approvalCommand],
   ["browser", localAdminCommands.browserCommand],
   ["job", localAdminCommands.jobCommand],
   ["uninstall", uninstallCommand],
@@ -187,17 +186,18 @@ async function startCommand(args) {
   assertNodeVersion();
   const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "cli" });
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
-  const state = loadState(workspace, { stateDir: args.stateDir });
-  if (args.daemonOnly) {
-    const serviceEnvironment = loadServiceEnvironment(state.paths.stateRoot);
-    logger.debug?.("Loaded persisted service network environment", { keys: serviceEnvironment.keys });
-  }
+  let state = loadState(workspace, { stateDir: args.stateDir });
   let startupLock = null;
   let serviceLock = null;
 
   try {
     serviceLock = await acquireRuntimeStartServiceLock(args, acquireMachineServiceLockWithWait, logger);
     startupLock = await acquireStartupLockWithWait(state, { operation: "start", logger });
+    state = loadState(workspace, { stateDir: args.stateDir });
+    if (args.daemonOnly) {
+      const serviceEnvironment = loadServiceEnvironment(state.paths.stateRoot);
+      logger.debug?.("Loaded persisted service network environment", { keys: serviceEnvironment.keys });
+    }
     const startMode = await prepareStartMode(args, state, logger);
     const daemonLock = await acquireDaemonLockWithTakeover(state, {
       takeOverServiceOwner: startMode.takeOverServiceOwner,
@@ -251,14 +251,13 @@ async function prepareStartMode(args, state, logger) {
 }
 
 function reportExistingDaemon(args, state, owner, logger) {
-  const pid = owner?.pid ? `pid ${owner.pid}` : "unknown pid";
   if (isIdempotentDaemonOnlyStart(args)) {
     logger.debug?.("local daemon already running; daemon-only start completed as an idempotent no-op", { owner_pid_known: Boolean(owner?.pid) });
     return;
   }
   const mode = owner?.mode === "foreground" ? "foreground" : owner?.mode === "service" ? "background service" : "local";
   const version = owner?.version ? `, version ${owner.version}` : "";
-  const notice = `${mode} daemon already running for this workspace (${pid}${version}); it was not restarted and requested changes were not applied`;
+  const notice = `${mode} daemon already running for this workspace${version}; it was not restarted and requested changes were not applied`;
   logger.warn(notice);
   if (args.json) {
     printStartJson(state, { requestedChangesApplied: false, notice });
@@ -337,7 +336,7 @@ export function cleanupRuntimeStartFailure(error, runtime, daemonLock) {
     : error;
 }
 
-async function prepareRemoteState({ args, workspace, state, logger, onRemotePrepared }) {
+async function prepareRemoteState({ args, workspace, state, logger, onRemotePrepared, provisionInitialOwner = true }) {
   if (!args.daemonOnly) {
     await convergeRemoteConfiguration({ args, state });
     onRemotePrepared?.();
@@ -354,7 +353,9 @@ async function prepareRemoteState({ args, workspace, state, logger, onRemotePrep
     currentPackageVersion(),
     { profileDir: state.paths.profileDir, reason: "Authorize Machine Bridge startup" },
   );
-  const initialOwner = args.daemonOnly ? null : await ensureInitialOwnerAccount(state, deviceSessionIdentity);
+  const initialOwner = args.daemonOnly || provisionInitialOwner === false
+    ? null
+    : await ensureInitialOwnerAccount(state, deviceSessionIdentity);
   if (!args.daemonOnly && !args.noAutostart) {
     await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
   }
@@ -382,7 +383,7 @@ function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSession
     policy: state.policy,
     logger: createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "daemon" }),
     jobRoot: join(state.paths.profileDir, "jobs"),
-    approvalRoot: state.paths.profileDir,
+    securityStateRoot: state.paths.profileDir,
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
     browserStateRoot: state.paths.stateRoot,
@@ -525,13 +526,25 @@ function keepProcessAlive({ daemon = null, lock = null, logger = createLogger({ 
     if (stopping) return;
     stopping = true;
     logger.info("stopping local services");
-    try { daemon?.stop?.(); } catch {}
-    try { lock?.release?.(); } catch {}
+    try {
+      await daemon?.stop?.();
+    } catch (error) {
+      stopping = false;
+      logger.error("local service shutdown is incomplete; retaining daemon ownership for a later retry", {
+        error_class: classifyOperationalError(error),
+      });
+      return;
+    }
+    try { lock?.release?.(); }
+    catch (error) { logger.warn("daemon lock release failed during final shutdown", { error_class: classifyOperationalError(error) }); }
     process.exit(0);
   };
-  process.once("SIGINT", () => void stop());
-  process.once("SIGTERM", () => void stop());
-  process.once("exit", () => lock?.release?.());
+  process.on("SIGINT", () => void stop());
+  process.on("SIGTERM", () => void stop());
+  process.once("exit", () => {
+    try { lock?.release?.(); }
+    catch { /* Process exit is the final ownership fallback; no in-process recovery remains possible. */ }
+  });
   setInterval(() => {}, 2 ** 31 - 1);
 }
 
@@ -549,18 +562,18 @@ async function statusCommand(args) {
 
 async function doctorCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
+  const state = loadState(workspace, { stateDir: args.stateDir });
+  state.policy = resolvePolicy({}, state.policy);
   const checks = [];
   checks.push({ name: "node", ok: isSupportedNodeVersion(), detail: process.version });
   const npmCommand = npmVersionCommand();
   const npm = await runExecutable(npmCommand.file, npmCommand.args, { capture: true, allowFailure: true, timeoutMs: 10_000 });
   const npmDetail = sanitizeLines(npm.stdout || npm.stderr);
   checks.push({ name: "npm", ok: npm.code === 0 && isSupportedNpmVersion(npmDetail), detail: npmDetail || "unavailable" });
-  const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true });
+  const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true, stateRoot: state.paths.stateRoot });
   checks.push({ name: "wrangler", ok: wrangler.code === 0, detail: (wrangler.stdout || wrangler.stderr).trim() });
-  const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true });
+  const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true, stateRoot: state.paths.stateRoot });
   checks.push({ name: "cloudflare-login", ok: whoami.code === 0, detail: whoami.code === 0 ? "authenticated" : sanitizeLines(whoami.stderr || whoami.stdout) });
-  const state = loadState(workspace, { stateDir: args.stateDir });
-  state.policy = resolvePolicy({}, state.policy);
   checks.push({ name: "policy", ok: true, detail: formatPolicySummary(state.policy) });
   checks.push({
     name: "authorization-model",
@@ -578,7 +591,7 @@ async function doctorCommand(args) {
     }
   }
   const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion(), { expectedWorkerName: state.worker.name }) : { ok: false, error: "no worker url" };
-  checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? state.worker.url : health.error });
+  checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? "reachable" : health.error });
   const diagnosticRuntime = new LocalRuntime({
     workspace,
     policy: state.policy,
@@ -599,8 +612,7 @@ async function doctorCommand(args) {
     ok: checks.every(check => check.ok),
     checks,
     diagnosticScope: DOCTOR_RUNTIME_SCOPE,
-    runtimeDiagnostics,
-    state: redactState(state),
+    state: supportStateProjection(state),
   }, null, 2));
 }
 
@@ -615,13 +627,14 @@ async function fullTestCommand(args) {
 
 async function rotateSecretsCommand(args) {
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: false, save: false, allowPositional: true });
-  const state = loadState(workspace, { stateDir: args.stateDir });
+  let state = loadState(workspace, { stateDir: args.stateDir });
   const operationLogger = createLogger({ level: args.quiet ? "error" : "warn", component: "service" });
   let startupLock = null;
   let serviceLock = null;
   try {
     serviceLock = await acquireMachineServiceLockWithWait({ operation: "rotate-secrets", logger: operationLogger });
     startupLock = await acquireStartupLockWithWait(state, { operation: "rotate-secrets", logger: operationLogger });
+    state = loadState(workspace, { stateDir: args.stateDir });
     await stopOwnedPlatformService({
       state,
       inspectWorkspaceDaemon,
@@ -656,10 +669,18 @@ async function rotateSecretsCommand(args) {
   }
 }
 
-async function installAutostartBestEffort({ workspace, stateRoot, entryScript, logger }) {
+export async function installAutostartBestEffort({ workspace, stateRoot, entryScript, logger }, options = {}) {
+  let serviceLock = null;
   try {
-    const { installAutostart } = await import("./service.mjs");
-    const result = await installAutostart({ workspace, stateRoot, entryScript, version: currentPackageVersion(), logger: structuredLogger(true) });
+    const acquireLock = options.acquireServiceLock || acquireMachineServiceLockWithWait;
+    const acquired = await acquireLock({ operation: "runtime-start-autostart", logger });
+    if (!acquired?.acquired || typeof acquired.release !== "function") {
+      throw new Error("machine-service operation lock could not be acquired for automatic autostart installation");
+    }
+    serviceLock = acquired;
+    const install = options.installAutostart || (await import("./service.mjs")).installAutostart;
+    const makeLogger = options.structuredLogger || structuredLogger;
+    const result = await install({ workspace, stateRoot, entryScript, version: currentPackageVersion(), logger: makeLogger(true) });
     if (result?.ok) logger.info("Autostart installed for future logins", { provider: result.provider });
     else logger.warn("Autostart installation reported a problem; run `machine-mcp service status` for details", {
       provider: result?.provider || "unknown",
@@ -667,6 +688,8 @@ async function installAutostartBestEffort({ workspace, stateRoot, entryScript, l
     });
   } catch (error) {
     logger.warn("Autostart installation skipped", { error_class: classifyOperationalError(error) });
+  } finally {
+    serviceLock?.release?.();
   }
 }
 
@@ -698,6 +721,10 @@ async function uninstallCommand(args) {
     console.log("Uninstall cancelled. Re-run with `machine-mcp uninstall --yes` to skip confirmation.");
     return;
   }
+  await withReleaseRuntimeLock(stateRoot, () => uninstallStateRoot({ stateRoot, deleteRemote }));
+}
+
+async function uninstallStateRoot({ stateRoot, deleteRemote }) {
   const currentValidation = validateStateRootForRemoval(stateRoot);
   const maintenance = currentValidation.exists ? acquireMaintenanceLock(stateRoot, { operation: "uninstall" }) : null;
   if (maintenance && !maintenance.acquired) {
@@ -729,11 +756,18 @@ async function uninstallCommand(args) {
 }
 
 function assertNoActiveJobsForUninstall(stateRoot) {
+  for (const state of knownProfileStates(stateRoot)) {
+    pruneRetiredManagedJobDirectories(join(state.paths.profileDir, "jobs"), { warn() {} });
+  }
   const activeJobs = activeStateJobs(stateRoot);
   if (!activeJobs.length) return;
-  const detail = activeJobs.slice(0, 5).map((item) => `${item.job_id}:${item.status}`).join(", ");
+  const retiredBlocked = activeJobs.some((item) => item.state_kind === "retired_managed_job");
+  const detail = activeJobs.slice(0, 5).map((item) => item.state_kind === "retired_managed_job" ? `retired-managed-job:${item.status}` : `${item.job_id}:${item.status}`).join(", ");
   const suffix = activeJobs.length > 5 ? `, and ${activeJobs.length - 5} more` : "";
-  throw new Error(`refusing to uninstall while managed jobs are active (${detail}${suffix}); inspect or cancel them with machine-mcp job list/cancel`);
+  const guidance = retiredBlocked
+    ? "run machine-mcp job list to retry safe retired cleanup; if retired state remains unreadable, inspect the owner-only state root instead of deleting it blindly; cancel any active jobs before retrying"
+    : "inspect with machine-mcp job list/read and cancel active jobs before retrying";
+  throw new Error(`refusing to uninstall while managed-job state is active or requires inspection (${detail}${suffix}); ${guidance}`);
 }
 
 function assertNoActiveLocksForUninstall(stateRoot) {
@@ -751,9 +785,9 @@ async function deleteKnownWorkers(stateRoot) {
   }
   const failures = [];
   for (const name of names) {
-    const result = await runWrangler(["delete", name, "--force"], { capture: true, allowFailure: true });
+    const result = await runWrangler(["delete", name, "--force"], { capture: true, allowFailure: true, stateRoot });
     const detail = (result.stderr || result.stdout || "unknown error").trim();
-    if (result.code === 0 || /not found|does not exist|could not find/i.test(detail)) {
+    if (result.code === 0) {
       console.log(`Deleted Worker: ${name}`);
     } else {
       failures.push({ name, detail: sanitizeLines(detail) || "unknown error" });
@@ -863,8 +897,6 @@ Commands:
   rotate-secrets    Rotate account-admin, device identity, and global token-version secrets
   account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove
                     Manage remote accounts, trusted clients, and targeted revocation
-  approval list|revoke|clear
-                    Inspect or remove legacy leases; runtime calls are automatic within role ceilings
   resource generate-ssh-key NAME [PATH]
                     Generate/reuse an Ed25519 key locally and register its private file by alias
   browser status    Show browser-extension bridge and connection status
@@ -903,13 +935,11 @@ Uninstall options:
 }
 
 function currentPackageVersion() {
-  const pkg = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
-  return String(pkg.version);
+  return packageVersion;
 }
 
 function version() {
-  const pkg = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
-  console.log(`${pkg.name} ${pkg.version}`);
+  console.log(`${packageName} ${packageVersion}`);
 }
 
 function sleep(ms) {

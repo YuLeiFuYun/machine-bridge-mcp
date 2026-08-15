@@ -100,10 +100,7 @@ export class RelayCallRecovery {
     }, "Keeping in-flight tool calls alive during a brief relay interruption");
   }
 
-  ready() {
-    this.clearTimer();
-    this.retryUnacknowledged("reconnected");
-  }
+  ready() { this.clearTimer(); this.retryUnacknowledged("reconnected"); }
 
   pulse() {
     this.retryUnacknowledged("heartbeat");
@@ -120,11 +117,11 @@ export class RelayCallRecovery {
       delivered += 1;
     }
     if (delivered > 0) {
-      this.logger.event?.(reason === "reconnected" ? "info" : "debug", "relay.tool_results.replayed", {
+      this.logger.event?.(reason === "reconnected" ? "info" : "debug", "relay.tool_results.redelivered", {
         delivered_results: delivered,
         reason,
         unacknowledged_results: this.pendingResults.size,
-      }, "Replayed completed tool results awaiting Worker acknowledgement");
+      }, "Redelivered completed tool results awaiting Worker acknowledgement");
     }
   }
 
@@ -143,7 +140,10 @@ export class RelayCallRecovery {
       this.pendingResults.clear();
       if (cancelled > 0) this.terminate();
       if (cancelled > 0 || discarded > 0) {
-        this.logger.warn?.(`remote relay did not recover within ${this.graceMs / 1000} seconds; cancelled ${cancelled} call(s) and discarded ${discarded} queued result(s)`);
+        const message = `remote relay did not recover within ${this.graceMs / 1000} seconds; cancelled ${cancelled} call(s) and discarded ${discarded} queued result(s)`;
+        this.logger.event
+          ? this.logger.event("warn", "relay.calls.reconnect_expired", { cancelled_calls: cancelled, discarded_results: discarded, grace_ms: this.graceMs }, message)
+          : this.logger.warn?.(message);
       }
     }, this.graceMs);
     this.reconnectTimer?.unref?.();

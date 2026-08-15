@@ -5,9 +5,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ACCEPTANCE_SCHEMA_VERSION, PROMOTION_DIGEST_POLICY_VERSION, acceptanceConfirmationForVersion } from "../../scripts/release-acceptance.mjs";
+import { ACCEPTANCE_CONFIRMATION, ACCEPTANCE_SCHEMA_VERSION } from "../../scripts/release-acceptance.mjs";
 import { computePromotionContentDigest } from "../../scripts/promotion-digest.mjs";
-import { compareReleaseVersions, parseReleaseVersion } from "../../scripts/release-channel.mjs";
+import { resolveTrustedGitExecutable } from "../../src/local/trusted-git-executable.mjs";
+import { releaseDiagnostic } from "../../scripts/release-diagnostic.mjs";
 
 const MAX_STDIN_BYTES = 8 * 1024 * 1024;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -56,7 +57,7 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
 
   if (acceptance.schema_version !== ACCEPTANCE_SCHEMA_VERSION
       || acceptance.result !== "passed"
-      || acceptance.confirmation !== acceptanceConfirmationForVersion(pkg.version)) {
+      || acceptance.confirmation !== ACCEPTANCE_CONFIRMATION) {
     throw new Error("interactive local candidate acceptance marker is invalid");
   }
   if (acceptance.package_name !== pkg.name
@@ -74,11 +75,9 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
   if (acceptance.package_content_sha256 !== expectedDigest) {
     throw new Error(`interactive local candidate acceptance content digest does not match the current npm package (expected ${expectedDigest})`);
   }
-  if (compareReleaseVersions(parseReleaseVersion(pkg.version), parseReleaseVersion(PROMOTION_DIGEST_POLICY_VERSION)) >= 0) {
-    const promotionDigest = computePromotionContentDigest(projectRoot, { packageJson: pkg, packRecord: pack });
-    if (acceptance.promotion_content_sha256 !== promotionDigest) {
-      throw new Error(`interactive local candidate promotion digest does not match the current npm package (expected ${promotionDigest})`);
-    }
+  const promotionDigest = computePromotionContentDigest(projectRoot, { packageJson: pkg, packRecord: pack });
+  if (acceptance.promotion_content_sha256 !== promotionDigest) {
+    throw new Error(`interactive local candidate promotion digest does not match the current npm package (expected ${promotionDigest})`);
   }
   return { acceptance, digest: expectedDigest, pack };
 }
@@ -94,13 +93,16 @@ function normalizeEntry(entry, index) {
 }
 
 function trackedIndex(projectRoot) {
-  const result = spawnSync("git", ["ls-files", "--stage", "-z"], {
+  const git = resolveTrustedGitExecutable({ workspace: projectRoot });
+  const result = spawnSync(git, ["ls-files", "--stage", "-z"], {
     cwd: projectRoot,
     encoding: null,
+    timeout: 30_000,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`git ls-files failed: ${String(result.stderr || "").trim()}`);
+  if (result.status !== 0) throw new Error(`git ls-files failed: ${releaseDiagnostic(result.stderr, 1000)}`);
   const entries = new Map();
   for (const raw of result.stdout.toString("utf8").split("\0")) {
     if (!raw) continue;
@@ -113,15 +115,18 @@ function trackedIndex(projectRoot) {
 
 function readGitBlobs(projectRoot, objectIds) {
   const input = objectIds.map((oid) => `${oid}\n`).join("");
-  const result = spawnSync("git", ["cat-file", "--batch"], {
+  const git = resolveTrustedGitExecutable({ workspace: projectRoot });
+  const result = spawnSync(git, ["cat-file", "--batch"], {
     cwd: projectRoot,
     input: Buffer.from(input, "ascii"),
     encoding: null,
     maxBuffer: 32 * 1024 * 1024,
+    timeout: 30_000,
+    killSignal: "SIGKILL",
     windowsHide: true,
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`git cat-file failed: ${String(result.stderr || "").trim()}`);
+  if (result.status !== 0) throw new Error(`git cat-file failed: ${releaseDiagnostic(result.stderr, 1000)}`);
 
   const values = new Map();
   let offset = 0;
@@ -189,7 +194,7 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch((error) => {
-    process.stderr.write(`portable release acceptance failed: ${String(error?.message || error)}\n`);
+    process.stderr.write(`portable release acceptance failed: ${releaseDiagnostic(error?.message || error, 1200)}\n`);
     process.exitCode = 1;
   });
 }

@@ -1,8 +1,10 @@
 import { closeSync, constants as fsConstants, ftruncateSync, readSync, readdirSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+
+const MANAGED_STATE_READ_ATTEMPTS = 4;
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { openRegularFileSync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { ensureOwnerOnlyDir, ownerOnlyFile } from "./state.mjs";
+import { ensureOwnerOnlyDir, ownerOnlyFile } from "./secure-file.mjs";
 
 export function atomicWriteJson(file, value, maxBytes) {
   ensureOwnerOnlyDir(dirname(file));
@@ -12,11 +14,21 @@ export function atomicWriteJson(file, value, maxBytes) {
   ownerOnlyFile(file);
 }
 
-export function readJson(file, maxBytes, label = "JSON") {
+export function readJson(file, maxBytes, label = "JSON", options = {}) {
+  const readFile = typeof options.readFile === "function" ? options.readFile : readBoundedRegularFileSync;
   let buffer;
-  try { buffer = readBoundedFile(file, maxBytes); } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw new Error(`${label} is unavailable (${resourceErrorClass(error)})`);
+  for (let attempt = 1; attempt <= MANAGED_STATE_READ_ATTEMPTS; attempt += 1) {
+    try {
+      buffer = readFile(file, maxBytes, "managed job state", {
+        verifyPathIdentity: true,
+        rejectMultipleLinks: true,
+      });
+      break;
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      if (error?.code === "MBM_IDENTITY_CHANGED" && attempt < MANAGED_STATE_READ_ATTEMPTS) continue;
+      throw new Error(`${label} is unavailable (${resourceErrorClass(error)})`, { cause: error });
+    }
   }
   let text;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
@@ -80,10 +92,13 @@ export function trimDiagnosticFile(file, maxBytes = 64 * 1024, keepBytes = 32 * 
 }
 
 export function resourceErrorClass(error) {
+  if (error?.code === "integrity_error") return "integrity_error";
+  if (error?.code === "MBM_IDENTITY_CHANGED" || error?.cause?.code === "MBM_IDENTITY_CHANGED") return "identity_changed";
   const message = String(error?.message || error || "");
   if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";
   if (/not found|ENOENT/i.test(message)) return "not_found";
   if (/symbolic link/i.test(message)) return "symbolic_link_denied";
+  if (/multiple hard links/i.test(message)) return "insecure_links";
   if (/readable by group|permissions/i.test(message)) return "insecure_permissions";
   if (/exceeds/i.test(message)) return "size_limit";
   return "resource_unavailable";

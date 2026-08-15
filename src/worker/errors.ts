@@ -31,6 +31,48 @@ export function daemonToolError(value: unknown): WorkerToolError {
   );
 }
 
+export function dispatchedDaemonTimeoutError(tool: string, terminationRequested = true): WorkerToolError {
+  return dispatchedDaemonCancellationStateError("timeout", `daemon tool timed out: ${tool}`, terminationRequested);
+}
+
+export function dispatchedDaemonCancellationError(message: string, terminationRequested = true): WorkerToolError {
+  return dispatchedDaemonCancellationStateError("cancelled", message, terminationRequested);
+}
+
+function dispatchedDaemonCancellationStateError(code: "cancelled" | "timeout", message: string, terminationRequested: boolean): WorkerToolError {
+  return new WorkerToolError(
+    code,
+    message,
+    false,
+    {
+      side_effects_started: true,
+      termination_requested: terminationRequested,
+      effect_settlement: terminationRequested ? "pending" : "unknown",
+    },
+  );
+}
+
+export function dispatchedDaemonDisconnectError(message: string): WorkerToolError {
+  return new WorkerToolError(
+    "unavailable",
+    message,
+    false,
+    {
+      side_effects_started: true,
+      termination_requested: false,
+      effect_settlement: "unknown",
+    },
+  );
+}
+
+export function revokedDaemonAuthorityError(): WorkerToolError {
+  return new WorkerToolError("authorization_denied", "tool call authority was revoked", false, {
+    side_effects_started: true,
+    termination_requested: false,
+    effect_settlement: "unknown",
+  });
+}
+
 export function publicWorkerToolError(error: unknown): { code: string; message: string; retryable: boolean; details?: Record<string, unknown> } {
   if (error instanceof WorkerToolError) {
     return {

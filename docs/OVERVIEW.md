@@ -1,6 +1,6 @@
 # System overview
 
-Machine Bridge is one local authority surface with two MCP transports. The architecture is organized around three independent questions:
+Machine Bridge is one local authority surface with two MCP transports. The architecture is organized around four independent questions:
 
 1. **Who may request an operation?** Remote OAuth account/client identity and role, or the local process identity that launched stdio.
 2. **Which tools are exposed?** The shared tool catalog, policy profile, and account-role intersection.
@@ -40,7 +40,7 @@ flowchart LR
 
 ### Remote transport
 
-1. The Worker validates OAuth client, token, account state, role, resource binding, and MCP session state.
+1. The Worker validates OAuth client, token, account state, role, resource binding, and the MCP request/version/media contract.
 2. The Worker exposes a stable account-role discovery catalog, then independently intersects each execution with the current end-to-end-ready daemon capability ceiling.
 3. The Durable Object relays a bounded tool envelope carrying account, account-version, OAuth-client, refresh-family, and role identity over the root-certified ephemeral daemon socket.
 4. The local runtime revalidates account authorization, policy, call lifecycle, timeout, and cancellation.
@@ -75,14 +75,14 @@ Local and Worker code consume these contracts. Generated references and drift te
 - Git operations;
 - managed jobs and local resources;
 - Agent context and capability resolution;
-- application and browser automation;
+- application/browser automation and snapshot-bound Computer Use;
 - remote relay adaptation.
 
 Low-level responsibilities remain in focused modules. Architecture tests enforce an acyclic local import graph, domain/adapter direction, and module-size budgets. Behavior and fault-injection tests remain authoritative; source-shape checks are supplementary.
 
 ## State and lifecycle
 
-Each canonical workspace has independent profile state, Worker identity, trusted clients, account/token state, legacy-lease cleanup state, audit-chain state, locks, service metadata, and managed jobs. State mutations use owner-only files where supported, bounded reads, atomic replacement, and process-identity-aware locks.
+Each canonical workspace has independent profile state, Worker identity, trusted clients, account/token state, one-time obsolete-lease cleanup state, audit-chain state, locks, service metadata, and managed jobs. State mutations use owner-only files where supported, bounded reads, atomic replacement, and process-identity-aware locks.
 
 The relay distinguishes a root-certified ephemeral session, signed preflight, challenge authentication, readiness probing, and active service. A candidate daemon must prove possession of the certified session key and complete an end-to-end probe before replacing an incumbent. A transient socket loss detaches ordinary calls for the bounded same-daemon reconnect window; only explicit cancellation, timeout, reconnect-grace expiry, runtime shutdown, or a non-recoverable daemon replacement terminates their local process trees.
 
@@ -93,6 +93,8 @@ Managed jobs use a separate durable lifecycle. Their plans are integrity-bound, 
 The local browser broker binds only to loopback and authenticates the packaged extension with local pairing state and a versioned capability handshake. Additional runtime processes may proxy through the machine-level broker rather than opening competing extension connections.
 
 The extension controls the Chromium profile into which it is loaded. Machine Bridge does not launch, isolate, or prove the identity of that profile. Browser cookies, sessions, tabs, and page content therefore remain part of the local user's browser authority.
+
+Computer Use is a higher-level state/verification layer over these existing browser and application backends, not a second automation engine. `computer_observe` publishes bounded process-local snapshot authority with semantic evidence and optional native image content; `computer_act` consumes the exact snapshot once, revalidates the target, dispatches no more than once, and returns post-state plus separate dispatch/effect settlement. Snapshot-bound points never become caller-supplied raw CDP or unrestricted pixel APIs.
 
 ## Verification layers
 
@@ -111,6 +113,7 @@ The repository uses several complementary layers:
 ## Read next
 
 - [Architecture](ARCHITECTURE.md) for detailed invariants and protocol flow
+- [Computer Use](COMPUTER_USE.md) for snapshot identity, verified UI actions, visual grounding, and retry settlement
 - [Threat model](THREAT_MODEL.md) for assets, attackers, non-goals, and residual risks
 - [Security policy](../SECURITY.md) for reporting and supported security boundaries
 - [Engineering](ENGINEERING.md) for implementation rules

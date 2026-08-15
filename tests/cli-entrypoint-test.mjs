@@ -70,12 +70,9 @@ try {
   const clientConfig = run(["client-config", "codex", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
   assert(clientConfig.status === 0 && clientConfig.stdout.includes("[mcp_servers.machine_bridge]"), `client-config failed: ${clientConfig.stderr}`);
 
-  const emptyApprovals = run(["approval", "list", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
-  assert(emptyApprovals.status === 0 && emptyApprovals.stdout.includes("automatic within each account role ceiling"), `approval list failed: ${emptyApprovals.stderr}`);
-  const removedGrant = run(["approval", "grant", "shell", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
-  assert(removedGrant.status !== 0 && removedGrant.stderr.includes("Terminal operation approval was removed"), "legacy approval grant remained user-accessible");
-  const removedApprove = run(["approval", "approve", "approval_unknown", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
-  assert(removedApprove.status !== 0 && removedApprove.stderr.includes("Terminal operation approval was removed"), "legacy approval approve remained user-accessible");
+  const removedApprovalCommand = run(["approval", "list", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
+  assert(removedApprovalCommand.status === 2 && removedApprovalCommand.stderr.includes("Unknown command"),
+    "obsolete approval/lease CLI remained user-accessible");
 
   const reset = run(["workspace", "reset", "--state-dir", stateRoot]);
   assert(reset.status === 0 && reset.stdout.includes("selection reset"), `workspace reset failed: ${reset.stderr}`);

@@ -1,24 +1,36 @@
-import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
+import { BrowserBrokerRoutes } from "../src/local/browser-broker-routes.mjs";
+import { BrowserRequestRegistry } from "../src/local/browser-request-registry.mjs";
+import { browserMethodMayMutate } from "../src/local/browser-extension-protocol.mjs";
+import { BridgeError, publicError } from "../src/local/errors.mjs";
 import { EXPECTED_EXTENSION_ID } from "../src/local/browser-extension-identity.mjs";
+import { BROKER_AUTH_REQUEST_HEADER, BROKER_AUTH_REQUEST_VALUE, createBrokerAuthChallenge, createBrokerClientProtocol, createBrokerInitProof, parseBrokerAuthResponse, verifyBrokerServerProof } from "../src/local/browser-broker-auth.mjs";
+import { createPairingBootstrapInitProof, createPairingBootstrapProof, parseBrowserPairingGrant } from "../src/local/browser-pairing-grant.mjs";
 
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const BROWSER_FIXTURE_WAIT_MS = 30_000;
 
 
+await testBrowserRequestSettlementEvidence();
 await testStopDuringStart();
 await testStartFailureCleanup();
+await testAuthenticatedProxyHandshakeFailure();
+await testRuntimeProxyRejectsForgedServerProof();
+await testPreviousPairingMigrationRefusesSecondOwner();
 
 const root = await mkdtemp(join(tmpdir(), "mbm-browser-bridge-"));
 if (process.platform !== "win32") await chmod(root, 0o777);
 const policy = { profile: "full", execMode: "shell", unrestrictedPaths: true };
+let openedPairUrl = "";
 const common = {
   policy,
   stateRoot: root,
-  runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+  runProcess: async (_command, argv) => { openedPairUrl = argv.find((value) => String(value).startsWith("http://127.0.0.1:")) || openedPairUrl; return { code: 0, stdout: "", stderr: "" }; },
   readResourceText: async () => "secret-value",
   readResourceBinary: () => ({ buffer: Buffer.from("file-data"), path: join(root, "upload.txt"), size: 9 }),
 };
@@ -51,36 +63,105 @@ try {
   assert(initial.pairing_url.endsWith("/pair") && !initial.pairing_url.includes("#"), "pairing token leaked through the URL fragment");
 
   const pairing = JSON.parse(await readFile(join(root, "browser-bridge.json"), "utf8"));
-  assert(pairing.schemaVersion === 2 && pairing.extensionToken !== pairing.runtimeToken, "browser pairing state did not separate extension and runtime credentials");
+  assert(pairing.schemaVersion === 2 && pairing.pairingAuthVersion === 2 && pairing.extensionToken !== pairing.runtimeToken, "browser pairing state did not separate extension and runtime credentials");
   assert(!JSON.stringify(initial).includes(pairing.extensionToken) && !JSON.stringify(initial).includes(pairing.runtimeToken), "browser status exposed a pairing credential");
   const response = await fetch(initial.pairing_url, { signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS) });
   const html = await response.text();
-  assert(response.status === 200 && html.includes(pairing.extensionToken), "local pairing page did not contain the local-only token");
+  assert(response.status === 200 && !html.includes(pairing.extensionToken), "sanitized local pairing page exposed the long-lived extension token");
   assert(html.includes("Expected extension build") && html.includes(PACKAGE_VERSION), "local pairing page omitted extension reload diagnostics");
   assert(html.includes("Expected extension ID") && html.includes(EXPECTED_EXTENSION_ID), "local pairing page omitted the pinned extension identity");
   assert(response.headers.get("cache-control") === "no-store", "pairing page is cacheable");
   assert(!html.includes(pairing.runtimeToken), "local pairing page exposed the owner-only runtime credential");
+  const pairLaunch = await owner.pair({ open: true });
+  assert(pairLaunch.pairing_url === initial.pairing_url && !pairLaunch.pairing_url.includes("grant="), "public pairing result exposed an internal pairing grant");
+  const internalPairUrl = new URL(openedPairUrl);
+  const launchFragment = internalPairUrl.hash.startsWith("#") ? new URLSearchParams(internalPairUrl.hash.slice(1)) : null;
+  const brokerPort = Number(launchFragment?.get("broker_port"));
+  assert(internalPairUrl.pathname === "/pair" && !internalPairUrl.search && launchFragment?.size === 2
+    && Number.isInteger(brokerPort) && brokerPort === pairing.port && Number(internalPairUrl.port) !== brokerPort
+    && !openedPairUrl.includes(pairing.extensionToken) && !openedPairUrl.includes(pairing.runtimeToken),
+  "internal pairing launch did not isolate the short-lived bootstrap on a separate loopback listener");
+  const grant = String(launchFragment?.get("grant") || "");
+  const parsedGrant = parseBrowserPairingGrant(grant);
+  assert(parsedGrant?.id && parsedGrant?.secret, "internal pairing launch URL contained an invalid bootstrap grant");
+  internalPairUrl.hash = "";
+  const grantedHtml = await (await fetch(internalPairUrl, { signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS) })).text();
+  assert(!grantedHtml.includes(pairing.extensionToken) && !grantedHtml.includes(pairing.runtimeToken) && !grantedHtml.includes(parsedGrant.secret),
+    "token-free pairing document exposed a long-lived credential or fragment secret");
+
+  const pairChallenge = createBrokerAuthChallenge();
+  const pairAuthUrl = new URL(`http://127.0.0.1:${brokerPort}/pair-auth`);
+  pairAuthUrl.searchParams.set("grant", parsedGrant.id);
+  pairAuthUrl.searchParams.set("challenge", pairChallenge);
+  pairAuthUrl.searchParams.set("init", createPairingBootstrapInitProof(parsedGrant.secret, parsedGrant.id, pairChallenge));
+  const pairProofResponse = await fetch(pairAuthUrl, {
+    method: "GET", headers: { [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE },
+    signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS),
+  });
+  const pairProof = parseBrokerAuthResponse(pairProofResponse.headers);
+  assert(pairProofResponse.status === 204 && pairProof
+    && pairProof.serverProof === createPairingBootstrapProof(parsedGrant.secret, "server", parsedGrant.id, pairChallenge, pairProof.serverNonce),
+  "pairing bootstrap did not authenticate the broker with the fragment secret");
+  const forgedPairAuth = new URL(`http://127.0.0.1:${brokerPort}/pair-auth`);
+  forgedPairAuth.searchParams.set("grant", `${Date.now() + 30_000}.${"f".repeat(22)}`);
+  forgedPairAuth.searchParams.set("challenge", createBrokerAuthChallenge());
+  forgedPairAuth.searchParams.set("init", "f".repeat(43));
+  const forgedPairResponse = await fetch(forgedPairAuth, {
+    method: "GET", headers: { [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE },
+    signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS),
+  });
+  assert(forgedPairResponse.status === 401, "fabricated pairing grant id consumed a broker bootstrap slot without fragment proof");
+  pairAuthUrl.searchParams.set("nonce", pairProof.serverNonce);
+  pairAuthUrl.searchParams.set("proof", createPairingBootstrapProof(parsedGrant.secret, "client", parsedGrant.id, pairChallenge, pairProof.serverNonce));
+  const pairCredentialResponse = await fetch(pairAuthUrl, {
+    method: "POST", headers: { [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE },
+    signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS),
+  });
+  assert(pairCredentialResponse.status === 204
+    && pairCredentialResponse.headers.get("x-machine-bridge-extension-token") === pairing.extensionToken,
+  "authenticated pairing bootstrap did not release the extension credential");
+  const replayResponse = await fetch(pairAuthUrl, {
+    method: "POST", headers: { [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE },
+    signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS),
+  });
+  assert(replayResponse.status === 401, "one-time pairing bootstrap replayed successfully");
+
+  const unauthenticatedChallenge = new URL(initial.endpoint);
+  unauthenticatedChallenge.protocol = "http:";
+  unauthenticatedChallenge.pathname = "/runtime-auth";
+  unauthenticatedChallenge.search = `?challenge=${encodeURIComponent(createBrokerAuthChallenge())}`;
+  const unauthenticatedResponse = await fetch(unauthenticatedChallenge, { signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS) });
+  assert(unauthenticatedResponse.status === 403, "browser broker issued an auth challenge without the internal request marker");
+  const unprovedChallenge = createBrokerAuthChallenge();
+  unauthenticatedChallenge.search = `?challenge=${encodeURIComponent(unprovedChallenge)}`;
+  const unprovedResponse = await fetch(unauthenticatedChallenge, {
+    headers: { [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE },
+    signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS),
+  });
+  assert(unprovedResponse.status === 400, "browser broker allocated a normal auth challenge before client HMAC proof");
 
   const tokenRoleRuntimeUrl = new URL(initial.endpoint);
   tokenRoleRuntimeUrl.pathname = "/runtime";
   await expectSocketRejected(new WebSocket(tokenRoleRuntimeUrl, [`mbm-runtime.${pairing.extensionToken}`]));
+  await expectSocketRejected(new WebSocket(tokenRoleRuntimeUrl, [`mbm-runtime.${pairing.runtimeToken}`]));
   await expectSocketRejected(new WebSocket(initial.endpoint, [`mbm.${pairing.runtimeToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` }));
+  await expectSocketRejected(new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` }));
 
-  const rejected = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: "https://example.test" });
+  const rejected = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: "https://example.test" });
   await expectSocketRejected(rejected);
-  invalidOrigin = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${"z".repeat(32)}` });
+  invalidOrigin = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: `chrome-extension://${"z".repeat(32)}` });
   await expectSocketRejected(invalidOrigin);
 
-  invalidExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+  invalidExtension = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
   await expectSocketRejected(invalidExtension);
 
-  malformedExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
+  malformedExtension = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   await onceOpen(malformedExtension);
   const malformedExtensionClosed = onceClose(malformedExtension);
   malformedExtension.send("{");
   assert((await malformedExtensionClosed).code === 1007, "invalid extension JSON did not close with 1007");
 
-  staleExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
+  staleExtension = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   await onceOpen(staleExtension);
   const staleClosed = onceClose(staleExtension);
   staleExtension.send(JSON.stringify({
@@ -93,7 +174,7 @@ try {
   assert(staleStatus.connected === false && staleStatus.extension_reload_required === true, "stale extension rejection did not persist reload guidance");
   await waitFor(async () => (await client.status()).extension_reload_required === true);
 
-  extension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
+  extension = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   const extensionReady = attachExtensionResponder(extension);
   await onceOpen(extension);
   await extensionReady;
@@ -117,7 +198,7 @@ try {
   assert(tabs.tabs[0].id === 7, "owner browser request was not routed to the extension");
 
   const compatibleSocket = owner.socket;
-  staleReplacement = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
+  staleReplacement = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   await onceOpen(staleReplacement);
   const staleReplacementClosed = onceClose(staleReplacement);
   staleReplacement.send(JSON.stringify({ type: "hello", role: "extension", protocol: 1, version: "0.13.0", extension_id: EXPECTED_EXTENSION_ID, capabilities: [] }));
@@ -150,7 +231,7 @@ try {
   await waitFor(() => Boolean(heldRequestId));
   const cancelledId = heldRequestId;
   owner.cancelCall("cancel-browser-call");
-  await expectReject(cancelled, "may already have completed");
+  await expectReject(cancelled, "browser request cancelled");
   await waitFor(() => cancelledRequestId === cancelledId);
   assert(owner.pending.size === 0, "cancelled owner request remained pending");
   holdListTabs = false;
@@ -161,7 +242,7 @@ try {
   const interruptedClient = client.listTabs({ timeout_seconds: 10 }).catch((error) => error);
   await waitFor(() => owner.pending.size === 1 && owner.brokerDiagnostics().routed_requests === 1);
   const previousServerSocket = owner.socket;
-  replacementExtension = new WebSocket(initial.endpoint, [`mbm.${pairing.extensionToken}`], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
+  replacementExtension = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
   const replacementReady = attachExtensionResponder(replacementExtension);
   await onceOpen(replacementExtension);
   await replacementReady;
@@ -179,7 +260,7 @@ try {
 
   const runtimeUrl = new URL(initial.endpoint);
   runtimeUrl.pathname = "/runtime";
-  invalidRuntime = new WebSocket(runtimeUrl, [`mbm-runtime.${pairing.runtimeToken}`]);
+  invalidRuntime = new WebSocket(runtimeUrl, [await runtimeProtocol(initial.endpoint, pairing.runtimeToken)]);
   const invalidRuntimeOpened = onceOpen(invalidRuntime);
   const invalidRuntimeHello = onceMessage(invalidRuntime);
   await invalidRuntimeOpened;
@@ -232,6 +313,184 @@ try {
 }
 
 
+async function testBrowserRequestSettlementEvidence() {
+  for (const method of ["manage_tabs", "point_action", "backend_node_action", "action", "fill_form", "upload_files", "screenshot"]) {
+    assert(browserMethodMayMutate(method), `${method} lost browser mutation classification`);
+  }
+  for (const method of ["list_tabs", "wait", "get_source", "inspect_page", "observe_computer", "document_state"]) {
+    assert(!browserMethodMayMutate(method), `${method} was incorrectly classified as a browser mutation`);
+  }
+  assert(!browserMethodMayMutate(["action"]), "coercible browser method acquired mutation classification");
+
+  const invalidMethodRegistry = new BrowserRequestRegistry();
+  await expectReject(
+    Promise.resolve().then(() => invalidMethodRegistry.request({ transport: { send() {} }, method: ["action"], params: {}, timeoutSeconds: 30 })),
+    "browser request method is invalid",
+  );
+  await expectReject(
+    Promise.resolve().then(() => invalidMethodRegistry.request({ transport: { send() {} }, method: "action", params: {}, timeoutSeconds: "30" })),
+    "browser request timeout is invalid",
+  );
+
+  const sendFailureRegistry = new BrowserRequestRegistry();
+  const sendFailure = sendFailureRegistry.request({
+    transport: { send() { throw new Error("injected transport send failure"); } },
+    method: "upload_files", params: {}, timeoutSeconds: 30,
+  });
+  let sendFailureError;
+  try { await sendFailure; } catch (error) { sendFailureError = error; }
+  assert(publicError(sendFailureError).message.includes("outcome is unknown") && publicError(sendFailureError).retryable === false,
+    "mutating transport send failure lost unknown non-replayable settlement");
+  assert(sendFailureRegistry.pending.size === 0, "failed mutating transport send left a pending browser request");
+
+  const sent = [];
+  const transport = { send(value) { sent.push(JSON.parse(value)); } };
+  const registry = new BrowserRequestRegistry();
+  const mutation = registry.request({ transport, method: "action", params: {}, timeoutSeconds: 60, callId: "mutation-timeout" });
+  registry.cancelCall("mutation-timeout", transport, new BridgeError("timeout", "tool call timed out"));
+  let mutationError;
+  try { await mutation; } catch (error) { mutationError = error; }
+  assert(mutationError instanceof BridgeError && mutationError.code === "timeout" && mutationError.retryable === false,
+    "browser mutation deadline lost its timeout identity or became safely retryable");
+  assert(mutationError.details?.request_delivery === "sent" && mutationError.details?.side_effects_started === "unknown"
+    && mutationError.details?.termination_requested === true && mutationError.details?.effect_settlement === "pending",
+  "browser mutation deadline overstated or omitted post-dispatch settlement evidence");
+  assert(sent.some((message) => message.type === "cancel"), "browser mutation deadline did not send a cancellation frame");
+
+  const read = registry.request({ transport, method: "list_tabs", params: {}, timeoutSeconds: 60, callId: "read-disconnect" });
+  registry.rejectAll("browser extension disconnected");
+  let readError;
+  try { await read; } catch (error) { readError = error; }
+  assert(readError instanceof BridgeError && readError.code === "unavailable" && readError.retryable === true && !readError.details,
+    "read-only browser disconnect was not safely distinguishable from an ambiguous mutation");
+
+  const mutationDisconnect = registry.request({ transport, method: "fill_form", params: {}, timeoutSeconds: 60, callId: "mutation-disconnect" });
+  registry.rejectAll("browser extension disconnected");
+  let disconnectError;
+  try { await mutationDisconnect; } catch (error) { disconnectError = error; }
+  assert(disconnectError instanceof BridgeError && disconnectError.code === "unavailable" && disconnectError.retryable === false
+    && disconnectError.details?.request_delivery === "sent" && disconnectError.details?.termination_requested === false
+    && disconnectError.details?.effect_settlement === "unknown",
+  "browser mutation disconnect invited an unsafe retry or invented cancellation delivery");
+
+  const partial = registry.request({ transport, method: "action", params: {}, timeoutSeconds: 60, callId: "partial-action" });
+  const partialId = sent.at(-1)?.id;
+  assert(registry.settle({ type: "response", id: partialId, ok: false, error: "trusted browser input may have been partially dispatched; the action outcome is unknown. Inspect the page before retrying." }),
+    "browser partial-action fixture did not settle its request");
+  let partialError;
+  try { await partial; } catch (error) { partialError = error; }
+  assert(partialError instanceof BridgeError && partialError.retryable === false
+    && partialError.details?.side_effects_started === true && partialError.details?.effect_settlement === "unknown",
+  "extension-proven partial browser input lost its structured side-effect evidence");
+
+  for (const malformedResponse of [
+    { ok: "false", error: "browser operation failed" },
+    { ok: 1, result: { ok: true } },
+    { error: "browser operation failed" },
+    { ok: false, error: ["browser operation failed"] },
+    { ok: false, error: "" },
+    { ok: true, result: ["completed"] },
+    { ok: true, result: "completed" },
+    { ok: true, result: null },
+  ]) {
+    const malformedRegistry = new BrowserRequestRegistry();
+    let requestId = "";
+    const malformed = malformedRegistry.request({
+      transport: { send(value) { requestId = JSON.parse(value).id; } },
+      method: "action", params: {}, timeoutSeconds: 30,
+    });
+    assert(malformedRegistry.settle({ type: "response", id: requestId, ...malformedResponse }),
+      "malformed extension response did not settle its pending request");
+    let malformedError;
+    try { await malformed; } catch (error) { malformedError = error; }
+    assert(publicError(malformedError).message.includes("outcome is unknown") && publicError(malformedError).retryable === false,
+      "malformed mutating response was accepted or downgraded to a definite failure");
+  }
+
+  const clientMessages = [];
+  const extensionMessages = [];
+  const clientSocket = { readyState: 1, send(value) { clientMessages.push(JSON.parse(value)); }, close() {} };
+  const extensionSocket = { readyState: 1, send(value) { extensionMessages.push(JSON.parse(value)); } };
+  const routes = new BrowserBrokerRoutes({
+    maximum: 8,
+    getExtensionSocket: () => extensionSocket,
+    extensionConnected: () => true,
+    extensionStatusInfo: () => null,
+    extensionReloadRequired: () => false,
+  });
+  routes.handleClientMessage(clientSocket, JSON.stringify({ type: "request", id: "proxy-action", method: "action", params: {}, timeout_ms: 1000 }));
+  assert(extensionMessages.at(-1)?.method === "action", "browser broker did not forward the mutating proxy request");
+  routes.rejectAll("browser extension was replaced; retry the browser request");
+  const brokerError = clientMessages.at(-1)?.error || "";
+  assert(brokerError.includes("outcome is unknown") && !brokerError.includes("retry the browser request"),
+    "browser broker proxy told a mixed-version client to blindly retry an already-dispatched mutation");
+
+  const proxyRegistry = new BrowserRequestRegistry();
+  const proxySent = [];
+  const proxyMutation = proxyRegistry.request({ transport: { send(value) { proxySent.push(JSON.parse(value)); } }, method: "action", params: {}, timeoutSeconds: 60, callId: "proxy-action" });
+  assert(proxyRegistry.settle({ type: "response", id: proxySent.at(-1)?.id, ok: false, error: brokerError }),
+    "browser proxy mutation error did not settle the current client request");
+  let proxyError;
+  try { await proxyMutation; } catch (error) { proxyError = error; }
+  assert(proxyError instanceof BridgeError && proxyError.code === "unavailable" && proxyError.retryable === false
+    && proxyError.details?.effect_settlement === "unknown",
+  "current browser proxy client lost the broker's ambiguous-mutation semantics");
+
+  const brokerClient = () => ({
+    readyState: 1,
+    responses: [],
+    send(value) { this.responses.push(JSON.parse(value)); },
+    close() {},
+  });
+  const brokerRoutes = (extensionSocket) => new BrowserBrokerRoutes({
+    maximum: 8,
+    getExtensionSocket: () => extensionSocket,
+    extensionConnected: () => true,
+    extensionStatusInfo: () => null,
+    extensionReloadRequired: () => false,
+  });
+  const brokerRequest = (id, method, extra = {}) => Buffer.from(JSON.stringify({
+    type: "request", id, method, params: {}, timeout_ms: 30000, ...extra,
+  }));
+
+  const preSendClient = brokerClient();
+  brokerRoutes({ readyState: 3, send() { throw new Error("must not send"); } })
+    .handleClientMessage(preSendClient, brokerRequest("pre-send", "action"));
+  assert(preSendClient.responses[0]?.error === "browser extension send failed",
+    "pre-send broker failure was incorrectly classified as an ambiguous mutation");
+
+  const sendThrowClient = brokerClient();
+  brokerRoutes({ readyState: 1, send() { throw new Error("injected send failure"); } })
+    .handleClientMessage(sendThrowClient, brokerRequest("send-throw", "upload_files"));
+  assert(String(sendThrowClient.responses[0]?.error || "").includes("outcome is unknown"),
+    "broker send failure after invoking transport lost mutation uncertainty");
+
+  const normalizedRequests = [];
+  const normalizedClient = brokerClient();
+  const normalizedRoutes = brokerRoutes({ readyState: 1, send(value) { normalizedRequests.push(JSON.parse(value)); } });
+  normalizedRoutes.handleClientMessage(normalizedClient, brokerRequest("normalized", "list_tabs", {
+    call_id: "call-1", secret_extra: "must-not-cross-broker",
+  }));
+  assert(normalizedRequests[0]?.call_id === "call-1" && !Object.hasOwn(normalizedRequests[0], "secret_extra"),
+    "broker forwarded runtime-controlled top-level fields outside the fixed request schema");
+  normalizedRoutes.rejectAll("test cleanup");
+
+  for (const malformedRequest of [
+    { id: ["bad"], method: "list_tabs", params: {}, timeout_ms: 30000 },
+    { id: "bad-method", method: ["list_tabs"], params: {}, timeout_ms: 30000 },
+    { id: "bad-params", method: "list_tabs", params: [], timeout_ms: 30000 },
+    { id: "bad-timeout", method: "list_tabs", params: {}, timeout_ms: "30000" },
+    { id: "bad-call-id", method: "list_tabs", params: {}, timeout_ms: 30000, call_id: ["call-1"] },
+  ]) {
+    const extensionRequests = [];
+    const malformedClient = { ...brokerClient(), closed: [], close(code, reason) { this.closed.push({ code, reason }); } };
+    const malformedRoutes = brokerRoutes({ readyState: 1, send(value) { extensionRequests.push(JSON.parse(value)); } });
+    malformedRoutes.handleClientMessage(malformedClient, Buffer.from(JSON.stringify({ type: "request", ...malformedRequest })));
+    assert(extensionRequests.length === 0 && malformedRoutes.snapshot().routed_requests === 0 && malformedClient.closed[0]?.code === 1002,
+      "coercible/malformed runtime request crossed the broker dispatch boundary");
+  }
+}
+
 async function testStopDuringStart() {
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-start-race-"));
   const manager = new BrowserBridgeManager({
@@ -263,6 +522,141 @@ async function testStopDuringStart() {
     manager.stop();
     await rm(stateRoot, { recursive: true, force: true });
   }
+}
+
+
+async function testAuthenticatedProxyHandshakeFailure() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-authenticated-proxy-race-"));
+  const common = {
+    policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+    stateRoot,
+    runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+    readResourceText: async () => "",
+    readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
+  };
+  const owner = new BrowserBridgeManager(common);
+  const contender = new BrowserBridgeManager(common);
+  try {
+    await owner.ensureStarted();
+    const ownerPort = owner.port;
+    owner.brokerRoutes.acceptClient = (socket) => {
+      owner.brokerRoutes.clients.add(socket);
+      socket.on("close", () => owner.brokerRoutes.clients.delete(socket));
+    };
+    await expectReject(contender.ensureStarted(), "accepted runtime authentication but did not complete its handshake");
+    assert(contender.server === null && contender.upstream === null,
+      "browser bridge created a second owner after authenticating to an unready peer");
+    const pairing = JSON.parse(await readFile(join(stateRoot, "browser-bridge.json"), "utf8"));
+    assert(pairing.port === ownerPort, "failed authenticated proxy handshake rewrote the shared pairing port");
+  } finally {
+    contender.stop();
+    owner.stop();
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+}
+
+
+async function testPreviousPairingMigrationRefusesSecondOwner() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-previous-owner-"));
+  if (process.platform !== "win32") await chmod(stateRoot, 0o700);
+  const blocker = createServer((_request, response) => response.writeHead(404).end());
+  await new Promise((resolvePromise, rejectPromise) => {
+    blocker.once("error", rejectPromise);
+    blocker.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const port = blocker.address().port;
+  const oldExtensionToken = "e".repeat(43);
+  const oldRuntimeToken = "r".repeat(43);
+  await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({ schemaVersion: 2, extensionToken: oldExtensionToken, runtimeToken: oldRuntimeToken, port })}\n`, { mode: 0o600 });
+  const manager = new BrowserBridgeManager({
+    policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+    stateRoot,
+    runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+    readResourceText: async () => "",
+    readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
+  });
+  try {
+    await expectReject(manager.ensureStarted(), "previous browser broker occupies the migrated pairing port");
+    assert(manager.server === null && manager.upstream === null, "previous-owner pairing migration created or retained a second broker transport");
+    const persisted = JSON.parse(await readFile(join(stateRoot, "browser-bridge.json"), "utf8"));
+    assert(persisted.schemaVersion === 2 && persisted.pairingAuthVersion === 2 && persisted.migrationPending === true, "failed mixed-version migration forgot its pending safety state");
+    assert(persisted.runtimeToken === oldRuntimeToken, "mixed-version migration changed the runtime HMAC key before the old owner stopped");
+    assert(persisted.extensionToken !== oldExtensionToken, "previous-state migration retained the extension token exposed by the prior pairing page");
+    const second = new BrowserBridgeManager({
+      policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+      stateRoot,
+      runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+      readResourceText: async () => "",
+      readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
+    });
+    try {
+      await expectReject(second.ensureStarted(), "previous browser broker occupies the migrated pairing port");
+      assert(second.server === null && second.upstream === null, "persisted pending migration allowed a later process to create a second broker owner");
+    } finally { second.stop(); }
+  } finally {
+    manager.stop();
+    await new Promise((resolvePromise) => { blocker.close(resolvePromise); });
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+}
+
+
+async function testRuntimeProxyRejectsForgedServerProof() {
+  let upgradeSeen = false;
+  let requestText = "";
+  const server = createServer((request, response) => {
+    requestText += `${request.method} ${request.url} ${JSON.stringify(request.headers)}\n`;
+    response.writeHead(204, {
+      "cache-control": "no-store",
+      "x-machine-bridge-runtime-nonce": "n".repeat(32),
+      "x-machine-bridge-runtime-proof": "p".repeat(43),
+    }).end();
+  });
+  server.on("upgrade", (request, socket) => {
+    upgradeSeen = true;
+    requestText += `UPGRADE ${request.url} ${JSON.stringify(request.headers)}\n`;
+    socket.destroy();
+  });
+  await new Promise((resolvePromise, rejectPromise) => {
+    server.once("error", rejectPromise);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const port = server.address().port;
+  const runtimeToken = "r".repeat(43);
+  const manager = new BrowserBridgeManager({
+    policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+    runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+    readResourceText: async () => "",
+    readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
+  });
+  manager.runtimeToken = runtimeToken;
+  try {
+    const result = await manager.connectProxy(port);
+    assert(result.connected === false && result.authenticated === false, "forged runtime broker proof was accepted");
+    assert(upgradeSeen === false, "runtime bearer protocol was sent before broker proof verification");
+    assert(!requestText.includes(runtimeToken), "long-lived runtime credential leaked to an unproven local port owner");
+  } finally {
+    manager.stop();
+    await new Promise((resolvePromise) => { server.close(resolvePromise); });
+  }
+}
+
+async function runtimeProtocol(endpoint, runtimeToken) {
+  return brokerProtocol(endpoint, runtimeToken, "runtime");
+}
+
+async function brokerProtocol(endpoint, token, role) {
+  const challenge = createBrokerAuthChallenge();
+  const url = new URL(endpoint);
+  url.protocol = "http:";
+  url.pathname = `/${role}-auth`;
+  const initProof = createBrokerInitProof(token, role, challenge);
+  url.search = `?challenge=${encodeURIComponent(challenge)}&init=${encodeURIComponent(initProof)}`;
+  const response = await fetch(url, { redirect: "error", cache: "no-store", headers: { [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE }, signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS) });
+  assert(response.status === 204, "runtime broker auth challenge was not accepted");
+  const auth = parseBrokerAuthResponse(response.headers);
+  assert(auth && verifyBrokerServerProof(token, role, challenge, auth.serverNonce, auth.serverProof), `${role} broker server proof was invalid`);
+  return createBrokerClientProtocol(token, role, challenge, auth.serverNonce);
 }
 
 

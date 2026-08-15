@@ -1,8 +1,8 @@
 import { clampInteger } from "./numbers.mjs";
 
 const RUNTIME_TOOL_HANDLERS = Object.freeze({
-  server_info: (runtime, _args, context) => runtime.runtimeInfo(context),
-  project_overview: (runtime, _args, context) => runtime.projectOverview(context),
+  server_info: (runtime, args, context) => runtime.serverInfo(args, context),
+  project_overview: (runtime, args, context) => runtime.projectOverview(args, context),
   session_bootstrap: (runtime, args, context) => runtime.sessionBootstrap(args, context),
   agent_context: (runtime, args, context) => runtime.agentContextManager.agentContext(args, context),
   resolve_task_capabilities: (runtime, args, context) => runtime.resolveTaskCapabilities(args, context),
@@ -14,6 +14,8 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   open_local_application: (runtime, args, context) => runtime.appAutomationManager.openApplication(args, context),
   inspect_local_application: (runtime, args, context) => runtime.appAutomationManager.inspectApplication(args, context),
   operate_local_application: (runtime, args, context) => runtime.appAutomationManager.operateApplication(args, context),
+  computer_observe: (runtime, args, context) => runtime.computerUseManager.observe(args, context),
+  computer_act: (runtime, args, context) => runtime.computerUseManager.act(args, context),
   browser_status: (runtime, _args, context) => runtime.browserBridgeManager.status(context),
   pair_browser_extension: (runtime, args, context) => runtime.browserBridgeManager.pair(args, context),
   browser_list_tabs: (runtime, args, context) => runtime.browserBridgeManager.listTabs(args, context),
@@ -38,6 +40,7 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   git_diff: (runtime, args, context) => runtime.gitDiff(args, context),
   git_log: (runtime, args, context) => runtime.gitLog(args, context),
   git_show: (runtime, args, context) => runtime.gitShow(args, context),
+  git_commit: (runtime, args, context) => runtime.gitCommit(args, context),
   diagnose_runtime: (runtime, _args, context) => runtime.diagnoseRuntime(context),
   list_local_resources: (runtime, _args, context) => runtime.managedJobManager.listResources(context),
   generate_ssh_key_resource: (runtime, args, context) => runtime.generateSshKeyResource(args, context),

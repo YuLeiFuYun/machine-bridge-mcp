@@ -22,7 +22,6 @@ import {
   WORKER_PENDING_CALL_CAPACITY,
   WORKER_PENDING_REGISTRY_OPTIONS,
   assertWorkerPendingCallAdmission,
-  combinedPendingCapacity,
   pendingCallAdmission,
   pendingRegistrySnapshot,
 } from "../src/worker/pending-call-capacity.ts";
@@ -322,28 +321,19 @@ function testWorkerCapacityBoundaries() {
     && snapshot.detached === 1 && snapshot.oldest_ms === 40,
   "pending registry capacity snapshot is invalid");
 
-  const combined = combinedPendingCapacity(
-    { active: 2, by_tool: { read_file: 2 } },
-    { active: 1, by_tool: { diagnose_runtime: 1 } },
-    config,
-  );
-  assert(combined.active === 3 && combined.active_reserved === 1 && combined.active_ordinary === 2,
-    "transient and durable capacity were not merged by tool");
   assert(pendingCallAdmission(
-    { active: 3, by_tool: { read_file: 3 } }, { active: 0, by_tool: {} }, "diagnose_runtime", config,
+    { active: 3, by_tool: { read_file: 3 } }, "diagnose_runtime", config,
   ).allowed, "reserved control call was rejected under ordinary saturation");
   assert(!pendingCallAdmission(
-    { active: 3, by_tool: { read_file: 3 } }, { active: 0, by_tool: {} }, "read_file", config,
+    { active: 3, by_tool: { read_file: 3 } }, "read_file", config,
   ).allowed, "ordinary call consumed reserved capacity");
 
-  assertWorkerPendingCallAdmission(
-    { active: 0, by_tool: {} }, { active: 0, by_tool: {} }, "read_file",
-  );
+  assertWorkerPendingCallAdmission({ active: 0, by_tool: {} }, "read_file");
   expectWorkerLimit(() => assertWorkerPendingCallAdmission(
-    { active: 30, by_tool: { read_file: 30 } }, { active: 0, by_tool: {} }, "read_file",
+    { active: 30, by_tool: { read_file: 30 } }, "read_file",
   ), "ordinary daemon-call capacity reached");
   expectWorkerLimit(() => assertWorkerPendingCallAdmission(
-    { active: 32, by_tool: { diagnose_runtime: 2, read_file: 30 } }, { active: 0, by_tool: {} }, "list_roots",
+    { active: 32, by_tool: { diagnose_runtime: 2, read_file: 30 } }, "list_roots",
   ), "too many concurrent daemon tool calls");
   assert(WORKER_PENDING_CALL_CAPACITY.maximum === 32,
     "default Worker capacity configuration is invalid");

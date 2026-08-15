@@ -1,6 +1,6 @@
 import { webcrypto } from "node:crypto";
 import {
-  consumeDpopProof, consumeDpopProofForInternalRetry, jwkThumbprint, normalizedHtu, verifyDpopProof,
+  consumeDpopProof, jwkThumbprint, normalizedHtu, verifyDpopProof,
 } from "../src/worker/dpop.ts";
 import { authorizeMcpRequest } from "../src/worker/mcp-access.ts";
 
@@ -31,54 +31,14 @@ assert(await consumeDpopProof(storage, verified, now), "authorized DPoP proof wa
 const replay = await verifyDpopProof({ request, accessToken: token, expectedJkt: jkt, now: now + 1 });
 assert(replay && !await consumeDpopProof(storage, replay, now + 1), "DPoP jti replay was accepted");
 
-const internalRetryProof = await createProof({
-  privateJwk, publicJwk, htm: "POST", htu: endpoint, iat: now,
-  jti: "proof-internal-retry-1234", accessToken: token,
-});
-const verifiedInternalRetry = await verifyDpopProof({
-  request: new Request(endpoint, { method: "POST", headers: { Authorization: `DPoP ${token}`, DPoP: internalRetryProof } }),
-  accessToken: token, expectedJkt: jkt, now,
-});
-const retryId = `retry_${"r".repeat(43)}`;
-assert(await consumeDpopProofForInternalRetry(storage, verifiedInternalRetry, retryId, now),
-  "first DPoP use with an internal retry binding was rejected");
-assert(await consumeDpopProofForInternalRetry(storage, verifiedInternalRetry, retryId, now + 1),
-  "same outer request could not transparently retry its consumed DPoP proof");
-assert(await consumeDpopProofForInternalRetry(storage, verifiedInternalRetry, retryId, now + 2),
-  "third bounded internal DPoP attempt was rejected");
-assert(await consumeDpopProofForInternalRetry(storage, verifiedInternalRetry, retryId, now + 3),
-  "fourth bounded internal DPoP attempt was rejected");
-assert(!await consumeDpopProofForInternalRetry(storage, verifiedInternalRetry, retryId, now + 4),
-  "internal DPoP retry binding exceeded its maximum use count");
-assert(!await consumeDpopProofForInternalRetry(storage, verifiedInternalRetry, `retry_${"s".repeat(43)}`, now + 1),
-  "another outer request reused a consumed DPoP proof");
-assert(!await consumeDpopProof(storage, verifiedInternalRetry, now + 1),
-  "internal retry binding weakened ordinary DPoP replay rejection");
-assert(!await consumeDpopProofForInternalRetry(storage, verifiedInternalRetry, "bad", now + 1),
-  "malformed internal DPoP retry id was accepted");
-const consistencyStorage = new MemoryStorage();
-const consistencyProofRaw = await createProof({
-  privateJwk, publicJwk, htm: "POST", htu: endpoint, iat: now,
-  jti: "proof-consistency-1234567", accessToken: token,
-});
-const consistencyProof = await verifyDpopProof({
-  request: new Request(endpoint, { method: "POST", headers: { DPoP: consistencyProofRaw } }),
-  accessToken: token, expectedJkt: jkt, now,
-});
-assert(await consumeDpopProofForInternalRetry(consistencyStorage, consistencyProof, retryId, now),
-  "consistency fixture could not establish an internal retry binding");
-await consistencyStorage.put("dpop-proof-jtis", {});
-assert(!await consumeDpopProofForInternalRetry(consistencyStorage, consistencyProof, retryId, now + 1),
-  "orphaned internal retry binding bypassed missing primary replay state");
-
 const accessNow = Math.floor(Date.now() / 1000);
-const accessRetryProof = await createProof({
+const accessProof = await createProof({
   privateJwk, publicJwk, htm: "POST", htu: endpoint, iat: accessNow,
-  jti: "proof-access-retry-123456", accessToken: token,
+  jti: "proof-access-12345678901", accessToken: token,
 });
 const accessRequest = () => new Request(endpoint, {
   method: "POST",
-  headers: { Authorization: `DPoP ${token}`, DPoP: accessRetryProof },
+  headers: { Authorization: `DPoP ${token}`, DPoP: accessProof },
 });
 const authorizedToken = {
   tokenKey: "sha256:synthetic",
@@ -90,25 +50,22 @@ const authorizedToken = {
   role: "owner",
 };
 const oauth = { async verifyAccessToken(value) { return value === token ? authorizedToken : null; } };
-const accessRetryId = `retry_${"a".repeat(43)}`;
+const accessStorage = new MemoryStorage();
 const firstAccess = await authorizeMcpRequest({
   request: accessRequest(), base: "https://bridge.example.com", oauth,
-  storage, bodyLimitBytes: 1024, internalDpopRetryId: accessRetryId,
+  storage: accessStorage, bodyLimitBytes: 1024, requiredScope: "machine-bridge-mcp",
 });
 assert(firstAccess.authorized?.accountId === authorizedToken.accountId,
-  "first MCP DPoP authorization with internal retry binding failed");
+  "first MCP DPoP authorization failed");
 const repeatedAccess = await authorizeMcpRequest({
   request: accessRequest(), base: "https://bridge.example.com", oauth,
-  storage, bodyLimitBytes: 1024, internalDpopRetryId: accessRetryId,
+  storage: accessStorage, bodyLimitBytes: 1024, requiredScope: "machine-bridge-mcp",
 });
-assert(repeatedAccess.authorized?.accountId === authorizedToken.accountId,
-  "same outer MCP request could not repeat DPoP authorization internally");
-const foreignAccess = await authorizeMcpRequest({
-  request: accessRequest(), base: "https://bridge.example.com", oauth,
-  storage, bodyLimitBytes: 1024, internalDpopRetryId: `retry_${"b".repeat(43)}`,
-});
-assert(foreignAccess.response?.status === 401,
-  "different outer MCP request reused an internally bound DPoP proof");
+assert(repeatedAccess.response?.status === 401,
+  "request-scoped DPoP proof replay was accepted");
+assert(repeatedAccess.response?.headers.get("www-authenticate")
+    === 'DPoP resource_metadata="https://bridge.example.com/.well-known/oauth-protected-resource/mcp", scope="machine-bridge-mcp"',
+  "DPoP challenge omitted the protected-resource metadata URL or minimum scope");
 
 const wrongMethodProof = await createProof({ privateJwk, publicJwk, htm: "GET", htu: endpoint, iat: now, jti: "proof-method-123456789", accessToken: token });
 assert(await verifyDpopProof({

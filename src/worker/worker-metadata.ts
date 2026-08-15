@@ -8,15 +8,14 @@ export function mcpMetadata(base: string, identity: WorkerIdentity): Record<stri
     version: identity.version,
     protocolVersion: String(serverMetadata.protocolVersion),
     protocolVersions: serverMetadata.supportedProtocolVersions.map((value) => String(value)),
-    protocolEras: {
-      modern: serverMetadata.modernProtocolVersions.map((value) => String(value)),
-      legacy: serverMetadata.legacyProtocolVersions.map((value) => String(value)),
-    },
     transport: {
       type: "streamable-http",
       url: `${base}/mcp`,
-      modern: { methods: ["POST"], protocolSessions: false, resumableSse: false },
-      legacy: { methods: ["GET", "POST"], protocolSessions: true, resumableSse: true },
+      methods: ["POST"],
+      initializationCompatibility: {
+        protocolVersions: serverMetadata.remoteHttpInitializationCompatibilityVersions.map((value) => String(value)),
+        sessionless: true,
+      },
     },
     auth: { type: "oauth", authorization_servers: [base] },
   };
@@ -33,6 +32,7 @@ export function authorizationServerMetadata(base: string, serverName: string): R
     token_endpoint_auth_methods_supported: ["none"],
     dpop_signing_alg_values_supported: ["ES256"],
     code_challenge_methods_supported: ["S256"],
+    authorization_response_iss_parameter_supported: true,
     scopes_supported: [serverName, "offline_access"],
   };
 }
@@ -41,7 +41,7 @@ export function protectedResourceMetadata(base: string, serverName: string): Rec
   return {
     resource: `${base}/mcp`,
     authorization_servers: [base],
-    scopes_supported: [serverName, "offline_access"],
+    scopes_supported: [serverName],
     bearer_methods_supported: ["header"],
     resource_name: serverName,
   };

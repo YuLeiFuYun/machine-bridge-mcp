@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { BridgeError, errorCode, publicError, remoteBridgeError } from "../src/local/errors.mjs";
+import { BridgeError, errorCode, publicError } from "../src/local/errors.mjs";
 import { CallRegistry } from "../src/local/call-registry.mjs";
 import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
@@ -17,9 +17,13 @@ import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs"
 import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
-import { workspaceShellCommand } from "../src/local/shell.mjs";
+import { runExecutable, workspaceShellCommand } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
+import { FileMutationCoordinator } from "../src/local/file-mutation-coordinator.mjs";
+import { DIRECTORY_METADATA_BATCH_SIZE, directoryEntriesWithMetadata } from "../src/local/directory-metadata.mjs";
+import { SEARCH_FILE_BATCH_SIZE, searchWorkspaceFiles } from "../src/local/workspace-search.mjs";
+import { projectRuntimeInfo } from "../src/local/runtime-info-projection.mjs";
 import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/runtime-relay.mjs";
 import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
@@ -32,12 +36,17 @@ const PROCESS_FIXTURE_TIMEOUT_MS = 30_000;
 await testCallRegistry();
 await testToolExecutor();
 await testToolExecutorConcurrency();
+await testToolExecutorLateCancellationSettlement();
+await testFileMutationCoordinator();
+await testDirectoryMetadataFanout();
+await testWorkspaceSearchFanout();
+await testRuntimeInfoProjection();
 testToolResultBoundary();
 await testDuplicateRelayCallId();
 testRelayReadinessProbe();
 await testRelayReadinessStateGuards();
 testRelayCancellationSuppression();
-testRelayResumeReconciliation();
+await testRelayResumeReconciliation();
 testRelayToolTimeoutNormalization();
 testRelayHandshakeDiagnostics();
 testRuntimeConvenienceMethods();
@@ -46,9 +55,13 @@ testAutostartLogMaintenance();
 await testProcessExecutionNoShell();
 await testForegroundTimeoutAlignment();
 await testFixedInternalProcessBoundary();
+await testProcessExitFallbackSettlement();
 testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
-testProcessTracker();
+await testProcessErrorRetainsOwnershipUntilClose();
+await testRunExecutableErrorWaitsForClose();
+await testProcessTimeoutIsNotSafeToRetry();
+await testProcessTracker();
 await testProcessTreeSupervisor();
 await testChildProcessSettlement();
 testHardSpawnSyncTimeout();
@@ -58,6 +71,170 @@ testErrors();
 testWorkspaceShellSelection();
 testBoundedOutput();
 console.log("runtime infrastructure test ok");
+
+async function testWorkspaceSearchFanout() {
+  const files = Array.from({ length: 20 }, (_value, index) => `/synthetic/file-${String(index).padStart(2, "0")}`);
+  const makeWalk = (items) => async (onFile) => {
+    for (const file of items) {
+      if (await onFile(file) === false) return { truncated: true, visitedEntries: items.indexOf(file) + 1 };
+    }
+    return { truncated: false, visitedEntries: items.length };
+  };
+  let active = 0;
+  let maximumActive = 0;
+  const result = await searchWorkspaceFiles({
+    maximumFiles: files.length,
+    maximumMatches: 100,
+    walk: makeWalk(files),
+    async searchFile(file) {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+      return [{ path: file, line: 1, text: file }];
+    },
+  });
+  assert(maximumActive === SEARCH_FILE_BATCH_SIZE,
+    `workspace search fan-out exceeded or failed to use its bounded concurrency (${maximumActive})`);
+  assert(JSON.stringify(result.matches.map((match) => match.path)) === JSON.stringify(files),
+    "workspace search fan-out changed file or match ordering");
+  assert(result.visitedFiles === files.length && result.truncated === true,
+    "workspace search fan-out lost exact max_files accounting");
+
+  const lateError = new Error("later search failed");
+  const early = await searchWorkspaceFiles({
+    maximumFiles: 2,
+    maximumMatches: 1,
+    batchSize: 2,
+    walk: makeWalk(["/synthetic/first", "/synthetic/second"]),
+    async searchFile(file) {
+      if (file.endsWith("second")) throw lateError;
+      return [{ path: file, line: 1, text: "match" }];
+    },
+  });
+  assert(early.matches.length === 1 && early.visitedFiles === 1 && early.truncated === true,
+    "workspace search exposed work beyond an earlier max_matches stop");
+
+  let consumedError;
+  try {
+    await searchWorkspaceFiles({
+      maximumFiles: 2,
+      maximumMatches: 1,
+      batchSize: 2,
+      walk: makeWalk(["/synthetic/first", "/synthetic/second"]),
+      async searchFile(file) {
+        if (file.endsWith("second")) throw lateError;
+        return [];
+      },
+    });
+  } catch (error) { consumedError = error; }
+  assert(consumedError === lateError, "workspace search hid or replaced a consumed file-search error");
+
+  let searched = 0;
+  const capped = await searchWorkspaceFiles({
+    maximumFiles: 2,
+    maximumMatches: 100,
+    batchSize: 16,
+    walk: makeWalk(files.slice(0, 4)),
+    async searchFile() { searched += 1; return []; },
+  });
+  assert(searched === 2 && capped.visitedFiles === 2 && capped.truncated === true,
+    "workspace search scheduled or counted files beyond max_files");
+
+  const cancellationError = new Error("search cancelled during file I/O");
+  let cancelled = false;
+  let cancellationObserved;
+  try {
+    await searchWorkspaceFiles({
+      maximumFiles: 1,
+      maximumMatches: 1,
+      walk: makeWalk(["/synthetic/cancel"]),
+      async searchFile() { await Promise.resolve(); cancelled = true; return []; },
+      throwIfCancelled() { if (cancelled) throw cancellationError; },
+    });
+  } catch (error) { cancellationObserved = error; }
+  assert(cancellationObserved === cancellationError, "workspace search ignored cancellation after prefetched file I/O");
+}
+
+async function testDirectoryMetadataFanout() {
+  const fakeEntries = Array.from({ length: 20 }, (_value, index) => ({ name: `entry-${String(index).padStart(2, "0")}` }));
+  const openDirectory = async () => ({
+    async *[Symbol.asyncIterator]() { for (const entry of fakeEntries) yield entry; },
+  });
+  let active = 0;
+  let maximumActive = 0;
+  const inspect = async (path) => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await Promise.resolve();
+    active -= 1;
+    return { size: path.length };
+  };
+  const observed = [];
+  for await (const item of directoryEntriesWithMetadata("/synthetic", { openDirectory, inspect })) observed.push(item.entry.name);
+  assert(maximumActive === DIRECTORY_METADATA_BATCH_SIZE,
+    `directory metadata fan-out exceeded or failed to use its bounded concurrency (${maximumActive})`);
+  assert(JSON.stringify(observed) === JSON.stringify(fakeEntries.map((entry) => entry.name)),
+    "directory metadata fan-out changed directory enumeration order");
+
+  const deferredError = new Error("later metadata failed");
+  const twoEntries = async () => ({
+    async *[Symbol.asyncIterator]() { yield { name: "first" }; yield { name: "second" }; },
+  });
+  const inspectWithLateFailure = async (path) => {
+    if (path.endsWith("second")) throw deferredError;
+    return { size: 1 };
+  };
+  const truncated = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: twoEntries, inspect: inspectWithLateFailure, batchSize: 2,
+  });
+  const first = await truncated.next();
+  assert(first.value?.entry?.name === "first", "directory metadata fan-out lost the first settled entry");
+  await truncated.return();
+
+  const consumed = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: twoEntries, inspect: inspectWithLateFailure, batchSize: 2,
+  });
+  assert((await consumed.next()).value?.entry?.name === "first", "directory metadata error fixture lost its leading entry");
+  let consumedError;
+  try { await consumed.next(); } catch (error) { consumedError = error; }
+  assert(consumedError === deferredError, "directory metadata fan-out hid or replaced an error that was actually consumed");
+
+  let cancelled = false;
+  const cancellationError = new Error("cancelled between prefetched entries");
+  const cancellable = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: twoEntries,
+    inspect: async () => ({ size: 1 }),
+    batchSize: 2,
+    throwIfCancelled() { if (cancelled) throw cancellationError; },
+  });
+  assert((await cancellable.next()).value?.entry?.name === "first", "directory metadata cancellation fixture did not yield first entry");
+  cancelled = true;
+  let cancellationObserved;
+  try { await cancellable.next(); } catch (error) { cancellationObserved = error; }
+  assert(cancellationObserved === cancellationError, "directory metadata fan-out ignored cancellation between prefetched entries");
+
+  const empty = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: async () => ({ async *[Symbol.asyncIterator]() {} }),
+    inspect,
+    batchSize: 65,
+  });
+  assert((await empty.next()).done === true, "directory metadata fan-out did not settle an empty directory");
+
+  const tailError = new Error("tail metadata failed");
+  const tail = directoryEntriesWithMetadata("/synthetic", {
+    openDirectory: async () => ({
+      async *[Symbol.asyncIterator]() { yield { name: "a" }; yield { name: "b" }; yield { name: "tail" }; },
+    }),
+    batchSize: 2,
+    inspect: async (path) => { if (path.endsWith("tail")) throw tailError; return { size: 1 }; },
+  });
+  assert((await tail.next()).value?.entry?.name === "a" && (await tail.next()).value?.entry?.name === "b",
+    "directory metadata tail-error fixture lost its full leading batch");
+  let tailObserved;
+  try { await tail.next(); } catch (error) { tailObserved = error; }
+  assert(tailObserved === tailError, "directory metadata fan-out hid or replaced a consumed tail-batch error");
+}
 
 async function testCallRegistry() {
   const timers = new Map();
@@ -81,11 +258,33 @@ async function testCallRegistry() {
   expectBridgeError(() => registry.throwIfCancelled(first), "timeout");
   assert(cancelled[0]?.reason === "deadline exceeded", "deadline did not use the central cancellation path");
   assert(registry.snapshot().active === 2, "cancelled call vanished before lifecycle finish");
+  const prototypeOriginRegistry = new CallRegistry({ maximum: 1 });
+  prototypeOriginRegistry.open({ callId: "prototype-origin", tool: "read_file", origin: "__proto__" });
+  const prototypeOriginSnapshot = prototypeOriginRegistry.snapshot();
+  assert(Object.hasOwn(prototypeOriginSnapshot.by_origin, "__proto__") && prototypeOriginSnapshot.by_origin.__proto__ === 1,
+    "call-registry diagnostics lost a prototype-shaped origin key");
+  assert(Object.getPrototypeOf(prototypeOriginSnapshot.by_origin) === null, "call-registry origin diagnostics regained prototype semantics");
+  prototypeOriginRegistry.finish("prototype-origin");
   registry.finish("one");
   assert(registry.cancelOrigin("relay", "relay disconnected") === 1, "relay origin cancellation did not find its call");
   assert(cancelled.at(-1)?.reason === "relay disconnected", "relay origin cancellation lost its reason");
   registry.finish("two");
   assert(registry.snapshot().active === 0, "finished calls leaked from registry");
+
+  const authority = new CallRegistry({ maximum: 3 });
+  const accountId = `acct_${"r".repeat(32)}`;
+  const clientId = `mcp_client_${"r".repeat(43)}`;
+  const familyId = `mcp_family_${"r".repeat(43)}`;
+  authority.open({ callId: "family-call", tool: "run_process", origin: "relay" });
+  authority.bindPrincipal("family-call", { kind: "account", accountId, accountVersion: 4, clientId, familyId, role: "operator" });
+  authority.open({ callId: "new-version", tool: "read_file", origin: "relay" });
+  authority.bindPrincipal("new-version", { kind: "account", accountId, accountVersion: 5, clientId, familyId, role: "operator" });
+  assert(authority.cancelAuthority({ accountId, accountVersion: 4, clientId, familyId }) === 1,
+    "family authority revocation did not cancel the exact old-version call");
+  expectBridgeError(() => authority.throwIfCancelled({ callId: "family-call" }), "authorization_denied");
+  authority.throwIfCancelled({ callId: "new-version" });
+  authority.finish("family-call");
+  authority.finish("new-version");
 
   const defaultCapacity = new CallRegistry();
   assert(defaultCapacity.snapshot().maximum === 16,
@@ -101,8 +300,24 @@ async function testCallRegistry() {
 
   registry.open({ callId: "stop-one", tool: "read_file" });
   registry.open({ callId: "stop-two", tool: "git_status" });
-  registry.cancelAll("runtime stopped");
-  assert(registry.snapshot().active === 0, "cancelAll left stopped calls registered");
+  const callDrain = registry.cancelAllAndWait("runtime stopped", 100);
+  assert(registry.snapshot().active === 2, "call shutdown discarded handlers before lifecycle settlement");
+  expectBridgeError(() => registry.open({ callId: "late-stop-call", tool: "read_file" }), "unavailable");
+  registry.finish("stop-one");
+  let drainSettled = false;
+  callDrain.then(() => { drainSettled = true; });
+  await Promise.resolve();
+  assert(!drainSettled, "call shutdown settled while a handler was still registered");
+  registry.finish("stop-two");
+  await callDrain;
+  assert(registry.snapshot().active === 0, "call shutdown left settled calls registered");
+
+  const stalledCalls = new CallRegistry({ maximum: 1 });
+  stalledCalls.open({ callId: "stalled-stop-call", tool: "run_process" });
+  await expectReject(() => stalledCalls.cancelAllAndWait("runtime stopped", 20), "unavailable", "tool call shutdown did not settle");
+  assert(stalledCalls.snapshot().active === 1, "failed call shutdown discarded the retained in-flight handler");
+  expectBridgeError(() => stalledCalls.open({ callId: "post-timeout-call", tool: "read_file" }), "unavailable");
+  stalledCalls.finish("stalled-stop-call");
 }
 
 async function testToolExecutor() {
@@ -220,6 +435,40 @@ async function testToolExecutorConcurrency() {
   assert(registry.snapshot().active === 0, "concurrent tool calls leaked lifecycle state");
 }
 
+async function testToolExecutorLateCancellationSettlement() {
+  const registry = new CallRegistry({ maximum: 2 });
+  const observability = new RuntimeObservability();
+  const commitStarted = deferred();
+  const finishCommit = deferred();
+  let committed = false;
+  const fullPolicy = { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true };
+  const executor = new ToolExecutor({
+    handlers: {
+      write_file: async () => {
+        commitStarted.resolve();
+        await finishCommit.promise;
+        committed = true;
+        return { ok: true, committed: true };
+      },
+    },
+    policyGate: { policy: fullPolicy, assert() {} },
+    accountAccessGate: { assert() {}, authority() { return { principal: { kind: "local", role: "owner" }, effectivePolicy: fullPolicy, owner: true }; } },
+    callRegistry: registry,
+    observability,
+    logger: { event() {} },
+  });
+  const pending = executor.execute("write_file", { path: "settled.txt", content: "x" }, { callId: "late-cancel-settlement" });
+  await commitStarted.promise;
+  assert(registry.cancel("late-cancel-settlement", "caller stopped waiting") === true, "late cancellation did not reach the in-flight call");
+  finishCommit.resolve();
+  const result = await pending;
+  const metrics = observability.snapshot();
+  assert(committed && result.committed === true, "late cancellation replaced an already-settling mutation result");
+  assert(metrics.calls.completed === 1 && metrics.calls.cancelled === 0 && metrics.calls.failed === 0,
+    "late cancellation made local observability disagree with the completed handler result");
+  assert(registry.snapshot().active === 0, "late-cancelled settled call leaked registry state");
+}
+
 function testRelayReadinessProbe() {
   const delivered = [];
   let violation = "";
@@ -307,7 +556,7 @@ function testRelayCancellationSuppression() {
   assert(!runtime.suppressedRelayResults.has("unknown-call"), "unknown cancellation created an unbounded suppression entry");
 }
 
-function testRelayResumeReconciliation() {
+async function testRelayResumeReconciliation() {
   assert(normalizeRelayResumeCalls({ ids: ["call_valid_12345678"] }).ok, "valid resumed-call set was rejected");
   assert(!normalizeRelayResumeCalls({ ids: ["call_duplicate_12345678", "call_duplicate_12345678"] }).ok, "duplicate resumed-call ids were accepted");
   assert(!normalizeRelayResumeCalls({ ids: ["invalid"] }).ok, "malformed resumed-call id was accepted");
@@ -334,12 +583,33 @@ function testRelayResumeReconciliation() {
     && !runtime.relayCallRecovery.pendingResults.has("call_discard_12345678"), "reconnect reconciliation retained an orphaned queued result");
   assert(events.some((event) => event.name === "relay.calls.reconciled"), "reconnect reconciliation was not observable");
 
+  const revocationAttempts = [];
+  const aggregateRevocationRuntime = {
+    callRegistry: { cancelAuthority() { revocationAttempts.push("calls"); return 1; } },
+    processSessionManager: { revokeAuthority() { revocationAttempts.push("sessions"); throw new Error("synthetic session revocation failure"); } },
+    managedJobManager: { revokeAuthority() { revocationAttempts.push("jobs"); return 2; } },
+    logger: {},
+  };
+  let aggregateRevocationFailure = null;
+  try { await LocalRuntime.prototype.applyAuthorityRevocation.call(aggregateRevocationRuntime, { accountId: `acct_${"a".repeat(32)}`, accountVersion: 1 }); }
+  catch (error) { aggregateRevocationFailure = error; }
+  assert(aggregateRevocationFailure instanceof BridgeError && aggregateRevocationFailure.code === "unavailable"
+    && aggregateRevocationFailure.retryable === true && aggregateRevocationFailure.cause instanceof AggregateError
+    && revocationAttempts.join(",") === "calls,sessions,jobs",
+  "authority revocation stopped before attempting every local execution category or lost its retry classification");
+
   let violation = "";
   let confirmed = 0;
   let acknowledged = "";
+  const cancelledControlCalls = [];
+  let revokedAuthority;
+  let revocationAck;
+  let revocationInterrupt = null;
   const controlRuntime = {
     relayResumeSessionId: 0,
     reconcileRelayCalls(ids) { this.resumed = ids; },
+    cancelRelayCall(id, reason) { cancelledControlCalls.push({ id, reason }); return true; },
+    applyAuthorityRevocation(value) { revokedAuthority = value; },
     handleRelayProtocolViolation(reason) { violation = reason; },
     relayCallRecovery: {
       pulse() {},
@@ -348,32 +618,91 @@ function testRelayResumeReconciliation() {
     relay: {
       acknowledge() {},
       confirmReady() { confirmed += 1; return true; },
+      interrupt(category) { revocationInterrupt = category; return true; },
+      sendForSession(message, sessionId) { revocationAck = { message, sessionId }; return { ok: true }; },
     },
   };
-  LocalRuntime.prototype.handleRelayControlMessage.call(
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "resume_calls", ids: ["call_valid_12345678"] },
     { sessionId: 17, authenticated: true, ready: false },
   );
   assert(controlRuntime.relayResumeSessionId === 17 && controlRuntime.resumed[0] === "call_valid_12345678", "valid resume_calls did not establish the reconnect contract");
-  LocalRuntime.prototype.handleRelayControlMessage.call(
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    {
+      type: "authority_revoke", revocation_id: `revoke_${"r".repeat(43)}`,
+      account_id: `acct_${"r".repeat(32)}`, account_version: 4,
+    },
+    { sessionId: 17, authenticated: true, ready: false },
+  );
+  assert(revokedAuthority?.accountVersion === 4
+    && revocationAck?.sessionId === 17
+    && revocationAck.message.revocation_id === `revoke_${"r".repeat(43)}`,
+  "pre-ready authority revocation was not applied and acknowledged on its authenticated relay generation");
+  revocationAck = null;
+  controlRuntime.applyAuthorityRevocation = () => { throw new Error("synthetic revocation application failure"); };
+  let revocationFailure = null;
+  try {
+    await LocalRuntime.prototype.handleRelayControlMessage.call(
+      controlRuntime,
+      {
+        type: "authority_revoke", revocation_id: `revoke_${"f".repeat(43)}`,
+        account_id: `acct_${"f".repeat(32)}`, account_version: 5,
+      },
+      { sessionId: 17, authenticated: true, ready: false },
+    );
+  } catch (error) { revocationFailure = error; }
+  assert(String(revocationFailure?.message || "").includes("synthetic revocation application failure"),
+    "failed local authority revocation did not propagate its application failure");
+  assert(revocationAck === null, "failed local authority revocation was acknowledged and could be removed from the durable Worker queue");
+  assert(revocationInterrupt === "local_authority_revocation_retry",
+    "failed local authority revocation did not interrupt the relay generation for prompt durable-queue replay");
+  controlRuntime.applyAuthorityRevocation = (value) => { revokedAuthority = value; };
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "ready_ack" },
     { sessionId: 17, authenticated: true, ready: false },
   );
   assert(confirmed === 1 && controlRuntime.relayResumeSessionId === 0, "ready_ack was not gated by resume reconciliation");
-  LocalRuntime.prototype.handleRelayControlMessage.call(
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "tool_result_ack", id: "call_valid_12345678" },
     { sessionId: 17, authenticated: true, ready: true },
   );
   assert(acknowledged === "call_valid_12345678", "valid Worker result acknowledgement was not applied");
-  LocalRuntime.prototype.handleRelayControlMessage.call(
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "ready_ack" },
     { sessionId: 18, authenticated: true, ready: false },
   );
   assert(violation === "resume_calls_required", "ready_ack without resume_calls was accepted");
+  violation = "";
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "cancel_call", id: "call_cancel_12345678" },
+    { sessionId: 17, authenticated: true, ready: false },
+  );
+  assert(violation === "invalid_cancel_call" && cancelledControlCalls.length === 0,
+    "pre-ready relay cancellation bypassed the authenticated ready-generation gate");
+  violation = "";
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "cancel_call", id: "not-a-call-id" },
+    { sessionId: 17, authenticated: true, ready: true },
+  );
+  assert(violation === "invalid_cancel_call" && cancelledControlCalls.length === 0,
+    "malformed relay cancellation reached the call registry");
+  violation = "";
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "cancel_call", id: "call_cancel_12345678" },
+    { sessionId: 17, authenticated: true, ready: true },
+  );
+  assert(violation === "" && cancelledControlCalls.length === 1
+    && cancelledControlCalls[0].id === "call_cancel_12345678"
+    && cancelledControlCalls[0].reason === "caller_cancelled",
+  "ready-generation relay cancellation did not reach the call registry exactly once");
 }
 
 function testRelayHandshakeDiagnostics() {
@@ -508,7 +837,7 @@ function testRelayReconnectDelivery() {
   recovery.ready();
   assert(recovery.pendingResults.has("call_reconnect") && scheduledCallback === null,
     "replayed result was discarded before Worker acknowledgement");
-  assert(events.some((event) => event.name === "relay.tool_results.replayed" && event.fields.delivered_results === 1), "replayed result was not observable");
+  assert(events.some((event) => event.name === "relay.tool_results.redelivered" && event.fields.delivered_results === 1), "redelivered result was not observable");
   recovery.pulse();
   assert(recovery.pendingResults.has("call_reconnect"), "heartbeat replay discarded an unacknowledged result");
   assert(recovery.acknowledge("call_reconnect") && recovery.pendingResults.size === 0,
@@ -524,6 +853,12 @@ function testRelayReconnectDelivery() {
   assert(cancelled === 1 && terminated === 1, "reconnect expiry did not cancel calls and terminate ordinary processes");
   assert(suppressed.get("call_expire") === "relay_reconnect_timeout", "reconnect expiry did not suppress the eventual result");
   assert(recovery.pendingResults.size === 0, "reconnect expiry retained queued results");
+  const reconnectExpired = events.find((event) => event.name === "relay.calls.reconnect_expired");
+  assert(reconnectExpired?.level === "warn"
+    && reconnectExpired.fields?.cancelled_calls === 1
+    && reconnectExpired.fields?.discarded_results === 1
+    && reconnectExpired.fields?.grace_ms === 30_000,
+  "reconnect expiry did not emit structured loss diagnostics");
 }
 
 
@@ -663,14 +998,64 @@ async function testFixedInternalProcessBoundary() {
       1024,
       { callId: "fixed-internal", authority: { principal: { kind: "account", role: "reviewer" } } },
       temp,
+      null,
+      { GIT_OPTIONAL_LOCKS: "0" },
     );
     assert(result.code === 0, "fixed internal process did not complete");
     assert(spawnInvocation?.cmd === "git" && spawnInvocation?.args?.[0] === "status", "fixed internal process was wrapped as delegated arbitrary execution");
     assert(spawnInvocation?.options?.shell === false, "fixed internal process enabled shell interpretation");
     assert(spawnInvocation?.options?.env?.HOME === join(temp, "home"), "fixed internal process did not use an isolated minimal environment");
+    assert(spawnInvocation?.options?.env?.GIT_OPTIONAL_LOCKS === "0", "fixed internal process lost an approved implementation-owned environment override");
+    await expectReject(
+      () => service.runFixedInternal("git", ["status"], 5000, true, 1024, {}, temp, null, { NODE_OPTIONS: "--require=fixture" }),
+      "invalid_request", "internal process environment override is not approved",
+    );
+    await expectReject(
+      () => service.runFixedInternal("git", ["status"], 5000, true, 1024, {}, temp, null, { GIT_OPTIONAL_LOCKS: "1" }),
+      "invalid_request", "internal process environment override is not approved",
+    );
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
+}
+
+async function testProcessExitFallbackSettlement() {
+  class ExitOnlyChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4344;
+      this.exitCode = null;
+      this.signalCode = null;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.stdin = new PassThrough();
+      this.unrefCount = 0;
+    }
+    unref() { this.unrefCount += 1; }
+  }
+  const child = new ExitOnlyChild();
+  const tracker = new ProcessTracker();
+  const service = new ProcessExecutionService({
+    workspace: process.cwd(),
+    policy: { minimalEnv: false },
+    policyGate: { assert() {} },
+    runtimeDir: process.cwd(),
+    processTracker: tracker,
+    resolveExistingPath: async (value) => value,
+    resolveLocalCommand: async () => ({}),
+    displayPath: (value) => value,
+    throwIfCancelled() {},
+    childSettlementOptions: { fallbackMs: 0 },
+    spawnProcess: () => {
+      queueMicrotask(() => { child.exitCode = 0; child.emit("exit", 0, null); });
+      return child;
+    },
+  });
+  const result = await service.runFixedInternal(process.execPath, ["-e", ""], 5_000, false, 1024);
+  assert(result.code === 0, "one-shot process exit fallback changed a successful exit result");
+  assert(tracker.snapshot().active_processes === 0, "one-shot process exit fallback retained process ownership without close");
+  assert(child.stdout.destroyed && child.stderr.destroyed && child.stdin.destroyed && child.unrefCount === 1,
+    "one-shot process exit fallback did not close residual stdio handles before settlement");
 }
 
 async function testProcessCancellationSettlesBeforeClose() {
@@ -707,14 +1092,139 @@ async function testProcessCancellationSettlesBeforeClose() {
   const running = service.run("never", [], 60_000, false, 1024, { callId: "stuck", signal: controller.signal });
   assert(spawnInvocation?.options?.shell === false, "direct process execution did not explicitly disable shell interpretation");
   controller.abort(new BridgeError("cancelled", "relay disconnected"));
-  await expectReject(() => Promise.race([running, new Promise((_, reject) => { setTimeout(() => reject(new Error("cancellation did not settle")), 100); })]), "cancelled", "relay disconnected");
+  const cancellation = await expectReject(() => Promise.race([running, new Promise((_, reject) => { setTimeout(() => reject(new Error("cancellation did not settle")), 100); })]), "cancelled", "relay disconnected");
+  assert(cancellation.retryable === false && cancellation.details?.side_effects_started === true
+    && cancellation.details?.termination_requested === true && cancellation.details?.effect_settlement === "pending",
+  "cancelled process implied its already-started side effects had settled or were safe to retry");
   assert(terminated === 1, "cancelled process was not terminated");
   assert(tracker.snapshot().active_processes === 1, "process tracker released a child before close");
   child.emit("close", null);
   assert(tracker.snapshot().active_processes === 0, "process tracker retained child after close");
+
+  const deadlineChild = new NeverClosingChild();
+  service.spawnProcess = () => deadlineChild;
+  const deadlineController = new AbortController();
+  const deadlineRun = service.run("never", [], 60_000, false, 1024, { callId: "deadline", signal: deadlineController.signal });
+  deadlineController.abort(new BridgeError("timeout", "tool call timed out"));
+  const deadline = await expectReject(() => deadlineRun, "timeout", "tool call timed out");
+  assert(deadline.retryable === false && deadline.details?.effect_settlement === "pending",
+    "registry deadline lost its timeout code or became safe to retry after process dispatch");
+  deadlineChild.emit("close", null);
 }
 
-function testProcessTracker() {
+async function testProcessErrorRetainsOwnershipUntilClose() {
+  class ErrorThenCloseChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4_242_425;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.stdin = new PassThrough();
+      this.exitCode = null;
+      this.signalCode = null;
+    }
+  }
+  const child = new ErrorThenCloseChild();
+  let releases = 0;
+  const tracker = new ProcessTracker();
+  const service = new ProcessExecutionService({
+    workspace: process.cwd(), policy: { minimalEnv: false }, policyGate: { assert() {} }, runtimeDir: process.cwd(),
+    processTracker: tracker,
+    resourceCoordinator: { acquire: async () => ({ async bindProcess() { return this; }, async release() { releases += 1; return true; } }) },
+    resolveExistingPath: async (value) => value, resolveLocalCommand: async () => ({}), displayPath: (value) => value,
+    throwIfCancelled() {}, spawnProcess: () => child,
+  });
+  const running = service.run("synthetic-child", [], 60_000, false, 1024, { callId: "error-before-close" });
+  for (let attempt = 0; attempt < 20 && child.listenerCount("error") === 0; attempt += 1) {
+    await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  }
+  assert(child.listenerCount("error") > 0, "child error fixture never reached process ownership registration");
+  child.emit("error", new Error("synthetic child error before close"));
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(tracker.snapshot().active_processes === 1 && releases === 0,
+    "child error released process ownership or resources before close");
+  child.emit("close", null);
+  let childFailure = null;
+  try { await running; } catch (error) { childFailure = error; }
+  assert(childFailure?.message === "synthetic child error before close", "child error changed meaning while ownership was retained");
+  assert(tracker.snapshot().active_processes === 0 && releases === 1,
+    "child close did not release retained process ownership exactly once after an error");
+}
+
+async function testRunExecutableErrorWaitsForClose() {
+  class ErrorThenCloseChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4_242_426;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+    }
+  }
+  const child = new ErrorThenCloseChild();
+  let settled = false;
+  const running = runExecutable("synthetic-internal", [], {
+    capture: true, timeoutMs: 60_000,
+    spawnProcess(_command, _args, options) {
+      assert(options.shell === false && options.detached === (process.platform !== "win32"),
+        "runExecutable test seam changed the fixed production spawn boundary");
+      return child;
+    },
+  }).finally(() => { settled = true; });
+  child.emit("error", new Error("synthetic internal child error before close"));
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(settled === false, "runExecutable settled directly from child error before close");
+  child.emit("close", null);
+  let failure = null;
+  try { await running; } catch (error) { failure = error; }
+  assert(failure?.message === "synthetic internal child error before close" && settled === true,
+    "runExecutable did not preserve the child error until close settlement");
+}
+
+async function testProcessTimeoutIsNotSafeToRetry() {
+  class NeverClosingChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4_242_424;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.stdin = new PassThrough();
+      this.exitCode = null;
+      this.signalCode = null;
+    }
+  }
+  const child = new NeverClosingChild();
+  let terminated = 0;
+  const tracker = new ProcessTracker();
+  const service = new ProcessExecutionService({
+    workspace: process.cwd(),
+    policy: { minimalEnv: false },
+    policyGate: { assert() {} },
+    runtimeDir: process.cwd(),
+    processTracker: tracker,
+    resolveExistingPath: async (value) => value,
+    resolveLocalCommand: async () => ({}),
+    displayPath: (value) => value,
+    throwIfCancelled() {},
+    spawnProcess: () => child,
+    terminateProcess: () => { terminated += 1; return null; },
+  });
+  let timeoutError = null;
+  try { await service.run("never", [], 10, false, 1024, { callId: "timeout-ambiguous" }); }
+  catch (error) { timeoutError = error; }
+  assert(timeoutError instanceof BridgeError && timeoutError.code === "timeout", "process timeout did not retain its stable error code");
+  assert(timeoutError.retryable === false, "process timeout advertised an ambiguous started side effect as safely retryable");
+  assert(timeoutError.details?.side_effects_started === true
+    && timeoutError.details?.termination_requested === true
+    && timeoutError.details?.effect_settlement === "pending",
+  "process timeout omitted its pending side-effect settlement metadata");
+  assert(terminated === 1 && tracker.snapshot().active_processes === 1,
+    "process timeout test did not preserve the intended fast-return/background-termination contract");
+  child.emit("close", null);
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(tracker.snapshot().active_processes === 0, "timed-out process remained tracked after close");
+}
+
+async function testProcessTracker() {
   const terminations = [];
   const escalations = [];
   const tracker = new ProcessTracker({
@@ -776,6 +1286,36 @@ function testProcessTracker() {
   timerTracker.track(timedChild, "timed-again");
   timerTracker.terminateCall("timed-again");
   assert(scheduledCount === 2, "settled process escalation was not released from the tracker");
+
+  const drainTerminations = [];
+  const drainTracker = new ProcessTracker({
+    terminate(child, signal) { drainTerminations.push({ child, signal }); return true; },
+  });
+  const drainingChild = { pid: 301 };
+  drainTracker.track(drainingChild, "drain");
+  const drained = drainTracker.drain("SIGKILL", 100);
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
+  assert(drainTerminations.length === 1 && drainTerminations[0].signal === "SIGKILL",
+    "process tracker drain did not request forced termination");
+  drainTracker.untrack(drainingChild);
+  await drained;
+  const lateChild = { pid: 302 };
+  drainTracker.track(lateChild, "late-during-drain");
+  assert(drainTerminations.length === 2 && drainTerminations[1].child === lateChild,
+    "process tracker allowed a new child to escape after runtime drain began");
+  drainTracker.untrack(lateChild);
+
+  let stalledDrainRequests = 0;
+  const stalledDrainTracker = new ProcessTracker({ terminate() { stalledDrainRequests += 1; return true; } });
+  const stalledDrainChild = { pid: 303 };
+  stalledDrainTracker.track(stalledDrainChild, "stalled-drain");
+  await expectReject(() => stalledDrainTracker.drain("SIGKILL", 20), "unavailable", "process shutdown did not settle");
+  assert(stalledDrainTracker.snapshot().active_processes === 1,
+    "failed process drain discarded the only retained ownership handle");
+  const retriedDrain = stalledDrainTracker.drain("SIGKILL", 100);
+  assert(stalledDrainRequests === 2, "failed process drain permanently suppressed a later termination retry");
+  stalledDrainTracker.untrack(stalledDrainChild);
+  await retriedDrain;
   timerTracker.terminateCall("timed-again", { force: true });
   assert(clearedTimers.join(",") === "timer-2", "forced process termination did not clear the pending escalation timer");
 }
@@ -802,6 +1342,49 @@ async function testProcessTreeSupervisor() {
   assert(scheduled?.delay === 25, "process-tree escalation lost the configured grace period");
   await scheduled.callback();
   assert(signals.length === 2 && signals[1][1] === "SIGKILL" && escalated, "process-tree escalation did not force termination after the grace period");
+
+  let boundedCallback = null;
+  const boundedPrecheckTimeouts = [];
+  let boundedPrecheckKills = 0;
+  terminateProcessTreeWithEscalation({ pid: 4292 }, {
+    graceMs: 0,
+    ownershipCheckBudgetMs: 90,
+    monotonicNow: () => 0,
+    captureOwnership(_child, phaseOptions) {
+      boundedPrecheckTimeouts.push(phaseOptions.processSnapshotTimeoutMs);
+      return { pid: 4292 };
+    },
+    refreshOwnership(value, phaseOptions) {
+      boundedPrecheckTimeouts.push(phaseOptions.processSnapshotTimeoutMs);
+      return value;
+    },
+    isTerminationTargetOwned: () => true,
+    terminate(_child, signal) { if (signal === "SIGKILL") boundedPrecheckKills += 1; },
+    setTimeout(callback) { boundedCallback = callback; return "bounded-precheck-timer"; },
+  });
+  await boundedCallback();
+  assert(boundedPrecheckKills === 1 && boundedPrecheckTimeouts.length === 2
+    && boundedPrecheckTimeouts.every((value) => value > 0)
+    && boundedPrecheckTimeouts.reduce((sum, value) => sum + value, 0) <= 90,
+  `process-tree capture/refresh exceeded their shared ownership budget: ${boundedPrecheckTimeouts.join(",")}`);
+
+  let expiredCallback = null;
+  let expiredRefreshes = 0;
+  let expiredKills = 0;
+  let precheckNow = 0;
+  terminateProcessTreeWithEscalation({ pid: 4293 }, {
+    graceMs: 0,
+    ownershipCheckBudgetMs: 20,
+    monotonicNow: () => precheckNow,
+    captureOwnership() { precheckNow = 21; return { pid: 4293 }; },
+    refreshOwnership(value) { expiredRefreshes += 1; return value; },
+    isTerminationTargetOwned: () => true,
+    terminate(_child, signal) { if (signal === "SIGKILL") expiredKills += 1; },
+    setTimeout(callback) { expiredCallback = callback; return "expired-precheck-timer"; },
+  });
+  await expiredCallback();
+  assert(expiredRefreshes === 0 && expiredKills === 0,
+    "expired pre-escalation ownership budget refreshed or forced an unverified process tree");
 
   let exitedCallback = null;
   let exitedSignals = 0;
@@ -1070,8 +1653,6 @@ function testErrors() {
   assert(errorCode(new Error("something timed out")) === "execution_failed", "untyped messages must not be reclassified heuristically");
   const publicValue = publicError(new BridgeError("network_error", "network unavailable"));
   assert(publicValue.code === "network_error" && publicValue.retryable === true, "public error lost retryability");
-  const remote = remoteBridgeError({ code: "limit_exceeded", message: "busy", retryable: true, details: { retained: true } });
-  assert(remote.code === "limit_exceeded" && remote.retryable === true && remote.details?.retained === true, "remote structured error was not preserved");
   const hidden = publicError(new BridgeError("internal_error", "private", { expose: false, details: { secret: "must-not-leak" } }));
   assert(!hidden.details && hidden.message === "internal error", "non-exposed error leaked structured details");
   const rawUnknown = publicError(new Error("private path /Users/private-user and token secret"));
@@ -1130,6 +1711,127 @@ function expectBridgeError(operation, code) {
   throw new Error(`expected BridgeError ${code}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
+
+async function testFileMutationCoordinator() {
+  const coordinator = new FileMutationCoordinator();
+  const root = join(tmpdir(), "mbm-file-mutation-coordinator");
+  const firstPath = join(root, "first.txt");
+  const secondPath = join(root, "second.txt");
+  const thirdPath = join(root, "third.txt");
+  for (const [paths, callback, label] of [
+    [null, async () => {}, "non-array paths"],
+    [[], async () => {}, "empty paths"],
+    [[firstPath], null, "missing callback"],
+    [["relative.txt"], async () => {}, "relative path"],
+    [[""], async () => {}, "empty path"],
+    [[`${firstPath}\0suffix`], async () => {}, "NUL path"],
+  ]) {
+    let invalidError;
+    try { await coordinator.withPaths(paths, callback); } catch (error) { invalidError = error; }
+    assert(invalidError instanceof TypeError, `file mutation coordinator accepted ${label}`);
+  }
+  const samePathOrder = [];
+  const sameStarted = deferred();
+  const sameRelease = deferred();
+  let secondSameStarted = false;
+  const firstSame = coordinator.withPaths([firstPath], async () => {
+    samePathOrder.push("first:start");
+    sameStarted.resolve();
+    await sameRelease.promise;
+    samePathOrder.push("first:end");
+  });
+  await sameStarted.promise;
+  const secondSame = coordinator.withPaths([firstPath], async () => {
+    secondSameStarted = true;
+    samePathOrder.push("second:start");
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert(!secondSameStarted, "same-path file mutations overlapped");
+  sameRelease.resolve();
+  await Promise.all([firstSame, secondSame]);
+  assert(samePathOrder.join(",") === "first:start,first:end,second:start", "same-path file mutation order changed");
+
+  const unrelatedStarted = deferred();
+  const unrelatedRelease = deferred();
+  const held = coordinator.withPaths([firstPath], async () => {
+    unrelatedStarted.resolve();
+    await unrelatedRelease.promise;
+  });
+  await unrelatedStarted.promise;
+  let secondPathStarted = false;
+  const unrelated = coordinator.withPaths([secondPath], async () => { secondPathStarted = true; });
+  await unrelated;
+  assert(secondPathStarted, "unrelated file mutation was serialized behind another path");
+  unrelatedRelease.resolve();
+  await held;
+
+  const multiStarted = deferred();
+  const multiRelease = deferred();
+  const multi = coordinator.withPaths([firstPath, secondPath, firstPath], async () => {
+    multiStarted.resolve();
+    await multiRelease.promise;
+  });
+  await multiStarted.promise;
+  let overlapStarted = false;
+  const overlap = coordinator.withPaths([secondPath], async () => { overlapStarted = true; });
+  let thirdStarted = false;
+  await coordinator.withPaths([thirdPath], async () => { thirdStarted = true; });
+  await Promise.resolve();
+  assert(thirdStarted, "multi-path reservation blocked an unrelated path");
+  assert(!overlapStarted, "multi-path reservation did not retain every conflicting path");
+  multiRelease.resolve();
+  await Promise.all([multi, overlap]);
+  assert(overlapStarted, "overlapping mutation never resumed after multi-path release");
+
+  let failed = false;
+  try { await coordinator.withPaths([firstPath], async () => { throw new Error("expected mutation failure"); }); }
+  catch (error) { failed = error?.message === "expected mutation failure"; }
+  assert(failed, "mutation coordinator swallowed a callback failure");
+  let afterFailure = false;
+  await coordinator.withPaths([firstPath], async () => { afterFailure = true; });
+  assert(afterFailure, "failed file mutation leaked its path reservation");
+}
+
+function testRuntimeInfoProjection() {
+  const full = { name: "fixture", policy: { profile: "custom" }, tool_delivery: { daemon_advertised_tool_count: 7 }, runtime: {} };
+  assert(projectRuntimeInfo(full, "full") === full, "full local server_info projection stopped preserving the canonical object");
+  const summary = projectRuntimeInfo({
+    name: "fixture",
+    protocol_version: "test",
+    workspace: ".",
+    workspace_name: "workspace",
+    policy: null,
+    tool_delivery: null,
+    runtime: {
+      processes: null,
+      process_sessions: [],
+      managed_jobs: { active: 2, retained: 3, maximum: 9, staged: 1, capacity: { retained_state: 9, retired_state: 6, retired_unreadable: 2 } },
+    },
+  }, "summary");
+  assert(summary.detail === "summary" && summary.policy && Object.keys(summary.policy).length === 0
+    && summary.tool_delivery.daemon_advertised_tool_count === 0
+    && summary.runtime.lifecycle === null && summary.runtime.relay === null
+    && summary.runtime.processes.active_processes === 0 && summary.runtime.processes.draining_processes === 0
+    && summary.runtime.process_sessions.active === 0 && !("staged" in summary.runtime.process_sessions)
+    && summary.runtime.managed_jobs.active === 2 && summary.runtime.managed_jobs.staged === 1
+    && summary.runtime.managed_jobs.capacity?.retained_state === 9
+    && summary.runtime.managed_jobs.capacity?.retired_state === 6
+    && summary.runtime.managed_jobs.capacity?.retired_unreadable === 2,
+  "sparse local server_info projection lost bounded defaults or owner retained-state capacity diagnostics");
+  const hiddenSummary = projectRuntimeInfo({
+    runtime: { processes: { activity_hidden_by_authority: true }, process_sessions: { active: 1, retained: 1, maximum: 8 }, managed_jobs: { active: 0, retained: 0, maximum: 50 } },
+  }, "summary");
+  assert(hiddenSummary.runtime.processes.activity_hidden_by_authority === true
+    && !("active_processes" in hiddenSummary.runtime.processes),
+  "server_info summary converted hidden global process activity into false zero-valued evidence");
+}
+
+function deferred() {
+  let resolvePromise = () => {};
+  const promise = new Promise((resolve) => { resolvePromise = resolve; });
+  return { promise, resolve: resolvePromise };
+}
 
 function testToolResultBoundary() {
   const source = { ok: true, nested: { value: 7 } };

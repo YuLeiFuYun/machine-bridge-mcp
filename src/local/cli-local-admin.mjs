@@ -1,14 +1,15 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { createLogger } from "./log.mjs";
 import { inspectResourceFile, loadManagedJobPlan, ManagedJobManager, publicResourceRegistry, validateResourceName } from "./managed-jobs.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import {
-  acquireStartupLockWithWait, expandHome, loadState, ownerOnlyFile, packageRoot, saveState,
+  acquireStartupLockWithWait, defaultStateRoot, expandHome, loadState, saveState,
 } from "./state.mjs";
+import { readBrowserPairing, readBrowserPairingPort } from "./browser-pairing-store.mjs";
+import { startBrowserPairingLaunch } from "./browser-pairing-launch.mjs";
+import { browserExtensionPathForRuntime } from "./browser-extension-path.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
 import { readLoopbackJson } from "./loopback-health.mjs";
 
@@ -18,7 +19,7 @@ export function createLocalAdminCommands(dependencies) {
   if (typeof chooseWorkspace !== "function" || typeof confirm !== "function") {
     throw new TypeError("local admin commands require chooseWorkspace and confirm dependencies");
   }
-  const context = Object.freeze({ chooseWorkspace, confirm });
+  const context = Object.freeze({ chooseWorkspace, confirm, openExternal: dependencies.openExternal || openExternal });
   return Object.freeze({
     resourceCommand: (args) => resourceCommand(args, context),
     browserCommand: (args) => browserCommand(args, context),
@@ -197,7 +198,8 @@ async function browserCommand(args, dependencies) {
 }
 
 function browserPathAction(args) {
-  const extensionPath = resolve(packageRoot, "browser-extension");
+  const stateRoot = resolve(expandHome(args.stateDir || defaultStateRoot()));
+  const extensionPath = browserExtensionPathForRuntime({ stateRoot });
   if (args.json) console.log(JSON.stringify({ extension_path: extensionPath }, null, 2));
   else console.log(extensionPath);
 }
@@ -207,49 +209,32 @@ async function browserStatusAction(args, { chooseWorkspace }) {
   renderBrowserStatus(context.result, args.json === true);
 }
 
-async function browserPairAction(args, { chooseWorkspace }) {
+async function browserPairAction(args, { chooseWorkspace, openExternal: openTarget }) {
   const context = await browserCommandContext(args, chooseWorkspace);
   if (!context.result.running) throw new Error("browser bridge is not reachable; keep machine-mcp running and retry");
-  await openExternal(context.pairingUrl);
+  const pairing = readBrowserPairing(context.stateRoot);
+  if (!pairing || pairing.port !== context.port) throw new Error("browser pairing state changed; retry setup");
+  const launch = await startBrowserPairingLaunch({ brokerPort: pairing.port, extensionToken: pairing.extensionToken });
+  try { await openTarget(launch.url); } catch (error) { launch.close(); throw error; }
   if (args.json) {
     console.log(JSON.stringify({ ...context.result, pairing_page_opened: true }, null, 2));
     return;
   }
   console.log(`Extension path: ${context.extensionPath}`);
   console.log("Load this directory in the Chromium profile you use every day; Machine Bridge does not install it into Playwright or a separate automation profile.");
-  console.log("Enable Developer mode, choose Load unpacked, and reload the extension after each Machine Bridge upgrade.");
+  console.log("Enable Developer mode, choose Load unpacked once, and reload the same path after each Machine Bridge upgrade. Older local-candidate installs may need one Load unpacked migration to this stable path.");
   console.log(`Pairing page opened: ${context.pairingUrl}`);
 }
 
 async function browserCommandContext(args, chooseWorkspace) {
-  const extensionPath = resolve(packageRoot, "browser-extension");
   const workspace = await chooseWorkspace({ ...args, _: [] }, { promptOnFirstRun: false, save: false, allowPositional: false });
   const state = loadState(workspace, { stateDir: args.stateDir });
-  const pairingFile = join(state.paths.stateRoot, "browser-bridge.json");
-  if (!existsSync(pairingFile)) {
-    throw new Error("browser bridge is not initialized; start machine-mcp once, then run this command again");
-  }
-  ownerOnlyFile(pairingFile);
-  const pairing = readBrowserPairingState(pairingFile);
-  const pairingUrl = `http://127.0.0.1:${pairing.port}/pair`;
-  const health = await readBrowserHealth(`http://127.0.0.1:${pairing.port}/healthz`);
-  return { extensionPath, pairingUrl, result: browserStatusResult(health, extensionPath, pairingUrl) };
-}
-
-function readBrowserPairingState(pairingFile) {
-  let pairing;
-  try {
-    pairing = JSON.parse(readBoundedRegularFileSync(pairingFile, 64 * 1024).toString("utf8"));
-  } catch {
-    throw new Error("browser bridge state is invalid; restart machine-mcp to repair it");
-  }
-  const port = Number(pairing.port);
-  const extensionToken = String(pairing.extensionToken || pairing.token || "");
-  if (!/^[A-Za-z0-9_-]{32,100}$/.test(extensionToken) || (pairing.runtimeToken !== undefined && !/^[A-Za-z0-9_-]{32,100}$/.test(String(pairing.runtimeToken)))) {
-    throw new Error("browser bridge state contains invalid bounded tokens");
-  }
-  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("browser bridge state contains an invalid port");
-  return { port };
+  const extensionPath = browserExtensionPathForRuntime({ stateRoot: state.paths.stateRoot });
+  const port = readBrowserPairingPort(state.paths.stateRoot);
+  if (port === null) throw new Error("browser bridge is not initialized; start machine-mcp once, then run this command again");
+  const pairingUrl = `http://127.0.0.1:${port}/pair`;
+  const health = await readBrowserHealth(`http://127.0.0.1:${port}/healthz`);
+  return { extensionPath, pairingUrl, port, stateRoot: state.paths.stateRoot, result: browserStatusResult(health, extensionPath, pairingUrl) };
 }
 
 function readBrowserHealth(healthUrl) {

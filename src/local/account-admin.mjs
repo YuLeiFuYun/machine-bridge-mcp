@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ADMIN_AUTH_SCHEME, adminAuthTranscript } from "../shared/admin-auth.mjs";
 import { ACCOUNT_ROLES, normalizeAccountRole } from "./account-access.mjs";
+import { boundedRemoteAdminMessage, isReadOnlyAdminMethod, readAdminJsonResponse, validateAdminResponseStatus } from "./account-admin-response.mjs";
 import { encodeDeviceSessionCertificate, signWithDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
 import { BridgeError } from "./errors.mjs";
 
 const REQUEST_TIMEOUT_MS = 15_000;
-const MAX_ADMIN_RESPONSE_BYTES = 1024 * 1024;
 
 export function generateAccountPassword() {
   return `account_password_${randomBytes(32).toString("base64url")}`;
@@ -79,85 +79,33 @@ export class AccountAdminClient {
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: body === undefined ? undefined : serializedBody,
+      redirect: "error",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       cache: "no-store",
     }).catch((error) => {
-      throw new BridgeError("network_error", "account administration request failed", { cause: error, retryable: true });
+      const retryable = isReadOnlyAdminMethod(method);
+      throw new BridgeError("network_error", "account administration request failed", {
+        cause: error,
+        retryable,
+        ...(retryable ? {} : { details: { request_delivery: "unknown", effect_settlement: "unknown" } }),
+      });
     });
+    await validateAdminResponseStatus(response, method, pathname);
     if (response.status === 204) return { removed: true };
-    const payload = await readAdminJsonResponse(response);
+    const payload = await readAdminJsonResponse(response, method);
     if (!response.ok) {
-      const message = typeof payload.message === "string" ? payload.message : typeof payload.error === "string" ? payload.error : `account administration failed (${response.status})`;
+      const message = boundedRemoteAdminMessage(payload, response.status);
+      if (response.status >= 500) {
+        const retryable = isReadOnlyAdminMethod(method);
+        throw new BridgeError("unavailable", message, {
+          retryable,
+          ...(retryable ? {} : { details: { request_delivery: "sent", effect_settlement: "unknown" } }),
+        });
+      }
       throw new BridgeError(response.status === 404 ? "not_found" : response.status === 409 ? "conflict" : response.status === 401 ? "authentication_failed" : "invalid_request", message);
     }
     return payload;
   }
-}
-
-
-async function readAdminJsonResponse(response) {
-  const declared = Number(response.headers.get("content-length") || "0");
-  if (Number.isFinite(declared) && declared > MAX_ADMIN_RESPONSE_BYTES) {
-    await cancelResponseBody(response.body);
-    throw new BridgeError("invalid_response", "account administration response exceeded the size limit");
-  }
-  if (!response.body) {
-    if (response.ok) throw new BridgeError("invalid_response", "account administration response was empty");
-    return {};
-  }
-  const reader = response.body.getReader();
-  const chunks = [];
-  let bytes = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      bytes += value.byteLength;
-      if (bytes > MAX_ADMIN_RESPONSE_BYTES) {
-        await cancelReader(reader);
-        throw new BridgeError("invalid_response", "account administration response exceeded the size limit");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  let payload;
-  try {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(concatBytes(chunks, bytes));
-    payload = JSON.parse(text);
-  } catch (cause) {
-    if (response.ok) {
-      throw new BridgeError("invalid_response", "account administration response was not valid JSON", { cause });
-    }
-    return {};
-  }
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    if (response.ok) throw new BridgeError("invalid_response", "account administration response was not a JSON object");
-    return {};
-  }
-  return payload;
-}
-
-async function cancelResponseBody(body) {
-  if (!body) return;
-  const reader = body.getReader();
-  try { await cancelReader(reader); } finally { reader.releaseLock(); }
-}
-
-async function cancelReader(reader) {
-  try { await reader.cancel("response size limit reached"); } catch { /* cleanup only */ }
-}
-
-function concatBytes(chunks, bytes) {
-  const output = new Uint8Array(bytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return output;
 }
 
 export function accountAdminRequestHeaders({

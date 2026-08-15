@@ -10,9 +10,10 @@ export async function writeEarliestRuntimeAlarm(input: {
   now: number;
   onError: (error: unknown) => void;
   onMutation?: (action: "set" | "delete" | "noop") => void;
+  currentAlarm?: number | null;
 }): Promise<void> {
   try {
-    const current = await input.storage.getAlarm();
+    const current = input.currentAlarm === undefined ? await input.storage.getAlarm() : input.currentAlarm;
     if (!Number.isFinite(input.nextDeadline)) {
       if (current === null) {
         input.onMutation?.("noop");
@@ -30,6 +31,7 @@ export async function writeEarliestRuntimeAlarm(input: {
     await input.storage.setAlarm(target);
     input.onMutation?.("set");
   } catch (error) {
-    try { input.onError(error); } catch {}
+    try { input.onError(error); }
+    catch { /* Alarm persistence already failed; observer failure cannot repair that storage outcome. */ }
   }
 }

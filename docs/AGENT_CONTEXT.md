@@ -14,7 +14,7 @@ This approximates a local coding agent without pretending that the MCP server ow
 - `list_local_commands` returns effective registered commands.
 - `run_local_command` executes a registered direct-argv command when policy permits.
 
-Both stdio and remote Worker connection initialization attempt `session_bootstrap`. Its instruction text is appended to the MCP `initialize` result. Because a host may reuse one MCP connection across conversations, the explicit tool and per-task `resolve_task_capabilities` call remain necessary to refresh and reapply instructions reliably. A host may return the previous `refresh.fingerprint` as `known_refresh_fingerprint`; a match suppresses only unchanged static instruction metadata, not the fresh task-specific scan or routing. Local stdio `server_info.observability.capability_routing` and both transports’ `project_overview.capabilityRouting` report whether those calls reached the local runtime, their counts and timestamps, loaded-source flags, selected capability metadata, primary route, ambiguity class, score gap, and a runtime-keyed HMAC task fingerprint. Raw task text is not retained.
+MCP `2026-07-28` `server/discover` is intentionally static and does not call the daemon bootstrap path. Every executable request carries current protocol metadata, and clients use the explicit `session_bootstrap` or capability-resolution tools when refreshed local context is needed; `initialize` and protocol-session state are not served. Because a host may reuse one transport connection across conversations, call `resolve_task_capabilities` when the current task depends on refreshed project instructions, local skills/registered commands, or application/browser route selection. Straightforward file, Git, or shell work can use the already exposed tools directly without adding a resolver round trip. For shallow workspace identity/inventory without loading skills, commands, instruction bodies, or exact tool membership, use `project_overview` with `detail: "summary"`; reserve `agent_context` and `resolve_task_capabilities` for tasks that actually require those heavier context surfaces. A host may return the previous `refresh.fingerprint` as `known_refresh_fingerprint`; a match suppresses only unchanged static instruction metadata, not the fresh task-specific scan or routing when resolution is requested. Local stdio `server_info.observability.capability_routing` and both transports’ `project_overview.capabilityRouting` report whether those calls reached the local runtime, their counts and timestamps, loaded-source flags, selected capability metadata, primary route, ambiguity class, score gap, and a runtime-keyed HMAC task fingerprint. Raw task text is not retained.
 
 ## Useful defaults without configuration
 
@@ -106,11 +106,11 @@ chmod 600 ~/.config/machine-bridge-mcp/agent.json ~/.config/machine-bridge-mcp/M
 
 The file must be a non-empty, regular, non-symbolic-link UTF-8 file and is bounded by the hard instruction-file limit. Relative values are resolved from the user's home directory. Keep credentials, tokens, private keys, and unrelated personal data out of instruction files.
 
-Changes are discovered on the next `session_bootstrap`, `agent_context`, or `resolve_task_capabilities` call and do not require daemon restart. Because an MCP host may reuse a connection and may not call those tools automatically, start a new conversation or reconnect the MCP client when revised global instructions must be present in initialization context from the beginning.
+Changes are discovered on the next `session_bootstrap`, `agent_context`, or `resolve_task_capabilities` call and do not require daemon restart. `server/discover` does not load local project instructions, so starting a new conversation or reconnecting is not a substitute for an explicit refresh call.
 
 `model_instructions_file`, `builtin_instructions`, and `automatic_project_context` are global-only. Project manifests cannot set or override them. The global model file and the two boolean controls are honored under workspace-confined profiles; other user-manifest fields that would widen filesystem/skill/command scope remain ignored there.
 
-In remote mode, the selected instruction text and enabled automatic project facts necessarily traverse the user's Cloudflare Worker and authorized MCP host as part of initialization. Do not put credentials or private records in instructions.
+In remote mode, selected instruction text and enabled automatic project facts necessarily traverse the user's Cloudflare Worker and authorized MCP host when an explicit context/bootstrap call returns them. Do not put credentials or private records in instructions.
 
 ## Instruction precedence
 
@@ -215,7 +215,7 @@ Directly invoking `npm run`, `pnpm run`, `yarn run`, or `bun run` does not make 
 ## Recommended host workflow
 
 1. consume MCP initialization instructions, including the built-in baseline and automatic project facts;
-2. call `resolve_task_capabilities` with the complete user task and target path;
+2. when the task needs refreshed instructions, local skill/command discovery, or application/browser route selection, call `resolve_task_capabilities` with the complete user task and target path; otherwise use the already exposed direct tool;
 3. apply explicit global/project instructions over lower-precedence defaults;
 4. follow the selected skill only after checking relevance;
 5. use the returned route set as advice: prefer registered commands for stable workflows, direct Bash for efficient ad hoc composition, process sessions for interactive work, and managed jobs for disconnect-surviving multi-step work;

@@ -2,11 +2,11 @@ import serverMetadata from "../shared/server-metadata.json" with { type: "json" 
 import { serverImplementation } from "../shared/mcp-protocol.mjs";
 
 export const SERVER_NAME = String(serverMetadata.name);
-export const MCP_MODERN_PROTOCOL_VERSIONS = Object.freeze(
-  serverMetadata.modernProtocolVersions.map((value) => String(value)),
+export const MCP_PROTOCOL_VERSIONS = Object.freeze(
+  serverMetadata.supportedProtocolVersions.map((value) => String(value)),
 );
-export const MCP_LEGACY_PROTOCOL_VERSIONS = Object.freeze(
-  serverMetadata.legacyProtocolVersions.map((value) => String(value)),
+export const MCP_INITIALIZATION_COMPATIBILITY_VERSIONS = Object.freeze(
+  serverMetadata.remoteHttpInitializationCompatibilityVersions.map((value) => String(value)),
 );
 export const MCP_INSTRUCTIONS = serverMetadata.instructions.map((value) => String(value)).join("\n");
 export const MCP_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: false }) });

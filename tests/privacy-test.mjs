@@ -1,19 +1,20 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runStateRedactionPrivacyTest } from "./state-redaction-test.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const temp = mkdtempSync(join(tmpdir(), "mbm-privacy-test-"));
 const privateName = ["private", "alias+fixture"].join(".");
 try {
+  runStateRedactionPrivacyTest();
   mkdirSync(join(temp, "scripts"), { recursive: true });
   mkdirSync(join(temp, "src", "local"), { recursive: true });
-  cpSync(join(root, "scripts", "privacy-check.mjs"), join(temp, "scripts", "privacy-check.mjs"));
-  for (const name of ["secure-file.mjs", "trusted-git-executable.mjs", "trusted-executable.mjs", "errors.mjs"]) {
-    cpSync(join(root, "src", "local", name), join(temp, "src", "local", name));
-  }
+  const privacyCheckerSource = join(root, "scripts", "privacy-check.mjs");
+  cpSync(privacyCheckerSource, join(temp, "scripts", "privacy-check.mjs"));
+  copyRelativeModuleClosure(privacyCheckerSource);
   writeFileSync(join(temp, ".privacy-denylist"), `${privateName}\n`, { mode: 0o600 });
   git(["init", "-q"]);
   git(["config", "user.name", "Privacy Test"]);
@@ -56,7 +57,7 @@ try {
   rmSync(binary, { force: true });
 
   const safeNpmrc = join(temp, ".npmrc");
-  writeFileSync(safeNpmrc, "engine-strict=true\n");
+  writeFileSync(safeNpmrc, "engine-strict=true\nsave-exact=true\n");
   const safeNpmrcResult = runCheck();
   assert(safeNpmrcResult.status === 0, `safe tracked .npmrc was rejected: ${safeNpmrcResult.stderr}`);
   const npmToken = ["npm", "A".repeat(36)].join("_");
@@ -94,6 +95,16 @@ try {
   git(["add", "scripts/privacy-check.mjs", "README.md"]);
   const publicAutomationEmail = ["support", "github.com"].join("@");
   git(["commit", "-q", "-m", "safe baseline", "-m", `Signed-off-by: dependabot[bot] <${publicAutomationEmail}>`]);
+  const workingTreeDeletion = join(temp, "removed-publication-file.txt");
+  writeFileSync(workingTreeDeletion, "neutral tracked content\n");
+  git(["add", "removed-publication-file.txt"]);
+  git(["commit", "-q", "-m", "tracked deletion fixture"]);
+  rmSync(workingTreeDeletion, { force: true });
+  const deletedWorkingTreeResult = runCheck();
+  assert(deletedWorkingTreeResult.status === 0,
+    `unstaged tracked deletion was misclassified as an unreadable publication file: ${deletedWorkingTreeResult.stderr}`);
+  git(["add", "-u"]);
+  git(["commit", "-q", "-m", "remove tracked deletion fixture"]);
   const safeHistory = runCheck({ args: ["--history"] });
   assert(safeHistory.status === 0, `public Dependabot trailer was rejected by history scanning: ${safeHistory.stderr}`);
   const historicalToken = ["npm", "H".repeat(36)].join("_");
@@ -118,6 +129,26 @@ try {
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
+
+function copyRelativeModuleClosure(entry, seen = new Set()) {
+  const absolute = resolve(entry);
+  if (seen.has(absolute)) return;
+  seen.add(absolute);
+  const source = readFileSync(absolute, "utf8");
+  const importPattern = /\b(?:import|export)\s+(?:[^\n"']*?\s+from\s+)?["'](\.{1,2}\/[^"']+)["']/g;
+  for (const match of source.matchAll(importPattern)) {
+    const dependency = resolve(dirname(absolute), match[1]);
+    const repositoryRelative = relative(root, dependency);
+    if (!repositoryRelative || repositoryRelative === ".." || repositoryRelative.startsWith(`..${sep}`)) {
+      throw new Error("privacy fixture import escaped the repository");
+    }
+    const destination = join(temp, repositoryRelative);
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(dependency, destination);
+    copyRelativeModuleClosure(dependency, seen);
+  }
+}
+
 
 function assertSensitiveContent(name, value, rule) {
   const file = join(temp, name);

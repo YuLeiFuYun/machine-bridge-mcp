@@ -65,7 +65,15 @@ export class RelayHeartbeatMonitor {
     this.maxEventLoopLagMs = Math.max(this.maxEventLoopLagMs, eventLoopLagMs);
 
     if (eventLoopLagMs >= this.stallThresholdMs) {
-      this.observeEventLoopStall(now, eventLoopLagMs);
+      const silentForMs = Math.max(0, now - this.lastInboundAt());
+      const staleAfterLongPause = eventLoopLagMs > this.timeoutMs + this.recoveryGraceMs
+        && silentForMs > this.timeoutMs;
+      this.observeEventLoopStall(now, eventLoopLagMs, !staleAfterLongPause);
+      if (staleAfterLongPause) {
+        this.recoveryUntil = 0;
+        this.onTimeout({ silentForMs, eventLoopLagMs });
+        return;
+      }
       this.recoveryUntil = Math.max(this.recoveryUntil, now + this.recoveryGraceMs);
       this.sendHeartbeat(now);
       return;
@@ -83,17 +91,22 @@ export class RelayHeartbeatMonitor {
     this.sendHeartbeat(now);
   }
 
-  observeEventLoopStall(now, lagMs) {
+  observeEventLoopStall(now, lagMs, relayDisconnectDeferred = true) {
     this.eventLoopStallCount += 1;
     this.lastEventLoopStallAt = now;
     if (this.lastEventLoopStallWarnAt && now - this.lastEventLoopStallWarnAt < this.timeoutMs) return;
     this.lastEventLoopStallWarnAt = now;
-    this.logger.warn?.("local event loop stalled; relay liveness decision deferred", {
-      event: "runtime.event_loop.stall",
-      lag_ms: lagMs,
-      recovery_grace_ms: this.recoveryGraceMs,
-      relay_disconnect_deferred: true,
-    });
+    this.logger.warn?.(
+      relayDisconnectDeferred
+        ? "local event loop stalled; relay liveness decision deferred"
+        : "local event loop resumed after a long pause; reconnecting stale relay transport",
+      {
+        event: "runtime.event_loop.stall",
+        lag_ms: lagMs,
+        recovery_grace_ms: this.recoveryGraceMs,
+        relay_disconnect_deferred: relayDisconnectDeferred,
+      },
+    );
   }
 }
 

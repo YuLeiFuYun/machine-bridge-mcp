@@ -1,9 +1,10 @@
 // @ts-check
-
 import { randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { BridgeError } from "./errors.mjs";
 import { assertCallCapacity, callCapacityConfig, callCapacitySnapshot } from "./call-capacity.mjs";
+import { bindCallPrincipal, callIdsForAuthority } from "./call-authority.mjs";
+import { assertCallRegistryOpen, cancelAllCallsAndWait, notifyCallRegistryChanged } from "./call-registry-drain.mjs";
 
 /** @typedef {ReturnType<typeof setTimeout>} TimerHandle */
 /**
@@ -16,6 +17,8 @@ import { assertCallCapacity, callCapacityConfig, callCapacitySnapshot } from "./
  *   controller: AbortController,
  *   cancelReason: string,
  *   timer: TimerHandle | null,
+ *   owner_kind?: string, owner_account_id?: string, owner_account_version?: number,
+ *   owner_client_id?: string, owner_family_id?: string,
  * }} CallRecord
  */
 /**
@@ -49,6 +52,7 @@ export class CallRegistry {
 
   /** @param {OpenCallInput} [input] */
   open({ callId = "", tool = "", origin = "local", timeoutMs = 0 } = {}) {
+    assertCallRegistryOpen(this);
     const id = String(callId || `call_${randomBytes(16).toString("hex")}`);
     const toolName = String(tool || "");
     if (this.calls.has(id)) throw new BridgeError("conflict", "duplicate in-flight call id");
@@ -99,7 +103,7 @@ export class CallRegistry {
     if (!record) return false;
     if (record.timer) this.scheduler.clearTimeout(record.timer);
     this.calls.delete(id);
-    this.onFinish(record);
+    try { this.onFinish(record); } finally { notifyCallRegistryChanged(this); }
     return true;
   }
 
@@ -120,12 +124,20 @@ export class CallRegistry {
     return cancelled;
   }
 
-  /** @param {unknown} [reason] */
-  cancelAll(reason = "runtime stopped") {
-    for (const id of [...this.calls.keys()]) {
-      this.cancel(id, reason);
-      this.finish(id);
-    }
+  /** @param {unknown} callId @param {unknown} principal */ bindPrincipal(callId, principal) {
+    return bindCallPrincipal(this.calls.get(String(callId || "")), principal);
+  }
+
+  /** @param {unknown} revocation */ cancelAuthority(revocation) {
+    let cancelled = 0;
+    for (const id of callIdsForAuthority(this.calls.values(), revocation))
+      if (this.cancel(id, "authority revoked", "authorization_denied")) cancelled += 1;
+    return cancelled;
+  }
+
+  /** @param {unknown} [reason] @param {number} [waitMs] */
+  async cancelAllAndWait(reason = "runtime stopped", waitMs = 5_000) {
+    await cancelAllCallsAndWait(this, reason, waitMs);
   }
 
   /** @param {unknown} callId */
@@ -154,7 +166,7 @@ export class CallRegistry {
   snapshot() {
     const now = this.now();
     /** @type {Record<string, number>} */
-    const byOrigin = {};
+    const byOrigin = Object.create(null);
     let oldestMs = 0;
     for (const call of this.calls.values()) {
       byOrigin[call.origin] = (byOrigin[call.origin] || 0) + 1;

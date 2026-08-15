@@ -1,16 +1,18 @@
 import { classifyOperationalError } from "./log.mjs";
 import { buildExecutionRouting } from "./execution-routing.mjs";
 import { policyAllowsTool } from "./policy.mjs";
-
+const APPLICATION_TOOLS = ["list_local_applications", "open_local_application", "inspect_local_application", "operate_local_application"];
 export async function sessionBootstrap({
   agentContextManager,
   appAutomationManager,
   capabilityObserver,
   policy,
+  availableTools = null,
 }, args = {}, context = {}) {
   const bootstrap = await agentContextManager.sessionBootstrap(args, context);
-  const applicationAllowed = policyAllowsTool(policy, "list_local_applications");
-  const browserAllowed = policyAllowsTool(policy, "browser_status");
+  const availableNames = availableToolSet(availableTools);
+  const applicationAllowed = availableNames ? availableNames.has("list_local_applications") : policyAllowsTool(policy, "list_local_applications");
+  const browserAllowed = availableNames ? availableNames.has("browser_status") : policyAllowsTool(policy, "browser_status");
   bootstrap.local_automation = {
     applications: applicationAllowed ? appAutomationManager.capabilities() : null,
     browser: browserAllowed ? {
@@ -28,11 +30,13 @@ export async function resolveTaskCapabilities({
   appAutomationManager,
   capabilityObserver,
   policy,
+  availableTools = null,
 }, args = {}, context = {}) {
   const result = await agentContextManager.resolveTaskCapabilities(args, context);
   const task = String(args.task || "");
-  const applicationAllowed = policyAllowsTool(policy, "list_local_applications");
-  const browserAllowed = policyAllowsTool(policy, "browser_status");
+  const availableNames = availableToolSet(availableTools);
+  const applicationAllowed = availableNames ? availableNames.has("list_local_applications") : policyAllowsTool(policy, "list_local_applications");
+  const browserAllowed = availableNames ? availableNames.has("browser_status") : policyAllowsTool(policy, "browser_status");
   if (applicationAllowed) {
     let applications;
     try {
@@ -55,22 +59,21 @@ export async function resolveTaskCapabilities({
       .map(({ application, score }) => ({ ...application, score }));
   } else {
     result.application_matches = [];
-    result.application_discovery = { available: false, warning_count: 0, truncated: false, reason: "effective_policy" };
+    result.application_discovery = {
+      available: false, warning_count: 0, truncated: false,
+      reason: availableNames ? "effective_authority" : "effective_policy",
+    };
   }
   if (result.application_matches.length) {
-    result.recommended_tools = [...new Set([
-      ...result.recommended_tools,
-      "list_local_applications",
-      "open_local_application",
-      "inspect_local_application",
-      "operate_local_application",
-    ])];
+    const applicationTools = APPLICATION_TOOLS.filter((tool) => !availableNames || availableNames.has(tool));
+    result.recommended_tools = [...new Set([...result.recommended_tools, ...applicationTools])];
   }
   result.browser_backend = browserAllowed
     ? { tool: "browser_status", existing_profile: true, extension_bridge: true }
     : null;
   const routing = buildExecutionRouting(task, {
     policy,
+    availableTools,
     seedTools: result.recommended_tools,
     commandRelevant: (result.command_matches?.[0]?.score || 0) >= 3,
     skillRelevant: (result.skill_matches?.[0]?.score || 0) >= 3,
@@ -79,10 +82,12 @@ export async function resolveTaskCapabilities({
   });
   result.execution_routing = routing;
   result.recommended_tools = routing.recommended_tools;
-  result.routing_observability = "Call server_info or project_overview to verify that bootstrap and task capability resolution reached the local runtime. Routing is advisory and does not restrict direct shell or any other tool allowed by the effective policy.";
+  result.routing_observability = "Call server_info or project_overview to verify that bootstrap and task capability resolution reached the local runtime. Routing is advisory and cannot expand the effective authority; direct shell is available only when that authority exposes it.";
   capabilityObserver.recordResolution(task, result);
   return result;
 }
+
+function availableToolSet(value) { if (value === null || value === undefined) return null; if (!Array.isArray(value) && !(value instanceof Set)) throw new TypeError("availableTools must be an array or set"); return new Set([...value].map((tool) => String(tool || "")).filter(Boolean)); }
 
 function applicationMatchScore(task, application) {
   const name = String(application.name || "").toLowerCase();

@@ -2,29 +2,43 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultStateRoot, expandHome, selectedWorkspace } from "../src/local/state.mjs";
 import { ensureOwnerOnlyDirectorySync } from "../src/local/secure-file.mjs";
-import { createCandidateRuntimePrefix, pruneInactiveCandidateRuntimes } from "./candidate-runtime-store.mjs";
+import { createCandidateRuntimePrefix, isNonBlockingCandidateRuntimeCleanupError, pruneInactiveCandidateRuntimes } from "./candidate-runtime-store.mjs";
 import { ACTIVATION_SCHEMA_VERSION, writePrereleaseActivation } from "./prerelease-activation.mjs";
 import { verifyTarball } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { discoverForegroundDaemonRecovery } from "./foreground-daemon-recovery.mjs";
-import { persistentActivationSpawnOptions, persistentCandidateFailureMessage } from "./persistent-activation-process.mjs";
+import { persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "./persistent-activation-process.mjs";
 import { assertCandidateMatchesCurrentSource, validateCandidateManifest } from "./release-candidate-manifest.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
+import { createHardenedNpmSession, settleHardenedNpmSession } from "./hardened-npm-session.mjs";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { withReleaseRuntimeLock } from "../src/local/release-runtime-lock.mjs";
+import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
+import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
+import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
+import { resolveNpmCli } from "../src/local/npm-cli.mjs";
+import { publishReleaseBrowserExtension } from "./release-browser-extension-store.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateDirectory = join(root, ".release-candidate");
 const manifestPath = join(candidateDirectory, "manifest.json");
 const foregroundInstallPrefix = join(candidateDirectory, "runtime");
-const npmCli = process.env.npm_execpath;
-
-if (!npmCli) fail("candidate startup must run through npm so npm_execpath is available");
+const installOnly = process.argv.includes("--install-only");
+const activateService = process.argv.includes("--activate-service");
+const allowWorkerDeploy = process.argv.includes("--allow-worker-deploy");
+const lifecycleNpmCli = process.env.npm_execpath;
+let sourceNpmCli = lifecycleNpmCli;
+let npmCli = "";
+let npmSession = null;
 
 try {
+  if (installOnly) sourceNpmCli = resolveNpmCli({ allowLifecycleNpmCli: false, allowFallbackLocations: false });
+  if (!sourceNpmCli) throw new Error("candidate live startup must run through npm so npm_execpath is available");
   const currentPackage = readJson(join(root, "package.json"), "current package");
   const manifest = validateCandidateManifest(
     readJson(manifestPath, "release candidate manifest"),
@@ -33,57 +47,51 @@ try {
   assertCandidateMatchesCurrentSource(manifest, {
     packageName: currentPackage.name,
     packageVersion: currentPackage.version,
-    promotionDigest: computePromotionContentDigest(root, { npmCli }),
+    promotionDigest: computePromotionContentDigest(root, { npmCli: sourceNpmCli }),
   });
   const tarball = join(candidateDirectory, manifest.filename);
   verifyTarball(tarball, manifest);
-
-  const npmVersion = runNpm(["--version"], root).stdout.trim();
-  if (Number(npmVersion.split(".")[0]) < 12) {
-    throw new Error(`candidate startup requires npm 12 or newer; current ${npmVersion}`);
-  }
-
-  const activateService = process.argv.includes("--activate-service");
-  const stateRoot = resolve(expandHome(argumentValue("--state-dir") || defaultStateRoot()));
-  const installPrefix = activateService
-    ? createCandidateRuntimePrefix({ stateRoot, version: manifest.package_version, shasum: manifest.shasum })
-    : foregroundInstallPrefix;
-  if (!activateService) rmSync(installPrefix, { recursive: true, force: true });
-  ensureOwnerOnlyDirectorySync(installPrefix);
-  runNpm([
-    "install",
-    "--global",
-    "--prefix", installPrefix,
-    "--omit=optional",
-    "--allow-scripts=esbuild,workerd,sharp,fsevents",
-    tarball,
-  ], root);
-
-  const globalRoot = runNpm(["root", "--global", "--prefix", installPrefix], root).stdout.trim();
-  const installedPackage = join(globalRoot, manifest.package_name);
-  const installed = readJson(join(installedPackage, "package.json"), "installed candidate package");
-  if (installed.version !== manifest.package_version) {
-    throw new Error(`installed candidate version ${installed.version} does not match ${manifest.package_version}`);
-  }
-
-  console.log(`Verified candidate tarball: ${manifest.filename} (${manifest.shasum})`);
-  console.log(`Installed isolated candidate: ${installedPackage}`);
-  const installOnly = process.argv.includes("--install-only");
-  const allowWorkerDeploy = process.argv.includes("--allow-worker-deploy");
-  if (installOnly) {
-    console.log("Candidate installation check passed; startup was skipped by --install-only.");
-    process.exit(0);
-  }
-
-  if (!allowWorkerDeploy) {
+  if (!installOnly && !allowWorkerDeploy) {
     throw new Error("candidate activation may update the configured same-name Worker; rerun with --allow-worker-deploy to authorize that live candidate deployment");
   }
+  const persistentActivation = activateService && !installOnly;
+  const globalPrefix = persistentActivation
+    ? resolveNpmGlobalPrefix(lifecycleNpmCli, { cwd: root, env: process.env })
+    : "";
+  npmSession = await createHardenedNpmSession();
+  npmCli = npmSession.cli;
 
+  const npmVersion = runNpm(["--version"], root).stdout.trim();
+  if (npmVersion !== npmSession.version) {
+    throw new Error(`candidate startup hardened npm reported ${npmVersion || "no version"}, expected ${npmSession.version}`);
+  }
+
+  const stateRoot = resolve(expandHome(argumentValue("--state-dir") || defaultStateRoot()));
   const forwardedArgs = process.argv.slice(2).filter((value) => ![
     "--install-only", "--allow-worker-deploy", "--activate-service",
   ].includes(value));
-  if (activateService) {
-    activatePersistentCandidate({ manifest, installedPackage, installPrefix, stateRoot, forwardedArgs });
+  if (persistentActivation) {
+    await withReleaseRuntimeLock(stateRoot, async () => {
+      const installPrefix = createCandidateRuntimePrefix({ stateRoot, version: manifest.package_version, shasum: manifest.shasum });
+      const installedPackage = installCandidateRuntime({ installPrefix, manifest, tarball });
+      const previousInstallation = persistentActivation
+        ? currentGlobalInstallation(manifest.package_name, globalPrefix, npmCli)
+        : null;
+      disposeNpmSession();
+      activatePersistentCandidate({
+        manifest, installedPackage, installPrefix, stateRoot, forwardedArgs, previousInstallation,
+      });
+    });
+    process.exit(0);
+  }
+
+  const installPrefix = foregroundInstallPrefix;
+  rmSync(installPrefix, { recursive: true, force: true });
+  const installedPackage = installCandidateRuntime({ installPrefix, manifest, tarball });
+  disposeNpmSession();
+  if (installOnly) {
+    rmSync(installPrefix, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    console.log("Candidate installation check passed; temporary runtime was removed and startup was skipped by --install-only.");
     process.exit(0);
   }
 
@@ -92,7 +100,7 @@ try {
   console.log("Starting the exact candidate in the foreground. Leave this process running while the coding agent verifies the Worker, relay, and local runtime end to end.");
   const child = spawn(process.execPath, [cli, ...forwardedArgs], {
     cwd: root,
-    env: process.env,
+    env: nestedNpmEnvironment(process.env),
     stdio: "inherit",
     windowsHide: true,
   });
@@ -113,19 +121,47 @@ try {
     process.exitCode = code ?? 1;
   });
 } catch (error) {
-  fail(error?.message || error);
+  const settled = settleNpmSession(error);
+  fail(settled?.message || settled);
 }
 
-function activatePersistentCandidate({ manifest, installedPackage, installPrefix, stateRoot, forwardedArgs }) {
+function installCandidateRuntime({ installPrefix, manifest, tarball }) {
+  ensureOwnerOnlyDirectorySync(installPrefix);
+  runNpm([
+    "install",
+    "--dry-run=false",
+    "--workspaces=false",
+    "--ignore-scripts=false",
+    "--global",
+    "--prefix", installPrefix,
+    "--omit=optional",
+    "--include=prod",
+    "--package-lock-only=false",
+    "--allow-scripts=esbuild,workerd,sharp,fsevents",
+    tarball,
+  ], root);
+  const globalRoot = runNpm(["root", "--json=false", "--parseable=false", "--workspaces=false", "--global", "--prefix", installPrefix], root).stdout.trim();
+  const installedPackage = join(globalRoot, manifest.package_name);
+  const installed = readJson(join(installedPackage, "package.json"), "installed candidate package");
+  if (installed.version !== manifest.package_version) {
+    throw new Error(`installed candidate version ${installed.version} does not match ${manifest.package_version}`);
+  }
+  console.log(`Verified candidate tarball: ${manifest.filename} (${manifest.shasum})`);
+  console.log(`Installed isolated candidate: ${installedPackage}`);
+  return installedPackage;
+}
+
+function activatePersistentCandidate({
+  manifest, installedPackage, installPrefix, stateRoot, forwardedArgs, previousInstallation,
+}) {
   const releaseVersion = parseReleaseVersion(manifest.package_version);
   const cli = join(installedPackage, "bin", "machine-mcp.mjs");
   const args = ["activate", ...withoutManagedFlags(forwardedArgs), "--state-dir", stateRoot, "--json"];
-  const previous = currentGlobalInstallation(manifest.package_name);
   console.log("Activating the exact prerelease as the persistent login daemon. Portable-root startup does not prompt; a separately provisioned Secure Enclave broker may request one user-presence operation.");
   const result = spawnSync(
     process.execPath,
     [cli, ...args],
-    persistentActivationSpawnOptions({ cwd: root, env: process.env }),
+    persistentActivationSpawnOptions({ cwd: root, env: nestedNpmEnvironment(process.env) }),
   );
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -147,7 +183,30 @@ function activatePersistentCandidate({ manifest, installedPackage, installPrefix
   ) {
     throw new Error("persistent candidate activation did not converge on the exact candidate version");
   }
+  const recovery = validateActivationRecoveryPayload(activation);
 
+  let publishedBrowserExtension;
+  try {
+    publishedBrowserExtension = publishReleaseBrowserExtension({
+      stateRoot,
+      sourceDirectory: join(installedPackage, "browser-extension"),
+      expectedVersion: manifest.package_version,
+    });
+  } catch (error) {
+    throw new Error(
+      "persistent candidate activation converged, but the stable browser extension could not be published; the candidate Worker/service is live and must be inspected before retrying",
+      { cause: error },
+    );
+  }
+
+  let removedRuntimes = [];
+  let runtimeCleanupWarning = "";
+  try {
+    removedRuntimes = pruneInactiveCandidateRuntimes({ stateRoot, activePrefix: installPrefix });
+  } catch (error) {
+    if (!isNonBlockingCandidateRuntimeCleanupError(error)) throw error;
+    runtimeCleanupWarning = boundedCleanupWarning(error);
+  }
   let recordPath = "";
   if (releaseVersion.prerelease) {
     recordPath = writePrereleaseActivation({
@@ -161,29 +220,36 @@ function activatePersistentCandidate({ manifest, installedPackage, installPrefix
       activated_at: new Date().toISOString(),
       workspace_hash: workspaceHash(activation.workspace),
       runtime_entry: cli,
-      ...(previous ? { global_package_rollback_baseline: previous } : {}),
+      ...(recovery.recovered ? {
+        activation_recovered: true,
+        activation_recovery_reason: recovery.reason,
+        activation_recovery_detail: recovery.detail,
+      } : {}),
+      ...(previousInstallation ? { global_package_rollback_baseline: previousInstallation } : {}),
     }, stateRoot);
   }
-  const removedRuntimes = pruneInactiveCandidateRuntimes({ stateRoot, activePrefix: installPrefix });
+  if (recovery.recovered) {
+    console.warn(`Persistent activation used verified candidate-service recovery (${recovery.reason}): ${recovery.detail}`);
+  }
   console.log(`Persistent release candidate activated: ${manifest.package_version}`);
+  console.log(`Stable browser extension published: ${publishedBrowserExtension.path}`);
   if (recordPath) console.log(`Activation record: ${recordPath}`);
   if (removedRuntimes.length) console.log(`Removed ${removedRuntimes.length} inactive candidate runtime(s).`);
+  if (runtimeCleanupWarning) console.warn(`Candidate activation succeeded but inactive runtime cleanup was incomplete: ${runtimeCleanupWarning}`);
   console.log("The Worker and login daemon now run the exact candidate. The terminal may close; the coding agent should verify the live deployment through Machine Bridge.");
-  if (previous?.version) console.log(`Global package rollback baseline retained: ${previous.version}.`);
+  if (previousInstallation?.version) {
+    console.log(`Global package rollback baseline retained: ${previousInstallation.version}.`);
+  }
 }
 
 
-function currentGlobalInstallation(packageName) {
-  try {
-    const globalRoot = runNpm(["root", "--global"], root).stdout.trim();
-    const packageRoot = join(globalRoot, packageName);
-    const packagePath = join(packageRoot, "package.json");
-    if (!existsSync(packagePath)) return null;
-    const pkg = readJson(packagePath, "globally installed package");
-    return { version: String(pkg.version || ""), entry: join(packageRoot, "bin", "machine-mcp.mjs") };
-  } catch {
-    return null;
-  }
+function currentGlobalInstallation(packageName, globalPrefix, npmExecutable) {
+  const globalRoot = runNpm(
+    ["root", "--json=false", "--parseable=false", "--workspaces=false", "--global", "--prefix", globalPrefix],
+    root,
+    npmExecutable,
+  ).stdout.trim();
+  return inspectGlobalPackageInstallation(globalRoot, packageName);
 }
 
 function withoutManagedFlags(args) {
@@ -217,18 +283,34 @@ function workspaceHash(workspace) {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
 
-function runNpm(args, cwd) {
-  const result = spawnSync(process.execPath, [npmCli, ...args], {
+function runNpm(args, cwd, npmExecutable = npmCli) {
+  const cli = String(npmExecutable || "");
+  if (!cli) throw new Error("nested npm CLI is unavailable");
+  const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: process.env,
+    env: nestedNpmEnvironment(process.env),
     timeout: 300_000,
     killSignal: "SIGKILL",
     windowsHide: true,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`npm ${args[0]} failed: ${result.stderr || result.stdout}`);
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure("npm", args, result));
   return result;
+}
+
+function disposeNpmSession() {
+  const error = settleNpmSession();
+  if (error) throw error;
+}
+
+function settleNpmSession(primaryError = null) {
+  const session = npmSession;
+  npmSession = null;
+  return settleHardenedNpmSession(session, primaryError, "release candidate failed and hardened npm temporary cleanup was incomplete");
+}
+
+function boundedCleanupWarning(error) {
+  return releaseDiagnostic(error?.message || error || "candidate runtime cleanup failed", 600);
 }
 
 function readJson(path, label) {
@@ -240,6 +322,6 @@ function readJson(path, label) {
 }
 
 function fail(message) {
-  console.error(`release candidate startup failed: ${message}`);
+  console.error(JSON.stringify(releaseDiagnosticEvent("release.candidate.failed", message, 1200)));
   process.exit(1);
 }

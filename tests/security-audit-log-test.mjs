@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +48,9 @@ try {
   assert(!JSON.stringify(state).includes(principal.accountId), "security audit persisted the raw account id");
   assert(!JSON.stringify(state).includes(principal.clientId), "security audit persisted the raw client id");
   assert(!JSON.stringify(state).includes(principal.familyId), "security audit persisted the raw token family id");
+  const publiclySaltedAccountRef = createHash("sha256").update(state.identity_salt).update("\0").update(principal.accountId).digest("hex");
+  assert(state.events[0].account_ref !== publiclySaltedAccountRef,
+    "security audit account reference remained offline-enumerable from the public salt stored beside the events");
   assert(!JSON.stringify(state).includes("credential contents"), "security audit persisted operation content");
   assert(state.events[1].previous_hash === state.events[0].hash, "security audit chain did not link adjacent events");
 

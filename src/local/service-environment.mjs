@@ -1,7 +1,6 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 
 const SERVICE_ENVIRONMENT_SCHEMA = 1;
 const MAX_SERVICE_ENVIRONMENT_BYTES = 64 * 1024;
@@ -38,9 +37,10 @@ export function captureServiceEnvironment(environment = process.env) {
   return captured;
 }
 
-export function writeServiceEnvironment(stateRoot, environment = process.env) {
+export function writeServiceEnvironment(stateRoot, environment = process.env, options = {}) {
   const file = serviceEnvironmentPath(stateRoot);
-  const previous = existsSync(file) ? parseServiceEnvironment(file).environment : {};
+  const previousPayload = serviceEnvironmentIfPresent(file, options);
+  const previous = previousPayload ? previousPayload.environment : {};
   const captured = captureServiceEnvironment(environment);
   const merged = { ...previous };
   for (const [key, value] of Object.entries(captured)) {
@@ -64,8 +64,8 @@ export function writeServiceEnvironment(stateRoot, environment = process.env) {
 
 export function loadServiceEnvironment(stateRoot, targetEnvironment = process.env, options = {}) {
   const file = serviceEnvironmentPath(stateRoot);
-  if (!existsSync(file)) return { path: file, keys: [], loaded: false };
-  const payload = parseServiceEnvironment(file);
+  const payload = serviceEnvironmentIfPresent(file, options);
+  if (!payload) return { path: file, keys: [], loaded: false };
   const platform = String(options.platform || process.platform);
   const loaded = [];
   for (const [key, rawValue] of Object.entries(payload.environment)) {
@@ -77,15 +77,23 @@ export function loadServiceEnvironment(stateRoot, targetEnvironment = process.en
   return { path: file, keys: loaded.sort(), loaded: true };
 }
 
-export function serviceEnvironmentSummary(stateRoot) {
+export function serviceEnvironmentSummary(stateRoot, options = {}) {
   const file = serviceEnvironmentPath(stateRoot);
-  if (!existsSync(file)) return { configured: false, keys: [] };
-  const payload = parseServiceEnvironment(file);
+  const payload = serviceEnvironmentIfPresent(file, options);
+  if (!payload) return { configured: false, keys: [] };
   return { configured: true, keys: Object.keys(payload.environment).sort() };
 }
 
+function serviceEnvironmentIfPresent(file, options = {}) {
+  const inspect = options.inspectPathIfPresentSync || inspectPathIfPresentSync;
+  const info = inspect(file, "service environment file");
+  if (!info) return null;
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error("service environment file must be a regular file and not a symbolic link");
+  return parseServiceEnvironment(file);
+}
+
 function parseServiceEnvironment(file) {
-  const content = readBoundedRegularFileSync(file, MAX_SERVICE_ENVIRONMENT_BYTES, "service environment file");
+  const content = readBoundedRegularFileSync(file, MAX_SERVICE_ENVIRONMENT_BYTES, "service environment file", { verifyPathIdentity: true, rejectMultipleLinks: true });
   let payload;
   try {
     payload = JSON.parse(content.toString("utf8"));

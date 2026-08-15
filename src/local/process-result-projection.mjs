@@ -1,6 +1,7 @@
 // @ts-check
 
 import { MCP_TEXT_PROJECTION_KEY } from "../shared/result-projection.mjs";
+import { BridgeError } from "./errors.mjs";
 
 /** @param {Record<string, any>} value */
 export function publicProcessToolResult(value) {
@@ -10,6 +11,27 @@ export function publicProcessToolResult(value) {
     : truncated > 0 ? " Additional output could not be retained because the process-session limit was reached." : "";
   const summary = `Process exited with code ${value.code}.${truncated > 0 ? ` ${truncated} inline byte(s) omitted.` : ""}${continuation}`;
   return { ...value, [MCP_TEXT_PROJECTION_KEY]: summary };
+}
+
+/** @param {string} trigger @param {Record<string, unknown>} [details] */
+export function processOutcomeUnknownAfterSpawn(trigger, details = {}) {
+  const terminationRequested = trigger === "cancelled" || trigger === "timeout" || trigger === "resource_binding";
+  return new BridgeError(
+    "execution_failed",
+    "command execution may have partially completed; the outcome is unknown. Inspect command effects before retrying.",
+    {
+      expose: true,
+      retryable: false,
+      details: {
+        ...details,
+        reason: "process_outcome_unknown_after_spawn",
+        trigger: String(trigger || "unknown").slice(0, 64),
+        side_effects_started: "unknown",
+        termination_requested: terminationRequested,
+        effect_settlement: terminationRequested ? "pending" : "unknown",
+      },
+    },
+  );
 }
 
 /** @param {Record<string, any>} result */

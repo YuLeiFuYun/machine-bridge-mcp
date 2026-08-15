@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
-import { clampInteger } from "./numbers.mjs";
 
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -17,10 +16,10 @@ export function validateResourceName(value) {
   return name;
 }
 
-export function inspectResourceFile(inputPath, { allowInsecurePermissions = false, includeHash = false } = {}) {
+export function inspectResourceFile(inputPath, { allowInsecurePermissions = false, includeHash = false, includeContent = false } = {}) {
   const path = resolve(String(inputPath || ""));
   const canonical = realpathFile(path);
-  const { buffer: content, info } = readBoundedRegularFileWithInfoSync(canonical, MAX_RESOURCE_BYTES);
+  const { buffer: content, info } = readBoundedRegularFileWithInfoSync(canonical, MAX_RESOURCE_BYTES, "resource file", { verifyPathIdentity: true });
   if (process.platform !== "win32" && !allowInsecurePermissions && (info.mode & 0o077) !== 0) {
     throw new Error("resource file is readable by group or others; restrict permissions or use --allow-insecure-permissions");
   }
@@ -33,6 +32,7 @@ export function inspectResourceFile(inputPath, { allowInsecurePermissions = fals
     updatedAt: new Date().toISOString(),
     allowInsecurePermissions: allowInsecurePermissions === true,
     ...(includeHash ? { sha256: createHash("sha256").update(content).digest("hex") } : {}),
+    ...(includeContent ? { content } : {}),
   };
 }
 
@@ -53,10 +53,10 @@ export function validatePlan(args, context) {
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("job arguments must be an object");
   const allowed = new Set(["name", "steps", "finally_steps", "temporary_files"]);
   for (const key of Object.keys(args)) if (!allowed.has(key)) throw new Error(`job contains unknown field: ${key}`);
-  const name = String(args.name || "managed job").trim().slice(0, 128) || "managed job";
+  const name = args.name === undefined ? "managed job" : boundedString(args.name, 128, "name").trim() || "managed job";
   const steps = validateSteps(args.steps, "steps", context);
-  const finallySteps = validateSteps(args.finally_steps || [], "finally_steps", context, true);
-  const temporaryFiles = validateTemporaryFiles(args.temporary_files || []);
+  const finallySteps = validateSteps(args.finally_steps === undefined ? [] : args.finally_steps, "finally_steps", context, true);
+  const temporaryFiles = validateTemporaryFiles(args.temporary_files === undefined ? [] : args.temporary_files);
   if (!steps.length) throw new Error("steps must contain at least one step");
   return {
     version: 1,
@@ -83,7 +83,7 @@ function validateTemporaryFiles(value) {
     const content = boundedString(item.content, 256 * 1024, `temporary_files[${index}].content`);
     totalBytes += Buffer.byteLength(content);
     if (totalBytes > MAX_TEMPORARY_FILE_BYTES) throw new Error(`temporary file contents exceed ${MAX_TEMPORARY_FILE_BYTES} bytes`);
-    return { name, content, executable: item.executable === true };
+    return { name, content, executable: optionalBoolean(item.executable, `temporary_files[${index}].executable`) };
   });
 }
 
@@ -113,11 +113,29 @@ function validateSteps(value, label, context, allowEmpty = false) {
       env_resources: envResources,
       stdin,
       stdin_resource: stdinResource,
-      timeout_seconds: clampInteger(input.timeout_seconds, 600, 1, 3600),
-      allow_failure: input.allow_failure === true,
-      capture_output: input.capture_output === "discard" ? "discard" : "redacted",
+      timeout_seconds: optionalInteger(input.timeout_seconds, 600, 1, 3600, `${label}[${index}].timeout_seconds`),
+      allow_failure: optionalBoolean(input.allow_failure, `${label}[${index}].allow_failure`),
+      capture_output: validateCaptureOutput(input.capture_output, `${label}[${index}].capture_output`),
     };
   });
+}
+
+function optionalBoolean(value, label) {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
+}
+
+function optionalInteger(value, defaultValue, min, max, label) {
+  if (value === undefined) return defaultValue;
+  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${label} must be an integer between ${min} and ${max}`);
+  return value;
+}
+
+function validateCaptureOutput(value, label) {
+  if (value === undefined || value === "redacted") return "redacted";
+  if (value === "discard") return "discard";
+  throw new Error(`${label} must be redacted or discard`);
 }
 
 function validateEnv(value, label) {
@@ -175,8 +193,14 @@ function referencedResources(steps, registry) {
 
 export function normalizeResourceRegistry(resources) {
   const out = Object.create(null);
-  if (!resources || typeof resources !== "object" || Array.isArray(resources)) return out;
-  for (const [rawName, rawValue] of Object.entries(resources).slice(0, MAX_RESOURCES)) {
+  if (resources === undefined || resources === null) return out;
+  if (typeof resources !== "object" || Array.isArray(resources)) throw new Error("local resource registry must be an object");
+  let count = 0;
+  for (const rawName in resources) {
+    if (!Object.hasOwn(resources, rawName)) continue;
+    count += 1;
+    if (count > MAX_RESOURCES) throw new Error(`local resource registry limit exceeded (${MAX_RESOURCES})`);
+    const rawValue = resources[rawName];
     const name = validateResourceName(rawName);
     if (!rawValue || rawValue.kind !== "file" || typeof rawValue.path !== "string") continue;
     out[name] = {

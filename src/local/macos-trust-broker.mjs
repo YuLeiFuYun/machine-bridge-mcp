@@ -1,19 +1,19 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { lstatSync, realpathSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { deviceKeyId } from "./device-identity.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { packageRoot } from "./package-identity.mjs";
 
-const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const PROVIDER = "macos-secure-enclave-v1";
 const BROKER_PROTOCOL = 1;
 const BROKER_ENVIRONMENT_VARIABLE = "MBM_MACOS_TRUST_BROKER";
 const SOURCE_RELATIVE = "native/macos/MachineBridgeTrustBroker.swift";
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_TRANSCRIPT_BYTES = 64 * 1024;
+const MAX_DEVELOPMENT_BROKER_BYTES = 16 * 1024 * 1024;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]{2,199}$/;
 const TEAM_IDENTIFIER_PATTERN = /^[A-Z0-9]{10}$/;
 
@@ -199,44 +199,121 @@ export function probeProvisionedMacosTrustBroker(brokerOrPath, options = {}) {
 export function buildDevelopmentTrustBrokerBinary(profileDir, options = {}) {
   if (process.platform !== "darwin") throw new Error("macOS trust broker build is unavailable on this platform");
   const source = path.resolve(options.packageRoot || packageRoot, SOURCE_RELATIVE);
-  const sourceBytes = readBoundedRegularFileSync(source, 2 * 1024 * 1024, "macOS trust broker source");
-  const digest = createHash("sha256").update(sourceBytes).digest("hex");
+  const sourceBytes = readBoundedRegularFileSync(source, 2 * 1024 * 1024, "macOS trust broker source", {
+    verifyPathIdentity: true,
+    rejectMultipleLinks: true,
+  });
+  const sourceDigest = createHash("sha256").update(sourceBytes).digest("hex");
   const directory = path.resolve(profileDir, "native", "macos");
   ensureOwnerOnlyDirectorySync(directory);
   const binary = path.join(directory, "machine-bridge-trust-broker-development");
   const marker = path.join(directory, "machine-bridge-trust-broker-development.sha256");
-  let currentDigest = "";
-  try { currentDigest = readFileSync(marker, "utf8").trim(); } catch {}
-  if (existsSync(binary) && currentDigest === digest) return binary;
+  const currentMarker = readDevelopmentBrokerMarker(marker);
+  const existingBinary = inspectDevelopmentBrokerBinary(binary);
+  if (existingBinary && currentMarker?.sourceSha256 === sourceDigest) {
+    const binaryBytes = readBoundedRegularFileSync(binary, MAX_DEVELOPMENT_BROKER_BYTES, "macOS development trust broker", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+    const binaryDigest = createHash("sha256").update(binaryBytes).digest("hex");
+    if (binaryDigest === currentMarker.binarySha256) return binary;
+  }
 
   const temporary = path.join(directory, `.machine-bridge-trust-broker.${process.pid}.${randomBytes(6).toString("hex")}`);
   const compiler = options.swiftc || "/usr/bin/swiftc";
-  const compile = (options.spawnSync || spawnSync)(compiler, [
-    "-parse-as-library", "-O", "-framework", "Security", "-framework", "LocalAuthentication", source, "-o", temporary,
-  ], {
-    encoding: "utf8",
-    timeout: 120_000,
-    killSignal: "SIGKILL",
-    maxBuffer: MAX_OUTPUT_BYTES,
-    env: minimalEnvironment(),
-  });
-  if (compile.status !== 0 || compile.error) {
-    throw new Error(`could not build macOS trust broker (${boundedDiagnostic(compile.stderr || compile.error?.message)})`);
+  let compiledBytes;
+  let primaryError = null;
+  try {
+    const compile = (options.spawnSync || spawnSync)(compiler, [
+      "-parse-as-library", "-O", "-framework", "Security", "-framework", "LocalAuthentication", source, "-o", temporary,
+    ], {
+      encoding: "utf8",
+      timeout: 120_000,
+      killSignal: "SIGKILL",
+      maxBuffer: MAX_OUTPUT_BYTES,
+      env: minimalEnvironment(),
+    });
+    if (compile.status !== 0 || compile.error) {
+      throw new Error(`could not build macOS trust broker (${boundedDiagnostic(compile.stderr || compile.error?.message)})`);
+    }
+    const sign = (options.spawnSync || spawnSync)("/usr/bin/codesign", ["--force", "--sign", "-", temporary], {
+      encoding: "utf8",
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+      maxBuffer: MAX_OUTPUT_BYTES,
+      env: minimalEnvironment(),
+    });
+    if (sign.status !== 0 || sign.error) {
+      throw new Error(`could not ad-hoc sign development macOS trust broker (${boundedDiagnostic(sign.stderr || sign.error?.message)})`);
+    }
+    compiledBytes = readBoundedRegularFileSync(temporary, MAX_DEVELOPMENT_BROKER_BYTES, "compiled macOS development trust broker", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+  } catch (error) {
+    primaryError = error;
   }
-  const sign = (options.spawnSync || spawnSync)("/usr/bin/codesign", ["--force", "--sign", "-", temporary], {
-    encoding: "utf8",
-    timeout: 30_000,
-    killSignal: "SIGKILL",
-    maxBuffer: MAX_OUTPUT_BYTES,
-    env: minimalEnvironment(),
-  });
-  if (sign.status !== 0 || sign.error) {
-    throw new Error(`could not ad-hoc sign development macOS trust broker (${boundedDiagnostic(sign.stderr || sign.error?.message)})`);
+  let cleanupError = null;
+  try { (options.unlinkSync || unlinkSync)(temporary); }
+  catch (error) {
+    if (error?.code !== "ENOENT") cleanupError = error;
   }
-  replaceFileAtomicallySync(binary, readFileSync(temporary), { mode: 0o700 });
-  try { (options.unlinkSync || unlinkSync)(temporary); } catch {}
-  replaceFileAtomicallySync(marker, `${digest}\n`, { mode: 0o600 });
+  if (primaryError && cleanupError) {
+    throw new AggregateError([primaryError, cleanupError], "macOS development trust broker build failed and temporary cleanup was incomplete");
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw new Error("macOS development trust broker temporary cleanup failed", { cause: cleanupError });
+
+  const binaryDigest = createHash("sha256").update(compiledBytes).digest("hex");
+  replaceFileAtomicallySync(binary, compiledBytes, { mode: 0o700 });
+  replaceFileAtomicallySync(marker, `${JSON.stringify({
+    schema: 1,
+    source_sha256: sourceDigest,
+    binary_sha256: binaryDigest,
+  })}
+`, { mode: 0o600 });
   return binary;
+}
+
+function readDevelopmentBrokerMarker(marker) {
+  let bytes;
+  try {
+    bytes = readBoundedRegularFileSync(marker, 512, "macOS development trust broker digest", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || value.schema !== 1
+      || !/^[0-9a-f]{64}$/.test(String(value.source_sha256 || ""))
+      || !/^[0-9a-f]{64}$/.test(String(value.binary_sha256 || ""))) return null;
+  return { sourceSha256: value.source_sha256, binarySha256: value.binary_sha256 };
+}
+
+function inspectDevelopmentBrokerBinary(binary) {
+  let info;
+  try { info = lstatSync(binary); }
+  catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw new Error("macOS development trust broker must be a regular file and not a symbolic link");
+  }
+  if (Number(info.nlink) > 1) throw new Error("macOS development trust broker must not have multiple hard links");
+  if (process.platform !== "win32" && ((info.mode & 0o077) !== 0 || (info.mode & 0o700) !== 0o700)) {
+    throw new Error("macOS development trust broker must remain owner-only and owner-executable");
+  }
+  return info;
 }
 
 function assertBrokerBinding(identity, broker) {

@@ -1,12 +1,24 @@
+export const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"]);
 const TERMINAL_JOB_STATUSES = new Set([
   "succeeded", "failed", "cancelled", "succeeded_cleanup_failed", "failed_cleanup_failed",
   "cancelled_cleanup_failed", "recovered", "recovery_failed", "runner_failed",
   "runner_launch_failed", "recovery_exhausted", "cancelled_before_start", "expired_before_start",
 ]);
 
+export function managedJobFinalStatus({ recover, cancelled, mainError, cleanupError }) {
+  if (recover) return mainError || cleanupError ? "recovery_failed" : "recovered";
+  if (cancelled) return cleanupError ? "cancelled_cleanup_failed" : "cancelled";
+  if (mainError) return cleanupError ? "failed_cleanup_failed" : "failed";
+  return cleanupError ? "succeeded_cleanup_failed" : "succeeded";
+}
+
+export function isTerminalManagedJobStatus(value) {
+  return TERMINAL_JOB_STATUSES.has(String(value || ""));
+}
+
 export function isTerminalManagedJobResult(value, expectedJobId = "") {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  if (!TERMINAL_JOB_STATUSES.has(String(value.status || ""))) return false;
+  if (!isTerminalManagedJobStatus(value.status)) return false;
   if (expectedJobId && value.job_id !== expectedJobId) return false;
   if (!Number.isFinite(Date.parse(String(value.finished_at || "")))) return false;
   if (!Array.isArray(value.steps) || !Array.isArray(value.finally_steps)) return false;

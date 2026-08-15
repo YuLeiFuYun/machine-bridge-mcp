@@ -1,20 +1,20 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
-import { replaceFileSync } from "./atomic-fs.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { preserveFileSnapshotSync } from "./file-snapshot-preservation.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createDeviceIdentity } from "./device-identity.mjs";
 import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
-import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
 import { isPlainRecord } from "./records.mjs";
+import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
+import { appName, packageRoot } from "./package-identity.mjs";
+import { inspectStateRootGeneration, pruneRetiredStateRootDirectories, removeStateRootGenerationIfCurrent } from "./state-root-retirement.mjs";
+import { validateOwnedStateNamespaces } from "./state-root-owned-namespaces.mjs";
 
-export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-export const appName = String(serverMetadata.name);
 const STATE_MARKER = ".machine-bridge-mcp-state";
 const STATE_MARKER_SCHEMA = 2;
 export const STATE_SCHEMA_VERSION = 6;
@@ -73,11 +73,14 @@ function configPath(stateRoot = defaultStateRoot()) {
   return path.join(expandHome(stateRoot), "config.json");
 }
 
-export function loadGlobalConfig(stateRoot = defaultStateRoot()) {
+export function loadGlobalConfig(stateRoot = defaultStateRoot(), options = {}) {
   const root = path.resolve(expandHome(stateRoot));
   assertNoForeignMaintenance(root);
   const file = configPath(root);
-  if (!existsSync(file)) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
+  const inspect = options.inspectPathIfPresentSync || inspectPathIfPresentSync;
+  const info = inspect(file, "global configuration file");
+  if (!info) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error("global configuration file must be a regular file and not a symbolic link");
   ownerOnlyFile(file);
   const config = readJsonObjectOrBackup(file, { allowEmptyRecovery: true });
   if (config[CORRUPT_RECOVERY]) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
@@ -113,16 +116,21 @@ export function selectedWorkspace(stateRoot = defaultStateRoot()) {
 
 export function validateStateRootForRemoval(stateRoot = defaultStateRoot()) {
   const root = path.resolve(expandHome(stateRoot));
-  if (!existsSync(root)) return { exists: false, root };
+  if (!inspectPathIfPresentSync(root, "state root")) return { exists: false, root };
   const canonical = assertSafeStateRootForRemoval(root);
   return { exists: true, root: canonical };
 }
 
 export function removeStateRoot(stateRoot = defaultStateRoot()) {
-  const validation = validateStateRootForRemoval(stateRoot);
+  const requested = path.resolve(expandHome(stateRoot));
+  pruneRetiredStateRootDirectories(requested, assertSafeStateRootForRemoval);
+  const validation = validateStateRootForRemoval(requested);
   if (!validation.exists) return false;
-  rmSync(validation.root, { recursive: true, force: true });
-  return true;
+  const generation = inspectStateRootGeneration(validation.root);
+  if (removeStateRootGenerationIfCurrent(validation.root, generation, assertSafeStateRootForRemoval)) return true;
+  pruneRetiredStateRootDirectories(requested, assertSafeStateRootForRemoval);
+  if (!inspectPathIfPresentSync(validation.root, "state root")) return false;
+  throw new Error("state root changed during generation-bound removal; state requires inspection");
 }
 
 function workspaceHash(workspace) {
@@ -140,7 +148,7 @@ function profileDirForWorkspace(workspace, stateRoot = defaultStateRoot()) {
 function canonicalizePotentialPath(input) {
   let existing = path.resolve(input);
   const suffix = [];
-  while (!existsSync(existing)) {
+  while (!inspectPathIfPresentSync(existing, "path identity")) {
     const parent = path.dirname(existing);
     if (parent === existing) break;
     suffix.unshift(path.basename(existing));
@@ -192,18 +200,22 @@ export function loadState(workspace, options = {}) {
   const profileDir = profileDirForWorkspace(canonicalWorkspace, stateRoot);
   const statePath = path.join(profileDir, "state.json");
   ensureOwnerOnlyDir(profileDir);
+  removeObsoleteOperationLeaseState(profileDir);
   const recoveryPath = recoveryMarkerPath(statePath);
-  const recoveryPending = existsSync(recoveryPath);
-  const recoveryMarker = recoveryPending ? readRecoveryMarker(recoveryPath, statePath) : null;
+  const recoveryPending = Boolean(inspectPathIfPresentSync(recoveryPath, "state recovery marker"));
+  const recoverySnapshot = recoveryPending ? readRecoveryMarker(recoveryPath, statePath) : null;
+  const recoveryMarker = recoverySnapshot?.marker || null;
   let state = {};
-  if (existsSync(statePath)) {
+  if (inspectPathIfPresentSync(statePath, "workspace state")) {
     ownerOnlyFile(statePath);
     state = readJsonObjectOrBackup(statePath, { recoveryPath });
     if (state.schemaVersion !== STATE_SCHEMA_VERSION) {
       throw new Error("workspace state schema is obsolete; remove the state root and initialize the current version");
     }
     assertWorkspaceStateEnvelope(state, { canonicalWorkspace, stateRoot, profileDir, statePath });
-    if (recoveryPending) unlinkSync(recoveryPath);
+    if (recoverySnapshot && !unlinkRegularFileIfIdentitySync(recoveryPath, recoverySnapshot.identity, "state recovery marker")) {
+      throw new Error("workspace state recovery marker changed before removal");
+    }
   } else if (recoveryPending) {
     throw recoveryRequiredError(recoveryMarker);
   }
@@ -221,6 +233,22 @@ export function loadState(workspace, options = {}) {
   return state;
 }
 
+function removeObsoleteOperationLeaseState(profileDir) {
+  const file = path.join(profileDir, "operation-leases.json");
+  const info = inspectPathIfPresentSync(file, "obsolete operation lease state", {
+    lstatSync: (target) => lstatSync(target, { bigint: true }),
+  });
+  if (!info) return false;
+  if (info.isSymbolicLink() || !info.isFile() || info.nlink !== 1n) {
+    throw new Error("obsolete operation lease state must be a single-link regular file before migration cleanup");
+  }
+  const identity = filesystemIdentity(info, "obsolete operation lease state");
+  if (!unlinkRegularFileIfIdentitySync(file, identity, "obsolete operation lease state")) {
+    throw new Error("obsolete operation lease state changed before migration cleanup");
+  }
+  return true;
+}
+
 export function saveState(state) {
   const envelope = assertWorkspaceStateEnvelope(state);
   assertNoForeignMaintenance(envelope.stateRoot);
@@ -228,7 +256,12 @@ export function saveState(state) {
   ensureOwnerOnlyDir(envelope.profileDir);
   atomicWriteJson(envelope.statePath, { ...state });
   const recoveryPath = recoveryMarkerPath(envelope.statePath);
-  if (existsSync(recoveryPath)) unlinkSync(recoveryPath);
+  if (inspectPathIfPresentSync(recoveryPath, "state recovery marker")) {
+    const recoverySnapshot = readRecoveryMarker(recoveryPath, envelope.statePath);
+    if (!unlinkRegularFileIfIdentitySync(recoveryPath, recoverySnapshot.identity, "state recovery marker")) {
+      throw new Error("workspace state recovery marker changed before removal");
+    }
+  }
 }
 
 function assertWorkspaceStateEnvelope(state, expected = {}) {
@@ -317,8 +350,7 @@ export async function acquireMachineServiceLockWithWait(options = {}) {
   const metadata = { operation: options.operation };
   let lock = acquireMachineServiceLock(metadata, options);
   if (lock.acquired) return lock;
-  const ownerPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "another process";
-  logger.info?.(`waiting for ${ownerPid} to finish the current machine-service operation`);
+  logger.info?.("waiting for another process to finish the current machine-service operation");
   const deadline = createMonotonicDeadline(timeoutMs);
   while (!deadline.expired()) {
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline.remainingMs()))); });
@@ -335,7 +367,7 @@ export async function acquireMachineServiceLockWithWait(options = {}) {
 
 export function acquireMaintenanceLock(stateRoot, metadata = {}) {
   const root = path.resolve(expandHome(stateRoot));
-  if (!existsSync(root)) throw new Error("cannot acquire maintenance lock for a missing state root");
+  if (!inspectPathIfPresentSync(root, "state root")) throw new Error("cannot acquire maintenance lock for a missing state root");
   const operation = typeof metadata.operation === "string" && /^[a-z][a-z0-9._-]{0,63}$/.test(metadata.operation)
     ? metadata.operation
     : "maintenance";
@@ -352,7 +384,6 @@ export function assertStateMaintenanceAvailable(stateRoot) {
 function assertNoForeignMaintenance(stateRoot) {
   if (!stateRoot) return;
   const file = path.join(path.resolve(expandHome(stateRoot)), "maintenance.lock");
-  if (!existsSync(file)) return;
   const snapshot = readProcessLockSnapshot(file);
   if (!snapshot) return;
   if (!snapshot.owner) {
@@ -377,7 +408,7 @@ function assertNoForeignMaintenance(stateRoot) {
 
 export function acquireDaemonLock(state, metadata = {}) {
   assertNoForeignMaintenance(state?.paths?.stateRoot);
-  const details = { startupReady: false, startupReadyAt: null };
+  const details = { startupReady: false, startupReadyAt: null, nodeVersion: process.versions.node };
   if (metadata?.mode === "foreground" || metadata?.mode === "service") details.mode = metadata.mode;
   if (typeof metadata?.version === "string" && /^[0-9A-Za-z.+_-]{1,64}$/.test(metadata.version)) details.version = metadata.version;
   return acquireProcessLock(daemonLockPathForState(state), state, "daemon", details, { maxAgeMs: Number.POSITIVE_INFINITY });
@@ -397,8 +428,7 @@ export async function acquireStartupLockWithWait(state, options = {}) {
   const metadata = { operation: options.operation };
   let lock = acquireStartupLock(state, metadata);
   if (lock.acquired) return lock;
-  const ownerPid = lock.owner?.pid ? `pid ${lock.owner.pid}` : "another process";
-  logger.info?.(`waiting for ${ownerPid} to finish the current startup/state operation`);
+  logger.info?.("waiting for another process to finish the current startup/state operation");
   const deadline = createMonotonicDeadline(timeoutMs);
   while (!deadline.expired()) {
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, Math.min(pollMs, Math.max(1, deadline.remainingMs()))); });
@@ -471,26 +501,31 @@ function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}
 }
 
 function readProcessLockSnapshot(lockPath) {
-  let info;
-  try { info = lstatSync(lockPath); } catch (error) {
-    if (error?.code === "ENOENT") return null;
+  let opened;
+  try {
+    opened = retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    }));
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw error;
   }
-  if (info.isSymbolicLink()) throw new Error(`process lock must not be a symbolic link: ${lockPath}`);
-  if (!info.isFile()) throw new Error(`process lock is not a regular file: ${lockPath}`);
+  const info = lockIdentity(opened.identityInfo, opened.identity);
+  let text;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(opened.buffer); }
+  catch { return { owner: null, info }; }
   let owner = null;
   try {
-    const parsed = JSON.parse(readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file"));
+    const parsed = JSON.parse(text);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-  }
-  return { owner, info: lockIdentity(info) };
+  } catch { /* Successfully read malformed JSON remains eligible for bounded stale recovery. */ }
+  return { owner, info };
 }
 
 function removeLockSnapshot(lockPath, snapshot) {
   let current;
-  try { current = lstatSync(lockPath); } catch (error) { return error?.code === "ENOENT"; }
+  try { current = lstatSync(lockPath, { bigint: true }); } catch (error) { return error?.code === "ENOENT"; }
   if (current.isSymbolicLink() || !current.isFile()) return false;
   if (!sameLockIdentity(snapshot.info, lockIdentity(current))) return false;
   if (snapshot.owner?.token) {
@@ -505,17 +540,17 @@ function removeLockSnapshot(lockPath, snapshot) {
   }
 }
 
-function lockIdentity(info) {
+function lockIdentity(info, identity = filesystemIdentity(info, "process lock")) {
   return {
-    dev: Number(info.dev),
-    ino: Number(info.ino),
-    size: Number(info.size),
-    mtimeMs: Number(info.mtimeMs),
+    ...identity,
+    size: exactFilesystemInteger(info.size, "process lock size"),
+    nlink: exactFilesystemInteger(info.nlink, "process lock link count"),
+    mtimeMs: filesystemTimeMs(info.mtimeMs, "process lock modification time"),
   };
 }
 
 function sameLockIdentity(left, right) {
-  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
+  return sameFilesystemIdentity(left, right) && left.size === right.size && left.mtimeMs === right.mtimeMs;
 }
 
 function updateProcessLock(lockPath, token, patch) {
@@ -557,12 +592,7 @@ function releaseProcessLock(lockPath, token) {
 }
 
 export function readDaemonLockOwner(lockPath) {
-  try {
-    const parsed = JSON.parse(readBoundedUtf8(lockPath, MAX_LOCK_BYTES, "lock file"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  return readProcessLockSnapshot(lockPath)?.owner || null;
 }
 
 function boundedPositiveInteger(value, fallback) {
@@ -570,17 +600,23 @@ function boundedPositiveInteger(value, fallback) {
   return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : fallback;
 }
 
-function readBoundedUtf8(filePath, maxBytes, label) {
-  const buffer = readBoundedRegularFileSync(filePath, maxBytes, label);
+function readBoundedUtf8(filePath, maxBytes, label, options = {}) {
+  return decodeUtf8(readBoundedRegularFileSync(filePath, maxBytes, label, options), label);
+}
+
+function decodeUtf8(buffer, label) {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-  } catch {
-    throw new Error(`${label} is not valid UTF-8`);
+  } catch (cause) {
+    throw Object.assign(new Error(`${label} is not valid UTF-8`, { cause }), { code: "ERR_INVALID_UTF8" });
   }
 }
 
 function readJsonObjectOrBackup(filePath, options = {}) {
-  const text = readBoundedUtf8(filePath, MAX_STATE_JSON_BYTES, "state JSON");
+  const opened = readBoundedRegularFileWithInfoSync(filePath, MAX_STATE_JSON_BYTES, "state JSON", {
+    verifyPathIdentity: true, rejectMultipleLinks: true,
+  });
+  const text = decodeUtf8(opened.buffer, "state JSON");
   let parsed;
   try {
     parsed = JSON.parse(text);
@@ -588,7 +624,7 @@ function readJsonObjectOrBackup(filePath, options = {}) {
     return parsed;
   } catch {
     const backupPath = `${filePath}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
-    replaceFileSync(filePath, backupPath);
+    preserveFileSnapshotSync(filePath, backupPath, opened.buffer, opened.identity, { label: "state JSON", mode: 0o600 });
     ownerOnlyFile(backupPath);
     pruneBackups(filePath, 3);
     if (options.allowEmptyRecovery === true) {
@@ -608,15 +644,23 @@ function recoveryMarkerPath(statePath) { return `${statePath}.recovery-required`
 
 function readRecoveryMarker(markerPath, statePath) {
   ownerOnlyFile(markerPath);
+  let opened;
   let marker;
-  try { marker = JSON.parse(readBoundedUtf8(markerPath, MAX_MARKER_BYTES, "state recovery marker")); }
-  catch { throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing"); }
+  try {
+    opened = readBoundedRegularFileWithInfoSync(markerPath, MAX_MARKER_BYTES, "state recovery marker", {
+      verifyPathIdentity: true, rejectMultipleLinks: true,
+    });
+    marker = JSON.parse(decodeUtf8(opened.buffer, "state recovery marker"));
+  } catch { throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing"); }
   if (marker?.schemaVersion !== RECOVERY_MARKER_SCHEMA || typeof marker.backup !== "string"
       || !marker.backup.startsWith(`${path.basename(statePath)}.corrupt-`) || path.basename(marker.backup) !== marker.backup
       || !Number.isFinite(Date.parse(String(marker.detectedAt || "")))) {
     throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing");
   }
-  return Object.freeze({ schemaVersion: marker.schemaVersion, backup: marker.backup, detectedAt: marker.detectedAt });
+  return {
+    marker: Object.freeze({ schemaVersion: marker.schemaVersion, backup: marker.backup, detectedAt: marker.detectedAt }),
+    identity: opened.identity,
+  };
 }
 
 function recoveryRequiredError(marker) {
@@ -659,6 +703,9 @@ function assertSafeStateRootForRemoval(root) {
     path.resolve(packageRoot),
   ]);
   if (forbidden.has(canonical)) throw new Error(`refusing to remove unsafe state root: ${canonical}`);
+  if (currentEntrypointInsideStateRoot(canonical)) {
+    throw new Error("refusing to remove a state root that contains the currently executing Machine Bridge CLI; run uninstall from an installation outside that state root");
+  }
   if (looksLikeSourceTree(canonical) || stateRootMatchesRecordedWorkspace(canonical)) {
     throw new Error(`refusing to remove state root that appears to be a workspace: ${canonical}`);
   }
@@ -666,6 +713,7 @@ function assertSafeStateRootForRemoval(root) {
   if (!hasOnlyStateEntries(entries)) {
     throw new Error(`refusing to remove state root containing unrelated entries: ${canonical}`);
   }
+  validateOwnedStateNamespaces(canonical);
   const marker = path.join(canonical, STATE_MARKER);
   if (existsSync(marker)) {
     assertValidStateMarker(marker);
@@ -675,7 +723,7 @@ function assertSafeStateRootForRemoval(root) {
 }
 
 function assertValidStateMarker(marker) {
-  const content = readBoundedUtf8(marker, MAX_MARKER_BYTES, "state marker");
+  const content = readBoundedUtf8(marker, MAX_MARKER_BYTES, "state marker", { verifyPathIdentity: true, rejectMultipleLinks: true });
   let value;
   try { value = JSON.parse(content); } catch { throw new Error(`invalid state root marker: ${marker}`); }
   if (value?.app !== appName || value?.schema !== STATE_MARKER_SCHEMA) {
@@ -684,8 +732,24 @@ function assertValidStateMarker(marker) {
 }
 
 function hasOnlyStateEntries(entries) {
-  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "maintenance.lock", "profiles", "logs", "service-environment.json", "service-launcher.cmd"]);
+  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "maintenance.lock", "profiles", "logs", "service-environment.json", "service-launcher.cmd", "toolchains", "release-channels", "release-tasks"]);
   return entries.every((entry) => allowed.has(entry) || /^config\.json\.corrupt-\d+(?:-[a-f0-9]{8})?$/.test(entry));
+}
+
+function currentEntrypointInsideStateRoot(root) {
+  const entry = String(process.argv[1] || "").trim();
+  if (!entry) return false;
+  let canonicalRoot;
+  let resolved;
+  try {
+    canonicalRoot = canonicalizePotentialPath(root);
+    resolved = canonicalizePotentialPath(entry);
+  } catch {
+    canonicalRoot = path.resolve(root);
+    resolved = path.resolve(entry);
+  }
+  const relative = path.relative(canonicalRoot, resolved);
+  return Boolean(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function looksLikeSourceTree(root) {
@@ -697,13 +761,12 @@ function stateRootMatchesRecordedWorkspace(root) {
   if (typeof config?.selectedWorkspace === "string" && sameWorkspaceIdentity(config.selectedWorkspace, root)) return true;
 
   const profiles = path.join(root, "profiles");
-  let entries;
-  try {
-    entries = readdirSync(profiles, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw new Error("could not inspect state-root profiles before removal", { cause: error });
+  const profilesInfo = inspectPathIfPresentSync(profiles, "state-root profiles");
+  if (!profilesInfo) return false;
+  if (profilesInfo.isSymbolicLink() || !profilesInfo.isDirectory()) {
+    throw new Error("state-root profiles must be a real directory before removal");
   }
+  const entries = readdirSync(profiles, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const profileDir = path.join(profiles, entry.name);
@@ -718,7 +781,7 @@ function stateRootMatchesRecordedWorkspace(root) {
 function readOptionalRemovalJson(file, label) {
   let text;
   try {
-    text = readBoundedUtf8(file, MAX_STATE_JSON_BYTES, label);
+    text = readBoundedUtf8(file, MAX_STATE_JSON_BYTES, label, { verifyPathIdentity: true, rejectMultipleLinks: true });
   } catch (error) {
     if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw new Error(`${label} could not be verified before state removal`, { cause: error });
@@ -755,7 +818,7 @@ function cleanupStaleAtomicTemps(dir, baseName = "") {
     const file = path.join(dir, name);
     try {
       if (now - statSync(file).mtimeMs > 60 * 60 * 1000) unlinkSync(file);
-    } catch {}
+    } catch { /* Stale-temp cleanup is opportunistic and must not block the authoritative state write. */ }
   }
 }
 
@@ -772,7 +835,8 @@ function pruneBackups(filePath, keep) {
     return;
   }
   for (const backup of backups.slice(keep)) {
-    try { unlinkSync(backup.path); } catch {}
+    try { unlinkSync(backup.path); }
+    catch { /* Backup pruning is bounded housekeeping; retained backups are safer than failing state recovery. */ }
   }
 }
 
@@ -853,18 +917,9 @@ function randomToken(prefix) {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
 }
 
-export function ensureOwnerOnlyDir(dir, options = {}) {
-  return ensureOwnerOnlyDirectorySync(dir, options);
-}
-
-export function ownerOnlyFile(filePath) {
-  chmodRegularFileSync(filePath, 0o600, "owner-only path");
-}
-
 export function redactState(state) {
   const clone = redactHomeInValue(JSON.parse(JSON.stringify(state)));
-  if (clone.worker?.deviceIdentity?.privateJwk?.d) clone.worker.deviceIdentity.privateJwk.d = "<redacted>";
-  redactBrokerPaths(clone.worker);
+  redactDeviceIdentityState(clone.worker);
   if (clone.worker?.oauthTokenVersion) clone.worker.oauthTokenVersion = "<redacted>";
   if (clone.resources && typeof clone.resources === "object") {
     for (const value of Object.values(clone.resources)) {
@@ -877,14 +932,18 @@ export function redactState(state) {
 }
 
 
-function redactBrokerPaths(worker) {
+function redactDeviceIdentityState(worker) {
   if (!worker || typeof worker !== "object") return;
   for (const identity of [
     worker.deviceIdentity,
     worker.pendingDeviceIdentity,
     ...(Array.isArray(worker.previousDeviceIdentities) ? worker.previousDeviceIdentities : []),
   ]) {
-    if (identity?.brokerPath) identity.brokerPath = "<local-broker-path>";
+    if (!identity || typeof identity !== "object") continue;
+    delete identity.privateJwk;
+    delete identity.publicJwk;
+    if (identity.brokerPath) identity.brokerPath = "<local-broker-path>";
+    if (identity.keyTag) identity.keyTag = "<local-key-tag>";
   }
 }
 
@@ -899,8 +958,4 @@ function redactHomeInValue(value) {
     for (const key of Object.keys(value)) value[key] = redactHomeInValue(value[key]);
   }
   return value;
-}
-
-export function previewSecret(_value) {
-  return "<redacted>";
 }

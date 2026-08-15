@@ -89,7 +89,7 @@ async function serviceStatusAction({ args, stateRoot, service, context }) {
     workspace_daemon: workspaceDaemon,
     service_owner: ownerProjection,
     service_environment: context.serviceEnvironmentSummary(effectiveStateRoot),
-    effective_active: Boolean(status.active || workspaceDaemon?.alive),
+    effective_active: status.active === true || workspaceDaemon?.alive === true ? true : status.active === false ? false : null,
     orphaned_workspace_daemon: Boolean(status.active === false && workspaceDaemon?.alive && workspaceDaemon?.verified_service_daemon),
   }, context, false);
 }

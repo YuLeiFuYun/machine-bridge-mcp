@@ -135,6 +135,7 @@ Follow the sample workflow.
     agentHome: root,
     codexHome: join(root, "empty-codex-home"),
     recoverJobs: false,
+    processResourceWaitMs: 5 * 60_000,
   });
   try {
     const context = await runtime.executeTool("agent_context", { path: "packages/example" });
@@ -158,6 +159,10 @@ Follow the sample workflow.
     assert(!contextCommandNames.has("fixed"), "nearest manifest command deletion failed");
     assert(context.commands.find((command) => command.name === "echo-args")?.cwd === "packages/example", "registered command cwd was not resolved relative to its config scope");
     assert(context.commands.find((command) => command.name === "package.check")?.source_type === "automatic-package-script", "automatic package command provenance is missing");
+    assert(context.metadata_authority?.capability_metadata === "project-or-user-provided-planning-context"
+      && context.metadata_authority?.execution_authority === "machine-bridge-policy-account-and-operation-gates"
+      && context.metadata_authority?.authority_expansion === false,
+    "agent context did not distinguish project/user capability metadata from execution authority");
 
     const skills = await runtime.executeTool("list_local_skills", { path: "packages/example", query: "sample" });
     assert(skills.skills.length === 1, "list_local_skills did not find the sample skill");
@@ -177,6 +182,10 @@ Follow the sample workflow.
       "omitting selected-skill instructions incorrectly disabled the relevant skill route");
     assert(resolved.effective_instructions.includes("root project") && resolved.effective_instructions.includes("nested local"), "task capability resolver omitted effective instructions for a reused host session");
     assert(resolved.recommended_tools.includes("run_local_command"), "task capability resolver did not recommend the registered command surface");
+    assert(resolved.metadata_authority?.authority_expansion === false
+      && resolved.host_semantics.includes("cannot grant or expand execution authority")
+      && resolved.host_semantics.includes("operation authorization"),
+    "task capability resolver blurred project/user metadata with Machine Bridge execution authority");
     const reusedContext = await runtime.executeTool("resolve_task_capabilities", {
       path: "packages/example",
       task: "Run the same repository workflow again",
@@ -272,7 +281,7 @@ description: 审查部署流程并验证发布配置。
     const metadata = parseSkillMetadata("---\nname: 'quoted'\ndescription: test skill\n---\n");
     assert(metadata.name === "quoted" && metadata.description === "test skill", "skill frontmatter parsing failed");
   } finally {
-    runtime.stop();
+    await runtime.stop();
   }
 
   const editRuntime = new LocalRuntime({
@@ -435,10 +444,12 @@ Use the linked workflow.
   await mkdir(join(optOutHome, ".config", "machine-bridge-mcp"), { recursive: true });
   await mkdir(join(optOutWorkspace, ".git"), { recursive: true });
   await writeFile(join(optOutWorkspace, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }), "utf8");
+  await writeFile(join(optOutHome, "private-model.md"), "owner private model guidance\n", "utf8");
   await writeFile(join(optOutHome, ".config", "machine-bridge-mcp", "agent.json"), JSON.stringify({
     version: 1,
     builtin_instructions: false,
     automatic_project_context: false,
+    model_instructions_file: "private-model.md",
   }, null, 2), "utf8");
   const optOutManager = new AgentContextManager({
     workspace: optOutWorkspace,
@@ -449,7 +460,29 @@ Use the linked workflow.
   });
   const optedOut = await optOutManager.agentContext({ path: "." });
   assert(optedOut.builtin_instructions === null && optedOut.automatic_project_context === null, "global opt-out did not disable automatic instruction layers");
+  assert(optedOut.model_instructions_file?.content.includes("owner private model guidance"), "local restricted policy lost user-global model guidance");
   assert(!optedOut.effective_instructions.includes("Machine Bridge default working agreements"), "disabled built-in instructions remained in effective context");
+  const delegatedAccountContext = {
+    origin: "relay",
+    authority: { owner: false, principal: { kind: "account", role: "editor" } },
+  };
+  const delegatedContext = await optOutManager.agentContext({ path: "." }, delegatedAccountContext);
+  assert(delegatedContext.builtin_instructions?.content.includes("Machine Bridge default working agreements")
+    && delegatedContext.automatic_project_context?.content.includes("npm run test"),
+  "remote non-owner context incorrectly inherited owner-global opt-out switches");
+  assert(delegatedContext.model_instructions_file === null
+    && !delegatedContext.effective_instructions.includes("owner private model guidance")
+    && !delegatedContext.config_files.some((value) => String(value).includes(".config/machine-bridge-mcp/agent.json")),
+  "remote non-owner agent context leaked owner-global config provenance or model guidance");
+  const delegatedBootstrap = await optOutManager.sessionBootstrap({ path: "." }, delegatedAccountContext);
+  assert(delegatedBootstrap.model_instructions_file === null
+    && !delegatedBootstrap.instructions.includes("owner private model guidance"),
+  "remote non-owner session bootstrap leaked owner-global model guidance");
+  const delegatedResolution = await optOutManager.resolveTaskCapabilities({ path: ".", task: "run the project test" }, delegatedAccountContext);
+  assert(delegatedResolution.model_instructions_file === null
+    && !delegatedResolution.effective_instructions.includes("owner private model guidance")
+    && !delegatedResolution.instruction_files.some((item) => String(item.path).includes("private-model.md")),
+  "remote non-owner capability resolution leaked owner-global model guidance or provenance");
 
   await mkdir(join(optOutWorkspace, ".machine-bridge"), { recursive: true });
   await writeFile(join(optOutWorkspace, ".machine-bridge", "agent.json"), JSON.stringify({

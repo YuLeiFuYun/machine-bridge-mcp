@@ -6,6 +6,7 @@ const TRANSIENT_NETWORK_FAILURE = /(?:SSL_ERROR_SYSCALL|SSL_connect|TLS handshak
 export function runNetworkCommand(command, args, options = {}) {
   const attempts = clampInteger(options.attempts, 3, 1, 5);
   const baseDelayMs = clampInteger(options.baseDelayMs, 750, 0, 10_000);
+  const timeoutMs = clampInteger(options.timeoutMs, 120_000, 10, 600_000);
   const actualArgs = networkCommandArgs(command, args);
   let result;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -14,6 +15,9 @@ export function runNetworkCommand(command, args, options = {}) {
       encoding: "utf8",
       stdio: "pipe",
       env: options.env,
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
+      maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
     });
     result.attempts = attempt;
@@ -24,7 +28,10 @@ export function runNetworkCommand(command, args, options = {}) {
 }
 
 export function networkCommandArgs(command, args) {
-  return command === "git" ? ["-c", "http.version=HTTP/1.1", ...args] : [...args];
+  const executable = String(command || "");
+  return /(?:^|[\\/])git(?:\.exe)?$/i.test(executable)
+    ? ["-c", "http.version=HTTP/1.1", ...args]
+    : [...args];
 }
 
 export function isTransientNetworkFailure(result) {

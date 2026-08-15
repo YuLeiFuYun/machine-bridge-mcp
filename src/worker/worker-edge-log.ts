@@ -1,3 +1,5 @@
+import { sanitizePortableLogText } from "../shared/log-redaction.mjs";
+
 type EdgeLogLevel = "warn" | "error";
 type EdgeLogWriter = (level: EdgeLogLevel, text: string) => void;
 const SENSITIVE_FIELD = /(?:authorization|cookie|password|secret|token|key|credential|proof)/i;
@@ -34,7 +36,7 @@ export function createThrottledEdgeLogger(options: {
 }
 
 function safeFields(fields: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  const out = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(fields).slice(0, 16)) {
     const name = safeName(key);
     if (!name) continue;
@@ -43,7 +45,7 @@ function safeFields(fields: Record<string, unknown>): Record<string, unknown> {
       continue;
     }
     if (typeof value === "number" || typeof value === "boolean" || value === null) out[name] = value;
-    else if (typeof value === "string") out[name] = value.replace(/[\u0000-\u001f\u007f]/g, "_").slice(0, 160);
+    else if (typeof value === "string") out[name] = sanitizePortableLogText(value, { maxChars: 160 });
   }
   return out;
 }

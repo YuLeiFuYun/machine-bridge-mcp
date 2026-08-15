@@ -1,9 +1,9 @@
-import { DEFAULT_ACCOUNT_ROLE, normalizeAccountRole, type AccountRole } from "./access.ts";
+import { DEFAULT_ACCOUNT_ROLE, normalizeAccountRole, type AuthorizedToken } from "./access.ts";
 import { accountAdminAuthorized, consumeAccountAdminNonce, handleAccountAdminOperation } from "./account-admin.ts";
 import { exchangeOAuthToken, type OAuthRefreshEvent } from "./oauth-tokens.ts";
 import {
   AUTH_BLOCK_SECONDS, accountByName, authorizationIdentity, emptyOAuthStore,
-  isCurrentOAuthStore, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
+  normalizeOAuthScope, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
   recordAuthorizationFailure, safeEqual, sha256Hex, validateAuthorizationRequest, verifyAccountPassword,
   type OAuthClient, type OAuthStore,
 } from "./oauth-state.ts";
@@ -13,13 +13,15 @@ import {
 } from "./http.ts";
 import { authorizationPage } from "./oauth-authorization-page.ts";
 import { handleOAuthClientAdminOperation } from "./oauth-client-admin.ts";
-import { loadOAuthRefreshStore } from "./oauth-refresh-families.ts";
+import {
+  MAX_OAUTH_CLIENTS, MAX_OAUTH_CLIENTS_PER_IDENTITY, OAUTH_CLIENT_REGISTRATION_REVISION,
+  OAUTH_CLIENT_IDLE_TTL_SECONDS, OAUTH_UNUSED_CLIENT_TTL_SECONDS, oauthClientRegistrationDocument, reusablePendingOAuthClient,
+} from "./oauth-client-contract.ts";
+import { loadOAuthRefreshStore } from "./oauth-refresh-families.ts"; import { oauthRefreshPersistenceEntries } from "./oauth-refresh-persistence.ts";
+import { isCurrentOAuthStore } from "./oauth-store-validation.ts";
+import { putWithAuthorityRevocation, putWithAuthorityRevocations } from "./authority-revocations.ts";
 
 const OAUTH_BODY_LIMIT_BYTES = 64 * 1024;
-const OAUTH_UNUSED_CLIENT_TTL_SECONDS = 60 * 60;
-const MAX_OAUTH_CLIENTS = 50;
-const MAX_OAUTH_CLIENTS_PER_IDENTITY = 5;
-const OAUTH_CLIENT_IDLE_TTL_SECONDS = 60 * 60 * 24 * 90;
 const MAX_CODES_PER_CLIENT = 10;
 const MAX_OAUTH_CODES = 200;
 const MAX_AUTH_FAILURE_IDENTITIES = 200;
@@ -29,23 +31,12 @@ export interface OAuthControllerEnv {
   OAUTH_TOKEN_VERSION: string;
 }
 
-export interface AuthorizedToken {
-  tokenKey: string;
-  accountId: string;
-  accountVersion: number;
-  clientId: string;
-  familyId: string;
-  dpopJkt: string;
-  role: AccountRole;
-}
-
 export class OAuthController {
   private readonly ctx: DurableObjectState;
   private readonly env: OAuthControllerEnv;
   private readonly serverName: string;
   private readonly serverVersion: string;
   private readonly onRefreshEvent?: (event: OAuthRefreshEvent) => void;
-  private oauthQueue: Promise<void> = Promise.resolve();
 
   constructor(
     ctx: DurableObjectState,
@@ -67,11 +58,12 @@ export class OAuthController {
       throw new HttpError(503, "oauth_state_schema_mismatch", "OAuth state does not match the current schema");
     }
     const store = isCurrentOAuthStore(raw) ? raw : emptyOAuthStore();
-    let changed = false;
+    let changed = false; const revocations = [];
     const now = Math.floor(Date.now() / 1000);
 
     for (const account of Object.values(store.accounts)) {
       if (normalizeAccountRole(account.role)) continue;
+      revocations.push({ accountId: account.account_id, accountVersion: account.version });
       account.role = DEFAULT_ACCOUNT_ROLE;
       account.active = false;
       account.version = Number.isInteger(account.version) && account.version > 0 ? account.version + 1 : 1;
@@ -114,7 +106,7 @@ export class OAuthController {
         changed = true;
       }
     }
-    if (changed) await this.ctx.storage.put("oauth", store);
+    if (changed) await putWithAuthorityRevocations(this.ctx.storage, { oauth: store }, revocations);
     return store;
   }
 
@@ -134,8 +126,8 @@ export class OAuthController {
       }
       const store = await this.oauthStore();
       return handleAccountAdminOperation({
-        request, operation, store, now,
-        save: () => this.ctx.storage.put("oauth", store),
+        request: authorization.request, operation, store, now,
+        save: (revocation) => putWithAuthorityRevocation(this.ctx.storage, { oauth: store }, revocation),
       });
     });
   }
@@ -156,7 +148,12 @@ export class OAuthController {
       }
       const store = await this.oauthStore();
       const refreshStore = await loadOAuthRefreshStore(store, this.ctx.storage);
-      return handleOAuthClientAdminOperation({ request, store, refreshStore, storage: this.ctx.storage, now });
+      return handleOAuthClientAdminOperation({
+        request: authorization.request, store, refreshStore, now,
+        save: (revocation) => putWithAuthorityRevocation(this.ctx.storage, {
+          oauth: store, ...oauthRefreshPersistenceEntries(refreshStore),
+        }, revocation),
+      });
     });
   }
 
@@ -178,12 +175,17 @@ export class OAuthController {
       return json({ error: "invalid_client_metadata", error_description: "redirect_uris must be canonicalizable https or local http URLs without credentials or fragments" }, 400);
     }
     const normalized = [...new Set(canonicalRedirectUris as string[])];
+    const clientName = normalizeDisplayText(stringOrUndefined(body.client_name) ?? "MCP Client", 128);
 
     return this.withOAuthLock(async () => {
       const store = await this.oauthStore();
       const registrationIdentity = await authorizationIdentity(request, this.identityKey());
-      const pendingIdentityClientCount = Object.values(store.clients).filter((client) => (
+      const clients = Object.values(store.clients);
+      const reusable = reusablePendingOAuthClient(clients, registrationIdentity, clientName, normalized);
+      if (reusable) return json(oauthClientRegistrationDocument(reusable), 201);
+      const pendingIdentityClientCount = clients.filter((client) => (
         client.registration_identity === registrationIdentity && client.has_been_authorized === false
+        && client.registration_revision === OAUTH_CLIENT_REGISTRATION_REVISION
       )).length;
       if (pendingIdentityClientCount >= MAX_OAUTH_CLIENTS_PER_IDENTITY) {
         return json({ error: "too_many_requests", error_description: "pending client registration limit reached for this source" }, 429);
@@ -194,24 +196,17 @@ export class OAuthController {
       const now = Math.floor(Date.now() / 1000);
       const client: OAuthClient = {
         client_id: randomToken("mcp_client"),
-        client_name: normalizeDisplayText(stringOrUndefined(body.client_name) ?? "MCP Client", 128),
+        client_name: clientName,
         redirect_uris: normalized,
         created_at: now,
         last_used_at: now,
         has_been_authorized: false,
         registration_identity: registrationIdentity,
+        registration_revision: OAUTH_CLIENT_REGISTRATION_REVISION,
       };
       store.clients[client.client_id] = client;
       await this.ctx.storage.put("oauth", store);
-      return json({
-        client_id: client.client_id,
-        client_name: client.client_name,
-        redirect_uris: client.redirect_uris,
-        grant_types: ["authorization_code", "refresh_token"],
-        response_types: ["code"],
-        token_endpoint_auth_method: "none",
-        client_id_issued_at: client.created_at,
-      });
+      return json(oauthClientRegistrationDocument(client), 201);
     });
   }
 
@@ -264,7 +259,7 @@ export class OAuthController {
       client.trusted_at ||= now;
 
       const code = randomToken("mcp_code");
-      const redirectLocation = authorizationRedirectLocation(redirectUri, code, state);
+      const redirectLocation = authorizationRedirectLocation(redirectUri, code, state, base);
       store.codes[code] = {
         client_id: clientId,
         account_id: account.account_id,
@@ -292,6 +287,9 @@ export class OAuthController {
       loadOAuthStore: () => this.oauthStore(),
       withLock: (callback) => this.withOAuthLock(callback),
       onRefreshEvent: this.onRefreshEvent,
+      saveStores: (oauthStore, refreshStore, revocation) => putWithAuthorityRevocation(this.ctx.storage, {
+        oauth: oauthStore, ...oauthRefreshPersistenceEntries(refreshStore),
+      }, revocation),
     });
   }
 
@@ -310,6 +308,7 @@ export class OAuthController {
       const currentVersion = this.env.OAUTH_TOKEN_VERSION ?? "";
       if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
       if (record.resource !== `${base}/mcp`) return null;
+      if (normalizeOAuthScope(record.scope, this.serverName) !== record.scope) { delete store.tokens[key]; await this.ctx.storage.put("oauth", store); return null; }
       const account = store.accounts[record.account_id];
       const client = store.clients[record.client_id];
       if (
@@ -334,15 +333,18 @@ export class OAuthController {
   }
 
   private async withOAuthLock<T>(callback: () => Promise<T>): Promise<T> {
-    const previous = this.oauthQueue;
-    let release = () => {};
-    this.oauthQueue = new Promise<void>((resolve) => { release = resolve; });
-    await previous;
-    try {
-      return await callback();
-    } finally {
-      release();
-    }
+    let value: T | undefined;
+    let failed = false, failure: unknown;
+    await this.ctx.blockConcurrencyWhile(async () => {
+      try {
+        value = await callback();
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+    });
+    if (failed) throw failure;
+    return value as T;
   }
 
   identityKey(): string {

@@ -4,6 +4,7 @@ import {
   refreshProcessTreeOwnership,
 } from "./process-tree-ownership.mjs";
 import { terminateProcessTree } from "./process-tree-signal.mjs";
+import { createSnapshotBudget } from "./process-tree-snapshot.mjs";
 
 export const DEFAULT_PROCESS_TERMINATION_GRACE_MS = 2000;
 
@@ -20,12 +21,22 @@ export function terminateProcessTreeWithEscalation(child, options = {}) {
   const isOwned = typeof options.isTerminationTargetOwned === "function"
     ? options.isTerminationTargetOwned : processTreeOwnershipStillCurrent;
 
+  const snapshotBudget = createSnapshotBudget(options);
   let ownershipBeforeSignal;
-  try { ownershipBeforeSignal = Promise.resolve(capture(child, options)).catch(() => null); }
-  catch { ownershipBeforeSignal = Promise.resolve(null); }
-  try { terminate(child, "SIGTERM", options); } catch {}
+  try {
+    const captureOptions = boundedSnapshotOptions(snapshotBudget, options, 2);
+    ownershipBeforeSignal = captureOptions
+      ? Promise.resolve(capture(child, captureOptions)).catch(() => null)
+      : Promise.resolve(null);
+  } catch { ownershipBeforeSignal = Promise.resolve(null); }
+  try { terminate(child, "SIGTERM", options); }
+  catch { /* Ownership-checked forced escalation remains available after the grace period. */ }
   const refreshedOwnership = ownershipBeforeSignal
-    .then((snapshot) => snapshot ? refresh(snapshot, options) : null)
+    .then((snapshot) => {
+      if (!snapshot) return null;
+      const refreshOptions = boundedSnapshotOptions(snapshotBudget, options, 1);
+      return refreshOptions ? refresh(snapshot, refreshOptions) : null;
+    })
     .catch(() => null);
 
   return schedule(() => superviseEscalation({
@@ -41,8 +52,18 @@ async function superviseEscalation({ child, options, terminate, isOwned, refresh
     try { owned = await isOwned(ownership, child, options); } catch { return; }
     if (!owned) return;
     try { terminate(child, "SIGKILL", options); } catch { return; }
-    try { options.onEscalated?.(); } catch {}
+    try { options.onEscalated?.(); } catch { /* Observer failure must not suppress termination settlement. */ }
   } finally {
-    try { options.onTerminationSettled?.(); } catch {}
+    try { options.onTerminationSettled?.(); } catch { /* Observer failure cannot change settled supervision. */ }
   }
+}
+
+function boundedSnapshotOptions(budget, options, slots) {
+  const remainingMs = budget.take(slots);
+  if (!remainingMs) return null;
+  const configuredMs = Number(options.processSnapshotTimeoutMs);
+  const processSnapshotTimeoutMs = Number.isFinite(configuredMs) && configuredMs >= 1
+    ? Math.min(remainingMs, Math.floor(configuredMs))
+    : remainingMs;
+  return { ...options, processSnapshotTimeoutMs };
 }

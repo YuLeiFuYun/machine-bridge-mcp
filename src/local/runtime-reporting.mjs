@@ -4,12 +4,18 @@ import {
   POLICY_PROFILES, SERVER_NAME,
 } from "./tools.mjs";
 import { executionGuardrailsSnapshot } from "./execution-limits.mjs";
+import {
+  hiddenGlobalActivity, hiddenInFlightActivity, publicDeviceRootStatus, publicSecurityAudit, runtimeActivityVisible,
+} from "./runtime-activity-projection.mjs";
+
+const MAX_PROJECT_OVERVIEW_TOP_LEVEL_ENTRIES = 40;
 
 export function buildRuntimeInfo({
   workspace,
   displayPath,
   policy,
   toolNames,
+  daemonToolNames = toolNames,
   capabilityObserver,
   observability,
   callRegistry,
@@ -19,7 +25,12 @@ export function buildRuntimeInfo({
   processTracker,
   processSessionManager,
   managedJobManager,
+  securityAudit = null,
+  deviceRootStatus = null,
+  context = {},
 }) {
+  const globalActivityVisible = runtimeActivityVisible(context);
+  const inFlightCalls = callRegistry.snapshot();
   return {
     name: SERVER_NAME,
     protocol_version: MCP_PROTOCOL_VERSION,
@@ -42,7 +53,8 @@ export function buildRuntimeInfo({
     },
     tool_delivery: {
       full_profile_scope: "local-daemon-and-relay-advertisement",
-      daemon_advertised_tool_count: toolNames.length + 1,
+      effective_tool_count: toolNames.length + 1,
+      daemon_advertised_tool_count: daemonToolNames.length + 1,
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
     },
@@ -54,21 +66,23 @@ export function buildRuntimeInfo({
       per_tool_events: "structured-debug-events",
       default_logs_include_tool_failures: false,
       tool_arguments_or_results_logged: false,
-      capability_routing: capabilityObserver.snapshot(),
-      tool_calls: observability.snapshot(),
-      in_flight_calls: callRegistry.snapshot(),
+      capability_routing: globalActivityVisible ? capabilityObserver.snapshot() : hiddenGlobalActivity(),
+      tool_calls: globalActivityVisible ? observability.snapshot() : hiddenGlobalActivity(),
+      in_flight_calls: globalActivityVisible ? inFlightCalls : hiddenInFlightActivity(inFlightCalls),
     },
     runtime: {
       environment: policy.minimalEnv ? "isolated-minimal" : "full-parent",
       lifecycle: lifecycle.snapshot(),
       relay: relayStatus(),
       runtime_dir: policy.exposeAbsolutePaths ? runtimeDir : "<private-runtime-dir>",
-      processes: processTracker.snapshot(),
+      processes: globalActivityVisible ? processTracker.snapshot() : hiddenGlobalActivity(),
       execution_guardrails: executionGuardrailsSnapshot(),
-      process_sessions: processSessionManager.status(),
-      managed_jobs: managedJobManager.status(),
-      local_resources: managedJobManager.resourceInfo(),
+      process_sessions: processSessionManager.status(context),
+      managed_jobs: managedJobManager.status(context),
+      local_resources: managedJobManager.resourceInfo(context),
     },
+    ...(securityAudit ? { security_audit: publicSecurityAudit(securityAudit, globalActivityVisible) } : {}),
+    trust: { device_root: publicDeviceRootStatus(deviceRootStatus, globalActivityVisible) },
   };
 }
 
@@ -81,31 +95,28 @@ export async function buildProjectOverview({
   daemonToolNames = toolNames,
   capabilityObserver,
   listTopLevel,
-  runInternalProcess,
-  gitExecutable,
+  resolveGitRoot,
   safeErrorMessage,
   throwIfCancelled,
 }, context = {}) {
   throwIfCancelled(context);
-  const top = await listTopLevel(context).catch((error) => ({ error: safeErrorMessage(error), entries: [] }));
-  const git = await runInternalProcess(
-    gitExecutable(),
-    ["-c", "core.fsmonitor=false", "-C", workspace, "rev-parse", "--show-toplevel"],
-    10_000,
-    true,
-    512 * 1024,
-    context,
-  );
+  const topPromise = listTopLevel(context).catch((error) => ({ error: safeErrorMessage(error), entries: [] }));
+  const gitPromise = resolveGitRoot(context);
+  const [top, gitRoot] = await Promise.all([topPromise, gitPromise]);
+  const topEntries = Array.isArray(top.entries) ? top.entries : [];
+  const topLevel = topEntries.slice(0, MAX_PROJECT_OVERVIEW_TOP_LEVEL_ENTRIES);
   return {
     workspace: displayPath(workspace),
     workspaceName: policy.exposeAbsolutePaths ? basename(workspace) : "workspace",
-    gitRoot: git.code === 0 ? displayPath(git.stdout.trim()) : "",
+    gitRoot: gitRoot ? displayPath(gitRoot) : "",
     policy,
     tools: ["server_info", ...toolNames],
     daemonPolicy,
     daemonTools: ["server_info", ...daemonToolNames],
-    capabilityRouting: capabilityObserver.snapshot(),
-    topLevel: top.entries || [],
+    capabilityRouting: runtimeActivityVisible(context) ? capabilityObserver.snapshot() : hiddenGlobalActivity(),
+    topLevel,
+    topLevelTotal: topEntries.length,
+    topLevelTruncated: Boolean(top.truncated || topEntries.length > topLevel.length),
   };
 }
 

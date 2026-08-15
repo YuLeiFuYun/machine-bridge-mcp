@@ -3,6 +3,9 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
+import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
+import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -27,13 +30,15 @@ export function backlogBlockers({ issues = [], pullRequests = [], branch = "", c
 export function assertGitHubBacklogReady(options = {}) {
   const run = options.run || runCommand;
   const cwd = options.cwd || root;
-  const branch = options.branch || output(run, "git", ["branch", "--show-current"], cwd);
+  const git = options.git || resolveTrustedGitExecutable({ workspace: cwd });
+  const gh = options.gh || resolveTrustedGithubCli({ workspace: cwd });
+  const branch = options.branch || output(run, git, ["branch", "--show-current"], cwd);
   if (!branch) throw new Error("cannot inspect GitHub backlog from a detached HEAD");
-  const commitMessages = output(run, "git", ["log", "--format=%B%x00", "origin/main..HEAD"], cwd);
-  const issueRows = pagedJson(output(run, "gh", [
+  const commitMessages = output(run, git, ["log", "--format=%B%x00", "origin/main..HEAD"], cwd);
+  const issueRows = pagedJson(output(run, gh, [
     "api", "--paginate", "--slurp", "repos/{owner}/{repo}/issues?state=open&per_page=100",
   ], cwd), "open GitHub issues");
-  const pullRows = pagedJson(output(run, "gh", [
+  const pullRows = pagedJson(output(run, gh, [
     "api", "--paginate", "--slurp", "repos/{owner}/{repo}/pulls?state=open&per_page=100",
   ], cwd), "open GitHub pull requests");
   const issues = issueRows
@@ -97,11 +102,7 @@ function runCommand(command, args, cwd) {
     windowsHide: true,
     shell: false,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || "").trim();
-    throw new Error(`${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
-  }
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure(command, args, result));
   return result;
 }
 
@@ -110,7 +111,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const result = assertGitHubBacklogReady();
     console.log(result.message);
   } catch (error) {
-    console.error(`GitHub backlog gate failed: ${error?.message || error}`);
+    console.error(JSON.stringify(releaseDiagnosticEvent("github.backlog.failed", error?.message || error, 1200)));
     process.exit(1);
   }
 }

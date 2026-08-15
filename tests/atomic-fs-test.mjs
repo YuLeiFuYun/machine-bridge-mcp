@@ -3,7 +3,8 @@ import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isTransientReplaceError, replaceFileSync } from "../src/local/atomic-fs.mjs";
-import { commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
+import { publicError } from "../src/local/errors.mjs";
+import { assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-atomic-replace-test-"));
 try {
@@ -59,6 +60,29 @@ try {
   assert(nonTransientCalls === 1, "non-transient replacement error was retried");
   assert(isTransientReplaceError({ code: "EACCES" }) && !isTransientReplaceError({ code: "ENOENT" }), "transient error classification is incorrect");
 
+  const caseAliasOne = { operation: { kind: "add" }, source: null, target: join(root, "Case-Alias.txt") };
+  const caseAliasTwo = { operation: { kind: "add" }, source: null, target: join(root, "case-alias.txt") };
+  const caseCollision = expectThrow(() => assertNoResolvedPatchCollisions([caseAliasOne, caseAliasTwo], "darwin"), "same path");
+  assert(caseCollision?.code === "conflict" && caseCollision?.details?.reason === "resolved_path_collision",
+    "Darwin resolved-path collision did not use the shared mutation identity or stable conflict reason");
+  assertNoResolvedPatchCollisions([caseAliasOne, caseAliasTwo], "linux");
+
+  const appearedTarget = join(root, "appeared-target.txt");
+  let noOverwriteLinkCalls = 0;
+  const appeared = await expectAsyncThrow(() => commitPatchTransaction([{
+    kind: "add", source: null, target: appearedTarget, content: "new", mode: 0o600,
+  }], {
+    async rename() { throw new Error("patch staged target unexpectedly used overwrite-capable rename"); },
+    async link() {
+      noOverwriteLinkCalls += 1;
+      const error = new Error("simulated target alias appeared");
+      error.code = "EEXIST";
+      throw error;
+    },
+  }), "target appeared", "conflict", true, "target_appeared");
+  assert(noOverwriteLinkCalls === 1 && appeared.cause?.code === "EEXIST",
+    "patch target commit did not fail closed through the no-overwrite link primitive");
+
   const cleanupTarget = join(root, "cleanup-warning.txt");
   await writeFile(cleanupTarget, "old", { encoding: "utf8", mode: 0o600 });
   const cleanupResult = await commitPatchTransaction([{
@@ -79,7 +103,7 @@ try {
 
   const rollbackTarget = join(root, "rollback-warning.txt");
   await writeFile(rollbackTarget, "old", { encoding: "utf8", mode: 0o600 });
-  await expectAsyncThrow(() => commitPatchTransaction([{
+  const rollbackFailure = await expectAsyncThrow(() => commitPatchTransaction([{
     kind: "update",
     source: rollbackTarget,
     target: rollbackTarget,
@@ -88,11 +112,63 @@ try {
     mode: 0o600,
   }], {
     async rename(from, to) {
-      if (from.includes(".mbm-patch-")) throw new Error("simulated commit failure");
       if (from.includes(".mbm-backup-")) throw new Error("simulated rollback failure");
       return rename(from, to);
     },
-  }), "recovery was incomplete", "internal_error", false);
+    async link() { throw new Error("simulated commit failure"); },
+  }), "recovery was incomplete", "execution_failed", true);
+  const publicRollbackFailure = publicError(rollbackFailure);
+  assert(rollbackFailure.retryable === false
+    && rollbackFailure.details?.reason === "patch_recovery_incomplete"
+    && publicRollbackFailure.retryable === false
+    && publicRollbackFailure.message.includes("may have partially modified files")
+    && publicRollbackFailure.message.includes("inspect affected paths before retrying"),
+  "incomplete patch rollback was not exposed as a stable non-retryable unknown filesystem settlement");
+  assert(rollbackFailure.cause instanceof AggregateError
+    && rollbackFailure.cause.errors?.[0]?.message === "simulated commit failure"
+    && rollbackFailure.cause.errors?.[1]?.message === "simulated rollback failure",
+  "incomplete patch rollback did not preserve primary and cleanup causes in order");
+
+  const rollbackCleanupTarget = join(root, "rollback-cleanup-only.txt");
+  await writeFile(rollbackCleanupTarget, "old", { encoding: "utf8", mode: 0o600 });
+  const rollbackCleanupFailure = await expectAsyncThrow(() => commitPatchTransaction([{
+    kind: "update", source: rollbackCleanupTarget, target: rollbackCleanupTarget,
+    content: "new", originalHash: sha256("old"), mode: 0o600,
+  }], {
+    async link() { throw new Error("simulated commit failure before target creation"); },
+    async remove(path, options) {
+      if (path.includes(".mbm-patch-")) throw new Error("simulated staging cleanup failure");
+      return rm(path, options);
+    },
+  }), "staging cleanup was incomplete", "internal_error", false);
+  assert(await readFile(rollbackCleanupTarget, "utf8") === "old"
+    && rollbackCleanupFailure.details?.reason !== "patch_recovery_incomplete"
+    && rollbackCleanupFailure.cause instanceof AggregateError
+    && rollbackCleanupFailure.cause.errors?.[0]?.message === "simulated commit failure before target creation"
+    && rollbackCleanupFailure.cause.errors?.[1]?.message === "simulated staging cleanup failure",
+  "staging-artifact cleanup failure was incorrectly reported as ambiguous user-file rollback");
+
+  const atomicCleanupTarget = join(root, "atomic-cleanup.txt");
+  await writeFile(atomicCleanupTarget, "current", { encoding: "utf8", mode: 0o600 });
+  const atomicCleanupFailure = await expectAsyncThrow(() => atomicWriteText(atomicCleanupTarget, "new", null, {
+    expectedHash: sha256("stale"),
+    async remove() { throw new Error("simulated atomic staging cleanup failure"); },
+  }), "cleanup was incomplete", "internal_error", false);
+  assert(atomicCleanupFailure.cause instanceof AggregateError
+    && atomicCleanupFailure.cause.errors?.[0]?.code === "conflict"
+    && atomicCleanupFailure.cause.errors?.[0]?.details?.reason === "hash_mismatch"
+    && atomicCleanupFailure.cause.errors?.[1]?.message === "simulated atomic staging cleanup failure"
+    && await readFile(atomicCleanupTarget, "utf8") === "current",
+  "atomic pre-commit cleanup failure lost its primary conflict, cleanup cause, or target integrity");
+
+  const createOnlyTarget = join(root, "create-only-cleanup-warning.txt");
+  const createOnlyCommit = await atomicWriteText(createOnlyTarget, "committed", null, {
+    createOnly: true,
+    async remove() { throw new Error("simulated post-commit staging cleanup failure"); },
+  });
+  assert(await readFile(createOnlyTarget, "utf8") === "committed"
+    && createOnlyCommit.warnings.length === 1 && createOnlyCommit.warnings[0].includes("File committed"),
+  "create-only post-commit cleanup failure retroactively reported the committed mutation as failed");
 
   const staleTarget = join(root, "stale-source.txt");
   await writeFile(staleTarget, "current", { encoding: "utf8", mode: 0o600 });
@@ -113,7 +189,7 @@ try {
 
 function expectThrow(callback, pattern) {
   try { callback(); } catch (error) {
-    if (String(error?.message || error).includes(pattern)) return;
+    if (String(error?.message || error).includes(pattern)) return error;
     throw error;
   }
   throw new Error(`expected throw containing: ${pattern}`);

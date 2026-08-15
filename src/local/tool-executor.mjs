@@ -27,7 +27,7 @@ export class ToolExecutor {
     this.pipeline = composeMiddleware([
       lifecycleMiddleware(this.callRegistry),
       observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs),
-      authorizeMiddleware(this.policyGate, this.accountAccessGate, this.operationAuthorizer),
+      authorizeMiddleware(this.policyGate, this.accountAccessGate, this.operationAuthorizer, this.callRegistry),
       validateArgumentsMiddleware(),
     ], invokeHandler(this.handlers));
   }
@@ -41,7 +41,7 @@ export function composeMiddleware(middleware, terminal) {
   return middleware.reduceRight((next, current) => (operation) => current(operation, next), terminal);
 }
 
-function authorizeMiddleware(policyGate, accountAccessGate, operationAuthorizer) {
+function authorizeMiddleware(policyGate, accountAccessGate, operationAuthorizer, callRegistry) {
   return async (operation, next) => {
     policyGate.assert(operation.tool);
     if (operation.context.origin === "relay") {
@@ -50,10 +50,12 @@ function authorizeMiddleware(policyGate, accountAccessGate, operationAuthorizer)
       if (!role) throw new Error("relay tool call is missing an account role");
       accountAccessGate.assert(role, operation.tool);
       operation.context.authority = accountAccessGate.authority(authorization, policyGate.policy, "relay");
+      callRegistry.bindPrincipal(operation.context.callId, operation.context.authority.principal);
       const decision = await operationAuthorizer?.authorize(operation);
       if (decision) operation.context.operationAuthorization = decision;
     } else {
       operation.context.authority = accountAccessGate.authority({}, policyGate.policy, "local");
+      callRegistry.bindPrincipal(operation.context.callId, operation.context.authority.principal);
     }
     return next(operation);
   };
@@ -83,9 +85,10 @@ function lifecycleMiddleware(callRegistry) {
     operation.context = { ...operation.request.context, ...context };
     try {
       callRegistry.throwIfCancelled(operation.context);
-      const result = await next(operation);
-      callRegistry.throwIfCancelled(operation.context);
-      return result;
+      // Handler return is the local settlement point. Cooperative handlers observe cancellation
+      // before or during cancellable work; a later signal must not retroactively relabel a
+      // completed side effect as cancelled after observability/audit already recorded completion.
+      return await next(operation);
     } finally {
       callRegistry.finish(context.callId);
     }

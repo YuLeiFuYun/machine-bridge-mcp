@@ -4,15 +4,13 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { LocalRuntime } from "./runtime.mjs";
+import { isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
 import { generateSshKeyPair } from "./ssh-key.mjs";
 import { runExecutable } from "./shell.mjs";
 import { allToolNames, assertCanonicalFullPolicy, policyProfile } from "./tools.mjs";
-
-const TERMINAL_JOB_STATES = new Set([
-  "succeeded", "failed", "cancelled", "runner_failed", "runner_launch_failed",
-  "recovery_failed", "recovery_exhausted", "succeeded_cleanup_failed",
-  "failed_cleanup_failed", "cancelled_cleanup_failed",
-]);
+const FULL_ACCESS_RESOURCE_WAIT_MS = 5 * 60_000;
+const FULL_ACCESS_JOB_WAIT_MS = 5 * 60_000;
+const FULL_ACCESS_JOB_CLEANUP_WAIT_MS = 30_000;
 
 export async function runFullAccessTest({ workspace, policy = policyProfile("full", "explicit") } = {}) {
   const canonicalPolicy = assertCanonicalFullPolicy(policy);
@@ -28,6 +26,8 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
   const previousSentinel = process.env[sentinelKey];
   process.env[sentinelKey] = "visible";
   let runtime;
+  let unsettledJobId = "";
+  let removeRoot = true;
 
   try {
     runtime = new LocalRuntime({
@@ -37,6 +37,7 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
       resources: {},
       logger: silentLogger(),
       recoverJobs: false,
+      processResourceWaitMs: FULL_ACCESS_RESOURCE_WAIT_MS,
     });
 
     const toolNames = runtime.tools();
@@ -141,7 +142,9 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
       steps: [{ argv: [process.execPath, "{{temp:main.js}}", mainMarker], timeout_seconds: 10 }],
       finally_steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'cleanup')", cleanupMarker], timeout_seconds: 10 }],
     });
-    const job = await waitForJob(runtime.managedJobManager, accepted.job_id, 15_000);
+    unsettledJobId = accepted.job_id;
+    const job = await waitForJob(runtime.managedJobManager, accepted.job_id, FULL_ACCESS_JOB_WAIT_MS);
+    unsettledJobId = "";
     checks.push(check("detached-managed-job", job.status === "succeeded"
       && await fileEquals(mainMarker, "main")
       && await fileEquals(cleanupMarker, "cleanup"), {
@@ -171,21 +174,34 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
       },
     };
   } finally {
-    runtime?.stop();
+    if (runtime && unsettledJobId) {
+      try {
+        const status = runtime.managedJobManager.read({ job_id: unsettledJobId });
+        if (!isTerminalManagedJobStatus(status.status)) {
+          runtime.managedJobManager.cancel({ job_id: unsettledJobId });
+          await waitForJob(runtime.managedJobManager, unsettledJobId, FULL_ACCESS_JOB_CLEANUP_WAIT_MS);
+        }
+      } catch {
+        removeRoot = false;
+      }
+    }
+    await runtime?.stop();
     if (previousSentinel === undefined) delete process.env[sentinelKey];
     else process.env[sentinelKey] = previousSentinel;
-    await rm(root, { recursive: true, force: true });
+    if (removeRoot) await rm(root, { recursive: true, force: true });
   }
 }
 
 async function waitForJob(manager, jobId, timeoutMs) {
   const deadline = createMonotonicDeadline(timeoutMs);
+  let lastStatus = "unknown";
   while (!deadline.expired()) {
     const value = manager.read({ job_id: jobId });
-    if (TERMINAL_JOB_STATES.has(value.status)) return value;
+    lastStatus = String(value.status || "unknown");
+    if (isTerminalManagedJobStatus(value.status)) return value;
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, 50); });
   }
-  throw new Error("full access managed-job test timed out");
+  throw new Error(`full access managed-job test timed out while status=${lastStatus}`);
 }
 
 async function equivalentPath(left, right) {

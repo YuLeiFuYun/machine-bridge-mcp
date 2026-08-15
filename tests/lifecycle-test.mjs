@@ -23,6 +23,17 @@ failed.markFailed(new BridgeError("network_error", "offline"));
 assert(failed.snapshot().state === "failed" && failed.snapshot().failure_code === "network_error", "failure state lost the stable code");
 assert(failed.beginStart(), "failed lifecycle could not retry start");
 failed.markRunning();
+
+const stopFailed = new LifecycleController("stop-failed-runtime");
+stopFailed.beginStart();
+stopFailed.markRunning();
+stopFailed.beginStop();
+stopFailed.markStopFailed(new BridgeError("unavailable", "child still settling"));
+assert(stopFailed.snapshot().state === "stop_failed" && stopFailed.snapshot().failure_code === "unavailable"
+  && !stopFailed.snapshot().operational, "failed stop did not retain a distinct non-operational retry state");
+expectBridgeError(() => stopFailed.beginStart(), "conflict");
+assert(stopFailed.beginStop(), "failed stop could not retry cleanup");
+stopFailed.markStopped();
 console.log("lifecycle controller test ok");
 
 function expectBridgeError(operation, code) {

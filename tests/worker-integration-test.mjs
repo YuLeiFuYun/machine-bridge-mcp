@@ -62,23 +62,31 @@ try {
   assert(publicMetadata.response.status === 200, "public MCP metadata failed");
   assert(!("tools" in publicMetadata.body), "public MCP metadata exposed potential local tools");
   assert(!("instructions" in publicMetadata.body), "public MCP metadata exposed operational instructions");
-  assert(publicMetadata.body.protocolVersion === "2026-07-28", "public MCP metadata omitted the primary modern version");
-  assert(publicMetadata.body.protocolVersions?.includes("2026-07-28")
-    && publicMetadata.body.protocolVersions?.includes("2025-11-25"), "public MCP metadata omitted dual-era versions");
-  assert(publicMetadata.body.protocolEras?.modern?.includes("2026-07-28")
-    && publicMetadata.body.protocolEras?.legacy?.includes("2025-11-25"), "public MCP metadata did not separate protocol eras");
+  assert(publicMetadata.body.protocolVersion === "2026-07-28", "public MCP metadata omitted the current protocol version");
+  assert(JSON.stringify(publicMetadata.body.protocolVersions) === JSON.stringify(["2026-07-28"]),
+    "public MCP metadata advertised a removed protocol version");
+  assert(!("protocolEras" in publicMetadata.body), "public MCP metadata retained a removed protocol-era taxonomy");
   assert(publicMetadata.body.transport?.type === "streamable-http", "public MCP metadata did not advertise Streamable HTTP");
-  assert(publicMetadata.body.transport?.modern?.protocolSessions === false
-    && publicMetadata.body.transport?.modern?.resumableSse === false,
-  "public MCP metadata retained legacy session or resumption semantics for modern clients");
+  assert(JSON.stringify(publicMetadata.body.transport?.initializationCompatibility?.protocolVersions)
+      === JSON.stringify(["2025-11-25", "2025-06-18"])
+      && publicMetadata.body.transport?.initializationCompatibility?.sessionless === true,
+  "public MCP metadata omitted the bounded stateless initialization compatibility surface");
+  assert(!Object.hasOwn(publicMetadata.body.transport ?? {}, "protocolSessions")
+    && !Object.hasOwn(publicMetadata.body.transport ?? {}, "resumableSse")
+    && JSON.stringify(publicMetadata.body.transport?.methods) === JSON.stringify(["POST"]),
+  "public MCP metadata retained removed session/resumability flags or GET semantics");
   const authorizationMetadata = await fetchJson(`${base}/.well-known/oauth-authorization-server/mcp`);
   assert(authorizationMetadata.response.status === 200, "OAuth authorization-server discovery failed");
   assert(authorizationMetadata.body.grant_types_supported?.includes("refresh_token"), "OAuth metadata omitted refresh-token support");
   assert(authorizationMetadata.body.scopes_supported?.includes("offline_access"), "OAuth metadata omitted offline_access");
+  assert(authorizationMetadata.body.authorization_response_iss_parameter_supported === true,
+    "OAuth authorization-server metadata did not advertise RFC 9207 issuer responses");
   const protectedResourceMetadata = await fetchJson(`${base}/.well-known/oauth-protected-resource/mcp`);
   assert(protectedResourceMetadata.response.status === 200, "OAuth protected-resource discovery failed");
   assert(protectedResourceMetadata.body.resource === `${base}/mcp`, "protected-resource metadata changed the MCP resource");
   assert(protectedResourceMetadata.body.authorization_servers?.[0] === base, "protected-resource metadata changed the authorization server");
+  assert(!protectedResourceMetadata.body.scopes_supported?.includes("offline_access"),
+    "protected-resource metadata advertised refresh-token policy as a resource scope");
   const unauthenticatedMcpDiscovery = await stableFetch(`${base}/mcp`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -86,7 +94,7 @@ try {
   });
   assert(unauthenticatedMcpDiscovery.status === 401, "unauthenticated MCP discovery request did not return 401");
   for (const mode of ["poll", "subscribe"]) {
-    const spoofedInternalStream = await stableFetch(`${base}/mcp`, {
+    const removedInternalStream = await stableFetch(`${base}/mcp`, {
       method: "GET",
       headers: {
         accept: "text/event-stream",
@@ -94,11 +102,26 @@ try {
         "x-machine-bridge-internal-mcp-stream-id": `stream_${"S".repeat(43)}`,
       },
     });
-    assert(spoofedInternalStream.status === 401, `public internal-stream ${mode} headers bypassed MCP authorization`);
+    assert(removedInternalStream.status === 405,
+      `removed internal-stream ${mode} mode was still recognized as an MCP delivery path`);
   }
+  const spoofedCurrentControl = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "MCP-Protocol-Version": "2026-07-28",
+      "Mcp-Method": "server/discover",
+      "x-machine-bridge-internal-mcp-stream-mode": "cancel",
+      "x-machine-bridge-internal-mcp-stream-id": `stream_${"S".repeat(43)}`,
+    },
+    body: JSON.stringify(currentMcpRequest(0, "server/discover", {})),
+  });
+  assert(spoofedCurrentControl.status === 401,
+    "caller-supplied current internal-stream control headers bypassed MCP authorization");
   assert(
-    unauthenticatedMcpDiscovery.headers.get("www-authenticate") === `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
-    "unauthenticated MCP response omitted the protected-resource discovery challenge",
+    unauthenticatedMcpDiscovery.headers.get("www-authenticate") === `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp", scope="machine-bridge-mcp"`,
+    "unauthenticated MCP response omitted the protected-resource discovery or minimum-scope challenge",
   );
   const wrongHealthMethod = await stableFetch(`${base}/healthz`, { method: "POST" });
   assert(wrongHealthMethod.status === 405, "health endpoint accepted an unsupported method");
@@ -139,7 +162,7 @@ try {
   assert(opaqueAuthorization.status === 400, `opaque-origin authorization did not reach OAuth validation: ${opaqueAuthorization.status}`);
   assert(opaqueAuthorization.headers.get("access-control-allow-origin") === null, "opaque-origin authorization received CORS response access");
   assert((await opaqueAuthorization.text()).includes("Authorization cannot continue"), "opaque-origin authorization did not render the normal OAuth error page");
-  for (const origin of ["https://chatgpt.com", "https://chat.openai.com", "https://grok.com", "https://x.com"]) {
+  for (const origin of ["https://chatgpt.com", "https://grok.com", "https://x.com"]) {
     const builtInPreflight = await stableFetch(`${base}/oauth/register`, {
       method: "OPTIONS",
       headers: {
@@ -165,8 +188,12 @@ try {
   assert(preflight.status === 204, `configured-origin preflight failed: ${preflight.status}`);
   assert(preflight.headers.get("access-control-allow-origin") === "http://localhost:3001", "preflight omitted exact allowed origin");
   const allowedHeaders = preflight.headers.get("access-control-allow-headers") || "";
-  for (const requiredHeader of ["authorization", "dpop", "last-event-id", "mcp-protocol-version", "mcp-session-id"]) {
-    assert(allowedHeaders.split(/,\s*/).includes(requiredHeader), `MCP CORS preflight omitted ${requiredHeader}`);
+  const allowedHeaderNames = allowedHeaders.split(/,\s*/);
+  for (const requiredHeader of ["authorization", "dpop", "mcp-protocol-version", "mcp-method", "mcp-name"]) {
+    assert(allowedHeaderNames.includes(requiredHeader), `MCP CORS preflight omitted ${requiredHeader}`);
+  }
+  for (const removedHeader of ["last-event-id", "mcp-session-id"]) {
+    assert(!allowedHeaderNames.includes(removedHeader), `MCP CORS preflight still advertised removed ${removedHeader}`);
   }
   const corsHealth = await stableFetch(`${base}/healthz`, { headers: { origin: "http://localhost:3001" } });
   assert(corsHealth.status === 200, "configured browser origin could not access health endpoint");
@@ -174,10 +201,10 @@ try {
 
   const unauthenticatedAdmin = await stableFetch(`${base}/admin/accounts`);
   assert(unauthenticatedAdmin.status === 401, "account administration accepted an unauthenticated request");
-  const legacyBearerAdmin = await stableFetch(`${base}/admin/accounts`, {
+  const removedBearerAdmin = await stableFetch(`${base}/admin/accounts`, {
     headers: { authorization: "Bearer integration-admin-secret" },
   });
-  assert(legacyBearerAdmin.status === 401, "account administration still accepted the long-lived bearer protocol");
+  assert(removedBearerAdmin.status === 401, "account administration still accepted the long-lived bearer protocol");
   const replayOptions = adminRequest("GET", "/admin/accounts");
   const firstSignedAdmin = await stableFetch(`${base}/admin/accounts`, replayOptions);
   const replayedSignedAdmin = await stableFetch(`${base}/admin/accounts`, replayOptions);
@@ -214,7 +241,7 @@ try {
   assert(invalidRegistration.status === 400, "non-loopback HTTP redirect URI was accepted");
 
   const redirectUriInput = "http://LOCALHOST:80/callback/../callback";
-  const chatGptRedirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const chatGptRedirectUri = "https://chatgpt.com/connector/oauth/integration-callback";
   const claudeRedirectUri = "https://claude.ai/api/mcp/auth_callback";
   const copilotRedirectUri = "https://global.consent.azure-apim.net/redirect/machine-bridge-mcp-test";
   const consentLookalikeRedirectUri = "https://global.consent.azure-apim.net.example.com/callback";
@@ -223,7 +250,7 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ client_name: "Integration\u202e <Client>\u200b", redirect_uris: [redirectUriInput, chatGptRedirectUri, claudeRedirectUri, copilotRedirectUri, consentLookalikeRedirectUri] }),
   });
-  assert(registration.response.status === 200, `client registration failed: ${registration.response.status}`);
+  assert(registration.response.status === 201, `client registration failed: ${registration.response.status}`);
   assert(typeof registration.body.client_id === "string", "registration did not return client_id");
   assert(registration.body.client_name === "Integration <Client>", "registration retained Unicode display-control characters");
   assert(registration.body.redirect_uris?.[0] === "http://localhost/callback", "registration did not canonicalize redirect URI");
@@ -329,6 +356,7 @@ try {
   const code = redirect.searchParams.get("code");
   assert(code, "authorization redirect omitted code");
   assert(redirect.searchParams.get("state") === "integration-state", "authorization state was not preserved");
+  assert(redirect.searchParams.get("iss") === base, "authorization redirect omitted or changed the RFC 9207 issuer");
 
   const chatGptAuthorization = {
     response_type: "code",
@@ -352,7 +380,7 @@ try {
   assert(chatGptLocation, "ChatGPT authorization redirect omitted Location");
   const chatGptRedirect = new URL(chatGptLocation);
   assert(chatGptRedirect.origin === "https://chatgpt.com", "ChatGPT authorization redirect changed origin");
-  assert(chatGptRedirect.pathname === "/connector_platform_oauth_redirect", "ChatGPT authorization redirect changed path");
+  assert(chatGptRedirect.pathname === "/connector/oauth/integration-callback", "ChatGPT authorization redirect changed path");
   assert(chatGptRedirect.searchParams.get("code")?.startsWith("mcp_code_"), "ChatGPT authorization redirect omitted a valid code");
   assert(chatGptRedirect.searchParams.get("state") === chatGptAuthorization.state, "ChatGPT authorization redirect corrupted state");
 
@@ -405,6 +433,8 @@ try {
     }),
   });
   assert(token.response.status === 200, `token exchange failed: ${token.response.status}`);
+  assert(token.response.headers.get("cache-control") === "no-store" && token.response.headers.get("pragma") === "no-cache",
+    "OAuth token response omitted mandatory no-store/no-cache cache controls");
   assert(typeof token.body.access_token === "string", "token exchange omitted access_token");
   assert(typeof token.body.refresh_token === "string", "token exchange omitted refresh_token");
   assert(token.body.scope === "machine-bridge-mcp offline_access", "token exchange changed the granted scope");
@@ -420,6 +450,7 @@ try {
     }),
   });
   assert(refreshed.response.status === 200, `refresh-token exchange failed: ${refreshed.response.status}`);
+  assert(refreshed.response.headers.get("pragma") === "no-cache", "OAuth refresh response omitted Pragma: no-cache");
   assert(typeof refreshed.body.access_token === "string" && refreshed.body.access_token !== token.body.access_token, "refresh did not rotate the access token");
   assert(typeof refreshed.body.refresh_token === "string" && refreshed.body.refresh_token !== token.body.refresh_token, "refresh did not rotate the refresh token");
   assert(refreshed.body.expires_in === 900, "access-token lifetime was not reduced to 15 minutes");
@@ -471,78 +502,105 @@ try {
   }
   const retainedFamilyAccess = await stableFetch(`${base}/mcp`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "concurrent-refresh", version: "1" } } }),
+    headers: currentMcpHeaders(ownerAccessToken, "tools/list"),
+    body: JSON.stringify(currentMcpRequest(99, "tools/list", {})),
   });
   assert(retainedFamilyAccess.status === 200, "concurrent refresh retry invalidated the replacement access token");
 
-  const modernDiscovery = await fetchJson(`${base}/mcp`, {
+  const currentDiscovery = await fetchJson(`${base}/mcp`, {
     method: "POST",
-    headers: modernMcpHeaders(ownerAccessToken, "server/discover"),
-    body: JSON.stringify(modernRequest(9000, "server/discover", {})),
+    headers: currentMcpHeaders(ownerAccessToken, "server/discover"),
+    body: JSON.stringify(currentMcpRequest(9000, "server/discover", {})),
   });
-  assert(modernDiscovery.response.status === 200, `modern server/discover failed: ${modernDiscovery.response.status}`);
-  assert(modernDiscovery.body.result?.resultType === "complete"
-    && JSON.stringify(modernDiscovery.body.result?.supportedVersions) === JSON.stringify(["2026-07-28"]),
-  "modern discovery omitted resultType or advertised a legacy per-request retry version");
-  assert(modernDiscovery.body.result?.cacheScope === "public"
-    && modernDiscovery.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
-  "modern discovery omitted cache or server identity metadata");
-  assert(modernDiscovery.response.headers.get("mcp-session-id") === null, "modern discovery minted a protocol session");
+  assert(currentDiscovery.response.status === 200, `current server/discover failed: ${currentDiscovery.response.status}`);
+  assert(currentDiscovery.body.result?.resultType === "complete"
+    && JSON.stringify(currentDiscovery.body.result?.supportedVersions) === JSON.stringify(["2026-07-28"]),
+  "current discovery omitted resultType or advertised a removed protocol version");
+  assert(currentDiscovery.body.result?.cacheScope === "public"
+    && currentDiscovery.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
+  "current discovery omitted cache or server identity metadata");
+  assert(currentDiscovery.response.headers.get("mcp-session-id") === null, "current discovery minted a protocol session");
 
-  const spoofedModernCancelHeaders = modernMcpHeaders(ownerAccessToken, "tools/list");
-  spoofedModernCancelHeaders["x-machine-bridge-internal-mcp-stream-mode"] = "modern-cancel";
-  spoofedModernCancelHeaders["x-machine-bridge-internal-mcp-stream-id"] = `stream_${"S".repeat(43)}`;
-  const spoofedModernCancel = await fetchJson(`${base}/mcp`, {
+  const spoofedCurrentCancelHeaders = currentMcpHeaders(ownerAccessToken, "tools/list");
+  spoofedCurrentCancelHeaders["x-machine-bridge-internal-mcp-stream-mode"] = "current-cancel";
+  spoofedCurrentCancelHeaders["x-machine-bridge-internal-mcp-stream-id"] = `stream_${"S".repeat(43)}`;
+  const spoofedCurrentCancel = await fetchJson(`${base}/mcp`, {
     method: "POST",
-    headers: spoofedModernCancelHeaders,
-    body: JSON.stringify(modernRequest(90001, "tools/list", {})),
+    headers: spoofedCurrentCancelHeaders,
+    body: JSON.stringify(currentMcpRequest(90001, "tools/list", {})),
   });
-  assert(spoofedModernCancel.response.status === 200
-    && Array.isArray(spoofedModernCancel.body.result?.tools),
-  "public internal modern-cancel headers reached the Durable Object control path");
+  assert(spoofedCurrentCancel.response.status === 200
+    && Array.isArray(spoofedCurrentCancel.body.result?.tools),
+  "public internal current-cancel headers reached the Durable Object control path");
 
-  const modernMissingMethodHeaders = modernMcpHeaders(ownerAccessToken, "server/discover");
-  delete modernMissingMethodHeaders["Mcp-Method"];
-  const modernMissingMethod = await fetchJson(`${base}/mcp`, {
+  const currentMissingMethodHeaders = currentMcpHeaders(ownerAccessToken, "server/discover");
+  delete currentMissingMethodHeaders["Mcp-Method"];
+  const currentMissingMethod = await fetchJson(`${base}/mcp`, {
     method: "POST",
-    headers: modernMissingMethodHeaders,
-    body: JSON.stringify(modernRequest(9001, "server/discover", {})),
+    headers: currentMissingMethodHeaders,
+    body: JSON.stringify(currentMcpRequest(9001, "server/discover", {})),
   });
-  assert(modernMissingMethod.response.status === 400 && modernMissingMethod.body.error?.code === -32020,
-    "modern request missing Mcp-Method did not fail with HeaderMismatch");
+  assert(currentMissingMethod.response.status === 400 && currentMissingMethod.body.error?.code === -32020,
+    "current request missing Mcp-Method did not fail with HeaderMismatch");
 
-  const unsupportedModern = await fetchJson(`${base}/mcp`, {
+  const currentMissingBodyVersion = await fetchJson(`${base}/mcp`, {
     method: "POST",
-    headers: modernMcpHeaders(ownerAccessToken, "tools/list", "", "1900-01-01"),
-    body: JSON.stringify(modernRequest(9002, "tools/list", {}, "1900-01-01")),
+    headers: currentMcpHeaders(ownerAccessToken, "server/discover"),
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 90011, method: "server/discover",
+      params: { _meta: { "io.modelcontextprotocol/clientCapabilities": {} } },
+    }),
   });
-  assert(unsupportedModern.response.status === 400 && unsupportedModern.body.error?.code === -32022,
-    "modern unsupported version did not use the protocol-defined error");
-  assert(JSON.stringify(unsupportedModern.body.error?.data?.supported) === JSON.stringify(["2026-07-28"]),
-    "modern unsupported-version error advertised a legacy retry version");
+  assert(currentMissingBodyVersion.response.status === 400 && currentMissingBodyVersion.body.error?.code === -32020,
+    "current HTTP request missing body protocol version bypassed HeaderMismatch precedence");
 
-  const modernGet = await stableFetch(`${base}/mcp`, {
+  const currentWrongContentTypeHeaders = currentMcpHeaders(ownerAccessToken, "server/discover");
+  currentWrongContentTypeHeaders["content-type"] = "text/plain; a=application/json";
+  const currentWrongContentType = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: currentWrongContentTypeHeaders,
+    body: JSON.stringify(currentMcpRequest(90012, "server/discover", {})),
+  });
+  assert(currentWrongContentType.response.status === 415 && currentWrongContentType.body.error?.code === -32600,
+    "current HTTP request with a non-JSON media type did not fail with 415 Unsupported Media Type");
+  const currentWrongContentTypeInvalidBody = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: currentWrongContentTypeHeaders,
+    body: "not-json-at-all",
+  });
+  assert(currentWrongContentTypeInvalidBody.response.status === 415
+    && currentWrongContentTypeInvalidBody.body.id === null
+    && currentWrongContentTypeInvalidBody.body.error?.code === -32600,
+  "current Content-Type validation ran after JSON parsing instead of before body materialization");
+
+  const unsupportedCurrent = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: currentMcpHeaders(ownerAccessToken, "tools/list", "", "1900-01-01"),
+    body: JSON.stringify(currentMcpRequest(9002, "tools/list", {}, "1900-01-01")),
+  });
+  assert(unsupportedCurrent.response.status === 400 && unsupportedCurrent.body.error?.code === -32022,
+    "current unsupported version did not use the protocol-defined error");
+  assert(JSON.stringify(unsupportedCurrent.body.error?.data?.supported) === JSON.stringify(["2026-07-28"]),
+    "current unsupported-version error advertised a removed protocol version");
+
+  const currentGet = await stableFetch(`${base}/mcp`, {
     method: "GET",
     headers: { authorization: `Bearer ${ownerAccessToken}`, "MCP-Protocol-Version": "2026-07-28" },
   });
-  assert(modernGet.status === 405 && modernGet.headers.get("allow") === "POST", "modern MCP GET was not rejected");
+  assert(currentGet.status === 405 && currentGet.headers.get("allow") === "POST", "current MCP GET was not rejected");
 
-  const modernToolsWithoutDaemon = await modernCall(base, ownerAccessToken, 9003, "tools/list", {});
-  assert(modernToolsWithoutDaemon.response.status === 200
-    && modernToolsWithoutDaemon.body.result?.resultType === "complete"
-    && modernToolsWithoutDaemon.body.result?.cacheScope === "private",
-  "modern tools/list omitted complete/private cache semantics");
-  const modernUnavailable = await modernCall(base, ownerAccessToken, 9004, "tools/call", {
+  const currentToolsWithoutDaemon = await currentMcpCall(base, ownerAccessToken, 9003, "tools/list", {});
+  assert(currentToolsWithoutDaemon.response.status === 200
+    && currentToolsWithoutDaemon.body.result?.resultType === "complete"
+    && currentToolsWithoutDaemon.body.result?.cacheScope === "private",
+  "current tools/list omitted complete/private cache semantics");
+  const currentUnavailable = await currentMcpCall(base, ownerAccessToken, 9004, "tools/call", {
     name: "list_dir", arguments: { path: "." },
   });
-  assert(modernUnavailable.body.result?.resultType === "complete"
-    && modernUnavailable.body.result?.isError === true
-    && modernUnavailable.body.result?.structuredContent?.error?.code === "unavailable",
-  "modern tool call without a daemon did not fail closed inside a complete tool result");
+  assert(currentUnavailable.body.result?.resultType === "complete"
+    && currentUnavailable.body.result?.isError === true
+    && currentUnavailable.body.result?.structuredContent?.error?.code === "unavailable",
+  "current tool call without a daemon did not fail closed inside a complete tool result");
 
   const reviewerRegistration = await registerTestClient({ base, redirectUri, name: "Reviewer Integration Client" });
   const reviewerCredentials = await issueAccountToken({
@@ -593,7 +651,79 @@ try {
   });
   assert(unauthenticated.status === 401, "MCP endpoint accepted a request without a bearer token");
 
-  const initialized = await fetchJson(`${base}/mcp`, {
+  const legacyProtocolVersion = "2025-06-18";
+  const compatibilityInitialize = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${ownerAccessToken}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1000,
+      method: "initialize",
+      params: {
+        protocolVersion: legacyProtocolVersion,
+        capabilities: {},
+        clientInfo: { name: "ChatGPT", version: "integration" },
+      },
+    }),
+  });
+  assert(compatibilityInitialize.response.status === 200
+      && compatibilityInitialize.body.result?.protocolVersion === legacyProtocolVersion
+      && compatibilityInitialize.body.result?.capabilities?.tools
+      && compatibilityInitialize.body.result?.serverInfo?.name === "machine-bridge-mcp",
+  "stateless initialization compatibility did not initialize the hosted MCP client");
+  assert(compatibilityInitialize.response.headers.get("mcp-session-id") === null,
+    "initialization compatibility minted a removed MCP session id");
+
+  const compatibilityInitialized = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${ownerAccessToken}`,
+      "mcp-protocol-version": legacyProtocolVersion,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }),
+  });
+  assert(compatibilityInitialized.status === 202,
+    "stateless initialization compatibility rejected notifications/initialized");
+
+  const compatibilityTools = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${ownerAccessToken}`,
+      "mcp-protocol-version": legacyProtocolVersion,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1001, method: "tools/list", params: {} }),
+  });
+  assert(compatibilityTools.response.status === 200
+      && compatibilityTools.body.result?.tools?.some((tool) => tool.name === "server_info")
+      && compatibilityTools.response.headers.get("mcp-session-id") === null,
+  "stateless initialization compatibility did not expose the authenticated tool list");
+
+  const compatibilityToolCall = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${ownerAccessToken}`,
+      "mcp-protocol-version": legacyProtocolVersion,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1002, method: "tools/call", params: { name: "server_info", arguments: { detail: "summary" } },
+    }),
+  });
+  assert(compatibilityToolCall.response.status === 200
+      && compatibilityToolCall.response.headers.get("content-type")?.startsWith("application/json")
+      && compatibilityToolCall.body.result?.isError === false,
+  "stateless initialization compatibility did not execute a JSON tool call");
+
+  const removedInitialize = await fetchJson(`${base}/mcp`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -603,62 +733,38 @@ try {
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
-      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "integration", version: "1" } },
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "outdated-client", version: "1" } },
     }),
   });
-  assert(initialized.response.status === 200, `authenticated initialize failed: ${initialized.response.status}`);
-  assert(initialized.body.result?.protocolVersion === "2025-11-25", "legacy initialize did not negotiate the supported compatibility protocol");
-  assert(initialized.body.result?.serverInfo?.version === pkg.version, "initialize returned the wrong Worker version");
-  assert(initialized.body.result?.capabilities?.tools, "initialize omitted tools capability");
-  assert(initialized.body.result.capabilities.tools.listChanged === false, "stable tool catalog did not declare listChanged=false");
-  const primarySession = initialized.response.headers.get("mcp-session-id");
-  assert(/^mcp_[A-Za-z0-9_-]{32}_[A-Za-z0-9_-]{43}$/.test(primarySession || ""), "initialize did not issue a valid MCP session id");
+  assert(removedInitialize.response.status === 400 && removedInitialize.body.error?.code === -32601
+    && JSON.stringify(removedInitialize.body.error?.data?.supported) === JSON.stringify(["2026-07-28"]),
+  "removed initialize flow did not return explicit current-version upgrade guidance");
 
-  const secondInitialized = await fetchJson(`${base}/mcp`, {
+  const removedSessionHeader = await fetchJson(`${base}/mcp`, {
     method: "POST",
     headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
+      ...currentMcpHeaders(ownerAccessToken, "tools/list"),
+      "mcp-session-id": "removed-session-protocol",
     },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "integration-second-window", version: "1" } },
-    }),
+    body: JSON.stringify(currentMcpRequest(2, "tools/list", {})),
   });
-  const secondarySession = secondInitialized.response.headers.get("mcp-session-id");
-  assert(secondInitialized.response.status === 200 && secondarySession && secondarySession !== primarySession, "independent initialize did not create an isolated MCP session");
-
-  const invalidSession = await fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": "2025-11-25",
-      "mcp-session-id": tamperSessionId(primarySession),
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping", params: {} }),
-  });
-  assert(invalidSession.response.status === 404 && invalidSession.body.error?.code === -32001, "tampered MCP session id was accepted");
+  assert(removedSessionHeader.response.status === 400 && removedSessionHeader.body.error?.code === -32601,
+    "removed MCP session header was silently accepted");
 
   const unsupportedProtocol = await fetchJson(`${base}/mcp`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": "1900-01-01",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping", params: {} }),
+    headers: currentMcpHeaders(ownerAccessToken, "tools/list", "", "1900-01-01"),
+    body: JSON.stringify(currentMcpRequest(3, "tools/list", {}, "1900-01-01")),
   });
   assert(unsupportedProtocol.response.status === 400, "unsupported MCP protocol header was accepted");
-  assert(unsupportedProtocol.body.error?.data?.supported?.includes("2025-11-25"), "unsupported protocol response omitted supported versions");
+  assert(JSON.stringify(unsupportedProtocol.body.error?.data?.supported) === JSON.stringify(["2026-07-28"]),
+    "unsupported protocol response advertised anything except the current version");
 
   const toolsWithoutDaemon = await callToolsList(base, ownerAccessToken, 3);
   const stableOwnerToolNames = ["server_info", ...accountRoleToolNames("owner", workspaceTools.map((tool) => tool.name))].sort();
   assert(JSON.stringify(toolsWithoutDaemon.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
     "transient daemon absence changed the authenticated account tool catalog");
-  const unavailableWithoutDaemon = await callTool(base, ownerAccessToken, primarySession, 31, "list_dir", { path: "." });
+  const unavailableWithoutDaemon = await callTool(base, ownerAccessToken, 31, "list_dir", { path: "." });
   assert(unavailableWithoutDaemon.result?.isError === true
     && unavailableWithoutDaemon.result?.structuredContent?.error?.code === "unavailable",
   "stable catalog did not fail closed when the daemon was unavailable");
@@ -686,6 +792,19 @@ try {
   assert(!firstStatus.daemon?.tools?.includes("write_file"), "review policy did not filter write_file");
   assert(!firstStatus.daemon?.tools?.includes("exec_command"), "review policy did not filter exec_command");
   assert(firstStatus.daemon?.readiness_verified === true, "first daemon was advertised before end-to-end readiness verification");
+  const compactFirstStatus = await callServerInfo(base, ownerAccessToken, 210, { detail: "summary" });
+  assert(compactFirstStatus.detail === "summary" && compactFirstStatus.version === pkg.version
+    && compactFirstStatus.authorization?.account?.role === "owner" && !("account_id" in compactFirstStatus.authorization.account)
+    && compactFirstStatus.authorization?.effective_policy?.profile === "review"
+    && compactFirstStatus.daemon?.connected === true && compactFirstStatus.daemon?.readiness_verified === true
+    && compactFirstStatus.worker?.sockets_live?.ready === 1 && !("observability" in compactFirstStatus.worker)
+    && !("oauth" in compactFirstStatus) && !("tools" in compactFirstStatus),
+  "remote compact server_info lost authority/readiness state or retained cold-path fields");
+  const compactFirstStatusJson = JSON.stringify(compactFirstStatus);
+  assert(compactFirstStatusJson.length < JSON.stringify(firstStatus).length * 0.6,
+    "remote compact server_info did not materially reduce the payload");
+  assert(compactFirstStatusJson.length <= 2400,
+    `remote compact server_info exceeded its hot-path output budget: ${compactFirstStatusJson.length} chars`);
   const invalidProbeCandidate = await connectDaemon(base);
   daemonSockets.push(invalidProbeCandidate);
   const invalidProbe = await beginDaemonHello(invalidProbeCandidate, ["list_files"]);
@@ -777,121 +896,122 @@ try {
   assert(!statusAfterHello.daemon?.tools?.includes("exec_command"), "agent policy did not filter shell execution");
   assert(!statusAfterHello.daemon?.tools?.includes("read_file"), "replaced daemon tools remained active");
 
-  const modernAgentTools = await modernCall(base, ownerAccessToken, 9100, "tools/list", {});
-  assert(modernAgentTools.response.status === 200
-    && modernAgentTools.body.result?.resultType === "complete"
-    && modernAgentTools.body.result?.tools?.some((tool) => tool.name === "run_process"),
-  "modern tools/list did not expose the authenticated stable catalog");
+  const currentAgentTools = await currentMcpCall(base, ownerAccessToken, 9100, "tools/list", {});
+  assert(currentAgentTools.response.status === 200
+    && currentAgentTools.body.result?.resultType === "complete"
+    && currentAgentTools.body.result?.tools?.some((tool) => tool.name === "run_process"),
+  "current tools/list did not expose the authenticated stable catalog");
 
-  const modernRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const modernToolPromise = modernCall(base, ownerAccessToken, 9101, "tools/call", {
+  const currentRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const currentToolPromise = currentMcpCall(base, ownerAccessToken, 9101, "tools/call", {
     name: "list_dir", arguments: { path: "." },
   });
-  const modernRelay = await modernRelayPromise;
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: modernRelay.id, ok: true, result: { modern: true } }));
-  const modernTool = await modernToolPromise;
-  assert(modernTool.response.status === 200
-    && modernTool.body.result?.resultType === "complete"
-    && modernTool.body.result?.structuredContent?.modern === true
-    && modernTool.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
-  "modern tools/call lost resultType, structured content, or server identity");
-  assert(modernTool.response.headers.get("mcp-session-id") === null, "modern tool call minted a legacy session");
+  const currentRelay = await currentRelayPromise;
+  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: currentRelay.id, ok: true, result: { current: true } }));
+  const currentTool = await currentToolPromise;
+  assert(currentTool.response.status === 200
+    && currentTool.body.result?.resultType === "complete"
+    && currentTool.body.result?.structuredContent?.current === true
+    && currentTool.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
+  "current tools/call lost resultType, structured content, or server identity");
+  assert(currentTool.response.headers.get("mcp-session-id") === null, "current tool call minted a removed session");
 
   const malformedMessages = captureWsMessageTypes(candidateDaemon);
-  const malformedModernTool = await modernCall(base, ownerAccessToken, 9107, "tools/call", {
+  const malformedCurrentTool = await currentMcpCall(base, ownerAccessToken, 9107, "tools/call", {
     name: "list_dir", arguments: { path: ".", unexpected: "must-not-dispatch" },
   });
-  assert(malformedModernTool.body.error?.code === -32602
-    && malformedModernTool.body.error?.data?.validation_issues?.[0]?.instancePath === "/unexpected",
-  "modern malformed tool arguments were not returned as Invalid params");
-  assert(!malformedMessages.stop().includes("tool_call"), "modern malformed tool arguments reached the daemon");
+  assert(malformedCurrentTool.body.error?.code === -32602
+    && malformedCurrentTool.body.error?.data?.validation_issues?.[0]?.instancePath === "/unexpected",
+  "current malformed tool arguments were not returned as Invalid params");
+  assert(!malformedMessages.stop().includes("tool_call"), "current malformed tool arguments reached the daemon");
   const unknownMessages = captureWsMessageTypes(candidateDaemon);
-  const unknownModernTool = await modernCall(base, ownerAccessToken, 9108, "tools/call", {
+  const unknownCurrentTool = await currentMcpCall(base, ownerAccessToken, 9108, "tools/call", {
     name: "missing_tool", arguments: {},
   });
-  assert(unknownModernTool.body.error?.code === -32602, "modern unknown tool was not returned as Invalid params");
-  assert(!unknownMessages.stop().includes("tool_call"), "modern unknown tool reached the daemon");
+  assert(unknownCurrentTool.body.error?.code === -32602, "current unknown tool was not returned as Invalid params");
+  assert(!unknownMessages.stop().includes("tool_call"), "current unknown tool reached the daemon");
 
   const mismatchMessages = captureWsMessageTypes(candidateDaemon);
   const mismatchedName = await fetchJson(`${base}/mcp`, {
     method: "POST",
-    headers: modernMcpHeaders(ownerAccessToken, "tools/call", "read_file"),
-    body: JSON.stringify(modernRequest(9102, "tools/call", { name: "list_dir", arguments: { path: "." } })),
+    headers: currentMcpHeaders(ownerAccessToken, "tools/call", "read_file"),
+    body: JSON.stringify(currentMcpRequest(9102, "tools/call", { name: "list_dir", arguments: { path: "." } })),
   });
   assert(mismatchedName.response.status === 400 && mismatchedName.body.error?.code === -32020,
-    "modern Mcp-Name/body mismatch was accepted");
+    "current Mcp-Name/body mismatch was accepted");
   assert(!mismatchMessages.stop().includes("tool_call"), "header mismatch reached the daemon");
 
-  const modernInitialize = await modernCall(base, ownerAccessToken, 9109, "initialize", {});
-  assert(modernInitialize.response.status === 404 && modernInitialize.body.error?.code === -32601,
-    "modern HTTP initialize entered the legacy adapter");
+  const initializeMessages = captureWsMessageTypes(candidateDaemon);
+  const currentInitialize = await currentMcpCall(base, ownerAccessToken, 9109, "initialize", {});
+  assert(currentInitialize.response.status === 400 && currentInitialize.body.error?.code === -32601
+    && currentInitialize.body.error?.data?.supported?.length === 1
+    && currentInitialize.body.error.data.supported[0] === "2026-07-28",
+  "removed HTTP initialize did not return bounded current-version upgrade guidance");
+  assert(!initializeMessages.stop().includes("tool_call"), "removed HTTP initialize reached the daemon");
 
-  const removedPing = await modernCall(base, ownerAccessToken, 9103, "ping", {});
+  const removedPing = await currentMcpCall(base, ownerAccessToken, 9103, "ping", {});
   assert(removedPing.response.status === 404 && removedPing.body.error?.code === -32601,
-    "modern HTTP retained removed ping semantics");
+    "current HTTP retained removed ping semantics");
 
-  const invalidSubscription = await modernCall(base, ownerAccessToken, 9111, "subscriptions/listen", {});
+  const invalidSubscription = await currentMcpCall(base, ownerAccessToken, 9111, "subscriptions/listen", {});
   assert(invalidSubscription.response.status === 400 && invalidSubscription.body.error?.code === -32602,
-    "modern HTTP accepted a missing subscription filter");
+    "current HTTP accepted a subscription without notifications");
 
   const subscriptionResponse = await stableFetch(`${base}/mcp`, {
     method: "POST",
-    headers: modernMcpHeaders(ownerAccessToken, "subscriptions/listen"),
-    body: JSON.stringify(modernRequest(9104, "subscriptions/listen", {
+    headers: currentMcpHeaders(ownerAccessToken, "subscriptions/listen"),
+    body: JSON.stringify(currentMcpRequest(9104, "subscriptions/listen", {
       notifications: { toolsListChanged: true },
     })),
   });
-  const subscriptionText = await subscriptionResponse.text();
-  const subscriptionMessages = subscriptionText.split(/\r?\n/)
-    .filter((line) => line.startsWith("data: "))
-    .map((line) => JSON.parse(line.slice(6)));
+  const subscriptionMessages = parseSseJsonMessages(await subscriptionResponse.text());
   assert(subscriptionResponse.status === 200
-    && subscriptionResponse.headers.get("content-type")?.startsWith("text/event-stream")
-    && subscriptionResponse.headers.get("x-accel-buffering") === "no",
-  "modern subscriptions/listen did not use a non-buffered SSE response");
-  assert(!subscriptionText.split(/\r?\n/).some((line) => line.startsWith("id:")),
-    "modern subscription emitted a legacy resumable event id");
-  assert(subscriptionMessages[0]?.method === "notifications/subscriptions/acknowledged"
-    && Object.keys(subscriptionMessages[0]?.params?.notifications || {}).length === 0,
-  "modern subscription acknowledged an unsupported notification type");
-  assert(subscriptionMessages[1]?.id === 9104
-    && subscriptionMessages[1]?.result?.resultType === "complete",
-  "modern subscription did not terminate with a complete result");
+      && subscriptionResponse.headers.get("content-type")?.startsWith("text/event-stream"),
+  "current HTTP subscription did not use its request-scoped SSE response");
+  assert(subscriptionMessages.length === 2
+      && subscriptionMessages[0].method === "notifications/subscriptions/acknowledged"
+      && Object.keys(subscriptionMessages[0].params?.notifications ?? {}).length === 0,
+  "current HTTP subscription did not acknowledge the empty supported notification subset");
+  assert(subscriptionMessages[0].params?._meta?.["io.modelcontextprotocol/subscriptionId"] === 9104
+      && subscriptionMessages[1].id === 9104
+      && subscriptionMessages[1].result?.resultType === "complete"
+      && subscriptionMessages[1].result?._meta?.["io.modelcontextprotocol/subscriptionId"] === 9104,
+  "current HTTP subscription did not close gracefully with correlated result metadata");
 
-  const modernNotification = await fetchJson(`${base}/mcp`, {
+  const currentNotification = await fetchJson(`${base}/mcp`, {
     method: "POST",
-    headers: modernMcpHeaders(ownerAccessToken, "notifications/cancelled"),
+    headers: currentMcpHeaders(ownerAccessToken, "notifications/cancelled"),
     body: JSON.stringify({
       jsonrpc: "2.0",
       method: "notifications/cancelled",
       params: {
-        _meta: modernRequest(0, "unused", {}).params._meta,
+        _meta: currentMcpRequest(0, "unused", {}).params._meta,
         requestId: 9105,
       },
     }),
   });
-  assert(modernNotification.response.status === 404 && modernNotification.body.error?.code === -32601,
-    "modern HTTP accepted a stdio-only cancellation notification");
+  assert(currentNotification.response.status === 404 && currentNotification.body.error?.code === -32601,
+    "current HTTP accepted a stdio-only cancellation notification");
 
   const duplicateRelaySequence = waitForWsMessageSequence(candidateDaemon, ["tool_call", "tool_call"], 10_000);
-  const duplicateModernA = modernCall(base, ownerAccessToken, 9110, "tools/call", {
+  const duplicateCurrentA = currentMcpCall(base, ownerAccessToken, 9110, "tools/call", {
     name: "list_dir", arguments: { path: "." },
   });
-  const duplicateModernB = modernCall(base, ownerAccessToken, 9110, "tools/call", {
+  const duplicateCurrentB = currentMcpCall(base, ownerAccessToken, 9110, "tools/call", {
     name: "list_dir", arguments: { path: "." },
   });
   const [duplicateRelayA, duplicateRelayB] = await duplicateRelaySequence;
   assert(duplicateRelayA.id !== duplicateRelayB.id,
-    "modern HTTP requests sharing a JSON-RPC id reused an internal daemon call id");
+    "current HTTP requests sharing a JSON-RPC id reused an internal daemon call id");
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: duplicateRelayA.id, ok: true, result: { request: "a" } }));
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: duplicateRelayB.id, ok: true, result: { request: "b" } }));
-  const [duplicateResultA, duplicateResultB] = await Promise.all([duplicateModernA, duplicateModernB]);
+  const [duplicateResultA, duplicateResultB] = await Promise.all([duplicateCurrentA, duplicateCurrentB]);
   const duplicateValues = [
     duplicateResultA.body.result?.structuredContent?.request,
     duplicateResultB.body.result?.structuredContent?.request,
   ].sort();
   assert(JSON.stringify(duplicateValues) === JSON.stringify(["a", "b"]),
-    "stateless modern HTTP calls with the same request id conflicted or crossed results");
+    "stateless current HTTP calls with the same request id conflicted or crossed results");
 
   const remoteAgentTools = await callToolsList(base, ownerAccessToken, 2501);
   const remoteRunProcess = remoteAgentTools.find((tool) => tool.name === "run_process");
@@ -899,7 +1019,7 @@ try {
     && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 60,
   "remote tools/list advertised a foreground timeout beyond the hosted delivery boundary");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
-  const overLimit = await callTool(base, ownerAccessToken, primarySession, 2502, "run_process", {
+  const overLimit = await callTool(base, ownerAccessToken, 2502, "run_process", {
     argv: ["must-not-run"], timeout_seconds: 120,
   });
   assert(!overLimitMessages.stop().includes("tool_call"),
@@ -910,7 +1030,7 @@ try {
   "over-limit foreground rejection omitted its pre-dispatch schema contract");
 
   const malformedTimeoutMessages = captureWsMessageTypes(candidateDaemon);
-  const malformedTimeout = await callTool(base, ownerAccessToken, primarySession, 25021, "run_process", {
+  const malformedTimeout = await callTool(base, ownerAccessToken, 25021, "run_process", {
     argv: ["must-not-run"], timeout_seconds: "60",
   });
   assert(!malformedTimeoutMessages.stop().includes("tool_call"),
@@ -921,189 +1041,76 @@ try {
   "malformed foreground timeout omitted its pre-dispatch schema contract");
 
   const missingNameMessages = captureWsMessageTypes(candidateDaemon);
-  const missingName = await callTool(base, ownerAccessToken, primarySession, 25022, "", {});
-  assert(!missingNameMessages.stop().includes("tool_call")
-    && missingName.error?.code === -32602
-    && missingName.error?.message === "tools/call requires a tool name",
-  "legacy tools/call without a name escaped protocol validation");
+  const missingName = await currentMcpCall(base, ownerAccessToken, 25022, "tools/call", { arguments: {} });
+  assert(missingName.response.status === 400
+    && !missingNameMessages.stop().includes("tool_call")
+    && missingName.body.error?.code === -32602
+    && missingName.body.error?.message === "name must be a string",
+  "current tools/call without a name escaped pre-dispatch HTTP validation");
 
   const nonObjectArgumentsMessages = captureWsMessageTypes(candidateDaemon);
-  const nonObjectArguments = await callTool(base, ownerAccessToken, primarySession, 25023, "list_dir", []);
+  const nonObjectArguments = await callTool(base, ownerAccessToken, 25023, "list_dir", []);
   assert(!nonObjectArgumentsMessages.stop().includes("tool_call")
     && nonObjectArguments.error?.code === -32602
     && nonObjectArguments.error?.data?.side_effects_started === false
     && nonObjectArguments.error?.data?.validation_issues?.some((issue) => issue.instancePath === "" && issue.keyword === "type"),
-  "legacy tools/call silently coerced non-object arguments");
+  "removed tools/call silently coerced non-object arguments");
 
   const overLimitStreamMessages = captureWsMessageTypes(candidateDaemon);
-  const overLimitStreamResponse = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0", id: 2503, method: "tools/call",
-      params: { name: "run_process", arguments: { argv: ["must-not-stream-run"], timeout_seconds: 120 } },
-    }),
+  const overLimitStream = await currentMcpCall(base, ownerAccessToken, 2503, "tools/call", {
+    name: "run_process", arguments: { argv: ["must-not-stream-run"], timeout_seconds: 120 },
   });
-  const overLimitStream = await overLimitStreamResponse.json();
-  assert(overLimitStreamResponse.status === 400
-    && overLimitStreamResponse.headers.get("content-type")?.startsWith("application/json"),
-  "invalid streamed tool call allocated a resumable stream before schema validation");
   assert(!overLimitStreamMessages.stop().includes("tool_call"),
     "over-limit streamed tool call reached the daemon before rejection");
-  assert(overLimitStream.error?.code === -32602
-    && overLimitStream.error?.data?.side_effects_started === false
-    && overLimitStream.error?.data?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "maximum"),
-  "invalid streamed call omitted its pre-dispatch schema contract");
+  assert(overLimitStream.body.error?.code === -32602
+    && overLimitStream.body.error?.data?.side_effects_started === false,
+  "invalid current tool call omitted its pre-dispatch schema contract");
 
   const streamedRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const streamedResponsePromise = stableFetch(`${base}/mcp`, {
     method: "POST",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 879, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+    headers: currentMcpHeaders(ownerAccessToken, "tools/call", "list_dir"),
+    body: JSON.stringify(currentMcpRequest(879, "tools/call", { name: "list_dir", arguments: { path: "." } })),
   });
   const streamedRelay = await streamedRelayPromise;
   const streamedResponse = await streamedResponsePromise;
-  assert(streamedResponse.status === 200, `streamed tool call failed: ${streamedResponse.status}`);
-  assert(streamedResponse.headers.get("content-type")?.startsWith("text/event-stream"), "event-stream client received a buffered JSON response");
+  assert(streamedResponse.status === 200 && streamedResponse.headers.get("content-type")?.startsWith("text/event-stream"),
+    "current event-stream request did not use request-scoped SSE");
   const streamedReader = streamedResponse.body.getReader();
-  const streamedInitialFrame = await readSseInitialEvent(streamedReader);
-  const streamedInitial = streamedInitialFrame.text;
-  const streamedInitialId = streamedInitialFrame.eventId;
-  assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(streamedInitialId), `streamed tool call did not prime the client with a resumable sequence-zero event: ${JSON.stringify(streamedInitial.slice(0, 512))}`);
+  const streamedInitial = new TextDecoder().decode((await streamedReader.read()).value);
+  assert(streamedInitial === ": connected\n\n", "current response stream exposed a replay/session event id");
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: streamedRelay.id, ok: true, result: { streamed: true } }));
   const streamedEnvelope = await readSseJsonRpcResponse(streamedReader, streamedInitial);
-  assert(streamedEnvelope.message.result?.structuredContent?.streamed === true, "streamed tool call lost the terminal result");
-  assert(streamedEnvelope.eventIds.at(-1) === `${streamedInitialId.slice(0, -1)}1`, "streamed tool call terminal event did not advance the resumption sequence");
+  assert(streamedEnvelope.message.result?.structuredContent?.streamed === true
+    && streamedEnvelope.eventIds.length === 0,
+  "current streamed tool call lost its result or regained replay event ids");
 
-  const liveCancellationRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const liveCancellationResponse = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 8790, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
-  });
-  const liveCancellationRelay = await liveCancellationRelayPromise;
-  const liveCancellationReader = liveCancellationResponse.body.getReader();
-  const liveCancellationInitialFrame = await readSseInitialEvent(liveCancellationReader);
-  const liveCancellationInitial = liveCancellationInitialFrame.text;
-  assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(liveCancellationInitialFrame.eventId), "live cancellation stream omitted sequence zero");
-  const openSseStatus = await callServerInfo(base, ownerAccessToken, 87901);
-  assert(openSseStatus.worker?.pending_calls?.active === 1 && openSseStatus.worker?.pending_calls?.request_keys === 1, "open SSE prevented a concurrent server_info request");
-  const liveCancellationNotice = waitForWsMessage(candidateDaemon, "cancel_call", 10_000, "open-SSE explicit cancellation");
-  const liveCancellation = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: mcpHeaders(ownerAccessToken, primarySession),
-    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 8790, reason: "open SSE cancellation" } }),
-  });
-  assert(liveCancellation.status === 202, "explicit cancellation could not enter while SSE remained open");
-  assert((await liveCancellationNotice).id === liveCancellationRelay.id, "open-SSE cancellation targeted the wrong daemon call");
-  const liveCancellationEnvelope = await readSseJsonRpcResponse(liveCancellationReader, liveCancellationInitial);
-  assert(liveCancellationEnvelope.message.result?.isError === true
-    && JSON.stringify(liveCancellationEnvelope.message).includes("cancelled"), "open-SSE cancellation did not settle the original stream");
-
-  const resumableRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const resumableResponse = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 8791, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
-  });
-  const resumableRelay = await resumableRelayPromise;
-  const resumableReader = resumableResponse.body.getReader();
-  const resumableInitialFrame = await readSseInitialEvent(resumableReader);
-  const resumableEventId = resumableInitialFrame.eventId;
-  assert(/^stream_[A-Za-z0-9_-]{43}:0$/.test(resumableEventId), "resumable call omitted its initial event id");
-  await resumableReader.cancel();
-
-  const wrongSessionResume = await stableFetch(`${base}/mcp`, {
+  const removedGet = await stableFetch(`${base}/mcp`, {
     method: "GET",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, secondarySession),
-      accept: "text/event-stream",
-      "last-event-id": resumableEventId,
-    },
+    headers: { authorization: `Bearer ${ownerAccessToken}`, "MCP-Protocol-Version": "2026-07-28", "Last-Event-ID": "removed" },
   });
-  assert(wrongSessionResume.status === 404, "another MCP session could retrieve a resumable stream");
-  await wrongSessionResume.arrayBuffer();
-
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: resumableRelay.id, ok: true, result: { recovered_delivery: true } }));
-  const resumedResponse = await stableFetch(`${base}/mcp`, {
-    method: "GET",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "text/event-stream",
-      "last-event-id": resumableEventId,
-    },
-  });
-  assert(resumedResponse.status === 200 && resumedResponse.headers.get("content-type")?.startsWith("text/event-stream"), "Last-Event-ID resumption did not return SSE");
-  const resumedEnvelope = parseSseJsonRpcResponse(await resumedResponse.text());
-  assert(resumedEnvelope.message.result?.structuredContent?.recovered_delivery === true, "resumed stream lost the daemon terminal result");
-  const terminalEventId = resumedEnvelope.eventIds.at(-1);
-  assert(terminalEventId === `${resumableEventId.slice(0, -1)}1`, "resumed stream returned the wrong terminal event id");
-
-  const completedResume = await stableFetch(`${base}/mcp`, {
-    method: "GET",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "text/event-stream",
-      "last-event-id": terminalEventId,
-    },
-  });
-  assert(completedResume.status === 200 && await completedResume.text() === "", "acknowledged terminal event was delivered twice");
-
-  const disconnectedHttpRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const disconnectedHttpController = new AbortController();
-  const disconnectedHttpFetch = fetch(`${base}/mcp`, {
-    method: "POST",
-    headers: mcpHeaders(ownerAccessToken, primarySession),
-    signal: disconnectedHttpController.signal,
-    body: JSON.stringify({ jsonrpc: "2.0", id: 878, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
-  }).catch((error) => error);
-  const disconnectedHttpRelay = await disconnectedHttpRelayPromise;
-  disconnectedHttpController.abort();
-  await disconnectedHttpFetch;
-  await sleep(50);
-  const disconnectedHttpStatus = await callServerInfo(base, ownerAccessToken, 8780);
-  assert(disconnectedHttpStatus.worker?.pending_calls?.active === 1, "HTTP disconnect incorrectly cancelled the MCP operation");
-  assert(disconnectedHttpStatus.worker?.pending_calls?.request_keys === 1, "HTTP disconnect removed the explicit-cancellation request key");
-  const disconnectedHttpCancelNotice = waitForWsMessage(candidateDaemon, "cancel_call", 10_000, "HTTP-disconnect cleanup cancellation");
-  const disconnectedHttpCancellation = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: mcpHeaders(ownerAccessToken, primarySession),
-    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 878, reason: "explicit cleanup after HTTP disconnect" } }),
-  });
-  assert(disconnectedHttpCancellation.status === 202, "explicit cancellation after HTTP disconnect failed");
-  assert((await disconnectedHttpCancelNotice).id === disconnectedHttpRelay.id, "explicit cancellation after HTTP disconnect targeted the wrong daemon call");
+  assert(removedGet.status === 405 && removedGet.headers.get("allow") === "POST",
+    "removed GET/Last-Event-ID resumption path was still served");
 
   const firstWindowRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const firstWindowCall = toolCallRequest(base, ownerAccessToken, primarySession, 880, "list_dir", { path: "." });
+  const firstWindowCall = toolCallRequest(base, ownerAccessToken, 880, "list_dir", { path: "." });
   const firstWindowRelay = await firstWindowRelayPromise;
   const secondWindowRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const secondWindowCall = toolCallRequest(base, ownerAccessToken, secondarySession, 880, "list_dir", { path: "." });
+  const secondWindowCall = toolCallRequest(base, ownerAccessToken, 880, "list_dir", { path: "." });
   const secondWindowRelay = await secondWindowRelayPromise;
-  assert(firstWindowRelay.id !== secondWindowRelay.id, "two MCP sessions reused an internal daemon call id");
+  assert(firstWindowRelay.id !== secondWindowRelay.id, "two MCP request streams reused an internal daemon call id");
   const concurrentStatus = await callServerInfo(base, ownerAccessToken, 8810);
-  assert(concurrentStatus.worker?.pending_calls?.active === 2, "Worker did not retain two concurrent session calls");
-  assert(concurrentStatus.worker?.pending_calls?.request_keys === 2, "Worker did not index concurrent calls by isolated session");
+  assert(concurrentStatus.worker?.pending_calls?.active === 2, "Worker did not retain two concurrent request-scoped calls");
+  assert(concurrentStatus.worker?.pending_calls?.request_keys === 2, "Worker did not isolate concurrent request-stream keys");
   assert(concurrentStatus.worker?.pending_calls?.by_tool?.list_dir === 2, "pending-call diagnostics omitted concurrent tool counts");
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: secondWindowRelay.id, ok: true, result: { window: "second" } }));
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: firstWindowRelay.id, ok: true, result: { window: "first" } }));
   const [firstWindowResult, secondWindowResult] = await Promise.all([firstWindowCall, secondWindowCall]);
-  assert(firstWindowResult.body.result?.structuredContent?.window === "first", "first MCP session received another session's result");
-  assert(secondWindowResult.body.result?.structuredContent?.window === "second", "second MCP session received another session's result");
+  assert(firstWindowResult.body.result?.structuredContent?.window === "first", "first MCP request stream received another request's result");
+  assert(secondWindowResult.body.result?.structuredContent?.window === "second", "second MCP request stream received another request's result");
 
   const handoverRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const handoverCall = toolCallRequest(base, ownerAccessToken, primarySession, 8799, "list_dir", { path: "." });
+  const handoverCall = toolCallRequest(base, ownerAccessToken, 8799, "list_dir", { path: "." });
   const handoverRelay = await handoverRelayPromise;
   const handoverPreviousSocket = candidateDaemon;
   const handoverPreviousClosed = waitForWsClose(handoverPreviousSocket);
@@ -1137,7 +1144,7 @@ try {
     "duplicate terminal result was misclassified as a stale-connection rejection");
 
   const reconnectRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const reconnectCall = toolCallRequest(base, ownerAccessToken, primarySession, 8801, "list_dir", { path: "." });
+  const reconnectCall = toolCallRequest(base, ownerAccessToken, 8801, "list_dir", { path: "." });
   const reconnectRelay = await reconnectRelayPromise;
   const disconnectedCandidate = candidateDaemon;
   const disconnectedCandidateClosed = waitForWsClose(disconnectedCandidate);
@@ -1158,185 +1165,17 @@ try {
   const reconnectResult = await reconnectCall;
   assert(reconnectResult.body.result?.structuredContent?.resumed === true, "MCP request did not complete after same-instance daemon reconnect");
 
-  const cancelledReconnectRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const cancelledReconnectCall = toolCallRequest(base, ownerAccessToken, primarySession, 8804, "list_dir", { path: "." });
-  await cancelledReconnectRelayPromise;
-  const cancelledReconnectSocket = candidateDaemon;
-  const cancelledReconnectClosed = waitForWsClose(cancelledReconnectSocket);
-  cancelledReconnectSocket.terminate();
-  await cancelledReconnectClosed;
-  const cancelledWhileDetached = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: mcpHeaders(ownerAccessToken, primarySession),
-    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 8804, reason: "cancel during relay interruption" } }),
-  });
-  assert(cancelledWhileDetached.status === 202, "detached-call cancellation notification failed");
-  const cancelledReconnectResult = await cancelledReconnectCall;
-  assert(cancelledReconnectResult.body.result?.isError === true
-    && JSON.stringify(cancelledReconnectResult.body.result).includes("cancelled"), "detached call did not settle as cancelled");
-
-  candidateDaemon = await connectDaemon(base);
-  daemonSockets.push(candidateDaemon);
-  const postCancelResume = await sendDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
-  assert(postCancelResume.ids.length === 0, "same-instance reconnect attempted to resume a request cancelled while detached");
-
-  const sessionlessFirstRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const sessionlessFirst = toolCallRequest(base, ownerAccessToken, "", 881, "list_dir", { path: "." });
-  const sessionlessFirstRelay = await sessionlessFirstRelayPromise;
-  const sessionlessSecondRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const sessionlessSecond = toolCallRequest(base, ownerAccessToken, "", 881, "list_dir", { path: "." });
-  const sessionlessSecondRelay = await sessionlessSecondRelayPromise;
-  const sessionlessStatus = await callServerInfo(base, ownerAccessToken, 8811);
-  assert(sessionlessStatus.worker?.pending_calls?.active === 2 && sessionlessStatus.worker?.pending_calls?.request_keys === 0, "sessionless independent POST requests shared a token-level request-id lock");
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: sessionlessFirstRelay.id, ok: true, result: { request: "one" } }));
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: sessionlessSecondRelay.id, ok: true, result: { request: "two" } }));
-  await Promise.all([sessionlessFirst, sessionlessSecond]);
-
-  const sessionlessStreamRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const sessionlessStreamResponse = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      ...mcpHeaders(ownerAccessToken),
-      accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 8812, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
-  });
-  const sessionlessStreamRelay = await sessionlessStreamRelayPromise;
-  assert(sessionlessStreamResponse.status === 200
-    && sessionlessStreamResponse.headers.get("content-type")?.startsWith("text/event-stream"),
-  "sessionless legacy SSE call was rejected by partial idempotency state");
-  const sessionlessStreamReader = sessionlessStreamResponse.body.getReader();
-  const sessionlessStreamInitial = await readSseInitialEvent(sessionlessStreamReader);
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: sessionlessStreamRelay.id, ok: true, result: { sessionless_stream: true } }));
-  const sessionlessStreamEnvelope = await readSseJsonRpcResponse(sessionlessStreamReader, sessionlessStreamInitial.text);
-  assert(sessionlessStreamEnvelope.message.result?.structuredContent?.sessionless_stream === true,
-    "sessionless legacy SSE call lost its terminal result");
-
-  const cancelFirstRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const cancelFirstCall = toolCallRequest(base, ownerAccessToken, primarySession, 882, "list_dir", { path: "." });
-  const cancelFirstRelay = await cancelFirstRelayPromise;
-  const cancelSecondRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const cancelSecondCall = toolCallRequest(base, ownerAccessToken, secondarySession, 882, "list_dir", { path: "." });
-  const cancelSecondRelay = await cancelSecondRelayPromise;
-  const isolatedCancelNotice = waitForWsMessage(candidateDaemon, "cancel_call", 10_000, "session-isolated cancellation");
-  const isolatedCancellation = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: mcpHeaders(ownerAccessToken, primarySession),
-    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 882, reason: "cancel first window only" } }),
-  });
-  assert(isolatedCancellation.status === 202, "session-scoped cancellation notification failed");
-  assert((await isolatedCancelNotice).id === cancelFirstRelay.id, "session-scoped cancellation targeted the wrong window");
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: cancelSecondRelay.id, ok: true, result: { window: "still-running" } }));
-  const [cancelFirstResult, cancelSecondResult] = await Promise.all([cancelFirstCall, cancelSecondCall]);
-  assert(cancelFirstResult.body.result?.isError === true && JSON.stringify(cancelFirstResult.body.result).includes("cancelled"), "cancelled session did not settle as cancelled");
-  assert(cancelSecondResult.body.result?.structuredContent?.window === "still-running", "cancelling one MCP session interrupted another session");
-
-  const duplicateRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const duplicateOriginalResponsePromise = stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 883, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
-  });
-  const duplicateRelay = await duplicateRelayPromise;
-  const duplicateOriginalResponse = await duplicateOriginalResponsePromise;
-  assert(duplicateOriginalResponse.status === 200, "original idempotency stream did not open");
-  const duplicateOriginalReader = duplicateOriginalResponse.body.getReader();
-  const duplicateOriginalInitial = await readSseInitialEvent(duplicateOriginalReader);
-
-  const changedDuplicateResponse = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 883, method: "tools/call", params: { name: "list_dir", arguments: { path: ".." } } }),
-  });
-  const changedDuplicateBody = await changedDuplicateResponse.json();
-  assert(changedDuplicateResponse.status === 409
-    && changedDuplicateBody.error?.data?.side_effects_started === true,
-  `same-session streamed request id with changed arguments did not fail as an ambiguous-side-effect conflict: ${JSON.stringify({
-    status: changedDuplicateResponse.status,
-    body: changedDuplicateBody,
-  })}`);
-
-  const duplicateBaseline = await callServerInfo(base, ownerAccessToken, 8840);
-  const baselineCoexisting = duplicateBaseline.worker?.observability?.stream_transport?.subscribers_coexisting ?? 0;
-  const duplicateRetryResponse = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      ...mcpHeaders(ownerAccessToken, primarySession),
-      accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 883, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
-  });
-  assert(duplicateRetryResponse.status === 200, "identical legacy retry did not reopen the result stream");
-  const duplicateRetryReader = duplicateRetryResponse.body.getReader();
-  const duplicateRetryInitial = await readSseInitialEvent(duplicateRetryReader);
-  assert(duplicateRetryInitial.text.startsWith(": resumed"), "identical legacy retry did not return a resumed stream");
-
-  let duplicateStatus = duplicateBaseline;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    duplicateStatus = await callServerInfo(base, ownerAccessToken, 8841 + attempt);
-    if ((duplicateStatus.worker?.observability?.stream_transport?.subscribers_coexisting ?? 0) > baselineCoexisting) break;
-    await sleep(25);
-  }
-  assert((duplicateStatus.worker?.observability?.stream_transport?.subscribers_coexisting ?? 0) > baselineCoexisting,
-    "identical legacy retry did not attach a second terminal subscriber");
-  assert(duplicateStatus.worker?.pending_calls?.active === 1,
-    "identical legacy retry dispatched a duplicate daemon operation");
-
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: duplicateRelay.id, ok: true, result: { original: true } }));
-  const [duplicateOriginalEnvelope, duplicateRetryEnvelope] = await Promise.all([
-    readSseJsonRpcResponse(duplicateOriginalReader, duplicateOriginalInitial.text),
-    readSseJsonRpcResponse(duplicateRetryReader, duplicateRetryInitial.text),
-  ]);
-  assert(duplicateOriginalEnvelope.message.result?.structuredContent?.original === true
-    && duplicateRetryEnvelope.message.result?.structuredContent?.original === true,
-  "same-session identical retry did not share the original terminal result");
-
-  const bufferedDuplicateRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const bufferedDuplicateOriginal = toolCallRequest(base, ownerAccessToken, primarySession, 885, "list_dir", { path: "." });
-  const bufferedDuplicateRelay = await bufferedDuplicateRelayPromise;
-  const bufferedDuplicateRequest = await toolCallRequest(base, ownerAccessToken, primarySession, 885, "list_dir", { path: "." });
-  assert(bufferedDuplicateRequest.body.result?.isError === true
-    && JSON.stringify(bufferedDuplicateRequest.body.result).includes("MCP session"),
-  "JSON-only legacy duplicate request id lost its in-flight conflict contract");
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: bufferedDuplicateRelay.id, ok: true, result: { buffered_original: true } }));
-  assert((await bufferedDuplicateOriginal).body.result?.structuredContent?.buffered_original === true,
-    "JSON-only duplicate conflict corrupted the original call");
-
-  const initializedWithDaemonPromise = fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 251,
-      method: "initialize",
-      params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "integration-reinitialize", version: "1" } },
-    }),
-  });
-  const bootstrapCall = await waitForWsMessage(candidateDaemon, "tool_call");
-  assert(bootstrapCall.tool === "session_bootstrap", "Worker did not request local session bootstrap during initialize");
-  candidateDaemon.send(JSON.stringify({ type: "tool_result", id: bootstrapCall.id, ok: true, result: { instructions: "worker injected global model instructions" } }));
-  const initializedWithDaemon = await initializedWithDaemonPromise;
-  assert(initializedWithDaemon.body.result?.instructions?.includes("worker injected global model instructions"), "Worker initialize did not append daemon session instructions");
-
+  const idlessMessages = captureWsMessageTypes(candidateDaemon);
+  const idlessBody = currentMcpRequest(250, "tools/call", { name: "server_info", arguments: {} });
+  delete idlessBody.id;
   const idlessToolCall = await fetchJson(`${base}/mcp`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": "2025-11-25",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", method: "tools/call", params: { name: "server_info", arguments: {} } }),
+    headers: currentMcpHeaders(ownerAccessToken, "tools/call", "server_info"),
+    body: JSON.stringify(idlessBody),
   });
-  assert(idlessToolCall.response.status === 200 && idlessToolCall.body.error?.code === -32600, "Worker accepted tools/call without a request id");
+  assert(idlessToolCall.response.status === 404 && idlessToolCall.body.error?.code === -32601
+    && !idlessMessages.stop().includes("tool_call"),
+  "Worker accepted tools/call as a notification or dispatched it without a request id");
 
   const activeTools = await callToolsList(base, ownerAccessToken, 26);
   assert(JSON.stringify(activeTools.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
@@ -1349,28 +1188,15 @@ try {
   assert(!reviewerTools.some((tool) => tool.name === "run_process"), "reviewer was shown a process-execution tool");
 
   const reviewerDeniedMessages = captureWsMessageTypes(candidateDaemon);
-  const reviewerDenied = await fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${reviewerToken}`,
-      "mcp-protocol-version": "2025-11-25",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 271, method: "tools/call", params: { name: "run_process", arguments: { argv: ["true"] } } }),
+  const reviewerDenied = await currentMcpCall(base, reviewerToken, 271, "tools/call", {
+    name: "run_process", arguments: { argv: ["true"] },
   });
   assert(!reviewerDeniedMessages.stop().includes("tool_call"), "reviewer process execution reached the daemon");
-  assert(reviewerDenied.body.error?.code === -32602
-    && reviewerDenied.body.error?.message === "Unknown tool",
+  assert(reviewerDenied.body.error?.code === -32602 && reviewerDenied.body.error?.message === "Unknown tool",
   "reviewer process execution was not rejected at the role-filtered protocol boundary");
 
-  const reviewerReadPromise = fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${reviewerToken}`,
-      "mcp-protocol-version": "2025-11-25",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 272, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
+  const reviewerReadPromise = currentMcpCall(base, reviewerToken, 272, "tools/call", {
+    name: "list_dir", arguments: { path: "." },
   });
   const reviewerRelay = await waitForWsMessage(candidateDaemon, "tool_call");
   assert(reviewerRelay.authorization?.role === "reviewer", "reviewer role was not forwarded to the daemon");
@@ -1379,14 +1205,8 @@ try {
   const reviewerRead = await reviewerReadPromise;
   assert(reviewerRead.body.result?.isError === false, "reviewer read-only call failed");
 
-  const remoteImageCall = fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": "2025-11-25",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 76, method: "tools/call", params: { name: "view_image", arguments: { path: "pixel.png" } } }),
+  const remoteImageCall = currentMcpCall(base, ownerAccessToken, 76, "tools/call", {
+    name: "view_image", arguments: { path: "pixel.png" },
   });
   const relayedImageCall = await waitForWsMessage(candidateDaemon, "tool_call");
   assert(relayedImageCall.tool === "view_image", "Worker relayed the wrong rich-content tool");
@@ -1410,14 +1230,8 @@ try {
   assert(remoteImage.body.result?.structuredContent?.path === "pixel.png", "Worker omitted rich structuredContent");
   assert(!JSON.stringify(remoteImage.body.result).includes("$mcp"), "Worker leaked the internal rich-result envelope");
 
-  const relayTimeoutCall = fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": "2025-11-25",
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 75, method: "tools/call", params: { name: "run_process", arguments: { argv: ["never-runs"], timeout_seconds: 1 } } }),
+  const relayTimeoutCall = currentMcpCall(base, ownerAccessToken, 75, "tools/call", {
+    name: "run_process", arguments: { argv: ["never-runs"], timeout_seconds: 1 },
   });
   const timedRelay = await waitForWsMessage(candidateDaemon, "tool_call");
   assert(timedRelay.tool === "run_process" && timedRelay.timeout_ms === 1_000,
@@ -1428,53 +1242,62 @@ try {
   assert(relayTimeoutResult.response.status === 200, "timed-out tools/call did not settle cleanly");
   assert(relayTimeoutResult.body.result?.isError === true, "timed-out tools/call was not marked as an error");
   assert(JSON.stringify(relayTimeoutResult.body.result).includes("timed out"), "timed-out tools/call returned the wrong error");
-
-  const remoteCall = fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": "2025-11-25",
-      "mcp-session-id": primarySession,
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 77, method: "tools/call", params: { name: "list_dir", arguments: { path: "." } } }),
-  });
-  const relayedCall = await waitForWsMessage(candidateDaemon, "tool_call");
-  assert(relayedCall.tool === "list_dir", "Worker relayed the wrong tool");
-  const cancelNotice = waitForWsMessage(candidateDaemon, "cancel_call", 10_000, "ordinary explicit cancellation");
-  const cancelled = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": "2025-11-25",
-      "mcp-session-id": primarySession,
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 77, reason: "integration test" } }),
-  });
-  assert(cancelled.status === 202, `cancellation notification returned ${cancelled.status}`);
-  const cancelledRelay = await cancelNotice;
-  assert(cancelledRelay.id === relayedCall.id, "Worker cancellation targeted the wrong daemon call");
-  const cancelledResult = await remoteCall;
-  assert(cancelledResult.response.status === 200, "cancelled tools/call did not settle cleanly");
-  assert(cancelledResult.body.result?.isError === true, "cancelled tools/call was not marked as an error");
-  assert(JSON.stringify(cancelledResult.body.result).includes("cancelled"), "cancelled tools/call returned the wrong error");
+  const relayTimeoutText = JSON.stringify(relayTimeoutResult.body.result);
+  assert(relayTimeoutText.includes('"retryable":false')
+    && relayTimeoutText.includes('"side_effects_started":true')
+    && relayTimeoutText.includes('"termination_requested":true')
+    && relayTimeoutText.includes('"effect_settlement":"pending"'),
+  "Worker daemon-settlement timeout advertised an already-dispatched side effect as safely retryable");
 
   const demoteLastOwner = await stableFetch(`${base}/admin/accounts`, adminRequest("PATCH", "/admin/accounts", {
     account_id: ownerAccount.body.account.account_id, role: "reviewer",
   }));
   assert(demoteLastOwner.status === 409, "last active owner could be demoted");
 
+  const reviewerRevokedCall = currentMcpCall(base, reviewerToken, 2730, "tools/call", {
+    name: "list_dir", arguments: { path: "." },
+  });
+  const reviewerRevokedRelay = await waitForWsMessage(candidateDaemon, "tool_call");
+  const firstAuthorityRevoke = waitForWsMessage(candidateDaemon, "authority_revoke", 10_000, "reviewer authority revocation");
   const reviewerRoleChange = await fetchJson(`${base}/admin/accounts`, adminRequest("PATCH", "/admin/accounts", {
     account_id: reviewerAccount.body.account.account_id, role: "editor",
   }));
   assert(reviewerRoleChange.response.status === 200, "reviewer role change failed");
+  const initialRevoke = await firstAuthorityRevoke;
+  assert(initialRevoke.account_id === reviewerRelay.authorization.account_id
+    && initialRevoke.account_version === reviewerRevokedRelay.authorization.account_version
+    && initialRevoke.client_id === undefined && initialRevoke.family_id === undefined,
+  "reviewer role change did not deliver a broad revocation for the exact previous account version");
+  const reviewerRevokedResult = await reviewerRevokedCall;
+  assert(reviewerRevokedResult.body.result?.isError === true
+    && reviewerRevokedResult.body.result?.structuredContent?.error?.code === "authorization_denied",
+  "reviewer in-flight call survived its account-version revocation");
+
+  const replacedForRevocation = candidateDaemon;
+  const replacedForRevocationClosed = waitForWsClose(replacedForRevocation);
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const revocationReplayProbe = await beginDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  const revocationReplay = await completeDaemonProbeWithRevocations(candidateDaemon, revocationReplayProbe, 1);
+  assert(revocationReplay.resume.ids.length === 0, "revoked pending call was rebound during daemon handover");
+  const replayedRevoke = revocationReplay.revocations[0];
+  assert(replayedRevoke.revocation_id === initialRevoke.revocation_id
+    && replayedRevoke.account_id === initialRevoke.account_id
+    && replayedRevoke.account_version === initialRevoke.account_version,
+  "unacknowledged authority revocation was not durably replayed before daemon readiness");
+  assert((await replacedForRevocationClosed).code === 1012, "authority-revocation handover did not replace the previous daemon cleanly");
+  candidateDaemon.send(JSON.stringify({ type: "authority_revoke_ack", revocation_id: replayedRevoke.revocation_id }));
+  const revocationBarrier = waitForWsMessage(candidateDaemon, "pong", 10_000, "authority revocation acknowledgement barrier");
+  candidateDaemon.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+  await revocationBarrier;
+
   const revokedReviewer = await stableFetch(`${base}/mcp`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${reviewerToken}` },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 273, method: "ping", params: {} }),
+    headers: currentMcpHeaders(reviewerToken, "tools/list"),
+    body: JSON.stringify(currentMcpRequest(273, "tools/list", {})),
   });
   assert(revokedReviewer.status === 401, "role change did not revoke the changed account token");
+  const postAckMessages = captureWsMessageTypes(candidateDaemon);
   const revokedReviewerRefresh = await fetchJson(`${base}/oauth/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -1486,6 +1309,7 @@ try {
     }),
   });
   assert(revokedReviewerRefresh.response.status === 400 && revokedReviewerRefresh.body.error === "invalid_grant", "role change did not revoke the changed account refresh token");
+  assert(!postAckMessages.stop().includes("authority_revoke"), "acknowledged authority revocation remained in the durable replay queue");
   const ownerAfterReviewerChange = await callServerInfo(base, ownerAccessToken, 274);
   assert(ownerAfterReviewerChange.account?.role === "owner", "another account change invalidated the owner token");
   assert(ownerAfterReviewerChange.authorization.execution_model.owner_ambient_authority === "daemon_os_user", "owner server_info omitted daemon OS-user ambient authority");
@@ -1497,7 +1321,7 @@ try {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ client_name: `Quota Client ${index}`, redirect_uris: [redirectUri] }),
     });
-    assert(extraRegistration.status === 200, `pending-registration quota rejected client ${index + 1} too early`);
+    assert(extraRegistration.status === 201, `pending-registration quota rejected client ${index + 1} too early`);
   }
   const registrationOverflow = await stableFetch(`${base}/oauth/register`, {
     method: "POST",
@@ -1533,6 +1357,10 @@ try {
   const editorStatus = await callServerInfo(base, editorToken, 275);
   assert(editorStatus.account?.account_id === editorAccount.body.account.account_id && editorStatus.account?.role === "editor", "server_info reported the wrong authenticated editor account");
   assert(editorStatus.daemon?.policy?.profile === "full", "full daemon ceiling was not preserved");
+  assert(Array.isArray(editorStatus.daemon?.tools) && editorStatus.daemon.tools.length === 0
+    && editorStatus.daemon?.tools_hidden_by_authority === true
+    && editorStatus.daemon?.tool_count === 6,
+  "non-owner server_info leaked daemon-only tool names instead of retaining only the ceiling count");
   assert(editorStatus.daemon?.policy_scope === "daemon_capability_ceiling_not_account_authority", "daemon policy scope remained ambiguous");
   assert(editorStatus.tool_delivery?.full_profile_scope === "daemon-capability-ceiling-before-account-filtering", "full-profile delivery scope remained ambiguous");
   assert(editorStatus.authorization?.account_policy?.profile === "edit", "editor account policy was not reported");
@@ -1547,7 +1375,7 @@ try {
   assert(editorStatus.authorization.execution_model.within_effective_authority === "automatic_without_per_operation_prompt", "server_info omitted the automatic execution model");
   assert(editorStatus.authorization.execution_model.owner_ambient_authority === "not_owner", "delegated account was mislabeled as owner ambient authority");
 
-  const editorOverviewPromise = toolCallRequest(base, editorToken, "", 276, "project_overview", {});
+  const editorOverviewPromise = toolCallRequest(base, editorToken, 276, "project_overview", {});
   const editorOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
   assert(editorOverviewRelay.authorization?.role === "editor", "project_overview did not relay the editor role");
   fullDaemon.send(JSON.stringify({
@@ -1558,15 +1386,95 @@ try {
       tools: ["server_info", "project_overview", "list_dir", "read_file", "write_file"],
       daemonPolicy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
       daemonTools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
-      topLevel: [],
+      privateDaemonField: "/synthetic/private/daemon-state",
+      topLevel: [{ name: "src", path: "/synthetic/workspace/src", type: "directory", size: 4096, private_metadata: "daemon-private" }],
     },
   }));
   const editorOverview = (await editorOverviewPromise).body.result?.structuredContent;
   assert(editorOverview?.policy?.profile === "edit", "remote project_overview exposed the daemon full policy as editor authority");
   assert(editorOverview?.daemonPolicy?.profile === "full", "remote project_overview lost the daemon capability ceiling");
   assert(editorOverview?.tools?.includes("write_file") && !editorOverview?.tools?.includes("exec_command") && !editorOverview?.tools?.includes("browser_action"), "remote project_overview did not expose editor-effective tools");
-  assert(editorOverview?.daemonTools?.includes("exec_command") && editorOverview?.daemonTools?.includes("browser_action"), "remote project_overview did not preserve daemon-advertised tools separately");
+  assert(Array.isArray(editorOverview?.daemonTools) && editorOverview.daemonTools.length === 0
+    && editorOverview?.daemonToolCount === 7 && editorOverview?.daemonToolsHiddenByAuthority === true,
+  "remote project_overview leaked daemon-only tool names to a non-owner account");
+  assert(editorOverview?.workspace === "." && editorOverview?.workspaceName === "workspace" && editorOverview?.gitRoot === ""
+    && editorOverview?.capabilityRouting?.activity_hidden_by_authority === true
+    && !("privateDaemonField" in editorOverview)
+    && editorOverview?.topLevel?.[0]?.name === "src" && editorOverview?.topLevel?.[0]?.size === 4096
+    && !("path" in editorOverview.topLevel[0]) && !("private_metadata" in editorOverview.topLevel[0]),
+  "remote project_overview failed to enforce fail-closed non-owner path/activity/unknown-field privacy at the Worker boundary");
   assert(editorOverview?.policyScope === "authenticated_account_effective_authority", "remote project_overview policy scope remained ambiguous");
+
+  const compactOverviewPromise = toolCallRequest(base, editorToken, 2761, "project_overview", { detail: "summary" });
+  const compactOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
+  assert(compactOverviewRelay.authorization?.role === "editor"
+    && compactOverviewRelay.arguments && Object.keys(compactOverviewRelay.arguments).length === 0,
+  "remote compact project_overview failed to use the backward-compatible default/full daemon request");
+  fullDaemon.send(JSON.stringify({
+    type: "tool_result", id: compactOverviewRelay.id, ok: true,
+    result: {
+      workspace: "/synthetic/workspace", workspaceName: "workspace", gitRoot: "/synthetic/workspace",
+      policy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      tools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      daemonPolicy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      daemonTools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      privateDaemonField: "/synthetic/private/summary-state",
+      capabilityRouting: {
+        bootstrap_observed: true, bootstrap_count: 8, task_resolution_observed: true, task_resolution_count: 3,
+        last_task_resolution: {
+          observed_at: "2026-08-08T00:00:00.000Z", task_fingerprint: "private-fingerprint", refresh_fingerprint: "private-refresh",
+          selected_skill: "review", matched_skills: 2, matched_commands: 3, matched_applications: 4,
+          recommended_tools: ["read_file", "git_status"], primary_route: "files", routing_ambiguity: "low", routing_score_gap: 4,
+        },
+        enforcement_boundary: "long cold-path explanation",
+      },
+      topLevel: [
+        { name: "src", path: "/synthetic/workspace/src", type: "directory", size: 4096, private_metadata: "summary-private" },
+        { name: "README.md", path: "/synthetic/workspace/README.md", type: "file", size: 1234 },
+      ],
+      topLevelTotal: 2, topLevelTruncated: false,
+    },
+  }));
+  const compactOverview = (await compactOverviewPromise).body.result?.structuredContent;
+  const compactOverviewJson = JSON.stringify(compactOverview);
+  assert(compactOverview?.detail === "summary"
+    && compactOverview?.policy?.profile === "edit"
+    && compactOverview?.effectiveToolCount === 5
+    && compactOverview?.daemonToolCount === 7
+    && compactOverview?.authorization?.account?.role === "editor"
+    && !("account_id" in compactOverview.authorization.account)
+    && compactOverview?.authorization?.effective_tool_count === 5
+    && compactOverview?.topLevel?.[0]?.name === "src"
+    && !("path" in compactOverview.topLevel[0]) && !("size" in compactOverview.topLevel[0])
+    && !("private_metadata" in compactOverview.topLevel[0]) && !("privateDaemonField" in compactOverview)
+    && compactOverview?.capabilityRouting?.activity_hidden_by_authority === true
+    && compactOverview?.daemonToolsHiddenByAuthority === true
+    && !("last_task_resolution" in compactOverview.capabilityRouting)
+    && !("tools" in compactOverview) && !("daemonTools" in compactOverview),
+  "remote compact project_overview leaked cold-path identity/tool/path/activity fields or lost effective authority");
+  assert(compactOverviewJson.length <= 2600,
+    `remote compact project_overview exceeded its hot-path output budget: ${compactOverviewJson.length} chars`);
+
+  const explicitFullOverviewPromise = toolCallRequest(base, editorToken, 2762, "project_overview", { detail: "full" });
+  const explicitFullOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
+  assert(explicitFullOverviewRelay.arguments && Object.keys(explicitFullOverviewRelay.arguments).length === 0,
+    "explicit full project_overview was not normalized for an older default-full daemon");
+  fullDaemon.send(JSON.stringify({
+    type: "tool_result", id: explicitFullOverviewRelay.id, ok: true,
+    result: {
+      workspace: "/synthetic/workspace", workspaceName: "workspace", gitRoot: "",
+      policy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      tools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      daemonPolicy: { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true },
+      daemonTools: ["server_info", "project_overview", "list_dir", "read_file", "write_file", "exec_command", "browser_action"],
+      topLevel: [],
+    },
+  }));
+  const explicitFullOverview = (await explicitFullOverviewPromise).body.result?.structuredContent;
+  assert(Array.isArray(explicitFullOverview?.tools)
+    && explicitFullOverview?.authorization?.account?.account_id === editorAccount.body.account.account_id
+    && !("detail" in explicitFullOverview),
+  "explicit full project_overview lost backward-compatible full authority fields");
 
   const duplicateHelloDaemon = await connectDaemon(base);
   daemonSockets.push(duplicateHelloDaemon);
@@ -1612,7 +1520,7 @@ async function registerTestClient({ base, redirectUri, name }) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ client_name: name, redirect_uris: [redirectUri] }),
   });
-  assert(registration.response.status === 200, `test client registration failed: ${registration.response.status}`);
+  assert(registration.response.status === 201, `test client registration failed: ${registration.response.status}`);
   return registration.body;
 }
 
@@ -1709,7 +1617,7 @@ async function beginDaemonHello(socket, tools, policy = defaultDaemonPolicy(), i
     instance_id: instanceId,
     tools,
     policy,
-    protocol_versions: ["2025-11-25"],
+    protocol_versions: ["2026-07-28"],
     authentication,
   }));
   const [, probe] = await handshake;
@@ -1723,6 +1631,15 @@ async function completeDaemonProbe(socket, probe) {
   const [resume] = await ready;
   assert(Array.isArray(resume.ids), "Worker resume_calls omitted its call-id array");
   return resume;
+}
+
+async function completeDaemonProbeWithRevocations(socket, probe, count) {
+  const ready = waitForWsMessageSequence(socket, ["resume_calls", ...Array(count).fill("authority_revoke"), "ready_ack"]);
+  socket.send(JSON.stringify({ type: "relay_probe_result", id: probe.id }));
+  const messages = await ready;
+  const resume = messages[0];
+  assert(Array.isArray(resume.ids), "Worker revocation replay omitted resume_calls or its call-id array");
+  return { resume, revocations: messages.slice(1, -1) };
 }
 
 function nextDaemonInstanceId() {
@@ -1824,22 +1741,7 @@ function waitForWsClose(socket, timeoutMs = 5000) {
   }), timeoutMs, "daemon close");
 }
 
-function tamperSessionId(value) {
-  const signatureStart = value.lastIndexOf("_") + 1;
-  const replacement = value[signatureStart] === "A" ? "B" : "A";
-  return `${value.slice(0, signatureStart)}${replacement}${value.slice(signatureStart + 1)}`;
-}
-
-function mcpHeaders(accessToken, sessionId = "") {
-  return {
-    "content-type": "application/json",
-    authorization: `Bearer ${accessToken}`,
-    "mcp-protocol-version": "2025-11-25",
-    ...(sessionId ? { "mcp-session-id": sessionId } : {}),
-  };
-}
-
-function modernMcpHeaders(accessToken, method, name = "", version = "2026-07-28") {
+function currentMcpHeaders(accessToken, method, name = "", version = "2026-07-28") {
   return {
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
@@ -1850,7 +1752,7 @@ function modernMcpHeaders(accessToken, method, name = "", version = "2026-07-28"
   };
 }
 
-function modernRequest(id, method, params, version = "2026-07-28") {
+function currentMcpRequest(id, method, params, version = "2026-07-28") {
   return {
     jsonrpc: "2.0",
     id,
@@ -1860,18 +1762,18 @@ function modernRequest(id, method, params, version = "2026-07-28") {
       _meta: {
         "io.modelcontextprotocol/protocolVersion": version,
         "io.modelcontextprotocol/clientCapabilities": {},
-        "io.modelcontextprotocol/clientInfo": { name: "worker-modern-integration", version: "1" },
+        "io.modelcontextprotocol/clientInfo": { name: "worker-current-integration", version: "1" },
       },
     },
   };
 }
 
-async function modernCall(origin, accessToken, id, method, params) {
+async function currentMcpCall(origin, accessToken, id, method, params) {
   const name = method === "tools/call" ? String(params.name || "") : "";
   const response = await stableFetch(`${origin}/mcp`, {
     method: "POST",
-    headers: modernMcpHeaders(accessToken, method, name),
-    body: JSON.stringify(modernRequest(id, method, params)),
+    headers: currentMcpHeaders(accessToken, method, name),
+    body: JSON.stringify(currentMcpRequest(id, method, params)),
   });
   const text = await response.text();
   if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
@@ -1890,26 +1792,18 @@ function encodeMcpHeaderValue(value) {
   return plain ? text : `=?base64?${Buffer.from(text, "utf8").toString("base64")}?=`;
 }
 
-function toolCallRequest(origin, accessToken, sessionId, id, name, argumentsValue) {
-  return fetchJson(`${origin}/mcp`, {
-    method: "POST",
-    headers: mcpHeaders(accessToken, sessionId),
-    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: argumentsValue } }),
-  });
+function toolCallRequest(origin, accessToken, id, name, argumentsValue) {
+  return currentMcpCall(origin, accessToken, id, "tools/call", { name, arguments: argumentsValue });
 }
 
-async function callTool(origin, accessToken, sessionId, id, name, argumentsValue) {
-  const response = await toolCallRequest(origin, accessToken, sessionId, id, name, argumentsValue);
+async function callTool(origin, accessToken, id, name, argumentsValue) {
+  const response = await toolCallRequest(origin, accessToken, id, name, argumentsValue);
   assert(response.response.status === 200, `${name} call failed: ${response.response.status}`);
   return response.body;
 }
 
-async function callServerInfo(origin, accessToken, id) {
-  const response = await fetchJson(`${origin}/mcp`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}`, "mcp-protocol-version": "2025-11-25" },
-    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "server_info", arguments: {} } }),
-  });
+async function callServerInfo(origin, accessToken, id, args = {}) {
+  const response = await currentMcpCall(origin, accessToken, id, "tools/call", { name: "server_info", arguments: args });
   assert(response.response.status === 200, `server_info call failed: ${response.response.status}`);
   const text = response.body.result?.content?.[0]?.text;
   const structured = response.body.result?.structuredContent;
@@ -1920,11 +1814,7 @@ async function callServerInfo(origin, accessToken, id) {
 }
 
 async function callToolsList(origin, accessToken, id) {
-  const response = await fetchJson(`${origin}/mcp`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}`, "mcp-protocol-version": "2025-11-25" },
-    body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/list", params: {} }),
-  });
+  const response = await currentMcpCall(origin, accessToken, id, "tools/list", {});
   assert(response.response.status === 200, `tools/list failed: ${response.response.status}`);
   assert(Array.isArray(response.body.result?.tools), "tools/list did not return an array");
   return response.body.result.tools;
@@ -2009,22 +1899,6 @@ async function stableFetchAttempt(url, options = {}, attempts = 3) {
   throw lastError || new Error("fetch failed without a response");
 }
 
-async function readSseInitialEvent(reader) {
-  const decoder = new TextDecoder();
-  let text = "";
-  for (;;) {
-    const chunk = await reader.read();
-    if (chunk.done) throw new Error("SSE stream ended before the initial event completed");
-    text += decoder.decode(chunk.value, { stream: true });
-    const boundary = text.search(/\r?\n\r?\n/);
-    if (boundary >= 0) {
-      const eventText = text.slice(0, boundary + (text[boundary] === "\r" ? 4 : 2));
-      return { text: eventText, eventId: firstSseEventId(eventText) };
-    }
-    if (text.length > 64 * 1024) throw new Error("SSE initial event exceeded its bounded frame size");
-  }
-}
-
 async function readSseJsonRpcResponse(reader, initialText = "") {
   const decoder = new TextDecoder();
   let text = initialText;
@@ -2041,15 +1915,20 @@ function parseSseJsonRpcResponse(text) {
   const eventIds = text.split(/\r?\n/)
     .filter((line) => line.startsWith("id: "))
     .map((line) => line.slice(4));
-  const dataLines = text.split(/\r?\n/).filter((line) => line.startsWith("data: "));
-  for (let index = dataLines.length - 1; index >= 0; index -= 1) {
-    try { return { message: JSON.parse(dataLines[index].slice(6)), eventIds, text }; } catch {}
+  const messages = parseSseJsonMessages(text);
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index] && typeof messages[index] === "object") return { message: messages[index], eventIds, text };
   }
   throw new Error(`SSE response omitted a JSON-RPC message: ${text.slice(0, 512)}`);
 }
 
-function firstSseEventId(text) {
-  return text.split(/\r?\n/).find((line) => line.startsWith("id: "))?.slice(4) || "";
+function parseSseJsonMessages(text) {
+  const messages = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("data: ")) continue;
+    try { messages.push(JSON.parse(line.slice(6))); } catch {}
+  }
+  return messages;
 }
 
 function fetchJson(url, options) {

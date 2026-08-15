@@ -1,3 +1,5 @@
+import type { AuthorityRevocation } from "../shared/authority-revocation.mjs";
+
 export type PendingCallOutcome =
   | { ok: true; value: unknown }
   | { ok: false; error: Error };
@@ -7,6 +9,17 @@ export type PendingCallSettlement = {
   reject: (error: Error) => void;
 };
 
+export class PendingCallRegistrationError extends Error {
+  readonly code: "conflict" | "limit_exceeded";
+  readonly retryable: boolean;
+  constructor(code: "conflict" | "limit_exceeded", message: string, retryable = false) {
+    super(message);
+    this.name = "PendingCallRegistrationError";
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
 export interface PendingCallRecord {
   id: string;
   socket?: WebSocket;
@@ -15,6 +28,11 @@ export interface PendingCallRecord {
   reconnectDeadlineAt?: number;
   onReconnectTimeout?: (record: PendingCallRecord) => Error;
   clientRequestKey?: string;
+  owner_kind?: "account";
+  owner_account_id?: string;
+  owner_account_version?: number;
+  owner_client_id?: string;
+  owner_family_id?: string;
   tool: string;
   startedAt: number;
   timeout?: ReturnType<typeof setTimeout>;
@@ -31,6 +49,7 @@ export interface RegisterPendingCall {
   socket: WebSocket;
   daemonInstanceId?: string;
   clientRequestKey?: string;
+  authority?: AuthorityRevocation;
   tool: string;
   timeoutMs: number;
   onTimeout: (record: PendingCallRecord) => Error;

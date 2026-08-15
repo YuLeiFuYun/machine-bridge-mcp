@@ -73,6 +73,35 @@ export function createChildProcessSettlement(options = {}) {
   return Object.freeze({ onClose, onExit, cancel });
 }
 
+/**
+ * Attach the shared close-preferred settlement policy to one ChildProcess-like object.
+ * Residual stdio is destroyed only after exit has been observed and the bounded close grace expired.
+ * @param {any} child
+ * @param {ChildProcessSettlementOptions} options
+ */
+export function attachChildProcessSettlement(child, options = {}) {
+  const settlement = createChildProcessSettlement({
+    ...options,
+    readExitState: options.readExitState || (() => ({ code: child?.exitCode, signal: child?.signalCode })),
+    onFallback() {
+      for (const stream of [child?.stdin, child?.stdout, child?.stderr]) {
+        try { stream?.destroy?.(); }
+        catch { /* The process has exited; residual stream destruction is bounded best-effort cleanup. */ }
+      }
+      try { child?.unref?.(); }
+      catch { /* Detachment is advisory after process exit and cannot change the settlement result. */ }
+      options.onFallback?.();
+    },
+  });
+  /** @param {number | null} code @param {string | null} signal */
+  const onExit = (code, signal) => settlement.onExit(code, signal);
+  /** @param {number | null} code @param {string | null} signal */
+  const onClose = (code, signal) => settlement.onClose(code, signal);
+  child.once("exit", onExit);
+  child.once("close", onClose);
+  return settlement;
+}
+
 /** @param {unknown} value */
 function boundedDelay(value) {
   if (value === undefined) return 1000;

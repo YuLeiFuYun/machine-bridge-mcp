@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { conformanceProxyTarget, validateConformanceCheckout } from "../scripts/official-mcp-conformance.mjs";
@@ -31,6 +31,12 @@ try {
   assert.throws(() => validateConformanceCheckout(checkout), /dependencies are not installed/);
   mkdirSync(join(checkout, "node_modules"));
   assert.equal(validateConformanceCheckout(checkout), realpathSync.native(checkout));
+  assert.throws(() => validateConformanceCheckout(checkout, {
+    lstatSync(path) {
+      if (path.endsWith("package-lock.json")) throw Object.assign(new Error("synthetic permission failure"), { code: "EACCES" });
+      return lstatSync(path);
+    },
+  }), /could not be inspected/);
   const alias = join(checkoutRoot, "alias");
   symlinkSync(checkout, alias);
   assert.throws(() => validateConformanceCheckout(alias), /real directory/);

@@ -42,7 +42,9 @@ export function authorizationPage({
   );
   const clientBlock = authorization
     ? `<p><strong>Client:</strong> ${escapeHtml(authorization.client.client_name)}</p>
-    <p><strong>Redirect URI:</strong> <code>${escapeHtml(authorization.redirectUri)}</code></p>`
+    <p><strong>Redirect URI:</strong> <code>${escapeHtml(authorization.redirectUri)}</code></p>
+    ${clientTrustNotice(authorization)}
+    ${loopbackRedirectWarning(authorization.redirectUri)}`
     : "";
   const errorBlock = error ? `<p role="alert" aria-live="assertive" style="color:#b91c1c; font-weight:600">${escapeHtml(error)}</p>` : "";
   const accountName = normalizeDisplayText(String(submitted?.account_name ?? ""), 64, "");
@@ -67,4 +69,22 @@ export function authorizationPage({
     ${form}
   </body>
 </html>`, status, redirectOrigin);
+}
+
+function clientTrustNotice(authorization: ValidatedAuthorization): string {
+  const previouslyAuthorized = authorization.client.has_been_authorized === true
+    && Boolean(authorization.client.trusted_account_id);
+  return previouslyAuthorized
+    ? `<p><strong>Client status:</strong> Previously authorized and account-bound on this Machine Bridge.</p>`
+    : `<p role="alert"><strong>Client status:</strong> Unverified dynamically registered client. The client name is self-asserted; verify the redirect URI before entering credentials.</p>`;
+}
+
+function loopbackRedirectWarning(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname)) return "";
+    return `<p role="alert"><strong>Local callback:</strong> This authorization code will be sent to a loopback address on this device. Continue only if you initiated the local client connection.</p>`;
+  } catch {
+    return "";
+  }
 }

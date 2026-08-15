@@ -3,7 +3,7 @@ import path from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
-import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
 
 const MAX_LOCK_BYTES = 8 * 1024;
 const DEFAULT_WAIT_MS = 5_000;
@@ -31,7 +31,7 @@ export async function withOwnerStateLock(root, callback, options = {}) {
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      const inspected = readLockOwner(lockPath, purpose);
+      const inspected = retryTransientMultipleLinksSync(() => readOwnerStateLock(lockPath, purpose));
       if (inspected.kind === "missing") continue;
       if (inspected.kind === "invalid") {
         throw new Error(`${label} lock is malformed; inspect the owner-only state directory`);
@@ -56,8 +56,17 @@ export async function withOwnerStateLock(root, callback, options = {}) {
   } catch (error) {
     callbackError = error;
   }
-  const released = removeOwnedJsonFileSync(lockPath, { token: owner.token, purpose }, { maxBytes: MAX_LOCK_BYTES });
-  if (!released) throw new Error(`${label} lock changed before release; state may require inspection`);
+  let releaseError;
+  try {
+    const released = removeOwnedJsonFileSync(lockPath, { token: owner.token, purpose }, { maxBytes: MAX_LOCK_BYTES });
+    if (!released) releaseError = new Error(`${label} lock changed before release; state may require inspection`);
+  } catch (error) {
+    releaseError = new Error(`${label} lock release failed; state may require inspection`, { cause: error });
+  }
+  if (callbackError && releaseError) {
+    throw new AggregateError([callbackError, releaseError], `${label} operation failed and lock release was incomplete`);
+  }
+  if (releaseError) throw releaseError;
   if (callbackError) throw callbackError;
   return result;
 }
@@ -73,13 +82,12 @@ function lockOwner(purpose) {
   };
 }
 
-function readLockOwner(file, purpose) {
+export function readOwnerStateLock(file, purpose) {
+  let text;
+  try { text = readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock", { verifyPathIdentity: true, rejectMultipleLinks: true }).toString("utf8"); }
+  catch (error) { if (error?.code === "ENOENT") return { kind: "missing" }; throw error; }
   let parsed;
-  try {
-    parsed = JSON.parse(readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock").toString("utf8"));
-  } catch (error) {
-    return error?.code === "ENOENT" ? { kind: "missing" } : { kind: "invalid" };
-  }
+  try { parsed = JSON.parse(text); } catch { return { kind: "invalid" }; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "invalid" };
   if (!Number.isInteger(parsed.pid) || parsed.pid <= 0) return { kind: "invalid" };
   if (!/^[a-f0-9]{32}$/.test(String(parsed.token || ""))) return { kind: "invalid" };

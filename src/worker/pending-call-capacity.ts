@@ -71,49 +71,35 @@ export type PendingCapacitySnapshot = {
   by_tool: Record<string, number>;
 };
 
-export function combinedPendingCapacity(
-  transient: PendingCapacitySnapshot,
-  durable: PendingCapacitySnapshot,
-  config: ToolCallCapacityConfig = WORKER_PENDING_CALL_CAPACITY,
-): {
-  active: number;
-  by_tool: Record<string, number>;
-  maximum: number;
-  ordinary_capacity: number;
-  reserved_capacity: number;
-  active_reserved: number;
-  active_ordinary: number;
-} {
-  const byTool = Object.assign(Object.create(null) as Record<string, number>, transient.by_tool);
-  for (const [tool, count] of Object.entries(durable.by_tool)) byTool[tool] = (byTool[tool] ?? 0) + count;
-  const usage = toolCallCapacityUsage({ active: transient.active + durable.active, byTool }, config);
-  return {
-    active: usage.active,
-    by_tool: byTool,
-    maximum: usage.maximum,
-    ordinary_capacity: usage.ordinaryMaximum,
-    reserved_capacity: usage.reserved,
-    active_reserved: usage.activeReserved,
-    active_ordinary: usage.activeOrdinary,
-  };
-}
-
 export function pendingCallAdmission(
-  transient: PendingCapacitySnapshot,
-  durable: PendingCapacitySnapshot,
+  pending: PendingCapacitySnapshot,
   tool: string,
   config: ToolCallCapacityConfig = WORKER_PENDING_CALL_CAPACITY,
 ): ToolCallAdmission {
-  const combined = combinedPendingCapacity(transient, durable, config);
-  return toolCallAdmission({ active: combined.active, byTool: combined.by_tool }, config, tool);
+  return toolCallAdmission(pending, config, tool);
+}
+
+export function pendingCapacityProjection(
+  pending: PendingRegistrySnapshot,
+  preDispatch: PendingCapacitySnapshot,
+): PendingRegistrySnapshot & Record<string, unknown> {
+  const byTool = { ...pending.by_tool };
+  for (const [tool, count] of Object.entries(preDispatch.by_tool)) byTool[tool] = (byTool[tool] ?? 0) + count;
+  const usage = toolCallCapacityUsage({ active: pending.active + preDispatch.active, byTool }, WORKER_PENDING_CALL_CAPACITY);
+  return Object.freeze({
+    ...pending,
+    pre_dispatch_waiters: preDispatch.active,
+    capacity_active: usage.active,
+    capacity_active_ordinary: usage.activeOrdinary,
+    capacity_active_reserved: usage.activeReserved,
+  });
 }
 
 export function assertWorkerPendingCallAdmission(
-  transient: PendingCapacitySnapshot,
-  durable: PendingCapacitySnapshot,
+  pending: PendingCapacitySnapshot,
   tool: string,
 ): void {
-  const decision = pendingCallAdmission(transient, durable, tool);
+  const decision = pendingCallAdmission(pending, tool);
   if (decision.allowed) return;
   const message = decision.reason === "ordinary_capacity"
     ? `ordinary daemon-call capacity reached (${decision.ordinaryMaximum}); control-plane capacity is reserved for diagnosis and recovery`

@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { releaseCommandFailure } from "./release-diagnostic.mjs";
 
 const MAX_SBOM_BYTES = 4 * 1024 * 1024;
 const SBOM_TIMEOUT_MS = 30_000;
@@ -12,17 +14,16 @@ export function generateAndValidateSbom(options = {}) {
   const npmCli = String(options.npmCli || process.env.npm_execpath || "").trim();
   if (!npmCli) throw new Error("sbom check must run through an npm lifecycle so npm_execpath is available");
   const cwd = resolve(options.cwd || root);
-  const result = spawnSync(process.execPath, [npmCli, "sbom", "--sbom-format", "cyclonedx"], {
+  const result = spawnSync(process.execPath, [npmCli, "sbom", "--workspaces=false", "--global=false", "--prefix", root, "--sbom-format", "cyclonedx"], {
     cwd,
-    env: options.env || process.env,
+    env: nestedNpmEnvironment(options.env || process.env),
     encoding: "utf8",
     maxBuffer: MAX_SBOM_BYTES,
     timeout: SBOM_TIMEOUT_MS,
     killSignal: "SIGKILL",
     windowsHide: true,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`npm sbom failed: ${boundedText(result.stderr || result.stdout)}`);
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure("npm", ["sbom"], result));
   if (Buffer.byteLength(result.stdout) > MAX_SBOM_BYTES) throw new Error("npm sbom output exceeds the fixed byte budget");
   let document;
   try { document = JSON.parse(result.stdout); }
@@ -53,7 +54,9 @@ export function validateCycloneDxSbom(document, options = {}) {
   if (!Array.isArray(document.dependencies) || document.dependencies.length < 1 || document.dependencies.length > 20_000) {
     throw new Error("SBOM dependencies must be a non-empty bounded array");
   }
-  const references = new Set();
+  const rootReference = String(component["bom-ref"] || "");
+  if (!rootReference) throw new Error("SBOM root component reference is missing");
+  const references = new Set([rootReference]);
   for (const item of document.components) {
     if (!isRecord(item) || typeof item["bom-ref"] !== "string" || !item["bom-ref"]
         || typeof item.name !== "string" || !item.name || typeof item.version !== "string" || !item.version) {
@@ -62,10 +65,18 @@ export function validateCycloneDxSbom(document, options = {}) {
     if (references.has(item["bom-ref"])) throw new Error("SBOM contains duplicate component references");
     references.add(item["bom-ref"]);
   }
-  const rootReference = String(component["bom-ref"] || "");
-  if (!rootReference || !document.dependencies.some((entry) => isRecord(entry)
-      && entry.ref === rootReference && Array.isArray(entry.dependsOn))) {
-    throw new Error("SBOM dependency graph omits the root package");
+  const dependencyByReference = new Map();
+  for (const entry of document.dependencies) {
+    if (!isRecord(entry) || typeof entry.ref !== "string" || !references.has(entry.ref)
+        || dependencyByReference.has(entry.ref) || !Array.isArray(entry.dependsOn)
+        || entry.dependsOn.some((reference) => typeof reference !== "string" || !references.has(reference))) {
+      throw new Error("SBOM dependency graph contains an invalid reference");
+    }
+    dependencyByReference.set(entry.ref, entry.dependsOn);
+  }
+  if (dependencyByReference.size !== references.size
+      || [...references].some((reference) => !dependencyByReference.has(reference))) {
+    throw new Error("SBOM dependency graph omits a component reference");
   }
   const serialized = JSON.stringify(document);
   for (const path of options.forbiddenPaths || []) {
@@ -85,10 +96,6 @@ export function validateCycloneDxSbom(document, options = {}) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function boundedText(value) {
-  return String(value || "").replace(/[\r\n]+/g, " ").slice(0, 1000);
 }
 
 async function main() {

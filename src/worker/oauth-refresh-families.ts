@@ -8,8 +8,17 @@ import {
   type OAuthStore,
 } from "./oauth-state.ts";
 import { HttpError } from "./http.ts";
+import {
+  hasOnlyRecordFields, OAUTH_CONSUMED_REFRESH_FIELDS, OAUTH_REFRESH_TOKEN_FIELDS, OAUTH_REVOKED_REFRESH_FAMILY_FIELDS,
+} from "./oauth-field-contract.ts";
+import {
+  loadConsumedRefreshShards,
+  mergeLegacyAndShardedConsumed,
+  OAUTH_REFRESH_STORE_KEY,
+  saveOAuthRefreshStore,
+} from "./oauth-refresh-persistence.ts";
+export { OAUTH_REFRESH_STORE_KEY } from "./oauth-refresh-persistence.ts";
 
-export const OAUTH_REFRESH_STORE_KEY = "oauth-refresh";
 const MAX_CONSUMED_REFRESH_TOKENS = 4096;
 const MAX_REVOKED_REFRESH_FAMILIES = 1024;
 export const OAUTH_REFRESH_RETRY_GRACE_SECONDS = 30;
@@ -22,11 +31,21 @@ export async function loadOAuthRefreshStore(
   storage: DurableObjectStorage,
 ): Promise<OAuthRefreshStore> {
   const raw = await storage.get<unknown>(OAUTH_REFRESH_STORE_KEY);
+  const shards = await loadConsumedRefreshShards(storage);
   const store = raw === undefined ? emptyOAuthRefreshStore() : upgradeOAuthRefreshStore(raw);
-  if (!store || !validRefreshStoreRecords(store)) {
+  if (!store || !shards.valid || (raw === undefined && shards.present)) {
     throw new HttpError(503, "oauth_refresh_state_schema_mismatch", "OAuth refresh-token state requires operator repair");
   }
   const migrated = raw !== undefined && !isCurrentOAuthRefreshStore(raw);
+  const legacyConsumedPresent = Object.keys(store.consumed).length > 0;
+  const mergedConsumed = mergeLegacyAndShardedConsumed(store.consumed, shards.consumed);
+  if (!mergedConsumed) {
+    throw new HttpError(503, "oauth_refresh_state_schema_mismatch", "OAuth refresh-token state requires operator repair");
+  }
+  store.consumed = mergedConsumed;
+  if (!validRefreshStoreRecords(store)) {
+    throw new HttpError(503, "oauth_refresh_state_schema_mismatch", "OAuth refresh-token state requires operator repair");
+  }
   let changed = false;
   const now = Math.floor(Date.now() / 1000);
   for (const [token, value] of Object.entries(store.tokens)) {
@@ -50,6 +69,14 @@ export async function loadOAuthRefreshStore(
     if (value.expires_at <= now) {
       delete store.consumed[token];
       changed = true;
+      continue;
+    }
+    if (Number.isSafeInteger(value.retry_until) && value.retry_until! < now) {
+      delete value.retry_until;
+      delete value.retry_issues;
+      delete value.source;
+      delete value.access_scope;
+      changed = true;
     }
   }
   for (const [familyId, value] of Object.entries(store.revoked_families)) {
@@ -59,7 +86,7 @@ export async function loadOAuthRefreshStore(
     }
   }
   if (pruneOAuthRefreshReplayState(store, oauthStore)) changed = true;
-  if (changed || migrated) await storage.put(OAUTH_REFRESH_STORE_KEY, store);
+  if (changed || migrated || legacyConsumedPresent) await saveOAuthRefreshStore(storage, store);
   return store;
 }
 
@@ -71,6 +98,7 @@ export function recordConsumedRefreshToken(
   source: OAuthRefreshToken,
   expiresAt: number,
   consumedAt = Math.floor(Date.now() / 1000),
+  accessScope = source.scope,
 ): void {
   if (!TOKEN_HASH_PATTERN.test(tokenHash) || !FAMILY_ID_PATTERN.test(source.family_id)) {
     throw new Error("consumed refresh-token identity is invalid");
@@ -85,6 +113,7 @@ export function recordConsumedRefreshToken(
     retry_until: Math.min(expiresAt, consumedAt + OAUTH_REFRESH_RETRY_GRACE_SECONDS),
     retry_issues: 0,
     source: { ...source },
+    access_scope: accessScope,
   };
   pruneOAuthRefreshReplayState(store, oauthStore);
 }
@@ -131,6 +160,7 @@ function validRefreshStoreRecords(store: OAuthRefreshStore): boolean {
   )) && Object.entries(store.consumed).every(([key, token]) => (
     TOKEN_HASH_PATTERN.test(key)
     && plainRecord(token)
+    && hasOnlyRecordFields(token, OAUTH_CONSUMED_REFRESH_FIELDS)
     && FAMILY_ID_PATTERN.test(token.family_id)
     && validTimestamp(token.consumed_at)
     && validTimestamp(token.expires_at)
@@ -146,12 +176,20 @@ function validRefreshStoreRecords(store: OAuthRefreshStore): boolean {
       && token.retry_issues <= MAX_REFRESH_RETRY_ISSUES
     ))
     && (token.source === undefined || validRefreshTokenRecord(token.source))
+    && (token.access_scope === undefined || (
+      typeof token.access_scope === "string"
+      && token.access_scope.length > 0
+      && token.access_scope.length <= 256
+      && token.source !== undefined
+      && scopeSubset(token.access_scope, token.source.scope)
+    ))
     && ((token.source === undefined && token.retry_until === undefined && token.retry_issues === undefined)
       || (token.source !== undefined && token.retry_until !== undefined && token.retry_issues !== undefined
         && token.source.family_id === token.family_id))
   )) && Object.entries(store.revoked_families).every(([familyId, value]) => (
     FAMILY_ID_PATTERN.test(familyId)
     && plainRecord(value)
+    && hasOnlyRecordFields(value, OAUTH_REVOKED_REFRESH_FAMILY_FIELDS)
     && value.reason === "replay"
     && validTimestamp(value.expires_at)
   ));
@@ -159,6 +197,7 @@ function validRefreshStoreRecords(store: OAuthRefreshStore): boolean {
 
 function validRefreshTokenRecord(token: OAuthRefreshToken): boolean {
   return plainRecord(token)
+    && hasOnlyRecordFields(token, OAUTH_REFRESH_TOKEN_FIELDS)
     && /^mcp_client_[A-Za-z0-9_-]{43}$/.test(token.client_id)
     && /^acct_[A-Za-z0-9_-]{20,96}$/.test(token.account_id)
     && Number.isSafeInteger(token.account_version)
@@ -182,6 +221,14 @@ function validRefreshTokenRecord(token: OAuthRefreshToken): boolean {
 
 function validTimestamp(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function scopeSubset(requested: string, granted: string): boolean {
+  const requestedScopes = requested.trim().split(/\s+/).filter(Boolean);
+  const grantedScopes = new Set(granted.trim().split(/\s+/).filter(Boolean));
+  return requestedScopes.length > 0
+    && new Set(requestedScopes).size === requestedScopes.length
+    && requestedScopes.every((scope) => grantedScopes.has(scope));
 }
 
 function validHttpsResource(value: unknown): boolean {

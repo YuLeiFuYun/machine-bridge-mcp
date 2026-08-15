@@ -1,6 +1,6 @@
 import http from "node:http";
 import https from "node:https";
-import { appName } from "./state.mjs";
+import { appName } from "./package-identity.mjs";
 import { proxyAgentForHttp } from "./network-proxy.mjs";
 
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
@@ -28,9 +28,12 @@ export async function workerHealth(workerUrl, expectedVersion, options = {}) {
     const networkRoute = result.networkRoute || "direct";
     if (result.statusCode !== 200) return { ok: false, error: `HTTP ${result.statusCode}`, networkRoute };
     const body = result.body;
-    if (body?.ok !== true || body?.server !== appName) return { ok: false, error: "unexpected_health_response", networkRoute };
-    if (body?.version !== expectedVersion) return { ok: false, error: `version_mismatch:${body?.version || "unknown"}!=${expectedVersion}`, networkRoute };
-    return { ok: true, version: body.version, networkRoute };
+    const observedVersion = healthVersion(body?.version);
+    if (body?.ok !== true || body?.server !== appName || !observedVersion) {
+      return { ok: false, error: "unexpected_health_response", networkRoute };
+    }
+    if (observedVersion !== expectedVersion) return { ok: false, error: `version_mismatch:${observedVersion}!=${expectedVersion}`, networkRoute };
+    return { ok: true, version: observedVersion, networkRoute };
   } catch (error) {
     return {
       ok: false,
@@ -69,6 +72,11 @@ export function normalizeWorkerOrigin(workerUrl, expectedWorkerName = "") {
 
 export function workerHealthUrl(workerUrl, expectedWorkerName = "") {
   return `${normalizeWorkerOrigin(workerUrl, expectedWorkerName)}/healthz`;
+}
+
+function healthVersion(value) {
+  const version = typeof value === "string" ? value : "";
+  return /^[0-9A-Za-z][0-9A-Za-z.+-]{0,127}$/.test(version) ? version : "";
 }
 
 export function isRetryableWorkerHealthError(value) {

@@ -1,20 +1,22 @@
-export const MCP_MODERN_PROTOCOL_VERSION = "2026-07-28";
-export const MCP_LEGACY_PROTOCOL_VERSION = "2025-11-25";
-export const MCP_MODERN_PROTOCOL_VERSIONS = Object.freeze([MCP_MODERN_PROTOCOL_VERSION]);
-export const MCP_LEGACY_PROTOCOL_VERSIONS = Object.freeze([MCP_LEGACY_PROTOCOL_VERSION]);
+export const MCP_PROTOCOL_VERSION = "2026-07-28";
+export const MCP_PROTOCOL_VERSIONS = Object.freeze([MCP_PROTOCOL_VERSION]);
 export const MCP_HEADER_MISMATCH = -32020;
 export const MCP_UNSUPPORTED_PROTOCOL_VERSION = -32022;
+export const MCP_REMOVED_PROTOCOL_MESSAGE = "MCP session protocol was removed; upgrade the client and use request-scoped metadata/server/discover";
 const MCP_RESULT_COMPLETE = "complete";
 
 const PROTOCOL_VERSION_KEY = "io.modelcontextprotocol/protocolVersion";
 const CLIENT_INFO_KEY = "io.modelcontextprotocol/clientInfo";
 const CLIENT_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities";
 const SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo";
+const SUBSCRIPTION_ID_KEY = "io.modelcontextprotocol/subscriptionId";
 const LOG_LEVELS = new Set(["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]);
 const META_KEY = /^(?:(?:[A-Za-z](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)*[A-Za-z](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/)?(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)?$/;
 const MAX_MCP_JSON_DEPTH = 32;
 const MAX_MCP_JSON_NODES = 4096;
 const MAX_MCP_JSON_KEY_LENGTH = 256;
+const MAX_RESOURCE_SUBSCRIPTIONS = 128;
+const MAX_RESOURCE_SUBSCRIPTION_URI_LENGTH = 4096;
 
 export class McpProtocolError extends Error {
   constructor(code, message, data) {
@@ -38,11 +40,7 @@ export function requestProtocolVersion(value) {
   return typeof version === "string" ? version : "";
 }
 
-export function isModernMcpRequest(value) {
-  return requestProtocolVersion(value) !== "" || asMcpObject(value).method === "server/discover";
-}
-
-export function validateModernRequestMetadata(value, supportedVersions = MCP_MODERN_PROTOCOL_VERSIONS) {
+export function validateRequestMetadata(value, supportedVersions = MCP_PROTOCOL_VERSIONS) {
   const params = asMcpObject(asMcpObject(value).params);
   const meta = asMcpObject(params._meta);
   assertBoundedMcpJsonStructure(meta, "request metadata");
@@ -90,51 +88,72 @@ export function serverImplementation({ name, version, title, description }) {
   return implementation;
 }
 
-export function modernCompleteResult(fields = {}, serverInfo) {
-  return modernResult(MCP_RESULT_COMPLETE, fields, serverInfo);
+export function completeResult(fields = {}, serverInfo) {
+  return result(MCP_RESULT_COMPLETE, fields, serverInfo);
 }
 
-
-export function modernCacheableResult(fields, { ttlMs, cacheScope, serverInfo }) {
+export function cacheableResult(fields, { ttlMs, cacheScope, serverInfo }) {
   const normalizedTtl = Number(ttlMs);
   if (!Number.isFinite(normalizedTtl) || normalizedTtl < 0) throw new Error("ttlMs must be a non-negative number");
   if (cacheScope !== "public" && cacheScope !== "private") throw new Error("cacheScope must be public or private");
-  return modernCompleteResult({ ...fields, ttlMs: normalizedTtl, cacheScope }, serverInfo);
+  return completeResult({ ...fields, ttlMs: normalizedTtl, cacheScope }, serverInfo);
 }
 
-export function modernDiscoverResult({ supportedVersions, capabilities, instructions, ttlMs = 0, serverInfo }) {
+export function discoverResult({ supportedVersions, capabilities, instructions, ttlMs = 0, serverInfo }) {
   const fields = {
     supportedVersions: [...supportedVersions],
     capabilities: structuredClone(capabilities),
   };
   if (instructions) fields.instructions = String(instructions);
-  return modernCacheableResult(fields, { ttlMs, cacheScope: "public", serverInfo });
+  return cacheableResult(fields, { ttlMs, cacheScope: "public", serverInfo });
 }
 
-
-export function resultForProtocol(version, fields, { serverInfo, ttlMs, cacheScope } = {}) {
-  if (version !== MCP_MODERN_PROTOCOL_VERSION) return structuredClone(fields);
-  if (ttlMs !== undefined || cacheScope !== undefined) {
-    return modernCacheableResult(fields, {
-      ttlMs: ttlMs ?? 0,
-      cacheScope: cacheScope ?? "private",
-      serverInfo,
-    });
+export function validateSubscriptionRequest(value) {
+  const notifications = asMcpObject(asMcpObject(value).params).notifications;
+  if (!isPlainObject(notifications)) {
+    throw new McpProtocolError(-32602, "subscriptions/listen requires a notifications object");
   }
-  return modernCompleteResult(fields, serverInfo);
+  assertBoundedMcpJsonStructure(notifications, "subscription filter");
+  for (const key of ["toolsListChanged", "promptsListChanged", "resourcesListChanged"]) {
+    if (notifications[key] !== undefined && typeof notifications[key] !== "boolean") {
+      throw new McpProtocolError(-32602, `Invalid subscriptions/listen notification filter: ${key}`);
+    }
+  }
+  const resources = notifications.resourceSubscriptions;
+  if (resources === undefined) return;
+  if (!Array.isArray(resources) || resources.length > MAX_RESOURCE_SUBSCRIPTIONS
+      || resources.some((uri) => typeof uri !== "string" || !uri || uri.length > MAX_RESOURCE_SUBSCRIPTION_URI_LENGTH)) {
+    throw new McpProtocolError(-32602, "Invalid subscriptions/listen notification filter: resourceSubscriptions");
+  }
 }
 
-function modernServerInfoMeta(serverInfo) {
+export function emptySubscriptionAcknowledgement(requestId) {
+  return {
+    jsonrpc: "2.0",
+    method: "notifications/subscriptions/acknowledged",
+    params: {
+      notifications: {},
+      _meta: { [SUBSCRIPTION_ID_KEY]: requestId },
+    },
+  };
+}
+
+export function subscriptionCompleteResult(requestId, serverInfo) {
+  const output = completeResult({}, serverInfo);
+  output._meta = { ...asMcpObject(output._meta), [SUBSCRIPTION_ID_KEY]: requestId };
+  return output;
+}
+
+function serverInfoMeta(serverInfo) {
   return serverInfo ? { [SERVER_INFO_KEY]: structuredClone(serverInfo) } : undefined;
 }
 
-function modernResult(resultType, fields, serverInfo) {
-  const result = { ...structuredClone(fields), resultType };
-  const meta = modernServerInfoMeta(serverInfo);
-  if (meta) result._meta = { ...asMcpObject(result._meta), ...meta };
-  return result;
+function result(resultType, fields, serverInfo) {
+  const output = { ...structuredClone(fields), resultType };
+  const meta = serverInfoMeta(serverInfo);
+  if (meta) output._meta = { ...asMcpObject(output._meta), ...meta };
+  return output;
 }
-
 
 export function assertBoundedMcpJsonStructure(value, label = "MCP value") {
   const stack = [{ value, depth: 0 }];

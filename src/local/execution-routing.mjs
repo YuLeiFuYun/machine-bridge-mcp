@@ -20,7 +20,7 @@ const ROUTES = Object.freeze([
   ]),
   route("shell", "Direct shell", [
     "exec_command", "run_process",
-  ], "Use Bash or direct argv for efficient ad hoc composition, investigation, and ordinary CLI work. This remains the general escape hatch and is not sandboxed.", [
+  ], "Use Bash or direct argv for efficient ad hoc composition, investigation, and ordinary CLI work when the effective authority exposes those tools. This is the general unsandboxed escape hatch inside that authority, not a way around it.", [
     "bash", "shell", "terminal", "cli", "command", "script", "debug", "diagnose", "benchmark", "audit", "probe",
     "命令", "终端", "脚本", "排查", "调试", "基准", "审查", "测试", "构建",
   ]),
@@ -41,10 +41,15 @@ const ROUTES = Object.freeze([
     "file", "source", "code", "edit", "write", "patch", "refactor", "search", "inspect", "repository",
     "文件", "源码", "代码", "修改", "写入", "补丁", "重构", "搜索", "仓库",
   ]),
-  route("git-review", "Git inspection", [
-    "git_status", "git_diff", "git_log", "git_show",
-  ], "Use Git-specific read surfaces for bounded status, diffs, history, and revision inspection.", [
+  route("git-review", "Git repository", [
+    "git_status", "git_diff", "git_log", "git_show", "git_commit",
+  ], "Use Git-specific structured surfaces for bounded inspection and local commits from an already-staged index; prefer git_commit over generic process execution when creating a commit.", [
     "git", "commit", "diff", "branch", "history", "revision", "提交", "分支", "差异", "历史", "版本",
+  ]),
+  route("computer-use", "Verified computer use", [
+    "computer_observe", "computer_act",
+  ], "Use snapshot-bound observe-act-verify for GUI work. Prefer this over separate low-level browser/application calls when the task needs state validation or recovery from ambiguous outcomes.", [
+    "computer use", "gui agent", "screen grounding", "verify action", "电脑操作", "界面操作", "视觉定位", "验证结果",
   ]),
   route("browser", "Existing browser profile", [
     "browser_status", "browser_list_tabs", "browser_manage_tabs", "browser_get_source", "browser_inspect_page",
@@ -77,8 +82,9 @@ const ROUTE_FALLBACKS = Object.freeze({
   "managed-job": ["process-session", "shell"],
   "workspace-edit": ["shell", "git-review"],
   "git-review": ["workspace-edit", "shell"],
-  browser: ["diagnostics", "shell"],
-  application: ["diagnostics", "shell"],
+  "computer-use": ["browser", "application", "diagnostics"],
+  browser: ["computer-use", "diagnostics", "shell"],
+  application: ["computer-use", "diagnostics", "shell"],
   "protected-resource": ["diagnostics"],
   diagnostics: ["shell"],
 });
@@ -89,6 +95,7 @@ const ROUTE_FALLBACKS = Object.freeze({
  * @param {unknown} task
  * @param {{
  *   policy?: Record<string, unknown>,
+ *   availableTools?: Iterable<unknown> | null,
  *   seedTools?: unknown[],
  *   commandRelevant?: boolean,
  *   skillRelevant?: boolean,
@@ -98,7 +105,9 @@ const ROUTE_FALLBACKS = Object.freeze({
  */
 export function buildExecutionRouting(task, options = {}) {
   const text = String(task || "");
-  const availableNames = new Set(toolNamesForPolicy(options.policy || {}));
+  const availableNames = options.availableTools === null || options.availableTools === undefined
+    ? new Set(toolNamesForPolicy(options.policy || {}))
+    : new Set([...options.availableTools].map((tool) => String(tool || "")).filter(Boolean));
   const toolScores = [...availableNames]
     .map((name) => toolDefinition(name))
     .filter(Boolean)
@@ -123,7 +132,7 @@ export function buildExecutionRouting(task, options = {}) {
 
   const routes = scoredRoutes.slice(0, MAX_ROUTES);
   const availableRouteIds = new Set(ROUTES
-    .filter((definition) => definition.tools.some((tool) => availableNames.has(tool)))
+    .filter((definition) => routeUsable(definition, text, availableNames))
     .map((definition) => definition.id));
   const primary = routes[0] || null;
   const second = routes[1] || null;
@@ -137,16 +146,17 @@ export function buildExecutionRouting(task, options = {}) {
         : "low";
 
   const recommendedTools = unique([
-    ...routes.slice(0, 3).flatMap((item) => item.tools.slice(0, 5)),
+    ...routes.slice(0, 3).flatMap((item) => rankedRouteTools(item, scoreByTool, 5)),
     ...(Array.isArray(options.seedTools) ? options.seedTools : []),
     ...toolScores.slice(0, MAX_RANKED_TOOLS).map((item) => item.tool),
   ]).filter((tool) => availableNames.has(tool)).slice(0, MAX_RECOMMENDED_TOOLS);
 
   return {
     schema_version: 1,
-    strategy: "set-level advisory routing with direct shell retained as a general escape hatch",
+    strategy: "set-level advisory routing; direct shell is an escape hatch only inside the effective authority",
     score_semantics: "deterministic relative ranking within this response; scores are not probabilities and are not comparable across versions",
-    policy_effective_tool_count: availableNames.size,
+    effective_tool_count: availableNames.size,
+    policy_effective_tool_count: toolNamesForPolicy(options.policy || {}).length,
     primary_route: primary ? publicRoute(primary, availableRouteIds) : null,
     routes: routes.map((routeValue) => publicRoute(routeValue, availableRouteIds)),
     ranked_tools: toolScores.slice(0, MAX_RANKED_TOOLS),
@@ -159,19 +169,33 @@ export function buildExecutionRouting(task, options = {}) {
     recovery_guidance: [
       "Diagnose policy, relay, or runtime failures before changing execution surfaces.",
       "After an ambiguous mutation failure, inspect stable state before retrying; do not assume the side effect did not occur.",
-      "A fallback route is an alternative execution surface, not permission to bypass host or effective-policy denial.",
+      "A fallback route is an alternative execution surface, not permission to bypass host or effective-authority denial.",
     ],
-    enforcement: "advisory_only; the MCP host may choose any tool allowed by the effective policy",
+    enforcement: "advisory_only; the MCP host may choose only tools allowed by the effective authority",
   };
+}
+
+function rankedRouteTools(routeValue, scoreByTool, maximum) {
+  return routeValue.tools
+    .map((tool, index) => ({ tool, index, score: scoreByTool.get(tool) || 0 }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, maximum)
+    .map((item) => item.tool);
 }
 
 function route(id, title, tools, guidance, keywords) {
   return Object.freeze({ id, title, tools: Object.freeze(tools), guidance, keywords: Object.freeze(keywords) });
 }
 
+function routeUsable(definition, task, availableNames) {
+  if (!definition.tools.some((tool) => availableNames.has(tool))) return false;
+  return definition.id !== "managed-job" || !managedJobCreationIntent(task)
+    || availableNames.has("start_job") || availableNames.has("stage_job");
+}
+
 function scoreRoute(definition, task, availableNames, scoreByTool, options, fallbackScore = 0) {
+  if (!routeUsable(definition, task, availableNames)) return null;
   const tools = definition.tools.filter((tool) => availableNames.has(tool));
-  if (!tools.length) return null;
   let score = relevanceScore(task, `${definition.title} ${definition.guidance} ${definition.keywords.join(" ")}`, definition.id);
   const reasons = [];
   const boost = dynamicBoost(definition.id, task, options);
@@ -195,6 +219,10 @@ function scoreRoute(definition, task, availableNames, scoreByTool, options, fall
   };
 }
 
+function managedJobCreationIntent(task) {
+  return /background|detached|durable|long[- ]?running|overnight|continuous|multi[- ]?step|后台|持久|长时间|持续|多步骤/i.test(String(task || ""));
+}
+
 function dynamicBoost(id, task, options) {
   const lower = String(task || "").toLowerCase();
   const reasons = [];
@@ -203,6 +231,7 @@ function dynamicBoost(id, task, options) {
   if (id === "guided-workflow" && options.skillRelevant === true) add(18, "relevant_skill_found");
   if (id === "registered-command" && options.commandRelevant === true) add(20, "relevant_registered_command_found");
   if (id === "application" && Array.isArray(options.applicationMatches) && options.applicationMatches.length > 0) add(20, "installed_application_match");
+  if (id === "computer-use" && /computer use|gui agent|screen grounding|电脑操作|界面操作|视觉定位/.test(lower)) add(18, "computer_use_intent");
   if (id === "browser" && options.browserAvailable === true && /browser|chrome|edge|brave|网页|浏览器|表单|网站|登录/.test(lower)) add(14, "browser_intent");
   if (id === "managed-job" && /background|detached|durable|long[- ]?running|resume|cleanup|finally|overnight|continuous|后台|持久|断线|清理|长时间|持续|重试|多步骤/.test(lower)) add(14, "durability_or_cleanup_intent");
   if (id === "process-session" && /interactive|stdin|repl|watch|tail|stream|dev server|交互|实时日志|输入|常驻进程/.test(lower)) add(12, "interactive_process_intent");

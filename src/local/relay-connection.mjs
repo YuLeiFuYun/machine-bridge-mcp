@@ -5,6 +5,14 @@ import { RelayHeartbeatMonitor } from "./relay-heartbeat.mjs";
 import {
   APPLICATION_PROXY_ROUTE_SCOPE, preferredRelayCloseCategory, relayOutageFields, relayRecoveryFields, relayStatusSnapshot,
 } from "./relay-diagnostics.mjs";
+import {
+  acknowledgementMismatch, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory, relayCloseUserCause,
+  relayFatalMessage, relayOutageUserAction, relayServerErrorReconnectCategory, sanitizeProtocolErrorCode, welcomeMismatch,
+} from "./relay-connection-classification.mjs";
+export {
+  acknowledgementMismatch, isRelayReadyContext, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory,
+  relayOutageUserAction, relayServerErrorReconnectCategory, welcomeMismatch,
+} from "./relay-connection-classification.mjs";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 25_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 75_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
@@ -14,7 +22,6 @@ const DEFAULT_OUTAGE_WARN_AFTER_MS = 10_000;
 const DEFAULT_OUTAGE_WARN_REPEAT_MS = 60_000;
 const DEFAULT_OUTAGE_WARN_MAX_REPEAT_MS = 15 * 60_000;
 const MAX_CLOSE_REASON_CHARS = 128;
-const MAX_PROTOCOL_ERROR_CODE_CHARS = 64;
 const DEFAULT_SCHEDULER = Object.freeze({
   setTimeout: (callback, delay) => setTimeout(callback, delay),
   clearTimeout: (timer) => clearTimeout(timer),
@@ -147,7 +154,8 @@ export class RelayConnection {
     const socket = this.socket;
     this.socket = null;
     if (socket) {
-      try { socket.close(1000, "daemon shutdown"); } catch {}
+      try { socket.close(1000, "daemon shutdown"); }
+      catch { /* Relay shutdown state is already authoritative and the transport may have closed concurrently. */ }
     }
     this.resetOutage();
     this.reconnectAttempt = 0;
@@ -162,7 +170,8 @@ export class RelayConnection {
     const sessionId = Number(expectedSessionId) || 0;
     if (!sessionId || sessionId !== this.activeSessionId) return { ok: false, reason: "session_ended" };
     if (!this.authenticated || !this.isSocketOpen(this.socket)) return { ok: false, reason: "transport_unavailable" };
-    if (!this.ready && value?.type !== "relay_probe_result") return { ok: false, reason: "transport_unavailable" };
+    const preReadyControl = value?.type === "relay_probe_result" || value?.type === "authority_revoke_ack";
+    if (!this.ready && !preReadyControl) return { ok: false, reason: "transport_unavailable" };
     if (!this.sendOnSocket(this.socket, value)) return { ok: false, reason: "send_failed" };
     if (value?.type === "relay_probe_result") this.readinessProbeDelivered = true;
     return { ok: true, reason: "sent" };
@@ -337,7 +346,8 @@ export class RelayConnection {
     socket.on("open", () => {
       this.clearTimer("connectTimer", "clearTimeout");
       if (this.socket !== socket || this.closed) {
-        try { socket.close(1000, "stale daemon connection"); } catch {}
+        try { socket.close(1000, "stale daemon connection"); }
+        catch { /* Stale transport ownership has already been rejected; concurrent close is harmless. */ }
         return;
       }
       this.lastInboundAt = this.now();
@@ -418,10 +428,10 @@ export class RelayConnection {
         this.clearTimer("reconnectTimer", "clearTimeout");
         this.clearTimer("outageWarnTimer", "clearTimeout");
         this.logger.warn?.("daemon connection was replaced by a newer verified instance");
-        queueMicrotask(() => {
-          try { this.onSuperseded(); } catch (error) {
-            this.logger.error?.("daemon superseded callback failed", { error_class: classifyOperationalError(error) });
-          }
+        queueMicrotask(async () => {
+          try {
+            await this.onSuperseded();
+          } catch (error) { this.logger.error?.("daemon superseded callback failed", { error_class: classifyOperationalError(error) }); }
         });
         return;
       }
@@ -477,10 +487,10 @@ export class RelayConnection {
     }
     this.logger.error?.(message);
     this.logger.debug?.("remote relay fatal details", { category, cause: relayCloseUserCause(category) });
-    queueMicrotask(() => {
-      try { this.onFatal(error); } catch (callbackError) {
-        this.logger.error?.("relay fatal callback failed", { error_class: classifyOperationalError(callbackError) });
-      }
+    queueMicrotask(async () => {
+      try {
+        await this.onFatal(error);
+      } catch (callbackError) { this.logger.error?.("relay fatal callback failed", { error_class: classifyOperationalError(callbackError) }); }
     });
   }
 
@@ -560,9 +570,7 @@ export class RelayConnection {
     this.outageWarningCount += 1;
     this.lastOutageWarnAt = this.now();
     const cause = relayCloseUserCause(this.lastCloseCategory);
-    const action = outageMs >= 5 * 60_000
-      ? " If this persists, check internet access and the deployed Worker."
-      : "";
+    const action = relayOutageUserAction(this.lastCloseCategory, outageMs);
     const outageFields = relayOutageFields(this, this.now(), cause);
     this.logger.warn?.(`remote relay unavailable for ${formatDuration(outageMs)}; reconnecting automatically (${formatAttempts(this.outageAttempts)}; ${cause}).${action}`, outageFields);
     this.logger.debug?.("remote relay outage details", outageFields);
@@ -591,118 +599,6 @@ export class RelayConnection {
   }
 }
 
-export function relayServerErrorReconnectCategory(errorCode, state = {}) {
-  const code = sanitizeProtocolErrorCode(errorCode);
-  const authenticated = state?.authenticated === true;
-  const ready = state?.ready === true;
-  if (code === "daemon_hello_timeout" && !authenticated) return "relay_handshake_timeout";
-  if (code === "daemon_ready_timeout" && authenticated && !ready) return "relay_readiness_timeout";
-  if (code === "daemon_transport_error") return "relay_transport_error";
-  if (code === "daemon_liveness_timeout") return "relay_heartbeat_timeout";
-  return "";
-}
-
-export function relayCloseCategory(code, reason = "") {
-  const numeric = Number(code);
-  const reasonText = String(reason || "");
-  if (isSupersededClose(numeric, reasonText)) return "superseded";
-  if (numeric === 1008 && reasonText === "daemon hello timeout") return "relay_handshake_timeout";
-  if (numeric === 1008 && reasonText === "daemon ready timeout") return "relay_readiness_timeout";
-  if ([1008, 1012].includes(numeric) && ["daemon pong failed", "daemon send failed"].includes(reasonText)) return "relay_transport_error";
-  if ([1008, 1012].includes(numeric) && reasonText === "daemon liveness timeout") return "relay_heartbeat_timeout";
-  if (numeric === 1008 && ["stale daemon candidate", "expired daemon candidate"].includes(reasonText)) return "relay_restarting_or_unavailable";
-  if (numeric === 1008 && ["daemon hello required", "missing daemon attachment", "invalid daemon candidate timestamp"].includes(reasonText)) return "relay_protocol_error";
-  if (numeric === 1000) return "normal_close";
-  if (numeric === 1001 || numeric === 1012 || numeric === 1013) return "relay_restarting_or_unavailable";
-  if (numeric === 1006) return "connection_interrupted";
-  if (numeric === 1002) return "relay_protocol_error";
-  if (numeric === 1007) return "invalid_transport_payload";
-  if (numeric === 1008) return "relay_policy_rejected";
-  if (numeric === 1009) return "message_too_large";
-  if (numeric === 1011) return "relay_internal_error";
-  return "unexpected_close";
-}
-
-function relayFatalMessage(category) {
-  if (category === "relay_protocol_mismatch") {
-    return "remote relay identity or version does not match this daemon; upgrade and redeploy both components";
-  }
-  if (category === "relay_protocol_error") {
-    return "remote relay protocol error; upgrade and redeploy both components, then restart the daemon";
-  }
-  if (category === "relay_proxy_configuration") {
-    return "remote relay proxy configuration is invalid; check HTTP_PROXY, HTTPS_PROXY, and NO_PROXY";
-  }
-  return "remote relay rejected the daemon connection; verify credentials or redeploy the Worker";
-}
-
-function relayCloseUserCause(category) {
-  const causes = {
-    connection_interrupted: "connection interrupted",
-    relay_restarting_or_unavailable: "relay restarting or temporarily unavailable",
-    relay_policy_rejected: "relay rejected the connection",
-    relay_internal_error: "relay internal error",
-    relay_protocol_mismatch: "relay identity or version mismatch",
-    relay_authentication_failed: "relay authentication failed",
-    relay_connect_timeout: "relay connection attempt timed out",
-    relay_handshake_timeout: "relay authentication acknowledgement timed out",
-    relay_readiness_timeout: "end-to-end relay readiness verification timed out",
-    relay_heartbeat_timeout: "relay stopped responding",
-    relay_transport_error: "relay transport error",
-    relay_protocol_error: "relay protocol error",
-    relay_proxy_configuration: "relay proxy configuration invalid",
-    invalid_transport_payload: "invalid transport payload",
-    message_too_large: "message exceeded the relay limit",
-    normal_close: "connection closed",
-    unexpected_close: "unexpected connection close",
-    superseded: "connection superseded",
-  };
-  return causes[String(category || "")] || "connection interrupted";
-}
-
-export function welcomeMismatch(message, expectedServer = "", expectedVersion = "") {
-  if (!message || typeof message !== "object" || Array.isArray(message)) return "invalid_welcome";
-  if (message.type !== "welcome") return "unexpected_welcome_type";
-  if (expectedServer && message.server !== expectedServer) return "server_identity_mismatch";
-  if (expectedVersion && message.version !== expectedVersion) return "server_version_mismatch";
-  if (typeof message.server !== "string" || !message.server || typeof message.version !== "string" || !message.version) return "incomplete_welcome";
-  return "";
-}
-
-export function acknowledgementMismatch(message, expectedServer = "", expectedVersion = "") {
-  if (!message || typeof message !== "object" || Array.isArray(message)) return "invalid_acknowledgement";
-  if (message.type !== "hello_ack") return "unexpected_acknowledgement_type";
-  if (expectedServer && message.server !== expectedServer) return "server_identity_mismatch";
-  if (expectedVersion && message.version !== expectedVersion) return "server_version_mismatch";
-  if (typeof message.server !== "string" || !message.server || typeof message.version !== "string" || !message.version) return "incomplete_acknowledgement";
-  return "";
-}
-
-export function readinessMismatch(message, expectedServer = "", expectedVersion = "") {
-  if (!message || typeof message !== "object" || Array.isArray(message)) return "invalid_readiness_acknowledgement";
-  if (message.type !== "ready_ack") return "unexpected_readiness_acknowledgement_type";
-  if (expectedServer && message.server !== expectedServer) return "server_identity_mismatch";
-  if (expectedVersion && message.version !== expectedVersion) return "server_version_mismatch";
-  if (typeof message.server !== "string" || !message.server || typeof message.version !== "string" || !message.version) return "incomplete_readiness_acknowledgement";
-  return "";
-}
-
-export function isRelayReadyContext(relayContext = {}, relay = null) {
-  if (relayContext?.ready === true) return true;
-  if (relayContext?.ready === false) return false;
-  return Number(relayContext?.sessionId) > 0 && relay?.status?.()?.ready === true;
-}
-
-export function isSupersededClose(code, reason) {
-  return Number(code) === 1012 && String(reason || "") === "replaced by verified daemon";
-}
-
-export function reconnectDelay(attempt, random = Math.random) {
-  const safeAttempt = Math.max(0, Number.isFinite(Number(attempt)) ? Number(attempt) : 0);
-  const base = Math.min(1000 * (2 ** Math.min(safeAttempt, 4)), 15_000);
-  return base + Math.floor(random() * 500);
-}
-
 function normalizeWorkerUrl(value) {
   let url;
   try { url = new URL(String(value || "")); } catch { throw new Error("invalid Worker URL"); }
@@ -722,7 +618,7 @@ function terminateSocket(socket) {
   try {
     if (typeof socket?.terminate === "function") socket.terminate();
     else socket?.close?.();
-  } catch {}
+  } catch { /* Callers classify the relay generation as failed independently of transport-close success. */ }
 }
 
 function redactUrl(value) {
@@ -745,11 +641,6 @@ function classifyRelayTransportError(error) {
 function boundedPositiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
-}
-
-function sanitizeProtocolErrorCode(value) {
-  const code = String(value || "unknown_error").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, MAX_PROTOCOL_ERROR_CODE_CHARS);
-  return code || "unknown_error";
 }
 
 function formatAttempts(value) {

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { installAutostart, runServiceCommand, stopSystemdService } from "../src/local/service.mjs";
+import { installAutostart, runServiceCommand, stopLaunchdService, stopSystemdService } from "../src/local/service.mjs";
+import { LAUNCHD_MISSING_SERVICE_CODE, launchdStatusSummary } from "../src/local/service-status.mjs";
+import { removeServiceDefinitionIfCurrent, snapshotServiceDefinition } from "../src/local/service-definition.mjs";
 import { beginServiceOwnerUpdate, loadCommittedServiceOwner, loadServiceOwner, removeServiceOwner, serviceOwnerPath } from "../src/local/service-owner.mjs";
 import { convergeOwnedServiceRuntime, restartOwnedServiceRuntime, startOwnedServiceRuntime, waitForOwnedServiceDaemon } from "../src/local/service-runtime.mjs";
 import { waitForInactiveStatus } from "../src/local/service-convergence.mjs";
+import { systemdRemovalDecision } from "../src/local/systemd-removal.mjs";
 import { boundedPositiveInteger, stableWindowsStatus, waitForWindowsStatus, windowsStatusWaitOptions } from "../src/local/windows-service-convergence.mjs";
 import {
   installWindowsTask,
@@ -64,6 +67,7 @@ assert.equal(serviceInvocation.options.timeoutMs, 30_000);
 assert.equal(serviceInvocation.options.maxOutputBytes, 64 * 1024);
 
 if (process.platform === "win32") windowsLauncherLiveTest();
+await serviceDefinitionIdentityTest();
 await serviceOwnerTransactionTest();
 await serviceInstallOwnerCommitTest();
 await ownedServiceRuntimeTest();
@@ -76,10 +80,44 @@ await windowsTransientStartTest();
 await windowsUnknownStatusTest();
 await windowsStopTest();
 await windowsUninstallTest();
+await windowsLauncherRemovalTest();
+await windowsLauncherReplacementRemovalTest();
+await systemdRemovalDecisionTest();
 await systemdStopContractTest();
+await launchdStatusContractTest();
+await launchdStopContractTest();
 await delayedLaunchdStopTest();
 await stuckLaunchdStopTest();
 console.log("service platform lifecycle test ok");
+
+async function serviceDefinitionIdentityTest() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "mbm-service-definition-"));
+  try {
+    const file = path.join(root, "definition.service");
+    const missing = path.join(root, "missing.service");
+    assert.equal(snapshotServiceDefinition(missing, "missing service definition"), null,
+      "missing service definition snapshot was not classified as absent");
+    writeFileSync(file, "original\n", { mode: 0o600 });
+    const identity = snapshotServiceDefinition(file, "test service definition");
+    rmSync(file, { force: true });
+    writeFileSync(file, "replacement\n", { mode: 0o600 });
+    assert.equal(removeServiceDefinitionIfCurrent(file, identity, "test service definition"), false,
+      "service definition removal deleted a replacement path");
+    assert.equal(readFileSync(file, "utf8"), "replacement\n");
+    rmSync(file, { force: true });
+    assert.equal(removeServiceDefinitionIfCurrent(file, null, "test service definition"), true,
+      "already-absent service definition did not settle idempotently");
+    writeFileSync(file, "appeared-late\n", { mode: 0o600 });
+    assert.equal(removeServiceDefinitionIfCurrent(file, null, "test service definition"), false,
+      "service definition absent at snapshot time deleted a newly appeared path");
+    if (process.platform !== "win32") {
+      const alias = path.join(root, "definition-alias.service");
+      linkSync(file, alias);
+      assert.throws(() => snapshotServiceDefinition(file, "multiply linked service definition"), /multiple hard links/,
+        "service definition snapshot accepted multiply-linked control evidence");
+    }
+  } finally { removeTestTree(root); }
+}
 
 async function serviceOwnerTransactionTest() {
   const root = mkdtempSync(path.join(os.tmpdir(), "mbm-service-owner-"));
@@ -132,12 +170,34 @@ async function serviceOwnerTransactionTest() {
       [{ ...valid, transactionId: "bad" }, "transaction id is invalid"],
       [{ ...valid, version: "bad version!" }, "version is invalid"],
       [{ ...valid, workspace: "relative" }, "workspace must be absolute"],
+      [{ ...valid, workspace: path.join(root, "missing-workspace") }, "workspace is unavailable"],
+      [{ ...valid, stateRoot: entryScript }, "state root is not a directory"],
+      [{ ...valid, entryScript: stateRoot }, "entry script is not a file"],
       [{ ...valid, createdAt: "not-a-date" }, "createdAt is invalid"],
+      [{ ...valid, committedAt: "not-a-date" }, "committedAt is invalid"],
     ]) {
       writeFileSync(ownerFile, `${JSON.stringify(value)}\n`, { mode: 0o600 });
       assert.match(loadOwnerFailure({ controlRoot }), new RegExp(expected));
     }
     writeFileSync(ownerFile, `${JSON.stringify(valid)}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") {
+      const ownerAlias = `${ownerFile}.alias`;
+      try {
+        linkSync(ownerFile, ownerAlias);
+        assert.throws(() => removeServiceOwner({ controlRoot }), /multiple hard links/,
+          "service-owner cleanup accepted multiply-linked ownership evidence");
+        assert.equal(existsSync(ownerFile), true);
+        assert.equal(existsSync(ownerAlias), true);
+      } finally { rmSync(ownerAlias, { force: true }); }
+    }
+    const ownerStorageFailure = {
+      controlRoot,
+      inspectPathIfPresentSync() {
+        throw Object.assign(new Error("synthetic service owner storage failure"), { code: "EIO" });
+      },
+    };
+    assert.throws(() => loadServiceOwner(ownerStorageFailure), /synthetic service owner storage failure/);
+    assert.throws(() => beginServiceOwnerUpdate({ workspace, stateRoot, entryScript, version: "3.0.0-test.failure" }, ownerStorageFailure), /synthetic service owner storage failure/);
 
     const stale = beginServiceOwnerUpdate({ workspace, stateRoot, entryScript, version: "3.0.0-test.4" }, { controlRoot });
     const replacement = beginServiceOwnerUpdate({ workspace, stateRoot, entryScript, version: "3.0.0-test.5" }, { controlRoot });
@@ -530,6 +590,69 @@ async function windowsUninstallTest() {
   assert.equal(result.status.installed, false);
 }
 
+async function windowsLauncherRemovalTest() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "mbm-windows-launcher-remove-"));
+  const launcher = path.join(root, "service-launcher.cmd");
+  try {
+    writeFileSync(launcher, "original launcher\n", { mode: 0o600 });
+    let deleted = false;
+    const removed = await uninstallWindowsTask(quietLogger(), {
+      stateRoot: root,
+      sleep: async () => {},
+      run: async (command, args) => {
+        if (command === "schtasks" && args[0] === "/Delete") { deleted = true; return { code: 0, stdout: "", stderr: "" }; }
+        if (command === "powershell.exe") return deleted ? { code: 3, stdout: "", stderr: "" } : scheduledTaskResult("Ready");
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    assert.equal(removed.ok, true, "Windows task removal did not settle after deleting its launcher");
+    assert.equal(existsSync(launcher), false, "Windows service uninstall retained its unchanged launcher");
+  } finally { removeTestTree(root); }
+}
+
+async function windowsLauncherReplacementRemovalTest() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "mbm-windows-launcher-replace-"));
+  const launcher = path.join(root, "service-launcher.cmd");
+  try {
+    writeFileSync(launcher, "second launcher\n", { mode: 0o600 });
+    let deleted = false;
+    const replaced = await uninstallWindowsTask(quietLogger(), {
+      stateRoot: root,
+      sleep: async () => {},
+      run: async (command, args) => {
+        if (command === "schtasks" && args[0] === "/Delete") {
+          deleted = true;
+          rmSync(launcher, { force: true });
+          writeFileSync(launcher, "replacement launcher\n", { mode: 0o600 });
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        if (command === "powershell.exe") return deleted ? { code: 3, stdout: "", stderr: "" } : scheduledTaskResult("Ready");
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    assert.equal(replaced.ok, false, "Windows uninstall accepted a replaced launcher as removed");
+    assert.equal(replaced.reason, "launcher_changed");
+    assert.equal(readFileSync(launcher, "utf8"), "replacement launcher\n",
+      "Windows uninstall deleted a replacement launcher");
+  } finally { removeTestTree(root); }
+}
+
+async function systemdRemovalDecisionTest() {
+  const inactive = { installed: true, active: false, state: "inactive" };
+  assert.deepEqual(systemdRemovalDecision({ definitionPresent: true, disableCode: 0, status: inactive }),
+    { removable: true, alreadyAbsent: false, reason: "disabled" });
+  assert.equal(systemdRemovalDecision({ definitionPresent: true, disableCode: 1, status: inactive }).reason, "disable_failed",
+    "nonzero systemd disable became removable for an installed definition");
+  assert.equal(systemdRemovalDecision({ definitionPresent: true, disableCode: 1, status: { ...inactive, stderr: "not found" } }).removable, false,
+    "systemd removal trusted stderr prose over command/status evidence");
+  assert.deepEqual(systemdRemovalDecision({ definitionPresent: false, disableCode: 1, status: { installed: false, active: false, state: "unknown" } }),
+    { removable: true, alreadyAbsent: true, reason: "already_absent" });
+  for (const state of ["active", "activating", "deactivating", "reloading", "maintenance"]) {
+    const decision = systemdRemovalDecision({ definitionPresent: true, disableCode: 0, status: { installed: true, active: state === "active", state } });
+    assert.equal(decision.removable, false, `systemd ${state} state was treated as removable`);
+  }
+}
+
 async function systemdStopContractTest() {
   const calls = [];
   const statuses = [
@@ -549,6 +672,19 @@ async function systemdStopContractTest() {
   assert.equal(stopped.active, false);
   assert.equal(stopped.restore_required, true, "systemd stop omitted provider restoration evidence");
   assert.equal(calls.length, 1);
+
+  const missingButActiveStatuses = [
+    { installed: false, active: true, state: "active" },
+    { installed: false, active: false, state: "unknown" },
+  ];
+  let missingButActiveStops = 0;
+  const missingButActive = await stopSystemdService(quietLogger(), {
+    readStatus: async () => missingButActiveStatuses.shift(),
+    run: async () => { missingButActiveStops += 1; return { code: 0, stdout: "", stderr: "" }; },
+    waitForInactive: async readStatus => readStatus(),
+  });
+  assert.equal(missingButActive.ok, true);
+  assert.equal(missingButActiveStops, 1, "missing systemd definition incorrectly implied the loaded service was inactive");
 
   const transitioningStatuses = [
     { installed: true, active: false, state: "activating" },
@@ -590,6 +726,98 @@ async function systemdStopContractTest() {
   assert.equal(maintenance.ok, false, "systemd maintenance state was treated as safely stoppable");
   assert.equal(maintenance.reason, "status_unavailable");
   assert.equal(maintenanceCommands, 0, "systemd maintenance state was mutated before diagnosis");
+}
+
+async function launchdStatusContractTest() {
+  const missing = launchdStatusSummary({
+    installed: true, definition: "dev.machine-bridge-mcp.daemon",
+    result: { code: LAUNCHD_MISSING_SERVICE_CODE, stdout: "", stderr: "localized not-found output" },
+  });
+  assert.equal(missing.loaded, false);
+  assert.equal(missing.active, false);
+  assert.equal(missing.state, "inactive");
+  assert.equal(missing.status_available, true);
+  assert.equal(missing.status_query_code, LAUNCHD_MISSING_SERVICE_CODE);
+
+  const unavailable = launchdStatusSummary({
+    installed: true, definition: "dev.machine-bridge-mcp.daemon",
+    result: { code: 5, stdout: "state = running\npid = 123\nruns = 9\n", stderr: "permission or provider failure" },
+  });
+  assert.equal(unavailable.loaded, false, "failed launchctl print output was treated as loaded state");
+  assert.equal(unavailable.active, null);
+  assert.equal(unavailable.state, "unknown");
+  assert.equal(unavailable.status_available, false, "arbitrary launchctl failure was treated as safe absence");
+  assert.equal(unavailable.pid, null, "untrusted failed-query stdout leaked into launchd status evidence");
+
+  const running = launchdStatusSummary({
+    installed: true, definition: "dev.machine-bridge-mcp.daemon",
+    result: { code: 0, stdout: "state = running\npid = 123\nruns = 9\n", stderr: "" },
+  });
+  assert.equal(running.loaded, true);
+  assert.equal(running.active, true);
+  assert.equal(running.status_available, true);
+  assert.equal(running.pid, 123);
+}
+
+async function launchdStopContractTest() {
+  let unavailableCommands = 0;
+  const unavailable = await stopLaunchdService(quietLogger(), {
+    uid: "not-needed-before-mutation",
+    readStatus: async () => ({ installed: true, loaded: false, active: false, state: "unknown", status_available: false, status_query_code: 5 }),
+    run: async () => { unavailableCommands += 1; return { code: 0, stdout: "", stderr: "" }; },
+  });
+  assert.equal(unavailable.ok, false, "ambiguous launchd status was treated as safely stopped");
+  assert.equal(unavailable.reason, "status_unavailable");
+  assert.equal(unavailableCommands, 0, "ambiguous launchd status mutated the provider before diagnosis");
+
+  const absent = await stopLaunchdService(quietLogger(), {
+    uid: "not-needed-before-mutation",
+    readStatus: async () => ({ installed: true, loaded: false, active: false, state: "inactive", status_available: true, status_query_code: LAUNCHD_MISSING_SERVICE_CODE }),
+  });
+  assert.equal(absent.ok, true);
+  assert.equal(absent.already_stopped, true);
+  assert.equal(absent.restore_required, false);
+
+  const stoppedStatuses = [
+    { installed: true, loaded: true, active: true, state: "running", status_available: true, status_query_code: 0 },
+    { installed: true, loaded: false, active: false, state: "inactive", status_available: true, status_query_code: LAUNCHD_MISSING_SERVICE_CODE },
+  ];
+  const stopCommands = [];
+  const stopped = await stopLaunchdService(quietLogger(), {
+    uid: 501,
+    readStatus: async () => stoppedStatuses.shift(),
+    run: async (command, args) => { stopCommands.push([command, ...args].join(" ")); return { code: 0, stdout: "", stderr: "" }; },
+    waitForUnloaded: async readStatus => readStatus(),
+  });
+  assert.equal(stopped.ok, true);
+  assert.equal(stopped.loaded, false);
+  assert.equal(stopped.active, false);
+  assert.equal(stopped.restore_required, true);
+  assert.equal(stopCommands.length, 1);
+  assert.equal(stopCommands[0], "launchctl bootout gui/501/dev.machine-bridge-mcp.daemon");
+
+  const stillLoadedStatuses = [
+    { installed: true, loaded: true, active: true, state: "running", status_available: true, status_query_code: 0 },
+    { installed: true, loaded: true, active: false, state: "exited", status_available: true, status_query_code: 0 },
+  ];
+  const stillLoaded = await stopLaunchdService(quietLogger(), {
+    uid: 501,
+    readStatus: async () => stillLoadedStatuses.shift(),
+    run: async () => ({ code: 0, stdout: "", stderr: "" }),
+    waitForUnloaded: async readStatus => readStatus(),
+  });
+  assert.equal(stillLoaded.ok, false, "inactive but still-loaded launchd service was accepted as stopped");
+  assert.equal(stillLoaded.reason, "stop_not_observed");
+  assert.equal(stillLoaded.loaded, true);
+
+  const lostStatus = await stopLaunchdService(quietLogger(), {
+    uid: 501,
+    readStatus: async () => ({ installed: true, loaded: true, active: true, state: "running", status_available: true, status_query_code: 0 }),
+    run: async () => ({ code: 0, stdout: "", stderr: "" }),
+    waitForUnloaded: async () => ({ installed: true, loaded: false, active: false, state: "unknown", status_available: false, status_query_code: 5 }),
+  });
+  assert.equal(lostStatus.ok, false, "post-bootout launchd status failure was treated as verified stop");
+  assert.equal(lostStatus.reason, "stop_not_observed");
 }
 
 async function delayedLaunchdStopTest() {

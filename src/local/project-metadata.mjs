@@ -2,6 +2,7 @@
 
 import { constants as fsConstants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
+import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 const SKIPPABLE_METADATA_CODES = new Set(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "EBUSY"]);
 
@@ -22,23 +23,35 @@ export async function isRegularNonSymlink(filePath) {
   return Boolean(info && !info.isSymbolicLink() && info.isFile());
 }
 
-/** @param {string} filePath @param {number} maxBytes */
-export async function readOptionalRegularUtf8(filePath, maxBytes) {
-  const handle = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0))
+/**
+ * @param {string} filePath
+ * @param {number} maxBytes
+ * @param {{openFile?: typeof open, inspectPath?: typeof lstat}} [options]
+ */
+export async function readOptionalRegularUtf8(filePath, maxBytes, options = {}) {
+  const limit = Number(maxBytes);
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new TypeError("project metadata byte limit must be a non-negative safe integer");
+  const openFile = options.openFile || open;
+  const inspectPath = options.inspectPath || lstat;
+  const handle = await openFile(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0), 0o600)
     .catch((error) => skippableMetadataError(error) ? null : Promise.reject(error));
   if (!handle) return null;
   try {
     let pathInfo;
     let current;
     try {
-      [pathInfo, current] = await Promise.all([lstat(filePath), handle.stat()]);
+      [pathInfo, current] = await Promise.all([
+        inspectPath(filePath, { bigint: true }),
+        handle.stat({ bigint: true }),
+      ]);
     } catch (error) {
       if (skippableMetadataError(error)) return null;
       throw error;
     }
     if (pathInfo.isSymbolicLink() || !pathInfo.isFile() || !current.isFile()
-        || pathInfo.dev !== current.dev || pathInfo.ino !== current.ino || current.size > maxBytes) return null;
-    const buffer = Buffer.alloc(current.size);
+        || !sameFilesystemIdentity(filesystemIdentity(pathInfo, "project metadata"), filesystemIdentity(current, "project metadata"))
+        || current.size > BigInt(limit)) return null;
+    const buffer = Buffer.alloc(Number(current.size));
     let offset = 0;
     while (offset < buffer.length) {
       const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);

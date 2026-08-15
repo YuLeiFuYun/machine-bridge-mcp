@@ -14,7 +14,8 @@ export function terminateProcessTree(child, signal = "SIGTERM", options = {}) {
       const fallback = () => {
         if (fallbackUsed) return;
         fallbackUsed = true;
-        try { child.kill(signal); } catch {}
+        try { child.kill(signal); }
+        catch { /* Callers that require proof wait for process settlement instead of trusting this best-effort fallback. */ }
       };
       killer?.once?.("error", fallback);
       killer?.once?.("exit", (code) => { if (code !== 0) fallback(); });

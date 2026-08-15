@@ -1,4 +1,4 @@
-import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign, webcrypto } from "node:crypto";
+import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { DAEMON_AUTH_SCHEME, DAEMON_PREFLIGHT_SCHEME, daemonAuthTranscript, daemonPreflightTranscript } from "../shared/daemon-auth.mjs";
 import {
   DEVICE_SESSION_CERTIFICATE_SCHEME,
@@ -213,5 +213,3 @@ function validatePublicDeviceJwk(value) {
 function samePublicJwk(left, right) {
   return left?.kty === right?.kty && left?.crv === right?.crv && left?.x === right?.x && left?.y === right?.y;
 }
-
-export const deviceWebCrypto = webcrypto;

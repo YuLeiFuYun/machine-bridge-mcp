@@ -8,9 +8,10 @@ import {
   type OAuthRefreshToken,
   type OAuthStore,
 } from "./oauth-state.ts";
-import { HttpError, json } from "./http.ts";
-import { OAUTH_REFRESH_STORE_KEY } from "./oauth-refresh-families.ts";
+import { HttpError, json, workerErrorClass } from "./http.ts";
+import { writeOAuthRefreshPersistenceEntries } from "./oauth-refresh-persistence.ts";
 import { deriveRefreshReplacementPair } from "./oauth-token-derivation.ts";
+import type { AuthorityRevocation } from "../shared/authority-revocation.mjs";
 
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_IDLE_TTL_SECONDS = 60 * 60 * 24 * 14;
@@ -30,6 +31,7 @@ export interface OAuthTokenExchangeOptions {
   loadOAuthStore: () => Promise<OAuthStore>;
   withLock: OAuthLock;
   onRefreshEvent?: (event: OAuthRefreshEvent) => void;
+  saveStores: (oauthStore: OAuthStore, refreshStore: OAuthRefreshStore, revocation?: AuthorityRevocation) => Promise<void>;
 }
 
 export interface IssuedTokenPair {
@@ -43,7 +45,7 @@ export async function issueTokenPair(
   source: OAuthCode | OAuthRefreshToken,
   tokenVersion: string,
   dpopJkt?: string,
-  issuance: { derivationSeed?: string; issuedAt?: number } = {},
+  issuance: { derivationSeed?: string; issuedAt?: number; accessScope?: string } = {},
 ): Promise<IssuedTokenPair> {
   if (!tokenVersion) throw new HttpError(503, "server_error", "OAuth token version is not configured");
   const now = Number.isSafeInteger(issuance.issuedAt) && Number(issuance.issuedAt) > 0
@@ -58,12 +60,14 @@ export async function issueTokenPair(
     ? await deriveRefreshReplacementPair(tokenVersion, issuance.derivationSeed)
     : { accessToken: randomToken("mcp_at"), refreshToken: randomToken("mcp_rt") };
   const { accessToken, refreshToken } = issued;
+  const accessScope = typeof issuance.accessScope === "string" && issuance.accessScope.trim()
+    ? issuance.accessScope.trim()
+    : source.scope;
   const common = {
     client_id: source.client_id,
     account_id: source.account_id,
     account_version: source.account_version,
     role: source.role,
-    scope: source.scope,
     resource: source.resource,
     version: tokenVersion,
     family_id: familyId,
@@ -71,10 +75,12 @@ export async function issueTokenPair(
   };
   oauthStore.tokens[`sha256:${await sha256Hex(accessToken)}`] = {
     ...common,
+    scope: accessScope,
     expires_at: now + ACCESS_TOKEN_TTL_SECONDS,
   };
   refreshStore.tokens[`sha256:${await sha256Hex(refreshToken)}`] = {
     ...common,
+    scope: source.scope,
     family_id: familyId,
     family_expires_at: familyExpiresAt,
     issued_at: now,
@@ -94,13 +100,20 @@ export function tokenResponse(issued: IssuedTokenPair, scope: string, dpopJkt?: 
     token_type: dpopJkt ? "DPoP" : "Bearer",
     expires_in: ACCESS_TOKEN_TTL_SECONDS,
     scope,
-  });
+  }, 200, { pragma: "no-cache" });
 }
 
 export async function saveOAuthStores(
-  oauthStore: OAuthStore,
-  refreshStore: OAuthRefreshStore,
-  storage: DurableObjectStorage,
+  oauthStore: OAuthStore, refreshStore: OAuthRefreshStore, storage: DurableObjectStorage,
 ): Promise<void> {
-  await storage.put({ oauth: oauthStore, [OAUTH_REFRESH_STORE_KEY]: refreshStore });
+  let stage = "oauth";
+  try {
+    await storage.transaction(async (tx) => {
+      await tx.put("oauth", oauthStore); stage = "refresh";
+      await writeOAuthRefreshPersistenceEntries(tx, refreshStore); stage = "commit";
+    });
+  } catch (error) {
+    const wrapped = new Error("OAuth store persistence failed", { cause: error });
+    wrapped.name = `oauth_store_persist_${stage}_${workerErrorClass(error)}`; throw wrapped;
+  }
 }

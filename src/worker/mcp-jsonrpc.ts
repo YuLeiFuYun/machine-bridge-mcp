@@ -1,7 +1,6 @@
 import { projectMcpResult } from "../shared/result-projection.mjs";
-import { MCP_LEGACY_PROTOCOL_VERSION, resultForProtocol } from "../shared/mcp-protocol.mjs";
+import { completeResult } from "../shared/mcp-protocol.mjs";
 const JSONRPC_VERSION = "2.0";
-const MAX_SESSION_INSTRUCTION_BYTES = 3 * 1024 * 1024;
 
 export type JsonRpcId = string | number | null;
 
@@ -41,7 +40,6 @@ export function rpcError(id: JsonRpcId | undefined, code: number, message: strin
 export function textToolResult(
   value: unknown,
   isError = false,
-  protocolVersion: string = MCP_LEGACY_PROTOCOL_VERSION,
   serverInfo?: Record<string, unknown>,
 ): Record<string, unknown> {
   const special = asObject(value).$mcp;
@@ -52,7 +50,7 @@ export function textToolResult(
       if (Object.prototype.hasOwnProperty.call(specialObject, "structuredContent")) {
         result.structuredContent = structuredClone(specialObject.structuredContent);
       }
-      return resultForProtocol(protocolVersion, result, { serverInfo });
+      return completeResult(result, serverInfo);
     }
   }
   const projection = projectMcpResult(value);
@@ -61,7 +59,7 @@ export function textToolResult(
     isError,
   };
   if (projection.hasStructuredContent) result.structuredContent = structuredClone(projection.structuredContent);
-  return resultForProtocol(protocolVersion, result, { serverInfo });
+  return completeResult(result, serverInfo);
 }
 
 export function asObject(value: unknown): Record<string, unknown> {
@@ -73,28 +71,6 @@ export function requiredString(value: Record<string, unknown>, key: string): str
   const field = value[key];
   if (typeof field !== "string" || !field.trim()) throw new Error(`${key} must be a non-empty string`);
   return field.trim();
-}
-
-export function sessionInstructionText(value: unknown): string {
-  const object = asObject(value);
-  const instructions = typeof object.instructions === "string" ? object.instructions : "";
-  if (!instructions) return "";
-  if (new TextEncoder().encode(instructions).byteLength > MAX_SESSION_INSTRUCTION_BYTES) return "";
-  return instructions;
-}
-
-export function validateProtocolVersionHeader(
-  request: Request,
-  body: JsonRpcRequest,
-  supportedVersions: readonly string[],
-): Record<string, unknown> | null {
-  if (body.method === "initialize") return null;
-  const version = request.headers.get("MCP-Protocol-Version");
-  if (!version || supportedVersions.includes(version)) return null;
-  return rpcError(body.id, -32602, "Unsupported MCP protocol version", {
-    requested: version,
-    supported: [...supportedVersions],
-  });
 }
 
 function isJsonRpcId(value: unknown): value is JsonRpcId {

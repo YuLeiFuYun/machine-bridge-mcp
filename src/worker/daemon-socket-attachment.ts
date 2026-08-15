@@ -46,7 +46,7 @@ function sanitizeProbeId(value: unknown): string | undefined {
   return typeof value === "string" && /^probe_[A-Za-z0-9_-]{8,240}$/.test(value) ? value : undefined;
 }
 
-function sanitizeDaemonInstanceId(value: unknown): string | undefined {
+export function sanitizeDaemonInstanceId(value: unknown): string | undefined {
   return typeof value === "string" && /^daemon_[A-Za-z0-9_-]{16,96}$/.test(value) ? value : undefined;
 }
 

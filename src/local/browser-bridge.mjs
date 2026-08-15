@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
 import { WebSocket } from "ws";
 import { createToolAuthorizer } from "./policy.mjs";
-import { assertStateMaintenanceAvailable, packageRoot } from "./state.mjs";
+import { assertStateMaintenanceAvailable } from "./state.mjs";
+import { packageRoot } from "./package-identity.mjs";
 import {
   BROWSER_EXTENSION_PROTOCOL, EXPECTED_EXTENSION_VERSION, MAX_BROWSER_MESSAGE_BYTES,
   closeProtocolSocket, normalizeCompatibleExtensionInfo, parseBrowserSocketMessage, parseExtensionHello, safeSocketSend,
@@ -14,6 +15,9 @@ import { handleBrowserBridgeHttp } from "./browser-bridge-http.mjs";
 import { BrowserBrokerRoutes } from "./browser-broker-routes.mjs";
 import { startBrowserBrokerServer } from "./browser-broker-server.mjs";
 import { EXPECTED_EXTENSION_ID } from "./browser-extension-identity.mjs";
+import { BROKER_AUTH_REQUEST_HEADER, BROKER_AUTH_REQUEST_VALUE, createBrokerAuthChallenge, createBrokerClientProtocol, createBrokerInitProof, parseBrokerAuthResponse, verifyBrokerServerProof } from "./browser-broker-auth.mjs";
+import { startBrowserPairingLaunch } from "./browser-pairing-launch.mjs";
+import { browserExtensionPathForRuntime } from "./browser-extension-path.mjs";
 
 const MAX_PORT_ATTEMPTS = 10;
 const MAX_PENDING = 32;
@@ -55,7 +59,7 @@ export class BrowserBridgeManager {
     this.port = 0;
     this.extensionToken = "";
     this.runtimeToken = "";
-    this.extensionPath = resolve(packageRoot, "browser-extension");
+    this.extensionPath = browserExtensionPathForRuntime({ stateRoot: this.stateRoot, packageDirectory: packageRoot });
     this.operationService = new BrowserOperationService({
       authorizeTool: (tool) => this.authorizeTool(tool),
       ensureStarted: (context) => this.ensureStarted(context),
@@ -68,12 +72,14 @@ export class BrowserBridgeManager {
         extensionReloadRequired: this.extensionReloadRequired(),
         ...this.brokerRoutes.snapshot(),
       }),
+      createPairingLaunch: (port) => startBrowserPairingLaunch({ brokerPort: port, extensionToken: this.extensionToken }),
       extensionPath: this.extensionPath,
       expectedExtensionVersion: EXPECTED_EXTENSION_VERSION,
       expectedExtensionId: EXPECTED_EXTENSION_ID,
       runProcess: (...args) => this.runProcess(...args),
       readResourceText: (name) => this.readResourceText(name),
       readResourceBinary: (name) => this.readResourceBinary(name),
+      throwIfCancelled: (context) => this.throwIfCancelled(context),
     });
   }
 
@@ -92,6 +98,14 @@ export class BrowserBridgeManager {
   getSource(args = {}, context = {}) { return this.operationService.getSource(args, context); }
 
   inspectPage(args = {}, context = {}) { return this.operationService.inspectPage(args, context); }
+
+  observeComputer(args = {}, context = {}) { return this.operationService.observeComputer(args, context); }
+
+  documentState(args = {}, context = {}) { return this.operationService.documentState(args, context); }
+
+  pointAction(args = {}, context = {}) { return this.operationService.pointAction(args, context); }
+
+  backendNodeAction(args = {}, context = {}) { return this.operationService.backendNodeAction(args, context); }
 
   act(args = {}, context = {}) { return this.operationService.act(args, context); }
 
@@ -130,6 +144,7 @@ export class BrowserBridgeManager {
     try { await pending; } finally {
       if (this.startPromise === pending) this.startPromise = null;
     }
+    this.throwIfCancelled(context);
   }
 
   async start(generation = this.startGeneration) {
@@ -143,20 +158,31 @@ export class BrowserBridgeManager {
         try {
           await this.listen(port);
           this.assertStartCurrent(generation);
-          if (port !== pairing.port && this.stateRoot) {
-            await savePairing(this.stateRoot, { schemaVersion: pairing.schemaVersion, extensionToken: this.extensionToken, runtimeToken: this.runtimeToken, port });
+          if (this.stateRoot && (port !== pairing.port || pairing.migrationPending)) {
+            await savePairing(this.stateRoot, { schemaVersion: pairing.schemaVersion, pairingAuthVersion: pairing.pairingAuthVersion, extensionToken: this.extensionToken, runtimeToken: this.runtimeToken, port, migrationPending: false });
             this.assertStartCurrent(generation);
           }
           return;
         } catch (error) {
           this.assertStartCurrent(generation);
           if (error?.code !== "EADDRINUSE") throw error;
-          if (await this.connectProxy(port, generation)) {
+          const proxy = await this.connectProxy(port, generation);
+          if (proxy.connected) {
             this.assertStartCurrent(generation);
             this.port = port;
+            if (this.stateRoot && pairing.migrationPending) {
+              await savePairing(this.stateRoot, { schemaVersion: pairing.schemaVersion, pairingAuthVersion: pairing.pairingAuthVersion, extensionToken: this.extensionToken, runtimeToken: this.runtimeToken, port, migrationPending: false });
+              this.assertStartCurrent(generation);
+            }
             return;
           }
           this.assertStartCurrent(generation);
+          if (proxy.authenticated) {
+            throw new Error("browser broker accepted runtime authentication but did not complete its handshake; refusing a second broker owner");
+          }
+          if (pairing.migrationPending && offset === 0) {
+            throw new Error("previous browser broker occupies the migrated pairing port; restart the prior Machine Bridge runtime before browser broker migration can complete");
+          }
           if (offset === MAX_PORT_ATTEMPTS - 1) throw error;
         }
       }
@@ -191,27 +217,43 @@ export class BrowserBridgeManager {
   }
 
   async connectProxy(port, generation = this.startGeneration) {
+    const clientChallenge = createBrokerAuthChallenge();
+    const initProof = createBrokerInitProof(this.runtimeToken, "runtime", clientChallenge);
+    const authUrl = `http://127.0.0.1:${port}/runtime-auth?challenge=${encodeURIComponent(clientChallenge)}&init=${encodeURIComponent(initProof)}`;
+    let authResponse;
+    try {
+      authResponse = await fetch(authUrl, { method: "GET", redirect: "error", cache: "no-store", headers: { [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE }, signal: AbortSignal.timeout(750) });
+    } catch { return { connected: false, authenticated: false }; }
+    if (authResponse.status !== 204) return { connected: false, authenticated: false };
+    const challenge = parseBrokerAuthResponse(authResponse.headers);
+    if (!challenge || !verifyBrokerServerProof(this.runtimeToken, "runtime", clientChallenge, challenge.serverNonce, challenge.serverProof)) {
+      return { connected: false, authenticated: false };
+    }
+    this.assertStartCurrent(generation);
+    const protocol = createBrokerClientProtocol(this.runtimeToken, "runtime", clientChallenge, challenge.serverNonce);
     const url = `ws://127.0.0.1:${port}/runtime`;
     return new Promise((resolvePromise) => {
       let settled = false;
-      const ws = new WebSocket(url, [`mbm-runtime.${this.runtimeToken}`], { maxPayload: MAX_BROWSER_MESSAGE_BYTES });
+      const authenticated = true;
+      const ws = new WebSocket(url, [protocol], { maxPayload: MAX_BROWSER_MESSAGE_BYTES });
       const timer = setTimeout(() => finish(false), 1500);
       timer.unref?.();
-      const finish = (ok) => {
+      const finish = (connected) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (!ok) {
-          try { ws.terminate(); } catch { try { ws.close(); } catch {} }
+        if (!connected) {
+          try { ws.terminate(); }
+          catch {
+            try { ws.close(); }
+            catch { /* Rejected bridge ownership is already settled even if the peer closed concurrently. */ }
+          }
         }
-        resolvePromise(ok);
+        resolvePromise({ connected, authenticated });
       };
       ws.on("message", (data) => {
         const parsed = parseBrowserSocketMessage(data);
-        if (!parsed.ok) {
-          closeProtocolSocket(ws, parsed.code, parsed.reason);
-          return;
-        }
+        if (!parsed.ok) { closeProtocolSocket(ws, parsed.code, parsed.reason); return; }
         const message = parsed.message;
         if (!settled) {
           if (message.type !== "hello" || message.role !== "runtime" || message.protocol !== 1) {
@@ -219,7 +261,8 @@ export class BrowserBridgeManager {
             return;
           }
           if (!this.isStartCurrent(generation)) {
-            try { ws.close(1001, "runtime stopped"); } catch {}
+            try { ws.close(1001, "runtime stopped"); }
+            catch { /* Runtime shutdown may race an already-closed extension socket. */ }
             finish(false);
             return;
           }
@@ -377,16 +420,15 @@ export class BrowserBridgeManager {
   handleHttp(request, response) {
     return handleBrowserBridgeHttp(request, response, {
       port: this.port,
-      token: this.extensionToken,
       extensionConnected: () => this.extensionConnected(),
       extensionStatusInfo: () => this.extensionStatusInfo(),
       extensionReloadRequired: () => this.extensionReloadRequired(),
     });
   }
 
-  cancelCall(callId) {
+  cancelCall(callId, reason = null) {
     const transport = this.server ? this.socket : this.upstream;
-    this.requestRegistry.cancelCall(callId, transport);
+    this.requestRegistry.cancelCall(callId, transport, reason);
   }
 
   rejectPending(message) {
@@ -407,9 +449,12 @@ export class BrowserBridgeManager {
 
   closeBrokerTransports(message) {
     this.rejectPending(message);
-    try { this.upstream?.close(1001, "runtime stopped"); } catch {}
-    try { this.socket?.close(1001, "runtime stopped"); } catch {}
-    try { this.pendingExtensionSocket?.close(1001, "runtime stopped"); } catch {}
+    try { this.upstream?.close(1001, "runtime stopped"); }
+    catch { /* Runtime shutdown is idempotent and the upstream may already be closed. */ }
+    try { this.socket?.close(1001, "runtime stopped"); }
+    catch { /* Runtime shutdown is idempotent and the client socket may already be closed. */ }
+    try { this.pendingExtensionSocket?.close(1001, "runtime stopped"); }
+    catch { /* Runtime shutdown is idempotent and the pending extension socket may already be closed. */ }
     this.brokerRoutes.close(message);
     this.upstream = null;
     this.socket = null;
@@ -419,8 +464,10 @@ export class BrowserBridgeManager {
     this.proxyExtensionInfo = null;
     this.proxyExtensionReloadRequired = false;
     this.extensionReloadRequiredFlag = false;
-    try { this.wss?.close(); } catch {}
-    try { this.server?.close(); } catch {}
+    try { this.wss?.close(); }
+    catch { /* Listener shutdown may race a prior close; ownership state is already terminal. */ }
+    try { this.server?.close(); }
+    catch { /* Listener shutdown may race a prior close; ownership state is already terminal. */ }
     this.wss = null;
     this.server = null;
   }

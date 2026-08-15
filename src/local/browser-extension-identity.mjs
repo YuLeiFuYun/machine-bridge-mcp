@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { packageRoot } from "./state.mjs";
+import { packageRoot } from "./package-identity.mjs";
 
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;

@@ -12,7 +12,16 @@ assert(validators.validate("list_dir", { path: "." }).valid, "valid list_dir arg
 assertIssue(validators.validate("list_dir", { path: ".", unexpected: true }), "/unexpected", "additionalProperties");
 assertIssue(validators.validate("read_file", { path: "x", start_line: 0 }), "/start_line", "minimum");
 assertIssue(validators.validate("list_files", { max_files: "10" }), "/max_files", "type");
+assert(validators.validate("server_info", {}).valid && validators.validate("server_info", { detail: "summary" }).valid
+  && validators.validate("server_info", { detail: "full" }).valid, "server_info detail modes were rejected");
+assertIssue(validators.validate("server_info", { detail: "verbose" }), "/detail", "enum");
 assertIssue(validators.validate("write_file", { path: "x", content: "y", expected_sha256: "secret-value" }), "/expected_sha256", "pattern");
+const oversizedGitPath = "x".repeat(32769);
+for (const name of ["git_status", "git_diff", "git_log", "git_show", "git_commit"]) {
+  const args = name === "git_commit" ? { path: oversizedGitPath, message: "fix: bounded" } : { path: oversizedGitPath };
+  assertIssue(validators.validate(name, args), "/path", "maxLength");
+}
+assertIssue(validators.validate("git_show", { revision: "r".repeat(257) }), "/revision", "maxLength");
 const sensitive = validators.validate("write_file", { path: "x", content: "private-content", unexpected: "secret-value" });
 assert(!JSON.stringify(sensitive).includes("private-content") && !JSON.stringify(sensitive).includes("secret-value"),
   "validation issues exposed argument values");

@@ -5,47 +5,20 @@ const MAX_TOOLS = 128;
 const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|secret|token|verifier|private[_-]?key)/i;
 
 export type DaemonTerminalResultDisposition =
-  | "transient_committed"
-  | "durable_committed"
+  | "committed"
   | "owner_missing_acknowledged"
   | "stale_connection_rejected";
-
-export type DurableTerminalResultSettlement = "committed" | "missing" | "stale";
-
-export function daemonTerminalResultDecision(
-  transientMatched: boolean,
-  durableSettlement?: DurableTerminalResultSettlement,
-): { matched: boolean; acknowledge: boolean; disposition: DaemonTerminalResultDisposition } {
-  if (transientMatched) {
-    return { matched: true, acknowledge: true, disposition: "transient_committed" };
-  }
-  if (durableSettlement === "committed") {
-    return { matched: true, acknowledge: true, disposition: "durable_committed" };
-  }
-  if (durableSettlement === "missing") {
-    return { matched: false, acknowledge: true, disposition: "owner_missing_acknowledged" };
-  }
-  return { matched: false, acknowledge: false, disposition: "stale_connection_rejected" };
-}
 
 export class WorkerObservability {
   private readonly startedAt = performance.now();
   private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
-  private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0, unmatched_results: 0 };
+  private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0 };
   private readonly terminalResults = {
-    transient_committed: 0, durable_committed: 0,
-    owner_missing_acknowledged: 0, stale_connection_rejected: 0,
+    committed: 0, owner_missing_acknowledged: 0, stale_connection_rejected: 0,
   };
   private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
-  private readonly streamTransport = {
-    subscribers_opened: 0, subscribers_coexisting: 0, subscriber_limit_rejections: 0,
-    legacy_internal_terminal_publications: 0, legacy_internal_live_subscriber_sends: 0,
-    legacy_internal_publications_without_live_subscriber: 0, legacy_internal_storage_responses: 0,
-    legacy_internal_storage_race_sends: 0, legacy_internal_storage_race_send_failures: 0,
-    protocol_errors: 0,
-  };
   private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
-  private readonly durableBudget = { stream_rows_written_estimate: 0, alarm_sets: 0, alarm_deletes: 0, alarm_noops: 0 };
+  private readonly runtimeAlarm = { sets: 0, deletes: 0, noops: 0 };
   private readonly errors = new Map<string, number>();
   private readonly tools = new Map<string, { started: number; completed: number; failed: number; active: number }>();
 
@@ -80,9 +53,6 @@ export class WorkerObservability {
 
   daemonTerminalResult(disposition: DaemonTerminalResultDisposition): void {
     this.terminalResults[disposition] += 1;
-    if (disposition === "owner_missing_acknowledged" || disposition === "stale_connection_rejected") {
-      this.calls.unmatched_results += 1;
-    }
   }
   recordError(code: string): void { this.incrementError(code); }
 
@@ -95,49 +65,14 @@ export class WorkerObservability {
     this.incrementError(code || "protocol_error");
   }
 
-  streamSubscriberOpened(existing: number): void {
-    this.streamTransport.subscribers_opened += 1;
-    this.streamTransport.subscribers_coexisting += Math.max(0, Math.floor(existing));
-  }
-
-  streamSubscriberRejected(): void {
-    this.streamTransport.subscriber_limit_rejections += 1;
-    this.incrementError("stream_subscriber_limit");
-  }
-
-  streamTerminalPublished(recipients: number): void {
-    const delivered = Math.max(0, Math.floor(recipients));
-    this.streamTransport.legacy_internal_terminal_publications += 1;
-    this.streamTransport.legacy_internal_live_subscriber_sends += delivered;
-    if (delivered === 0) this.streamTransport.legacy_internal_publications_without_live_subscriber += 1;
-  }
-
-  streamTerminalStorageResponse(): void {
-    this.streamTransport.legacy_internal_storage_responses += 1;
-  }
-
-  streamTerminalStorageRaceDelivery(delivered: boolean): void {
-    if (delivered) this.streamTransport.legacy_internal_storage_race_sends += 1;
-    else this.streamTransport.legacy_internal_storage_race_send_failures += 1;
-  }
-
-  streamSubscriberProtocolError(): void {
-    this.streamTransport.protocol_errors += 1;
-    this.incrementError("stream_subscriber_protocol_error");
-  }
-
   oauthRefreshEvent(event: "rotated" | "retry_issued" | "retry_exhausted" | "family_revoked" | "rejected"): void {
     this.oauthRefresh[event] += 1;
   }
 
-  streamStorageRowsWritten(rows: number): void {
-    this.durableBudget.stream_rows_written_estimate += Math.max(0, Math.floor(rows));
-  }
-
   runtimeAlarmMutation(action: "set" | "delete" | "noop"): void {
-    if (action === "set") this.durableBudget.alarm_sets += 1;
-    else if (action === "delete") this.durableBudget.alarm_deletes += 1;
-    else this.durableBudget.alarm_noops += 1;
+    if (action === "set") this.runtimeAlarm.sets += 1;
+    else if (action === "delete") this.runtimeAlarm.deletes += 1;
+    else this.runtimeAlarm.noops += 1;
   }
 
   snapshot(): Record<string, unknown> {
@@ -145,17 +80,15 @@ export class WorkerObservability {
       uptime_ms: Math.max(0, performance.now() - this.startedAt),
       metric_scope: {
         lifecycle: "current_worker_isolate",
-        durable_calls_may_cross_isolates: true,
-        counters_may_not_balance: true,
-        unmatched_results_is_legacy_aggregate: true,
+        request_scoped_calls: true,
+        counters_may_not_balance_across_isolate_restarts: true,
       },
       requests: { ...this.requests },
       calls: { ...this.calls },
       terminal_results: { ...this.terminalResults },
       sockets: { ...this.sockets },
-      stream_transport: { ...this.streamTransport },
       oauth_refresh: { ...this.oauthRefresh },
-      durable_budget: { ...this.durableBudget },
+      runtime_alarm: { ...this.runtimeAlarm },
       errors: Object.fromEntries([...this.errors.entries()].sort(([left], [right]) => left.localeCompare(right))),
       tools: Object.fromEntries([...this.tools.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, metric]) => [name, { ...metric }])),
     };
@@ -199,7 +132,7 @@ function sanitizeName(value: unknown): string {
 }
 
 function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  const out = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(fields).slice(0, 32)) {
     const safeKey = sanitizeName(key);
     if (!safeKey) continue;

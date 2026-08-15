@@ -1,9 +1,8 @@
-import {
-  proxyMcpEventStream,
-  sanitizeBridgeRequest,
-} from "./mcp-stream-proxy.ts";
+import { proxyMcpResponseStream } from "./mcp-response-proxy.ts";
+import { sanitizeBridgeRequest } from "./mcp-stream-proxy-contract.ts";
 import { respondWithoutDurableObject } from "./worker-static-routes.ts";
 import { createThrottledEdgeLogger } from "./worker-edge-log.ts";
+import { statefulRouteClass } from "./worker-rate-limit-key.ts";
 import {
   admitGlobalStatefulRequest, admitStatefulRequest,
   durableObjectQuotaResponse,
@@ -40,12 +39,12 @@ export async function handleOuterWorkerFetch(
     const limited = await admitStatefulRequest(request, env.STATEFUL_RATE_LIMITER, extraOrigins);
     if (limited) return limited;
     const stub = env.BRIDGE.getByName("default");
-    const streamed = await proxyMcpEventStream({ request, bridge: stub, extraOrigins, ctx });
+    const streamed = await proxyMcpResponseStream({ request, bridge: stub, ctx });
     return streamed ?? stub.fetch(sanitizeBridgeRequest(request));
   } catch (error) {
     if (isDurableObjectQuotaError(error)) return durableObjectQuotaResponse(request, extraOrigins);
     logOuterFetchFailure("error", "outer.fetch.failed", {
-      path: new URL(request.url).pathname,
+      route: statefulRouteClass(new URL(request.url).pathname),
       error_class: outerWorkerErrorClass(error),
     });
     return workerGatewayErrorResponse(request, extraOrigins);

@@ -99,7 +99,7 @@ try {
   await assert.rejects(access(lockPath), { code: "ENOENT" });
   const previousPath = process.env.PATH;
   process.env.PATH = "";
-  try { assert.throws(() => resolveGithubPublicationStateRoot(root), /could not resolve/); }
+  try { assert.equal(resolveGithubPublicationStateRoot(root), stateRoot); }
   finally { process.env.PATH = previousPath; }
 } finally {
   await rm(linkedRoot, { recursive: true, force: true });
@@ -113,4 +113,3 @@ function git(cwd, args) {
   assert.equal(result.status, 0, `${result.stdout || ""}${result.stderr || ""}`);
   return result;
 }
-

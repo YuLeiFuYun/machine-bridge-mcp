@@ -1,24 +1,24 @@
-import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { activeManagedJobs } from "./managed-jobs.mjs";
+import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
 import { activeManagedJobLock } from "./managed-job-lock.mjs";
 import { inspectProcessInstance } from "./process-identity.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { activeOwnerStateLocks } from "./state-owner-lock-inventory.mjs";
 import { STATE_SCHEMA_VERSION, expandHome, readDaemonLockOwner, resolveWorkspace } from "./state.mjs";
 
 const PROFILE_NAME = /^[a-f0-9]{24}$/;
-const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
 
 export function knownWorkerNames(stateRoot) {
   const profiles = profilesDirectory(stateRoot);
-  if (!existsSync(profiles)) return [];
   const names = new Set();
   for (const entry of profileDirectories(profiles)) {
     const profileDir = resolve(profiles, entry.name);
     const stateFile = resolve(profileDir, "state.json");
-    if (!existsSync(stateFile)) {
+    if (!inspectPathIfPresentSync(stateFile, "workspace state")) {
       const evidence = readdirSync(profileDir).some((name) => /^state\.json\.corrupt-/.test(name) || name === "state.json.recovery-required" || name === "daemon.lock");
       if (evidence) throw unreadableWorkerState(entry.name);
       continue;
@@ -46,14 +46,13 @@ export function knownWorkerNames(stateRoot) {
 export function knownProfileStates(stateRoot) {
   const canonicalStateRoot = canonicalRoot(stateRoot);
   const profiles = resolve(canonicalStateRoot, "profiles");
-  if (!existsSync(profiles)) return [];
   const states = [];
   const seen = new Set();
   for (const entry of profileDirectories(profiles)) {
     const profileDir = resolve(profiles, entry.name);
     const statePath = resolve(profileDir, "state.json");
     const candidates = [];
-    if (existsSync(statePath)) {
+    if (inspectPathIfPresentSync(statePath, "workspace state")) {
       try {
         const value = readStateJson(statePath);
         if (typeof value?.workspace?.path === "string") candidates.push(value.workspace.path);
@@ -62,8 +61,9 @@ export function knownProfileStates(stateRoot) {
       }
     }
     const daemonLock = resolve(profileDir, "daemon.lock");
+    const daemonLockPresent = Boolean(inspectPathIfPresentSync(daemonLock, "daemon lock"));
     const daemonOwner = readDaemonLockOwner(daemonLock);
-    if (existsSync(daemonLock) && !daemonOwner) {
+    if (daemonLockPresent && !daemonOwner) {
       throw new Error(`cannot inspect daemon lock for profile ${entry.name}; service definitions and state were kept`);
     }
     if (typeof daemonOwner?.workspace === "string") candidates.push(daemonOwner.workspace);
@@ -88,7 +88,6 @@ export function knownProfileStates(stateRoot) {
 
 export function activeStateJobs(stateRoot) {
   const profiles = profilesDirectory(stateRoot);
-  if (!existsSync(profiles)) return [];
   const active = [];
   for (const profile of profileDirectories(profiles)) {
     for (const job of activeManagedJobs(resolve(profiles, profile.name, "jobs"))) {
@@ -99,9 +98,9 @@ export function activeStateJobs(stateRoot) {
 }
 
 export function activeStateLocks(stateRoot) {
-  const profiles = profilesDirectory(stateRoot);
-  if (!existsSync(profiles)) return [];
-  const active = [];
+  const root = canonicalRoot(stateRoot);
+  const profiles = resolve(root, "profiles");
+  const active = activeOwnerStateLocks(root);
   for (const profile of profileDirectories(profiles)) {
     const profileDir = resolve(profiles, profile.name);
     for (const [kind, name] of [
@@ -111,7 +110,7 @@ export function activeStateLocks(stateRoot) {
       ["security-audit", "security-audit.lock"],
     ]) {
       const lockPath = resolve(profileDir, name);
-      if (!existsSync(lockPath)) continue;
+      if (!inspectPathIfPresentSync(lockPath, `${kind} lock`)) continue;
       const owner = readDaemonLockOwner(lockPath);
       if (!owner) {
         active.push({ kind, pid: null, path: lockPath, reason: "invalid_or_unreadable_lock" });
@@ -124,9 +123,14 @@ export function activeStateLocks(stateRoot) {
       }
     }
     const jobRoot = resolve(profileDir, "jobs");
-    if (!existsSync(jobRoot)) continue;
+    const jobRootInfo = inspectPathIfPresentSync(jobRoot, "managed-job root");
+    if (!jobRootInfo) continue;
+    if (jobRootInfo.isSymbolicLink() || !jobRootInfo.isDirectory()) throw new Error("managed-job root must be a real directory");
+    const capacityLockPath = resolve(jobRoot, "capacity.lock");
+    const capacityLock = activeManagedJobLock(capacityLockPath);
+    if (capacityLock?.active) active.push({ kind: "job-capacity", pid: capacityLock.pid, path: capacityLockPath, reason: capacityLock.reason });
     for (const entry of readdirSync(jobRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !JOB_ID.test(entry.name)) continue;
+      if (!entry.isDirectory() || !MANAGED_JOB_ID.test(entry.name)) continue;
       for (const [kind, name] of [["job-transition", "transition.lock"], ["job-recovery", "recovery.lock"]]) {
         const lockPath = resolve(jobRoot, entry.name, name);
         const lock = activeManagedJobLock(lockPath);
@@ -137,23 +141,27 @@ export function activeStateLocks(stateRoot) {
   return active;
 }
 
-function profilesDirectory(stateRoot) {
-  return resolve(canonicalRoot(stateRoot), "profiles");
-}
-
+function profilesDirectory(stateRoot) { return resolve(canonicalRoot(stateRoot), "profiles"); }
 function canonicalRoot(stateRoot) {
   const expanded = resolve(expandHome(stateRoot));
-  if (!existsSync(expanded)) return expanded;
+  const info = inspectPathIfPresentSync(expanded, "state root"); if (!info) return expanded;
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("state root must be a real directory");
   return realpathSync.native ? realpathSync.native(expanded) : realpathSync(expanded);
 }
 
 function profileDirectories(profiles) {
-  return readdirSync(profiles, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && PROFILE_NAME.test(entry.name));
+  const info = inspectPathIfPresentSync(profiles, "state profile directory");
+  if (!info) return [];
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("state profile directory must be a real directory");
+  const entries = readdirSync(profiles, { withFileTypes: true });
+  if (entries.some((entry) => !PROFILE_NAME.test(entry.name) || !entry.isDirectory())) throw new Error("state profile directory contains an unexpected entry; local state was kept for inspection");
+  return entries;
 }
-
 function readStateJson(path) {
-  return JSON.parse(readBoundedRegularFileSync(path, MAX_STATE_BYTES).toString("utf8"));
+  return JSON.parse(readBoundedRegularFileSync(path, MAX_STATE_BYTES, "state inventory", {
+    verifyPathIdentity: true,
+    rejectMultipleLinks: true,
+  }).toString("utf8"));
 }
 
 function unreadableWorkerState(profile) {

@@ -50,9 +50,11 @@ export function sanitizeDaemonChallengeAttachment(value: Record<string, unknown>
     ? value.authSessionKeyId
     : undefined;
   let workerOrigin: string | undefined;
-  try { workerOrigin = normalizeWorkerOrigin(String(value.workerOrigin || "")); } catch {}
+  try { workerOrigin = normalizeWorkerOrigin(String(value.workerOrigin || "")); }
+  catch { /* Invalid optional persisted auth metadata remains undefined and fails the caller's completeness checks. */ }
   let authSessionPublicKeyJson: string | undefined;
-  try { authSessionPublicKeyJson = JSON.stringify(parsePublicJwk(String(value.authSessionPublicKeyJson || ""))); } catch {}
+  try { authSessionPublicKeyJson = JSON.stringify(parsePublicJwk(String(value.authSessionPublicKeyJson || ""))); }
+  catch { /* Invalid optional persisted auth metadata remains undefined and fails the caller's completeness checks. */ }
   return { authChallenge, authIssuedAt, authExpiresAt, workerOrigin, authSessionPublicKeyJson, authSessionKeyId, authCertificateExpiresAt };
 }
 
@@ -119,6 +121,7 @@ export async function consumeDaemonPreflightNonce(
     now,
     noncePattern: /^[A-Za-z0-9_-]{24,128}$/,
     maximum: 128,
+    maxFutureSeconds: DAEMON_PREFLIGHT_TTL_SECONDS * 2,
   });
 }
 

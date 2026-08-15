@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { AccountAdminClient, accountRoleNames, generateAccountPassword } from "./account-admin.mjs";
 import { createDeviceSessionForRoot } from "./device-root-provider.mjs";
-import { loadState, packageRoot } from "./state.mjs";
+import { loadState } from "./state.mjs";
+import { packageVersion } from "./package-identity.mjs";
 
 export function createAccountCommand({ chooseWorkspace, confirm }) {
   if (typeof chooseWorkspace !== "function" || typeof confirm !== "function") {
@@ -35,7 +34,7 @@ export async function accountAdminClient(state, sessionIdentity = null) {
 }
 
 function currentPackageVersion() {
-  return String(JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8")).version);
+  return packageVersion;
 }
 
 async function performAccountAction({ action, args, client, confirm }) {
@@ -90,7 +89,8 @@ function printAccountResult(action, result) {
       return;
     }
     for (const client of result.clients) {
-      console.log(`${client.client_name}\t${client.trusted_role || "untrusted"}\t${client.client_id}\taccess=${client.active_access_tokens} refresh=${client.active_refresh_tokens}`);
+      const registration = client.registration_current === true ? "current" : "stale";
+      console.log(`${client.client_name}\t${client.trusted_role || "untrusted"}\t${client.client_id}\taccess=${client.active_access_tokens} refresh=${client.active_refresh_tokens} registration=${registration}`);
     }
     return;
   }

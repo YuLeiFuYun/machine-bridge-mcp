@@ -5,6 +5,7 @@ import { classifyOperationalError } from "./log.mjs";
 import { readBoundedFile } from "./workspace-file-service.mjs";
 import { systemNetworkRouteCheck } from "./system-network-route.mjs";
 import { diagnosticControlPlaneState } from "./runtime-diagnostic-state.mjs";
+import { resourceAdmissionDiagnostic } from "./resource-admission-diagnostics.mjs";
 export const RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS = 30_000;
 export async function diagnoseRuntime({
   policy,
@@ -14,6 +15,7 @@ export async function diagnoseRuntime({
   runFixedInternal,
   probeShell,
   managedJobManager,
+  resourceCoordinatorSnapshot = null,
   relayStatus = () => null,
   controlPlaneState = {},
   throwIfCancelled,
@@ -46,9 +48,7 @@ export async function diagnoseRuntime({
   } : {
     layer: "remote-relay", ok: false, skipped: true, transport: "stdio-or-local",
   });
-
   checks.push(await systemNetworkRouteCheck({ runFixedInternal, classifyError: classifyOperationalError, context }));
-
   const probe = join(runtimeDir, `.diagnostic-${process.pid}-${randomBytes(6).toString("hex")}`);
   try {
     await writeFile(probe, "ok\n", { mode: 0o600, flag: "wx" });
@@ -59,7 +59,6 @@ export async function diagnoseRuntime({
   } finally {
     await rm(probe, { force: true }).catch(() => {});
   }
-
   if (policy.execMode === "direct" || policy.execMode === "shell") {
     const direct = await runProcess(
       process.execPath,
@@ -78,7 +77,6 @@ export async function diagnoseRuntime({
   } else {
     checks.push({ layer: "local-process-spawn", ok: false, skipped: true, error_class: "policy_denied" });
   }
-
   if (policy.execMode === "shell") {
     const result = await probeShell(context, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS)
       .catch((error) => ({ code: 127, error_class: classifyOperationalError(error) }));
@@ -90,7 +88,9 @@ export async function diagnoseRuntime({
   } else {
     checks.push({ layer: "local-shell", ok: false, skipped: true, error_class: "policy_denied" });
   }
-
+  const admissionDiagnostic = await resourceAdmissionDiagnostic(resourceCoordinatorSnapshot, classifyOperationalError);
+  const resourceAdmission = admissionDiagnostic.snapshot;
+  if (admissionDiagnostic.check) checks.push(admissionDiagnostic.check);
   checks.push({ layer: "managed-job-storage", ...managedJobManager.diagnoseStorage() });
   const resources = managedJobManager.listResources();
   checks.push({
@@ -101,18 +101,18 @@ export async function diagnoseRuntime({
       .filter((resource) => !resource.available)
       .map((resource) => ({ name: resource.name, error_class: resource.error_class })),
   });
-
   return {
     request_reached_local_runtime: true,
     interpretation: {
-      tool_call_blocked_before_response: "host/platform or connector gateway",
+      current_request_delivery: "confirmed: this diagnose_runtime request reached the local runtime; this evidence does not support a blanket current platform disable of Machine Bridge",
+      tool_call_blocked_before_response: "not observable by Machine Bridge; possible causes include conversation/surface app routing state, a stale host action/tool snapshot, host tool filtering, connector gateway, client routing, or platform policy; do not attribute one without host-side evidence",
       diagnostic_reached_daemon_but_spawn_failed: "local OS, endpoint security, shell configuration, or Machine Bridge policy",
       system_network_stack_scope: "application proxy selection only; an operating-system VPN or TUN may still intercept the relay connection",
       tunnel_default_route_detected: "the operating-system route is carried by a VPN/TUN; node selection and repair remain outside Machine Bridge",
       managed_job_accepted_then_later_tools_blocked: "job continues independently; inspect with local CLI or a later read_job call",
     },
     policy,
-    ...diagnosticControlPlaneState(controlPlaneState, relay),
+    ...diagnosticControlPlaneState({ ...controlPlaneState, resourceAdmission }, relay),
     checks,
     ok: checks.filter((check) => !check.skipped).every((check) => check.ok),
   };

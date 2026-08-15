@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, fstatSync, linkSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -37,6 +37,46 @@ try {
 
   const second = buildDevelopmentTrustBrokerBinary(root);
   assert(second === binary, "development trust broker cache path changed without a source change");
+
+  appendNoFollowRegularFile(binary, Buffer.from([0]));
+  const rebuilt = buildDevelopmentTrustBrokerBinary(root);
+  assert(rebuilt === binary, "tampered development trust broker was rebuilt at a different path");
+  const rebuiltSignature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", killSignal: "SIGKILL", timeout: 30_000 });
+  assert(rebuiltSignature.status === 0, "tampered development trust broker was not rebuilt and re-signed");
+
+  chmodSync(binary, 0o777);
+  expectThrow(
+    () => buildDevelopmentTrustBrokerBinary(root),
+    "must remain owner-only and owner-executable",
+  );
+  chmodSync(binary, 0o700);
+
+  const marker = `${binary}.sha256`;
+  const markerBytes = readFileSync(marker);
+  unlinkSync(marker);
+  symlinkSync(binary, marker);
+  expectThrow(
+    () => buildDevelopmentTrustBrokerBinary(root),
+    "must not be a symbolic link",
+  );
+  unlinkSync(marker);
+  writeFileSync(marker, markerBytes, { mode: 0o600 });
+
+  const markerHardLink = `${marker}.link`;
+  linkSync(marker, markerHardLink);
+  expectThrow(
+    () => buildDevelopmentTrustBrokerBinary(root),
+    "must not have multiple hard links",
+  );
+  unlinkSync(markerHardLink);
+
+  const binaryHardLink = `${binary}.link`;
+  linkSync(binary, binaryHardLink);
+  expectThrow(
+    () => buildDevelopmentTrustBrokerBinary(root),
+    "must not have multiple hard links",
+  );
+  unlinkSync(binaryHardLink);
 
   const publicJwk = createDeviceIdentity().publicJwk;
   const calls = [];
@@ -176,6 +216,21 @@ try {
   console.log("macOS provisioned trust broker boundary test ok");
 } finally {
   rmSync(root, { recursive: true, force: true });
+}
+
+function appendNoFollowRegularFile(file, bytes) {
+  const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
+  assert(noFollow !== 0, "macOS trust broker tamper test requires O_NOFOLLOW");
+  let fd;
+  try {
+    fd = openSync(file, Number(fsConstants.O_WRONLY) | Number(fsConstants.O_APPEND) | noFollow);
+    const info = fstatSync(fd);
+    assert(info.isFile(), "development trust broker tamper target is not a regular file");
+    assert(info.nlink === 1, "development trust broker tamper target has multiple hard links");
+    assert(writeSync(fd, bytes) === bytes.length, "development trust broker tamper write was incomplete");
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function jsonResult(value) {

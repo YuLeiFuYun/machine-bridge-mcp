@@ -1,8 +1,8 @@
 import { EXPECTED_EXTENSION_ID, normalizeExtensionId } from "./browser-extension-identity.mjs";
 import { EXPECTED_EXTENSION_VERSION } from "./browser-extension-protocol.mjs";
 
-export function pairingHtml(port, extensionToken) {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="machine-bridge-browser-pair" content="1"><meta name="machine-bridge-browser-port" content="${port}"><meta name="machine-bridge-browser-token" content="${extensionToken}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Machine Bridge browser pairing</title></head><body><h1>Machine Bridge browser pairing</h1><p>Expected extension build: <strong>${EXPECTED_EXTENSION_VERSION}</strong>.</p><p>Expected extension ID: <code>${EXPECTED_EXTENSION_ID}</code>.</p><p>Reload the unpacked extension after every Machine Bridge upgrade.</p><p>The installed extension reads pairing material from this loopback-only page and stores it in browser-local extension storage. It is not sent to any website.</p><p id="status">Waiting for the Machine Bridge extension.</p></body></html>`;
+export function pairingHtml(port) {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="machine-bridge-browser-pair" content="1"><meta name="machine-bridge-browser-port" content="${port}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Machine Bridge browser pairing</title></head><body><h1>Machine Bridge browser pairing</h1><p>Expected extension build: <strong>${EXPECTED_EXTENSION_VERSION}</strong>.</p><p>Expected extension ID: <code>${EXPECTED_EXTENSION_ID}</code>.</p><p>Reload the unpacked extension after every Machine Bridge upgrade.</p><p>Pairing credentials are never embedded in this HTTP page. Run pair_browser_extension with opening enabled to create a short-lived extension bootstrap.</p><p id="status">Waiting for the Machine Bridge extension bootstrap.</p></body></html>`;
 }
 
 export function isAllowedExtensionOrigin(origin, expectedExtensionId = EXPECTED_EXTENSION_ID) {

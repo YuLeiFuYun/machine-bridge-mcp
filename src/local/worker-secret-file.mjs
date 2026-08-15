@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { createExclusiveFileSync } from "./exclusive-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { publicDeviceJwkJson } from "./device-identity.mjs";
+import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 import { deploymentDeviceIdentity } from "./state.mjs";
 import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync } from "./secure-file.mjs";
 
@@ -27,10 +28,14 @@ export async function withWorkerSecretsFile(state, callback, options = {}) {
   let result;
   let primaryError;
   try {
-    createExclusiveFileSync(tempPath, JSON.stringify(payload), { mode: 0o600 });
+    const creation = createExclusiveFileSync(tempPath, JSON.stringify(payload), { mode: 0o600, ...(options.exclusiveFileOptions || {}) });
     created = true;
-    createdIdentity = fileIdentity((options.lstatSync || lstatSync)(tempPath));
+    createdIdentity = fileIdentity(losslessLstat(tempPath, options.lstatSync));
+    if (creation.cleanupArtifact) {
+      retryExclusiveStagingCleanup(creation, options);
+    }
     (options.chmodFile || chmodRegularFileSync)(tempPath, 0o600, "temporary Worker secrets file");
+    createdIdentity = fileIdentity(losslessLstat(tempPath, options.lstatSync));
     result = await callback(tempPath);
   } catch (error) {
     primaryError = error;
@@ -39,7 +44,7 @@ export async function withWorkerSecretsFile(state, callback, options = {}) {
   let cleanupError;
   if (created) {
     try {
-      removeFile(tempPath, options.removeFile || unlinkSync, "could not remove temporary Worker secrets file", createdIdentity, options.lstatSync || lstatSync);
+      removeFile(tempPath, options.removeFile || unlinkSync, "could not remove temporary Worker secrets file", createdIdentity, (target) => losslessLstat(target, options.lstatSync));
     } catch (error) {
       cleanupError = error;
     }
@@ -63,7 +68,7 @@ export function cleanupStaleWorkerSecretFiles(dir, options = {}) {
   const inspect = options.inspectProcess || inspectProcessInstance;
   const remove = options.removeFile || unlinkSync;
   const readDirectory = options.readDirectory || readdirSync;
-  const inspectPath = options.lstatSync || lstatSync;
+  const inspectPath = options.lstatSync || ((target) => lstatSync(target, { bigint: true }));
   for (const entry of readDirectory(dir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const match = SECRET_FILE_PATTERN.exec(entry.name);
@@ -96,7 +101,27 @@ export function cleanupStaleWorkerSecretFiles(dir, options = {}) {
   }
 }
 
-function removeFile(file, remove, message = "could not remove temporary Worker secrets file", expectedIdentity = null, inspectPath = lstatSync) {
+function retryExclusiveStagingCleanup(creation, options) {
+  const artifact = creation.cleanupArtifact;
+  const inspectPath = (target) => losslessLstat(target, options.lstatSync);
+  const remove = options.removeFile || unlinkSync;
+  let identity;
+  try {
+    const info = inspectPath(artifact);
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error("temporary Worker secrets staging artifact changed type before cleanup");
+    identity = fileIdentity(info);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw new AggregateError([creation.cleanupError, error].filter(Boolean), "temporary Worker secrets staging cleanup could not be verified");
+  }
+  try {
+    removeFile(artifact, remove, "could not remove temporary Worker secrets staging artifact", identity, inspectPath);
+  } catch (error) {
+    throw new AggregateError([creation.cleanupError, error].filter(Boolean), "temporary Worker secrets staging cleanup failed");
+  }
+}
+
+function removeFile(file, remove, message = "could not remove temporary Worker secrets file", expectedIdentity = null, inspectPath = (target) => lstatSync(target, { bigint: true })) {
   try {
     if (expectedIdentity) {
       const current = inspectPath(file);
@@ -111,17 +136,12 @@ function removeFile(file, remove, message = "could not remove temporary Worker s
   }
 }
 
-function fileIdentity(info) {
-  return {
-    dev: Number(info.dev),
-    ino: Number(info.ino),
-    size: Number(info.size),
-    mtimeMs: Number(info.mtimeMs),
-  };
-}
+function fileIdentity(info) { return filesystemIdentity(info, "temporary Worker secrets file"); }
 
-function sameFileIdentity(left, right) {
-  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
+function sameFileIdentity(left, right) { return sameFilesystemIdentity(left, right); }
+
+function losslessLstat(target, injected) {
+  return injected ? injected(target) : lstatSync(target, { bigint: true });
 }
 
 function integerTimestamp(value) {

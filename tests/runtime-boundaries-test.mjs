@@ -2,7 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProjectOverview, buildRuntimeInfo } from "../src/local/runtime-reporting.mjs";
-import { GitService, GIT_METADATA_TIMEOUT_MS } from "../src/local/git-service.mjs";
+import { runtimeActivityVisible } from "../src/local/runtime-activity-projection.mjs";
+import { projectOverviewDetail, projectProjectOverview } from "../src/shared/project-overview-projection.mjs";
+import { GitService } from "../src/local/git-service.mjs";
 import { diagnoseRuntime, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/local/runtime-diagnostics.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "../src/local/doctor-reporting.mjs";
 import { classifySystemRouteInterface, inspectSystemNetworkRoute, systemNetworkRouteCheck } from "../src/local/system-network-route.mjs";
@@ -10,11 +12,13 @@ import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-
 import { policyProfile } from "../src/local/policy.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-inspection.mjs";
 import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
+import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 
 await testRuntimeReporting();
+testProcessSessionStatusAuthority();
 await testRuntimeDiagnostics();
 testDoctorReportingScope();
-await testGitServiceMetadataTimeout();
+await testGitServiceDiscoveryBoundary();
 await testRuntimeCapabilities();
 await testRuntimeResourceService();
 await testPathInspectionFailures();
@@ -73,6 +77,43 @@ async function testRuntimeReporting() {
   });
   assert(redacted.workspace_name === "workspace" && redacted.runtime.runtime_dir === "<private-runtime-dir>", "review policy leaked private paths");
 
+  const editorContext = { authority: { owner: false, principal: { kind: "account", role: "editor" } } };
+  assert(runtimeActivityVisible({}) === true
+    && runtimeActivityVisible({ authority: { owner: true, principal: { kind: "account", role: "owner" } } }) === true
+    && runtimeActivityVisible(editorContext) === false
+    && runtimeActivityVisible({ origin: "relay", authority: { principal: { kind: "account", role: "editor" } } }) === false,
+  "runtime activity projection failed open for a malformed relay/account authority context");
+  const nonOwner = buildRuntimeInfo({
+    workspace: "/workspace/project", displayPath: () => ".", policy: review, toolNames: ["read_file"],
+    capabilityObserver: { snapshot: () => ({ last_task_resolution: { selected_skill: "private-skill" } }) },
+    observability: { snapshot: () => ({ tools: { exec_command: { started: 9 } }, calls: { started: 9 } }) },
+    callRegistry: { snapshot: () => ({ active: 5, maximum: 16, ordinary_capacity: 14, reserved_capacity: 2, oldest_ms: 9999, by_origin: { relay: 5 } }) },
+    lifecycle: { snapshot: () => ({ state: "running" }) }, relayStatus: () => ({ ready: true }), runtimeDir: "/private/runtime",
+    processTracker: { snapshot: () => ({ active_processes: 4, draining_processes: 2 }) },
+    processSessionManager: { status: (context) => ({ active: context === editorContext ? 1 : 99, retained: 1, maximum: 8 }) },
+    managedJobManager: {
+      status: (context) => ({ active: 0, retained: context === editorContext ? 1 : 99, maximum: 50 }),
+      resourceInfo: (context) => ({ count: context === editorContext ? null : 99, names: [], inventory_hidden_by_authority: true }),
+    },
+    securityAudit: { enabled: true, healthy: true, chain_verified: true, persistence: "atomic", worker_ready: true, retained: 400, last_event_at: "private", queue_depth: 3 },
+    deviceRootStatus: { provider: "secure", root_storage: "Secure Enclave", key_id: "private-stable-key" },
+    context: editorContext,
+  });
+  assert(nonOwner.observability.capability_routing.activity_hidden_by_authority === true
+    && nonOwner.observability.tool_calls.activity_hidden_by_authority === true
+    && nonOwner.observability.in_flight_calls.activity_hidden_by_authority === true
+    && nonOwner.observability.in_flight_calls.maximum === 16
+    && !("active" in nonOwner.observability.in_flight_calls) && !("oldest_ms" in nonOwner.observability.in_flight_calls),
+  "non-owner runtime info leaked global task/tool/in-flight activity or hid static call capacity");
+  assert(nonOwner.runtime.processes.activity_hidden_by_authority === true
+    && nonOwner.runtime.process_sessions.active === 1 && nonOwner.runtime.managed_jobs.retained === 1
+    && nonOwner.runtime.local_resources.inventory_hidden_by_authority === true,
+  "non-owner runtime info leaked global process activity or lost principal-bound session/job state");
+  assert(nonOwner.security_audit.activity_hidden_by_authority === true && !("last_event_at" in nonOwner.security_audit)
+    && !("retained" in nonOwner.security_audit) && !("queue_depth" in nonOwner.security_audit)
+    && nonOwner.trust.device_root.key_id_hidden_by_authority === true && !("key_id" in nonOwner.trust.device_root),
+  "non-owner runtime info leaked audit activity or the stable device-root key id");
+
   const overview = await buildProjectOverview({
     workspace: "/workspace/project",
     displayPath: (value) => value,
@@ -80,13 +121,51 @@ async function testRuntimeReporting() {
     toolNames: ["read_file"],
     capabilityObserver: { snapshot: () => ({ resolutions: 1 }) },
     listTopLevel: async () => ({ entries: [{ name: "README.md" }] }),
-    gitExecutable: () => "/usr/bin/git",
-    runInternalProcess: async () => ({ code: 0, stdout: "/workspace/project\n" }),
+    resolveGitRoot: async () => "/workspace/project",
     safeErrorMessage: (error) => String(error?.message || error),
     throwIfCancelled() {},
   });
   assert(overview.gitRoot === "/workspace/project" && overview.topLevel.length === 1, "project overview lost repository metadata");
+  assert(overview.topLevelTotal === 1 && overview.topLevelTruncated === false, "project overview misreported its bounded inventory metadata");
   assert(overview.daemonPolicy.profile === "full" && overview.daemonTools.includes("read_file"), "project overview omitted the explicit daemon ceiling");
+  const nonOwnerOverview = await buildProjectOverview({
+    workspace: "/workspace/project", displayPath: (value) => value, policy: review, toolNames: ["read_file"],
+    daemonPolicy: full, daemonToolNames: ["read_file", "exec_command"],
+    capabilityObserver: { snapshot: () => ({ last_task_resolution: { selected_skill: "private-skill" } }) },
+    listTopLevel: async () => ({ entries: [] }), resolveGitRoot: async () => "/workspace/project",
+    safeErrorMessage: () => "safe", throwIfCancelled() {},
+  }, editorContext);
+  assert(nonOwnerOverview.capabilityRouting.activity_hidden_by_authority === true
+    && nonOwnerOverview.daemonTools.includes("exec_command"),
+  "non-owner project overview leaked cross-principal capability activity or lost the explicitly labeled daemon ceiling");
+
+  const starts = [];
+  let releaseTopLevel;
+  const topLevelGate = new Promise((resolvePromise) => { releaseTopLevel = resolvePromise; });
+  const concurrentOverview = buildProjectOverview({
+    workspace: "/workspace/project",
+    displayPath: (value) => value,
+    policy: full,
+    toolNames: [],
+    capabilityObserver: { snapshot: () => ({}) },
+    listTopLevel: async () => {
+      starts.push("top-level");
+      await topLevelGate;
+      return { entries: Array.from({ length: 55 }, (_value, index) => ({ name: `entry-${index}` })) };
+    },
+    resolveGitRoot: async () => {
+      starts.push("git");
+      return "/workspace/project";
+    },
+    safeErrorMessage: () => "safe",
+    throwIfCancelled() {},
+  });
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(starts.includes("top-level") && starts.includes("git"), "project overview serialized independent inventory and Git probes");
+  releaseTopLevel();
+  const boundedOverview = await concurrentOverview;
+  assert(boundedOverview.topLevel.length === 40 && boundedOverview.topLevelTotal === 55 && boundedOverview.topLevelTruncated === true,
+    "project overview did not bound oversized top-level inventories");
 
   const degraded = await buildProjectOverview({
     workspace: "/workspace/project",
@@ -95,12 +174,116 @@ async function testRuntimeReporting() {
     toolNames: [],
     capabilityObserver: { snapshot: () => ({}) },
     listTopLevel: async () => { throw new Error("unreadable"); },
-    gitExecutable: () => "/usr/bin/git",
-    runInternalProcess: async () => ({ code: 1, stdout: "" }),
+    resolveGitRoot: async () => "",
     safeErrorMessage: () => "safe",
     throwIfCancelled() {},
   });
   assert(degraded.gitRoot === "" && degraded.topLevel.length === 0, "project overview did not degrade safely");
+
+  assert(projectOverviewDetail({}) === "full"
+    && projectOverviewDetail({ detail: "summary" }) === "summary"
+    && projectOverviewDetail({ detail: "unknown" }) === "full",
+  "project overview detail selection lost backward-compatible full fallback");
+  const syntheticTools = Array.from({ length: 500 }, (_value, index) => `synthetic_tool_${index}`);
+  const syntheticOverview = {
+    workspace: "/workspace/project", workspaceName: "project", gitRoot: "/workspace/project",
+    policy: full, tools: syntheticTools, daemonPolicy: full, daemonTools: [...syntheticTools, "daemon_only"],
+    capabilityRouting: {
+      bootstrap_observed: true, bootstrap_count: 12, task_resolution_observed: true, task_resolution_count: 9,
+      last_task_resolution: {
+        observed_at: "2026-08-08T00:00:00.000Z", task_fingerprint: "private-task-fingerprint", refresh_fingerprint: "private-refresh",
+        selected_skill: "skill", matched_skills: 3, matched_commands: 4, matched_applications: 5,
+        recommended_tools: syntheticTools, primary_route: "files", routing_ambiguity: "low", routing_score_gap: 7,
+      },
+      enforcement_boundary: "cold path explanation",
+    },
+    topLevel: Array.from({ length: 40 }, (_value, index) => ({
+      name: `entry-${index}`, path: `/workspace/project/${"private/".repeat(12)}entry-${index}`, type: index % 2 ? "file" : "directory", size: 1000 + index,
+    })),
+    topLevelTotal: 4000, topLevelTruncated: true,
+    authorization: {
+      account: { account_id: "acct_private", role: "owner", version: 3 }, effective_policy: full, effective_tools: syntheticTools,
+      effective_tool_count: syntheticTools.length, account_role_is_owner: true, effective_profile_is_full: true,
+      execution_model: { within_effective_authority: "automatic_without_per_operation_prompt", owner_ambient_authority: "daemon_os_user", generic_control_plane_paths: "denied_even_for_owner" },
+    },
+    policyScope: "authenticated_account_effective_authority", toolsScope: "authenticated_account_effective_tools_before_host_filtering",
+  };
+  const compactOverview = projectProjectOverview(syntheticOverview, "summary");
+  const compactOverviewJson = JSON.stringify(compactOverview);
+  assert(compactOverview.detail === "summary"
+    && compactOverview.effectiveToolCount === 500 && compactOverview.daemonToolCount === 501
+    && compactOverview.authorization?.account?.role === "owner" && !("account_id" in compactOverview.authorization.account)
+    && compactOverview.topLevel.length === 40 && !("path" in compactOverview.topLevel[0]) && !("size" in compactOverview.topLevel[0])
+    && !("tools" in compactOverview) && !("daemonTools" in compactOverview)
+    && !compactOverviewJson.includes("synthetic_tool_")
+    && !compactOverviewJson.includes("private-task-fingerprint")
+    && !compactOverviewJson.includes("private-refresh")
+    && !compactOverviewJson.includes("private/private"),
+  "compact project overview leaked scale-dependent tool/path/fingerprint data or lost authority counts");
+  assert(compactOverviewJson.length <= 5200,
+    `compact project overview exceeded its 40-entry scale budget: ${compactOverviewJson.length} chars`);
+  const hiddenCompactOverview = projectProjectOverview({ ...syntheticOverview, capabilityRouting: { activity_hidden_by_authority: true } }, "summary");
+  assert(hiddenCompactOverview.capabilityRouting.activity_hidden_by_authority === true
+    && !("task_resolution_count" in hiddenCompactOverview.capabilityRouting),
+  "compact project overview converted hidden capability activity into false zero-valued evidence");
+  assert(projectProjectOverview(syntheticOverview, "full") === syntheticOverview
+    && projectProjectOverview("scalar", "summary") === "scalar",
+  "project overview projection changed full/non-record compatibility results");
+  const sparseCompactOverview = projectProjectOverview({
+    workspace: null, workspaceName: null, gitRoot: null,
+    tools: [], daemonTools: null, capabilityRouting: null, topLevel: "invalid",
+    topLevelTotal: "invalid", topLevelTruncated: false, authorization: {
+      effective_tool_count: "invalid", account_role_is_owner: false, effective_profile_is_full: false,
+      execution_model: null,
+    },
+  }, "summary");
+  assert(sparseCompactOverview.detail === "summary"
+    && sparseCompactOverview.effectiveToolCount === 0
+    && sparseCompactOverview.daemonToolCount === 0
+    && sparseCompactOverview.topLevel.length === 0
+    && sparseCompactOverview.topLevelTotal === 0
+    && sparseCompactOverview.capabilityRouting.last_task_resolution === null
+    && sparseCompactOverview.authorization.account === null
+    && sparseCompactOverview.authorization.execution_model === null
+    && !("policyScope" in sparseCompactOverview) && !("toolsScope" in sparseCompactOverview),
+  "project overview sparse compact projection lost bounded fallback semantics");
+  const oddTopLevel = projectProjectOverview({
+    tools: ["one"], daemonTools: ["one"],
+    capabilityRouting: { last_task_resolution: { recommended_tools: null, matched_skills: "bad", routing_score_gap: "bad" } },
+    topLevel: [null, { name: "ok" }], topLevelTotal: 2,
+  }, "summary");
+  assert(oddTopLevel.topLevel[0].name === "" && oddTopLevel.topLevel[0].type === "other"
+    && oddTopLevel.topLevel[1].name === "ok" && oddTopLevel.topLevel[1].type === "other"
+    && oddTopLevel.capabilityRouting.last_task_resolution.recommended_tool_count === 0
+    && oddTopLevel.capabilityRouting.last_task_resolution.matched_skills === 0
+    && oddTopLevel.capabilityRouting.last_task_resolution.routing_score_gap === 0,
+  "project overview compact projection lost malformed-optional-field fallbacks");
+}
+
+function testProcessSessionStatusAuthority() {
+  const manager = Object.create(ProcessSessionManager.prototype);
+  const owner = (accountId, closedAt = null) => ({
+    closedAt,
+    owner_kind: "account",
+    owner_account_id: accountId,
+    owner_account_version: 1,
+    owner_client_id: "client-a",
+    owner_family_id: "family-a",
+  });
+  manager.sessions = new Map([
+    ["mine-live", owner("acct-editor")],
+    ["mine-closed", owner("acct-editor", Date.now())],
+    ["other-live", owner("acct-owner")],
+  ]);
+  const editorContext = { authority: { owner: false, principal: {
+    kind: "account", role: "editor", accountId: "acct-editor", accountVersion: 1, clientId: "client-a", familyId: "family-a",
+  } } };
+  const editor = manager.status(editorContext);
+  const localOwner = manager.status({});
+  assert(editor.active === 1 && editor.retained === 2 && editor.maximum === 8,
+    "process-session status leaked another principal's retained or active session");
+  assert(localOwner.active === 2 && localOwner.retained === 3,
+    "local owner process-session status lost the full machine-user view");
 }
 
 async function testRuntimeDiagnostics() {
@@ -144,6 +327,12 @@ async function testRuntimeDiagnostics() {
       throwIfCancelled() {},
     });
     assert(shell.request_reached_local_runtime === true, "runtime diagnostic lost local reachability evidence");
+    assert(shell.interpretation?.current_request_delivery?.includes("blanket current platform disable")
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("not observable by Machine Bridge")
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("conversation/surface app routing state")
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("stale host action/tool snapshot")
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("host-side evidence"),
+    "runtime diagnostic overclaimed an unobservable host/platform refusal");
     assert(shell.runtime.lifecycle.state === "running"
       && shell.runtime.processes.draining_calls === 1
       && shell.runtime.execution_guardrails.tool_calls.maximum_concurrent === 16
@@ -270,24 +459,26 @@ function testDoctorReportingScope() {
   "doctor reporting scope falsely claims service relay inspection");
 }
 
-async function testGitServiceMetadataTimeout() {
-  const root = await mkdtemp(join(tmpdir(), "mbm-git-metadata-timeout-"));
+async function testGitServiceDiscoveryBoundary() {
+  const root = await mkdtemp(join(tmpdir(), "mbm-git-discovery-boundary-"));
   try {
-    let observedTimeoutMs = 0;
+    let processCalls = 0;
     const service = new GitService({
-      resolveExistingPath: async () => root,
+      resolveExistingPath: async (value) => {
+        if (value !== root) throw Object.assign(new Error("outside"), { code: "path_boundary" });
+        return value;
+      },
       displayPath: (value) => value,
-      runInternalProcess: async (_command, _args, timeoutMs) => {
-        observedTimeoutMs = timeoutMs;
-        return { code: 128, stdout: "", stderr: "not a repository" };
+      runInternalProcess: async () => {
+        processCalls += 1;
+        return { code: 128, stdout: "", stderr: "unexpected Git process" };
       },
       gitExecutable: () => "/usr/bin/git",
       maximumBytes: 1024 * 1024,
     });
     const result = await service.context(root);
-    assert(result.ok === false, "Git metadata fixture unexpectedly found a repository");
-    assert(observedTimeoutMs === GIT_METADATA_TIMEOUT_MS && GIT_METADATA_TIMEOUT_MS === 30_000,
-      "Git repository metadata probe did not use the bounded scheduler-tolerant timeout");
+    assert(result.ok === false, "Git discovery fixture unexpectedly found a repository");
+    assert(processCalls === 0, "Git repository discovery executed Git before establishing the local metadata boundary");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

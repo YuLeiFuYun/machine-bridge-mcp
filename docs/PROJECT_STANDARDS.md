@@ -18,11 +18,29 @@ Branch names use a short category and purpose, for example `feat/browser-downloa
 
 Direct pushes to `main`, force pushes, and branch deletion are blocked by repository protection. An exception requires an incident record and an explicit owner decision.
 
+### Local repository readiness and release readiness
+
+A review or automation report must state the scope of its readiness claim. `local_repository` readiness means that the current working-tree candidate is bound to its objective revision, has passed every required local and project-native verification stage, has requirement-specific evidence, and has the required reviews. It does not assert that a hosted Worker, browser client, GitHub repository, npm registry, service installation, or production network currently matches that candidate.
+
+`release_ready` is a separate claim. It requires the exact candidate identity plus the applicable independent-environment and independent-authority lifecycle evidence, including hosted CI and security checks, candidate activation where package behavior changed, publication controls, and any required soak. A local simulator, local owner attestation, or absence of a local failure cannot substitute for those external observations.
+
+During a deliberately local-only review, not invoking activation, publication, push, tag, or hosted-mutation commands is evidence that the observed review path did not request those side effects. It is not evidence that external state is healthy or synchronized. Reports must retain that limitation and list missing external stages rather than converting them into local blockers or silently treating them as passed.
+
+### Incident evidence discipline
+
+For production or candidate failures, the defect record must distinguish observed facts, inferences, falsified hypotheses, and unknowns. The exact deployed package/Worker/daemon/workspace identity is established before behavioral changes. Generic UI/connector messages and local simulator success are not causal evidence.
+
+Before changing authentication, persistence, transport, or release semantics, prefer a privacy-bounded stage discriminator or a minimal control experiment that can separate the plausible branches. Change one causal hypothesis at a time when live evidence can distinguish alternatives. If a live observation disproves the hypothesis, remove that patch before finalization unless an independent invariant and regression test justify it; do not accumulate speculative compatibility or security changes merely because each is individually plausible.
+
+Credential rotation, account recreation, security weakening, state deletion, forced deployment, and remote-resource renaming are not diagnostic resets. They require positive evidence at that boundary and must not erase the state needed to explain the incident. When local emulation differs from the hosted runtime, the hosted observation is the acceptance authority for that hosted behavior and the discrepancy becomes an explicit test/residual-risk item.
+
+Verification is run against a frozen tree. Starting a long integration/release check and then editing watched source invalidates the run; a hot reload or concurrent packaged-file write requires a clean rerun after the final edit. The same rule applies to a generated candidate: any packaged-byte change makes the prior candidate and acceptance evidence stale.
+
 ### Completion ownership, prerelease activation, and soak
 
 Repository automation owns implementation, local validation, candidate preparation, observed verification, acceptance recording, and pull-request completion. Package work for version 3 or later must use a `dev`, `beta`, or `rc` version before stable promotion. Direct implementation-to-stable release is prohibited.
 
-`npm run release:candidate` creates the exact tarball. The repository owner executes `npm run release:candidate:activate -- --allow-worker-deploy`; the command installs that tarball under the private state root, updates the same-name Worker, verifies candidate relay readiness, replaces the login daemon, verifies the background handoff, and exits. The coding agent then performs observed live verification through Machine Bridge and records acceptance only after that observed success. No per-operation terminal approval is involved.
+`npm run release:candidate` creates the exact tarball. Before owner handoff, repository automation runs `node scripts/start-release-candidate.mjs --install-only`; this non-live disposable-install preflight must still match current source/package modes and exact tarball identity, and failure requires candidate regeneration rather than owner involvement. The repository owner then executes `npm run release:candidate:activate -- --allow-worker-deploy`; the command installs that tarball under the private state root, updates the same-name Worker, verifies candidate relay readiness, replaces the login daemon, verifies the background handoff, and exits. The coding agent then derives `<activated-runtime-package>` from activation `runtime_entry` and runs `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd: this candidate-bound release probe executes activated-package code while treating the checkout only as candidate/evidence data, and creates one synthetic temporary reviewer account and DCR client, exercises authorization-code exchange, authenticated MCP, refresh rotation, and refreshed MCP, removes both temporary objects, and records only non-secret candidate/check metadata. The coding agent then performs observed live verification through Machine Bridge and records acceptance only after both the canary and that observed success. No per-operation terminal approval is involved.
 
 The tracked `release-acceptance/v<version>.json` binds npm hashes, a portable package digest, and a version-normalized promotion digest. Any packaged change invalidates acceptance. `npm run github:push`, CI, and source-release commands verify the record. Raw pushes of package branches are prohibited.
 
@@ -101,6 +119,7 @@ Tests follow risk rather than a repository-wide aggregate percentage:
 - Permission expansion includes denial tests. Bounded resources include over-limit tests. Multi-stage mutations include partial-failure and rollback tests.
 - Concurrency, locking, process trees, persistence, cancellation, retry, and recovery require behavior-level or fault-injection coverage.
 - Protocol changes include producer-consumer contract tests and malformed-input tests.
+- Hosted-runtime boundaries such as deployed Durable Object persistence, edge request cancellation, browser integration, and provider lifecycle receive deployed/live canaries when local workerd, emulators, or OS fakes cannot prove equivalent semantics. OAuth/token persistence changes require deployed authorization-code exchange, access/refresh persistence, one authenticated MCP request, and refresh rotation before acceptance.
 - Supported operating systems run the required suite in CI.
 - Critical modules have explicit function and branch baselines. Thresholds may rise after better tests or extraction; lowering one requires an audit note explaining why the old measurement was misleading.
 - High-risk JavaScript contract modules opt into strict TypeScript checking through `tsconfig.local.json`; implicit `any`, `@ts-ignore`, and untyped duplicate protocol/configuration shapes are not acceptable substitutes for a defined boundary.
@@ -126,7 +145,7 @@ Flaky tests are defects. A retry may diagnose environmental instability but may 
 - Third-party Actions are pinned to immutable commit SHAs and reviewed when Dependabot updates them. GitHub Action updates are grouped into one atomic pull request so coupled suites such as CodeQL cannot be split across incompatible versions.
 - npm dependencies use exact versions and a committed lockfile. Source bootstrap uses `npm ci`; the CI npm baseline itself is downloaded from an exact URL and verified against a pinned SHA-512 SRI before use. Registry signatures and attestations are verified in CI.
 - Dependency review blocks newly introduced vulnerable dependencies. CodeQL performs JavaScript/TypeScript and workflow analysis. OpenSSF Scorecard audits supply-chain posture, and both SARIF streams are failing gates with exact, expiring exceptions rather than advisory-only uploads.
-- CI generates and validates a CycloneDX SBOM. Release artifacts must match the repository-owner-tested tarball hash, be reproducible from a reviewed commit, and be tied to successful exact-commit CI, CodeQL, Governance, and Scorecard evidence.
+- CI generates and validates a CycloneDX SBOM. Release artifacts must match the repository-owner-tested tarball hash, be reproducible from a reviewed commit, and be tied to successful exact-commit CI, CodeQL, Governance, Workflow Policy Gate, and Scorecard evidence.
 - Secret scanning and push protection are enabled. Repository examples use synthetic identities and reserved domains; reachable history is scanned before release.
 - Long-lived publication tokens should be replaced by npm trusted publishing with GitHub OIDC. Until that external registry configuration is completed, release credentials remain an explicit operator responsibility and must never be stored in the repository.
 - Security reports follow [SECURITY.md](../SECURITY.md), not public issue templates.

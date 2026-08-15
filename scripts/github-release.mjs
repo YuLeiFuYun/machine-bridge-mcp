@@ -13,12 +13,21 @@ import { runNetworkCommand } from "./network-retry.mjs";
 import { requireSuccessfulWorkflowRun } from "./release-ci.mjs";
 import { tagSyncError } from "./release-state.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
+import { stageAcceptedCandidateTarball } from "./accepted-candidate-tarball.mjs";
+import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
+import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
+import { githubReleaseByTagEndpoint, waitForGithubReleaseAsset } from "./github-release-asset.mjs";
 import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
 import { verifyCurrentStableSoak } from "./release-soak.mjs";
 import { assertOwnerTerminalPublication, withGithubPublicationLock } from "./release-publication-guard.mjs";
+import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const git = resolveTrustedGitExecutable({ workspace: root });
+const gh = resolveTrustedGithubCli({ workspace: root });
 process.chdir(root);
 
 function fail(message) {
@@ -30,17 +39,14 @@ function run(command, args, options = {}) {
     cwd: root,
     encoding: "utf8",
     stdio: options.capture ? "pipe" : "inherit",
-    env: process.env,
+    env: options.env || process.env,
+    timeout: options.timeoutMs || 20 * 60 * 1000,
+    killSignal: "SIGKILL",
+    maxBuffer: 8 * 1024 * 1024,
   });
 
-  if (result.error) {
-    fail(`${command} could not be started: ${result.error.message}`);
-  }
-  if (result.status !== 0 && !options.allowFailure) {
-    const detail = options.capture
-      ? `${result.stdout ?? ""}${result.stderr ?? ""}`.trim()
-      : "";
-    fail(`${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
+  if ((result.error || result.status !== 0) && !options.allowFailure) {
+    fail(releaseCommandFailure(command, args, options.capture ? result : { ...result, stdout: "", stderr: "" }));
   }
   return result;
 }
@@ -52,9 +58,7 @@ function runNetwork(command, args, options = {}) {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
   }
-  if (result.error && !options.allowFailure) {
-    fail(`${command} could not be started: ${result.error.message}`);
-  }
+  if (result.error && !options.allowFailure) fail(releaseCommandFailure(command, args, result));
   if (result.status !== 0 && !options.allowFailure) failCommandResult(command, args, result);
   return result;
 }
@@ -65,13 +69,20 @@ function outputNetwork(command, args, options = {}) {
 }
 
 function failCommandResult(command, args, result) {
-  const detail = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-  fail(`${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
+  fail(releaseCommandFailure(command, args, result));
 }
 
 function output(command, args, options = {}) {
   const result = run(command, args, { ...options, capture: true });
   return (result.stdout ?? "").trim();
+}
+
+
+function runNpmScript(npmCli, task) {
+  return run(process.execPath, [
+    npmCli, "run", "--workspaces=false", "--global=false", "--ignore-scripts=false",
+    "--if-present=false", "--prefix", root, task,
+  ], { env: nestedNpmEnvironment(process.env) });
 }
 
 function packageMetadata() {
@@ -97,16 +108,16 @@ function changelogBody(version) {
 }
 
 function ensureClean() {
-  const status = output("git", ["status", "--porcelain"]);
+  const status = output(git, ["status", "--porcelain"]);
   if (status) fail(`working tree is not clean:\n${status}`);
 }
 
 function fetchRemote() {
-  runNetwork("git", ["fetch", "origin", "main", "--tags", "--prune"]);
+  runNetwork(git, ["fetch", "origin", "main", "--tags", "--prune"]);
 }
 
 function localTagCommit(tag) {
-  const result = run("git", ["rev-list", "-n", "1", tag], {
+  const result = run(git, ["rev-list", "-n", "1", tag], {
     capture: true,
     allowFailure: true,
   });
@@ -114,7 +125,7 @@ function localTagCommit(tag) {
 }
 
 function remoteTagCommit(tag) {
-  const text = outputNetwork("git", [
+  const text = outputNetwork(git, [
     "ls-remote",
     "--tags",
     "origin",
@@ -134,10 +145,11 @@ function assertSuccessfulCi(head) {
     [".github/workflows/codeql.yml", "CodeQL"],
     [".github/workflows/governance.yml", "Governance"],
     [".github/workflows/scorecard.yml", "OpenSSF Scorecard"],
+    [".github/workflows/workflow-policy.yml", "Workflow Policy Gate"],
   ];
   const verified = [];
   for (const [workflow, name] of required) {
-    const text = outputNetwork("gh", [
+    const text = outputNetwork(gh, [
       "run",
       "list",
       "--workflow",
@@ -164,29 +176,38 @@ function assertSuccessfulCi(head) {
 }
 
 function releaseInfo(tag) {
-  const result = runNetwork(
-    "gh",
-    [
-      "release",
-      "view",
-      tag,
-      "--json",
-      "tagName,name,targetCommitish,isDraft,isPrerelease,assets,url",
-    ],
-    { capture: true, allowFailure: true },
-  );
-  if (result.status !== 0) return null;
-  return JSON.parse(result.stdout);
+  const args = ["api", githubReleaseByTagEndpoint(tag)];
+  const result = runNetwork(gh, args, { capture: true, allowFailure: true });
+  if (result.status !== 0 || result.error) {
+    const detail = `${result.stdout ?? ""}${result.stderr ?? ""}${result.error?.message ?? ""}`.trim();
+    if (/\bHTTP 404\b|\bstatus 404\b|\b404 Not Found\b/i.test(detail)) return null;
+    throw commandResultError(gh, args, result);
+  }
+  let value;
+  try { value = JSON.parse(result.stdout); }
+  catch { throw new Error(`GitHub REST release query returned invalid JSON for ${tag}`); }
+  if (value?.tag_name !== tag || typeof value.draft !== "boolean" || typeof value.prerelease !== "boolean") {
+    throw new Error(`GitHub REST release metadata is invalid for ${tag}`);
+  }
+  return {
+    tagName: value.tag_name,
+    name: String(value.name || ""),
+    targetCommitish: String(value.target_commitish || ""),
+    isDraft: value.draft,
+    isPrerelease: value.prerelease,
+    assets: Array.isArray(value.assets) ? value.assets : [],
+    url: String(value.html_url || ""),
+  };
 }
 
-function assertCoreSync({ requireReleaseAsset }) {
+async function assertCoreSync({ requireReleaseAsset }) {
   const pkg = packageMetadata();
   const parsedVersion = parseReleaseVersion(pkg.version);
-  assertLocalAcceptance();
+  const acceptance = assertLocalAcceptance();
   if (requiresSoakForStable(pkg.version)) assertStableSoak();
   const tag = `v${pkg.version}`;
-  const head = output("git", ["rev-parse", "HEAD"]);
-  const originMain = output("git", ["rev-parse", "origin/main"]);
+  const head = output(git, ["rev-parse", "HEAD"]);
+  const originMain = output(git, ["rev-parse", "origin/main"]);
   if (head !== originMain) {
     fail(`HEAD ${head} does not match origin/main ${originMain}`);
   }
@@ -200,19 +221,11 @@ function assertCoreSync({ requireReleaseAsset }) {
   const remoteTagError = tagSyncError({ scope: "remote", tag, head, commit: remoteCommit });
   if (remoteTagError) fail(remoteTagError);
 
-  const release = releaseInfo(tag);
-  if (!release || release.isDraft || release.isPrerelease !== parsedVersion.prerelease) {
-    fail(parsedVersion.prerelease
-      ? `published GitHub prerelease ${tag} is missing or not marked as prerelease`
-      : `published GitHub Release ${tag} is missing or not final`);
-  }
+  await waitForPublishedReleaseState(tag, parsedVersion.prerelease);
 
   if (requireReleaseAsset) {
     const expectedAsset = `${pkg.name}-${pkg.version}.tgz`;
-    const names = new Set((release.assets ?? []).map((asset) => asset.name));
-    if (!names.has(expectedAsset)) {
-      fail(`GitHub Release ${tag} is missing ${expectedAsset}`);
-    }
+    await releaseAssetInfo(tag, expectedAsset, acceptance.artifactSha256);
   }
 
   console.log(`GitHub source, tag, release, and package asset are in sync: ${tag}`);
@@ -226,34 +239,12 @@ function writeNotesFile(directory, version) {
   return path;
 }
 
-function packReleaseAsset(directory, pkg) {
-  const result = run(
-    "npm",
-    ["pack", "--silent", "--json", "--pack-destination", directory],
-    { capture: true },
-  );
-  let records;
-  try {
-    records = JSON.parse(result.stdout);
-  } catch {
-    fail("npm pack did not return valid JSON");
-  }
-  const record = normalizePackRecord(records, pkg.name);
-  const filename = record?.filename;
-  if (typeof filename !== "string") fail("npm pack did not report a filename");
-  const path = join(directory, filename);
-  const expected = `${pkg.name.replaceAll("/", "-").replace(/^@/, "")}-${pkg.version}.tgz`;
-  if (filename !== expected) {
-    fail(`unexpected npm package filename ${filename}; expected ${expected}`);
-  }
-  return path;
-}
-
-function normalizePackRecord(value, packageName) {
-  if (Array.isArray(value)) return value[0] ?? null;
-  if (!value || typeof value !== "object") return null;
-  if (value[packageName] && typeof value[packageName] === "object") return value[packageName];
-  return Object.values(value).find((item) => item && typeof item === "object") ?? null;
+async function releaseAssetInfo(tag, assetName, expectedSha256) {
+  return waitForGithubReleaseAsset(() => {
+    const text = outputNetwork(gh, ["api", githubReleaseByTagEndpoint(tag)]);
+    try { return JSON.parse(text); }
+    catch { throw new Error(`GitHub REST release query returned invalid JSON for ${tag}`); }
+  }, { tag, assetName, expectedSha256 });
 }
 
 function ensureRelease(tag, version, assetPath, { latest, prerelease }) {
@@ -261,6 +252,7 @@ function ensureRelease(tag, version, assetPath, { latest, prerelease }) {
   const notes = writeNotesFile(temp, version);
   const existing = releaseInfo(tag);
   const title = `machine-bridge-mcp ${tag}`;
+  const failures = [];
 
   if (!existing) {
     const args = [
@@ -276,28 +268,54 @@ function ensureRelease(tag, version, assetPath, { latest, prerelease }) {
     ];
     if (notes) args.push("--notes-file", notes);
     else args.push("--generate-notes");
-    const created = runNetwork("gh", args, { allowFailure: true });
-    if (created.status !== 0 && !releaseInfo(tag)) failCommandResult("gh", args, created);
+    const created = runNetwork(gh, args, { allowFailure: true });
+    if (created.status !== 0) failures.push(commandResultError(gh, args, created));
   } else {
-    runNetwork("gh", [
-      "release",
-      "edit",
-      tag,
-      "--title",
-      title,
+    const editArgs = [
+      "release", "edit", tag, "--title", title,
       latest ? "--latest" : "--latest=false",
       prerelease ? "--prerelease" : "--prerelease=false",
       ...(notes ? ["--notes-file", notes] : []),
-    ]);
-    runNetwork("gh", ["release", "upload", tag, assetPath, "--clobber"]);
+    ];
+    const edited = runNetwork(gh, editArgs, { allowFailure: true });
+    if (edited.status !== 0) failures.push(commandResultError(gh, editArgs, edited));
+    const uploadArgs = ["release", "upload", tag, assetPath, "--clobber"];
+    const uploaded = runNetwork(gh, uploadArgs, { allowFailure: true });
+    if (uploaded.status !== 0) failures.push(commandResultError(gh, uploadArgs, uploaded));
   }
+  if (!failures.length) return null;
+  return failures.length === 1
+    ? failures[0]
+    : new AggregateError(failures, "GitHub release mutation commands returned multiple errors");
 }
 
-function publishCurrent({ prereleaseMode = false } = {}) {
+function commandResultError(command, args, result) {
+  return new Error(releaseCommandFailure(command, args, result, { maxChars: 1200 }));
+}
+
+async function waitForPublishedReleaseState(tag, prerelease, options = {}) {
+  const attempts = Number.isSafeInteger(Number(options.attempts))
+    ? Math.min(Math.max(Number(options.attempts), 1), 10)
+    : 5;
+  const wait = typeof options.wait === "function" ? options.wait : defaultReleaseStateWait;
+  let release = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    release = releaseInfo(tag);
+    if (release && !release.isDraft && release.isPrerelease === prerelease) return release;
+    if (attempt < attempts) await wait(attempt);
+  }
+  throw new Error(`GitHub release ${tag} metadata did not converge after publication`);
+}
+
+function defaultReleaseStateWait(attempt) {
+  return new Promise((resolvePromise) => { setTimeout(resolvePromise, Math.min(4_000, attempt * 1_000)); });
+}
+
+async function publishCurrent({ prereleaseMode = false } = {}) {
   ensureClean();
   fetchRemote();
 
-  const branch = output("git", ["branch", "--show-current"]);
+  const branch = output(git, ["branch", "--show-current"]);
   if (branch !== "main") fail(`release must run from main, not ${branch || "detached HEAD"}`);
 
   const pkg = packageMetadata();
@@ -307,58 +325,98 @@ function publishCurrent({ prereleaseMode = false } = {}) {
       ? "prerelease versions must use npm run prerelease:release -- --owner-terminal-confirm"
       : "stable versions must use npm run release -- --owner-terminal-confirm");
   }
-  if (!parsedVersion.prerelease && requiresSoakForStable(pkg.version)) assertStableSoak();
   const tag = `v${pkg.version}`;
   if (!changelogBody(pkg.version)) {
     fail(`CHANGELOG.md has no section for ${pkg.version}`);
   }
 
-  run("npm", ["run", "check"]);
-  run("npm", ["run", "version:check"]);
-  ensureClean();
-  assertLocalAcceptance();
+  const npmSession = await createHardenedNpmSession();
+  let acceptance;
+  let verificationError = null;
+  try {
+    runNpmScript(npmSession.cli, "check");
+    runNpmScript(npmSession.cli, "version:check");
+    ensureClean();
+    acceptance = assertLocalAcceptance(npmSession.cli);
+    if (!parsedVersion.prerelease && requiresSoakForStable(pkg.version)) assertStableSoak(npmSession.cli);
+  } catch (error) {
+    verificationError = error;
+  }
+  let npmCleanupError = null;
+  try { npmSession.dispose(); } catch (error) { npmCleanupError = error; }
+  if (verificationError && npmCleanupError) {
+    throw new AggregateError([verificationError, npmCleanupError], "GitHub release verification failed and hardened npm cleanup was incomplete");
+  }
+  if (verificationError) throw verificationError;
+  if (npmCleanupError) throw npmCleanupError;
 
-  const head = output("git", ["rev-parse", "HEAD"]);
-  const originMain = output("git", ["rev-parse", "origin/main"]);
+  const head = output(git, ["rev-parse", "HEAD"]);
+  const originMain = output(git, ["rev-parse", "origin/main"]);
   if (head !== originMain) {
     fail("HEAD does not match origin/main; local acceptance must be committed, pushed through npm run github:push, reviewed, and merged before release publication");
   }
   assertSuccessfulCi(head);
 
-  const existingLocal = localTagCommit(tag);
-  if (existingLocal && existingLocal !== head) {
-    fail(`local ${tag} points to ${existingLocal}, not ${head}`);
-  }
-  if (!existingLocal) {
-    run("git", ["tag", "-a", tag, "-m", `Release ${pkg.version}`]);
-  }
-
-  const existingRemote = remoteTagCommit(tag);
-  if (existingRemote && existingRemote !== head) {
-    fail(`remote ${tag} points to ${existingRemote}, not ${head}`);
-  }
-  if (!existingRemote) {
-    runNetwork("git", ["push", "origin", tag]);
-  }
-
-  const temp = mkdtempSync(join(tmpdir(), "machine-bridge-mcp-release-"));
+  const candidate = stageAcceptedCandidateTarball(root, acceptance);
+  let primaryError = null;
+  let releaseVerified = false;
   try {
-    const assetPath = packReleaseAsset(temp, pkg);
-    ensureRelease(tag, pkg.version, assetPath, {
+    const existingLocal = localTagCommit(tag);
+    if (existingLocal && existingLocal !== head) {
+      fail(`local ${tag} points to ${existingLocal}, not ${head}`);
+    }
+    if (!existingLocal) {
+      run(git, ["tag", "-a", tag, "-m", `Release ${pkg.version}`]);
+    }
+
+    const existingRemote = remoteTagCommit(tag);
+    if (existingRemote && existingRemote !== head) {
+      fail(`remote ${tag} points to ${existingRemote}, not ${head}`);
+    }
+    if (!existingRemote) {
+      runNetwork(git, ["push", "origin", tag]);
+    }
+
+    const mutationError = ensureRelease(tag, pkg.version, candidate.path, {
       latest: !parsedVersion.prerelease,
       prerelease: parsedVersion.prerelease,
     });
-  } finally {
-    rmSync(temp, { recursive: true, force: true });
+    let assetError = null;
+    try {
+      await releaseAssetInfo(tag, acceptance.metadata.filename, acceptance.artifactSha256);
+      await waitForPublishedReleaseState(tag, parsedVersion.prerelease);
+    } catch (error) {
+      assetError = error;
+    }
+    if (mutationError && assetError) {
+      throw new AggregateError([mutationError, assetError], "GitHub release mutation and remote-state reconciliation both failed");
+    }
+    if (assetError) throw assetError;
+    if (mutationError) {
+      console.warn("GitHub release mutation returned an error, but the exact release metadata and accepted asset bytes were verified remotely");
+    }
+    releaseVerified = true;
+  } catch (error) {
+    primaryError = error;
+  }
+  let cleanupError = null;
+  try { candidate.dispose(); } catch (error) { cleanupError = error; }
+  if (primaryError) {
+    if (cleanupError) throw new AggregateError([primaryError, cleanupError], "GitHub release publication failed and candidate staging cleanup was incomplete");
+    throw primaryError;
+  }
+  if (cleanupError) {
+    if (!releaseVerified) throw cleanupError;
+    console.warn(`GitHub release bytes were verified but candidate staging cleanup was incomplete: ${releaseDiagnostic(cleanupError?.message || cleanupError, 600)}`);
   }
 
   fetchRemote();
-  assertCoreSync({ requireReleaseAsset: true });
+  await assertCoreSync({ requireReleaseAsset: true });
 }
 
-function assertStableSoak() {
+function assertStableSoak(npmCli = process.env.npm_execpath) {
   try {
-    const result = verifyCurrentStableSoak(root);
+    const result = verifyCurrentStableSoak(root, { npmCli });
     if (result.required) {
       console.log(`Stable promotion matches soaked ${result.record.prerelease_version} (${result.promotionDigest}).`);
     }
@@ -367,12 +425,12 @@ function assertStableSoak() {
   }
 }
 
-function assertLocalAcceptance() {
+function assertLocalAcceptance(npmCli = process.env.npm_execpath) {
   try {
-    const result = verifyCurrentReleaseAcceptance(root);
-    if (result.required) {
-      console.log(`Interactive local candidate acceptance matches ${result.metadata.filename} (${result.metadata.shasum}).`);
-    }
+    const result = verifyCurrentReleaseAcceptance(root, { npmCli });
+    if (!result.required) fail("GitHub release publication requires current local candidate acceptance");
+    console.log(`Interactive local candidate acceptance matches ${result.metadata.filename} (${result.metadata.shasum}).`);
+    return result;
   } catch (error) {
     fail(String(error?.message || error));
   }
@@ -382,10 +440,10 @@ function backfillMissingReleases() {
   ensureClean();
   fetchRemote();
 
-  const tags = output("git", ["tag", "--sort=version:refname"])
+  const tags = output(git, ["tag", "--sort=version:refname"])
     .split("\n")
     .filter((tag) => /^v\d+\.\d+\.\d+$/.test(tag));
-  const releases = JSON.parse(outputNetwork("gh", [
+  const releases = JSON.parse(outputNetwork(gh, [
     "release",
     "list",
     "--limit",
@@ -402,6 +460,8 @@ function backfillMissingReleases() {
   }
 
   const temp = mkdtempSync(join(tmpdir(), "machine-bridge-mcp-backfill-"));
+  let primaryError = null;
+  let completed = 0;
   try {
     for (const tag of missing) {
       if (!remoteTagCommit(tag)) fail(`remote tag ${tag} is missing`);
@@ -418,11 +478,23 @@ function backfillMissingReleases() {
       ];
       if (notes) args.push("--notes-file", notes);
       else args.push("--generate-notes");
-      const created = runNetwork("gh", args, { allowFailure: true });
-      if (created.status !== 0 && !releaseInfo(tag)) failCommandResult("gh", args, created);
+      const created = runNetwork(gh, args, { allowFailure: true });
+      if (created.status !== 0 && !releaseInfo(tag)) failCommandResult(gh, args, created);
+      completed += 1;
     }
-  } finally {
-    rmSync(temp, { recursive: true, force: true });
+  } catch (error) {
+    primaryError = error;
+  }
+  let cleanupError = null;
+  try { rmSync(temp, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
+  catch (error) { cleanupError = error; }
+  if (primaryError) {
+    if (cleanupError) throw new AggregateError([primaryError, cleanupError], "GitHub Release backfill failed and temporary cleanup was incomplete");
+    throw primaryError;
+  }
+  if (cleanupError) {
+    if (!completed) throw cleanupError;
+    console.warn(`GitHub Release backfill completed but temporary cleanup was incomplete: ${releaseDiagnostic(cleanupError?.message || cleanupError, 600)}`);
   }
 
   console.log(`Backfilled ${missing.length} GitHub Release(s): ${missing.join(", ")}`);
@@ -433,18 +505,18 @@ try {
   if (mode === "--check") {
     ensureClean();
     fetchRemote();
-    assertCoreSync({ requireReleaseAsset: true });
+    await assertCoreSync({ requireReleaseAsset: true });
   } else if (mode === "--publish" || mode === "--publish-prerelease" || mode === "--backfill") {
     assertOwnerTerminalPublication();
     await withGithubPublicationLock(root, async () => {
-      if (mode === "--publish") publishCurrent({ prereleaseMode: false });
-      else if (mode === "--publish-prerelease") publishCurrent({ prereleaseMode: true });
+      if (mode === "--publish") await publishCurrent({ prereleaseMode: false });
+      else if (mode === "--publish-prerelease") await publishCurrent({ prereleaseMode: true });
       else backfillMissingReleases();
     });
   } else {
     fail("usage: node scripts/github-release.mjs [--check|--publish|--publish-prerelease|--backfill] [--owner-terminal-confirm]");
   }
 } catch (error) {
-  console.error(`release error: ${String(error?.message || error)}`);
+  console.error(JSON.stringify(releaseDiagnosticEvent("github.release.failed", error?.message || error, 1600)));
   process.exitCode = 1;
 }

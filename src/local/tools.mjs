@@ -1,6 +1,6 @@
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 import { projectMcpResult } from "../shared/result-projection.mjs";
-import { MCP_LEGACY_PROTOCOL_VERSION, resultForProtocol } from "../shared/mcp-protocol.mjs";
+import { completeResult } from "../shared/mcp-protocol.mjs";
 export {
   DEFAULT_POLICY_PROFILE,
   DEFAULT_POLICY_REVISION,
@@ -28,13 +28,13 @@ export const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(serverMetadata.supportedProtocolVersions.map((value) => String(value)));
 export const MCP_INSTRUCTIONS = Object.freeze(serverMetadata.instructions.map((value) => String(value))).join("\n");
 
-export function toolResult(value, isError = false, protocolVersion = MCP_LEGACY_PROTOCOL_VERSION, serverInfo) {
+export function toolResult(value, isError = false, serverInfo) {
   const special = specialMcpResult(value);
-  if (special) return resultForProtocol(protocolVersion, { ...special, isError }, { serverInfo });
+  if (special) return completeResult({ ...special, isError }, serverInfo);
   const projection = projectMcpResult(value);
   const result = { content: [{ type: "text", text: projection.text }], isError };
   if (projection.hasStructuredContent) result.structuredContent = structuredClone(projection.structuredContent);
-  return resultForProtocol(protocolVersion, result, { serverInfo });
+  return completeResult(result, serverInfo);
 }
 
 export function rpcResult(id, result) {

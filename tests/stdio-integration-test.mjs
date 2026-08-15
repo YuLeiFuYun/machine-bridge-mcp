@@ -9,6 +9,7 @@ import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const MANAGED_JOB_SETTLEMENT_WAIT_MS = 5 * 60_000;
 const temp = await mkdtemp(join(tmpdir(), "mbm-stdio-test-"));
 const workspace = join(temp, "workspace");
 const stateDir = join(temp, "state");
@@ -26,6 +27,11 @@ await writeFile(join(workspace, "sample.txt"), "one\ntwo\nthree\n", "utf8");
 await writeFile(join(workspace, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=", "base64"));
 await writeFile(join(temp, "passwords.txt"), "stdio-sensitive-name-visible", "utf8");
 const canonicalWorkspace = await realpath(workspace);
+const currentMeta = Object.freeze({
+  "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+  "io.modelcontextprotocol/clientCapabilities": {},
+  "io.modelcontextprotocol/clientInfo": { name: "stdio-current-test", version: "1" },
+});
 
 const child = spawn(process.execPath, [
   join(root, "bin", "machine-mcp.mjs"),
@@ -54,11 +60,7 @@ rl.on("line", (line) => {
 });
 
 try {
-  const modernMeta = {
-    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-    "io.modelcontextprotocol/clientCapabilities": {},
-    "io.modelcontextprotocol/clientInfo": { name: "stdio-modern-test", version: "1" },
-  };
+  const modernMeta = currentMeta;
   send({ jsonrpc: "2.0", id: 900, method: "server/discover", params: { _meta: modernMeta } });
   const discovered = await responseFor(900);
   assert(discovered.result?.resultType === "complete", "modern stdio discovery omitted resultType");
@@ -75,16 +77,22 @@ try {
     _meta: modernMeta,
     notifications: { toolsListChanged: true },
   } });
-  const acknowledged = await messageFor((item) => item.method === "notifications/subscriptions/acknowledged"
-    && item.params?._meta?.["io.modelcontextprotocol/subscriptionId"] === 902);
-  assert(Object.keys(acknowledged.params.notifications).length === 0, "modern stdio acknowledged an unsupported notification type");
-  const subscriptionClosed = await responseFor(902);
-  assert(subscriptionClosed.result?.resultType === "complete"
-    && subscriptionClosed.result?._meta?.["io.modelcontextprotocol/subscriptionId"] === 902,
-  "modern stdio subscription did not close gracefully");
+  const subscriptionCompleted = await responseFor(902);
+  assert(subscriptionCompleted.result?.resultType === "complete",
+    "modern stdio did not gracefully complete an empty accepted subscription");
+  assert(subscriptionCompleted.result?._meta?.["io.modelcontextprotocol/subscriptionId"] === 902,
+    "modern stdio subscription completion omitted the subscription id");
+  const acknowledgementIndex = responses.findIndex((message) => (
+    message.method === "notifications/subscriptions/acknowledged"
+      && message.params?._meta?.["io.modelcontextprotocol/subscriptionId"] === 902
+  ));
+  assert(acknowledgementIndex >= 0, "modern stdio subscription omitted the acknowledgement notification");
+  const [acknowledgement] = responses.splice(acknowledgementIndex, 1);
+  assert(Object.keys(acknowledgement.params?.notifications ?? {}).length === 0,
+    "modern stdio acknowledged a notification capability the server does not advertise");
   send({ jsonrpc: "2.0", id: 909, method: "subscriptions/listen", params: { _meta: modernMeta } });
   const invalidSubscription = await responseFor(909);
-  assert(invalidSubscription.error?.code === -32602, "modern stdio accepted a missing subscription filter");
+  assert(invalidSubscription.error?.code === -32602, "modern stdio accepted a subscription without notifications");
 
   send({ jsonrpc: "2.0", id: 903, method: "tools/call", params: {
     _meta: modernMeta,
@@ -129,16 +137,16 @@ try {
     && unsupportedModern.error?.data?.supported?.[0] === "2026-07-28",
   "modern stdio unsupported-version error is invalid");
 
-  send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "stdio-test", version: "1" } } });
-  const initialized = await responseFor(1);
-  assert(initialized.result?.protocolVersion === "2025-11-25", "stdio protocol negotiation failed");
-  assert(initialized.result?.capabilities?.tools, "stdio initialize omitted tools capability");
-  assert(initialized.result?.instructions?.includes("Machine Bridge default working agreements"), "stdio initialize omitted built-in working agreements");
-  assert(initialized.result?.instructions?.includes("never call a hosted GitHub connector or ChatGPT GitHub plugin") && initialized.result.instructions.includes("stop and report the boundary"), "stdio initialize omitted the fail-closed local GitHub control-plane rule");
-  assert(initialized.result?.instructions?.includes("Automatic project context") && initialized.result?.instructions?.includes("npm run check"), "stdio initialize omitted automatic project facts");
-  assert(!initialized.result?.instructions?.includes("private-script-body.mjs"), "stdio initialize exposed a package script body");
-  assert(initialized.result?.instructions?.includes("stdio global model instructions"), "stdio initialize did not inject model_instructions_file into the session context");
-  send({ jsonrpc: "2.0", method: "notifications/initialized" });
+  sendRaw({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "stdio-removed-test", version: "1" } } });
+  const removedInitialize = await responseFor(1);
+  assert(removedInitialize.error?.code === -32601
+    && removedInitialize.error?.message?.includes("upgrade the client")
+    && JSON.stringify(removedInitialize.error?.data?.supported) === JSON.stringify(["2026-07-28"]),
+  "stdio removed protocol did not return bounded current-version upgrade guidance");
+  sendRaw({ jsonrpc: "2.0", id: 198, method: "tools/list", params: {} });
+  const missingMetadata = await responseFor(198);
+  assert(missingMetadata.error?.code === -32602 && missingMetadata.error?.message?.includes("protocolVersion"),
+    "stdio accepted a current request without per-request protocol metadata");
 
   const notificationMarker = join(workspace, "notification-must-not-write.txt");
   send({ jsonrpc: "2.0", method: "tools/call", params: { name: "write_file", arguments: { path: notificationMarker, content: "must-not-run" } } });
@@ -152,9 +160,9 @@ try {
   child.stdin.write(`${"x".repeat(8 * 1024 * 1024 + 1024)}\n`);
   const oversizedLine = await responseFor(null, 15_000);
   assert(oversizedLine.error?.code === -32600 && oversizedLine.error?.message.includes("maximum size"), "stdio did not reject an oversized line incrementally");
-  send({ jsonrpc: "2.0", id: 199, method: "ping" });
-  const pingAfterOversize = await responseFor(199);
-  assert(pingAfterOversize.result && typeof pingAfterOversize.result === "object", "stdio did not recover after discarding an oversized line");
+  send({ jsonrpc: "2.0", id: 199, method: "server/discover" });
+  const discoverAfterOversize = await responseFor(199);
+  assert(JSON.stringify(discoverAfterOversize.result?.supportedVersions) === JSON.stringify(["2026-07-28"]), "stdio did not recover after discarding an oversized line");
 
   send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const listed = await responseFor(2);
@@ -262,6 +270,15 @@ try {
   assert(serverInfo.result?.structuredContent?.enforcement?.host_policy_is_independent === true, "server_info did not disclose the independent host-policy boundary");
   assert(serverInfo.result?.structuredContent?.tool_delivery?.host_exposed_tools_known_to_server === false, "server_info incorrectly claimed visibility into host-exposed tools");
   assert(serverInfo.result?.structuredContent?.tool_delivery?.host_may_expose_subset === true, "server_info did not disclose host-side tool filtering");
+  send({ jsonrpc: "2.0", id: 6000, method: "tools/call", params: { name: "server_info", arguments: { detail: "summary" } } });
+  const compactServerInfo = await responseFor(6000);
+  const compactInfo = compactServerInfo.result?.structuredContent;
+  assert(compactInfo?.detail === "summary" && compactInfo?.policy?.profile === "full"
+    && compactInfo?.runtime?.lifecycle && compactInfo?.tool_delivery?.daemon_advertised_tool_count === serverInfo.result?.structuredContent?.tool_delivery?.daemon_advertised_tool_count,
+  "stdio compact server_info omitted core health or policy state");
+  assert(!("tools" in compactInfo) && !("observability" in compactInfo) && !("security_audit" in compactInfo) && !("trust" in compactInfo)
+    && JSON.stringify(compactInfo).length < JSON.stringify(serverInfo.result.structuredContent).length * 0.6,
+  "stdio compact server_info retained cold-path diagnostics or failed to compact materially");
 
   send({ jsonrpc: "2.0", id: 602, method: "tools/call", params: { name: "diagnose_runtime", arguments: {} } });
   const diagnostics = await responseFor(602, 10_000);
@@ -350,20 +367,20 @@ try {
   assert(cancelled.result?.isError === true, "cancelled process did not return a tool error");
   assert(JSON.stringify(cancelled.result).includes("cancelled"), "cancelled process returned the wrong error");
 
-  send({ jsonrpc: "2.0", id: 8, method: "ping", params: {} });
-  const ping = await responseFor(8);
-  assert(ping.result && Object.keys(ping.result).length === 0, "stdio server did not remain responsive after cancellation");
+  send({ jsonrpc: "2.0", id: 8, method: "server/discover", params: {} });
+  const discoveryAfterCancellation = await responseFor(8);
+  assert(JSON.stringify(discoveryAfterCancellation.result?.supportedVersions) === JSON.stringify(["2026-07-28"]), "stdio server did not remain responsive after cancellation");
 
   const stagedMarker = join(workspace, "staged-job-must-not-run.txt");
   send({ jsonrpc: "2.0", id: 690, method: "tools/call", params: { name: "stage_job", arguments: {
-    name: "stdio local approval handoff",
+    name: "stdio review-only staged draft",
     steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'unexpected')", stagedMarker], timeout_seconds: 10 }],
   } } });
   const stagedAccepted = await responseFor(690);
   const stagedJobId = stagedAccepted.result?.structuredContent?.job_id;
   assert(stagedAccepted.result?.structuredContent?.status === "staged" && stagedAccepted.result?.structuredContent?.execution_started === false, "stage_job did not remain non-executing");
   await new Promise((resolvePromise) => { setTimeout(resolvePromise, 300); });
-  try { await readFile(stagedMarker); throw new Error("staged job executed before approval"); } catch (error) {
+  try { await readFile(stagedMarker); throw new Error("review-only staged job executed"); } catch (error) {
     if (!String(error?.message || error).includes("ENOENT")) throw error;
   }
   send({ jsonrpc: "2.0", id: 691, method: "tools/call", params: { name: "read_job", arguments: { job_id: stagedJobId } } });
@@ -390,15 +407,15 @@ try {
   assert(exit.code === 0, `stdio server exited with ${exit.code}: ${stderr}`);
   assert(!stderr.includes("tool call completed"), "default stdio logging emitted per-call success noise");
   assert(!stderr.includes("tool call failed"), "default stdio logging emitted per-call failure noise");
-  await waitForFile(detachedMarker, 10_000);
-  await waitForFile(detachedCleanup, 10_000);
+  await waitForFile(detachedMarker, MANAGED_JOB_SETTLEMENT_WAIT_MS);
+  await waitForFile(detachedCleanup, MANAGED_JOB_SETTLEMENT_WAIT_MS);
   assert(await readFile(detachedMarker, "utf8") === "detached-complete", "managed job did not survive stdio disconnect");
   assert(await readFile(detachedCleanup, "utf8") === "cleanup-complete", "managed job finally step did not survive stdio disconnect");
   const state = loadState(canonicalWorkspace, { stateDir });
   const jobRoot = await realpath(join(state.paths.profileDir, "jobs"));
   const resultFile = join(jobRoot, detachedJobId, "result.json");
   try {
-    await waitForFile(resultFile, 10_000);
+    await waitForFile(resultFile, MANAGED_JOB_SETTLEMENT_WAIT_MS);
   } catch (error) {
     const manager = new ManagedJobManager({
       jobRoot,
@@ -425,28 +442,21 @@ try {
 }
 
 function send(value) {
-  child.stdin.write(`${JSON.stringify(value)}\n`);
+  if (value && typeof value === "object" && typeof value.method === "string") {
+    if (value.params === undefined) {
+      sendRaw({ ...value, params: { _meta: currentMeta } });
+      return;
+    }
+    if (value.params && typeof value.params === "object" && !Array.isArray(value.params) && !Object.hasOwn(value.params, "_meta")) {
+      sendRaw({ ...value, params: { ...value.params, _meta: currentMeta } });
+      return;
+    }
+  }
+  sendRaw(value);
 }
 
-function messageFor(predicate, timeoutMs = 5_000) {
-  const existingIndex = responses.findIndex(predicate);
-  if (existingIndex >= 0) return Promise.resolve(responses.splice(existingIndex, 1)[0]);
-  return new Promise((resolvePromise, rejectPromise) => {
-    const deadline = Date.now() + timeoutMs;
-    const poll = () => {
-      const index = responses.findIndex(predicate);
-      if (index >= 0) {
-        resolvePromise(responses.splice(index, 1)[0]);
-        return;
-      }
-      if (Date.now() >= deadline) {
-        rejectPromise(new Error(`timed out waiting for stdio message; stderr=${stderr}`));
-        return;
-      }
-      setTimeout(poll, 10);
-    };
-    poll();
-  });
+function sendRaw(value) {
+  child.stdin.write(`${JSON.stringify(value)}\n`);
 }
 
 function responseFor(id, timeoutMs = 5_000) {

@@ -1,3 +1,5 @@
+import { normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
+
 export function persistentActivationSpawnOptions({ cwd, env = process.env } = {}) {
   if (typeof cwd !== "string" || !cwd) {
     throw new TypeError("persistent activation subprocess requires cwd");
@@ -33,4 +35,19 @@ export function persistentCandidateFailureMessage(output, { cli, stateRoot, prev
     "No Worker deployment or service replacement was started.",
     ...recovery,
   ].join("\n");
+}
+
+export function validateActivationRecoveryPayload(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("persistent activation result is invalid");
+  }
+  try {
+    return normalizeActivationRecovery({
+      recovered: value.activation_recovered,
+      reason: value.activation_recovery_reason,
+      detail: value.activation_recovery_detail,
+    });
+  } catch (error) {
+    throw new Error(`persistent ${String(error?.message || "activation recovery metadata is invalid")}`, { cause: error });
+  }
 }

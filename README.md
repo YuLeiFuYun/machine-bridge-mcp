@@ -50,14 +50,15 @@ The complete component and trust-boundary diagram is in [docs/OVERVIEW.md](docs/
 
 ## MCP protocol model
 
-Machine Bridge is a dual-era server with a modern core:
+Machine Bridge uses MCP `2026-07-28` as its native protocol. Stdio is current-only. Remote HTTP also accepts bounded, stateless initialization compatibility for `2025-06-18` and `2025-11-25` so older hosts can migrate without restoring the removed session model.
 
-- **MCP `2026-07-28` is primary.** Every request carries protocol version and client capabilities in `_meta`; HTTP requests also mirror the version, method, and applicable name/parameter values into validated headers. Clients use `server/discover`; no `initialize` handshake or MCP session is created.
-- **MCP `2025-11-25` is a compatibility adapter.** Legacy clients still use `initialize`, a signed `Mcp-Session-Id`, and the older resumable Streamable HTTP behavior.
-- **Modern HTTP streams are request-scoped and not resumable.** Closing the response stream cancels that request. `Last-Event-ID`, recovery GETs, and session-bound replay exist only in the legacy adapter.
-- **Transport identity is not conversation identity.** Modern stdio and HTTP processes/connections may interleave unrelated requests; state that spans calls must use an explicit tool, job, process-session, or resource identifier.
+- **Native current requests are self-describing.** Protocol version and client capabilities travel in `_meta`; HTTP requests also mirror the version, method, and applicable name/parameter values into validated headers. Native `2026-07-28` clients use `server/discover` and do not create an MCP protocol session.
+- **Remote initialization compatibility is stateless.** Compatible HTTP clients may use `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`; tool calls still execute through the current request-scoped controller. Compatibility does not create or accept `Mcp-Session-Id`, recovery GET, `Last-Event-ID`, persisted replay/delivery state, or initialization-owned authorization state.
+- **HTTP streams are request-scoped and non-resumable.** Closing the response stream cancels that request. There is no recovery GET, SSE event-ID replay, or session-bound delivery store.
+- **Removed session/replay semantics never execute.** Unsupported protocol dates and requests for the retired session/recovery model receive bounded rejection or upgrade guidance rather than legacy state or replay behavior.
+- **Transport identity is not conversation identity.** Stdio and HTTP processes/connections may interleave unrelated requests; state that spans calls must use an explicit tool, job, process-session, or resource identifier.
 
-The Worker validates the actual `/mcp` Origin, mirrored headers, role-filtered tool visibility, and raw arguments before routing, durable stream allocation, or daemon dispatch. Tool arguments use one bounded JSON Schema 2020-12 contract in both Worker and local runtime; validation has fixed schema and runtime-work budgets and never echoes rejected values. Modern stream cancellation uses a private random capability stripped from public requests and forwards no OAuth/DPoP credential.
+The Worker validates the actual `/mcp` Origin, mirrored headers, role-filtered tool visibility, and raw arguments before routing or daemon dispatch. Tool arguments use one bounded JSON Schema 2020-12 contract in both Worker and local runtime; validation has fixed schema and runtime-work budgets and never echoes rejected values. Request-stream cancellation uses a private random capability stripped from public requests and forwards no OAuth/DPoP credential.
 
 `resolve_task_capabilities` provides bounded, set-level route advice across registered commands, direct Bash/argv, process sessions, managed jobs, files/Git, browser, applications, resources, and diagnostics. It does not hide or disable tools: Bash through `exec_command` remains the first-class general escape hatch under a shell-capable effective policy. The versioned result is filtered by the authenticated account's effective authority, reports routing ambiguity and fallbacks, and accepts the previous `refresh.fingerprint` to omit unchanged static instructions while still recomputing task-specific matches. Route scores are deterministic relative ranks within one response, not probabilities or cross-version metrics.
 
@@ -169,7 +170,7 @@ The default is intentionally `full` for owner-operated local automation. This is
 
 The shared source of truth is `src/shared/policy-contract.json`. The generated matrix is in [docs/POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md).
 
-For remote calls, `server_info.authorization.effective_policy` and `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
+For routine remote health checks, prefer `server_info` with `detail: "summary"`; the empty/default call remains full diagnostics. For routine workspace inventory, `project_overview` also accepts `detail: "summary"`; it preserves policy/tool counts and top-level names/types without repeating exact tool arrays, account identity, routing fingerprints, or per-entry paths/sizes. Its empty/default call likewise remains full for compatibility. For remote calls, `server_info.authorization.effective_policy` and, when exact membership is needed, the full projection's `effective_tools` are authoritative. Daemon policy and tools describe only the local capability ceiling before account-role and host-side filtering.
 
 `tools/list` is a stable discovery catalog for the authenticated account role. A brief relay interruption does not withdraw tool definitions or require a tools-list-changed notification. Discovery is not authority: every `tools/call` is still intersected with the current end-to-end-ready daemon policy and tool ceiling, and fails retryably with `unavailable` when no daemon is ready. `server_info.tool_delivery` distinguishes the stable advertised catalog from the currently effective daemon/account intersection. The remote catalog also narrows configurable foreground timeouts to 60 seconds while preserving each tool’s 30- or 60-second default; larger requests fail before daemon dispatch instead of being silently truncated after side effects may have begun.
 
@@ -188,9 +189,11 @@ Load the printed unpacked-extension directory into the intended Chromium profile
 
 Machine Bridge does not launch or identify a separate browser profile. It controls whichever profile contains the extension, including that profile's tabs and login state. Read [docs/LOCAL_AUTOMATION.md](docs/LOCAL_AUTOMATION.md) before enabling it.
 
+For stateful GUI trajectories, owner/full callers can use the higher-level `computer_observe` / `computer_act` pair. `computer_observe` creates one bounded browser or application snapshot with semantic evidence and native MCP image content when available; `computer_act` consumes the exact snapshot as one-shot mutation authority, dispatches at most once, observes post-state, and reports dispatch/effect settlement separately so ambiguous mutations are not automatically replayed. See [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md).
+
 ## Durable work and local resources
 
-Remote foreground process, shell, browser, and application calls are bounded to 60 seconds of daemon execution. The Worker retains separate settlement ownership for five additional seconds, but neither that margin nor its internal stream metrics prove that an external MCP host consumed the terminal frame. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; inspect `diagnose_runtime.runtime.processes` remotely (or `server_info.runtime.processes` over local stdio) when a heavy filesystem or process operation is still draining. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
+Remote foreground process, shell, browser, and application calls are bounded to 60 seconds of daemon execution. The Worker retains separate settlement ownership for five additional seconds, but neither that margin nor its internal stream metrics prove that an external MCP host consumed the terminal frame. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; a remote owner can inspect `diagnose_runtime.runtime.processes`, while local stdio exposes `server_info.runtime.processes`. Non-owner accounts receive authority-scoped readiness rather than machine-wide process activity. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
 
 Credentials and files can be registered by alias without returning their contents through MCP:
 
@@ -213,7 +216,6 @@ machine-mcp doctor
 machine-mcp workspace show|set|reset
 machine-mcp service status|install|start|stop|uninstall
 machine-mcp account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove
-machine-mcp approval list|revoke|clear
 machine-mcp browser status|setup|pair|path
 machine-mcp resource add|list|check|remove
 machine-mcp job submit|inspect|list|read|cancel
@@ -230,11 +232,11 @@ The exact tool set depends on the effective policy and account role. Both transp
 Major groups include:
 
 - workspace reads, writes, exact edits, and transactional patches;
-- Git status, diff, log, and show with helper suppression and privacy bounds;
+- Git status, diff, log, and show with helper suppression and privacy bounds, plus structured staged-only `git_commit`;
 - direct argv execution, shell execution, and interactive process sessions;
 - runtime diagnostics and structured project/capability discovery;
 - managed jobs and registered local resources;
-- supported application and browser operations.
+- supported application/browser operations and snapshot-bound Computer Use.
 
 ## Development and verification
 
@@ -258,7 +260,9 @@ Version 3 and later use a mandatory prerelease and soak path. Package work start
 
 ```sh
 npm run release:candidate
-# The owner runs the exact persistent activation command printed above:
+# The coding agent rechecks source/package identity and disposable installability before involving the owner:
+node scripts/start-release-candidate.mjs --install-only
+# The owner then runs the exact persistent activation command printed above:
 npm run release:candidate:activate -- --allow-worker-deploy
 # Activation requires device-authenticated relay readiness. One explicit authentication rejection may
 # redeploy the same Worker once with the unchanged selected identity; it never rotates credentials.

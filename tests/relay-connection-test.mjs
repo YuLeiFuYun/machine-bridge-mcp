@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, welcomeMismatch } from "../src/local/relay-connection.mjs";
+import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, relayOutageUserAction, welcomeMismatch } from "../src/local/relay-connection.mjs";
 import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
 
 class FakeSocket extends EventEmitter {
@@ -106,6 +106,14 @@ class ManualScheduler {
 }
 
 
+assert(relayOutageUserAction("connection_interrupted", 5 * 60_000).includes("check internet access"),
+  "sustained transport outage lost its network troubleshooting action");
+const localRevocationAction = relayOutageUserAction("local_authority_revocation_retry", 5 * 60_000);
+assert(localRevocationAction.includes("local authority, process-session, and managed-job state") && !localRevocationAction.includes("internet"),
+  "local authority-revocation retry was misdirected to network troubleshooting");
+assert(relayOutageUserAction("local_authority_revocation_retry", 5 * 60_000 - 1) === "",
+  "brief local authority retry emitted a premature operator action");
+
 const scheduler = new ManualScheduler();
 const sockets = [];
 const events = [];
@@ -148,6 +156,8 @@ assert(connection.status().authenticated === true && connection.status().ready =
 const authenticatedRelaySession = connection.currentSessionId();
 assert(authenticatedRelaySession > 0, "authenticated relay did not establish a session for the readiness probe");
 assert(connection.sendForSession({ type: "relay_probe_result", id: "probe_test-ready" }, authenticatedRelaySession).ok === true, "readiness probe result could not use the authenticated session before ready state");
+assert(connection.sendForSession({ type: "authority_revoke_ack", revocation_id: `revoke_${"r".repeat(43)}` }, authenticatedRelaySession).ok === true,
+  "authority revocation acknowledgement could not use the authenticated session before ready state");
 let startedResolved = false;
 void started.then(() => { startedResolved = true; });
 await Promise.resolve();
@@ -303,6 +313,48 @@ stalledHeartbeatSockets[0].emit("message", Buffer.from(JSON.stringify({ type: "p
 stalledHeartbeatScheduler.advance(5);
 assert(!stalledHeartbeatSockets[0].terminated, "fresh inbound traffic did not clear heartbeat recovery grace");
 stalledHeartbeatConnection.stop();
+
+const resumedAfterLongPauseScheduler = new ManualScheduler();
+const resumedAfterLongPauseSockets = [];
+const resumedAfterLongPauseEvents = [];
+const resumedAfterLongPauseConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  logger: captureLogger(resumedAfterLongPauseEvents),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      resumedAfterLongPauseSockets.push(this);
+    }
+  },
+  scheduler: resumedAfterLongPauseScheduler,
+  now: () => resumedAfterLongPauseScheduler.now,
+  reconnectDelay: () => 5,
+  heartbeatIntervalMs: 5,
+  heartbeatTimeoutMs: 10,
+  heartbeatStallThresholdMs: 5,
+  heartbeatRecoveryGraceMs: 10,
+  handshakeTimeoutMs: 20,
+  outageWarnAfterMs: 100,
+});
+resumedAfterLongPauseConnection.start();
+resumedAfterLongPauseSockets[0].open();
+resumedAfterLongPauseConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(resumedAfterLongPauseConnection, "test");
+resumedAfterLongPauseScheduler.now += 26;
+resumedAfterLongPauseSockets[0].emit("message", "fresh-after-pause");
+resumedAfterLongPauseScheduler.stall(0);
+assert(!resumedAfterLongPauseSockets[0].terminated,
+  "fresh inbound relay traffic after a long local pause did not preserve a proven-live socket");
+resumedAfterLongPauseScheduler.stall(26);
+assert(resumedAfterLongPauseSockets[0].terminated,
+  "relay retained a stale socket after a local pause exceeded both heartbeat timeout and recovery grace");
+assert(resumedAfterLongPauseEvents.some((event) => event.level === "warn"
+  && event.fields?.event === "runtime.event_loop.stall"
+  && event.fields?.relay_disconnect_deferred === false),
+"long local pause did not expose immediate relay recovery through structured diagnostics");
+resumedAfterLongPauseScheduler.advance(5);
+assert(resumedAfterLongPauseSockets.length === 2, "long local pause did not enter reconnect immediately");
+resumedAfterLongPauseConnection.stop();
 
 const readinessScheduler = new ManualScheduler();
 const readinessSockets = [];

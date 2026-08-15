@@ -57,10 +57,40 @@ const capacityStorage = new MemoryStorage({
 });
 assert(!await consumeBoundedNonce(capacityStorage, {
   key: "bounded-nonces", nonce: "c".repeat(24), expiresAt: issuedAt + 300, now: issuedAt,
-  noncePattern: /^[a-z]{24}$/, maximum: 2,
+  noncePattern: /^[a-z]{24}$/, maximum: 2, maxFutureSeconds: 600,
 }), "nonce capacity evicted an unexpired replay marker");
 const retainedCapacityState = await capacityStorage.get("bounded-nonces");
 assert(retainedCapacityState["a".repeat(24)] && retainedCapacityState["b".repeat(24)] && !retainedCapacityState["c".repeat(24)], "nonce capacity changed existing replay markers");
+const oversizedCapacityStorage = new MemoryStorage({
+  "bounded-nonces": {
+    ["a".repeat(24)]: issuedAt - 1,
+    ["b".repeat(24)]: issuedAt - 1,
+    ["c".repeat(24)]: issuedAt - 1,
+  },
+});
+assert(!await consumeBoundedNonce(oversizedCapacityStorage, {
+  key: "bounded-nonces", nonce: "d".repeat(24), expiresAt: issuedAt + 300, now: issuedAt,
+  noncePattern: /^[a-z]{24}$/, maximum: 2, maxFutureSeconds: 600,
+}), "oversized persisted nonce state was normalized past its read-boundary cardinality cap");
+assert(Object.keys(await oversizedCapacityStorage.get("bounded-nonces")).length === 3,
+  "invalid oversized nonce state was silently rewritten instead of failing closed");
+const farFutureStorage = new MemoryStorage({
+  "bounded-nonces": { ["a".repeat(24)]: issuedAt + 601 },
+});
+assert(!await consumeBoundedNonce(farFutureStorage, {
+  key: "bounded-nonces", nonce: "b".repeat(24), expiresAt: issuedAt + 300, now: issuedAt,
+  noncePattern: /^[a-z]{24}$/, maximum: 2, maxFutureSeconds: 600,
+}), "persisted nonce expiry beyond the protocol replay horizon was accepted");
+let farFutureWriteRejected = false;
+try {
+  await consumeBoundedNonce(new MemoryStorage(), {
+    key: "bounded-nonces", nonce: "b".repeat(24), expiresAt: issuedAt + 601, now: issuedAt,
+    noncePattern: /^[a-z]{24}$/, maximum: 2, maxFutureSeconds: 600,
+  });
+} catch (error) {
+  farFutureWriteRejected = error instanceof Error && error.message.includes("expiration is invalid");
+}
+assert(farFutureWriteRejected, "nonce store allowed a new replay marker beyond its declared future horizon");
 
 const tamperedPreflight = new Headers(preflightHeaders);
 tamperedPreflight.set("X-Bridge-Device-Nonce", `${tamperedPreflight.get("X-Bridge-Device-Nonce")}x`);
