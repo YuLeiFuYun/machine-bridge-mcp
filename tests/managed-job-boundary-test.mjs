@@ -18,11 +18,19 @@ try {
   mkdirSync(dir);
   assert.equal(resolveManagedJobDirectory(jobs, id), realpathSync(dir));
   assert.equal(resolveManagedJobRootIfPresent(jobs), realpathSync(jobs));
-  let observedDirectoryMode = null;
+  if (process.platform !== "win32") {
+    let observedDirectoryMode = null;
+    assert.equal(resolveManagedJobRootIfPresent(jobs, {
+      openSync(target, flags, mode) { observedDirectoryMode = mode; return openSync(target, flags, mode); },
+    }), realpathSync(jobs));
+    assert.equal(observedDirectoryMode, 0o700, "POSIX managed job directory descriptor open omitted the explicit private mode");
+  }
+  let windowsDescriptorOpened = false;
   assert.equal(resolveManagedJobRootIfPresent(jobs, {
-    openSync(target, flags, mode) { observedDirectoryMode = mode; return openSync(target, flags, mode); },
+    platform: "win32",
+    openSync() { windowsDescriptorOpened = true; throw new Error("Windows managed job root must not use POSIX directory descriptor pinning"); },
   }), realpathSync(jobs));
-  assert.equal(observedDirectoryMode, 0o700, "managed job directory descriptor open omitted the explicit private mode");
+  assert.equal(windowsDescriptorOpened, false, "Windows managed job root unexpectedly used POSIX directory descriptor pinning");
   const losslessRootInfo = lstatSync(jobs, { bigint: true });
   assert.equal(typeof losslessRootInfo.dev, "bigint");
   assert.equal(typeof losslessRootInfo.ino, "bigint");
