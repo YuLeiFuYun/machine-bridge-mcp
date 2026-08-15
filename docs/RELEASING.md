@@ -158,23 +158,23 @@ npm run github:push
 
 Create/update the pull request, satisfy required checks, squash-merge, fetch, and fast-forward local `main`.
 
-The repository owner creates the annotated prerelease tag, GitHub Prerelease, and exact tarball asset from a real interactive terminal:
+After the repository owner explicitly authorizes source publication, the owner or an authorized agent creates the annotated prerelease tag, GitHub Prerelease, and exact tarball asset through the local control plane:
 
 ```sh
-npm run prerelease:release -- --owner-terminal-confirm
+npm run prerelease:release -- --owner-confirm
 ```
 
-The flag is necessary but not sufficient: stdin, stdout, and stderr must all be TTYs. MCP calls, managed jobs, CI, redirected sessions, and other ordinary background automation fail before fetch, full verification, tag creation, or remote mutation. One common-Git-dir owner-only publication lock serializes tag/Release writes across the main checkout and linked worktrees. This ceremony prevents accidental and standard non-interactive publication; it is not an authentication boundary against arbitrary code already executing as the same OS user, which can emulate a terminal. Adversarial separation requires an external user-presence or isolated release environment.
+`--owner-confirm` is an explicit anti-accident acknowledgement, not a terminal-presence proof. A TTY is optional, so an explicitly authorized Machine Bridge call or other local automation may run the command. The command still fails closed on dirty state, wrong branch/version channel, missing exact acceptance, incomplete exact-commit CI, digest mismatch, conflicting tags/releases, or concurrent publication. One common-Git-dir publication lock serializes tag/Release writes across the main checkout and linked worktrees. Stronger adversarial user-presence guarantees require an external isolated release environment and are outside this repository's workflow contract.
 
 The command resolves trusted absolute git and GitHub CLI executables, creates a private staging copy of the accepted candidate, and never runs a new `npm pack` for the Release asset. After upload it queries the GitHub REST asset record and requires its SHA-256 digest to equal the current accepted artifact before reporting success.
 
-Historical GitHub Release backfill is governed by the same boundary and must be run by the owner from a real interactive terminal:
+Historical GitHub Release backfill uses the same explicit-authorization boundary:
 
 ```sh
-npm run release:backfill -- --owner-terminal-confirm
+npm run release:backfill -- --owner-confirm
 ```
 
-Publish npm through the repository-controlled channel command:
+Publish npm through the repository-controlled channel command only after a separate explicit owner authorization:
 
 ```sh
 npm run prerelease:publish
@@ -186,7 +186,7 @@ The release checks also perform an ordinary install of the exact tarball into an
 
 ## 5. Activate the published prerelease and begin soak
 
-From the exact accepted source checkout, the owner runs:
+From the exact accepted source checkout, run the following only after a separate explicit owner authorization for published-package installation/activation:
 
 ```sh
 npm run prerelease:install -- --allow-worker-deploy
@@ -241,20 +241,20 @@ npm run release:candidate
 node scripts/start-release-candidate.mjs --install-only
 ```
 
-The owner activates the exact stable candidate with the same persistent command:
+After explicit owner authorization, activate the exact stable candidate with the same persistent command:
 
 ```sh
 npm run release:candidate:activate -- --allow-worker-deploy
 ```
 
-The coding agent reruns `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary`, verifies the live stable candidate, and records its exact acceptance only after both succeed. Then commit, push with `npm run github:push`, and merge. The repository owner runs the following from a real interactive terminal:
+The coding agent reruns `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary`, verifies the live stable candidate, and records its exact acceptance only after both succeed. Then commit, push with `npm run github:push`, and merge. After explicit owner authorization for each external mutation, run:
 
 ```sh
-npm run release -- --owner-terminal-confirm
+npm run release -- --owner-confirm
 npm run stable:publish
 ```
 
-`npm run release -- --owner-terminal-confirm` creates the final annotated tag and GitHub Release only after the soak record, promotion digest, exact candidate acceptance, exact `origin/main`, and all required push-triggered checks pass. `stable:publish` always uses `latest` and repeats the same gates.
+`npm run release -- --owner-confirm` creates the final annotated tag and GitHub Release only after the soak record, promotion digest, exact candidate acceptance, exact `origin/main`, and all required push-triggered checks pass. `stable:publish` always uses `latest` and repeats the same gates.
 
 ## Rollback and recovery
 

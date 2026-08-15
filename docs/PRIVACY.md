@@ -46,7 +46,7 @@ Neither generated nor explicit instruction content is written to ordinary operat
 
 ## Capability-routing privacy
 
-Task routing is computed only from the current request, bounded project/skill/command metadata, public tool descriptions, and policy-visible application/browser metadata. The effective authenticated account policy is applied before local application discovery or route construction; a restricted role cannot use the resolver as an inventory side channel for hidden shell, browser, application, or write capabilities.
+Task routing is computed only from the current request, bounded project/skill/command metadata, public tool descriptions, and policy-visible application/browser metadata. Installed-application discovery is intentionally available as read-only device inventory to all authenticated roles, so application names and launcher/bundle identifiers are not treated as hidden capability metadata. Restricted roles still receive projected external paths and cannot use discovery to acquire application launch, Accessibility control, browser, shell, or write authority; those routes are filtered through the effective account/daemon policy intersection.
 
 The returned route set contains tool names, coarse scores, named reasons, ambiguity, and fallbacks. It does not include command bodies, secret values, application documents, browser page data, or tool arguments. Runtime observability keeps only an HMAC task fingerprint and coarse route fields; raw task text and route explanations are not logged. A client-supplied `known_refresh_fingerprint` is a content identity for static context, not a bearer credential.
 

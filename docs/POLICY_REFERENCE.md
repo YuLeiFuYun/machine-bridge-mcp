@@ -60,7 +60,7 @@ This table describes the local daemon policy ceiling. Remote account roles apply
 | `list_dir` | `always` | yes | yes | yes | yes |
 | `list_files` | `always` | yes | yes | yes | yes |
 | `list_jobs` | `always` | yes | yes | yes | yes |
-| `list_local_applications` | `full` | no | no | no | yes |
+| `list_local_applications` | `always` | yes | yes | yes | yes |
 | `list_local_commands` | `always` | yes | yes | yes | yes |
 | `list_local_resources` | `always` | yes | yes | yes | yes |
 | `list_local_skills` | `always` | yes | yes | yes | yes |
@@ -88,7 +88,7 @@ This table describes the local daemon policy ceiling. Remote account roles apply
 
 ## Remote account-role tool access
 
-Account-access revision: **3**. Default role: **reviewer**. Remote effective authority is the intersection of this account-role ceiling with the connected daemon policy/tool ceiling; the MCP host may expose a further subset.
+Account-access revision: **4**. Default role: **reviewer**. Remote effective authority is the intersection of this account-role ceiling with the connected daemon policy/tool ceiling; the MCP host may expose a further subset.
 
 | Tool | reviewer | editor | operator | owner |
 |---|---|---|---|---|
@@ -121,7 +121,7 @@ Account-access revision: **3**. Default role: **reviewer**. Remote effective aut
 | `list_dir` | yes | yes | yes | yes |
 | `list_files` | yes | yes | yes | yes |
 | `list_jobs` | yes | yes | yes | yes |
-| `list_local_applications` | no | no | no | yes |
+| `list_local_applications` | yes | yes | yes | yes |
 | `list_local_commands` | yes | yes | yes | yes |
 | `list_local_resources` | no | no | no | yes |
 | `list_local_skills` | yes | yes | yes | yes |

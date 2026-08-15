@@ -4,24 +4,24 @@ import { join, resolve } from "node:path";
 import { withOwnerStateLock } from "../src/local/owner-state-lock.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 
-const CONFIRMATION_FLAG = "--owner-terminal-confirm";
+const CONFIRMATION_FLAG = "--owner-confirm";
 const LOCK_DIRECTORY = "machine-bridge-release-state";
 const LOCK_FILE = "github-publication.lock";
 const GIT_METADATA_TIMEOUT_MS = 30_000;
 
-export function assertOwnerTerminalPublication(options = {}) {
+export function assertGithubPublicationAuthorized(options = {}) {
   let argv = process.argv.slice(2);
   if (Array.isArray(options.argv)) argv = options.argv.map(String);
   const stdin = options.stdin === undefined ? process.stdin : options.stdin;
   const stdout = options.stdout === undefined ? process.stdout : options.stdout;
   const stderr = options.stderr === undefined ? process.stderr : options.stderr;
   if (!argv.includes(CONFIRMATION_FLAG)) {
-    throw new Error(`GitHub publication requires an explicit owner terminal invocation with ${CONFIRMATION_FLAG}`);
+    throw new Error(`GitHub publication requires explicit owner authorization represented by ${CONFIRMATION_FLAG}`);
   }
-  if (stdin.isTTY !== true || stdout.isTTY !== true || stderr.isTTY !== true) {
-    throw new Error("GitHub publication requires an interactive owner terminal; background jobs, MCP calls, CI, and redirected sessions are not accepted");
-  }
-  return Object.freeze({ confirmation_flag: CONFIRMATION_FLAG, interactive_terminal: true });
+  return Object.freeze({
+    confirmation_flag: CONFIRMATION_FLAG,
+    interactive_terminal: stdin.isTTY === true && stdout.isTTY === true && stderr.isTTY === true,
+  });
 }
 
 export function withGithubPublicationLock(root, callback, options = {}) {

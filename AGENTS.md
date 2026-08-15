@@ -21,10 +21,11 @@ Unless the user explicitly narrows or expands the task, a coding agent may:
 - run repository-local inspection, validation, packaging, dependency, privacy, and dry-run commands;
 - create local branches and commits;
 - generate the exact candidate with `npm run release:candidate`;
-- after explicit owner authorization and owner execution of the printed activation command, run the repository's bounded synthetic release OAuth canary, verify the live candidate through Machine Bridge, and record acceptance;
-- push only with `npm run github:push`, manage the pull request through local `git`/`gh`, and prepare verified source-release metadata according to the mandatory prerelease/soak state machine; creating a Git tag or GitHub Release remains an owner-terminal action.
+- after explicit owner authorization for live activation, execute or observe the exact activation command, run the repository's bounded synthetic release OAuth canary, verify the live candidate through Machine Bridge, and record acceptance;
+- push only with `npm run github:push`, manage the pull request through local `git`/`gh`, and prepare verified source-release metadata according to the mandatory prerelease/soak state machine;
+- after explicit owner authorization for source publication, create the Git tag and GitHub Release through the repository command using local `git`/`gh` via Machine Bridge.
 
-This is standing authorization for implementation, local validation, observed candidate verification, the repository's bounded synthetic release OAuth canary after owner activation, acceptance recording, pull-request completion, and source-release metadata. The canary is the only standing live-data exception: it creates one random `reviewer` account plus one DCR client, never emits their credentials/tokens, exercises authorization-code/MCP/refresh, and must revoke the client and remove the account before recording evidence. It is not standing authorization for Git tag/GitHub Release publication, npm publication, global installation, Worker/service mutation, credential rotation, any other live-user-data mutation, or destructive live-data changes.
+This is standing authorization for implementation, local validation, observed candidate verification, the repository's bounded synthetic release OAuth canary after an authorized activation, acceptance recording, pull-request completion, and source-release metadata. The canary is the only standing live-data exception: it creates one random `reviewer` account plus one DCR client, never emits their credentials/tokens, exercises authorization-code/MCP/refresh, and must revoke the client and remove the account before recording evidence. Git tag/GitHub Release publication, npm publication, global installation, Worker/service mutation, credential rotation, any other live-user-data mutation, and destructive live-data changes require an explicit owner request in the current task; once that request is present, the agent may execute the requested operation through the repository's guarded command instead of forcing the owner to re-run it manually.
 
 GitHub-only infrastructure changes whose npm package bytes are unchanged do not require a synthetic package version or runtime acceptance. They still require review and applicable checks.
 
@@ -35,8 +36,8 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
 - New package work uses `x.y.z-dev.n`, `x.y.z-beta.n`, or `x.y.z-rc.n`.
 - These channels publish only to npm dist-tags `dev`, `beta`, and `next`; none may become `latest`.
 - The exact candidate must be persistently activated on the owner machine before the first GitHub push.
-- Immediately before asking for that owner action, the coding agent runs `node scripts/start-release-candidate.mjs --install-only`; this non-live `--install-only` preflight must prove current source identity, package modes, exact tarball integrity, and disposable installability without Worker/service activation or activation evidence.
-- The owner executes the single printed command:
+- Immediately before live activation, the coding agent runs `node scripts/start-release-candidate.mjs --install-only`; this non-live `--install-only` preflight must prove current source identity, package modes, exact tarball integrity, and disposable installability without Worker/service activation or activation evidence.
+- After explicit owner authorization for activation, the owner or the authorized agent executes the single guarded command:
 
   ```sh
   npm run release:candidate:activate -- --allow-worker-deploy
@@ -46,14 +47,14 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
 - The coding agent derives `<activated-runtime-package>` from the activation record `runtime_entry`, then runs `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv with the Git checkout as cwd. The canary code and imports therefore come from the exact activated package while the checkout is only candidate/evidence data. The candidate-bound canary creates only synthetic temporary reviewer/client state, proves authorization-code exchange, authenticated MCP, refresh rotation, refreshed MCP, and cleanup, and records no credential/token/client/account value.
 - The coding agent then verifies Worker version/hash, remote health, relay readiness, connected daemon/service identity, representative functionality, relevant failure paths, and log/privacy behavior through Machine Bridge.
 - Only after the candidate-bound OAuth canary evidence and observed live verification may the agent run `npm run release:accept`.
-- The accepted prerelease is reviewed and merged; the owner then creates its Git tag and GitHub Prerelease from a real interactive terminal with `npm run prerelease:release -- --owner-terminal-confirm`.
-- npm prerelease publication is an explicit owner/release-operator action using `npm run prerelease:publish`.
-- The owner installs and activates the published prerelease with `npm run prerelease:install -- --allow-worker-deploy`; only this registry-verified activation starts formal soak.
+- The accepted prerelease is reviewed and merged; after explicit owner authorization, the owner or authorized agent creates its Git tag and GitHub Prerelease with `npm run prerelease:release -- --owner-confirm`. A TTY is optional and is not an authorization boundary.
+- npm prerelease publication requires a separate explicit owner request and uses `npm run prerelease:publish`.
+- Published-prerelease installation/activation requires a separate explicit owner request and uses `npm run prerelease:install -- --allow-worker-deploy`; only this registry-verified activation starts formal soak.
 - Minimum soak is seven days for a major release, three days for a minor release, and one day for a patch release.
 - Every blocking defect requires a new prerelease number and restarts the complete soak interval.
 - The owner must explicitly report that the soak completed without blocking issues before the agent records `release-soak/v<stable>.json`.
 - Stable promotion may change only normalized release metadata. `promotion_content_sha256` must match the soaked prerelease; any functional packaged-byte change requires a new prerelease and new soak.
-- The exact stable candidate is activated and observed again before the owner's interactive `npm run release -- --owner-terminal-confirm` action and the explicit `npm run stable:publish` action.
+- The exact stable candidate is activated and observed again before an explicitly authorized `npm run release -- --owner-confirm` action and the separately authorized `npm run stable:publish` action.
 
 This workflow is a hard repository contract, not a conversational preference. Do not replace it with direct stable publication, an unobserved process, a transient foreground-only candidate, or an external signing prerequisite that is not part of this self-hosted flow.
 
@@ -70,18 +71,18 @@ Before any GitHub read or mutation, load and apply this repository contract thro
 
 ## Operations requiring explicit user authorization
 
-Do not perform these merely because code or a version changed:
+Do not perform these merely because code or a version changed. They may be executed by the agent when the repository owner explicitly requests the specific operation in the current task:
 
-- execute the owner-side live activation command on the owner's behalf;
+- execute a live candidate or published-package activation command;
 - publish, deprecate, or unpublish npm packages;
 - install or replace the global package;
 - directly deploy or remove a Cloudflare Worker;
 - rotate credentials or device roots;
-- replace the live daemon/service outside the exact owner-executed activation workflow;
+- replace the live daemon/service outside the exact guarded activation workflow;
 - create or push a version tag, GitHub Release, or GitHub Prerelease;
 - mutate live user data outside the candidate-bound synthetic release OAuth canary, or perform disruptive repository operations.
 
-The coding agent prepares and prints the exact command. The owner runs live activation and every GitHub/npm publication command from the required local terminal. Conversational authorization cannot substitute for the command's explicit flag and real TTY boundary.
+Explicit conversational authorization from the repository owner is sufficient user authorization for these operations. It never bypasses the repository's integrity, exact-commit, acceptance, CI, lock, dist-tag, or explicit command-flag gates. If the owner says they will execute an operation themselves, the agent must not execute that operation in parallel.
 
 ## Validation expectations
 
@@ -89,7 +90,7 @@ The coding agent prepares and prints the exact command. The owner runs live acti
 - Lock, state deletion, service lifecycle, release activation, detached process, credential, browser, or application changes require behavior, concurrency, and fault-injection tests; source-string checks alone are insufficient.
 - Run both dependency audits, Worker dry-run, registry signature verification, SBOM generation, package inspection, privacy history, and complete diff/status review for a versioned candidate.
 - Update tests, `CHANGELOG.md`, `docs/AUDIT.md`, release guidance, architecture, threat model, and operations whenever their contracts change.
-- `npm run release:candidate` creates the exact tarball. Before presenting activation, the coding agent must run `node scripts/start-release-candidate.mjs --install-only`; any packaged-file change or mode drift invalidates the candidate and requires regeneration. Only the repository owner then runs `npm run release:candidate:activate -- --allow-worker-deploy`.
+- `npm run release:candidate` creates the exact tarball. Before live activation, the coding agent must run `node scripts/start-release-candidate.mjs --install-only`; any packaged-file change or mode drift invalidates the candidate and requires regeneration. Activation then requires explicit owner authorization and uses `npm run release:candidate:activate -- --allow-worker-deploy`.
 - Release evidence contains bounded synthetic metadata only; never put user names, machine paths, command output, credentials, or private content in it.
 
 ## Incident diagnosis and evidence hard gate
@@ -114,12 +115,12 @@ When the incident is closed, record the causal evidence and the disproved branch
 1. Finish implementation and review; use a `dev`, `beta`, or `rc` version.
 2. Run complete verification and `npm run release:candidate`.
 3. Run `node scripts/start-release-candidate.mjs --install-only`; if it fails, repair and regenerate the candidate instead of involving the owner.
-4. Present `npm run release:candidate:activate -- --allow-worker-deploy` to the owner and stop.
-5. After the owner runs it, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the live candidate through Machine Bridge.
+4. Obtain explicit owner authorization for `npm run release:candidate:activate -- --allow-worker-deploy`; if authorized to execute it, the agent may run it through Machine Bridge, otherwise present the command and stop.
+5. After activation, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the live candidate through Machine Bridge.
 6. Record exact candidate acceptance only after both candidate-bound canary evidence and observed live verification; commit and push only through `npm run github:push`.
 7. Complete the pull request and exact-commit checks.
-8. The owner runs `npm run prerelease:release -- --owner-terminal-confirm` from a real interactive terminal.
-9. The owner runs `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy`.
+8. After explicit owner authorization, run `npm run prerelease:release -- --owner-confirm` through the local control plane; an interactive TTY is optional.
+9. Run `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy` only when each operation is explicitly authorized; if the owner elects to run them manually, provide the commands instead.
 10. Wait for real use. Do not assume successful soak; the owner reports the outcome.
 11. After explicit successful soak feedback, record the exact `prerelease:soak:accept` phrase.
 
@@ -127,10 +128,10 @@ When the incident is closed, record the causal evidence and the disproved branch
 
 1. Promote the same base version without functional package changes.
 2. Run `npm run release:soak:verify`, complete checks, and prepare a stable candidate.
-3. Present the same persistent candidate activation command to the owner.
+3. Obtain explicit owner authorization for the same persistent candidate activation command.
 4. Run the candidate-bound synthetic OAuth canary, verify the live stable candidate, and record exact acceptance only after both succeed.
 5. Push/review/merge through the guarded flow.
-6. The owner runs `npm run release -- --owner-terminal-confirm` from a real interactive terminal only after soak and exact-commit gates pass.
-7. The owner explicitly runs `npm run stable:publish`.
+6. After soak and exact-commit gates pass and the owner explicitly authorizes source publication, run `npm run release -- --owner-confirm` through the local control plane.
+7. Run `npm run stable:publish` only after a separate explicit owner authorization.
 
 The complete procedure and rollback boundaries are in [docs/RELEASING.md](docs/RELEASING.md).

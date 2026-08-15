@@ -127,7 +127,7 @@
     "name": "list_local_applications",
     "title": "List local applications",
     "description": "Discover installed local applications and launchers without reading their document contents.",
-    "availability": "full",
+    "availability": "always",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,

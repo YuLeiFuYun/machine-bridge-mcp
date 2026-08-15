@@ -41,16 +41,16 @@ Repository-only infrastructure changes, such as a `.github/` workflow update, do
 3. run targeted and complete checks, dependency audits, Worker dry-run, privacy review, `npm run sbom:test`, and package inspection;
 4. inspect the complete diff and run `npm run release:candidate`;
 5. run `node scripts/start-release-candidate.mjs --install-only`; this non-live preflight must still match current source/package modes and install the exact tarball disposably, otherwise repair and regenerate the candidate;
-6. give the owner `npm run release:candidate:activate -- --allow-worker-deploy` and stop;
-7. after the owner runs it, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the Worker, candidate relay, verified service daemon, exact version, representative behavior, and relevant failure paths through Machine Bridge;
+6. obtain explicit owner authorization for `npm run release:candidate:activate -- --allow-worker-deploy`; the owner or authorized agent may run it through the local control plane;
+7. after activation, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the Worker, candidate relay, verified service daemon, exact version, representative behavior, and relevant failure paths through Machine Bridge;
 8. only after the candidate-bound canary and observed live verification both succeed, record exact candidate acceptance;
 9. commit and push only with `npm run github:push`, then complete review and required checks;
-10. the repository owner creates the GitHub Prerelease from a real interactive terminal with `npm run prerelease:release -- --owner-terminal-confirm`;
-11. the release operator runs `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy`;
+10. after explicit owner authorization, create the GitHub Prerelease with `npm run prerelease:release -- --owner-confirm`; a TTY is optional;
+11. run `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy` only under their own explicit owner authorization;
 12. use the published prerelease for at least seven days for a major, three days for a minor, or one day for a patch;
 13. every blocking defect increments the prerelease number and restarts the interval;
 14. after explicit owner confirmation, record the soak result; stable promotion must pass `npm run release:soak:verify` and preserve the functional promotion digest;
-15. activate and observe the exact stable candidate, repeat acceptance and review, then have the repository owner run `npm run release -- --owner-terminal-confirm` from a real interactive terminal; the owner separately runs `npm run stable:publish`.
+15. activate and observe the exact stable candidate, repeat acceptance and review, then run `npm run release -- --owner-confirm` after explicit owner authorization; `npm run stable:publish` remains a separately authorized operation.
 
 Automated checks do not authorize candidate acceptance or soak success. The agent observes the live candidate; the owner reports the real soak outcome. Release evidence contains bounded release metadata only and no private user content.
 

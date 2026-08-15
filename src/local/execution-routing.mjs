@@ -57,8 +57,13 @@ const ROUTES = Object.freeze([
   ], "Use the paired daily browser for authenticated websites, complex forms, DOM inspection, and actions that depend on the user's existing session.", [
     "browser", "website", "web page", "tab", "dom", "form", "login", "authenticated", "chrome", "网页", "浏览器", "网站", "标签页", "表单", "登录",
   ]),
+  route("application-discovery", "Installed application inventory", [
+    "list_local_applications",
+  ], "Use read-only local application discovery to identify installed apps and launchers without implying authority to open, inspect, or operate them.", [
+    "installed app", "application inventory", "application discovery", "launcher", "已安装应用", "应用清单", "应用发现", "启动器",
+  ]),
   route("application", "Desktop application", [
-    "list_local_applications", "open_local_application", "inspect_local_application", "operate_local_application",
+    "open_local_application", "inspect_local_application", "operate_local_application",
   ], "Use structured desktop automation for installed applications and macOS Accessibility surfaces.", [
     "application", "desktop", "gui", "window", "accessibility", "mac app", "应用", "桌面", "界面", "窗口", "软件",
   ]),
@@ -84,6 +89,7 @@ const ROUTE_FALLBACKS = Object.freeze({
   "git-review": ["workspace-edit", "shell"],
   "computer-use": ["browser", "application", "diagnostics"],
   browser: ["computer-use", "diagnostics", "shell"],
+  "application-discovery": ["application", "diagnostics"],
   application: ["computer-use", "diagnostics", "shell"],
   "protected-resource": ["diagnostics"],
   diagnostics: ["shell"],
@@ -233,6 +239,7 @@ function dynamicBoost(id, task, options) {
   if (id === "application" && Array.isArray(options.applicationMatches) && options.applicationMatches.length > 0) add(20, "installed_application_match");
   if (id === "computer-use" && /computer use|gui agent|screen grounding|电脑操作|界面操作|视觉定位/.test(lower)) add(18, "computer_use_intent");
   if (id === "browser" && options.browserAvailable === true && /browser|chrome|edge|brave|网页|浏览器|表单|网站|登录/.test(lower)) add(14, "browser_intent");
+  if (id === "application-discovery" && Array.isArray(options.applicationMatches) && options.applicationMatches.length > 0) add(8, "installed_application_inventory_match");
   if (id === "managed-job" && /background|detached|durable|long[- ]?running|resume|cleanup|finally|overnight|continuous|后台|持久|断线|清理|长时间|持续|重试|多步骤/.test(lower)) add(14, "durability_or_cleanup_intent");
   if (id === "process-session" && /interactive|stdin|repl|watch|tail|stream|dev server|交互|实时日志|输入|常驻进程/.test(lower)) add(12, "interactive_process_intent");
   if (id === "shell" && /bash|shell|terminal|cli|command|script|debug|diagnos|benchmark|audit|probe|命令|终端|脚本|排查|调试|基准|审查|测试|构建/.test(lower)) add(10, "shell_or_cli_intent");

@@ -24,6 +24,7 @@
     "src/local/git-operation-state.mjs",
     "src/local/support-state-projection.mjs",
     "src/local/capability-ranking.mjs",
+    "src/local/application-capability-projection.mjs",
     "src/local/agent-contract.mjs",
     "src/local/browser-extension-protocol.mjs",
     "src/local/browser-request-settlement.mjs",

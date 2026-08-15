@@ -59,7 +59,7 @@ try {
   }
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [
-    "runtime-reporting.mjs", "runtime-info-projection.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs", "execution-routing.mjs",
+    "runtime-reporting.mjs", "runtime-info-projection.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs", "application-capability-projection.mjs", "execution-routing.mjs",
     "runtime-tool-handlers.mjs", "runtime-relay.mjs", "runtime-paths.mjs", "runtime-resource-service.mjs",
     "file-mutation-coordinator.mjs", "filesystem-identity.mjs", "workspace-file-transaction.mjs", "relay-connection-classification.mjs",
   ]) {

@@ -146,7 +146,7 @@ The first start of a new deployment creates an owner account automatically and p
 
 When the platform cannot prove that boundary, operator process execution is unavailable. The runtime does not fall back to a path blacklist that only appears isolated.
 
-Browser/application control, local data export, credential operations, persistent job creation, machine-wide runtime diagnostics, protected local-resource inventory, sensitive targets, and unrestricted paths remain owner-only. In the public remote catalog this additionally means `diagnose_runtime`, `list_local_resources`, `stage_job`, and `start_job` are not discoverable or callable by reviewer/editor/operator accounts even where the underlying local daemon profile would otherwise admit them.
+Installed-application inventory is the deliberate read-only exception: reviewer/editor/operator accounts may use `list_local_applications`, with external paths projected rather than exposed absolutely. Browser/application content inspection or control, local data export, credential operations, persistent job creation, machine-wide runtime diagnostics, protected local-resource inventory, sensitive targets, and unrestricted paths remain owner-only. In the public remote catalog this additionally means `diagnose_runtime`, `list_local_resources`, `stage_job`, and `start_job` are not discoverable or callable by reviewer/editor/operator accounts even where the underlying local daemon profile would otherwise admit them.
 
 ## Concurrency and revocation
 

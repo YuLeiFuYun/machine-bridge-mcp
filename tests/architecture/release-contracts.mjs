@@ -469,13 +469,13 @@ if (!releaseSoakSource.includes("resolveTrustedGitExecutable") || releaseSoakSou
 }
 if (packageJson.scripts?.release !== "node scripts/github-release.mjs --publish") throw new Error("source release command is missing");
 if (Object.hasOwn(packageJson.scripts || {}, "release:publish")) throw new Error("removed release:publish alias returned to the live npm command surface");
-if (packageJson.scripts?.["release:accept"] !== "node scripts/local-release-acceptance.mjs --record") throw new Error("interactive acceptance command is missing");
+if (packageJson.scripts?.["release:accept"] !== "node scripts/local-release-acceptance.mjs --record") throw new Error("candidate acceptance command is missing");
 if (packageJson.scripts?.["release:acceptance:verify"] !== "node scripts/local-release-acceptance.mjs --verify") throw new Error("release acceptance verification command is missing");
 if (packageJson.scripts?.["github:push"] !== "node scripts/github-push.mjs") throw new Error("guarded GitHub push command is missing");
 const githubReleaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
 const githubPublicationGuardSource = readFileSync(join(root, "scripts", "release-publication-guard.mjs"), "utf8");
-for (const required of ["assertOwnerTerminalPublication", "withGithubPublicationLock", "--owner-terminal-confirm"]) {
-  if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost owner-publication boundary: ${required}`);
+for (const required of ["assertGithubPublicationAuthorized", "withGithubPublicationLock", "--owner-confirm"]) {
+  if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost explicit-authorization boundary: ${required}`);
 }
 for (const required of [
   "stageAcceptedCandidateTarball", "candidate.path", "artifactSha256",
@@ -515,15 +515,18 @@ const githubAssetSource = readFileSync(join(root, "scripts", "github-release-ass
 for (const required of ["tag_name", "matches.length !== 1", "sha256:", "expectedSha256", "asset.digest", "waitForGithubReleaseAsset", "defaultAssetWait"]) {
   if (!githubAssetSource.includes(required)) throw new Error(`GitHub release asset verifier lost required boundary: ${required}`);
 }
-for (const required of ["interactive owner terminal", "withOwnerStateLock", "--git-common-dir", "github-publication", "github-publication.lock"]) {
+for (const required of ["explicit owner authorization", "withOwnerStateLock", "--git-common-dir", "github-publication", "github-publication.lock"]) {
   if (!githubPublicationGuardSource.includes(required)) throw new Error(`GitHub publication guard lost required boundary: ${required}`);
 }
-const publicationGuardCall = githubReleaseSource.lastIndexOf("assertOwnerTerminalPublication()");
+if (githubPublicationGuardSource.includes("isTTY !== true")) {
+  throw new Error("GitHub publication guard regained a mandatory TTY boundary");
+}
+const publicationGuardCall = githubReleaseSource.lastIndexOf("assertGithubPublicationAuthorized()");
 const publicationLockCall = githubReleaseSource.lastIndexOf("await withGithubPublicationLock");
 const prereleasePublishCall = githubReleaseSource.lastIndexOf("publishCurrent({ prereleaseMode: true })");
 if (publicationGuardCall < 0 || publicationLockCall < 0 || prereleasePublishCall < 0
     || publicationGuardCall > publicationLockCall || publicationLockCall > prereleasePublishCall) {
-  throw new Error("GitHub publication no longer verifies owner terminal presence and acquires its lock before remote mutation");
+  throw new Error("GitHub publication no longer verifies explicit owner authorization and acquires its lock before remote mutation");
 }
 const githubBacklogPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
 if (!githubBacklogPushSource.includes("assertGitHubBacklogReady") || !githubBacklogPushSource.includes('runNetwork(git, ["fetch", "origin", "main", "--prune"]')) {
@@ -764,6 +767,9 @@ if (!syntaxCheckSource.includes('"src/shared"')
 const localTypecheckSource = readFileSync(join(root, "tsconfig.local.json"), "utf8");
 if (!localTypecheckSource.includes('"src/shared/activation-recovery.mjs"')) {
   throw new Error("activation recovery evidence contract is missing from strict local typecheck");
+}
+if (!localTypecheckSource.includes('"src/local/application-capability-projection.mjs"')) {
+  throw new Error("application authority projection is missing from strict local typecheck");
 }
 const stateEntrypointBoundaryStart = stateSource.indexOf("function currentEntrypointInsideStateRoot(root)");
 const stateEntrypointBoundaryEnd = stateSource.indexOf("\nfunction looksLikeSourceTree", stateEntrypointBoundaryStart);
@@ -1238,17 +1244,17 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   if (!releaseContract.includes("prerelease") || !releaseContract.includes("soak") || !releaseContract.includes("npm")) {
     throw new Error(`release ownership contract drifted in ${relative(root, file)}`);
   }
-  for (const required of ["--owner-terminal-confirm", "interactive", "owner"]) {
+  for (const required of ["--owner-confirm", "explicit owner", "authorization"]) {
     if (!releaseContract.includes(required)) throw new Error(`GitHub publication ownership drifted in ${relative(root, file)}: ${required}`);
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "real interactive terminal", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "TTY is optional", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const releasingGuide = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
-for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-terminal-confirm", "npm run release:backfill -- --owner-terminal-confirm", "npm run release -- --owner-terminal-confirm", "real interactive terminal"]) {
-  if (!releasingGuide.includes(required)) throw new Error(`release guide omitted owner-terminal publication contract: ${required}`);
+for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-confirm", "npm run release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "A TTY is optional"]) {
+  if (!releasingGuide.includes(required)) throw new Error(`release guide omitted explicit-authorization publication contract: ${required}`);
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
 const sharedToolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
@@ -1256,7 +1262,7 @@ if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || 
   throw new Error("generated MCP tool reference is missing or malformed");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
-for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-terminal-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
+for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
 }
 if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {

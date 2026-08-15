@@ -63,6 +63,27 @@ const application = buildExecutionRouting("Use Notes to update the document", {
 assert(application.primary_route?.id === "application", "an exact installed-application match did not select structured application automation");
 assert(application.routes.some((route) => route.id === "shell"), "application routing removed the general shell alternative");
 
+const reviewApplicationInventory = buildExecutionRouting("Find the installed Notes application", {
+  policy: policyProfile("review"),
+  availableTools: accountRoleToolNames("reviewer"),
+  applicationMatches: [{ name: "Notes", score: 15 }],
+});
+assert(reviewApplicationInventory.primary_route?.id === "application-discovery"
+  && reviewApplicationInventory.primary_route.tools.length === 1
+  && reviewApplicationInventory.primary_route.tools[0] === "list_local_applications",
+"read-only application inventory did not remain distinct from desktop automation");
+assert(reviewApplicationInventory.routes.every((route) => route.id !== "application"),
+  "reviewer application discovery exposed an unusable desktop-automation route");
+
+const zeroSignalDiagnosticsFallback = buildExecutionRouting("", {
+  policy: policyProfile("review"),
+  availableTools: ["server_info"],
+});
+assert(zeroSignalDiagnosticsFallback.primary_route?.id === "diagnostics"
+  && zeroSignalDiagnosticsFallback.primary_route.tools.length === 1
+  && zeroSignalDiagnosticsFallback.primary_route.tools[0] === "server_info",
+"zero-signal routing did not fall back from unavailable shell to available diagnostics");
+
 const review = buildExecutionRouting("Use bash and the browser to modify files", {
   policy: policyProfile("review"),
   browserAvailable: false,

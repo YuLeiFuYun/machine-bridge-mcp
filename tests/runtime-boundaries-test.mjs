@@ -9,6 +9,7 @@ import { diagnoseRuntime, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/l
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "../src/local/doctor-reporting.mjs";
 import { classifySystemRouteInterface, inspectSystemNetworkRoute, systemNetworkRouteCheck } from "../src/local/system-network-route.mjs";
 import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-capabilities.mjs";
+import { projectApplicationCapabilities } from "../src/local/application-capability-projection.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-inspection.mjs";
 import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
@@ -485,6 +486,31 @@ async function testGitServiceDiscoveryBoundary() {
 }
 
 async function testRuntimeCapabilities() {
+  const rawApplicationCapabilities = {
+    discovery: true,
+    open: true,
+    accessibility_inspection: true,
+    structured_accessibility_actions: true,
+    window_screenshot: true,
+    background_visual_point: { available: true, backend: "synthetic" },
+  };
+  const discoveryOnly = projectApplicationCapabilities(rawApplicationCapabilities, (tool) => tool === "list_local_applications");
+  assert(discoveryOnly.discovery === true
+    && discoveryOnly.open === false
+    && discoveryOnly.accessibility_inspection === false
+    && discoveryOnly.structured_accessibility_actions === false
+    && discoveryOnly.window_screenshot === false
+    && discoveryOnly.background_visual_point.available === false,
+  "application capability projection widened read-only discovery into UI authority");
+  const fullProjection = projectApplicationCapabilities(rawApplicationCapabilities, () => true);
+  assert(fullProjection.discovery === true
+    && fullProjection.open === true
+    && fullProjection.accessibility_inspection === true
+    && fullProjection.structured_accessibility_actions === true
+    && fullProjection.window_screenshot === true
+    && fullProjection.background_visual_point.available === true,
+  "application capability projection lost authorized full capabilities");
+
   const bootstrapObserver = [];
   const bootstrap = await sessionBootstrap({
     agentContextManager: { sessionBootstrap: async () => ({ instructions: "rules" }) },
@@ -497,12 +523,18 @@ async function testRuntimeCapabilities() {
 
   const reviewBootstrap = await sessionBootstrap({
     agentContextManager: { sessionBootstrap: async () => ({ instructions: "rules" }) },
-    appAutomationManager: { capabilities: () => ({ structured: true }) },
+    appAutomationManager: { capabilities: () => ({ discovery: true, open: true, accessibility_inspection: true, structured_accessibility_actions: true, window_screenshot: true, background_visual_point: { available: true } }) },
     capabilityObserver: { recordBootstrap() {} },
     policy: policyProfile("review"),
   });
-  assert(reviewBootstrap.local_automation.browser === null && reviewBootstrap.local_automation.applications === null,
-    "review bootstrap advertised browser or application authority outside the effective policy");
+  assert(reviewBootstrap.local_automation.browser === null
+    && reviewBootstrap.local_automation.applications?.discovery === true
+    && reviewBootstrap.local_automation.applications?.open === false
+    && reviewBootstrap.local_automation.applications?.accessibility_inspection === false
+    && reviewBootstrap.local_automation.applications?.structured_accessibility_actions === false
+    && reviewBootstrap.local_automation.applications?.window_screenshot === false
+    && reviewBootstrap.local_automation.applications?.background_visual_point?.available === false,
+  "review bootstrap did not separate read-only application discovery from mutation/inspection authority");
 
   const resolutions = [];
   const full = await resolveTaskCapabilities({
@@ -538,14 +570,16 @@ async function testRuntimeCapabilities() {
 
   const review = await resolveTaskCapabilities({
     agentContextManager: { resolveTaskCapabilities: async () => ({ recommended_tools: [] }) },
-    appAutomationManager: { listApplications: async () => { throw new Error("must not scan"); } },
+    appAutomationManager: { listApplications: async () => ({ applications: [{ name: "Notes", id: "com.example.Notes" }] }) },
     capabilityObserver: { recordResolution() {} },
     policy: policyProfile("review"),
   }, { task: "open app" });
   assert(review.application_matches.length === 0 && review.browser_backend === null, "review capability resolution expanded automation authority");
-  assert(review.application_discovery.reason === "effective_policy", "policy-disabled application discovery was reported as an operational failure");
-  assert(!review.execution_routing.routes.some((route) => ["application", "browser", "shell"].includes(route.id)),
-    "review capability routing leaked application, browser, or shell surfaces outside the effective policy");
+  assert(review.application_discovery.available === true && !review.application_discovery.reason,
+    "read-only application discovery remained blocked under review authority");
+  assert(review.execution_routing.routes.some((route) => route.id === "application-discovery")
+    && !review.execution_routing.routes.some((route) => ["application", "browser", "shell"].includes(route.id)),
+  "review capability routing did not isolate application inventory from unavailable mutation/browser/shell surfaces");
 }
 
 async function testRuntimeResourceService() {
