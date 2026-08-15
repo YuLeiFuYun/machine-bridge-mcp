@@ -1,3 +1,5 @@
+import { normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
+
 export function persistentActivationSpawnOptions({ cwd, env = process.env } = {}) {
   if (typeof cwd !== "string" || !cwd) {
     throw new TypeError("persistent activation subprocess requires cwd");
@@ -39,24 +41,13 @@ export function validateActivationRecoveryPayload(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("persistent activation result is invalid");
   }
-  const recovered = value.activation_recovered;
-  if (typeof recovered !== "boolean") {
-    throw new Error("persistent activation recovery flag is missing or invalid");
+  try {
+    return normalizeActivationRecovery({
+      recovered: value.activation_recovered,
+      reason: value.activation_recovery_reason,
+      detail: value.activation_recovery_detail,
+    });
+  } catch (error) {
+    throw new Error(`persistent ${String(error?.message || "activation recovery metadata is invalid")}`, { cause: error });
   }
-  const reason = value.activation_recovery_reason;
-  const detail = value.activation_recovery_detail;
-  if (!recovered) {
-    if (![null, undefined, ""].includes(reason) || ![null, undefined, ""].includes(detail)) {
-      throw new Error("persistent activation recovery metadata is inconsistent");
-    }
-    return Object.freeze({ recovered: false, reason: "", detail: "" });
-  }
-  if (!/^[a-z0-9_]{1,80}$/.test(String(reason || ""))) {
-    throw new Error("persistent activation recovery reason is invalid");
-  }
-  const text = String(detail || "");
-  if (!text || text.length > 600 || /[\r\n\t]/.test(text)) {
-    throw new Error("persistent activation recovery detail is invalid");
-  }
-  return Object.freeze({ recovered: true, reason: String(reason), detail: text });
 }

@@ -26,7 +26,7 @@ export default [
     ignores: ["node_modules/**", ".wrangler/**"],
   },
   {
-    files: ["eslint.config.mjs", "bin/**/*.mjs", "src/local/**/*.{js,mjs}", "scripts/**/*.{js,mjs}", ".github/scripts/**/*.{js,mjs}", "tests/**/*.mjs"],
+    files: ["eslint.config.mjs", "bin/**/*.mjs", "src/local/**/*.{js,mjs}", "src/shared/**/*.{js,mjs}", "scripts/**/*.{js,mjs}", ".github/scripts/**/*.{js,mjs}", "tests/**/*.mjs"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",

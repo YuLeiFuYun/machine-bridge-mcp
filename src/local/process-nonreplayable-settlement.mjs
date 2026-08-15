@@ -5,7 +5,7 @@ import { processOutcomeUnknownAfterSpawn } from "./process-result-projection.mjs
 /** @param {unknown} error @param {boolean} nonReplayable */
 export function processPreSpawnFailure(error, nonReplayable) {
   if (!nonReplayable || error instanceof BridgeError) return error;
-  return new BridgeError("execution_failed", boundedMessage(error), {
+  return new BridgeError("execution_failed", "process failed before spawn", {
     cause: error instanceof Error ? error : undefined,
     retryable: false,
     details: { reason: "process_failed_before_spawn" },
@@ -42,15 +42,9 @@ export function processPostSpawnFailure(nonReplayable, trigger, fallback, detail
 export function processChildErrorFailure(nonReplayable, error, started) {
   if (!nonReplayable) return error;
   if (started) return processOutcomeUnknownAfterSpawn("process_error");
-  return new BridgeError("execution_failed", boundedMessage(error), {
+  return new BridgeError("execution_failed", "process failed before spawn", {
     cause: error instanceof Error ? error : undefined,
     retryable: false,
     details: { reason: "process_failed_before_spawn" },
   });
-}
-
-/** @param {unknown} error */
-function boundedMessage(error) {
-  const message = error instanceof Error ? error.message : String(error || "process failed before spawn");
-  return message.replace(/[\r\n]+/g, " ").slice(0, 4096) || "process failed before spawn";
 }

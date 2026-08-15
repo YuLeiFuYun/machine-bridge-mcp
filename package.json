@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.80",
+  "version": "3.0.0-beta.82",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -125,7 +125,7 @@
     "account:test": "node tests/account-admin-test.mjs",
     "sarif-security:test": "node tests/sarif-security-gate-test.mjs",
     "security-properties:test": "node tests/security-properties-test.js",
-    "lint": "eslint eslint.config.mjs bin src/local scripts tests browser-extension .github/scripts",
+    "lint": "eslint eslint.config.mjs bin src/local src/shared scripts tests browser-extension .github/scripts",
     "lint:test": "node tests/lint-gate-test.mjs",
     "shell:test": "node tests/shell-test.mjs",
     "deadline:test": "node tests/monotonic-deadline-test.mjs",

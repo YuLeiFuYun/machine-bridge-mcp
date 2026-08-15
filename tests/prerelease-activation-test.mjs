@@ -1,13 +1,22 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTIVATION_SCHEMA_VERSION, assertPrereleaseActivationRuntimeRoot, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
+import { ACTIVATION_SCHEMA_VERSION, assertPrereleaseActivationRuntimeRoot, prereleaseActivationPath, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
 import { discoverForegroundDaemonRecovery, foregroundPid } from "../scripts/foreground-daemon-recovery.mjs";
 import { persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
 import { inspectGlobalPackageInstallation } from "../scripts/global-package-installation.mjs";
+import { canonicalActivationRecoveryDetail, normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-prerelease-activation-"));
 try {
+  assert(canonicalActivationRecoveryDetail("relay_authentication_failed") === "candidate relay authentication failed after readiness",
+    "activation recovery detail mapping drifted");
+  expectThrow(() => canonicalActivationRecoveryDetail("unknown_recovery"), "reason is invalid");
+  expectThrow(() => canonicalActivationRecoveryDetail(7), "reason is invalid");
+  expectThrow(() => normalizeActivationRecovery({ recovered: "false", reason: null, detail: null }), "flag is invalid");
+  expectThrow(() => normalizeActivationRecovery({ recovered: true, reason: "relay_authentication_failed", detail: "" }), "detail is invalid");
+  expectThrow(() => normalizeActivationRecovery({ recovered: true, reason: "relay_authentication_failed", detail: "bad\nline" }), "detail is invalid");
+
   const globalRoot = join(root, "global-root");
   const installedRoot = join(globalRoot, "machine-bridge-mcp");
   mkdirSync(join(installedRoot, "bin"), { recursive: true });
@@ -77,11 +86,39 @@ try {
     package_version: "3.0.0-beta.3",
     activation_recovered: true,
     activation_recovery_reason: "relay_authentication_failed",
-    activation_recovery_detail: "remote relay rejected the foreground candidate after readiness",
+    activation_recovery_detail: "remote relay rejected /private/tmp/operator-secret at https://private.example.invalid/token",
   });
   assert(recoveredRecord.activation_recovered === true
-    && recoveredRecord.activation_recovery_reason === "relay_authentication_failed",
-  "recovered activation metadata did not normalize");
+    && recoveredRecord.activation_recovery_reason === "relay_authentication_failed"
+    && recoveredRecord.activation_recovery_detail === "candidate relay authentication failed after readiness"
+    && !JSON.stringify(recoveredRecord).includes("/private/tmp/operator-secret")
+    && !JSON.stringify(recoveredRecord).includes("private.example.invalid"),
+  "recovered activation metadata did not normalize to privacy-safe synthetic evidence");
+  const privacySafeFile = writePrereleaseActivation({
+    ...base,
+    package_version: "3.0.0-beta.4",
+    activation_recovered: true,
+    activation_recovery_reason: "relay_authentication_failed",
+    activation_recovery_detail: "lower-layer detail /private/tmp/operator-secret credential=operator-secret-value",
+  }, root);
+  const privacySafeBytes = readFileSync(privacySafeFile, "utf8");
+  assert(privacySafeBytes.includes("candidate relay authentication failed after readiness")
+    && !privacySafeBytes.includes("/private/tmp/operator-secret")
+    && !privacySafeBytes.includes("operator-secret-value"),
+  "activation writer persisted lower-layer recovery detail instead of canonical evidence");
+  const historicalSchema2Version = "3.0.0-beta.5";
+  const historicalSchema2File = prereleaseActivationPath(historicalSchema2Version, root);
+  writeFileSync(historicalSchema2File, `${JSON.stringify({
+    ...base,
+    package_version: historicalSchema2Version,
+    activation_recovered: true,
+    activation_recovery_reason: "autostart_install_failed",
+    activation_recovery_detail: "historical lower-layer detail /private/tmp/operator-secret",
+  }, null, 2)}\n`, { mode: 0o600 });
+  const normalizedHistoricalSchema2 = readPrereleaseActivation(historicalSchema2Version, root);
+  assert(normalizedHistoricalSchema2.activation_recovery_detail === "candidate autostart installation failed after readiness"
+    && !JSON.stringify(normalizedHistoricalSchema2).includes("/private/tmp/operator-secret"),
+  "historical schema-2 activation detail was not normalized at the disk-read boundary");
   expectThrow(() => validatePrereleaseActivation({
     ...base,
     activation_recovery_reason: "relay_authentication_failed",
@@ -92,6 +129,17 @@ try {
     activation_recovery_reason: "bad-reason",
     activation_recovery_detail: "detail",
   }), "reason is invalid");
+  expectThrow(() => validatePrereleaseActivation({
+    ...base,
+    activation_recovered: true,
+    activation_recovery_reason: "relay_authentication_failed",
+    activation_recovery_detail: 7,
+  }), "detail is invalid");
+  expectThrow(() => validateActivationRecoveryPayload({
+    activation_recovered: true,
+    activation_recovery_reason: { value: "relay_authentication_failed" },
+    activation_recovery_detail: "detail",
+  }), "reason is invalid");
   assert(validateActivationRecoveryPayload({
     activation_recovered: false,
     activation_recovery_reason: null,
@@ -100,8 +148,8 @@ try {
   assert(validateActivationRecoveryPayload({
     activation_recovered: true,
     activation_recovery_reason: "autostart_start_failed",
-    activation_recovery_detail: "autostart did not persist",
-  }).reason === "autostart_start_failed", "recovered activation payload did not normalize");
+    activation_recovery_detail: "autostart did not persist at D:\\tmp\\operator-secret",
+  }).detail === "candidate autostart start failed after readiness", "recovered activation payload did not normalize to canonical detail");
   expectThrow(() => validateActivationRecoveryPayload({
     activation_recovered: false,
     activation_recovery_reason: "unexpected",

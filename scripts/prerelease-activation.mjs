@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { defaultStateRoot, expandHome } from "../src/local/state.mjs";
 import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { normalizeActivationRecovery as normalizeSharedActivationRecovery } from "../src/shared/activation-recovery.mjs";
 import { assertSoakEligiblePrerelease } from "./release-channel.mjs";
 
 export const ACTIVATION_SCHEMA_VERSION = 2;
@@ -119,26 +120,30 @@ export function validatePrereleaseActivation(value) {
 }
 
 function normalizeActivationRecovery(value) {
-  const recovered = value.activation_recovered === true;
   if (value.activation_recovered !== undefined && typeof value.activation_recovered !== "boolean") {
     throw new Error("prerelease activation recovery flag is invalid");
   }
-  const reason = String(value.activation_recovery_reason || "");
-  const detail = String(value.activation_recovery_detail || "");
-  if (!recovered) {
-    if (reason || detail) throw new Error("prerelease activation recovery metadata requires a recovered activation");
-    return Object.freeze({});
+  if (value.activation_recovered !== true
+      && (String(value.activation_recovery_reason || "") || String(value.activation_recovery_detail || ""))) {
+    throw new Error("prerelease activation recovery metadata requires a recovered activation");
   }
-  if (!/^[a-z0-9_]{1,80}$/.test(reason)) {
-    throw new Error("prerelease activation recovery reason is invalid");
+  let normalized;
+  try {
+    normalized = normalizeSharedActivationRecovery({
+      recovered: value.activation_recovered === true,
+      reason: value.activation_recovery_reason,
+      detail: value.activation_recovery_detail,
+    });
+  } catch (error) {
+    const message = String(error?.message || "activation recovery metadata is invalid")
+      .replace(/^activation recovery /, "prerelease activation recovery ");
+    throw new Error(message, { cause: error });
   }
-  if (!detail || detail.length > 600 || /[\r\n\t]/.test(detail)) {
-    throw new Error("prerelease activation recovery detail is invalid");
-  }
+  if (!normalized.recovered) return Object.freeze({});
   return Object.freeze({
     activation_recovered: true,
-    activation_recovery_reason: reason,
-    activation_recovery_detail: detail,
+    activation_recovery_reason: normalized.reason,
+    activation_recovery_detail: normalized.detail,
   });
 }
 

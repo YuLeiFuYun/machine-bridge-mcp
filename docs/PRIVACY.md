@@ -80,6 +80,8 @@ Before committing or publishing:
 
 The scanner is heuristic. It cannot identify every personal or organizational name, split/transformed/encrypted value, image, archive, binary fixture, custom credential format, unreachable/pruned object, reflog-only object, fork/cache copy, or Git identity header. Passing current-tree and reachable-history checks is a gate, not proof that every publication copy contains no private data.
 
+Recovered prerelease activation is also a publication-sensitive evidence boundary. Current schema-2 records may retain only an allowlisted recovery reason plus the fixed canonical detail owned by that reason. Lower-layer exception messages can contain paths, endpoints, account identifiers, or credential-shaped text, so they must stay in local causal/debugging state and must not be copied into recovered-success CLI JSON or activation records. Historical schema-2 records with a bounded legacy detail are normalized to the canonical detail when read; the current writer never republishes the legacy text.
+
 ## Incident response
 
 For an accidental publication, remove the value from the current tree and release artifacts, determine whether it is merely identifying metadata or an active credential, and rotate/revoke any credential immediately. Public Git and npm history are immutable in ordinary workflows: replacing the current file does not erase old commits or a published package. A coordinated history rewrite, cache invalidation request, or replacement release may be appropriate, but those actions are disruptive and require an explicit repository-owner decision.

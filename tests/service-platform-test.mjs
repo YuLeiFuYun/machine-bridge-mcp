@@ -762,6 +762,7 @@ async function launchdStatusContractTest() {
 async function launchdStopContractTest() {
   let unavailableCommands = 0;
   const unavailable = await stopLaunchdService(quietLogger(), {
+    uid: "not-needed-before-mutation",
     readStatus: async () => ({ installed: true, loaded: false, active: false, state: "unknown", status_available: false, status_query_code: 5 }),
     run: async () => { unavailableCommands += 1; return { code: 0, stdout: "", stderr: "" }; },
   });
@@ -770,6 +771,7 @@ async function launchdStopContractTest() {
   assert.equal(unavailableCommands, 0, "ambiguous launchd status mutated the provider before diagnosis");
 
   const absent = await stopLaunchdService(quietLogger(), {
+    uid: "not-needed-before-mutation",
     readStatus: async () => ({ installed: true, loaded: false, active: false, state: "inactive", status_available: true, status_query_code: LAUNCHD_MISSING_SERVICE_CODE }),
   });
   assert.equal(absent.ok, true);
@@ -782,6 +784,7 @@ async function launchdStopContractTest() {
   ];
   const stopCommands = [];
   const stopped = await stopLaunchdService(quietLogger(), {
+    uid: 501,
     readStatus: async () => stoppedStatuses.shift(),
     run: async (command, args) => { stopCommands.push([command, ...args].join(" ")); return { code: 0, stdout: "", stderr: "" }; },
     waitForUnloaded: async readStatus => readStatus(),
@@ -791,12 +794,14 @@ async function launchdStopContractTest() {
   assert.equal(stopped.active, false);
   assert.equal(stopped.restore_required, true);
   assert.equal(stopCommands.length, 1);
+  assert.equal(stopCommands[0], "launchctl bootout gui/501/dev.machine-bridge-mcp.daemon");
 
   const stillLoadedStatuses = [
     { installed: true, loaded: true, active: true, state: "running", status_available: true, status_query_code: 0 },
     { installed: true, loaded: true, active: false, state: "exited", status_available: true, status_query_code: 0 },
   ];
   const stillLoaded = await stopLaunchdService(quietLogger(), {
+    uid: 501,
     readStatus: async () => stillLoadedStatuses.shift(),
     run: async () => ({ code: 0, stdout: "", stderr: "" }),
     waitForUnloaded: async readStatus => readStatus(),
@@ -806,6 +811,7 @@ async function launchdStopContractTest() {
   assert.equal(stillLoaded.loaded, true);
 
   const lostStatus = await stopLaunchdService(quietLogger(), {
+    uid: 501,
     readStatus: async () => ({ installed: true, loaded: true, active: true, state: "running", status_available: true, status_query_code: 0 }),
     run: async () => ({ code: 0, stdout: "", stderr: "" }),
     waitForUnloaded: async () => ({ installed: true, loaded: false, active: false, state: "unknown", status_available: false, status_query_code: 5 }),

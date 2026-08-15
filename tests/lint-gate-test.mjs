@@ -11,6 +11,12 @@ const nodeResults = await eslint.lintText(
 );
 assertNoUndef(nodeResults[0], "missingStartupBinding", "Node production configuration");
 
+const sharedResults = await eslint.lintText(
+  "export function sharedProbe() { return missingSharedBinding; }\n",
+  { filePath: join(root, "src", "shared", "__lint-shared-probe__.mjs") },
+);
+assertNoUndef(sharedResults[0], "missingSharedBinding", "shared runtime configuration");
+
 const browserResults = await eslint.lintText(
   "importScripts('fixture.js');\nfunction browserProbe() { return missingBrowserBinding; }\nvoid browserProbe;\n",
   { filePath: join(root, "browser-extension", "__lint-browser-probe__.js") },
@@ -36,7 +42,7 @@ for (const ruleId of ["no-promise-executor-return", "no-unsafe-finally"]) {
 
 const unusedResults = await eslint.lintText(
   'import { readFile } from "node:fs/promises";\nvoid 0;',
-  { filePath: join(root, "src", "local", "__lint-unused-probe__.mjs") },
+  { filePath: join(root, "src", "shared", "__lint-unused-probe__.mjs") },
 );
 if (!unusedResults[0].messages.some((message) => message.ruleId === "no-unused-vars" && message.message.includes("readFile"))) {
   throw new Error(`semantic lint configuration did not reject an unused import: ${JSON.stringify(unusedResults[0].messages)}`);

@@ -592,7 +592,7 @@ async function testCandidateFatalDuringInstall() {
       installCalls += 1;
       events.push(`service:install:${installCalls}`);
       if (installCalls === 1) {
-        terminalError = new Error("relay fatal during install");
+        terminalError = new Error("relay fatal during install at /private/tmp/operator-secret; credential=operator-secret-value");
         terminalError.code = "relay_authentication_failed";
       }
       await Promise.resolve();
@@ -606,9 +606,11 @@ async function testCandidateFatalDuringInstall() {
   });
   assert(result.ok === true && result.activationRecovered === true
     && result.recoveryReason === "relay_authentication_failed"
-    && result.recoveryDetail === "relay fatal during install"
+    && result.recoveryDetail === "candidate relay authentication failed after readiness"
+    && !JSON.stringify(result).includes("/private/tmp/operator-secret")
+    && !JSON.stringify(result).includes("operator-secret-value")
     && result.candidateRelayVerified === true,
-  "post-ready candidate authentication failure did not settle through verified service recovery");
+  "post-ready candidate authentication failure did not settle through privacy-safe verified service recovery");
   assert(events.includes("runtime:stop") && events.includes("daemon:release") && events.includes("startup:release")
     && installCalls === 2 && events.includes("service:install:2") && events.at(-1) === "service:start-recovery",
   "candidate fatal did not clean up, reinstall, and verify the compatible service");
@@ -823,7 +825,7 @@ async function testServiceFailureAfterVerifiedCandidate() {
   });
   assert(result.ok === true && result.activationRecovered === true
     && result.recoveryReason === "autostart_start_failed"
-    && result.recoveryDetail.includes("did not reach an active persistent service")
+    && result.recoveryDetail === "candidate autostart start failed after readiness"
     && result.candidateRelayVerified === true,
   "verified service-handoff recovery did not settle as a successful activation");
   assert(events.indexOf("runtime:start") < events.indexOf("runtime:stop"), "candidate relay was not verified before service handoff failure");

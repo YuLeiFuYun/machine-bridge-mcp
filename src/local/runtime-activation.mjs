@@ -1,3 +1,5 @@
+import { canonicalActivationRecoveryDetail, isActivationRecoveryReason } from "../shared/activation-recovery.mjs";
+
 export async function activatePersistentRuntime(options = {}) {
   const required = [
     "acquireStartupLock",
@@ -408,12 +410,6 @@ function requireActiveServiceStart(result, operation, code = "") {
   }
 }
 
-const RECOVERABLE_POST_READY_CODES = new Set([
-  "relay_authentication_failed",
-  "autostart_install_failed",
-  "autostart_start_failed",
-]);
-
 function activationOperationalError(message, code) {
   const error = new Error(message);
   error.code = code;
@@ -421,11 +417,11 @@ function activationOperationalError(message, code) {
 }
 
 function recoverablePostReadySettlement(error) {
-  return RECOVERABLE_POST_READY_CODES.has(String(error?.code || ""));
+  return isActivationRecoveryReason(error?.code);
 }
 
 function activationRecoveryDetail(error) {
-  return activationErrorMessage(error).replace(/[\r\n\t]+/g, " ").slice(0, 600);
+  return canonicalActivationRecoveryDetail(activationRecoveryReason(error));
 }
 
 function activationFailureWithRecovery(error) {
@@ -459,8 +455,9 @@ function activationErrorMessage(error) {
 }
 
 function activationRecoveryReason(error) {
-  const code = String(error?.code || "activation_failure");
-  return /^[a-z0-9_]{1,80}$/.test(code) ? code : "activation_failure";
+  const code = String(error?.code || "");
+  if (!isActivationRecoveryReason(code)) throw new Error("activation recovery reason is invalid");
+  return code;
 }
 
 export async function waitForRestoredServiceRuntime({

@@ -146,9 +146,11 @@ const ordinaryPreSpawn = new Error("ordinary pre-spawn");
 assert.strictEqual(processPreSpawnFailure(ordinaryPreSpawn, false), ordinaryPreSpawn);
 const bridgePreSpawn = new BridgeError("policy_denied", "already classified");
 assert.strictEqual(processPreSpawnFailure(bridgePreSpawn, true), bridgePreSpawn);
-const rawPreSpawn = processPreSpawnFailure("raw\npre-spawn", true);
+const rawPreSpawn = processPreSpawnFailure(new Error("raw pre-spawn /private/tmp/operator-secret"), true);
 assert.equal(rawPreSpawn.code, "execution_failed");
-assert.equal(rawPreSpawn.message, "raw pre-spawn");
+assert.equal(rawPreSpawn.message, "process failed before spawn");
+assert.equal(JSON.stringify({ message: rawPreSpawn.message, details: rawPreSpawn.details }).includes("/private/tmp/operator-secret"), false,
+  "non-replayable pre-spawn public error exposed lower-layer exception text");
 
 const timeoutAbort = new AbortController();
 timeoutAbort.abort(new BridgeError("timeout", "deadline reached"));
@@ -171,6 +173,7 @@ assert.equal(processPostSpawnFailure(true, "process_error", fallback, { marker: 
 assert.strictEqual(processChildErrorFailure(false, fallback, true), fallback);
 assert.equal(processChildErrorFailure(true, fallback, true).details.trigger, "process_error");
 assert.equal(processChildErrorFailure(true, "", false).message, "process failed before spawn");
+assert.equal(processChildErrorFailure(true, new Error("spawn failed at /private/tmp/operator-secret"), false).message, "process failed before spawn");
 
 await new Promise((resolve) => { setImmediate(resolve); });
 assert.equal(tracker.snapshot().active_processes, 0, "process settlement fixtures leaked tracked children");

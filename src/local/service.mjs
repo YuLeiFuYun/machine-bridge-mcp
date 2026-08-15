@@ -406,8 +406,6 @@ async function restartLaunchd(logger) {
 
 export async function stopLaunchdService(logger = console, options = {}) {
   const plistPath = launchdPlistPath();
-  const domainTarget = launchdDomainTarget();
-  const serviceTarget = launchdServiceTarget();
   const run = typeof options.run === "function" ? options.run : serviceRun;
   const readStatus = typeof options.readStatus === "function" ? options.readStatus : statusLaunchd;
   const waitForUnloaded = typeof options.waitForUnloaded === "function"
@@ -438,6 +436,9 @@ export async function stopLaunchdService(logger = console, options = {}) {
     };
   }
 
+  const uid = options.uid === undefined ? process.getuid?.() : options.uid;
+  const domainTarget = launchdDomainTarget(uid);
+  const serviceTarget = launchdServiceTarget(uid);
   const byServiceTarget = await run("launchctl", ["bootout", serviceTarget]);
   const byPlist = byServiceTarget.code === 0
     ? null

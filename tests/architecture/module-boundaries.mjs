@@ -282,6 +282,7 @@ const lineLimits = Object.freeze({
   "src/local/resource-waiters.mjs": 140,
   "src/shared/tool-call-capacity.mjs": 80,
   "src/shared/project-overview-projection.mjs": 110,
+  "src/shared/activation-recovery.mjs": 70,
   "src/local/call-capacity.mjs": 70,
   "src/local/git-service.mjs": 220,
   "src/local/git-config-safety.mjs": 65,

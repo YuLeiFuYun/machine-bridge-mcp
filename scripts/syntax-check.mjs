@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as vm from "node:vm";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const roots = ["bin", "src/local", "scripts", "tests", "browser-extension", ".github/scripts"];
+const roots = ["bin", "src/local", "src/shared", "scripts", "tests", "browser-extension", ".github/scripts"];
 const files = roots.flatMap((entry) => collect(join(root, entry)))
   .filter((file) => [".js", ".mjs"].includes(extname(file)))
   .sort();

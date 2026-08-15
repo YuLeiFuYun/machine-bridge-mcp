@@ -27,6 +27,7 @@
     "src/local/agent-contract.mjs",
     "src/local/browser-extension-protocol.mjs",
     "src/local/browser-request-settlement.mjs",
+    "src/shared/activation-recovery.mjs",
     "src/local/computer-use-snapshot-store.mjs",
     "src/local/call-registry.mjs",
     "src/local/process-nonreplayable-settlement.mjs",

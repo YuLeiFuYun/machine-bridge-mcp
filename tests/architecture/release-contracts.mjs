@@ -10,15 +10,31 @@ if (/not found\|does not exist\|could not find/i.test(cliSource) || !cliSource.i
 }
 const cliActivateSource = readFileSync(join(root, "src", "local", "cli-activate.mjs"), "utf8");
 const runtimeActivationSource = readFileSync(join(root, "src", "local", "runtime-activation.mjs"), "utf8");
+const activationRecoverySource = readFileSync(join(root, "src", "shared", "activation-recovery.mjs"), "utf8");
 for (const required of [
   "recovery?.candidateServiceStarted && candidateRelayVerified && recoverablePostReadySettlement(error)",
-  "RECOVERABLE_POST_READY_CODES",
+  "isActivationRecoveryReason",
   "activationRecovered: true",
   "recoveryReason: activationRecoveryReason(error)",
   "recoveryDetail: activationRecoveryDetail(error)",
+  "canonicalActivationRecoveryDetail(activationRecoveryReason(error))",
   "if (settlement?.ok === true) return settlement",
 ]) {
   if (!runtimeActivationSource.includes(required)) throw new Error(`runtime activation lost verified recovered-success boundary: ${required}`);
+}
+for (const required of [
+  "relay_authentication_failed", "autostart_install_failed", "autostart_start_failed",
+  "canonicalActivationRecoveryDetail", "normalizeActivationRecovery",
+]) {
+  if (!activationRecoverySource.includes(required)) throw new Error(`activation recovery evidence lost canonical privacy boundary: ${required}`);
+}
+if (activationRecoverySource.includes("error.message") || activationRecoverySource.includes("String(error")) {
+  throw new Error("activation recovery evidence regained lower-layer exception text");
+}
+const nonReplayableSettlementSource = readFileSync(join(root, "src", "local", "process-nonreplayable-settlement.mjs"), "utf8");
+if (!nonReplayableSettlementSource.includes('"process failed before spawn"')
+    || nonReplayableSettlementSource.includes("boundedMessage(error)")) {
+  throw new Error("non-replayable pre-spawn settlement regained lower-layer exception text");
 }
 for (const required of ["activation_recovered", "activation_recovery_reason", "activation_recovery_detail", "verified candidate-service recovery"]) {
   if (!cliActivateSource.includes(required)) throw new Error(`candidate activation CLI lost recovered-result visibility: ${required}`);
@@ -160,7 +176,7 @@ if (packageJson.scripts?.["capability-ranking:test"] !== "node tests/capability-
 if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
   throw new Error("package syntax check is not using the dynamic repository scanner");
 }
-if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local scripts tests browser-extension .github/scripts") {
+if (packageJson.scripts?.lint !== "eslint eslint.config.mjs bin src/local src/shared scripts tests browser-extension .github/scripts") {
   throw new Error("production/test undefined-identifier lint gate is missing or drifted");
 }
 if (packageJson.scripts?.["lint:test"] !== "node tests/lint-gate-test.mjs") {
@@ -227,6 +243,9 @@ for (const lifecycle of ["prepare", "postpack", "prepublish", "publish", "postpu
 if (packageJson.scripts?.["release:candidate"] !== "npm run check && node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses the complete suite");
 if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-release-candidate.mjs") throw new Error("isolated candidate startup command is missing");
 const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.mjs"), "utf8");
+for (const required of ['"tests/prerelease-activation-test.mjs"', '"src/shared/activation-recovery.mjs"']) {
+  if (!coverageRunnerSource.includes(required)) throw new Error(`critical release recovery coverage lost boundary: ${required}`);
+}
 if (!coverageRunnerSource.includes("maxRetries") || !coverageRunnerSource.includes("retryDelay")) {
   throw new Error("coverage temporary-directory cleanup lost its concurrent-writer retry boundary");
 }
@@ -730,10 +749,21 @@ const sbomCheckSource = readFileSync(join(root, "scripts", "sbom-check.mjs"), "u
 for (const required of ["npm_execpath", "--workspaces=false", "--sbom-format", "cyclonedx", "CycloneDX 1.5", "dependencyByReference.size !== references.size", "SIGKILL", "MAX_SBOM_BYTES"]) {
   if (!sbomCheckSource.includes(required)) throw new Error(`SBOM validation lost required boundary: ${required}`);
 }
-if (!readFileSync(join(root, "scripts", "syntax-check.mjs"), "utf8").includes('".github/scripts"')
+const syntaxCheckSource = readFileSync(join(root, "scripts", "syntax-check.mjs"), "utf8");
+const eslintConfigSource = readFileSync(join(root, "eslint.config.mjs"), "utf8");
+if (!syntaxCheckSource.includes('".github/scripts"')
     || !packageJson.scripts?.lint?.includes(".github/scripts")
-    || !readFileSync(join(root, "eslint.config.mjs"), "utf8").includes('".github/scripts/**/*.{js,mjs}"')) {
+    || !eslintConfigSource.includes('".github/scripts/**/*.{js,mjs}"')) {
   throw new Error("GitHub workflow control scripts are missing from syntax or lint gates");
+}
+if (!syntaxCheckSource.includes('"src/shared"')
+    || !packageJson.scripts?.lint?.includes("src/shared")
+    || !eslintConfigSource.includes('"src/shared/**/*.{js,mjs}"')) {
+  throw new Error("shared runtime modules are missing from syntax or correctness lint gates");
+}
+const localTypecheckSource = readFileSync(join(root, "tsconfig.local.json"), "utf8");
+if (!localTypecheckSource.includes('"src/shared/activation-recovery.mjs"')) {
+  throw new Error("activation recovery evidence contract is missing from strict local typecheck");
 }
 const secureFileSource = readFileSync(join(root, "src", "local", "secure-file.mjs"), "utf8");
 if (!secureFileSource.includes("inspectPathIfPresentSync") || !secureFileSource.includes('error?.code === "ENOENT"')) {

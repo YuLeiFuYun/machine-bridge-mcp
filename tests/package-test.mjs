@@ -99,6 +99,9 @@ try {
   ]) {
     if (!record.files.some((item) => item.path === `src/shared/${module}`)) throw new Error(`npm package omitted shared MCP contract ${module}`);
   }
+  if (!record.files.some((item) => item.path === "src/shared/activation-recovery.mjs")) {
+    throw new Error("npm package omitted shared activation recovery evidence contract");
+  }
   if (!record.files.some((item) => item.path === "src/worker/pending-calls.ts")) throw new Error("npm package omitted the worker pending calls module");
   if (!record.files.some((item) => item.path === "src/worker/daemon-liveness.ts")) throw new Error("npm package omitted the worker daemon liveness module");
   if (!record.files.some((item) => item.path === "src/worker/policy.ts")) throw new Error("npm package omitted the worker policy module");
