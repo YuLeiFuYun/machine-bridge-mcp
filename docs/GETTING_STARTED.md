@@ -197,18 +197,15 @@ Password: account_password_...
 
 Save the generated password in a password manager. It is not stored locally or shown again. Do not place it in a repository, issue, screenshot, chat message, shell history note, or shared document.
 
-Current ChatGPT developer-mode flow, as documented in OpenAI's [Connect from ChatGPT](https://developers.openai.com/apps-sdk/deploy/connect-chatgpt) guide:
+Current ChatGPT custom-app flow, as documented in OpenAI's Apps/Apps SDK guidance:
 
-1. Open ChatGPT settings.
-2. Under **Security and login**, enable **Developer mode** if the account or workspace permits it.
-3. Open **Plugins** and create a developer-mode app.
-4. Enter a descriptive name and the exact printed `/mcp` URL.
-5. Start the connection.
-6. On the Machine Bridge authorization page, verify the displayed client name, redirect URI, and resource.
-7. Enter the Machine Bridge account name and password only after those values are recognized.
-8. Create a new chat and enable the app for that conversation.
+1. In the ChatGPT workspace app settings, create a custom app for the exact printed `/mcp` URL if one does not already exist.
+2. Complete the Machine Bridge OAuth flow. On the authorization page, verify the displayed client name, redirect URI, and resource before entering the Machine Bridge account name and password.
+3. Publish/enable the app for the intended workspace users and review its allowed actions according to workspace policy.
+4. In a supported chat surface, invoke the enabled app using the host's current app-selection or explicit app-routing affordance. ChatGPT UI labels and whether the app is visibly attached before the first invocation can vary by surface and host version.
+5. After changing the MCP tool catalog or input schemas, use the workspace app's refresh/review flow so the host action snapshot matches the running server before relying on new actions.
 
-ChatGPT navigation labels can change. The invariant is that the client must connect to the public `/mcp` endpoint and complete the OAuth authorization page served by the Worker. The same public `/mcp` URL can be entered in Grok where remote MCP configuration is available. Machine Bridge grants CORS response access to the exact `https://chatgpt.com`, `https://grok.com`, and `https://x.com` browser origins without requiring a Wrangler command. OAuth navigation and form POST requests are not failed solely because an embedded authorization container reports an opaque or different origin. After validation, the consent page CSP includes only the exact registered callback origin so the browser can complete the `303` return.
+An enabled workspace app is not evidence that every existing conversation has the same host-side app route or cached action/tool snapshot. If a fresh supported conversation can call `server_info` but an older conversation fails before any structured Machine Bridge response, do not diagnose the local daemon as platform-disabled; inspect the host conversation/surface route and app/action snapshot first. The transport invariant remains that ChatGPT connects to the public `/mcp` endpoint and completes the OAuth authorization page served by the Worker. The same public `/mcp` URL can be entered in Grok where remote MCP configuration is available. Machine Bridge grants CORS response access to the exact `https://chatgpt.com`, `https://grok.com`, and `https://x.com` browser origins without requiring a Wrangler command. OAuth navigation and form POST requests are not failed solely because an embedded authorization container reports an opaque or different origin. After validation, the consent page CSP includes only the exact registered callback origin so the browser can complete the `303` return.
 
 ### Claude custom connector
 

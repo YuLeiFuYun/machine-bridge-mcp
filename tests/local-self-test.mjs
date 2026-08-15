@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, win32 as winPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
@@ -276,6 +276,15 @@ async function stateSelfTest() {
     await mkdir(join(stateRoot, "toolchains"), { recursive: true });
     await mkdir(join(stateRoot, "release-channels", "runtimes"), { recursive: true });
     await mkdir(join(stateRoot, "release-tasks", "legacy-fixture"), { recursive: true });
+    const syntheticWinRoot = "D:\\machine-bridge-state";
+    const syntheticWinNativeRoot = "\\\\?\\D:\\machine-bridge-state";
+    const syntheticWinNativeEntry = `${syntheticWinNativeRoot}\\release-channels\\runtimes\\v3.0.0-test\\bin\\machine-mcp.mjs`;
+    if (!winPath.isAbsolute(winPath.relative(syntheticWinRoot, syntheticWinNativeEntry))) {
+      throw new Error("Windows state-root fixture no longer demonstrates mixed realpath namespace containment failure");
+    }
+    if (winPath.isAbsolute(winPath.relative(syntheticWinNativeRoot, syntheticWinNativeEntry))) {
+      throw new Error("Windows state-root fixture did not preserve same-namespace containment evidence");
+    }
     const previousEntryScript = process.argv[1];
     try {
       process.argv[1] = join(stateRoot, "release-channels", "runtimes", "v3.0.0-test", "bin", "machine-mcp.mjs");

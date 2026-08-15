@@ -765,6 +765,14 @@ const localTypecheckSource = readFileSync(join(root, "tsconfig.local.json"), "ut
 if (!localTypecheckSource.includes('"src/shared/activation-recovery.mjs"')) {
   throw new Error("activation recovery evidence contract is missing from strict local typecheck");
 }
+const stateEntrypointBoundaryStart = stateSource.indexOf("function currentEntrypointInsideStateRoot(root)");
+const stateEntrypointBoundaryEnd = stateSource.indexOf("\nfunction looksLikeSourceTree", stateEntrypointBoundaryStart);
+const stateEntrypointBoundary = stateEntrypointBoundaryStart >= 0 && stateEntrypointBoundaryEnd > stateEntrypointBoundaryStart
+  ? stateSource.slice(stateEntrypointBoundaryStart, stateEntrypointBoundaryEnd)
+  : "";
+for (const required of ["canonicalizePotentialPath(root)", "canonicalizePotentialPath(entry)", "path.relative(canonicalRoot, resolved)"]) {
+  if (!stateEntrypointBoundary.includes(required)) throw new Error(`state-root current-CLI removal guard lost canonical path-family alignment: ${required}`);
+}
 const secureFileSource = readFileSync(join(root, "src", "local", "secure-file.mjs"), "utf8");
 if (!secureFileSource.includes("inspectPathIfPresentSync") || !secureFileSource.includes('error?.code === "ENOENT"')) {
   throw new Error("shared present-path inspection no longer distinguishes only ENOENT as absence");

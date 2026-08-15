@@ -1118,7 +1118,7 @@ Create, activate, or close tabs in the paired existing Chromium profile. Tab mut
 
 **Read browser page source**
 
-Read bounded raw serialized DOM HTML from the active or selected tab when source markup is required. Use browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Read bounded raw serialized DOM HTML from the active or selected tab only when source markup is genuinely required. Raw source can contain hidden bootstrap, session, account, authentication, or other sensitive data that is not visible in the rendered page; treat the entire result as sensitive and do not use it for routine semantic inspection. Prefer browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|

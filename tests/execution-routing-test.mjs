@@ -135,6 +135,8 @@ assert(descriptions.get("run_process")?.includes("explicit executable plus argv"
 assert(descriptions.get("run_local_command")?.includes("repository already defines") && descriptions.get("run_local_command")?.includes("registered command"),
   "run_local_command description no longer distinguishes repeatable project commands");
 assert(descriptions.get("browser_get_source")?.includes("raw serialized DOM HTML")
+  && descriptions.get("browser_get_source")?.includes("hidden bootstrap, session, account, authentication")
+  && descriptions.get("browser_get_source")?.includes("do not use it for routine semantic inspection")
   && descriptions.get("browser_inspect_page")?.includes("semantic/actionability snapshot"),
 "browser source and semantic-inspection descriptions collided");
 assert(descriptions.get("resolve_task_capabilities")?.includes("set-level execution routes")

@@ -329,6 +329,8 @@ async function testRuntimeDiagnostics() {
     assert(shell.request_reached_local_runtime === true, "runtime diagnostic lost local reachability evidence");
     assert(shell.interpretation?.current_request_delivery?.includes("blanket current platform disable")
       && shell.interpretation?.tool_call_blocked_before_response?.includes("not observable by Machine Bridge")
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("conversation/surface app routing state")
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("stale host action/tool snapshot")
       && shell.interpretation?.tool_call_blocked_before_response?.includes("host-side evidence"),
     "runtime diagnostic overclaimed an unobservable host/platform refusal");
     assert(shell.runtime.lifecycle.state === "running"

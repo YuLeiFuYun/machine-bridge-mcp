@@ -188,7 +188,7 @@ After trusted input dispatch begins, an ambiguous failure is reported as unknown
 
 Computer Use screenshots share the ordinary MCP result-size boundary. When an image would make an observation result too large, the image is omitted before the snapshot ID is published and pixel-action authority is disabled. When a post-action image would overflow the same boundary, it is removed from the returned/stored post snapshot while the already-established mutation settlement and bounded continuation handle are preserved; the result never turns that dispatched action into a generic retryable size failure. Semantic state may still be returned. The experimental macOS background visual backend is disabled unless explicitly configured and successfully probed; Accessibility, Automation, Screen Recording, and the operating system remain independent enforcement boundaries.
 
-Local resources may be injected without returning their bytes through MCP, but the destination page or application still receives them. Screenshots and page source can themselves contain secrets.
+Local resources may be injected without returning their bytes through MCP, but the destination page or application still receives them. Screenshots and page source can themselves contain secrets. In particular, raw serialized HTML may contain hidden bootstrap/session/account/authentication values that are not visible in the rendered page; `browser_get_source` therefore should be used only when raw markup is required, with semantic inspection preferred for routine browser work.
 
 ## Filesystem and mutation integrity
 

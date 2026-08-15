@@ -105,7 +105,7 @@ export async function diagnoseRuntime({
     request_reached_local_runtime: true,
     interpretation: {
       current_request_delivery: "confirmed: this diagnose_runtime request reached the local runtime; this evidence does not support a blanket current platform disable of Machine Bridge",
-      tool_call_blocked_before_response: "not observable by Machine Bridge; possible causes include host tool filtering, connector gateway, client routing, or platform policy; do not attribute one without host-side evidence",
+      tool_call_blocked_before_response: "not observable by Machine Bridge; possible causes include conversation/surface app routing state, a stale host action/tool snapshot, host tool filtering, connector gateway, client routing, or platform policy; do not attribute one without host-side evidence",
       diagnostic_reached_daemon_but_spawn_failed: "local OS, endpoint security, shell configuration, or Machine Bridge policy",
       system_network_stack_scope: "application proxy selection only; an operating-system VPN or TUN may still intercept the relay connection",
       tunnel_default_route_detected: "the operating-system route is carried by a VPN/TUN; node selection and repair remain outside Machine Bridge",

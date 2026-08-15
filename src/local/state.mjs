@@ -739,9 +739,16 @@ function hasOnlyStateEntries(entries) {
 function currentEntrypointInsideStateRoot(root) {
   const entry = String(process.argv[1] || "").trim();
   if (!entry) return false;
+  let canonicalRoot;
   let resolved;
-  try { resolved = canonicalizePotentialPath(entry); } catch { resolved = path.resolve(entry); }
-  const relative = path.relative(root, resolved);
+  try {
+    canonicalRoot = canonicalizePotentialPath(root);
+    resolved = canonicalizePotentialPath(entry);
+  } catch {
+    canonicalRoot = path.resolve(root);
+    resolved = path.resolve(entry);
+  }
+  const relative = path.relative(canonicalRoot, resolved);
   return Boolean(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
