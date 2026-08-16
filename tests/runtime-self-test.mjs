@@ -10,6 +10,9 @@ import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 const SUCCESS_PROCESS_TIMEOUT_SECONDS = 30;
 const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000;
 const RUNTIME_GIT_FIXTURE_TIMEOUT_MS = 30_000;
+// Detached runner startup is OS-scheduled and can exceed ten seconds on loaded shared CI hosts.
+// This is a harness settlement budget, not a production execution or acceptance SLA.
+const DURABLE_JOB_SETTLEMENT_TEST_TIMEOUT_MS = 60_000;
 const PROCESS_TREE_ESCALATION_WAIT_MS = DEFAULT_PROCESS_TERMINATION_GRACE_MS
   + 2 * DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS
   + 2000;
@@ -676,7 +679,7 @@ async function waitForFileText(file, timeoutMs) {
   throw lastError || new Error(`timed out waiting for file: ${file}`);
 }
 
-async function waitForManagedJob(manager, jobId, context = {}, timeoutMs = 10_000) {
+async function waitForManagedJob(manager, jobId, context = {}, timeoutMs = DURABLE_JOB_SETTLEMENT_TEST_TIMEOUT_MS) {
   const deadline = performance.now() + timeoutMs;
   while (performance.now() < deadline) {
     const job = manager.read({ job_id: jobId }, context);
