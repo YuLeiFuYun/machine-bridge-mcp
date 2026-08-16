@@ -1,6 +1,6 @@
 import {
   effectiveForegroundTimeoutSeconds,
-  REMOTE_FOREGROUND_TIMEOUT_SECONDS,
+  remoteForegroundMaximumSeconds,
   remoteForegroundDefaultSeconds,
 } from "../shared/foreground-timeout.mjs";
 import { MAX_PROCESS_TIMEOUT_SECONDS } from "./execution-limits.mjs";
@@ -23,6 +23,6 @@ export function registeredCommandTimeoutSeconds(args, command, context = {}) {
   return Math.min(
     requested,
     command.timeoutSeconds,
-    remote ? REMOTE_FOREGROUND_TIMEOUT_SECONDS : MAX_PROCESS_TIMEOUT_SECONDS,
+    remote ? remoteForegroundMaximumSeconds("run_local_command") : MAX_PROCESS_TIMEOUT_SECONDS,
   );
 }

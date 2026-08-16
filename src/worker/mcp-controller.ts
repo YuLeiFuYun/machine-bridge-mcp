@@ -156,6 +156,8 @@ export class McpController {
   ): Promise<McpDispatchResult> {
     const inspected = inspectWorkerToolCall(request.params, this.config.tools(authorized));
     if (!inspected.ok) {
+      const compatibility = staleTimeoutSchemaCompatibilityResult(request, inspected.issues, this.config.serverInfo);
+      if (compatibility) return { status: 200, message: compatibility };
       const message = inspected.reason === "missing_name" ? "tools/call requires a tool name"
         : inspected.reason === "unknown_tool" ? "Unknown tool"
           : "Tool arguments do not match the input schema";
@@ -182,4 +184,24 @@ export class McpController {
       };
     }
   }
+}
+
+function staleTimeoutSchemaCompatibilityResult(
+  request: JsonRpcRequest,
+  issues: readonly Readonly<{ instancePath: string; keyword: string; message: string }>[] | undefined,
+  serverInfo: Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (!issues?.length || issues.some((issue) => issue.instancePath !== "/timeout_seconds" || issue.keyword !== "maximum")) return null;
+  return rpcResult(request.id, textToolResult({
+    error: {
+      code: "invalid_request",
+      message: "foreground timeout exceeds the current server limit; refresh tools/list and use start_process/read_process or start_job/read_job for longer work",
+      retryable: false,
+      details: {
+        side_effects_started: false,
+        schema_refresh_recommended: true,
+        validation_issues: [...issues],
+      },
+    },
+  }, true, serverInfo));
 }

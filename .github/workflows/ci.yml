@@ -57,7 +57,7 @@ jobs:
       - run: npm --version
       - run: npm ci
       - run: npm run check:full
-      - name: Verify interactive candidate acceptance
+      - name: Verify local candidate acceptance
         run: npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs
 
   package-audit:
@@ -77,7 +77,7 @@ jobs:
       - run: npm --version
       - run: npm ci
       - run: npm run privacy:history
-      - name: Verify interactive candidate acceptance
+      - name: Verify local candidate acceptance
         run: npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs
       - run: npm run install:test
       - run: npm run consumer-security:test

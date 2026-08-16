@@ -13,7 +13,7 @@ import {
   admitGlobalStatefulRequest, admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
   outerWorkerErrorClass, statefulRateLimitKey, statefulRouteClass, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
-import { daemonToolTimeoutBudget, remoteForegroundDefaultSeconds, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
+import { daemonToolTimeoutBudget, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_FOREGROUND_TIMEOUT_SECONDS, REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
 import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import {
@@ -867,18 +867,21 @@ function testRelayTimeoutContract() {
     "ordinary tool execution consumed its Worker settlement margin");
   assert(relayContract.maximumInteractiveExecutionTimeoutMs === 60_000, "interactive relay deadline lost its host-delivery margin");
   assert(REMOTE_FOREGROUND_TIMEOUT_SECONDS === 60, "remote foreground schema limit drifted from the relay execution budget");
+  assert(relayContract.maximumProcessForegroundExecutionTimeoutMs === 45_000
+    && REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS === 45,
+  "remote process foreground budget lost its host-settlement reserve");
   const defaultExecBudget = daemonToolTimeoutBudget("exec_command", {});
-  assert(defaultExecBudget.executionTimeoutMs === 60_000 && defaultExecBudget.settlementTimeoutMs === 65_000,
-    "remote configurable tool default lost its delivery margin");
-  const maximumExecBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 60 });
-  assert(maximumExecBudget.executionTimeoutMs === 60_000 && maximumExecBudget.settlementTimeoutMs === 65_000,
-    "maximum accepted foreground timeout did not reserve settlement time");
+  assert(defaultExecBudget.executionTimeoutMs === 30_000 && defaultExecBudget.settlementTimeoutMs === 35_000,
+    "remote process default did not preserve a short host-delivery margin");
+  const maximumExecBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 45 });
+  assert(maximumExecBudget.executionTimeoutMs === 45_000 && maximumExecBudget.settlementTimeoutMs === 50_000,
+    "maximum accepted process foreground timeout did not reserve host settlement time");
   const recoveredMaximumBudget = daemonToolTimeoutBudgetAfterDelay(maximumExecBudget, 10_000);
-  assert(recoveredMaximumBudget.executionTimeoutMs === 50_000 && recoveredMaximumBudget.settlementTimeoutMs === 55_000,
-    "new-call daemon recovery extended the 65-second hosted settlement envelope");
+  assert(recoveredMaximumBudget.executionTimeoutMs === 35_000 && recoveredMaximumBudget.settlementTimeoutMs === 40_000,
+    "new-call daemon recovery extended the process foreground settlement envelope");
   for (const malformedElapsed of [-1, Number.NaN]) {
     const unchanged = daemonToolTimeoutBudgetAfterDelay(maximumExecBudget, malformedElapsed);
-    assert(unchanged.executionTimeoutMs === 60_000 && unchanged.settlementTimeoutMs === 65_000,
+    assert(unchanged.executionTimeoutMs === 45_000 && unchanged.settlementTimeoutMs === 50_000,
       "invalid daemon-recovery elapsed time enlarged or reduced the original timeout budget");
   }
   const oneSecondBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 1 });
@@ -892,13 +895,13 @@ function testRelayTimeoutContract() {
     && exhaustedRecoveryError.retryable === true
     && exhaustedRecoveryError.details?.side_effects_started === false,
   "daemon recovery could dispatch after consuming the complete foreground execution window");
-  for (const requested of [61, 85, 120, 600]) {
+  for (const requested of [46, 61, 85, 120, 600]) {
     let rejected;
     try { daemonToolTimeoutBudget("exec_command", { timeout_seconds: requested }); }
     catch (error) { rejected = error; }
     assert(rejected instanceof WorkerToolError && rejected.code === "invalid_request" && rejected.retryable === false,
       `remote foreground timeout ${requested} was not rejected before dispatch`);
-    assert(rejected.details?.side_effects_started === false && rejected.details?.maximum_foreground_timeout_seconds === 60,
+    assert(rejected.details?.side_effects_started === false && rejected.details?.maximum_foreground_timeout_seconds === 45,
       `remote foreground timeout ${requested} omitted the no-side-effect contract`);
   }
   for (const requested of [0, -1, 1.5, "60", null, {}, Number.NaN]) {
@@ -909,7 +912,7 @@ function testRelayTimeoutContract() {
       `malformed remote foreground timeout ${String(requested)} was not rejected before dispatch`);
     assert(rejected.details?.side_effects_started === false
       && rejected.details?.minimum_foreground_timeout_seconds === 1
-      && rejected.details?.maximum_foreground_timeout_seconds === 60,
+      && rejected.details?.maximum_foreground_timeout_seconds === 45,
     `malformed remote foreground timeout ${String(requested)} omitted its strict pre-dispatch bounds`);
   }
   const validArguments = validateWorkerToolArguments("read_file", { path: "fixture.txt" });
@@ -924,7 +927,8 @@ function testRelayTimeoutContract() {
   for (const tool of configurableRemoteTools) {
     const timeout = tool.inputSchema.properties.timeout_seconds;
     const expectedDefault = remoteForegroundDefaultSeconds(tool.name);
-    assert(timeout.maximum === 60 && timeout.default === expectedDefault,
+    const expectedMaximum = remoteForegroundMaximumSeconds(tool.name);
+    assert(timeout.maximum === expectedMaximum && timeout.default === expectedDefault,
       `remote ${tool.name} schema drifted from its hosted timeout contract`);
     const budget = daemonToolTimeoutBudget(tool.name, {});
     assert(budget.executionTimeoutMs === expectedDefault * 1000

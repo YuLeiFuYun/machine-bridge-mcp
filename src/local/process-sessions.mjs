@@ -17,6 +17,7 @@ import { boundedErrorMessage, notifySessionWaiters, sessionHasOutputAfter, waitF
 import { terminateProcessSessions } from "./process-session-termination.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
 import { processSessionResourceWaitMs } from "./resource-foreground-wait.mjs";
+import { EXECUTION_SURFACE, withExecutionSurface } from "./execution-surface.mjs";
 import {
   MAX_PROCESS_SESSIONS, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_SESSION_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS,
 } from "./execution-limits.mjs";
@@ -106,8 +107,8 @@ export class ProcessSessionManager {
     if (this.sessions.size >= MAX_PROCESS_SESSIONS) throw new Error(`process session limit reached (${MAX_PROCESS_SESSIONS})`);
     this.throwIfCancelled(context);
 
-    const baseEnvironment = executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir });
-    const admitted = await acquireProcessResources(this.resourceCoordinator, argv[0], argv.slice(1), baseEnvironment, {
+    const executionEnvironment = withExecutionSurface(executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir }), EXECUTION_SURFACE.processSession);
+    const admitted = await acquireProcessResources(this.resourceCoordinator, argv[0], argv.slice(1), executionEnvironment, {
       cwd, priority: "interactive", waitMs: processSessionResourceWaitMs(this.resourceWaitMs), signal: context.signal,
     });
     const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });

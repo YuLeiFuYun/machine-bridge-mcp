@@ -9,6 +9,7 @@ import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { ProcessOutputStream } from "../src/local/process-output-stream.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
+import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import { toolResult } from "../src/local/tools.mjs";
 import { textToolResult } from "../src/worker/mcp-jsonrpc.ts";
 
@@ -51,6 +52,7 @@ const service = new ProcessExecutionService({
 try {
   testOutputStreamOffsets();
   testCompactProjection();
+  await testExecutionSurfaceMarkers();
   await testSuccessfulContinuation();
   await testFailureContinuation();
   await testSessionReleaseAfterBinding();
@@ -65,6 +67,30 @@ try {
 } finally {
   await sessions.clearAndWait();
   await rm(root, { recursive: true, force: true });
+}
+
+async function testExecutionSurfaceMarkers() {
+  const foreground = await service.runDirect({
+    argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_EXECUTION_SURFACE || '')"],
+    timeout_seconds: 10,
+  });
+  assert.equal(foreground.stdout, EXECUTION_SURFACE.foregroundProcess,
+    "foreground process execution omitted its execution-surface marker");
+
+  const started = await sessions.start({
+    argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_EXECUTION_SURFACE || '')"],
+  });
+  const page = await sessions.read({
+    session_id: started.session_id,
+    stdout_offset: 0,
+    stderr_offset: 0,
+    max_bytes: 1024,
+    wait_ms: 10_000,
+    wait_for_exit: true,
+  });
+  assert.equal(page.running, false, "execution-surface session fixture did not exit");
+  assert.equal(page.stdout.data, EXECUTION_SURFACE.processSession,
+    "process session omitted its execution-surface marker");
 }
 
 function testOutputStreamOffsets() {

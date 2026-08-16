@@ -9,6 +9,7 @@ import { withResourceTransactionLock } from "./resource-transaction-lock.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMsAsync } from "./process-identity.mjs";
 import { freshResourceHostSnapshot, resourceHostNeedsFreshIo } from "./resource-host-cache.mjs";
+import { readResourceHostSample } from "./resource-host-sample-file.mjs";
 import { sampleResourceHostAsync } from "./resource-host-snapshot.mjs";
 import { validateResourceRequest } from "./resource-request-contract.mjs";
 import { recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "./resource-staging-recovery.mjs";
@@ -74,7 +75,7 @@ export class ResourceCoordinator {
         const processParents = readdirSync(this.leasesDir).some((name) => LEASE_FILE.test(name)) ? await this.sampleProcessParents() : {};
         const result = await this.withLock(() => {
           const leases = this.pruneAndReadLeases();
-          const previous = this.readJson(this.hostSampleFile, 32 * 1024, "resource host sample", true);
+          const previous = readResourceHostSample(this.hostSampleFile, { optional: true });
           const enrichedHost = deriveHostRates(host, previous);
           this.writeJson(this.hostSampleFile, enrichedHost);
           const accounting = resourceCoordinatorAccounting(leases, processParents, waiter.owner.pid);
@@ -118,7 +119,7 @@ export class ResourceCoordinator {
     return this.withLock(() => {
       const leases = this.pruneAndReadLeases();
       const waiters = this.pruneAndReadWaiters();
-      const previous = this.readJson(this.hostSampleFile, 32 * 1024, "resource host sample", true);
+      const previous = readResourceHostSample(this.hostSampleFile, { optional: true });
       const enrichedHost = deriveHostRates(host, previous);
       this.writeJson(this.hostSampleFile, enrichedHost);
       const accounting = resourceCoordinatorAccounting(leases, processParents);
@@ -198,7 +199,6 @@ export class ResourceCoordinator {
     if (current?.schema_version !== SCHEMA || current?.protocol !== "agent-resource-coordinator") throw new Error("unsupported resource coordinator protocol");
     this.ready = true;
   }
-
   async freshHostSnapshot(cwd, request = null) {
     const scope = resourceProjectHash(cwd);
     const needsIo = resourceHostNeedsFreshIo(request);
@@ -208,7 +208,7 @@ export class ResourceCoordinator {
       if (!needsIo || shared?.io_sampled === true) return shared;
     }
     const flight = { promise: freshResourceHostSnapshot({
-      cached: this.readJson(this.hostSampleFile, 32 * 1024, "resource host sample", true),
+      cached: readResourceHostSample(this.hostSampleFile, { optional: true }),
       current: this.now(), sampleHost: this.sampleHost, cwd, request, scope,
     }) };
     this.hostSamplesInFlight.set(scope, flight);

@@ -941,16 +941,16 @@ async function testForegroundTimeoutAlignment() {
     await service.runDirect({ argv: [process.execPath] }, { origin: "relay" });
     await service.runShell("printf ok", undefined, { origin: "relay" });
     const remoteRegistered = await service.runRegistered({}, { origin: "relay" });
-    const remoteExplicit = await service.runRegistered({ timeout_seconds: 60 }, { origin: "relay" });
+    const remoteExplicit = await service.runRegistered({ timeout_seconds: 45 }, { origin: "relay" });
     let remoteOversized;
-    try { await service.runRegistered({ timeout_seconds: 61 }, { origin: "relay" }); }
+    try { await service.runRegistered({ timeout_seconds: 46 }, { origin: "relay" }); }
     catch (error) { remoteOversized = error; }
     const localRegistered = await service.runRegistered({}, { origin: "local" });
-    assert(observed[0].timeoutMs === 60_000 && observed[1].timeoutMs === 60_000,
-      "relay process and shell defaults drifted from the Worker sixty-second budget");
-    assert(remoteRegistered.timeout_seconds === 60 && remoteExplicit.timeout_seconds === 60,
+    assert(observed[0].timeoutMs === 30_000 && observed[1].timeoutMs === 30_000,
+      "relay process and shell defaults drifted from the short foreground budget");
+    assert(remoteRegistered.timeout_seconds === 30 && remoteExplicit.timeout_seconds === 45,
       "relay registered-command timeout did not honor the shared default and ceiling");
-    assert(remoteOversized instanceof RangeError && remoteOversized.message.includes("1 to 60"),
+    assert(remoteOversized instanceof RangeError && remoteOversized.message.includes("1 to 45"),
       "relay registered command accepted an oversized foreground timeout");
     assert(localRegistered.timeout_seconds === 600,
       "local registered-command execution lost the owner manifest timeout");

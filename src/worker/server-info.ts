@@ -85,6 +85,7 @@ function buildServerInfoSummary(
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
       remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
+      remote_process_foreground_execution_max_ms: relayContract.maximumProcessForegroundExecutionTimeoutMs,
       worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
     },
   };
@@ -159,6 +160,7 @@ function fullToolDelivery(input: ServerInfoInput): Record<string, unknown> {
     host_exposed_tools_known_to_server: false,
     host_may_expose_subset: true,
     remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
+    remote_process_foreground_execution_max_ms: relayContract.maximumProcessForegroundExecutionTimeoutMs,
     worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
     daemon_execution_and_worker_settlement_deadlines_separate: true,
     host_terminal_receipt_observable: false,

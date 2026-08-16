@@ -65,6 +65,8 @@ machine-mcp resource remove maintenance-key
 
 Removing an alias affects new jobs. A job already accepted has an owner-only resource snapshot specification and continues independently.
 
+Managed jobs are also the required Machine Bridge execution carrier for operations that intentionally replace the current daemon, including persistent release-candidate activation. A process session is retained only by the current daemon and its process group is drained during daemon shutdown; a managed-job runner is detached, unreferenced, persisted under the owner-only job root, and can be inspected again after the replacement daemon reconnects. Do not substitute `start_process` for a daemon-replacing transaction merely because both APIs return an identifier.
+
 Generate a new Ed25519 resource rather than exposing a private-key creation command through a model-generated shell string:
 
 ```sh

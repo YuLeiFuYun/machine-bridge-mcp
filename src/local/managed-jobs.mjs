@@ -28,7 +28,7 @@ const MAX_PLAN_BYTES = 1024 * 1024;
 const MAX_RECOVERY_ATTEMPTS = 3;
 
 export class ManagedJobManager {
-  constructor({ jobRoot, workspace, policy, authorizeTool = null, policyForContext = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true }) {
+  constructor({ jobRoot, workspace, policy, authorizeTool = null, policyForContext = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true, runnerEnvironmentOverrides = {} }) {
     const jobRootInput = resolve(jobRoot);
     ensureOwnerOnlyDir(jobRootInput);
     this.jobRoot = realpathSync.native ? realpathSync.native(jobRootInput) : realpathSync(jobRootInput);
@@ -41,6 +41,7 @@ export class ManagedJobManager {
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
     this.stateRoot = stateRoot ? resolve(stateRoot) : "";
     this.logger = logger;
+    this.runnerEnvironmentOverrides = { ...runnerEnvironmentOverrides };
     this.assertMaintenanceAvailable();
     this.prune();
     if (recover) this.recoverInterruptedJobs();
@@ -177,7 +178,7 @@ export class ManagedJobManager {
           }
           if (existing.status === "queued" && !runnerProcessIsCurrent(existing, dir)) {
             try {
-              launchRunner(dir, false, "", { logger: this.logger, fullEnv: plan.full_env === true });
+              launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides));
             } catch (error) {
               failRunnerLaunch(dir, existing, error);
               throw error;
@@ -204,7 +205,7 @@ export class ManagedJobManager {
         atomicWriteJson(statusFile, status, 256 * 1024);
         if (launch) {
           try {
-            launchRunner(dir, false, "", { logger: this.logger, fullEnv: plan.full_env === true });
+            launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides));
           } catch (error) {
             failRunnerLaunch(dir, status, error);
             throw error;
@@ -412,7 +413,7 @@ export class ManagedJobManager {
         markRecoveryExhausted(dir, file, status, recoveryAttempts);
         return;
       }
-      const runnerPid = relaunchInterruptedJob(dir, file, status, recoveryAttempts, recoveryLock.token, this.logger);
+      const runnerPid = relaunchInterruptedJob(dir, file, status, recoveryAttempts, recoveryLock.token, this.logger, this.runnerEnvironmentOverrides);
       recoveryLock.handoff(runnerPid);
       handedOff = true;
     } finally {
@@ -604,7 +605,7 @@ function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
   if (!terminal.statusPersisted) throw new Error(`managed job recovery-exhausted status persistence failed: ${terminal.statusErrorClass}`);
 }
 
-function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recoveryToken, logger) {
+function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recoveryToken, logger, runnerEnvironmentOverrides) {
   const plan = readRequiredJson(join(dir, "plan.json"), MAX_PLAN_BYTES, "job plan");
   assertPlanIntegrity(plan, status);
   status.status = "interrupted";
@@ -615,7 +616,11 @@ function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recov
   atomicWriteJson(statusFile, status, 256 * 1024);
   rmSync(join(dir, "runtime"), { recursive: true, force: true });
   rmSync(join(dir, "runner.pid"), { force: true });
-  return launchRunner(dir, true, recoveryToken, { logger, fullEnv: plan.full_env === true });
+  return launchRunner(dir, true, recoveryToken, runnerLaunchOptions(plan.full_env === true, logger, runnerEnvironmentOverrides));
+}
+
+function runnerLaunchOptions(fullEnv, logger, overrides = {}) {
+  return { logger, fullEnv, env: { ...process.env, ...overrides } };
 }
 
 function normalizeJobIdempotencyKey(value) {

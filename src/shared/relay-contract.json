@@ -4,6 +4,7 @@
   "streamHeartbeatMs": 10000,
   "maximumExecutionTimeoutMs": 600000,
   "maximumInteractiveExecutionTimeoutMs": 60000,
+  "maximumProcessForegroundExecutionTimeoutMs": 45000,
   "workerSettlementOverheadMs": 5000,
   "maximumRelayToolTimeoutMs": 610000
 }

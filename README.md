@@ -195,6 +195,8 @@ For stateful GUI trajectories, owner/full callers can use the higher-level `comp
 
 Remote foreground process, shell, browser, and application calls are bounded to 60 seconds of daemon execution. The Worker retains separate settlement ownership for five additional seconds, but neither that margin nor its internal stream metrics prove that an external MCP host consumed the terminal frame. Keep mutations and validation in independently terminal calls. A timeout is a protocol result, not proof that descendant cleanup has already completed; a remote owner can inspect `diagnose_runtime.runtime.processes`, while local stdio exposes `server_info.runtime.processes`. Non-owner accounts receive authority-scoped readiness rather than machine-wide process activity. Long, cleanup-sensitive, or remotely initiated workflows should use process sessions or managed jobs; managed jobs persist ordered argv steps and `finally_steps` under owner-only local state and continue across an MCP disconnect.
 
+When `run_process` or `exec_command` returns a child exit code and bounded stdout/stderr, the local process did run. For nested tools such as `ssh`, a remote forced-command usage message or command allowlist is therefore evidence from the target-side authorization layer, not evidence that Machine Bridge blocked process execution. Diagnose and change the narrowest failing layer instead of widening the `full` profile, which already removes Machine Bridge's own shell and path restrictions.
+
 Credentials and files can be registered by alias without returning their contents through MCP:
 
 ```sh

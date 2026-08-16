@@ -1988,7 +1988,7 @@ List effective direct-argv commands from project manifests and safe automatic pa
 
 **Run registered local command**
 
-Prefer this when the repository already defines the desired operation as a registered command or package script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation; use exec_command for ad hoc pipelines or run_process for an unregistered executable argv. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Prefer this when the repository already defines the desired operation as a registered command or package script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation; use exec_command for ad hoc pipelines or run_process for an unregistered executable argv. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Local foreground execution is limited to 60 seconds; remote process calls use a lower settlement-safe ceiling. Use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -2565,7 +2565,7 @@ Create one local Git commit from the repository's existing staged index. This to
 
 **Run process directly**
 
-Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Local foreground execution is limited to 60 seconds; remote process calls use a lower settlement-safe ceiling. Use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|
@@ -2611,7 +2611,7 @@ Run an explicit executable plus argv when no shell syntax is needed and no regis
 
 **Start process session**
 
-Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls. Cancellation before spawn is definite. If cancellation or deadline arrives after the child has spawned but before the start result settles, the server requests termination and returns a public non-retryable unknown outcome with the allocated session_id; the retained session remains inspectable so callers can verify its state instead of starting the command again blindly.
+Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls. Cancellation before spawn is definite. If cancellation or deadline arrives after the child has spawned but before the start result settles, the server requests termination and returns a public non-retryable unknown outcome with the allocated session_id; the retained session remains inspectable so callers can verify its state instead of starting the command again blindly. Process sessions are daemon-lifetime state: use start_job/read_job when work must survive a Machine Bridge daemon restart, service replacement, or MCP disconnect.
 
 | Contract field | Value |
 |---|---|
@@ -3377,7 +3377,7 @@ Request cancellation of a detached managed job. The runner terminates the active
 
 **Execute shell command**
 
-Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Foreground execution is limited to 60 seconds; use process sessions or managed jobs for longer work.
+Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Once local child-process dispatch crosses the spawn boundary, timeout or cancellation is a public non-retryable unknown outcome because command side effects may already have occurred; inspect command effects before retrying. Large output is retained for read_process. Local foreground execution is limited to 60 seconds; remote process calls use a lower settlement-safe ceiling. Use process sessions or managed jobs for longer work.
 
 | Contract field | Value |
 |---|---|

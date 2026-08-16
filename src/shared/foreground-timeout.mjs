@@ -8,7 +8,12 @@ const CONFIGURABLE_FOREGROUND_TOOLS = new Set([
   "computer_observe", "computer_act",
 ]);
 
+const PROCESS_FOREGROUND_TOOLS = new Set([
+  "exec_command", "run_process", "run_local_command",
+]);
+
 const THIRTY_SECOND_FOREGROUND_TOOLS = new Set([
+  "exec_command", "run_process", "run_local_command",
   "open_local_application", "inspect_local_application", "operate_local_application",
   "browser_list_tabs", "browser_manage_tabs", "browser_wait", "browser_get_source",
   "browser_inspect_page", "browser_action", "browser_screenshot",
@@ -19,12 +24,22 @@ export const REMOTE_FOREGROUND_TIMEOUT_SECONDS = Math.floor(
   relayContract.maximumInteractiveExecutionTimeoutMs / 1000,
 );
 
+export const REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS = Math.floor(
+  relayContract.maximumProcessForegroundExecutionTimeoutMs / 1000,
+);
+
 export function isConfigurableForegroundTool(name) {
   return CONFIGURABLE_FOREGROUND_TOOLS.has(name);
 }
 
 export function remoteForegroundDefaultSeconds(name) {
   return THIRTY_SECOND_FOREGROUND_TOOLS.has(name) ? 30 : 60;
+}
+
+export function remoteForegroundMaximumSeconds(name) {
+  return PROCESS_FOREGROUND_TOOLS.has(name)
+    ? REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS
+    : REMOTE_FOREGROUND_TIMEOUT_SECONDS;
 }
 
 export function effectiveForegroundTimeoutSeconds({
@@ -35,7 +50,7 @@ export function effectiveForegroundTimeoutSeconds({
   localMaximum,
 }) {
   const fallback = remote ? remoteForegroundDefaultSeconds(tool) : localDefault;
-  const maximum = remote ? REMOTE_FOREGROUND_TIMEOUT_SECONDS : localMaximum;
+  const maximum = remote ? remoteForegroundMaximumSeconds(tool) : localMaximum;
   const parsed = value === undefined ? fallback : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maximum) {
     throw new RangeError(`foreground timeout must be an integer from 1 to ${maximum}`);

@@ -1015,19 +1015,25 @@ try {
 
   const remoteAgentTools = await callToolsList(base, ownerAccessToken, 2501);
   const remoteRunProcess = remoteAgentTools.find((tool) => tool.name === "run_process");
-  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 60
-    && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 60,
-  "remote tools/list advertised a foreground timeout beyond the hosted delivery boundary");
+  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 45
+    && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 30,
+  "remote tools/list lost the settlement-safe process timeout contract");
+  const remoteBrowserWait = remoteAgentTools.find((tool) => tool.name === "browser_wait");
+  assert(remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.maximum === 60
+    && remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.default === 30,
+  "remote tools/list incorrectly narrowed the independent browser foreground timeout contract");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
   const overLimit = await callTool(base, ownerAccessToken, 2502, "run_process", {
     argv: ["must-not-run"], timeout_seconds: 120,
   });
   assert(!overLimitMessages.stop().includes("tool_call"),
     "over-limit JSON tool call reached the daemon before rejection");
-  assert(overLimit.error?.code === -32602
-    && overLimit.error?.data?.side_effects_started === false
-    && overLimit.error?.data?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "maximum"),
-  "over-limit foreground rejection omitted its pre-dispatch schema contract");
+  assert(overLimit.result?.isError === true
+    && overLimit.result?.structuredContent?.error?.code === "invalid_request"
+    && overLimit.result?.structuredContent?.error?.details?.side_effects_started === false
+    && overLimit.result?.structuredContent?.error?.details?.schema_refresh_recommended === true
+    && overLimit.result?.structuredContent?.error?.details?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "maximum"),
+  "over-limit foreground rejection omitted its stale-schema compatibility contract");
 
   const malformedTimeoutMessages = captureWsMessageTypes(candidateDaemon);
   const malformedTimeout = await callTool(base, ownerAccessToken, 25021, "run_process", {
@@ -1062,9 +1068,11 @@ try {
   });
   assert(!overLimitStreamMessages.stop().includes("tool_call"),
     "over-limit streamed tool call reached the daemon before rejection");
-  assert(overLimitStream.body.error?.code === -32602
-    && overLimitStream.body.error?.data?.side_effects_started === false,
-  "invalid current tool call omitted its pre-dispatch schema contract");
+  assert(overLimitStream.body.result?.isError === true
+    && overLimitStream.body.result?.structuredContent?.error?.code === "invalid_request"
+    && overLimitStream.body.result?.structuredContent?.error?.details?.side_effects_started === false
+    && overLimitStream.body.result?.structuredContent?.error?.details?.schema_refresh_recommended === true,
+  "stale-schema current tool call omitted its pre-dispatch compatibility contract");
 
   const streamedRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const streamedResponsePromise = stableFetch(`${base}/mcp`, {

@@ -67,11 +67,15 @@ npm run worker:dry-run
 npm pack --dry-run
 ```
 
+A successful `npm run check` / `check:full` writes an ignored owner-local `.project-local/full-verification.json` receipt after the stable-generation guard completes. It records only synthetic verification metadata: the exact source-generation digest, package name/version, Node version, platform/architecture, and verification timestamp. The receipt is valid for at most six hours. Starting another full run deletes the prior receipt before any test executes, and any source/package/runtime drift makes it unusable. This is a local execution cache, not acceptance or publication authority.
+
 Generate the exact tarball. The prepare/record/verify commands bootstrap ephemeral hardened npm and do not regenerate acceptance bytes through the ambient npm bundle:
 
 ```sh
 npm run release:candidate
 ```
+
+`release:candidate` consumes the current full-verification receipt instead of running the complete suite a second time. If the receipt is missing, stale, or does not match the frozen tree and runtime, preparation stops before `npm pack` and instructs the agent to run `npm run check:full`. Do not bypass this by calling a lower-level pack command; regenerate full evidence for the current tree.
 
 The candidate manifest records npm SHA-1/SHA-512 values and a promotion-content digest. Any packaged-file change invalidates the candidate. Every candidate start or activation recomputes the current digest and compares package identity before tarball verification, npm installation, Worker deployment, or service mutation; a stale but internally self-consistent tarball cannot be installed. Preparing or testing a candidate never authorizes npm publication; only the repository owner may invoke a publication command. An existing tag, GitHub Release, or npm version is immutable and must never be reused after source changes.
 
@@ -96,6 +100,8 @@ npm run release:candidate:activate -- --allow-worker-deploy
 ```
 
 A TTY is not required. Conversational authorization is sufficient when it is explicit and current-task-specific. If the owner says they will execute the command themselves, the agent must not race that operation.
+
+The **execution carrier is part of the safety contract**. This command intentionally stops and replaces the currently running Machine Bridge login daemon. Do not launch persistent activation through `run_process`, `exec_command`, `run_local_command`, or `start_process`: those children/process sessions belong to the current daemon and are terminated when that daemon drains its process tree. The packaged activation guard rejects those surfaces before Worker or service mutation. An authorized coding agent that executes activation through Machine Bridge must use a detached `start_job` step and inspect it with `read_job`; the managed-job runner is independent of the daemon and continues across the handoff. Running the exact command directly in an ordinary owner terminal is also valid.
 
 The command:
 

@@ -12,7 +12,7 @@ import { ACTIVATION_SCHEMA_VERSION, writePrereleaseActivation } from "./prerelea
 import { verifyTarball } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { discoverForegroundDaemonRecovery } from "./foreground-daemon-recovery.mjs";
-import { persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "./persistent-activation-process.mjs";
+import { assertPersistentActivationExecutionSurface, persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "./persistent-activation-process.mjs";
 import { assertCandidateMatchesCurrentSource, validateCandidateManifest } from "./release-candidate-manifest.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { createHardenedNpmSession, settleHardenedNpmSession } from "./hardened-npm-session.mjs";
@@ -31,12 +31,14 @@ const foregroundInstallPrefix = join(candidateDirectory, "runtime");
 const installOnly = process.argv.includes("--install-only");
 const activateService = process.argv.includes("--activate-service");
 const allowWorkerDeploy = process.argv.includes("--allow-worker-deploy");
+const persistentActivation = activateService && !installOnly;
 const lifecycleNpmCli = process.env.npm_execpath;
 let sourceNpmCli = lifecycleNpmCli;
 let npmCli = "";
 let npmSession = null;
 
 try {
+  if (persistentActivation) assertPersistentActivationExecutionSurface(process.env);
   if (installOnly) sourceNpmCli = resolveNpmCli({ allowLifecycleNpmCli: false, allowFallbackLocations: false });
   if (!sourceNpmCli) throw new Error("candidate live startup must run through npm so npm_execpath is available");
   const currentPackage = readJson(join(root, "package.json"), "current package");
@@ -54,7 +56,6 @@ try {
   if (!installOnly && !allowWorkerDeploy) {
     throw new Error("candidate activation may update the configured same-name Worker; rerun with --allow-worker-deploy to authorize that live candidate deployment");
   }
-  const persistentActivation = activateService && !installOnly;
   const globalPrefix = persistentActivation
     ? resolveNpmGlobalPrefix(lifecycleNpmCli, { cwd: root, env: process.env })
     : "";

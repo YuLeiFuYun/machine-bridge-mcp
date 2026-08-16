@@ -332,7 +332,9 @@ async function testRuntimeDiagnostics() {
       && shell.interpretation?.tool_call_blocked_before_response?.includes("not observable by Machine Bridge")
       && shell.interpretation?.tool_call_blocked_before_response?.includes("conversation/surface app routing state")
       && shell.interpretation?.tool_call_blocked_before_response?.includes("stale host action/tool snapshot")
-      && shell.interpretation?.tool_call_blocked_before_response?.includes("host-side evidence"),
+      && shell.interpretation?.tool_call_blocked_before_response?.includes("host-side evidence")
+      && shell.interpretation?.diagnostic_reached_daemon_but_spawn_failed?.includes("child exit code")
+      && shell.interpretation?.diagnostic_reached_daemon_but_spawn_failed?.includes("remote target decided the failure"),
     "runtime diagnostic overclaimed an unobservable host/platform refusal");
     assert(shell.runtime.lifecycle.state === "running"
       && shell.runtime.processes.draining_calls === 1

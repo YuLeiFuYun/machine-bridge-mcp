@@ -86,7 +86,7 @@ Explicit conversational authorization from the repository owner is sufficient us
 
 ## Validation expectations
 
-- Run targeted behavior tests while iterating and `npm run check` before candidate preparation.
+- Run targeted behavior tests while iterating and one `npm run check` / `check:full` on the frozen tree before candidate preparation. Successful full verification writes a short-lived ignored receipt bound to the exact generation; `release:candidate` must consume it rather than repeating the complete suite.
 - Lock, state deletion, service lifecycle, release activation, detached process, credential, browser, or application changes require behavior, concurrency, and fault-injection tests; source-string checks alone are insufficient.
 - Run both dependency audits, Worker dry-run, registry signature verification, SBOM generation, package inspection, privacy history, and complete diff/status review for a versioned candidate.
 - Update tests, `CHANGELOG.md`, `docs/AUDIT.md`, release guidance, architecture, threat model, and operations whenever their contracts change.
@@ -113,7 +113,7 @@ When the incident is closed, record the causal evidence and the disproved branch
 ### Prerelease
 
 1. Finish implementation and review; use a `dev`, `beta`, or `rc` version.
-2. Run complete verification and `npm run release:candidate`.
+2. Run complete verification once, then run `npm run release:candidate`; candidate preparation requires the matching full-verification receipt and does not rerun the complete suite.
 3. Run `node scripts/start-release-candidate.mjs --install-only`; if it fails, repair and regenerate the candidate instead of involving the owner.
 4. Obtain explicit owner authorization for `npm run release:candidate:activate -- --allow-worker-deploy`; if authorized to execute it, the agent may run it through Machine Bridge, otherwise present the command and stop.
 5. After activation, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the live candidate through Machine Bridge.

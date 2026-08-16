@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVATION_SCHEMA_VERSION, assertPrereleaseActivationRuntimeRoot, prereleaseActivationPath, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
 import { discoverForegroundDaemonRecovery, foregroundPid } from "../scripts/foreground-daemon-recovery.mjs";
-import { persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
+import { assertPersistentActivationExecutionSurface, persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
 import { inspectGlobalPackageInstallation } from "../scripts/global-package-installation.mjs";
 import { canonicalActivationRecoveryDetail, normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
+import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-prerelease-activation-"));
 try {
@@ -177,6 +178,23 @@ try {
   assert(!Object.hasOwn(subprocess, "timeout") && !Object.hasOwn(subprocess, "killSignal"),
     "persistent activation subprocess retained an outer hard timeout that can bypass cleanup");
   expectThrow(() => persistentActivationSpawnOptions({ cwd: "" }), "requires cwd");
+  assert(assertPersistentActivationExecutionSurface({}) === "local",
+    "ordinary local activation was not accepted as an independent execution surface");
+  assert(assertPersistentActivationExecutionSurface({ MBM_EXECUTION_SURFACE: EXECUTION_SURFACE.managedJob }) === EXECUTION_SURFACE.managedJob,
+    "durable managed-job activation was rejected");
+  for (const surface of [EXECUTION_SURFACE.foregroundProcess, EXECUTION_SURFACE.processSession]) {
+    let rejected;
+    try { assertPersistentActivationExecutionSurface({ MBM_EXECUTION_SURFACE: surface }); }
+    catch (error) { rejected = error; }
+    assert(rejected?.code === "unsafe_activation_execution_surface"
+      && rejected?.sideEffectsStarted === false
+      && rejected.message.includes("durable managed job"),
+    `unsafe ${surface} activation did not fail closed before live mutation`);
+  }
+  expectThrow(
+    () => assertPersistentActivationExecutionSurface({ MBM_EXECUTION_SURFACE: "synthetic_unknown_surface" }),
+    "cannot run from unknown",
+  );
   const recoveryRoot = join(root, "recovery-runtime");
   const workspace = join(recoveryRoot, "workspace");
   const stateRoot = join(recoveryRoot, "state");

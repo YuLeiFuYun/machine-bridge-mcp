@@ -240,7 +240,19 @@ for (const lifecycle of ["prepare", "postpack", "prepublish", "publish", "postpu
     throw new Error(`package lifecycle ${lifecycle} is incompatible with exact accepted-tarball publication`);
   }
 }
-if (packageJson.scripts?.["release:candidate"] !== "npm run check && node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses the complete suite");
+if (packageJson.scripts?.["release:candidate"] !== "node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses exact candidate preparation");
+const verificationStateSource = readFileSync(join(root, "scripts", "verification-state.mjs"), "utf8");
+const runChecksSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
+const localReleaseAcceptanceSource = readFileSync(join(root, "scripts", "local-release-acceptance.mjs"), "utf8");
+for (const required of ["captureVerificationRunGeneration", "captureVerifiedSourceGeneration", "clearFullVerificationReceipt", "writeFullVerificationReceipt"]) {
+  if (!runChecksSource.includes(required)) throw new Error(`full verification runner lost candidate-receipt boundary: ${required}`);
+}
+for (const required of ["assertFreshFullVerificationReceipt", "full verification receipt", "run npm run check:full"]) {
+  if (!verificationStateSource.includes(required) && !localReleaseAcceptanceSource.includes(required)) {
+    throw new Error(`release candidate lost exact-tree full-verification receipt contract: ${required}`);
+  }
+}
+if (!localReleaseAcceptanceSource.includes("assertFreshFullVerificationReceipt(root)")) throw new Error("candidate preparation no longer consumes the frozen-tree full verification receipt");
 if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-release-candidate.mjs") throw new Error("isolated candidate startup command is missing");
 const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.mjs"), "utf8");
 for (const required of ['"tests/prerelease-activation-test.mjs"', '"src/shared/activation-recovery.mjs"']) {
@@ -375,13 +387,19 @@ if (!resourceCommandProfileSource.includes("releaseControlCommandIsLight")
   throw new Error("release OAuth canary light profile lost its narrow direct-Node negative-regression boundary");
 }
 const agentContextTestSource = readFileSync(join(root, "tests", "agent-context-test.mjs"), "utf8");
-if (!agentContextTestSource.includes("processResourceWaitMs: 5 * 60_000")) {
-  throw new Error("agent-context coverage fixture lost cooperative long resource admission wait");
+if (!agentContextTestSource.includes('resourceCoordinatorRoot: join(root, "resource-coordinator")')
+    || !agentContextTestSource.includes("resourceCoordinatorOptions: { sampleHost: healthyResourceHost }")
+    || !agentContextTestSource.includes("processResourceWaitMs: 10_000")
+    || agentContextTestSource.includes("processResourceWaitMs: 5 * 60_000")) {
+  throw new Error("agent-context coverage fixture lost its isolated, short-bounded resource admission contract");
 }
 const fullAccessSource = readFileSync(join(root, "src", "local", "full-access-test.mjs"), "utf8");
-if (!fullAccessSource.includes("processResourceWaitMs: FULL_ACCESS_RESOURCE_WAIT_MS")
-    || !fullAccessSource.includes("const FULL_ACCESS_RESOURCE_WAIT_MS = 5 * 60_000")) {
-  throw new Error("full-access real-machine diagnostic lost cooperative long resource admission wait");
+if (!fullAccessSource.includes('resourceCoordinatorRoot: join(root, "resource-coordinator")')
+    || !readFileSync(join(root, "tests", "full-access-test.mjs"), "utf8").includes("resourceCoordinatorOptions: { sampleHost: healthyResourceHost }")
+    || !fullAccessSource.includes("processResourceWaitMs: FULL_ACCESS_RESOURCE_WAIT_MS")
+    || !fullAccessSource.includes("const FULL_ACCESS_RESOURCE_WAIT_MS = 10_000")
+    || fullAccessSource.includes("const FULL_ACCESS_RESOURCE_WAIT_MS = 5 * 60_000")) {
+  throw new Error("full-access diagnostic lost its isolated, short-bounded process resource admission contract");
 }
 if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAccessSource.includes("TERMINAL_JOB_STATES")) {
   throw new Error("full-access diagnostic regained a divergent managed-job terminal-state enum");
@@ -391,10 +409,12 @@ const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs
 const verificationGenerationGuardSource = readFileSync(join(root, "scripts", "verification-generation-guard.mjs"), "utf8");
 if (!checkEntrypointSource.includes("runVerificationPlan")
     || !checkEntrypointSource.includes("runWithStableGeneration")
-    || !checkEntrypointSource.includes("captureCoverageGeneration")
-    || !checkEntrypointSource.includes('"docs"')
-    || !checkEntrypointSource.includes('".github"')
-    || !checkEntrypointSource.includes('"release-acceptance"')
+    || !checkEntrypointSource.includes("captureVerificationRunGeneration")
+    || !checkEntrypointSource.includes("captureVerifiedSourceGeneration")
+    || !verificationStateSource.includes("captureCoverageGeneration")
+    || !verificationStateSource.includes('"docs"')
+    || !verificationStateSource.includes('".github"')
+    || !verificationStateSource.includes('"release-acceptance"')
     || !checkEntrypointSource.includes('value !== undefined && value !== ""')
     || !checkEntrypointSource.includes("MBM_CHECK_CONCURRENCY must be an integer from 1 to 16")
     || !verificationGenerationGuardSource.includes("if (after !== before)")
@@ -1022,10 +1042,27 @@ if (!ciSource.includes("npm run check:platform") || !ciSource.includes("npm run 
   throw new Error("CI no longer separates cross-platform fast checks from the Linux full suite");
 }
 const portableAcceptanceCommand = "npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs";
-if ((ciSource.split(portableAcceptanceCommand).length - 1) !== 2) throw new Error("CI no longer verifies portable interactive candidate acceptance in both package paths");
+if ((ciSource.split(portableAcceptanceCommand).length - 1) !== 2) throw new Error("CI no longer verifies portable local candidate acceptance in both package paths");
 const portableAcceptanceSource = readFileSync(join(root, ".github", "scripts", "verify-release-acceptance.mjs"), "utf8");
 for (const required of ["canonicalPackageDigest", "package_content_sha256", "promotion_content_sha256", "computePromotionContentDigest", "resolveTrustedGitExecutable", "ls-files", "--stage", "cat-file", "machine-bridge-mcp-package-content-v1"]) {
   if (!portableAcceptanceSource.includes(required)) throw new Error(`portable release acceptance verifier lost required content: ${required}`);
+}
+const testingGuide = readFileSync(join(root, "docs", "TESTING.md"), "utf8");
+for (const [name, source] of [
+  ["CI workflow", ciSource],
+  ["portable acceptance verifier", portableAcceptanceSource],
+  ["workflow policy contract", workflowPolicyContractSource],
+  ["testing guide", testingGuide],
+]) {
+  if (/interactive candidate acceptance/i.test(source)) {
+    throw new Error(`${name} retained obsolete interactive candidate acceptance wording`);
+  }
+}
+if (!ciSource.includes("Verify local candidate acceptance")
+    || !portableAcceptanceSource.includes("Portable local candidate acceptance matches")
+    || !workflowPolicyContractSource.includes('"local candidate acceptance"')
+    || !testingGuide.includes("verifies local candidate acceptance")) {
+  throw new Error("current release surfaces no longer agree on local candidate acceptance terminology");
 }
 if ((ciSource.match(/node scripts\/prepare-pinned-npm\.mjs/g) || []).length !== 3 || ciSource.includes("npm install --global npm@")) {
   throw new Error("CI no longer bootstraps the npm baseline from an integrity-verified immutable tarball");

@@ -58,7 +58,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "" }) {
+  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
@@ -71,7 +71,7 @@ export class LocalRuntime {
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
     this.deviceRootStatus = deviceRootStatus && typeof deviceRootStatus === "object" ? Object.freeze({ ...deviceRootStatus }) : null;
     this.processTracker = new ProcessTracker();
-    this.resourceCoordinator = new ResourceCoordinator(resourceCoordinatorRoot ? { root: resourceCoordinatorRoot } : {});
+    this.resourceCoordinator = new ResourceCoordinator({ ...(resourceCoordinatorOptions || {}), ...(resourceCoordinatorRoot ? { root: resourceCoordinatorRoot } : {}) });
     if (processResourceWaitMs !== undefined && (!Number.isInteger(processResourceWaitMs) || processResourceWaitMs < 0)) {
       throw new TypeError("processResourceWaitMs must be a non-negative integer when configured");
     }
@@ -123,6 +123,7 @@ export class LocalRuntime {
       stateRoot: browserStateRoot,
       logger: this.logger,
       recover: recoverJobs,
+      runnerEnvironmentOverrides: resourceCoordinatorRoot ? { AGENT_RESOURCE_COORDINATOR_ROOT: resolve(resourceCoordinatorRoot) } : {},
     });
     this.processSessionManager = new ProcessSessionManager({
       workspace: this.workspace,

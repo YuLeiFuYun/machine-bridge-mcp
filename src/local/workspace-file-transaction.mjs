@@ -1,14 +1,15 @@
 // @ts-check
-
 import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { fileMutationPathKey } from "./file-mutation-coordinator.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
-
 export async function atomicWriteText(full, content, existing = null, options = {}) {
   const readText = requiredReadText(options.readText, options.expectedHash);
+  if (options.expectedHash && existing && !options.createOnly) return commitPatchTransaction([{
+    kind: "update", source: full, target: full, content, originalHash: options.expectedHash, mode: existing.mode & 0o777,
+  }], { ...options, readText });
   const remove = options.remove || rm;
   const createTarget = options.link || link;
   const move = options.rename || rename;
@@ -96,6 +97,9 @@ export async function commitPatchTransaction(operations, options = {}) {
       }
       const record = { operation, backup, targetCreated: false };
       committed.push(record);
+      if (backup && sha256(await readText(backup)) !== operation.originalHash) {
+        throw new BridgeError("conflict", "patch source changed during commit", { details: { reason: "hash_mismatch" } });
+      }
       const stage = staged.find((item) => item.operation === operation);
       if (!stage) continue;
       try {
@@ -134,7 +138,6 @@ export async function commitPatchTransaction(operations, options = {}) {
       : [],
   };
 }
-
 export function sha256(value) {
   return createHash("sha256").update(String(value)).digest("hex");
 }
@@ -156,7 +159,6 @@ async function writeFlushedText(filePath, content, mode, remove) {
   }
   throw failure;
 }
-
 async function removeArtifacts(paths, remove) {
   const failures = [];
   for (const path of paths) {
@@ -164,7 +166,6 @@ async function removeArtifacts(paths, remove) {
   }
   return failures;
 }
-
 function patchRecoveryIncompleteError(primary, recoveryFailures) {
   const message = "patch transaction may have partially modified files because recovery was incomplete; inspect affected paths before retrying";
   return new BridgeError("execution_failed", message, {
@@ -174,7 +175,6 @@ function patchRecoveryIncompleteError(primary, recoveryFailures) {
     details: { reason: "patch_recovery_incomplete" },
   });
 }
-
 function incompleteMutationError(message, primary, cleanupFailures) {
   return new BridgeError("internal_error", message, {
     cause: new AggregateError([primary, ...cleanupFailures], message),

@@ -4,7 +4,7 @@ import { toolParameterHeaderNames } from "./mcp-http-contract.ts";
 import {
   isConfigurableForegroundTool,
   remoteForegroundDefaultSeconds,
-  REMOTE_FOREGROUND_TIMEOUT_SECONDS,
+  remoteForegroundMaximumSeconds,
 } from "./tool-timeout.ts";
 
 export type WorkerToolDefinition = Record<string, unknown> & { name: string; availability?: string };
@@ -29,9 +29,10 @@ function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
 
   const schema = definition.inputSchema as JsonSchema;
   const timeout = schema.properties.timeout_seconds;
-  timeout.maximum = REMOTE_FOREGROUND_TIMEOUT_SECONDS;
+  const maximumSeconds = remoteForegroundMaximumSeconds(definition.name);
+  timeout.maximum = maximumSeconds;
   timeout.default = remoteForegroundDefaultSeconds(definition.name);
-  definition.description = `${String(definition.description)} Remote foreground execution is limited to ${REMOTE_FOREGROUND_TIMEOUT_SECONDS} seconds; use process sessions or managed jobs for longer work.`;
+  definition.description = `${String(definition.description)} Remote foreground execution is limited to ${maximumSeconds} seconds; use process sessions or managed jobs for longer work.`;
   return definition;
 }
 

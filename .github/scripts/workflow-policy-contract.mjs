@@ -22,7 +22,7 @@ export function verifyWorkflowSet(sources) {
   requireRunMatch(
     ci,
     "ci.yml",
-    "interactive candidate acceptance",
+    "local candidate acceptance",
     /^npm pack --ignore-scripts --silent --dry-run --json \| node \.github\/scripts\/verify-release-acceptance\.mjs$/,
   );
 
