@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import catalog from "../shared/tool-catalog.json" with { type: "json" };
 import { compileToolArgumentValidators } from "../shared/tool-argument-validation.mjs";
+import { isRemoteDurableProcessTool, remoteDurableProcessTimeoutSeconds } from "../shared/foreground-timeout.mjs";
 import { BridgeError, errorCode, normalizeBridgeError } from "./errors.mjs";
 import { normalizeToolResult } from "./tool-result-boundary.mjs";
 import { createSecurityAuditFailureReporter } from "./security-audit-warning.mjs";
@@ -65,13 +66,26 @@ function validateArgumentsMiddleware() {
   return async (operation, next) => {
     const result = TOOL_ARGUMENTS.validate(operation.tool, operation.args);
     if (!result.known) throw new BridgeError("not_found", `unknown tool: ${operation.tool}`);
-    if (!result.valid) {
+    if (!result.valid && !validRelayDurableProcessSchemaExtension(operation, result.issues)) {
       throw new BridgeError("invalid_request", `tool arguments do not match the input schema: ${operation.tool}`, {
         details: { tool: operation.tool, validation_issues: result.issues },
       });
     }
     return next(operation);
   };
+}
+
+function validRelayDurableProcessSchemaExtension(operation, issues) {
+  if (operation.context.origin !== "relay" || !isRemoteDurableProcessTool(operation.tool) || !Array.isArray(issues) || !issues.length) {
+    return false;
+  }
+  if (issues.some((issue) => issue?.instancePath !== "/timeout_seconds" || issue?.keyword !== "maximum")) return false;
+  try {
+    remoteDurableProcessTimeoutSeconds(operation.args?.timeout_seconds);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function lifecycleMiddleware(callRegistry) {

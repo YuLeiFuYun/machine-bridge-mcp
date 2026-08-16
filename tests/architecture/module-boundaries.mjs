@@ -1275,7 +1275,7 @@ if (!daemonCleanupBoundary.includes("beginCleanup") || daemonCleanupBoundary.inc
   throw new Error("daemon socket cleanup must remain idempotent and scheduling-free");
 }
 const daemonDetachBoundary = /private async detachDaemonSocketCalls[\s\S]*?private reclaimStaleDaemonSockets/.exec(workerIndexBoundary)?.[0] || "";
-if (!daemonDetachBoundary.includes("this.pending.rejectSocket(ws, () => dispatchedDaemonDisconnectError(message))")) {
+if (!daemonDetachBoundary.includes("this.pending.rejectSocket(ws, (record) => dispatchedDaemonDisconnectError(message, record.recovery))")) {
   throw new Error("identity-damaged daemon socket cleanup regained retryable settlement for already-dispatched calls");
 }
 const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?private cleanupDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";

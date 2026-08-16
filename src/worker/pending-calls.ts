@@ -39,7 +39,6 @@ export class PendingCallRegistry {
     this.add(input, { resolve: resolveResult, reject: rejectResult });
     return result;
   }
-
   resolve(id: string, socket: WebSocket, value: unknown): Promise<boolean> {
     const record = this.byId.get(id);
     return !record || record.socket !== socket ? Promise.resolve(false) : this.finish(id, { ok: true, value });
@@ -128,7 +127,8 @@ export class PendingCallRegistry {
         owner_account_version: input.authority.accountVersion, owner_client_id: input.authority.clientId,
         owner_family_id: input.authority.familyId,
       } : {}),
-      tool: String(input.tool || "unknown"), startedAt, deadlineAt: startedAt + timeoutMs, remainingTimeoutMs: timeoutMs,
+      tool: String(input.tool || "unknown"), ...(input.recovery ? { recovery: input.recovery } : {}),
+      startedAt, deadlineAt: startedAt + timeoutMs, remainingTimeoutMs: timeoutMs,
       onTimeout: input.onTimeout, settlement, signal: input.signal, abortHandler,
     };
     this.byId.set(input.id, record);

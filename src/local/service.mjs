@@ -42,7 +42,7 @@ export function runServiceCommand(command, args, execute = runExecutable) {
 
 export async function installAutostart({ workspace, stateRoot, entryScript, version, logger = console,
   installProvider = defaultInstallProvider, beginOwnerUpdate = beginServiceOwnerUpdate,
-  writeEnvironment = writeServiceEnvironment } = {}) {
+  writeEnvironment = writeServiceEnvironment, deferOwnerCommit = false } = {}) {
   const spec = serviceSpec({ workspace, stateRoot, entryScript });
   const ownerUpdate = beginOwnerUpdate({ ...spec, version });
   let serviceEnvironment;
@@ -64,12 +64,19 @@ export async function installAutostart({ workspace, stateRoot, entryScript, vers
     );
   }
   if (result?.ok !== true) {
-    return {
+    return withDeferredOwnerTransaction({
       ...result,
       service_environment: serviceEnvironment,
       service_owner: { status: "pending", version },
       reason: result?.reason || "installation_failed_owner_pending",
-    };
+    }, ownerUpdate, deferOwnerCommit);
+  }
+  if (deferOwnerCommit) {
+    return withDeferredOwnerTransaction({
+      ...result,
+      service_environment: serviceEnvironment,
+      service_owner: { status: "pending", version },
+    }, ownerUpdate, true);
   }
   let owner;
   try { owner = ownerUpdate.commit(); }
@@ -80,6 +87,25 @@ export async function installAutostart({ workspace, stateRoot, entryScript, vers
     );
   }
   return { ...result, service_environment: serviceEnvironment, service_owner: { status: owner.status, version: owner.version } };
+}
+
+function withDeferredOwnerTransaction(result, ownerUpdate, enabled) {
+  if (!enabled) return result;
+  if (!ownerUpdate?.owner || ownerUpdate.owner.status !== "pending"
+      || typeof ownerUpdate.commit !== "function" || typeof ownerUpdate.rollback !== "function") {
+    throw new Error("deferred machine service owner transaction is unavailable");
+  }
+  Object.defineProperty(result, "serviceOwnerTransaction", {
+    value: Object.freeze({
+      owner: ownerUpdate.owner,
+      commit: () => ownerUpdate.commit(),
+      rollback: () => ownerUpdate.rollback(),
+    }),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return result;
 }
 
 async function defaultInstallProvider(spec, logger) {

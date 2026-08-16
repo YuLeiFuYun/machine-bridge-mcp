@@ -7,9 +7,9 @@ import { BridgeError } from "./errors.mjs";
 const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 let macosProbeResult;
 
-export function delegatedProcessCommand({ command, args = [], workspace, runtimeDir, context = {}, platform = process.platform } = {}) {
+export function delegatedProcessCommand({ command, args = [], workspace, runtimeDir, context = {}, platform = process.platform, forceDelegated = false } = {}) {
   const principal = context?.authority?.principal;
-  if (!principal || principal.kind !== "account" || principal.role === "owner") {
+  if (!forceDelegated && (!principal || principal.kind !== "account" || principal.role === "owner")) {
     return { command, args, isolation: "owner-or-local-user" };
   }
   if (platform === "darwin" && macosSandboxAvailable({ platform })) {

@@ -22,7 +22,7 @@ import { initializationCompatibilityResponse } from "./mcp-initialization-compat
 import { mcpStreamProxyMode } from "./mcp-stream-proxy-contract.ts";
 import { buildServerInfoResult, serverInfoDetail } from "./server-info.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
-import { daemonToolTimeoutBudget } from "./tool-timeout.ts";
+import { daemonToolTimeoutBudget, isRemoteDurableProcessTool } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
 import { daemonToolError, dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
@@ -54,7 +54,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.92";
+const SERVER_VERSION = "3.0.0-beta.93";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -507,6 +507,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!daemonInstanceId) throw new WorkerToolError("unavailable", "local daemon connection is missing its instance identity", true);
     if (!daemonAttachment?.tools?.includes(name)) throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
     const id = randomToken("call");
+    const recovery = durableProcessRecovery(name, args);
     let result!: Promise<unknown>;
     try {
       await this.pendingAdmission.run(async () => {
@@ -521,6 +522,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
             clientId: authorized.clientId, familyId: authorized.familyId,
           },
           tool: name,
+          ...(recovery ? { recovery } : {}),
           timeoutMs: dispatchBudget.settlementTimeoutMs,
           onTimeout: (record) => this.daemonCallTimeout(record, name),
           signal,
@@ -561,18 +563,18 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
   private daemonCallTimeout(record: import("./pending-call-contract.ts").PendingCallRecord, name: string): Error {
     const terminationRequested = Boolean(record.socket && trySendWebSocket(record.socket, { type: "cancel_call", id: record.id }));
-    return dispatchedDaemonTimeoutError(name, terminationRequested);
+    return dispatchedDaemonTimeoutError(name, terminationRequested, record.recovery);
   }
   private daemonCallCancellation(record: import("./pending-call-contract.ts").PendingCallRecord): Error {
     const terminationRequested = Boolean(record.socket && trySendWebSocket(record.socket, { type: "cancel_call", id: record.id }));
-    return dispatchedDaemonCancellationError("tool call cancelled when its HTTP response stream closed", terminationRequested);
+    return dispatchedDaemonCancellationError("tool call cancelled when its HTTP response stream closed", terminationRequested, record.recovery);
   }
 
   private async cancelClientRequest(requestKey?: string): Promise<void> {
     if (!requestKey) return;
     const cancelledTransient = await this.pending.cancelRequest(requestKey, (record) => {
       const terminationRequested = Boolean(record.socket && trySendWebSocket(record.socket, { type: "cancel_call", id: record.id }));
-      return dispatchedDaemonCancellationError("tool call cancelled by client", terminationRequested);
+      return dispatchedDaemonCancellationError("tool call cancelled by client", terminationRequested, record.recovery);
     });
     if (cancelledTransient) {
       await this.scheduleRuntimeAlarm();
@@ -663,12 +665,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     ws: WebSocket, message: string, attachment = this.daemonRegistry.attachment(ws),
   ): Promise<number> {
     if (!attachment?.instanceId) {
-      return await this.pending.rejectSocket(ws, () => dispatchedDaemonDisconnectError(message));
+      return await this.pending.rejectSocket(ws, (record) => dispatchedDaemonDisconnectError(message, record.recovery));
     }
     return this.pending.detachSocket(
       ws,
       DAEMON_RECONNECT_GRACE_MS,
-      () => dispatchedDaemonDisconnectError(`${message}; reconnect grace expired`),
+      (record) => dispatchedDaemonDisconnectError(`${message}; reconnect grace expired`, record.recovery),
     );
   }
 
@@ -716,6 +718,22 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
 }
+
+function durableProcessRecovery(name: string, args: Record<string, unknown>): Record<string, unknown> | null {
+  if (!isRemoteDurableProcessTool(name)) return null;
+  const idempotencyKey = args.idempotency_key;
+  if (typeof idempotencyKey !== "string" || !idempotencyKey) return null;
+  return {
+    mode: "idempotent_replay",
+    source_tool: name,
+    credential: "idempotency_key",
+    idempotency_key: idempotencyKey,
+    action: "retry_same_tool_arguments_with_same_idempotency_key",
+    result_tool_after_acceptance: "read_job",
+    duplicate_execution_prevented_by_key: true,
+  };
+}
+
 export default {
   fetch: (request: Request, env: BridgeEnv, ctx: ExecutionContext) =>
     handleOuterWorkerFetch(request, env, ctx, { server: SERVER_NAME, version: SERVER_VERSION }),

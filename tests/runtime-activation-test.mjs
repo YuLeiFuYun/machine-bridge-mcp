@@ -4,6 +4,8 @@ import { BridgeError } from "../src/local/errors.mjs";
 await testValidationAndPreflightFailures();
 await testConvergenceWait();
 await testSuccessfulHandoff();
+await testOwnerCommitFailureStopsVerifiedCandidate();
+await testUncommittedActiveCandidateStopsWhenRecoveryCannotConverge();
 await testAuthenticationFailureRedeploysOnce();
 await testAuthenticationRecoveryIsBounded();
 await testCompatibleCandidateRecoveryFailureIsObservable();
@@ -247,10 +249,21 @@ async function testSuccessfulHandoff() {
       events.push("runtime:create");
       return runtime;
     },
-    installAutostart: async () => { events.push("service:install"); return { ok: true, active: true, provider: "test" }; },
-    startAutostart: async () => { events.push("service:start"); return { ok: true, active: true, provider: "test" }; },
-    inspectDaemon: async () => ({ alive: true, verified_service_daemon: true, startup_readiness_verified: true, version: "3.0.0-beta.1", pid: 42 }),
-    checkWorker: async () => ({ ok: true, version: "3.0.0-beta.1" }),
+    installAutostart: async ({ deferOwnerCommit }) => {
+      assert(deferOwnerCommit === true, "activation did not request deferred service-owner commit");
+      events.push("service:install");
+      return deferredServiceInstall(events);
+    },
+    startAutostart: async ({ owner }) => {
+      assert(owner?.status === "pending", "candidate service was not started against the pending owner transaction");
+      events.push("service:start");
+      return { ok: true, active: true, provider: "test" };
+    },
+    inspectDaemon: async () => {
+      events.push("daemon:verified");
+      return { alive: true, verified_service_daemon: true, startup_readiness_verified: true, version: "3.0.0-beta.1", pid: 42 };
+    },
+    checkWorker: async () => { events.push("worker:verified"); return { ok: true, version: "3.0.0-beta.1" }; },
   });
   assert(result.ok && result.candidateRelayVerified, "successful activation did not report candidate relay verification");
   assert(JSON.stringify(events) === JSON.stringify([
@@ -263,7 +276,90 @@ async function testSuccessfulHandoff() {
     "daemon:release",
     "startup:release",
     "service:start",
+    "daemon:verified",
+    "worker:verified",
+    "owner:commit",
   ]), `activation ordering drifted: ${events.join(",")}`);
+}
+
+async function testOwnerCommitFailureStopsVerifiedCandidate() {
+  const events = [];
+  let caught;
+  try {
+    await activatePersistentRuntime({
+      expectedVersion: "3.0.0-beta.1",
+      inspectActivationOwnership: inactiveActivationOwnership,
+      maximumAttempts: 1,
+      wait: async () => {},
+      acquireStartupLock: async () => lock("startup", events),
+      acquireServiceLock: async () => silentServiceLock(),
+      stopAutostart: async () => {
+        events.push("service:stop");
+        return { ok: true, active_before: false, active: false, restore_required: false, provider: "test" };
+      },
+      acquireDaemonLock: async () => lock("daemon", events),
+      prepareRemoteState: async () => ({}),
+      createRuntime: () => ({ async start() {}, stop() {} }),
+      installAutostart: async () => deferredServiceInstall(events, { commitError: new Error("disk full") }),
+      startAutostart: async ({ owner }) => {
+        assert(owner?.status === "pending", "owner commit failure test did not start from pending ownership");
+        events.push("service:start");
+        return { ok: true, active: true, provider: "test" };
+      },
+      inspectDaemon: async () => readyCandidateDaemon(),
+      checkWorker: async () => readyCandidateWorker(),
+    });
+  } catch (error) { caught = error; }
+  assert(caught?.code === "service_owner_commit_failed"
+    && caught.message.includes("pending owner was retained"),
+  "service-owner commit failure was not reported as a fail-closed activation error");
+  assert(events.includes("owner:commit")
+    && events.filter((value) => value === "service:stop").length === 2
+    && events.indexOf("service:start") < events.indexOf("owner:commit")
+    && events.indexOf("owner:commit") < events.lastIndexOf("service:stop"),
+  `service-owner commit failure did not stop the verified candidate after commit failed: ${events.join(",")}`);
+}
+
+async function testUncommittedActiveCandidateStopsWhenRecoveryCannotConverge() {
+  const events = [];
+  let stopCalls = 0;
+  let caught;
+  try {
+    await activatePersistentRuntime({
+      expectedVersion: "3.0.0-beta.1",
+      inspectActivationOwnership: inactiveActivationOwnership,
+      maximumAttempts: 1,
+      wait: async () => {},
+      acquireStartupLock: async () => lock("startup", events),
+      acquireServiceLock: async () => silentServiceLock(),
+      stopAutostart: async () => {
+        stopCalls += 1;
+        events.push(`service:stop:${stopCalls}`);
+        return { ok: true, active_before: stopCalls > 1, active: false, restore_required: false, provider: "test" };
+      },
+      acquireDaemonLock: async () => lock("daemon", events),
+      prepareRemoteState: async () => ({}),
+      createRuntime: () => ({ async start() {}, stop() {} }),
+      installAutostart: async () => deferredServiceInstall(events),
+      startAutostart: async () => { events.push("service:start"); return { ok: true, active: true, provider: "test" }; },
+      startRecoveryAutostart: async ({ owner }) => {
+        assert(owner?.status === "pending", "active candidate recovery lost pending owner identity");
+        events.push("service:recover-active");
+        return { ok: true, active: true, provider: "test", already_running: true };
+      },
+      inspectCandidateAutostart: async () => ({ alive: false, verified_service_daemon: false }),
+      inspectDaemon: async () => ({ alive: false, verified_service_daemon: false }),
+      checkWorker: async () => readyCandidateWorker(),
+    });
+  } catch (error) { caught = error; }
+  assert(caught instanceof AggregateError
+    && caught.message.includes("persistent runtime activation did not converge")
+    && caught.message.includes("compatible candidate autostart recovery did not converge"),
+  "uncommitted active candidate failure did not preserve both primary and recovery convergence errors");
+  assert(events.includes("service:recover-active")
+    && stopCalls === 2
+    && !events.includes("owner:commit"),
+  `uncommitted active candidate was left running or incorrectly committed after failed recovery: ${events.join(",")}`);
 }
 
 async function testAuthenticationFailureRedeploysOnce() {
@@ -864,13 +960,15 @@ async function testServiceFailureAfterVerifiedCandidate() {
     acquireDaemonLock: async () => daemon,
     prepareRemoteState: async () => ({}),
     createRuntime: () => runtime,
-    installAutostart: async () => ({ ok: true, active: true, provider: "test" }),
-    startAutostart: async () => {
+    installAutostart: async () => deferredServiceInstall(events),
+    startAutostart: async ({ owner }) => {
+      assert(owner?.status === "pending", "failed handoff was not attempted against pending candidate ownership");
       startCalls += 1;
       events.push(`service:start:${startCalls}`);
       return { ok: true, active: false, provider: "test", reason: "completed_without_persistence" };
     },
-    startRecoveryAutostart: async () => {
+    startRecoveryAutostart: async ({ owner }) => {
+      assert(owner?.status === "pending", "candidate recovery lost the pending service owner identity");
       events.push("service:start-recovery");
       return { ok: true, active: true, provider: "test" };
     },
@@ -885,7 +983,8 @@ async function testServiceFailureAfterVerifiedCandidate() {
   "verified service-handoff recovery did not settle as a successful activation");
   assert(events.indexOf("runtime:start") < events.indexOf("runtime:stop"), "candidate relay was not verified before service handoff failure");
   assert(events.filter((value) => value === "startup:release").length === 1
-    && startCalls === 1 && events.filter((value) => value === "service:start-recovery").length === 1,
+    && startCalls === 1 && events.filter((value) => value === "service:start-recovery").length === 1
+    && events.indexOf("service:start-recovery") < events.indexOf("owner:commit"),
     "service start failure did not separate strict handoff from compatible-service recovery");
 }
 
@@ -960,6 +1059,25 @@ function readyCandidateDaemon(version = "3.0.0-beta.1") {
 
 function readyCandidateWorker(version = "3.0.0-beta.1") {
   return { ok: true, version };
+}
+
+function deferredServiceInstall(events, options = {}) {
+  const owner = { status: "pending", version: "3.0.0-beta.1" };
+  return {
+    ok: true,
+    active: true,
+    provider: "test",
+    service_owner: { status: "pending", version: owner.version },
+    serviceOwnerTransaction: {
+      owner,
+      commit() {
+        events.push("owner:commit");
+        if (options.commitError) throw options.commitError;
+        return { ...owner, status: "committed" };
+      },
+      rollback() { events.push("owner:rollback"); return true; },
+    },
+  };
 }
 
 function lock(name, events) {

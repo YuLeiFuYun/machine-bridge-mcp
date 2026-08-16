@@ -61,6 +61,14 @@ for (const fullOnly of ["open_local_application", "inspect_local_application", "
 assert(full.has("run_process") && full.has("exec_command") && full.has("generate_ssh_key_resource"), "full profile inventory is invalid");
 assert(full.has("browser_action") && full.has("browser_manage_tabs") && full.has("browser_wait") && full.has("operate_local_application"), "full profile omitted local automation tools");
 assert(full.size === catalog.length, "full profile must expose the complete catalog");
+for (const processToolName of ["run_local_command", "run_process", "exec_command"]) {
+  const processTool = catalog.find((tool) => tool.name === processToolName);
+  const timeout = processTool?.inputSchema?.properties?.timeout_seconds;
+  assert(timeout?.maximum === 60 && timeout?.default === 60,
+    `${processToolName} widened the owner-local foreground schema instead of leaving durability to the remote Worker projection`);
+  assert(processTool?.inputSchema?.properties?.idempotency_key?.type === "string",
+    `${processToolName} omitted the explicit durable acceptance idempotency key`);
+}
 
 const result = toolResult({ ok: true, nested: { value: 1 } });
 assert(result.isError === false, "successful tool result was marked as an error");

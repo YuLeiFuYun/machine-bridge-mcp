@@ -46,6 +46,7 @@ import { RuntimeResourceService } from "./runtime-resource-service.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage } from "./runtime-paths.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { ResourceCoordinator } from "./resource-admission.mjs";
+import { runRuntimeDirectProcess, runRuntimeExecCommand, runRuntimeLocalCommand } from "./runtime-process-routing.mjs";
 import {
   resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
   sessionBootstrap as buildRuntimeSessionBootstrap,
@@ -513,7 +514,6 @@ export class LocalRuntime {
       policy: this.policy,
       runtimeDir: this.runtimeDir,
       workspace: this.workspace,
-      runProcess: (...args) => this.runProcess(...args),
       runFixedInternal: (...args) => this.processExecutionService.runFixedInternal(...args),
       probeShell: (callContext, timeoutMs) => this.processExecutionService.probeShell(callContext, timeoutMs),
       managedJobManager: this.managedJobManager,
@@ -555,17 +555,11 @@ export class LocalRuntime {
     }, args, context);
   }
 
-  runDirectProcess(args, context = {}) {
-    return this.processExecutionService.runDirect(args, context);
-  }
+  runDirectProcess(args, context = {}) { return runRuntimeDirectProcess(this, args, context); }
 
-  runLocalCommand(args, context = {}) {
-    return this.processExecutionService.runRegistered(args, context);
-  }
+  runLocalCommand(args, context = {}) { return runRuntimeLocalCommand(this, args, context); }
 
-  execCommand(command, timeoutSeconds, context = {}) {
-    return this.processExecutionService.runShell(command, timeoutSeconds, context);
-  }
+  execCommand(input, timeoutOrContext = {}, maybeContext = {}) { return runRuntimeExecCommand(this, input, timeoutOrContext, maybeContext); }
 
   terminateActiveProcesses(signal = "SIGTERM", escalate = false) {
     this.processExecutionService.terminateAll(signal, escalate);

@@ -11,7 +11,6 @@ export async function diagnoseRuntime({
   policy,
   runtimeDir,
   workspace,
-  runProcess,
   runFixedInternal,
   probeShell,
   managedJobManager,
@@ -60,7 +59,7 @@ export async function diagnoseRuntime({
     await rm(probe, { force: true }).catch(() => {});
   }
   if (policy.execMode === "direct" || policy.execMode === "shell") {
-    const direct = await runProcess(
+    const direct = await runFixedInternal(
       process.execPath,
       ["-e", "process.stdout.write('ok')"],
       RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS,
@@ -106,7 +105,7 @@ export async function diagnoseRuntime({
     interpretation: {
       current_request_delivery: "confirmed: this diagnose_runtime request reached the local runtime; this evidence does not support a blanket current platform disable of Machine Bridge",
       tool_call_blocked_before_response: "not observable by Machine Bridge; possible causes include conversation/surface app routing state, a stale host action/tool snapshot, host tool filtering, connector gateway, client routing, or platform policy; do not attribute one without host-side evidence",
-      diagnostic_reached_daemon_but_spawn_failed: "a true local spawn failure points to the local OS, endpoint security, shell configuration, or Machine Bridge policy; a child exit code or bounded stdout/stderr instead proves spawn succeeded and the nested command or remote target decided the failure",
+      diagnostic_reached_daemon_but_spawn_failed: "the fixed local spawn/shell probes bypass cooperative resource admission, so a true probe failure points to the local OS, endpoint security, shell configuration, or Machine Bridge policy; a child exit code or bounded stdout/stderr instead proves spawn succeeded and the nested command or remote target decided the failure",
       system_network_stack_scope: "application proxy selection only; an operating-system VPN or TUN may still intercept the relay connection",
       tunnel_default_route_detected: "the operating-system route is carried by a VPN/TUN; node selection and repair remain outside Machine Bridge",
       managed_job_accepted_then_later_tools_blocked: "job continues independently; inspect with local CLI or a later read_job call",

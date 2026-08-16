@@ -7,6 +7,7 @@ import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError } from "./errors.mjs";
 import { assertOwnedByContext, principalBinding, visibleToContext } from "./authority-context.mjs";
 import { recordMatchesAuthorityRevocation } from "../shared/authority-revocation.mjs";
+import { startDurableProcessJob } from "./managed-job-durable-process.mjs";
 import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./managed-job-plan.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { clampInteger } from "./numbers.mjs";
@@ -117,16 +118,25 @@ export class ManagedJobManager {
     return this.createJob(args, { launch: true }, context);
   }
 
-  createJob(args, { launch }, context = {}) {
+  startDurableProcess(args = {}, context = {}) {
+    return startDurableProcessJob(this, args, context);
+  }
+
+  createJob(args, { launch, executionPriority = "background", delegatedProcess = false }, context = {}) {
     const effectivePolicy = this.policyForContext(context);
     const idempotencyKey = launch ? normalizeJobIdempotencyKey(args?.idempotency_key) : null;
     const planArgs = idempotencyKey === null ? args : omitJobIdempotencyKey(args);
-    const plan = validatePlan(planArgs, {
+    const validatedPlan = validatePlan(planArgs, {
       workspace: this.workspace,
       resources: this.currentResources(),
       fullEnv: effectivePolicy.minimalEnv === false,
       unrestrictedPaths: effectivePolicy.unrestrictedPaths === true,
     });
+    const plan = {
+      ...validatedPlan,
+      ...(executionPriority === "interactive" ? { execution_priority: "interactive" } : {}),
+      ...(delegatedProcess === true ? { delegated_process: true } : {}),
+    };
     const planSha256 = createHash("sha256").update(JSON.stringify(plan)).digest("hex");
     const idempotencyDigest = idempotencyKey === null ? null : managedJobIdempotencyDigest(idempotencyKey, context);
     const id = idempotencyDigest === null ? `job_${randomBytes(24).toString("base64url")}` : `job_${idempotencyDigest}`;

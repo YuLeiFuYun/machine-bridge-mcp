@@ -69,7 +69,7 @@ export class ProcessExecutionService {
   }
   async probeShell(context = {}, timeoutMs = 5_000) {
     const shell = workspaceShellCommand(process.platform === "win32" ? "cd" : "pwd");
-    return this.run(shell.cmd, shell.args, timeoutMs, true, 64 * 1024, context);
+    return this.run(shell.cmd, shell.args, timeoutMs, true, 64 * 1024, context, this.workspace, null, { internalFixed: true });
   }
   async runFixedInternal(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace, stdin = null, environment = {}) {
     const argv = validateArgv([cmd, ...args]);

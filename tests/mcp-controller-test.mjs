@@ -170,14 +170,22 @@ assert(JSON.stringify(boundedMethod).length < 1024);
 const malformed = await jsonResult(await handle(request("tools/call", { name: "list_dir", arguments: { unexpected: true } }), { accept: "application/json" }));
 assert.equal(malformed.error.code, -32602);
 assert.equal(malformed.error.data.validation_issues[0].keyword, "additionalProperties");
-const staleTimeoutSchema = await jsonResult(await handle(request("tools/call", {
-  name: "run_process", arguments: { argv: ["must-not-run"], timeout_seconds: 31 },
+const overDurableTimeoutSchema = await jsonResult(await handle(request("tools/call", {
+  name: "run_process", arguments: { argv: ["must-not-run"], timeout_seconds: 601, idempotency_key: "over-durable-timeout" },
 }), { accept: "application/json" }));
-assert.equal(staleTimeoutSchema.result.isError, true);
-assert.equal(staleTimeoutSchema.result.structuredContent.error.code, "invalid_request");
-assert.equal(staleTimeoutSchema.result.structuredContent.error.details.side_effects_started, false);
-assert.equal(staleTimeoutSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
-assert.equal(staleTimeoutSchema.result.structuredContent.error.details.validation_issues[0].keyword, "maximum");
+assert.equal(overDurableTimeoutSchema.result.isError, true);
+assert.equal(overDurableTimeoutSchema.result.structuredContent.error.code, "invalid_request");
+assert.equal(overDurableTimeoutSchema.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(overDurableTimeoutSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(overDurableTimeoutSchema.result.structuredContent.error.details.validation_issues[0].keyword, "maximum");
+const missingDurableRecoveryKey = await jsonResult(await handle(request("tools/call", {
+  name: "run_process", arguments: { argv: ["must-not-run"], timeout_seconds: 10 },
+}), { accept: "application/json" }));
+assert.equal(missingDurableRecoveryKey.result.isError, true);
+assert.equal(missingDurableRecoveryKey.result.structuredContent.error.code, "invalid_request");
+assert.equal(missingDurableRecoveryKey.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(missingDurableRecoveryKey.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(missingDurableRecoveryKey.result.structuredContent.error.details.recovery_credential_required, "idempotency_key");
 const staleReadPollSchema = await jsonResult(await handle(request("tools/call", {
   name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: 6000 },
 }), { accept: "application/json" }));

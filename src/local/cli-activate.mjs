@@ -101,14 +101,21 @@ export function createActivateCommand({
         deviceSessionIdentity: readiness.deviceSessionIdentity,
         exitOnTerminal: false,
       }),
-      installAutostart: () => installAutostart({
-        workspace,
-        stateRoot: state.paths.stateRoot,
-        entryScript: process.argv[1],
-        version: expectedVersion,
-        logger: structuredLogger(true),
-      }),
-      startAutostart: () => startOwnedServiceRuntime({ logger: structuredLogger(true) }),
+      installAutostart: ({ deferOwnerCommit } = {}) => {
+        if (deferOwnerCommit !== true) throw new Error("persistent activation requires deferred service-owner commit");
+        return installAutostart({
+          workspace,
+          stateRoot: state.paths.stateRoot,
+          entryScript: process.argv[1],
+          version: expectedVersion,
+          logger: structuredLogger(true),
+          deferOwnerCommit: true,
+        });
+      },
+      startAutostart: ({ owner } = {}) => {
+        if (!owner || owner.status !== "pending") throw new Error("persistent activation requires the pending candidate service owner");
+        return startOwnedServiceRuntime({ logger: structuredLogger(true), owner });
+      },
       startRecoveryAutostart: () => startAutostart({ logger: structuredLogger(true) }),
       restorePreviousAutostart: () => startAutostart({ logger: structuredLogger(true) }),
       inspectCandidateAutostart: () => inspectWorkspaceDaemon(state, {

@@ -17,6 +17,7 @@ import { sanitizeLogText } from "./log.mjs";
 import { confirmRunnerClaim } from "./managed-job-runner-claim.mjs";
 import { ResourceCoordinator } from "./resource-admission.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
+import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
 
 const RESOURCE_TOKEN = /\{\{resource:([a-z][a-z0-9._-]{0,63})\}\}/g;
 const TEMP_TOKEN = /\{\{temp:([a-z][a-z0-9._-]{0,63})\}\}/g;
@@ -305,6 +306,9 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
     cancellationAware,
     captureOutput: step.capture_output !== "discard",
     captureBudget,
+    resourcePriority: plan?.execution_priority === "interactive" ? "interactive" : "background",
+    delegatedProcess: plan?.delegated_process === true,
+    workspace: plan.workspace,
   });
   return {
     index,
@@ -325,16 +329,25 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
   };
 }
 
-async function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget }) {
+async function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget, resourcePriority = "background", delegatedProcess = false, workspace = "" }) {
   if (cancellationAware && isCancellationRequested()) throw new JobCancelledError();
   const admitted = await acquireProcessResources(resourceCoordinator, argv[0], argv.slice(1), env, {
-    cwd, priority: "background", waitMs: 30 * 60_000,
+    cwd, priority: resourcePriority, waitMs: 30 * 60_000,
     cancelCheck: () => { if (cancellationAware && isCancellationRequested()) throw new JobCancelledError(); },
   });
   return new Promise((resolvePromise, rejectPromise) => {
     let child;
     try {
-      child = spawn(admitted.command, admitted.args, {
+      const launch = delegatedProcess
+        ? delegatedProcessCommand({
+            command: admitted.command,
+            args: admitted.args,
+            workspace,
+            runtimeDir,
+            forceDelegated: true,
+          })
+        : { command: admitted.command, args: admitted.args };
+      child = spawn(launch.command, launch.args, {
         cwd, env: admitted.environment, detached: process.platform !== "win32", windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       });

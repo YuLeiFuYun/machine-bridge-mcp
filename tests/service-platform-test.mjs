@@ -242,6 +242,29 @@ async function serviceInstallOwnerCommitTest() {
       "service install did not persist its environment inside the isolated state root");
 
     events.length = 0;
+    const pendingOwner = {
+      status: "pending", version: spec.version, workspace, stateRoot, entryScript,
+    };
+    const deferred = await installAutostart({
+      ...spec,
+      deferOwnerCommit: true,
+      installProvider: async () => { events.push("provider:deferred"); return { ok: true, provider: "test" }; },
+      beginOwnerUpdate: () => ({
+        owner: pendingOwner,
+        commit() { events.push("owner:deferred-commit"); return { ...pendingOwner, status: "committed" }; },
+        rollback() { events.push("owner:deferred-rollback"); return true; },
+      }),
+    });
+    assert.equal(deferred.service_owner.status, "pending");
+    assert.equal(deferred.serviceOwnerTransaction.owner, pendingOwner);
+    assert.deepEqual(events, ["provider:deferred"],
+      "deferred service install committed ownership before provider activation/readiness verification");
+    assert.equal(Object.keys(deferred).includes("serviceOwnerTransaction"), false,
+      "internal deferred owner transaction leaked into enumerable service output");
+    assert.equal(deferred.serviceOwnerTransaction.commit().status, "committed");
+    assert.deepEqual(events, ["provider:deferred", "owner:deferred-commit"]);
+
+    events.length = 0;
     await assert.rejects(() => installAutostart({
       ...spec,
       writeEnvironment: () => { events.push("environment:failed"); throw new Error("environment denied"); },

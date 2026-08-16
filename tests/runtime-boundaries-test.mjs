@@ -303,11 +303,13 @@ async function testRuntimeDiagnostics() {
       policy: policyProfile("full"),
       runtimeDir,
       workspace: runtimeDir,
-      runProcess: async (_command, _args, timeoutMs) => {
-        diagnosticProcessTimeoutMs = timeoutMs;
-        return { code: 0, stdout: "ok", stderr: "" };
+      runFixedInternal: async (command, _args, timeoutMs) => {
+        if (command === process.execPath) {
+          diagnosticProcessTimeoutMs = timeoutMs;
+          return { code: 0, stdout: "ok", stderr: "" };
+        }
+        return { code: 0, stdout: "   interface: utun4\n", stderr: "" };
       },
-      runFixedInternal: async () => ({ code: 0, stdout: "   interface: utun4\n", stderr: "" }),
       probeShell: async (_context, timeoutMs) => {
         diagnosticShellTimeoutMs = timeoutMs;
         return { code: 0, stdout: "", stderr: "" };
@@ -363,7 +365,7 @@ async function testRuntimeDiagnostics() {
       policy: policyProfile("review"),
       runtimeDir,
       workspace: runtimeDir,
-      runProcess: async () => { throw new Error("must not run"); },
+      runFixedInternal: async () => { throw new Error("must not run"); },
       probeShell: async () => { throw new Error("must not run"); },
       managedJobManager: {
         diagnoseStorage: () => ({ ok: true }),
@@ -379,7 +381,10 @@ async function testRuntimeDiagnostics() {
       policy: policyProfile("agent"),
       runtimeDir,
       workspace: runtimeDir,
-      runProcess: async () => { throw new Error("spawn failed"); },
+      runFixedInternal: async (command) => {
+        if (command === process.execPath) throw new Error("spawn failed");
+        return { code: 1, stdout: "", stderr: "unavailable" };
+      },
       probeShell: async () => ({ code: 1, stdout: "", stderr: "" }),
       managedJobManager: {
         diagnoseStorage: () => ({ ok: false, error_class: "permission_denied" }),

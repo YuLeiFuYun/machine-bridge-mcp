@@ -6,6 +6,8 @@
   "defaultRemoteToolExecutionTimeoutMs": 30000,
   "maximumInteractiveExecutionTimeoutMs": 45000,
   "maximumProcessForegroundExecutionTimeoutMs": 30000,
+  "durableProcessAcceptanceTimeoutMs": 10000,
+  "maximumDurableProcessExecutionTimeoutMs": 600000,
   "maximumProcessReadWaitMs": 5000,
   "workerSettlementOverheadMs": 5000,
   "maximumRelayToolTimeoutMs": 50000

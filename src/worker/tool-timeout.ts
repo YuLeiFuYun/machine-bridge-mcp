@@ -1,24 +1,27 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import {
   isConfigurableForegroundTool,
+  isRemoteDurableProcessTool,
   remoteForegroundDefaultSeconds,
   remoteForegroundMaximumSeconds,
   REMOTE_FOREGROUND_TIMEOUT_SECONDS,
 } from "../shared/foreground-timeout.mjs";
 import { WorkerToolError } from "./errors.ts";
+import { durableProcessAcceptanceTimeoutMs } from "./durable-process-timeout.ts";
 
 export {
   isConfigurableForegroundTool,
+  isRemoteDurableProcessTool,
+  remoteDurableProcessTimeoutSeconds,
+  REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS,
+  REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS,
   remoteForegroundDefaultSeconds,
   remoteForegroundMaximumSeconds,
   REMOTE_FOREGROUND_TIMEOUT_SECONDS,
   REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS,
 } from "../shared/foreground-timeout.mjs";
 
-export type DaemonToolTimeoutBudget = Readonly<{
-  executionTimeoutMs: number;
-  settlementTimeoutMs: number;
-}>;
+export type DaemonToolTimeoutBudget = Readonly<{ executionTimeoutMs: number; settlementTimeoutMs: number }>;
 
 export function daemonToolTimeoutBudget(name: string, args: Record<string, unknown>): DaemonToolTimeoutBudget {
   const executionTimeoutMs = toolExecutionTimeoutMs(name, args);
@@ -38,6 +41,7 @@ function toolExecutionTimeoutMs(name: string, args: Record<string, unknown>): nu
     return Math.min(relayContract.defaultRemoteToolExecutionTimeoutMs, waitMs + 5_000);
   }
   if (name === "start_process") return Math.min(20_000, relayContract.defaultRemoteToolExecutionTimeoutMs);
+  if (isRemoteDurableProcessTool(name)) return durableProcessAcceptanceTimeoutMs(name, args);
   if (!isConfigurableForegroundTool(name)) return relayContract.defaultRemoteToolExecutionTimeoutMs;
 
   const seconds = remoteForegroundSeconds(name, args.timeout_seconds);
