@@ -1,10 +1,12 @@
 {
   "reconnectGraceMs": 120000,
   "newCallReconnectGraceMs": 10000,
-  "streamHeartbeatMs": 10000,
-  "maximumExecutionTimeoutMs": 600000,
-  "maximumInteractiveExecutionTimeoutMs": 60000,
-  "maximumProcessForegroundExecutionTimeoutMs": 45000,
+  "streamHeartbeatMs": 5000,
+  "maximumExecutionTimeoutMs": 45000,
+  "defaultRemoteToolExecutionTimeoutMs": 30000,
+  "maximumInteractiveExecutionTimeoutMs": 45000,
+  "maximumProcessForegroundExecutionTimeoutMs": 30000,
+  "maximumProcessReadWaitMs": 5000,
   "workerSettlementOverheadMs": 5000,
-  "maximumRelayToolTimeoutMs": 610000
+  "maximumRelayToolTimeoutMs": 50000
 }

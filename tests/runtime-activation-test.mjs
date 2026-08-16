@@ -15,6 +15,7 @@ await testCandidateFatalDuringInstall();
 await testUnexpectedPostReadyFailureRemainsFatal();
 await testPostDeploymentPreparationFailureUsesCandidateService();
 await testRemotePreparationFailureRestoresService();
+await testAmbiguousServiceStopRetriesPreviousRecovery();
 await testOrphanServiceRuntimeRestoresService();
 await testRestorationFailureAggregation();
 await testServiceFailureAfterVerifiedCandidate();
@@ -119,6 +120,7 @@ async function testValidationAndPreflightFailures() {
 
   for (const [field, value, expected] of [
     ["maximumAttempts", 0, "attempts must be between 1 and 1200"],
+    ["restoreStartAttempts", 0, "restore-start attempts must be between 1 and 60"],
     ["candidateRetryWait", true, "candidateRetryWait must be a function"],
     ["wait", "later", "wait must be a function"],
     ["repairRemoteState", 42, "repairRemoteState must be a function"],
@@ -737,6 +739,56 @@ async function testRemotePreparationFailureRestoresService() {
   ]), `failed activation did not restore the previous provider after releasing locks: ${events.join(",")}`);
 }
 
+async function testAmbiguousServiceStopRetriesPreviousRecovery() {
+  const events = [];
+  let startCalls = 0;
+  let inspectCalls = 0;
+  let caught;
+  try {
+    await activatePersistentRuntime({
+      expectedVersion: "3.0.0-beta.1",
+      inspectActivationOwnership: previousServiceActivationOwnership,
+      acquireStartupLock: async () => lock("startup", events),
+      acquireServiceLock: async () => silentServiceLock(),
+      stopAutostart: async () => {
+        events.push("service:stop-ambiguous");
+        return {
+          ok: false, provider: "test", active_before: true, active: null,
+          restore_required: true, mutation_attempted: true, reason: "stop_not_observed",
+        };
+      },
+      acquireDaemonLock: unexpected,
+      prepareRemoteState: unexpected,
+      createRuntime: unexpected,
+      installAutostart: unexpected,
+      startAutostart: unexpected,
+      restorePreviousAutostart: async () => {
+        startCalls += 1;
+        events.push(`service:restore:${startCalls}`);
+        return { ok: startCalls >= 2, active: startCalls >= 2, provider: "test" };
+      },
+      inspectPreviousAutostart: () => {
+        inspectCalls += 1;
+        if (inspectCalls >= 2) {
+          return { alive: true, verified_service_daemon: true, mode: "service", version: "2.0.0" };
+        }
+        return { alive: false, verified_service_daemon: false, mode: "service", version: "2.0.0" };
+      },
+      restoreStartAttempts: 5,
+      wait: async () => {},
+      inspectDaemon: unexpected,
+      checkWorker: unexpected,
+    });
+  } catch (error) { caught = error; }
+  assert(caught?.code === "autostart_stop_failed" && caught.message.includes("could not be stopped before activation"),
+    "ambiguous provider stop did not preserve the original activation failure after recovery");
+  assert(startCalls === 2 && inspectCalls === 2,
+    "ambiguous provider stop did not retry previous-service recovery until verified ready");
+  assert(JSON.stringify(events) === JSON.stringify([
+    "service:stop-ambiguous", "startup:release", "service:restore:1", "service:restore:2",
+  ]), `ambiguous provider-stop recovery ordering drifted: ${events.join(",")}`);
+}
+
 async function testOrphanServiceRuntimeRestoresService() {
   const events = [];
   await expectReject(() => activatePersistentRuntime({
@@ -774,7 +826,7 @@ async function testRestorationFailureAggregation() {
   try {
     await activatePersistentRuntime({
       expectedVersion: "3.0.0-beta.1",
-      inspectActivationOwnership: inactiveActivationOwnership,
+      inspectActivationOwnership: previousServiceActivationOwnership,
       acquireStartupLock: async () => startup,
       acquireServiceLock: async () => silentServiceLock(),
       stopAutostart: async () => ({ ok: true, active_before: true, active: false, restore_required: true, provider: "test" }),
@@ -784,13 +836,16 @@ async function testRestorationFailureAggregation() {
       installAutostart: unexpected,
       startAutostart: unexpected,
       restorePreviousAutostart: async () => ({ ok: false, active: false, provider: "test" }),
+      inspectPreviousAutostart: () => ({ alive: false, verified_service_daemon: false, mode: "service", version: "2.0.0" }),
+      restoreStartAttempts: 2,
+      wait: async () => {},
       inspectDaemon: unexpected,
       checkWorker: unexpected,
     });
   } catch (error) { caught = error; }
   assert(caught instanceof AggregateError && caught.errors?.length === 2
     && caught.errors[0]?.message.includes("remote preparation failed")
-    && caught.errors[1]?.message.includes("did not reach an active persistent service"),
+    && caught.errors[1]?.message.includes("previous autostart service recovery did not converge"),
   "activation did not preserve both the primary and provider-restoration failures");
 }
 

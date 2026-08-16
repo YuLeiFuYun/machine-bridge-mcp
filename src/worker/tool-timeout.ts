@@ -31,7 +31,14 @@ export function daemonToolTimeoutBudget(name: string, args: Record<string, unkno
 
 function toolExecutionTimeoutMs(name: string, args: Record<string, unknown>): number {
   if (name === "session_bootstrap") return 10_000;
-  if (!isConfigurableForegroundTool(name)) return 60_000;
+  if (name === "read_process") {
+    const waitMs = typeof args.wait_ms === "number" && Number.isSafeInteger(args.wait_ms)
+      ? Math.max(0, Math.min(args.wait_ms, relayContract.maximumProcessReadWaitMs))
+      : 0;
+    return Math.min(relayContract.defaultRemoteToolExecutionTimeoutMs, waitMs + 5_000);
+  }
+  if (name === "start_process") return Math.min(20_000, relayContract.defaultRemoteToolExecutionTimeoutMs);
+  if (!isConfigurableForegroundTool(name)) return relayContract.defaultRemoteToolExecutionTimeoutMs;
 
   const seconds = remoteForegroundSeconds(name, args.timeout_seconds);
   return Math.min(seconds * 1000, relayContract.maximumExecutionTimeoutMs);

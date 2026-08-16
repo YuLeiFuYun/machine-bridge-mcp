@@ -304,14 +304,23 @@ async function testDetachedTimeoutPause() {
   });
   advance(40);
   assert(registry.detachSocket(socketA, 120, () => new Error("reconnect timeout")) === 1, "timeout-pause test did not detach its call");
-  advance(100);
-  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 1, "normal operation timeout continued running while detached");
-  assert(registry.rebindInstance("daemon_pause_12345678", socketB).length === 1, "detached timeout test did not rebind");
+  assert(registry.nextDeadlineDelayMs() === 60, "detached reconnect grace extended the original operation deadline");
   advance(59);
-  assert(registry.snapshot().active === 1, "rebound operation timeout lost its remaining budget");
+  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 1, "detached call expired before its original operation deadline");
+  assert(registry.rebindInstance("daemon_pause_12345678", socketB).length === 1, "detached timeout test did not rebind");
   advance(1);
   await expectReject(pending, "operation timeout");
-  assert(registry.snapshot().active === 0, "expired rebound call leaked from the registry");
+  assert(registry.snapshot().active === 0, "rebound call extended beyond its original operation deadline");
+
+  const detachedExpiry = registry.register({
+    id: "detached-original-deadline", tool: "run_process", socket: socketA, daemonInstanceId: "daemon_detached_deadline_1",
+    timeoutMs: 100, onTimeout: () => new Error("operation timeout"),
+  });
+  advance(40);
+  assert(registry.detachSocket(socketA, 120, () => new Error("reconnect timeout")) === 1, "original-deadline detach did not find its call");
+  advance(60);
+  await expectReject(detachedExpiry, "reconnect timeout");
+  assert(registry.snapshot().active === 0, "detached reconnect grace outlived the original operation deadline");
 
   const socketC = {};
   const handover = registry.register({
@@ -851,7 +860,7 @@ function testWorkerRuntimeConfig() {
 function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
   assert(relayContract.newCallReconnectGraceMs === 10_000, "brief relay outages regained immediate new-call interruption");
-  assert(relayContract.streamHeartbeatMs === 10_000, "SSE heartbeat interval drifted from the idle-connection contract");
+  assert(relayContract.streamHeartbeatMs === 5_000, "SSE heartbeat interval drifted from the reply-liveness contract");
   assert(!("streamResumeRetentionMs" in relayContract)
     && !("maximumResumableStreams" in relayContract)
     && !("maximumResumableMessageBytes" in relayContract),
@@ -863,25 +872,27 @@ function testRelayTimeoutContract() {
   assert(bootstrapBudget.executionTimeoutMs === 10_000 && bootstrapBudget.settlementTimeoutMs === 15_000,
     "bootstrap execution and settlement deadlines were not separated");
   const ordinaryBudget = daemonToolTimeoutBudget("read_file", {});
-  assert(ordinaryBudget.executionTimeoutMs === 60_000 && ordinaryBudget.settlementTimeoutMs === 65_000,
-    "ordinary tool execution consumed its Worker settlement margin");
-  assert(relayContract.maximumInteractiveExecutionTimeoutMs === 60_000, "interactive relay deadline lost its host-delivery margin");
-  assert(REMOTE_FOREGROUND_TIMEOUT_SECONDS === 60, "remote foreground schema limit drifted from the relay execution budget");
-  assert(relayContract.maximumProcessForegroundExecutionTimeoutMs === 45_000
-    && REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS === 45,
+  assert(ordinaryBudget.executionTimeoutMs === 30_000 && ordinaryBudget.settlementTimeoutMs === 35_000,
+    "ordinary remote tool execution regained the full host-interaction window");
+  assert(relayContract.defaultRemoteToolExecutionTimeoutMs === 30_000,
+    "ordinary remote tool budget drifted from its reply-safe ceiling");
+  assert(relayContract.maximumInteractiveExecutionTimeoutMs === 45_000, "interactive relay deadline lost its host-delivery margin");
+  assert(REMOTE_FOREGROUND_TIMEOUT_SECONDS === 45, "remote foreground schema limit drifted from the relay execution budget");
+  assert(relayContract.maximumProcessForegroundExecutionTimeoutMs === 30_000
+    && REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS === 30,
   "remote process foreground budget lost its host-settlement reserve");
   const defaultExecBudget = daemonToolTimeoutBudget("exec_command", {});
-  assert(defaultExecBudget.executionTimeoutMs === 30_000 && defaultExecBudget.settlementTimeoutMs === 35_000,
+  assert(defaultExecBudget.executionTimeoutMs === 20_000 && defaultExecBudget.settlementTimeoutMs === 25_000,
     "remote process default did not preserve a short host-delivery margin");
-  const maximumExecBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 45 });
-  assert(maximumExecBudget.executionTimeoutMs === 45_000 && maximumExecBudget.settlementTimeoutMs === 50_000,
+  const maximumExecBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 30 });
+  assert(maximumExecBudget.executionTimeoutMs === 30_000 && maximumExecBudget.settlementTimeoutMs === 35_000,
     "maximum accepted process foreground timeout did not reserve host settlement time");
   const recoveredMaximumBudget = daemonToolTimeoutBudgetAfterDelay(maximumExecBudget, 10_000);
-  assert(recoveredMaximumBudget.executionTimeoutMs === 35_000 && recoveredMaximumBudget.settlementTimeoutMs === 40_000,
+  assert(recoveredMaximumBudget.executionTimeoutMs === 20_000 && recoveredMaximumBudget.settlementTimeoutMs === 25_000,
     "new-call daemon recovery extended the process foreground settlement envelope");
   for (const malformedElapsed of [-1, Number.NaN]) {
     const unchanged = daemonToolTimeoutBudgetAfterDelay(maximumExecBudget, malformedElapsed);
-    assert(unchanged.executionTimeoutMs === 45_000 && unchanged.settlementTimeoutMs === 50_000,
+    assert(unchanged.executionTimeoutMs === 30_000 && unchanged.settlementTimeoutMs === 35_000,
       "invalid daemon-recovery elapsed time enlarged or reduced the original timeout budget");
   }
   const oneSecondBudget = daemonToolTimeoutBudget("exec_command", { timeout_seconds: 1 });
@@ -895,13 +906,13 @@ function testRelayTimeoutContract() {
     && exhaustedRecoveryError.retryable === true
     && exhaustedRecoveryError.details?.side_effects_started === false,
   "daemon recovery could dispatch after consuming the complete foreground execution window");
-  for (const requested of [46, 61, 85, 120, 600]) {
+  for (const requested of [31, 46, 61, 85, 120, 600]) {
     let rejected;
     try { daemonToolTimeoutBudget("exec_command", { timeout_seconds: requested }); }
     catch (error) { rejected = error; }
     assert(rejected instanceof WorkerToolError && rejected.code === "invalid_request" && rejected.retryable === false,
       `remote foreground timeout ${requested} was not rejected before dispatch`);
-    assert(rejected.details?.side_effects_started === false && rejected.details?.maximum_foreground_timeout_seconds === 45,
+    assert(rejected.details?.side_effects_started === false && rejected.details?.maximum_foreground_timeout_seconds === 30,
       `remote foreground timeout ${requested} omitted the no-side-effect contract`);
   }
   for (const requested of [0, -1, 1.5, "60", null, {}, Number.NaN]) {
@@ -912,7 +923,7 @@ function testRelayTimeoutContract() {
       `malformed remote foreground timeout ${String(requested)} was not rejected before dispatch`);
     assert(rejected.details?.side_effects_started === false
       && rejected.details?.minimum_foreground_timeout_seconds === 1
-      && rejected.details?.maximum_foreground_timeout_seconds === 45,
+      && rejected.details?.maximum_foreground_timeout_seconds === 30,
     `malformed remote foreground timeout ${String(requested)} omitted its strict pre-dispatch bounds`);
   }
   const validArguments = validateWorkerToolArguments("read_file", { path: "fixture.txt" });
@@ -938,7 +949,20 @@ function testRelayTimeoutContract() {
   const remoteExec = workspaceTools.find((tool) => tool.name === "exec_command");
   assert(String(remoteExec?.description || "").includes("managed jobs"),
     "remote exec_command description omitted the durable execution path");
-  assert(relayContract.maximumRelayToolTimeoutMs === 610_000, "local relay envelope ceiling drifted from the Worker contract");
+  const remoteReadProcess = workspaceTools.find((tool) => tool.name === "read_process");
+  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 5_000,
+    "remote read_process schema regained a long blocking poll");
+  const immediateReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 0 });
+  const maximumReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 5_000 });
+  assert(immediateReadBudget.executionTimeoutMs === 5_000 && immediateReadBudget.settlementTimeoutMs === 10_000
+    && maximumReadBudget.executionTimeoutMs === 10_000 && maximumReadBudget.settlementTimeoutMs === 15_000,
+  "remote process polling did not retain its short settlement budget");
+  const startProcessBudget = daemonToolTimeoutBudget("start_process", {});
+  assert(startProcessBudget.executionTimeoutMs === 20_000 && startProcessBudget.settlementTimeoutMs === 25_000,
+    "process-session startup regained an interruption-prone remote deadline");
+  assert(relayContract.maximumExecutionTimeoutMs === 45_000
+    && relayContract.maximumRelayToolTimeoutMs === 50_000,
+  "relay envelope can still hold a synchronous remote tool beyond the reply-safe ceiling");
 }
 
 function testWorkerPolicyParity() {

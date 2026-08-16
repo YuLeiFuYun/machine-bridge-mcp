@@ -12,8 +12,11 @@ const PROCESS_FOREGROUND_TOOLS = new Set([
   "exec_command", "run_process", "run_local_command",
 ]);
 
-const THIRTY_SECOND_FOREGROUND_TOOLS = new Set([
+const TWENTY_SECOND_FOREGROUND_TOOLS = new Set([
   "exec_command", "run_process", "run_local_command",
+]);
+
+const THIRTY_SECOND_FOREGROUND_TOOLS = new Set([
   "open_local_application", "inspect_local_application", "operate_local_application",
   "browser_list_tabs", "browser_manage_tabs", "browser_wait", "browser_get_source",
   "browser_inspect_page", "browser_action", "browser_screenshot",
@@ -33,7 +36,10 @@ export function isConfigurableForegroundTool(name) {
 }
 
 export function remoteForegroundDefaultSeconds(name) {
-  return THIRTY_SECOND_FOREGROUND_TOOLS.has(name) ? 30 : 60;
+  if (TWENTY_SECOND_FOREGROUND_TOOLS.has(name)) return 20;
+  return THIRTY_SECOND_FOREGROUND_TOOLS.has(name)
+    ? 30
+    : Math.min(60, remoteForegroundMaximumSeconds(name));
 }
 
 export function remoteForegroundMaximumSeconds(name) {

@@ -1015,16 +1015,19 @@ try {
 
   const remoteAgentTools = await callToolsList(base, ownerAccessToken, 2501);
   const remoteRunProcess = remoteAgentTools.find((tool) => tool.name === "run_process");
-  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 45
-    && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 30,
+  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 30
+    && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 20,
   "remote tools/list lost the settlement-safe process timeout contract");
   const remoteBrowserWait = remoteAgentTools.find((tool) => tool.name === "browser_wait");
-  assert(remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.maximum === 60
+  assert(remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.maximum === 45
     && remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.default === 30,
-  "remote tools/list incorrectly narrowed the independent browser foreground timeout contract");
+  "remote tools/list lost the reply-safe browser foreground timeout contract");
+  const remoteReadProcess = remoteAgentTools.find((tool) => tool.name === "read_process");
+  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 5000,
+    "remote tools/list regained a long blocking process poll");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
   const overLimit = await callTool(base, ownerAccessToken, 2502, "run_process", {
-    argv: ["must-not-run"], timeout_seconds: 120,
+    argv: ["must-not-run"], timeout_seconds: 31,
   });
   assert(!overLimitMessages.stop().includes("tool_call"),
     "over-limit JSON tool call reached the daemon before rejection");
@@ -1034,6 +1037,19 @@ try {
     && overLimit.result?.structuredContent?.error?.details?.schema_refresh_recommended === true
     && overLimit.result?.structuredContent?.error?.details?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "maximum"),
   "over-limit foreground rejection omitted its stale-schema compatibility contract");
+
+  const overLimitPollMessages = captureWsMessageTypes(candidateDaemon);
+  const overLimitPoll = await callTool(base, ownerAccessToken, 25020, "read_process", {
+    session_id: "proc_stale_schema", wait_ms: 6000,
+  });
+  assert(!overLimitPollMessages.stop().includes("tool_call"),
+    "over-limit process poll reached the daemon before rejection");
+  assert(overLimitPoll.result?.isError === true
+    && overLimitPoll.result?.structuredContent?.error?.code === "invalid_request"
+    && overLimitPoll.result?.structuredContent?.error?.details?.side_effects_started === false
+    && overLimitPoll.result?.structuredContent?.error?.details?.schema_refresh_recommended === true
+    && overLimitPoll.result?.structuredContent?.error?.details?.validation_issues?.some((issue) => issue.instancePath === "/wait_ms" && issue.keyword === "maximum"),
+  "over-limit process poll omitted its stale-schema compatibility contract");
 
   const malformedTimeoutMessages = captureWsMessageTypes(candidateDaemon);
   const malformedTimeout = await callTool(base, ownerAccessToken, 25021, "run_process", {
@@ -1064,7 +1080,7 @@ try {
 
   const overLimitStreamMessages = captureWsMessageTypes(candidateDaemon);
   const overLimitStream = await currentMcpCall(base, ownerAccessToken, 2503, "tools/call", {
-    name: "run_process", arguments: { argv: ["must-not-stream-run"], timeout_seconds: 120 },
+    name: "run_process", arguments: { argv: ["must-not-stream-run"], timeout_seconds: 31 },
   });
   assert(!overLimitStreamMessages.stop().includes("tool_call"),
     "over-limit streamed tool call reached the daemon before rejection");

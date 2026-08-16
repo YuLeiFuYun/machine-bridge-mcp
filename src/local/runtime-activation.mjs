@@ -20,6 +20,7 @@ export async function activatePersistentRuntime(options = {}) {
   const expectedVersion = requiredExpectedVersion(options.expectedVersion);
   const maximumAttempts = boundedAttempts(options.maximumAttempts ?? 240);
   const candidateStartAttempts = boundedCandidateStartAttempts(options.candidateStartAttempts ?? 10);
+  const restoreStartAttempts = boundedRestoreStartAttempts(options.restoreStartAttempts ?? 30);
   const candidateRetryWait = optionalFunction(options.candidateRetryWait, "candidateRetryWait", defaultCandidateRetryWait);
   const convergenceWait = optionalFunction(options.wait, "wait", defaultWait);
   const restorePreviousAutostart = optionalFunction(options.restorePreviousAutostart, "restorePreviousAutostart", options.startAutostart);
@@ -157,6 +158,7 @@ export async function activatePersistentRuntime(options = {}) {
       previousServiceRuntime,
       restoreWait: convergenceWait,
       restoreMaximumAttempts: options.maximumAttempts,
+      restoreStartAttempts,
       candidateRelayVerified,
       candidateRecoveryRedeployed,
     });
@@ -186,6 +188,7 @@ async function failedActivationSettlement({
   previousServiceRuntime,
   restoreWait,
   restoreMaximumAttempts,
+  restoreStartAttempts,
   candidateRelayVerified,
   candidateRecoveryRedeployed,
 }) {
@@ -211,6 +214,7 @@ async function failedActivationSettlement({
         previousServiceRuntime,
         restoreWait,
         restoreMaximumAttempts,
+        restoreStartAttempts,
         providerStopped,
         serviceStarted,
         candidateServiceRequired: remotePrepared,
@@ -313,6 +317,7 @@ async function restoreCompatibleProvider({
   previousServiceRuntime,
   restoreWait,
   restoreMaximumAttempts,
+  restoreStartAttempts,
   providerStopped,
   serviceStarted,
   candidateServiceRequired,
@@ -327,12 +332,9 @@ async function restoreCompatibleProvider({
       throw new Error(`compatible candidate autostart could not be installed (${installed?.provider || "unknown"})`);
     }
   }
-  const restored = candidateServiceRequired
-    ? await startRecoveryAutostart()
-    : await restorePreviousAutostart();
-  const qualifier = candidateServiceRequired ? "compatible candidate" : "previous";
-  requireActiveServiceStart(restored, `${qualifier} autostart service recovery`);
   if (candidateServiceRequired) {
+    const restored = await startRecoveryAutostart();
+    requireActiveServiceStart(restored, "compatible candidate autostart service recovery");
     const convergence = await waitForActivatedRuntime({
       inspectDaemon: inspectCandidateAutostart,
       checkWorker,
@@ -348,16 +350,51 @@ async function restoreCompatibleProvider({
   if (!previousServiceRuntime || typeof inspectPreviousAutostart !== "function") {
     throw new Error("previous autostart service recovery lacks verified runtime identity evidence");
   }
-  const convergence = await waitForRestoredServiceRuntime({
-    inspectDaemon: () => inspectPreviousAutostart(previousServiceRuntime),
+  const recovery = await restorePreviousServiceUntilReady({
+    restorePreviousAutostart,
+    inspectPreviousAutostart: () => inspectPreviousAutostart(previousServiceRuntime),
     expectedVersion: previousServiceRuntime.version,
-    maximumAttempts: restoreMaximumAttempts,
+    attempts: restoreStartAttempts,
     wait: restoreWait,
   });
-  if (!convergence.ok) {
-    throw new Error(`previous autostart service recovery did not converge (${convergence.reason})`);
+  return { candidateServiceStarted: false, convergence: recovery.convergence, serviceStart: recovery.serviceStart };
+}
+
+async function restorePreviousServiceUntilReady({
+  restorePreviousAutostart, inspectPreviousAutostart, expectedVersion, attempts = 30, wait = defaultWait,
+} = {}) {
+  const maximum = boundedRestoreStartAttempts(attempts);
+  let daemon = null;
+  let serviceStart = null;
+  let lastStartError = null;
+  for (let attempt = 1; attempt <= maximum; attempt += 1) {
+    try {
+      serviceStart = await restorePreviousAutostart();
+      lastStartError = null;
+    } catch (error) {
+      lastStartError = error;
+    }
+    daemon = await inspectPreviousAutostart();
+    if (restoredServiceReady(daemon, expectedVersion)) {
+      return { serviceStart, convergence: { ok: true, attempts: attempt, daemon } };
+    }
+    if (attempt < maximum) await wait(attempt);
   }
-  return { candidateServiceStarted: false, convergence };
+  const failure = new Error(`previous autostart service recovery did not converge (${restoredServiceFailureReason(daemon, expectedVersion)})`);
+  if (lastStartError) failure.cause = lastStartError;
+  throw failure;
+}
+
+function restoredServiceReady(daemon, expectedVersion) {
+  return daemon?.alive === true && daemon?.verified_service_daemon === true
+    && daemon?.mode === "service" && daemon?.version === expectedVersion;
+}
+
+function restoredServiceFailureReason(daemon, expectedVersion) {
+  if (!daemon?.alive) return "daemon_not_running";
+  if (daemon?.verified_service_daemon !== true) return `daemon_identity_${daemon?.identity_reason || "unverified"}`;
+  if (daemon?.mode !== "service") return `daemon_mode_${daemon?.mode || "unknown"}`;
+  return daemon?.version === expectedVersion ? "service_not_stable" : `daemon_version_${daemon?.version || "unknown"}`;
 }
 
 function validateActivationOwnership(value) {
@@ -394,7 +431,10 @@ function validateActivationOwnership(value) {
 
 function validateProviderStop(result) {
   if (result?.ok !== true) {
-    throw new Error(`the existing autostart service could not be stopped before activation (${result?.provider || "unknown"})`);
+    throw activationOperationalError(
+      `the existing autostart service could not be stopped before activation (${result?.provider || "unknown"})`,
+      "autostart_stop_failed",
+    );
   }
   if (typeof result.active_before !== "boolean" || result.active !== false || typeof result.restore_required !== "boolean") {
     throw new Error(`the existing autostart stop state could not be verified before activation (${result?.provider || "unknown"})`);
@@ -547,6 +587,14 @@ function boundedCandidateStartAttempts(value) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 10) {
     throw new Error("candidate relay start attempts must be between 1 and 10");
+  }
+  return parsed;
+}
+
+function boundedRestoreStartAttempts(value) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 60) {
+    throw new Error("runtime activation restore-start attempts must be between 1 and 60");
   }
   return parsed;
 }

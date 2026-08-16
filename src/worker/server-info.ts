@@ -2,7 +2,6 @@ import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import type { WorkerObservability } from "./observability.ts";
 import { hiddenWorkerActivity, hiddenWorkerPending, projectDaemonStatus, workerGlobalActivityVisible } from "./server-info-activity.ts";
-
 export type ServerInfoDetail = "summary" | "full";
 
 type ServerInfoInput = {
@@ -86,6 +85,7 @@ function buildServerInfoSummary(
       host_may_expose_subset: true,
       remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
       remote_process_foreground_execution_max_ms: relayContract.maximumProcessForegroundExecutionTimeoutMs,
+      remote_default_tool_execution_max_ms: relayContract.defaultRemoteToolExecutionTimeoutMs, remote_process_poll_wait_max_ms: relayContract.maximumProcessReadWaitMs,
       worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
     },
   };
@@ -161,6 +161,7 @@ function fullToolDelivery(input: ServerInfoInput): Record<string, unknown> {
     host_may_expose_subset: true,
     remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
     remote_process_foreground_execution_max_ms: relayContract.maximumProcessForegroundExecutionTimeoutMs,
+    remote_default_tool_execution_max_ms: relayContract.defaultRemoteToolExecutionTimeoutMs, remote_process_poll_wait_max_ms: relayContract.maximumProcessReadWaitMs,
     worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
     daemon_execution_and_worker_settlement_deadlines_separate: true,
     host_terminal_receipt_observable: false,

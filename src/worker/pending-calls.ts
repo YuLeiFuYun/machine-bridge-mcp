@@ -12,7 +12,6 @@ export class PendingCallRegistry {
   private readonly byId = new Map<string, PendingCallRecord>();
   private readonly byRequestKey = new Map<string, string>();
   private readonly deadlines: PendingCallDeadlines;
-
   constructor(maximum: number, options: PendingCallRegistryOptions = {}) {
     this.capacity = toolCallCapacityConfig(maximum, options.reservedCapacity, options.reservedTools);
     this.deadlines = new PendingCallDeadlines(options);
@@ -25,7 +24,6 @@ export class PendingCallRegistry {
   nextDeadlineDelayMs(): number {
     return Math.min(Number.POSITIVE_INFINITY, ...[...this.byId.values()].map((record) => this.deadlines.nextDelayMs(record)));
   }
-
   async expireDue(now = this.deadlines.now()): Promise<number> {
     const due = [...this.byId.values()].filter((record) => this.deadlines.isDue(record, now));
     let expired = 0;
@@ -73,11 +71,12 @@ export class PendingCallRegistry {
 
   detachSocket(socket: WebSocket, graceMs: number, createError: (record: PendingCallRecord) => Error): number {
     const records = [...this.byId.values()].filter((record) => record.socket === socket);
-    const delay = Math.max(1, Math.floor(Number(graceMs) || 1));
+    const maximumGrace = Math.max(1, Math.floor(Number(graceMs) || 1));
     for (const record of records) {
       record.socket = undefined;
       record.onReconnectTimeout = createError;
       this.deadlines.pauseOperation(record);
+      const delay = Math.min(maximumGrace, record.remainingTimeoutMs);
       this.deadlines.armReconnect(record, delay, (id) => { void this.expireReconnect(id); });
     }
     return records.length;
@@ -90,9 +89,10 @@ export class PendingCallRegistry {
       if (record.daemonInstanceId !== daemonInstanceId || record.socket === socket) continue;
       if (record.socket) this.deadlines.pauseOperation(record);
       else this.deadlines.clearReconnect(record);
+      const remainingTimeoutMs = Math.max(1, Math.ceil(record.deadlineAt - this.deadlines.now()));
       record.onReconnectTimeout = undefined;
       record.socket = socket;
-      this.deadlines.armOperation(record, record.remainingTimeoutMs, (id) => { void this.expireOperation(id); });
+      this.deadlines.armOperation(record, remainingTimeoutMs, (id) => { void this.expireOperation(id); });
       rebound.push(record.id);
     }
     return rebound;

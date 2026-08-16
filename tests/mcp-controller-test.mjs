@@ -171,13 +171,26 @@ const malformed = await jsonResult(await handle(request("tools/call", { name: "l
 assert.equal(malformed.error.code, -32602);
 assert.equal(malformed.error.data.validation_issues[0].keyword, "additionalProperties");
 const staleTimeoutSchema = await jsonResult(await handle(request("tools/call", {
-  name: "run_process", arguments: { argv: ["must-not-run"], timeout_seconds: 46 },
+  name: "run_process", arguments: { argv: ["must-not-run"], timeout_seconds: 31 },
 }), { accept: "application/json" }));
 assert.equal(staleTimeoutSchema.result.isError, true);
 assert.equal(staleTimeoutSchema.result.structuredContent.error.code, "invalid_request");
 assert.equal(staleTimeoutSchema.result.structuredContent.error.details.side_effects_started, false);
 assert.equal(staleTimeoutSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
 assert.equal(staleTimeoutSchema.result.structuredContent.error.details.validation_issues[0].keyword, "maximum");
+const staleReadPollSchema = await jsonResult(await handle(request("tools/call", {
+  name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: 6000 },
+}), { accept: "application/json" }));
+assert.equal(staleReadPollSchema.result.isError, true);
+assert.equal(staleReadPollSchema.result.structuredContent.error.code, "invalid_request");
+assert.equal(staleReadPollSchema.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(staleReadPollSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(staleReadPollSchema.result.structuredContent.error.details.validation_issues[0].instancePath, "/wait_ms");
+const malformedReadPoll = await jsonResult(await handle(request("tools/call", {
+  name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: "5000" },
+}), { accept: "application/json" }));
+assert.equal(malformedReadPoll.error.code, -32602);
+assert.equal(malformedReadPoll.error.data.validation_issues[0].keyword, "type");
 assert.equal(calls.length, 0);
 
 const legacyMirrorsMatch = await initializationCompatibilityResponse(compatInput(

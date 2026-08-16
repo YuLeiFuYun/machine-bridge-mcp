@@ -809,6 +809,9 @@ async function launchdStopContractTest() {
   assert.equal(stillLoaded.ok, false, "inactive but still-loaded launchd service was accepted as stopped");
   assert.equal(stillLoaded.reason, "stop_not_observed");
   assert.equal(stillLoaded.loaded, true);
+  assert.equal(stillLoaded.restore_required, true,
+    "ambiguous launchd bootout lost rollback obligation for an initially active service");
+  assert.equal(stillLoaded.mutation_attempted, true);
 
   const lostStatus = await stopLaunchdService(quietLogger(), {
     uid: 501,
@@ -818,6 +821,8 @@ async function launchdStopContractTest() {
   });
   assert.equal(lostStatus.ok, false, "post-bootout launchd status failure was treated as verified stop");
   assert.equal(lostStatus.reason, "stop_not_observed");
+  assert.equal(lostStatus.restore_required, true,
+    "post-bootout status loss forgot that the previous active service may still disappear");
 }
 
 async function delayedLaunchdStopTest() {

@@ -156,7 +156,7 @@ export class McpController {
   ): Promise<McpDispatchResult> {
     const inspected = inspectWorkerToolCall(request.params, this.config.tools(authorized));
     if (!inspected.ok) {
-      const compatibility = staleTimeoutSchemaCompatibilityResult(request, inspected.issues, this.config.serverInfo);
+      const compatibility = staleSchemaMaximumCompatibilityResult(request, inspected.issues, this.config.serverInfo);
       if (compatibility) return { status: 200, message: compatibility };
       const message = inspected.reason === "missing_name" ? "tools/call requires a tool name"
         : inspected.reason === "unknown_tool" ? "Unknown tool"
@@ -186,16 +186,23 @@ export class McpController {
   }
 }
 
-function staleTimeoutSchemaCompatibilityResult(
+function staleSchemaMaximumCompatibilityResult(
   request: JsonRpcRequest,
   issues: readonly Readonly<{ instancePath: string; keyword: string; message: string }>[] | undefined,
   serverInfo: Record<string, unknown>,
 ): Record<string, unknown> | null {
-  if (!issues?.length || issues.some((issue) => issue.instancePath !== "/timeout_seconds" || issue.keyword !== "maximum")) return null;
+  if (!issues?.length || issues.some((issue) => issue.keyword !== "maximum")) return null;
+  const params = request.params && typeof request.params === "object" && !Array.isArray(request.params)
+    ? request.params as Record<string, unknown>
+    : null;
+  const toolName = typeof params?.name === "string" ? params.name : "";
+  const compatible = issues.every((issue) => issue.instancePath === "/timeout_seconds")
+    || toolName === "read_process" && issues.every((issue) => issue.instancePath === "/wait_ms");
+  if (!compatible) return null;
   return rpcResult(request.id, textToolResult({
     error: {
       code: "invalid_request",
-      message: "foreground timeout exceeds the current server limit; refresh tools/list and use start_process/read_process or start_job/read_job for longer work",
+      message: "cached tool arguments exceed the current server limit; refresh tools/list and use short polling, start_process/read_process, or start_job/read_job instead of holding one response open",
       retryable: false,
       details: {
         side_effects_started: false,

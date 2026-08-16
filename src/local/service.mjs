@@ -410,7 +410,7 @@ export async function stopLaunchdService(logger = console, options = {}) {
   const readStatus = typeof options.readStatus === "function" ? options.readStatus : statusLaunchd;
   const waitForUnloaded = typeof options.waitForUnloaded === "function"
     ? options.waitForUnloaded
-    : callback => waitForStatus(callback, launchdStatusIsSafelyUnloaded);
+    : callback => waitForStatus(callback, launchdStatusIsSafelyUnloaded, { attempts: 100, delayMs: 100 });
   const before = await readStatus();
   if (!before.loaded) {
     if (!launchdStatusIsSafelyUnloaded(before)) {
@@ -456,7 +456,11 @@ export async function stopLaunchdService(logger = console, options = {}) {
     loaded: ok ? false : after?.loaded ?? null,
     active_before: before.active === true,
     active: ok ? false : after?.active ?? null,
-    restore_required: ok,
+    // Once bootout is dispatched, an initially active service may still
+    // disappear after this observation window. Preserve rollback intent even
+    // when stop settlement itself is inconclusive.
+    restore_required: before.active === true,
+    mutation_attempted: true,
     already_stopped: false,
     code: ok ? 0 : rawResult.code,
     reason: ok ? "stopped" : "stop_not_observed",
