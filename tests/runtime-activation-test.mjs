@@ -4,6 +4,8 @@ import { BridgeError } from "../src/local/errors.mjs";
 await testValidationAndPreflightFailures();
 await testConvergenceWait();
 await testSuccessfulHandoff();
+await testOwnerCommitFailureStopsVerifiedCandidate();
+await testUncommittedActiveCandidateStopsWhenRecoveryCannotConverge();
 await testAuthenticationFailureRedeploysOnce();
 await testAuthenticationRecoveryIsBounded();
 await testCompatibleCandidateRecoveryFailureIsObservable();
@@ -15,6 +17,7 @@ await testCandidateFatalDuringInstall();
 await testUnexpectedPostReadyFailureRemainsFatal();
 await testPostDeploymentPreparationFailureUsesCandidateService();
 await testRemotePreparationFailureRestoresService();
+await testAmbiguousServiceStopRetriesPreviousRecovery();
 await testOrphanServiceRuntimeRestoresService();
 await testRestorationFailureAggregation();
 await testServiceFailureAfterVerifiedCandidate();
@@ -119,6 +122,7 @@ async function testValidationAndPreflightFailures() {
 
   for (const [field, value, expected] of [
     ["maximumAttempts", 0, "attempts must be between 1 and 1200"],
+    ["restoreStartAttempts", 0, "restore-start attempts must be between 1 and 60"],
     ["candidateRetryWait", true, "candidateRetryWait must be a function"],
     ["wait", "later", "wait must be a function"],
     ["repairRemoteState", 42, "repairRemoteState must be a function"],
@@ -245,10 +249,21 @@ async function testSuccessfulHandoff() {
       events.push("runtime:create");
       return runtime;
     },
-    installAutostart: async () => { events.push("service:install"); return { ok: true, active: true, provider: "test" }; },
-    startAutostart: async () => { events.push("service:start"); return { ok: true, active: true, provider: "test" }; },
-    inspectDaemon: async () => ({ alive: true, verified_service_daemon: true, startup_readiness_verified: true, version: "3.0.0-beta.1", pid: 42 }),
-    checkWorker: async () => ({ ok: true, version: "3.0.0-beta.1" }),
+    installAutostart: async ({ deferOwnerCommit }) => {
+      assert(deferOwnerCommit === true, "activation did not request deferred service-owner commit");
+      events.push("service:install");
+      return deferredServiceInstall(events);
+    },
+    startAutostart: async ({ owner }) => {
+      assert(owner?.status === "pending", "candidate service was not started against the pending owner transaction");
+      events.push("service:start");
+      return { ok: true, active: true, provider: "test" };
+    },
+    inspectDaemon: async () => {
+      events.push("daemon:verified");
+      return { alive: true, verified_service_daemon: true, startup_readiness_verified: true, version: "3.0.0-beta.1", pid: 42 };
+    },
+    checkWorker: async () => { events.push("worker:verified"); return { ok: true, version: "3.0.0-beta.1" }; },
   });
   assert(result.ok && result.candidateRelayVerified, "successful activation did not report candidate relay verification");
   assert(JSON.stringify(events) === JSON.stringify([
@@ -261,7 +276,90 @@ async function testSuccessfulHandoff() {
     "daemon:release",
     "startup:release",
     "service:start",
+    "daemon:verified",
+    "worker:verified",
+    "owner:commit",
   ]), `activation ordering drifted: ${events.join(",")}`);
+}
+
+async function testOwnerCommitFailureStopsVerifiedCandidate() {
+  const events = [];
+  let caught;
+  try {
+    await activatePersistentRuntime({
+      expectedVersion: "3.0.0-beta.1",
+      inspectActivationOwnership: inactiveActivationOwnership,
+      maximumAttempts: 1,
+      wait: async () => {},
+      acquireStartupLock: async () => lock("startup", events),
+      acquireServiceLock: async () => silentServiceLock(),
+      stopAutostart: async () => {
+        events.push("service:stop");
+        return { ok: true, active_before: false, active: false, restore_required: false, provider: "test" };
+      },
+      acquireDaemonLock: async () => lock("daemon", events),
+      prepareRemoteState: async () => ({}),
+      createRuntime: () => ({ async start() {}, stop() {} }),
+      installAutostart: async () => deferredServiceInstall(events, { commitError: new Error("disk full") }),
+      startAutostart: async ({ owner }) => {
+        assert(owner?.status === "pending", "owner commit failure test did not start from pending ownership");
+        events.push("service:start");
+        return { ok: true, active: true, provider: "test" };
+      },
+      inspectDaemon: async () => readyCandidateDaemon(),
+      checkWorker: async () => readyCandidateWorker(),
+    });
+  } catch (error) { caught = error; }
+  assert(caught?.code === "service_owner_commit_failed"
+    && caught.message.includes("pending owner was retained"),
+  "service-owner commit failure was not reported as a fail-closed activation error");
+  assert(events.includes("owner:commit")
+    && events.filter((value) => value === "service:stop").length === 2
+    && events.indexOf("service:start") < events.indexOf("owner:commit")
+    && events.indexOf("owner:commit") < events.lastIndexOf("service:stop"),
+  `service-owner commit failure did not stop the verified candidate after commit failed: ${events.join(",")}`);
+}
+
+async function testUncommittedActiveCandidateStopsWhenRecoveryCannotConverge() {
+  const events = [];
+  let stopCalls = 0;
+  let caught;
+  try {
+    await activatePersistentRuntime({
+      expectedVersion: "3.0.0-beta.1",
+      inspectActivationOwnership: inactiveActivationOwnership,
+      maximumAttempts: 1,
+      wait: async () => {},
+      acquireStartupLock: async () => lock("startup", events),
+      acquireServiceLock: async () => silentServiceLock(),
+      stopAutostart: async () => {
+        stopCalls += 1;
+        events.push(`service:stop:${stopCalls}`);
+        return { ok: true, active_before: stopCalls > 1, active: false, restore_required: false, provider: "test" };
+      },
+      acquireDaemonLock: async () => lock("daemon", events),
+      prepareRemoteState: async () => ({}),
+      createRuntime: () => ({ async start() {}, stop() {} }),
+      installAutostart: async () => deferredServiceInstall(events),
+      startAutostart: async () => { events.push("service:start"); return { ok: true, active: true, provider: "test" }; },
+      startRecoveryAutostart: async ({ owner }) => {
+        assert(owner?.status === "pending", "active candidate recovery lost pending owner identity");
+        events.push("service:recover-active");
+        return { ok: true, active: true, provider: "test", already_running: true };
+      },
+      inspectCandidateAutostart: async () => ({ alive: false, verified_service_daemon: false }),
+      inspectDaemon: async () => ({ alive: false, verified_service_daemon: false }),
+      checkWorker: async () => readyCandidateWorker(),
+    });
+  } catch (error) { caught = error; }
+  assert(caught instanceof AggregateError
+    && caught.message.includes("persistent runtime activation did not converge")
+    && caught.message.includes("compatible candidate autostart recovery did not converge"),
+  "uncommitted active candidate failure did not preserve both primary and recovery convergence errors");
+  assert(events.includes("service:recover-active")
+    && stopCalls === 2
+    && !events.includes("owner:commit"),
+  `uncommitted active candidate was left running or incorrectly committed after failed recovery: ${events.join(",")}`);
 }
 
 async function testAuthenticationFailureRedeploysOnce() {
@@ -737,6 +835,56 @@ async function testRemotePreparationFailureRestoresService() {
   ]), `failed activation did not restore the previous provider after releasing locks: ${events.join(",")}`);
 }
 
+async function testAmbiguousServiceStopRetriesPreviousRecovery() {
+  const events = [];
+  let startCalls = 0;
+  let inspectCalls = 0;
+  let caught;
+  try {
+    await activatePersistentRuntime({
+      expectedVersion: "3.0.0-beta.1",
+      inspectActivationOwnership: previousServiceActivationOwnership,
+      acquireStartupLock: async () => lock("startup", events),
+      acquireServiceLock: async () => silentServiceLock(),
+      stopAutostart: async () => {
+        events.push("service:stop-ambiguous");
+        return {
+          ok: false, provider: "test", active_before: true, active: null,
+          restore_required: true, mutation_attempted: true, reason: "stop_not_observed",
+        };
+      },
+      acquireDaemonLock: unexpected,
+      prepareRemoteState: unexpected,
+      createRuntime: unexpected,
+      installAutostart: unexpected,
+      startAutostart: unexpected,
+      restorePreviousAutostart: async () => {
+        startCalls += 1;
+        events.push(`service:restore:${startCalls}`);
+        return { ok: startCalls >= 2, active: startCalls >= 2, provider: "test" };
+      },
+      inspectPreviousAutostart: () => {
+        inspectCalls += 1;
+        if (inspectCalls >= 2) {
+          return { alive: true, verified_service_daemon: true, mode: "service", version: "2.0.0" };
+        }
+        return { alive: false, verified_service_daemon: false, mode: "service", version: "2.0.0" };
+      },
+      restoreStartAttempts: 5,
+      wait: async () => {},
+      inspectDaemon: unexpected,
+      checkWorker: unexpected,
+    });
+  } catch (error) { caught = error; }
+  assert(caught?.code === "autostart_stop_failed" && caught.message.includes("could not be stopped before activation"),
+    "ambiguous provider stop did not preserve the original activation failure after recovery");
+  assert(startCalls === 2 && inspectCalls === 2,
+    "ambiguous provider stop did not retry previous-service recovery until verified ready");
+  assert(JSON.stringify(events) === JSON.stringify([
+    "service:stop-ambiguous", "startup:release", "service:restore:1", "service:restore:2",
+  ]), `ambiguous provider-stop recovery ordering drifted: ${events.join(",")}`);
+}
+
 async function testOrphanServiceRuntimeRestoresService() {
   const events = [];
   await expectReject(() => activatePersistentRuntime({
@@ -774,7 +922,7 @@ async function testRestorationFailureAggregation() {
   try {
     await activatePersistentRuntime({
       expectedVersion: "3.0.0-beta.1",
-      inspectActivationOwnership: inactiveActivationOwnership,
+      inspectActivationOwnership: previousServiceActivationOwnership,
       acquireStartupLock: async () => startup,
       acquireServiceLock: async () => silentServiceLock(),
       stopAutostart: async () => ({ ok: true, active_before: true, active: false, restore_required: true, provider: "test" }),
@@ -784,13 +932,16 @@ async function testRestorationFailureAggregation() {
       installAutostart: unexpected,
       startAutostart: unexpected,
       restorePreviousAutostart: async () => ({ ok: false, active: false, provider: "test" }),
+      inspectPreviousAutostart: () => ({ alive: false, verified_service_daemon: false, mode: "service", version: "2.0.0" }),
+      restoreStartAttempts: 2,
+      wait: async () => {},
       inspectDaemon: unexpected,
       checkWorker: unexpected,
     });
   } catch (error) { caught = error; }
   assert(caught instanceof AggregateError && caught.errors?.length === 2
     && caught.errors[0]?.message.includes("remote preparation failed")
-    && caught.errors[1]?.message.includes("did not reach an active persistent service"),
+    && caught.errors[1]?.message.includes("previous autostart service recovery did not converge"),
   "activation did not preserve both the primary and provider-restoration failures");
 }
 
@@ -809,13 +960,15 @@ async function testServiceFailureAfterVerifiedCandidate() {
     acquireDaemonLock: async () => daemon,
     prepareRemoteState: async () => ({}),
     createRuntime: () => runtime,
-    installAutostart: async () => ({ ok: true, active: true, provider: "test" }),
-    startAutostart: async () => {
+    installAutostart: async () => deferredServiceInstall(events),
+    startAutostart: async ({ owner }) => {
+      assert(owner?.status === "pending", "failed handoff was not attempted against pending candidate ownership");
       startCalls += 1;
       events.push(`service:start:${startCalls}`);
       return { ok: true, active: false, provider: "test", reason: "completed_without_persistence" };
     },
-    startRecoveryAutostart: async () => {
+    startRecoveryAutostart: async ({ owner }) => {
+      assert(owner?.status === "pending", "candidate recovery lost the pending service owner identity");
       events.push("service:start-recovery");
       return { ok: true, active: true, provider: "test" };
     },
@@ -830,7 +983,8 @@ async function testServiceFailureAfterVerifiedCandidate() {
   "verified service-handoff recovery did not settle as a successful activation");
   assert(events.indexOf("runtime:start") < events.indexOf("runtime:stop"), "candidate relay was not verified before service handoff failure");
   assert(events.filter((value) => value === "startup:release").length === 1
-    && startCalls === 1 && events.filter((value) => value === "service:start-recovery").length === 1,
+    && startCalls === 1 && events.filter((value) => value === "service:start-recovery").length === 1
+    && events.indexOf("service:start-recovery") < events.indexOf("owner:commit"),
     "service start failure did not separate strict handoff from compatible-service recovery");
 }
 
@@ -905,6 +1059,25 @@ function readyCandidateDaemon(version = "3.0.0-beta.1") {
 
 function readyCandidateWorker(version = "3.0.0-beta.1") {
   return { ok: true, version };
+}
+
+function deferredServiceInstall(events, options = {}) {
+  const owner = { status: "pending", version: "3.0.0-beta.1" };
+  return {
+    ok: true,
+    active: true,
+    provider: "test",
+    service_owner: { status: "pending", version: owner.version },
+    serviceOwnerTransaction: {
+      owner,
+      commit() {
+        events.push("owner:commit");
+        if (options.commitError) throw options.commitError;
+        return { ...owner, status: "committed" };
+      },
+      rollback() { events.push("owner:rollback"); return true; },
+    },
+  };
 }
 
 function lock(name, events) {

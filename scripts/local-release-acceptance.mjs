@@ -28,6 +28,7 @@ import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
 import { readReleaseOAuthCanaryEvidence } from "./release-oauth-canary-evidence.mjs";
+import { assertFreshFullVerificationReceipt } from "./verification-state.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateDirectory = join(root, ".release-candidate");
@@ -64,6 +65,7 @@ async function runWithHardenedNpm() {
 
 function prepareCandidate(npmCli) {
   const pkg = readPackage();
+  const fullVerification = assertFreshFullVerificationReceipt(root);
   rmSync(candidateDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   mkdirSync(candidateDirectory, { recursive: true });
   const metadata = packProject(root, candidateDirectory, { npmCli, env: process.env });
@@ -77,6 +79,7 @@ function prepareCandidate(npmCli) {
   replaceFileAtomicallySync(candidateManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   const phrase = confirmationPhrase(pkg.name, pkg.version);
   console.log(`Release candidate created: ${join(candidateDirectory, metadata.filename)}`);
+  console.log(`Reused exact-tree full verification from ${fullVerification.verified_at}.`);
   parseReleaseVersion(pkg.version);
   console.log("Before live activation, the coding agent must reverify current source identity, package modes, tarball integrity, and disposable installability with direct Node argv (not npm lifecycle):");
   console.log("node scripts/start-release-candidate.mjs --install-only");

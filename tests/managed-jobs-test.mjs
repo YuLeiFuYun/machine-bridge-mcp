@@ -13,6 +13,7 @@ import { confirmRunnerClaim, publishProvisionalRunnerClaim } from "../src/local/
 import { managedJobFinalStatus, persistManagedJobTerminal } from "../src/local/managed-job-terminal.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/managed-job-lock.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
+import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 
 const MANAGED_JOB_TEST_WAIT_MS = 480_000;
 const MANAGED_JOB_MULTI_STEP_WAIT_MS = 600_000;
@@ -370,6 +371,8 @@ try {
   });
   assert(minimalRunnerEnv.PATH === "/safe/bin" && minimalRunnerEnv.HOME === "/safe/home" && minimalRunnerEnv.LANG === "C", "minimal runner environment lost control variables");
   assert(minimalRunnerEnv.HTTPS_PROXY === undefined && minimalRunnerEnv.API_TOKEN === undefined, "minimal runner environment retained daemon credentials");
+  assert(minimalRunnerEnv.MBM_EXECUTION_SURFACE === EXECUTION_SURFACE.managedJob,
+    "managed runner environment omitted its durable execution-surface identity");
   const recoveryRunnerEnv = managedRunnerEnvironment({ source: { PATH: "/bin", MBM_RECOVERY_LOCK_TOKEN: "stale" }, recoveryToken: "fresh" });
   assert(recoveryRunnerEnv.MBM_RECOVERY_LOCK_TOKEN === "fresh", "recovery runner environment lost the ownership token");
   const ordinaryRunnerEnv = managedRunnerEnvironment({ source: { PATH: "/bin", MBM_RECOVERY_LOCK_TOKEN: "stale", MBM_RUNNER_LAUNCH_TOKEN: "stale" } });
@@ -384,8 +387,10 @@ try {
   "minimal runner environment lost resource coordinator/build-root controls");
   const launchRunnerEnv = managedRunnerEnvironment({ source: { PATH: "/bin" }, launchToken: "a".repeat(32) });
   assert(launchRunnerEnv.MBM_RUNNER_LAUNCH_TOKEN === "a".repeat(32), "runner environment lost the fresh launch token");
-  const fullRunnerEnv = managedRunnerEnvironment({ fullEnv: true, source: { PATH: "/bin", API_TOKEN: "explicit" } });
+  const fullRunnerEnv = managedRunnerEnvironment({ fullEnv: true, source: { PATH: "/bin", API_TOKEN: "explicit", MBM_EXECUTION_SURFACE: "spoofed" } });
   assert(fullRunnerEnv.API_TOKEN === "explicit", "explicit full-env runner did not preserve the requested parent environment");
+  assert(fullRunnerEnv.MBM_EXECUTION_SURFACE === EXECUTION_SURFACE.managedJob,
+    "full-env managed runner allowed the parent to spoof its execution surface");
 
   const failedRunnerDir = join(root, `job_${"R".repeat(24)}`);
   await mkdir(failedRunnerDir, { recursive: true });

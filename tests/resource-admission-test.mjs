@@ -8,6 +8,7 @@ import { ResourceAdmissionError, ResourceCoordinator, ResourceLease } from "../s
 import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } from "../src/local/resource-admission-policy.mjs";
 import { applyResourceProfileEnv, resourceCommandEffectiveCwd, resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
 import { freshResourceHostSnapshot } from "../src/local/resource-host-cache.mjs";
+import { readResourceHostSample } from "../src/local/resource-host-sample-file.mjs";
 import { sampleDarwinHost, sampleDarwinHostAsync } from "../src/local/resource-host-darwin.mjs";
 import { sampleLinuxHost } from "../src/local/resource-host-linux.mjs";
 import { aggregateResourceLeases, resourceLeaseAccountingContext, resourceRequestIncrement } from "../src/local/resource-lease-accounting.mjs";
@@ -34,6 +35,31 @@ import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResour
 import { createResourceWaiter, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
 
 const GIB = 1024 ** 3;
+let hostSampleReads = 0;
+const recoveredHostSample = readResourceHostSample("/synthetic/host-sample.json", {
+  readFile: () => {
+    hostSampleReads += 1;
+    if (hostSampleReads < 4) throw Object.assign(new Error("synthetic host sample generation change"), { code: "MBM_IDENTITY_CHANGED" });
+    return Buffer.from('{"sampled_at_ms":1,"sample_scope":"test"}\n');
+  },
+});
+assert.equal(hostSampleReads, 4, "resource host sample did not retry bounded atomic-generation churn");
+assert.equal(recoveredHostSample.sample_scope, "test", "resource host sample retry lost the settled generation");
+let persistentHostSampleReads = 0;
+assert.throws(() => readResourceHostSample("/synthetic/host-sample.json", {
+  readFile: () => {
+    persistentHostSampleReads += 1;
+    throw Object.assign(new Error("persistent host sample generation churn"), { code: "MBM_IDENTITY_CHANGED" });
+  },
+}), /persistent host sample generation churn/, "persistent resource host sample generation churn did not fail closed");
+assert.equal(persistentHostSampleReads, 4, "resource host sample identity retry exceeded its bounded attempt budget");
+assert.equal(readResourceHostSample("/synthetic/missing-host-sample.json", {
+  optional: true,
+  readFile: () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); },
+}), null, "optional missing resource host sample was not treated as an empty cache");
+assert.throws(() => readResourceHostSample("/synthetic/malformed-host-sample.json", {
+  readFile: () => Buffer.from("not-json"),
+}), SyntaxError, "resource host sample retry masked malformed cache content");
 assert.equal(foregroundResourceWaitMs(60_000), 10_000, "default 60-second foreground work retained the interruption-prone two-second admission window");
 assert.equal(foregroundResourceWaitMs(30_000), 6_000, "foreground admission budget did not scale with the execution deadline");
 assert.equal(foregroundResourceWaitMs(10_000), 2_000, "short foreground work gained an excessive resource-admission delay");

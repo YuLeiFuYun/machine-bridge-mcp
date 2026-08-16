@@ -1,21 +1,27 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import {
   isConfigurableForegroundTool,
+  isRemoteDurableProcessTool,
   remoteForegroundDefaultSeconds,
+  remoteForegroundMaximumSeconds,
   REMOTE_FOREGROUND_TIMEOUT_SECONDS,
 } from "../shared/foreground-timeout.mjs";
 import { WorkerToolError } from "./errors.ts";
+import { durableProcessAcceptanceTimeoutMs } from "./durable-process-timeout.ts";
 
 export {
   isConfigurableForegroundTool,
+  isRemoteDurableProcessTool,
+  remoteDurableProcessTimeoutSeconds,
+  REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS,
+  REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS,
   remoteForegroundDefaultSeconds,
+  remoteForegroundMaximumSeconds,
   REMOTE_FOREGROUND_TIMEOUT_SECONDS,
+  REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS,
 } from "../shared/foreground-timeout.mjs";
 
-export type DaemonToolTimeoutBudget = Readonly<{
-  executionTimeoutMs: number;
-  settlementTimeoutMs: number;
-}>;
+export type DaemonToolTimeoutBudget = Readonly<{ executionTimeoutMs: number; settlementTimeoutMs: number }>;
 
 export function daemonToolTimeoutBudget(name: string, args: Record<string, unknown>): DaemonToolTimeoutBudget {
   const executionTimeoutMs = toolExecutionTimeoutMs(name, args);
@@ -28,7 +34,15 @@ export function daemonToolTimeoutBudget(name: string, args: Record<string, unkno
 
 function toolExecutionTimeoutMs(name: string, args: Record<string, unknown>): number {
   if (name === "session_bootstrap") return 10_000;
-  if (!isConfigurableForegroundTool(name)) return 60_000;
+  if (name === "read_process") {
+    const waitMs = typeof args.wait_ms === "number" && Number.isSafeInteger(args.wait_ms)
+      ? Math.max(0, Math.min(args.wait_ms, relayContract.maximumProcessReadWaitMs))
+      : 0;
+    return Math.min(relayContract.defaultRemoteToolExecutionTimeoutMs, waitMs + 5_000);
+  }
+  if (name === "start_process") return Math.min(20_000, relayContract.defaultRemoteToolExecutionTimeoutMs);
+  if (isRemoteDurableProcessTool(name)) return durableProcessAcceptanceTimeoutMs(name, args);
+  if (!isConfigurableForegroundTool(name)) return relayContract.defaultRemoteToolExecutionTimeoutMs;
 
   const seconds = remoteForegroundSeconds(name, args.timeout_seconds);
   return Math.min(seconds * 1000, relayContract.maximumExecutionTimeoutMs);
@@ -36,18 +50,20 @@ function toolExecutionTimeoutMs(name: string, args: Record<string, unknown>): nu
 
 function remoteForegroundSeconds(name: string, value: unknown): number {
   if (value === undefined) return remoteForegroundDefaultSeconds(name);
+  const maximumSeconds = remoteForegroundMaximumSeconds(name);
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-    throw foregroundTimeoutError("remote foreground timeout must be an integer of at least 1 second");
+    throw foregroundTimeoutError("remote foreground timeout must be an integer of at least 1 second", maximumSeconds);
   }
-  if (value > REMOTE_FOREGROUND_TIMEOUT_SECONDS) {
+  if (value > maximumSeconds) {
     throw foregroundTimeoutError(
-      `remote foreground timeout exceeds ${REMOTE_FOREGROUND_TIMEOUT_SECONDS} seconds; split mutations from verification and use start_process/read_process or start_job/read_job for longer work`,
+      `remote foreground timeout exceeds ${maximumSeconds} seconds for ${name}; split mutations from verification and use start_process/read_process or start_job/read_job for longer work`,
+      maximumSeconds,
     );
   }
   return value;
 }
 
-function foregroundTimeoutError(message: string): WorkerToolError {
+function foregroundTimeoutError(message: string, maximumSeconds = REMOTE_FOREGROUND_TIMEOUT_SECONDS): WorkerToolError {
   return new WorkerToolError(
     "invalid_request",
     message,
@@ -55,7 +71,7 @@ function foregroundTimeoutError(message: string): WorkerToolError {
     {
       side_effects_started: false,
       minimum_foreground_timeout_seconds: 1,
-      maximum_foreground_timeout_seconds: REMOTE_FOREGROUND_TIMEOUT_SECONDS,
+      maximum_foreground_timeout_seconds: maximumSeconds,
       recommended_tools: ["start_process", "read_process", "start_job", "read_job"],
     },
   );

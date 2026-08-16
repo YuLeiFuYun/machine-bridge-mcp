@@ -189,7 +189,7 @@ async function main() {
     return;
   }
   const result = verifyPortableAcceptance(root, value);
-  process.stdout.write(`Portable interactive candidate acceptance matches ${result.pack.filename} (${result.digest}).\n`);
+  process.stdout.write(`Portable local candidate acceptance matches ${result.pack.filename} (${result.digest}).\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

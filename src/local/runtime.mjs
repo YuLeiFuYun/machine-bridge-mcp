@@ -46,6 +46,7 @@ import { RuntimeResourceService } from "./runtime-resource-service.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage } from "./runtime-paths.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { ResourceCoordinator } from "./resource-admission.mjs";
+import { runRuntimeDirectProcess, runRuntimeExecCommand, runRuntimeLocalCommand } from "./runtime-process-routing.mjs";
 import {
   resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
   sessionBootstrap as buildRuntimeSessionBootstrap,
@@ -58,7 +59,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "" }) {
+  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
@@ -71,7 +72,7 @@ export class LocalRuntime {
     this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
     this.deviceRootStatus = deviceRootStatus && typeof deviceRootStatus === "object" ? Object.freeze({ ...deviceRootStatus }) : null;
     this.processTracker = new ProcessTracker();
-    this.resourceCoordinator = new ResourceCoordinator(resourceCoordinatorRoot ? { root: resourceCoordinatorRoot } : {});
+    this.resourceCoordinator = new ResourceCoordinator({ ...(resourceCoordinatorOptions || {}), ...(resourceCoordinatorRoot ? { root: resourceCoordinatorRoot } : {}) });
     if (processResourceWaitMs !== undefined && (!Number.isInteger(processResourceWaitMs) || processResourceWaitMs < 0)) {
       throw new TypeError("processResourceWaitMs must be a non-negative integer when configured");
     }
@@ -123,6 +124,7 @@ export class LocalRuntime {
       stateRoot: browserStateRoot,
       logger: this.logger,
       recover: recoverJobs,
+      runnerEnvironmentOverrides: resourceCoordinatorRoot ? { AGENT_RESOURCE_COORDINATOR_ROOT: resolve(resourceCoordinatorRoot) } : {},
     });
     this.processSessionManager = new ProcessSessionManager({
       workspace: this.workspace,
@@ -512,7 +514,6 @@ export class LocalRuntime {
       policy: this.policy,
       runtimeDir: this.runtimeDir,
       workspace: this.workspace,
-      runProcess: (...args) => this.runProcess(...args),
       runFixedInternal: (...args) => this.processExecutionService.runFixedInternal(...args),
       probeShell: (callContext, timeoutMs) => this.processExecutionService.probeShell(callContext, timeoutMs),
       managedJobManager: this.managedJobManager,
@@ -554,17 +555,11 @@ export class LocalRuntime {
     }, args, context);
   }
 
-  runDirectProcess(args, context = {}) {
-    return this.processExecutionService.runDirect(args, context);
-  }
+  runDirectProcess(args, context = {}) { return runRuntimeDirectProcess(this, args, context); }
 
-  runLocalCommand(args, context = {}) {
-    return this.processExecutionService.runRegistered(args, context);
-  }
+  runLocalCommand(args, context = {}) { return runRuntimeLocalCommand(this, args, context); }
 
-  execCommand(command, timeoutSeconds, context = {}) {
-    return this.processExecutionService.runShell(command, timeoutSeconds, context);
-  }
+  execCommand(input, timeoutOrContext = {}, maybeContext = {}) { return runRuntimeExecCommand(this, input, timeoutOrContext, maybeContext); }
 
   terminateActiveProcesses(signal = "SIGTERM", escalate = false) {
     this.processExecutionService.terminateAll(signal, escalate);

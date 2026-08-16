@@ -31,15 +31,15 @@ export function daemonToolError(value: unknown): WorkerToolError {
   );
 }
 
-export function dispatchedDaemonTimeoutError(tool: string, terminationRequested = true): WorkerToolError {
-  return dispatchedDaemonCancellationStateError("timeout", `daemon tool timed out: ${tool}`, terminationRequested);
+export function dispatchedDaemonTimeoutError(tool: string, terminationRequested = true, recovery?: Record<string, unknown>): WorkerToolError {
+  return dispatchedDaemonCancellationStateError("timeout", `daemon tool timed out: ${tool}`, terminationRequested, recovery);
 }
 
-export function dispatchedDaemonCancellationError(message: string, terminationRequested = true): WorkerToolError {
-  return dispatchedDaemonCancellationStateError("cancelled", message, terminationRequested);
+export function dispatchedDaemonCancellationError(message: string, terminationRequested = true, recovery?: Record<string, unknown>): WorkerToolError {
+  return dispatchedDaemonCancellationStateError("cancelled", message, terminationRequested, recovery);
 }
 
-function dispatchedDaemonCancellationStateError(code: "cancelled" | "timeout", message: string, terminationRequested: boolean): WorkerToolError {
+function dispatchedDaemonCancellationStateError(code: "cancelled" | "timeout", message: string, terminationRequested: boolean, recovery?: Record<string, unknown>): WorkerToolError {
   return new WorkerToolError(
     code,
     message,
@@ -48,11 +48,12 @@ function dispatchedDaemonCancellationStateError(code: "cancelled" | "timeout", m
       side_effects_started: true,
       termination_requested: terminationRequested,
       effect_settlement: terminationRequested ? "pending" : "unknown",
+      ...(recovery ? { recovery } : {}),
     },
   );
 }
 
-export function dispatchedDaemonDisconnectError(message: string): WorkerToolError {
+export function dispatchedDaemonDisconnectError(message: string, recovery?: Record<string, unknown>): WorkerToolError {
   return new WorkerToolError(
     "unavailable",
     message,
@@ -61,6 +62,7 @@ export function dispatchedDaemonDisconnectError(message: string): WorkerToolErro
       side_effects_started: true,
       termination_requested: false,
       effect_settlement: "unknown",
+      ...(recovery ? { recovery } : {}),
     },
   );
 }

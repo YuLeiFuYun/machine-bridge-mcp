@@ -41,6 +41,7 @@ const boundaryModules = new Set([
   "browser-command.mjs",
   "browser-operation-service.mjs",
   "computer-use.mjs",
+  "computer-use-expectation.mjs",
   "computer-use-observation.mjs",
   "computer-use-application-observation.mjs",
   "computer-use-recovery.mjs",
@@ -210,7 +211,8 @@ const lineLimits = Object.freeze({
   "src/local/systemd-removal.mjs": 40,
   "src/local/runtime-capabilities.mjs": 100,
   "src/local/application-capability-projection.mjs": 50,
-  "src/local/cli.mjs": 950,
+  "src/local/cli.mjs": 900,
+  "src/local/cli-ready-output.mjs": 80,
   "src/local/cli-service.mjs": 220,
   "src/worker/index.ts": 830,
   "src/worker/oauth-controller.ts": 360,
@@ -260,6 +262,7 @@ const lineLimits = Object.freeze({
   "src/local/resource-elastic-memory.mjs": 30,
   "src/local/resource-elastic-request.mjs": 40,
   "src/local/resource-host-cache.mjs": 50,
+  "src/local/resource-host-sample-file.mjs": 40,
   "src/local/resource-host-darwin.mjs": 80,
   "src/local/resource-host-linux.mjs": 80,
   "src/local/resource-host-snapshot.mjs": 100,
@@ -367,8 +370,9 @@ const lineLimits = Object.freeze({
   "src/local/browser-pairing-launch.mjs": 80,
   "src/local/browser-broker-server.mjs": 90,
   "src/local/browser-operation-service.mjs": 360,
-  "src/local/computer-use.mjs": 2450,
+  "src/local/computer-use.mjs": 2280,
   "src/local/computer-use-arguments.mjs": 310,
+  "src/local/computer-use-expectation.mjs": 210,
   "src/local/computer-use-observation.mjs": 780,
   "src/local/computer-use-application-observation.mjs": 240,
   "src/local/computer-use-recovery.mjs": 90,
@@ -1271,7 +1275,7 @@ if (!daemonCleanupBoundary.includes("beginCleanup") || daemonCleanupBoundary.inc
   throw new Error("daemon socket cleanup must remain idempotent and scheduling-free");
 }
 const daemonDetachBoundary = /private async detachDaemonSocketCalls[\s\S]*?private reclaimStaleDaemonSockets/.exec(workerIndexBoundary)?.[0] || "";
-if (!daemonDetachBoundary.includes("this.pending.rejectSocket(ws, () => dispatchedDaemonDisconnectError(message))")) {
+if (!daemonDetachBoundary.includes("this.pending.rejectSocket(ws, (record) => dispatchedDaemonDisconnectError(message, record.recovery))")) {
   throw new Error("identity-damaged daemon socket cleanup regained retryable settlement for already-dispatched calls");
 }
 const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?private cleanupDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";

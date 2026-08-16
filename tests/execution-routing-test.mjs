@@ -63,6 +63,15 @@ const application = buildExecutionRouting("Use Notes to update the document", {
 assert(application.primary_route?.id === "application", "an exact installed-application match did not select structured application automation");
 assert(application.routes.some((route) => route.id === "shell"), "application routing removed the general shell alternative");
 
+const browserWorkspace = buildExecutionRouting("inspect browser form and edit source files", {
+  policy: policyProfile("full"),
+  browserAvailable: true,
+});
+assert(browserWorkspace.primary_route?.id === "browser" && browserWorkspace.routes.some((route) => route.id === "workspace-edit"),
+  "mixed browser/workspace routing lost one of the task's primary execution surfaces");
+assert(browserWorkspace.routes.some((route) => route.id === "shell"),
+  "bounded route selection evicted the general shell alternative despite effective shell authority");
+
 const reviewApplicationInventory = buildExecutionRouting("Find the installed Notes application", {
   policy: policyProfile("review"),
   availableTools: accountRoleToolNames("reviewer"),

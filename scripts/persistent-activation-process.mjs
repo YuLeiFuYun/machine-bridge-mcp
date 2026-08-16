@@ -1,4 +1,16 @@
 import { normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
+import { EXECUTION_SURFACE, executionSurface } from "../src/local/execution-surface.mjs";
+
+export function assertPersistentActivationExecutionSurface(environment = process.env) {
+  const surface = executionSurface(environment);
+  if (!surface || surface === EXECUTION_SURFACE.managedJob) return surface || "local";
+  const error = new Error(
+    `persistent activation cannot run from ${surface}; use a durable managed job or an ordinary local terminal because activation intentionally replaces the current Machine Bridge daemon`,
+  );
+  error.code = "unsafe_activation_execution_surface";
+  error.sideEffectsStarted = false;
+  throw error;
+}
 
 export function persistentActivationSpawnOptions({ cwd, env = process.env } = {}) {
   if (typeof cwd !== "string" || !cwd) {

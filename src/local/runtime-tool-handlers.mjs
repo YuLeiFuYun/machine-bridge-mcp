@@ -54,7 +54,7 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   read_process: (runtime, args, context) => runtime.processSessionManager.read(args, context),
   write_process: (runtime, args, context) => runtime.processSessionManager.write(args, context),
   kill_process: (runtime, args, context) => runtime.processSessionManager.kill(args, context),
-  exec_command: (runtime, args, context) => runtime.execCommand(args.command, args.timeout_seconds, context),
+  exec_command: (runtime, args, context) => runtime.execCommand(args, context),
 });
 
 export function runtimeToolHandlerNames() {

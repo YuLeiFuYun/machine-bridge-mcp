@@ -38,8 +38,8 @@ Repository-only infrastructure changes, such as a `.github/` workflow update, do
 
 1. choose a `dev`, `beta`, or `rc` version; version 3 and later must not begin as stable;
 2. update changelog, audit notes, and documentation;
-3. run targeted and complete checks, dependency audits, Worker dry-run, privacy review, `npm run sbom:test`, and package inspection;
-4. inspect the complete diff and run `npm run release:candidate`;
+3. run targeted and one complete frozen-tree check, dependency audits, Worker dry-run, privacy review, `npm run sbom:test`, and package inspection; the successful full check writes a short-lived exact-generation receipt under ignored `.project-local/`;
+4. inspect the complete diff and run `npm run release:candidate`; it must consume that matching receipt and does not repeat the complete suite;
 5. run `node scripts/start-release-candidate.mjs --install-only`; this non-live preflight must still match current source/package modes and install the exact tarball disposably, otherwise repair and regenerate the candidate;
 6. obtain explicit owner authorization for `npm run release:candidate:activate -- --allow-worker-deploy`; the owner or authorized agent may run it through the local control plane;
 7. after activation, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the Worker, candidate relay, verified service daemon, exact version, representative behavior, and relevant failure paths through Machine Bridge;

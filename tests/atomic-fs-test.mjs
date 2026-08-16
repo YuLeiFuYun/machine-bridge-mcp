@@ -182,6 +182,49 @@ try {
   }]), "source changed", "conflict", true, "hash_mismatch");
   assert(await readFile(staleTarget, "utf8") === "current", "stale patch precondition modified the source file");
 
+  const commitRaceTarget = join(root, "commit-generation-race.txt");
+  await writeFile(commitRaceTarget, "observed", { encoding: "utf8", mode: 0o600 });
+  let injectedCommitRace = false;
+  await expectAsyncThrow(() => commitPatchTransaction([{
+    kind: "delete",
+    source: commitRaceTarget,
+    target: null,
+    originalHash: sha256("observed"),
+    mode: 0o600,
+  }], {
+    async rename(from, to) {
+      if (from === commitRaceTarget && !injectedCommitRace) {
+        injectedCommitRace = true;
+        await writeFile(commitRaceTarget, "concurrent-generation", { encoding: "utf8", mode: 0o600 });
+      }
+      return rename(from, to);
+    },
+  }), "source changed during commit", "conflict", true, "hash_mismatch");
+  assert(injectedCommitRace && await readFile(commitRaceTarget, "utf8") === "concurrent-generation",
+    "patch delete removed or overwrote a source generation that changed between preflight and rename");
+
+  const atomicRaceTarget = join(root, "atomic-generation-race.txt");
+  await writeFile(atomicRaceTarget, "observed", { encoding: "utf8", mode: 0o600 });
+  // atomicWriteText only needs the preserved permission bits here. Supplying
+  // the known fixture mode keeps this race injection focused on the
+  // transaction's hash generation rather than creating a test-side
+  // stat-then-write pattern that static analyzers correctly classify as a
+  // filesystem race in ordinary application code.
+  const atomicRaceInfo = { mode: 0o600 };
+  let injectedAtomicRace = false;
+  await expectAsyncThrow(() => atomicWriteText(atomicRaceTarget, "replacement", atomicRaceInfo, {
+    expectedHash: sha256("observed"),
+    async rename(from, to) {
+      if (from === atomicRaceTarget && !injectedAtomicRace) {
+        injectedAtomicRace = true;
+        await writeFile(atomicRaceTarget, "concurrent-generation", { encoding: "utf8", mode: 0o600 });
+      }
+      return rename(from, to);
+    },
+  }), "source changed during commit", "conflict", true, "hash_mismatch");
+  assert(injectedAtomicRace && await readFile(atomicRaceTarget, "utf8") === "concurrent-generation",
+    "expected-hash atomic write overwrote a source generation that changed between preflight and rename");
+
   console.log("atomic file replacement and patch recovery test ok");
 } finally {
   await rm(root, { recursive: true, force: true });

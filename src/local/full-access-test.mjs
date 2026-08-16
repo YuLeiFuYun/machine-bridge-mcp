@@ -8,11 +8,11 @@ import { isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
 import { generateSshKeyPair } from "./ssh-key.mjs";
 import { runExecutable } from "./shell.mjs";
 import { allToolNames, assertCanonicalFullPolicy, policyProfile } from "./tools.mjs";
-const FULL_ACCESS_RESOURCE_WAIT_MS = 5 * 60_000;
+const FULL_ACCESS_RESOURCE_WAIT_MS = 10_000;
 const FULL_ACCESS_JOB_WAIT_MS = 5 * 60_000;
 const FULL_ACCESS_JOB_CLEANUP_WAIT_MS = 30_000;
 
-export async function runFullAccessTest({ workspace, policy = policyProfile("full", "explicit") } = {}) {
+export async function runFullAccessTest({ workspace, policy = policyProfile("full", "explicit"), resourceCoordinatorOptions = null } = {}) {
   const canonicalPolicy = assertCanonicalFullPolicy(policy);
   const root = await mkdtemp(join(tmpdir(), "machine-mcp-full-test-"));
   const jobRoot = join(root, "jobs");
@@ -37,6 +37,8 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
       resources: {},
       logger: silentLogger(),
       recoverJobs: false,
+      resourceCoordinatorRoot: join(root, "resource-coordinator"),
+      resourceCoordinatorOptions,
       processResourceWaitMs: FULL_ACCESS_RESOURCE_WAIT_MS,
     });
 

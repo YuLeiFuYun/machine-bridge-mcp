@@ -34,6 +34,7 @@ export interface PendingCallRecord {
   owner_client_id?: string;
   owner_family_id?: string;
   tool: string;
+  recovery?: Record<string, unknown>;
   startedAt: number;
   timeout?: ReturnType<typeof setTimeout>;
   deadlineAt: number;
@@ -51,6 +52,7 @@ export interface RegisterPendingCall {
   clientRequestKey?: string;
   authority?: AuthorityRevocation;
   tool: string;
+  recovery?: Record<string, unknown>;
   timeoutMs: number;
   onTimeout: (record: PendingCallRecord) => Error;
   signal?: AbortSignal;

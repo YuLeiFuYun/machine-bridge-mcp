@@ -136,10 +136,10 @@ export function buildExecutionRouting(task, options = {}) {
     if (fallback) scoredRoutes.push(scoreRoute(fallback, text, availableNames, scoreByTool, options, 1));
   }
 
-  const routes = scoredRoutes.slice(0, MAX_ROUTES);
   const availableRouteIds = new Set(ROUTES
     .filter((definition) => routeUsable(definition, text, availableNames))
     .map((definition) => definition.id));
+  const routes = selectRoutes(scoredRoutes, availableRouteIds);
   const primary = routes[0] || null;
   const second = routes[1] || null;
   const scoreGap = primary && second ? primary.score - second.score : primary ? primary.score : 0;
@@ -179,6 +179,15 @@ export function buildExecutionRouting(task, options = {}) {
     ],
     enforcement: "advisory_only; the MCP host may choose only tools allowed by the effective authority",
   };
+}
+
+function selectRoutes(scoredRoutes, availableRouteIds) {
+  const routes = scoredRoutes.slice(0, MAX_ROUTES);
+  if (!availableRouteIds.has("shell") || routes.some((routeValue) => routeValue.id === "shell")) return routes;
+  const shell = scoredRoutes.find((routeValue) => routeValue.id === "shell");
+  if (!shell) return routes;
+  if (routes.length < MAX_ROUTES) return [...routes, shell];
+  return [...routes.slice(0, MAX_ROUTES - 1), shell];
 }
 
 function rankedRouteTools(routeValue, scoreByTool, maximum) {

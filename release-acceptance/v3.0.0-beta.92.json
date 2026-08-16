@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "result": "passed",
+  "confirmation": "owner-activated-agent-verified-persistent-candidate",
+  "package_name": "machine-bridge-mcp",
+  "package_version": "3.0.0-beta.92",
+  "filename": "machine-bridge-mcp-3.0.0-beta.92.tgz",
+  "shasum": "3de516fe748bba2a6fc4acbcec4addfc41bd29bf",
+  "integrity": "sha512-RBQsPTdcXjylRvE8DrKZ6s8phyuAmpcY+2P1BBaGy8jP8zLi2ft/pxxEv2woqA2ODDvKuMbDadw6PjYmE3arIw==",
+  "accepted_at": "2026-08-16T04:56:41.602Z",
+  "package_content_sha256": "7e535480eea533eea4272857ee88f23ea89849dc339af15720efb592ffcc0c5d",
+  "promotion_content_sha256": "5c8045a189411f544c969d319d538c6f41260ca80b2f6f89c8180092afb6ff23"
+}

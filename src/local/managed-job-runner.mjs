@@ -8,6 +8,7 @@ import { classifyOperationalError } from "./log.mjs";
 import { ownerOnlyFile } from "./secure-file.mjs";
 import { openPrivateAppendFile, readBoundedFile, trimDiagnosticFile } from "./managed-job-storage.mjs";
 import { publishProvisionalRunnerClaim } from "./managed-job-runner-claim.mjs";
+import { EXECUTION_SURFACE, withExecutionSurface } from "./execution-surface.mjs";
 
 const RUNNER_PATH = fileURLToPath(new URL("./job-runner.mjs", import.meta.url));
 
@@ -93,5 +94,5 @@ export function managedRunnerEnvironment({ fullEnv = false, recoveryToken = "", 
   else delete env.MBM_RECOVERY_LOCK_TOKEN;
   if (launchToken) env.MBM_RUNNER_LAUNCH_TOKEN = launchToken;
   else delete env.MBM_RUNNER_LAUNCH_TOKEN;
-  return env;
+  return withExecutionSurface(env, EXECUTION_SURFACE.managedJob);
 }

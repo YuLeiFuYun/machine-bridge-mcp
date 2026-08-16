@@ -98,30 +98,67 @@ export async function runtimeSelfTest() {
       return true;
     };
     restricted.relayCallRecovery.isRecoverable = () => true;
-    const processService = restricted.processExecutionService;
-    const originalResourceCoordinator = processService.resourceCoordinator;
-    const originalSpawnProcess = processService.spawnProcess;
-    let deadlineSpawned = false;
-    processService.resourceCoordinator = null;
-    processService.spawnProcess = (...spawnArgs) => { deadlineSpawned = true; return originalSpawnProcess(...spawnArgs); };
-    const deadlineCall = restricted.handleMessage(JSON.stringify({
+    await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
-      id: "deadline-call",
+      id: "durable-missing-recovery-key",
       tool: "run_process",
-      arguments: { argv: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], timeout_seconds: 10 },
+      arguments: { argv: [process.execPath, "-e", "process.stdout.write('must-not-run')"], timeout_seconds: 10 },
       timeout_ms: 10000,
       authorization: ownerAuthorization,
     }), { sessionId: 1, authenticated: true, ready: true });
-    for (let attempt = 0; !deadlineSpawned && attempt < 200; attempt += 1) await new Promise((resolvePromise) => { setTimeout(resolvePromise, 5); });
-    if (!deadlineSpawned) throw new Error("relay deadline fixture did not reach process dispatch");
-    restricted.callRegistry.cancel("deadline-call", "deadline exceeded", "timeout");
-    await deadlineCall;
-    processService.spawnProcess = originalSpawnProcess;
-    processService.resourceCoordinator = originalResourceCoordinator;
+    const missingRecoveryKey = relayMessages.find((value) => value.type === "tool_result" && value.id === "durable-missing-recovery-key");
+    if (missingRecoveryKey?.ok !== false || missingRecoveryKey.error?.code !== "invalid_request"
+        || missingRecoveryKey.error?.details?.side_effects_started !== false
+        || missingRecoveryKey.error?.details?.recovery_credential_required !== "idempotency_key") {
+      throw new Error(`relay durable process started without a caller-held recovery credential: ${JSON.stringify(missingRecoveryKey)}`);
+    }
+    relayMessages.length = 0;
+    await restricted.handleMessage(JSON.stringify({
+      type: "tool_call",
+      id: "deadline-call",
+      tool: "run_process",
+      arguments: {
+        argv: [process.execPath, "-e", "setTimeout(() => process.stdout.write('durable-ok'), 50)"],
+        timeout_seconds: 10,
+        idempotency_key: "runtime-self-test-durable-deadline",
+      },
+      timeout_ms: 10000,
+      authorization: ownerAuthorization,
+    }), { sessionId: 1, authenticated: true, ready: true });
     const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
-    if (deadlineResult?.ok !== false || deadlineResult.error?.code !== "timeout" || deadlineResult.error?.retryable !== false
-        || deadlineResult.error?.details?.side_effects_started !== true || deadlineResult.error?.details?.effect_settlement !== "pending") {
-      throw new Error(`relay deadline lost its non-retryable pending-effect timeout contract: ${JSON.stringify(deadlineResult)}`);
+    if (deadlineResult?.ok !== true || deadlineResult.result?.execution_mode !== "durable_job"
+        || typeof deadlineResult.result?.job_id !== "string" || deadlineResult.result?.recovery?.tool !== "read_job"
+        || deadlineResult.result?.idempotency_key_accepted !== true) {
+      throw new Error(`remote process did not settle as a recoverable durable acceptance: ${JSON.stringify(deadlineResult)}`);
+    }
+    if (restricted.callRegistry.cancel("deadline-call", "deadline exceeded", "timeout") !== false) {
+      throw new Error("durable process acceptance remained owned by the completed MCP call lifecycle");
+    }
+    const durableDeadlineJob = await waitForManagedJob(restricted.managedJobManager, deadlineResult.result.job_id);
+    if (durableDeadlineJob.status !== "succeeded" || durableDeadlineJob.result?.steps?.[0]?.stdout !== "durable-ok") {
+      throw new Error("durable process result was not recoverable after MCP call settlement");
+    }
+    relayMessages.length = 0;
+    await restricted.handleMessage(JSON.stringify({
+      type: "tool_call",
+      id: "durable-long-timeout",
+      tool: "run_process",
+      arguments: {
+        argv: [process.execPath, "-e", "process.stdout.write('durable-long-timeout-ok')"],
+        timeout_seconds: 600,
+        idempotency_key: "runtime-self-test-durable-long-timeout",
+      },
+      timeout_ms: 10000,
+      authorization: ownerAuthorization,
+    }), { sessionId: 1, authenticated: true, ready: true });
+    const longTimeoutResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "durable-long-timeout");
+    if (longTimeoutResult?.ok !== true || longTimeoutResult.result?.execution_timeout_seconds !== 600
+        || typeof longTimeoutResult.result?.job_id !== "string") {
+      throw new Error(`relay durable-process validation rejected the Worker-advertised 600 second execution budget: ${JSON.stringify(longTimeoutResult)}`);
+    }
+    const durableLongTimeoutJob = await waitForManagedJob(restricted.managedJobManager, longTimeoutResult.result.job_id);
+    if (durableLongTimeoutJob.status !== "succeeded" || durableLongTimeoutJob.result?.steps?.[0]?.stdout !== "durable-long-timeout-ok") {
+      throw new Error("600 second durable-process contract did not survive daemon validation and execute normally");
     }
     relayMessages.length = 0;
     await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
@@ -239,14 +276,26 @@ export async function runtimeSelfTest() {
       "outside the configured workspace",
     );
     if (delegatedProcessIsolationStatus().available) {
-      const operatorEnvironment = await fullAuthority.executeTool("run_process", {
+      const operatorAcceptance = await fullAuthority.executeTool("run_process", {
         argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || \"unset\")"],
         timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS,
+        idempotency_key: "operator-durable-environment",
       }, relayContext(operatorAuthorization));
-      if (operatorEnvironment.stdout !== "unset") throw new Error("operator inherited the full daemon parent environment");
+      if (operatorAcceptance.execution_mode !== "durable_job" || typeof operatorAcceptance.job_id !== "string") {
+        throw new Error("operator run_process did not receive a durable execution handle");
+      }
+      const operatorEnvironment = await waitForManagedJob(fullAuthority.managedJobManager, operatorAcceptance.job_id, relayContext(operatorAuthorization));
+      if (operatorEnvironment.result?.steps?.[0]?.stdout !== "unset") throw new Error("operator inherited the full daemon parent environment");
+      await expectReject(
+        () => fullAuthority.executeTool("start_job", { steps: [{ argv: [process.execPath, "-e", ""] }] }, relayContext(operatorAuthorization)),
+        "not allowed",
+      );
     } else {
       await expectReject(
-        () => fullAuthority.executeTool("run_process", { argv: [process.execPath, "-e", "process.exit(0)"] }, relayContext(operatorAuthorization)),
+        () => fullAuthority.executeTool("run_process", {
+          argv: [process.execPath, "-e", "process.exit(0)"],
+          idempotency_key: "operator-durable-sandbox-unavailable",
+        }, relayContext(operatorAuthorization)),
         "requires a behavior-verified OS workspace sandbox",
       );
     }
@@ -625,6 +674,16 @@ async function waitForFileText(file, timeoutMs) {
     }
   }
   throw lastError || new Error(`timed out waiting for file: ${file}`);
+}
+
+async function waitForManagedJob(manager, jobId, context = {}, timeoutMs = 10_000) {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    const job = manager.read({ job_id: jobId }, context);
+    if (["succeeded", "failed", "cancelled", "recovery_failed"].includes(job.status)) return job;
+    await new Promise(resolvePromise => { setTimeout(resolvePromise, 20); });
+  }
+  throw new Error(`timed out waiting for managed job settlement: ${jobId}`);
 }
 
 async function waitForProcessTrackerIdle(runtime, timeoutMs) {

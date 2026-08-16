@@ -15,11 +15,11 @@ import { processCancellationFailure, processChildErrorFailure, processPostSpawnF
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
 import { foregroundResourceWaitMs } from "./resource-foreground-wait.mjs";
 import { validateFixedProcessEnvironment } from "./fixed-process-environment.mjs";
+import { EXECUTION_SURFACE, withExecutionSurface } from "./execution-surface.mjs";
 import { DEFAULT_PROCESS_OUTPUT_BYTES, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS, PUBLIC_PROCESS_INLINE_OUTPUT_BYTES } from "./execution-limits.mjs";
 const PROCESS_OUTPUT_CAPTURE = Symbol("process-output-capture"); const CONTINUATION_READ_BYTES = 64 * 1024;
 function spawnDirectProcess(command, args, options) {
-  // Keep the production child_process API call structurally separate from the
-  // injectable test seam and enforce non-shell execution at the final boundary.
+  // Keep the production child_process API separate from the injectable test seam and enforce non-shell execution.
   return spawn(command, args, {
     cwd: options.cwd,
     env: options.env,
@@ -69,7 +69,7 @@ export class ProcessExecutionService {
   }
   async probeShell(context = {}, timeoutMs = 5_000) {
     const shell = workspaceShellCommand(process.platform === "win32" ? "cd" : "pwd");
-    return this.run(shell.cmd, shell.args, timeoutMs, true, 64 * 1024, context);
+    return this.run(shell.cmd, shell.args, timeoutMs, true, 64 * 1024, context, this.workspace, null, { internalFixed: true });
   }
   async runFixedInternal(cmd, args, timeoutMs, allowFailure = false, maxOutputBytes = DEFAULT_PROCESS_OUTPUT_BYTES, context = {}, cwd = this.workspace, stdin = null, environment = {}) {
     const argv = validateArgv([cmd, ...args]);
@@ -142,9 +142,10 @@ export class ProcessExecutionService {
       fullEnv: internalFixed ? false : this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir,
     });
     if (internalFixed) Object.assign(baseEnvironment, options.internalEnvironment || {});
+    const executionEnvironment = internalFixed ? baseEnvironment : withExecutionSurface(baseEnvironment, EXECUTION_SURFACE.foregroundProcess);
     const admitted = internalFixed || !this.resourceCoordinator
-      ? { lease: null, environment: baseEnvironment, command: cmd, args }
-      : await acquireProcessResources(this.resourceCoordinator, cmd, args, baseEnvironment, {
+      ? { lease: null, environment: executionEnvironment, command: cmd, args }
+      : await acquireProcessResources(this.resourceCoordinator, cmd, args, executionEnvironment, {
           cwd, priority: options.resourcePriority || "interactive", waitMs: options.resourceWaitMs ?? foregroundResourceWaitMs(timeoutMs, this.resourceWaitMs), signal: context.signal,
         });
     return new Promise((resolvePromise, rejectPromise) => {

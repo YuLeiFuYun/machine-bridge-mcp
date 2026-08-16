@@ -20,6 +20,7 @@ export async function activatePersistentRuntime(options = {}) {
   const expectedVersion = requiredExpectedVersion(options.expectedVersion);
   const maximumAttempts = boundedAttempts(options.maximumAttempts ?? 240);
   const candidateStartAttempts = boundedCandidateStartAttempts(options.candidateStartAttempts ?? 10);
+  const restoreStartAttempts = boundedRestoreStartAttempts(options.restoreStartAttempts ?? 30);
   const candidateRetryWait = optionalFunction(options.candidateRetryWait, "candidateRetryWait", defaultCandidateRetryWait);
   const convergenceWait = optionalFunction(options.wait, "wait", defaultWait);
   const restorePreviousAutostart = optionalFunction(options.restorePreviousAutostart, "restorePreviousAutostart", options.startAutostart);
@@ -38,6 +39,7 @@ export async function activatePersistentRuntime(options = {}) {
   let candidateRecoveryRedeployed = false;
   let remotePrepared = false;
   let autostartInstalled = false;
+  let serviceOwnerTransaction = null;
   let providerStopped = false;
   let previousServiceRuntime = null;
   let serviceStarted = false;
@@ -94,7 +96,8 @@ export async function activatePersistentRuntime(options = {}) {
     candidateRelayVerified = true;
     candidateRecoveryRedeployed = candidate.repaired;
 
-    const installed = await options.installAutostart();
+    const installed = await options.installAutostart({ deferOwnerCommit: true });
+    serviceOwnerTransaction = deferredServiceOwnerTransaction(installed);
     const terminalError = candidateRuntime.terminalError?.();
     if (terminalError) throw terminalError;
     if (installed?.ok !== true) {
@@ -112,7 +115,7 @@ export async function activatePersistentRuntime(options = {}) {
     startupLock.release();
     startupReleased = true;
 
-    const serviceStart = await options.startAutostart();
+    const serviceStart = await options.startAutostart({ owner: serviceOwnerTransaction?.owner || null });
     requireActiveServiceStart(serviceStart, "autostart start", "autostart_start_failed");
     serviceStarted = true;
 
@@ -125,6 +128,10 @@ export async function activatePersistentRuntime(options = {}) {
     });
     if (!convergence.ok) {
       throw new Error(`persistent runtime activation did not converge (${convergence.reason})`);
+    }
+    if (serviceOwnerTransaction) {
+      await commitVerifiedServiceOwner({ transaction: serviceOwnerTransaction, stopAutostart: options.stopAutostart });
+      serviceOwnerTransaction = null;
     }
     serviceLock.release();
     serviceLock = null;
@@ -147,9 +154,11 @@ export async function activatePersistentRuntime(options = {}) {
       serviceStarted,
       remotePrepared,
       autostartInstalled,
+      serviceOwnerTransaction,
       installAutostart: options.installAutostart,
       startRecoveryAutostart,
       restorePreviousAutostart,
+      stopRecoveryAutostart: options.stopAutostart,
       inspectCandidateAutostart,
       inspectPreviousAutostart: options.inspectPreviousAutostart,
       checkWorker: options.checkWorker,
@@ -157,6 +166,7 @@ export async function activatePersistentRuntime(options = {}) {
       previousServiceRuntime,
       restoreWait: convergenceWait,
       restoreMaximumAttempts: options.maximumAttempts,
+      restoreStartAttempts,
       candidateRelayVerified,
       candidateRecoveryRedeployed,
     });
@@ -176,9 +186,11 @@ async function failedActivationSettlement({
   serviceStarted,
   remotePrepared,
   autostartInstalled,
+  serviceOwnerTransaction,
   installAutostart,
   startRecoveryAutostart,
   restorePreviousAutostart,
+  stopRecoveryAutostart,
   inspectCandidateAutostart,
   inspectPreviousAutostart,
   checkWorker,
@@ -186,6 +198,7 @@ async function failedActivationSettlement({
   previousServiceRuntime,
   restoreWait,
   restoreMaximumAttempts,
+  restoreStartAttempts,
   candidateRelayVerified,
   candidateRecoveryRedeployed,
 }) {
@@ -198,12 +211,14 @@ async function failedActivationSettlement({
   }
   let recovery = null;
   const cleanupIncomplete = error?.cleanupIncomplete === true || cleanupErrors.length > 0;
-  if (!cleanupIncomplete) {
+  const recoveryBlocked = error?.recoveryBlocked === true;
+  if (!cleanupIncomplete && !recoveryBlocked) {
     try {
       recovery = await restoreCompatibleProvider({
         installAutostart,
         startRecoveryAutostart,
         restorePreviousAutostart,
+        stopRecoveryAutostart,
         inspectCandidateAutostart,
         inspectPreviousAutostart,
         checkWorker,
@@ -211,10 +226,12 @@ async function failedActivationSettlement({
         previousServiceRuntime,
         restoreWait,
         restoreMaximumAttempts,
+        restoreStartAttempts,
         providerStopped,
         serviceStarted,
         candidateServiceRequired: remotePrepared,
         candidateDefinitionRequired: remotePrepared && !autostartInstalled,
+        serviceOwnerTransaction,
       });
     } catch (failure) { cleanupErrors.push(failure); }
   }
@@ -306,6 +323,7 @@ async function restoreCompatibleProvider({
   installAutostart,
   startRecoveryAutostart,
   restorePreviousAutostart,
+  stopRecoveryAutostart,
   inspectCandidateAutostart,
   inspectPreviousAutostart,
   checkWorker,
@@ -313,51 +331,160 @@ async function restoreCompatibleProvider({
   previousServiceRuntime,
   restoreWait,
   restoreMaximumAttempts,
+  restoreStartAttempts,
   providerStopped,
   serviceStarted,
   candidateServiceRequired,
   candidateDefinitionRequired,
+  serviceOwnerTransaction,
 }) {
-  if (serviceStarted || (!candidateServiceRequired && !providerStopped)) {
+  if ((serviceStarted && !serviceOwnerTransaction) || (!candidateServiceRequired && !providerStopped)) {
     return { candidateServiceStarted: false };
   }
   if (candidateDefinitionRequired) {
-    const installed = await installAutostart();
+    const installed = await installAutostart({ deferOwnerCommit: true });
+    serviceOwnerTransaction = deferredServiceOwnerTransaction(installed) || serviceOwnerTransaction;
     if (installed?.ok !== true) {
       throw new Error(`compatible candidate autostart could not be installed (${installed?.provider || "unknown"})`);
     }
   }
-  const restored = candidateServiceRequired
-    ? await startRecoveryAutostart()
-    : await restorePreviousAutostart();
-  const qualifier = candidateServiceRequired ? "compatible candidate" : "previous";
-  requireActiveServiceStart(restored, `${qualifier} autostart service recovery`);
   if (candidateServiceRequired) {
-    const convergence = await waitForActivatedRuntime({
-      inspectDaemon: inspectCandidateAutostart,
-      checkWorker,
-      expectedVersion,
-      maximumAttempts: restoreMaximumAttempts,
-      wait: restoreWait,
-    });
-    if (!convergence.ok) {
-      throw new Error(`compatible candidate autostart recovery did not converge (${convergence.reason})`);
+    try {
+      const restored = await startRecoveryAutostart({ owner: serviceOwnerTransaction?.owner || null });
+      requireActiveServiceStart(restored, "compatible candidate autostart service recovery");
+      const convergence = await waitForActivatedRuntime({
+        inspectDaemon: inspectCandidateAutostart,
+        checkWorker,
+        expectedVersion,
+        maximumAttempts: restoreMaximumAttempts,
+        wait: restoreWait,
+      });
+      if (!convergence.ok) {
+        throw new Error(`compatible candidate autostart recovery did not converge (${convergence.reason})`);
+      }
+      if (serviceOwnerTransaction) {
+        await commitVerifiedServiceOwner({ transaction: serviceOwnerTransaction, stopAutostart: stopRecoveryAutostart });
+      }
+      return { candidateServiceStarted: true, convergence, serviceStart: restored };
+    } catch (error) {
+      if (!serviceOwnerTransaction || error?.recoveryBlocked === true) throw error;
+      throw await stopUncommittedCandidate(error, stopRecoveryAutostart);
     }
-    return { candidateServiceStarted: true, convergence, serviceStart: restored };
   }
   if (!previousServiceRuntime || typeof inspectPreviousAutostart !== "function") {
     throw new Error("previous autostart service recovery lacks verified runtime identity evidence");
   }
-  const convergence = await waitForRestoredServiceRuntime({
-    inspectDaemon: () => inspectPreviousAutostart(previousServiceRuntime),
+  const recovery = await restorePreviousServiceUntilReady({
+    restorePreviousAutostart,
+    inspectPreviousAutostart: () => inspectPreviousAutostart(previousServiceRuntime),
     expectedVersion: previousServiceRuntime.version,
-    maximumAttempts: restoreMaximumAttempts,
+    attempts: restoreStartAttempts,
     wait: restoreWait,
   });
-  if (!convergence.ok) {
-    throw new Error(`previous autostart service recovery did not converge (${convergence.reason})`);
+  return { candidateServiceStarted: false, convergence: recovery.convergence, serviceStart: recovery.serviceStart };
+}
+
+async function stopUncommittedCandidate(primaryError, stopAutostart) {
+  try {
+    const stopped = await stopAutostart();
+    if (stopped?.ok === true && stopped.active === false) return primaryError;
+    const stopError = new Error(`uncommitted candidate service stop could not be verified (${stopped?.provider || "unknown"})`);
+    const aggregate = new AggregateError(
+      [primaryError, stopError],
+      `${activationErrorMessage(primaryError)}; uncommitted candidate service stop could not be verified`,
+    );
+    aggregate.cleanupIncomplete = true;
+    return aggregate;
+  } catch (stopError) {
+    const aggregate = new AggregateError(
+      [primaryError, stopError],
+      `${activationErrorMessage(primaryError)}; uncommitted candidate service stop failed`,
+    );
+    aggregate.cleanupIncomplete = true;
+    return aggregate;
   }
-  return { candidateServiceStarted: false, convergence };
+}
+
+async function restorePreviousServiceUntilReady({
+  restorePreviousAutostart, inspectPreviousAutostart, expectedVersion, attempts = 30, wait = defaultWait,
+} = {}) {
+  const maximum = boundedRestoreStartAttempts(attempts);
+  let daemon = null;
+  let serviceStart = null;
+  let lastStartError = null;
+  for (let attempt = 1; attempt <= maximum; attempt += 1) {
+    try {
+      serviceStart = await restorePreviousAutostart();
+      lastStartError = null;
+    } catch (error) {
+      lastStartError = error;
+    }
+    daemon = await inspectPreviousAutostart();
+    if (restoredServiceReady(daemon, expectedVersion)) {
+      return { serviceStart, convergence: { ok: true, attempts: attempt, daemon } };
+    }
+    if (attempt < maximum) await wait(attempt);
+  }
+  const failure = new Error(`previous autostart service recovery did not converge (${restoredServiceFailureReason(daemon, expectedVersion)})`);
+  if (lastStartError) failure.cause = lastStartError;
+  throw failure;
+}
+
+function deferredServiceOwnerTransaction(result) {
+  const transaction = result?.serviceOwnerTransaction;
+  if (!transaction) return null;
+  if (!transaction.owner || transaction.owner.status !== "pending"
+      || typeof transaction.commit !== "function" || typeof transaction.rollback !== "function") {
+    throw new Error("candidate service owner transaction is invalid");
+  }
+  return transaction;
+}
+
+async function commitVerifiedServiceOwner({ transaction, stopAutostart }) {
+  try {
+    const committed = transaction.commit();
+    if (!committed || committed.status !== "committed") {
+      throw new Error("machine service owner commit did not return committed state");
+    }
+    return committed;
+  } catch (commitError) {
+    let stopError = null;
+    try {
+      const stopped = await stopAutostart();
+      if (stopped?.ok !== true || stopped.active !== false) {
+        stopError = new Error(`candidate service could not be stopped after owner commit failure (${stopped?.provider || "unknown"})`);
+      }
+    } catch (error) {
+      stopError = error;
+    }
+    const failure = new Error(
+      "candidate service reached verified readiness but its machine service owner could not be committed; the provider was stopped and the pending owner was retained for explicit recovery",
+      { cause: commitError },
+    );
+    failure.code = "service_owner_commit_failed";
+    failure.recoveryBlocked = true;
+    if (!stopError) throw failure;
+    const aggregate = new AggregateError(
+      [failure, stopError],
+      `${failure.message}; provider stop could not be verified`,
+    );
+    aggregate.code = failure.code;
+    aggregate.recoveryBlocked = true;
+    aggregate.cleanupIncomplete = true;
+    throw aggregate;
+  }
+}
+
+function restoredServiceReady(daemon, expectedVersion) {
+  return daemon?.alive === true && daemon?.verified_service_daemon === true
+    && daemon?.mode === "service" && daemon?.version === expectedVersion;
+}
+
+function restoredServiceFailureReason(daemon, expectedVersion) {
+  if (!daemon?.alive) return "daemon_not_running";
+  if (daemon?.verified_service_daemon !== true) return `daemon_identity_${daemon?.identity_reason || "unverified"}`;
+  if (daemon?.mode !== "service") return `daemon_mode_${daemon?.mode || "unknown"}`;
+  return daemon?.version === expectedVersion ? "service_not_stable" : `daemon_version_${daemon?.version || "unknown"}`;
 }
 
 function validateActivationOwnership(value) {
@@ -394,7 +521,10 @@ function validateActivationOwnership(value) {
 
 function validateProviderStop(result) {
   if (result?.ok !== true) {
-    throw new Error(`the existing autostart service could not be stopped before activation (${result?.provider || "unknown"})`);
+    throw activationOperationalError(
+      `the existing autostart service could not be stopped before activation (${result?.provider || "unknown"})`,
+      "autostart_stop_failed",
+    );
   }
   if (typeof result.active_before !== "boolean" || result.active !== false || typeof result.restore_required !== "boolean") {
     throw new Error(`the existing autostart stop state could not be verified before activation (${result?.provider || "unknown"})`);
@@ -547,6 +677,14 @@ function boundedCandidateStartAttempts(value) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 10) {
     throw new Error("candidate relay start attempts must be between 1 and 10");
+  }
+  return parsed;
+}
+
+function boundedRestoreStartAttempts(value) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 60) {
+    throw new Error("runtime activation restore-start attempts must be between 1 and 60");
   }
   return parsed;
 }

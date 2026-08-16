@@ -1,8 +1,7 @@
-import relayContract from "../shared/relay-contract.json" with { type: "json" };
+import { remoteToolDeliveryContract } from "./server-info-tool-delivery.ts";
 import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import type { WorkerObservability } from "./observability.ts";
 import { hiddenWorkerActivity, hiddenWorkerPending, projectDaemonStatus, workerGlobalActivityVisible } from "./server-info-activity.ts";
-
 export type ServerInfoDetail = "summary" | "full";
 
 type ServerInfoInput = {
@@ -84,8 +83,7 @@ function buildServerInfoSummary(
       effective_account_tool_count: input.effectiveTools.length,
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
-      remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
-      worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
+      ...remoteToolDeliveryContract(),
     },
   };
 }
@@ -158,8 +156,7 @@ function fullToolDelivery(input: ServerInfoInput): Record<string, unknown> {
     effective_scope: "live_daemon_and_account_intersection_before_host_filtering",
     host_exposed_tools_known_to_server: false,
     host_may_expose_subset: true,
-    remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
-    worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
+    ...remoteToolDeliveryContract(),
     daemon_execution_and_worker_settlement_deadlines_separate: true,
     host_terminal_receipt_observable: false,
   };

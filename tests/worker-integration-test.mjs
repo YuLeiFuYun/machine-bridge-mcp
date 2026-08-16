@@ -817,6 +817,10 @@ try {
   assert(statusAfterInvalidProbe.daemon?.connected === true && statusAfterInvalidProbe.daemon?.tools?.includes("read_file"), "failed replacement readiness probe displaced the incumbent daemon");
   assert(firstStatus.tool_delivery?.host_exposed_tools_known_to_server === false, "Worker server_info incorrectly claimed host tool visibility");
   assert(firstStatus.tool_delivery?.host_may_expose_subset === true, "Worker server_info omitted host-side filtering boundary");
+  assert(firstStatus.tool_delivery?.remote_process_delivery_mode === "durable_job"
+    && firstStatus.tool_delivery?.remote_process_acceptance_max_ms === 10_000
+    && firstStatus.tool_delivery?.remote_process_execution_timeout_max_ms === 600_000,
+  "Worker server_info lost the separated durable-process acceptance/execution contract");
 
   const timedOutCandidate = await connectDaemon(base);
   daemonSockets.push(timedOutCandidate);
@@ -1015,23 +1019,48 @@ try {
 
   const remoteAgentTools = await callToolsList(base, ownerAccessToken, 2501);
   const remoteRunProcess = remoteAgentTools.find((tool) => tool.name === "run_process");
-  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 60
-    && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 60,
-  "remote tools/list advertised a foreground timeout beyond the hosted delivery boundary");
+  assert(remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.maximum === 600
+    && remoteRunProcess?.inputSchema?.properties?.timeout_seconds?.default === 600
+    && remoteRunProcess?.inputSchema?.required?.includes("idempotency_key")
+    && String(remoteRunProcess?.description || "").includes("one-step durable job")
+    && String(remoteRunProcess?.description || "").includes("read_job"),
+  "remote tools/list lost the durable-process execution and recovery contract");
+  const remoteBrowserWait = remoteAgentTools.find((tool) => tool.name === "browser_wait");
+  assert(remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.maximum === 45
+    && remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.default === 30,
+  "remote tools/list lost the reply-safe browser foreground timeout contract");
+  const remoteReadProcess = remoteAgentTools.find((tool) => tool.name === "read_process");
+  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 5000,
+    "remote tools/list regained a long blocking process poll");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
   const overLimit = await callTool(base, ownerAccessToken, 2502, "run_process", {
-    argv: ["must-not-run"], timeout_seconds: 120,
+    argv: ["must-not-run"], timeout_seconds: 601, idempotency_key: "worker-over-limit",
   });
   assert(!overLimitMessages.stop().includes("tool_call"),
     "over-limit JSON tool call reached the daemon before rejection");
-  assert(overLimit.error?.code === -32602
-    && overLimit.error?.data?.side_effects_started === false
-    && overLimit.error?.data?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "maximum"),
-  "over-limit foreground rejection omitted its pre-dispatch schema contract");
+  assert(overLimit.result?.isError === true
+    && overLimit.result?.structuredContent?.error?.code === "invalid_request"
+    && overLimit.result?.structuredContent?.error?.details?.side_effects_started === false
+    && overLimit.result?.structuredContent?.error?.details?.schema_refresh_recommended === true
+    && overLimit.result?.structuredContent?.error?.details?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "maximum"),
+  "over-limit durable-process rejection omitted its stale-schema compatibility contract");
+
+  const overLimitPollMessages = captureWsMessageTypes(candidateDaemon);
+  const overLimitPoll = await callTool(base, ownerAccessToken, 25020, "read_process", {
+    session_id: "proc_stale_schema", wait_ms: 6000,
+  });
+  assert(!overLimitPollMessages.stop().includes("tool_call"),
+    "over-limit process poll reached the daemon before rejection");
+  assert(overLimitPoll.result?.isError === true
+    && overLimitPoll.result?.structuredContent?.error?.code === "invalid_request"
+    && overLimitPoll.result?.structuredContent?.error?.details?.side_effects_started === false
+    && overLimitPoll.result?.structuredContent?.error?.details?.schema_refresh_recommended === true
+    && overLimitPoll.result?.structuredContent?.error?.details?.validation_issues?.some((issue) => issue.instancePath === "/wait_ms" && issue.keyword === "maximum"),
+  "over-limit process poll omitted its stale-schema compatibility contract");
 
   const malformedTimeoutMessages = captureWsMessageTypes(candidateDaemon);
   const malformedTimeout = await callTool(base, ownerAccessToken, 25021, "run_process", {
-    argv: ["must-not-run"], timeout_seconds: "60",
+    argv: ["must-not-run"], timeout_seconds: "60", idempotency_key: "worker-malformed-timeout",
   });
   assert(!malformedTimeoutMessages.stop().includes("tool_call"),
     "malformed JSON foreground timeout reached the daemon before rejection");
@@ -1058,13 +1087,28 @@ try {
 
   const overLimitStreamMessages = captureWsMessageTypes(candidateDaemon);
   const overLimitStream = await currentMcpCall(base, ownerAccessToken, 2503, "tools/call", {
-    name: "run_process", arguments: { argv: ["must-not-stream-run"], timeout_seconds: 120 },
+    name: "run_process", arguments: { argv: ["must-not-stream-run"], timeout_seconds: 601, idempotency_key: "worker-stream-over-limit" },
   });
   assert(!overLimitStreamMessages.stop().includes("tool_call"),
     "over-limit streamed tool call reached the daemon before rejection");
-  assert(overLimitStream.body.error?.code === -32602
-    && overLimitStream.body.error?.data?.side_effects_started === false,
-  "invalid current tool call omitted its pre-dispatch schema contract");
+  assert(overLimitStream.body.result?.isError === true
+    && overLimitStream.body.result?.structuredContent?.error?.code === "invalid_request"
+    && overLimitStream.body.result?.structuredContent?.error?.details?.side_effects_started === false
+    && overLimitStream.body.result?.structuredContent?.error?.details?.schema_refresh_recommended === true,
+  "stale-schema current tool call omitted its pre-dispatch compatibility contract");
+
+  const missingRecoveryKeyMessages = captureWsMessageTypes(candidateDaemon);
+  const missingRecoveryKey = await callTool(base, ownerAccessToken, 25031, "run_process", {
+    argv: ["must-not-run"], timeout_seconds: 10,
+  });
+  assert(!missingRecoveryKeyMessages.stop().includes("tool_call"),
+    "durable process without a caller-held recovery key reached the daemon");
+  assert(missingRecoveryKey.result?.isError === true
+    && missingRecoveryKey.result?.structuredContent?.error?.code === "invalid_request"
+    && missingRecoveryKey.result?.structuredContent?.error?.details?.side_effects_started === false
+    && missingRecoveryKey.result?.structuredContent?.error?.details?.schema_refresh_recommended === true
+    && missingRecoveryKey.result?.structuredContent?.error?.details?.recovery_credential_required === "idempotency_key",
+  "missing durable-process recovery credential did not return a stale-schema-safe no-side-effect error");
 
   const streamedRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const streamedResponsePromise = stableFetch(`${base}/mcp`, {
@@ -1230,24 +1274,58 @@ try {
   assert(remoteImage.body.result?.structuredContent?.path === "pixel.png", "Worker omitted rich structuredContent");
   assert(!JSON.stringify(remoteImage.body.result).includes("$mcp"), "Worker leaked the internal rich-result envelope");
 
-  const relayTimeoutCall = currentMcpCall(base, ownerAccessToken, 75, "tools/call", {
-    name: "run_process", arguments: { argv: ["never-runs"], timeout_seconds: 1 },
+  const durableAcceptanceCall = currentMcpCall(base, ownerAccessToken, 75, "tools/call", {
+    name: "run_process", arguments: { argv: ["durable-step"], timeout_seconds: 1, idempotency_key: "worker-durable-acceptance" },
   });
   const timedRelay = await waitForWsMessage(candidateDaemon, "tool_call");
-  assert(timedRelay.tool === "run_process" && timedRelay.timeout_ms === 1_000,
-    "Worker did not relay the execution deadline independently from its settlement margin");
-  const relayTimeoutCancel = await waitForWsMessage(candidateDaemon, "cancel_call", 10_000);
-  assert(relayTimeoutCancel.id === timedRelay.id, "Worker timeout cancellation targeted the wrong daemon call");
-  const relayTimeoutResult = await relayTimeoutCall;
-  assert(relayTimeoutResult.response.status === 200, "timed-out tools/call did not settle cleanly");
-  assert(relayTimeoutResult.body.result?.isError === true, "timed-out tools/call was not marked as an error");
-  assert(JSON.stringify(relayTimeoutResult.body.result).includes("timed out"), "timed-out tools/call returned the wrong error");
-  const relayTimeoutText = JSON.stringify(relayTimeoutResult.body.result);
-  assert(relayTimeoutText.includes('"retryable":false')
-    && relayTimeoutText.includes('"side_effects_started":true')
-    && relayTimeoutText.includes('"termination_requested":true')
-    && relayTimeoutText.includes('"effect_settlement":"pending"'),
-  "Worker daemon-settlement timeout advertised an already-dispatched side effect as safely retryable");
+  assert(timedRelay.tool === "run_process" && timedRelay.timeout_ms === 10_000
+    && timedRelay.arguments?.timeout_seconds === 1
+    && timedRelay.arguments?.idempotency_key === "worker-durable-acceptance",
+  "Worker coupled the durable step lifetime back into the MCP acceptance deadline");
+  const durableJobId = `job_${"d".repeat(24)}`;
+  candidateDaemon.send(JSON.stringify({
+    type: "tool_result",
+    id: timedRelay.id,
+    ok: true,
+    result: {
+      accepted: true,
+      execution_mode: "durable_job",
+      job_id: durableJobId,
+      execution_timeout_seconds: 1,
+      idempotency_key_accepted: true,
+      recovery: { tool: "read_job", job_id: durableJobId },
+    },
+  }));
+  const durableAcceptanceResult = await durableAcceptanceCall;
+  assert(durableAcceptanceResult.response.status === 200
+    && durableAcceptanceResult.body.result?.isError === false
+    && durableAcceptanceResult.body.result?.structuredContent?.execution_mode === "durable_job"
+    && durableAcceptanceResult.body.result?.structuredContent?.job_id === durableJobId,
+  "durable process acceptance did not settle independently of the detached one-second step lifetime");
+
+  const ambiguousAcceptanceKey = "worker-ambiguous-durable-acceptance";
+  const ambiguousAcceptanceCall = currentMcpCall(base, ownerAccessToken, 751, "tools/call", {
+    name: "run_process",
+    arguments: { argv: ["durable-step-with-lost-acceptance"], timeout_seconds: 1, idempotency_key: ambiguousAcceptanceKey },
+  });
+  const ambiguousRelay = await waitForWsMessage(candidateDaemon, "tool_call");
+  assert(ambiguousRelay.tool === "run_process"
+    && ambiguousRelay.arguments?.idempotency_key === ambiguousAcceptanceKey
+    && ambiguousRelay.timeout_ms === 10_000,
+  "ambiguous durable acceptance fixture lost its caller-held recovery key before daemon dispatch");
+  const ambiguousCancel = await waitForWsMessage(candidateDaemon, "cancel_call", 20_000);
+  assert(ambiguousCancel.id === ambiguousRelay.id,
+    "durable acceptance timeout cancellation targeted the wrong daemon call");
+  const ambiguousAcceptanceResult = await ambiguousAcceptanceCall;
+  const ambiguousError = ambiguousAcceptanceResult.body.result?.structuredContent?.error;
+  assert(ambiguousAcceptanceResult.response.status === 200
+    && ambiguousAcceptanceResult.body.result?.isError === true
+    && ambiguousError?.code === "timeout"
+    && ambiguousError?.details?.side_effects_started === true
+    && ambiguousError?.details?.recovery?.credential === "idempotency_key"
+    && ambiguousError?.details?.recovery?.idempotency_key === ambiguousAcceptanceKey
+    && ambiguousError?.details?.recovery?.action === "retry_same_tool_arguments_with_same_idempotency_key",
+  "lost durable acceptance response did not return the original idempotent recovery credential");
 
   const demoteLastOwner = await stableFetch(`${base}/admin/accounts`, adminRequest("PATCH", "/admin/accounts", {
     account_id: ownerAccount.body.account.account_id, role: "reviewer",

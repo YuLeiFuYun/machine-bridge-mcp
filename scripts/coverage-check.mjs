@@ -7,7 +7,7 @@ import { captureCoverageGeneration } from "./coverage-generation.mjs";
 import { mergeFunctionExecutions } from "./coverage-range-merge.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const CRITICAL_SCRIPT_FILES = new Set(["scripts/release-publication-guard.mjs", "scripts/verification-generation-guard.mjs"]);
+const CRITICAL_SCRIPT_FILES = new Set(["scripts/release-publication-guard.mjs", "scripts/verification-generation-guard.mjs", "scripts/verification-state.mjs"]);
 const generationBefore = captureCoverageGeneration(root);
 const coverageDir = mkdtempSync(resolve(tmpdir(), "machine-bridge-coverage-"));
 const tests = [
@@ -38,6 +38,7 @@ const tests = [
   "tests/coverage-range-merge-test.mjs",
   "tests/coverage-generation-test.mjs",
   "tests/check-runner-test.mjs",
+  "tests/full-verification-receipt-test.mjs",
   "tests/resource-admission-test.mjs",
   "tests/resource-build-root-test.mjs",
   "tests/runtime-activation-test.mjs",
@@ -226,6 +227,7 @@ try {
     "src/local/runtime-activation.mjs": [90, 70],
     "scripts/release-publication-guard.mjs": [100, 80],
     "scripts/verification-generation-guard.mjs": [100, 80],
+    "scripts/verification-state.mjs": [90, 70],
     "src/local/child-process-settlement.mjs": [100, 85],
     "src/local/cli-options.mjs": [65, 35],
     "src/local/cli-policy.mjs": [70, 35],
