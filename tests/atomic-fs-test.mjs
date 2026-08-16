@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -205,7 +205,12 @@ try {
 
   const atomicRaceTarget = join(root, "atomic-generation-race.txt");
   await writeFile(atomicRaceTarget, "observed", { encoding: "utf8", mode: 0o600 });
-  const atomicRaceInfo = await stat(atomicRaceTarget);
+  // atomicWriteText only needs the preserved permission bits here. Supplying
+  // the known fixture mode keeps this race injection focused on the
+  // transaction's hash generation rather than creating a test-side
+  // stat-then-write pattern that static analyzers correctly classify as a
+  // filesystem race in ordinary application code.
+  const atomicRaceInfo = { mode: 0o600 };
   let injectedAtomicRace = false;
   await expectAsyncThrow(() => atomicWriteText(atomicRaceTarget, "replacement", atomicRaceInfo, {
     expectedHash: sha256("observed"),
