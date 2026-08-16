@@ -8,6 +8,12 @@
       "expires": "2026-10-14"
     },
     {
+      "ruleId": "js/indirect-command-line-injection",
+      "path": "src/local/process-execution.mjs",
+      "reason": "run_process is intentionally an authorized direct-exec capability: validateArgv bounds and rejects invalid argv, the final child_process call passes the executable and argv as separate values, shell is fixed false, and behavior tests prove shell metacharacters remain literal. The query models uncontrolled command interpretation, but this boundary deliberately executes the caller-authorized program without shell parsing; review again with the adjacent direct-process exception before expiry.",
+      "expires": "2026-10-14"
+    },
+    {
       "ruleId": "js/insufficient-password-hash",
       "path": "src/local/account-admin.mjs",
       "reason": "Account credentials are not human passwords: generateAccountPassword creates a mandatory 256-bit random token, the Worker rejects caller-chosen formats, and each account stores only a verifier derived with an independent 128-bit salt and HMAC-SHA-256. The rule models low-entropy password guessing, which does not apply to this machine-generated credential contract; reassess or migrate to a portable slow KDF before expiry.",

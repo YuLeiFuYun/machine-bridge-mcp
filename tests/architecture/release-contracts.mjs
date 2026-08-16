@@ -1129,6 +1129,7 @@ const codeqlAccepted = JSON.parse(readFileSync(join(root, ".github", "codeql-acc
 const acceptedCodeql = new Set((codeqlAccepted.accepted || []).map((item) => `${item.ruleId}\0${item.path}`));
 const expectedCodeql = new Set([
   "js/shell-command-injection-from-environment\0src/local/process-execution.mjs",
+  "js/indirect-command-line-injection\0src/local/process-execution.mjs",
   "js/insufficient-password-hash\0src/local/account-admin.mjs",
 ]);
 if (acceptedCodeql.size !== expectedCodeql.size || [...expectedCodeql].some((item) => !acceptedCodeql.has(item))) {
