@@ -45,7 +45,7 @@ export async function assertGitMetadataTreesSafe(roots, options = {}) {
         const info = await inspect(target);
         if (info.isSymbolicLink() || !info.isFile()) throw boundaryError();
       }
-    } finally { await directory.close().catch(() => {}); }
+    } finally { await directory.close().catch(() => { /* Directory-handle close is best-effort after bounded traversal ends. */ }); }
   }
   return visited;
 }

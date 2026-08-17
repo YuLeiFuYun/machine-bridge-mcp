@@ -1369,10 +1369,13 @@ for (const required of ["class DaemonSocketRegistry", "beginProbe", "promote", "
 }
 const daemonReadyWaiterBoundary = readFileSync(join(root, "src", "worker", "daemon-ready-waiters.ts"), "utf8");
 for (const required of [
-  "DEFAULT_GRACE_MS = 10_000", "waitForReadyDaemon", "notifyReadyDaemon", "readyDaemonWaiterSnapshot", "AbortSignal",
+  "relayContract.newCallReconnectGraceMs", "waitForReadyDaemon", "notifyReadyDaemon", "readyDaemonWaiterSnapshot", "AbortSignal",
   "PendingCapacitySnapshot", "assertWorkerPendingCallAdmission",
 ]) {
   if (!daemonReadyWaiterBoundary.includes(required)) throw new Error(`daemon reconnect admission lost shared-capacity new-call recovery: ${required}`);
+}
+if (daemonReadyWaiterBoundary.includes("DEFAULT_GRACE_MS = 10_000")) {
+  throw new Error("daemon reconnect admission regained the obsolete private ten-second recovery default");
 }
 const daemonRecoveryBudgetBoundary = readFileSync(join(root, "src", "worker", "daemon-recovery-budget.ts"), "utf8");
 for (const required of ["daemonToolTimeoutBudgetAfterDelay", "workerSettlementOverheadMs", "side_effects_started: false"]) {

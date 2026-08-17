@@ -13,21 +13,20 @@ import { readResourceHostSample } from "./resource-host-sample-file.mjs";
 import { sampleResourceHostAsync } from "./resource-host-snapshot.mjs";
 import { validateResourceRequest } from "./resource-request-contract.mjs";
 import { recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "./resource-staging-recovery.mjs";
-import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } from "./resource-admission-policy.mjs";
+import { deriveHostRates, evaluateResourceAdmission, resourceAdmissionDecisionRetryable, resourcePressureSnapshot } from "./resource-admission-policy.mjs";
 import { fitElasticRequestToPressure } from "./resource-elastic-request.mjs";
 import { resourceCoordinatorAccounting, resourceCoordinatorEvaluator } from "./resource-coordinator-accounting.mjs";
 import { cachedResourceProcessParentSamplerAsync } from "./resource-process-ancestry-cache.mjs";
 import { sampleResourceProcessParentsAsync } from "./resource-process-ancestry.mjs";
 import { resourceProjectHash, resourceRequestForProject } from "./resource-project-key.mjs";
 import { createResourceWaiter, pruneAndReadResourceWaiters, removeResourceWaiter, resourceWaiterQueueSnapshot, selectedResourceWaiter } from "./resource-waiters.mjs";
-const SCHEMA = 1; const PROVISIONAL_TTL_MS = 30_000; const PROCESS_OWNERSHIP_LOCK_WAIT_MS = 30_000;
-const LEASE_FILE = /^lease_[a-f0-9]{32}\.json$/;
+const SCHEMA = 1; const PROVISIONAL_TTL_MS = 30_000; const PROCESS_OWNERSHIP_LOCK_WAIT_MS = 30_000; const LEASE_FILE = /^lease_[a-f0-9]{32}\.json$/;
 export class ResourceAdmissionError extends Error {
   constructor(decision) {
     super(`local heavy-resource admission deferred (${decision?.reason || "resource_busy"})`);
     this.name = "ResourceAdmissionError";
     this.code = "MBM_RESOURCE_BUSY";
-    this.retryable = true;
+    this.retryable = resourceAdmissionDecisionRetryable(decision);
     this.decision = decision;
   }
 }
@@ -97,6 +96,7 @@ export class ResourceCoordinator {
         }, Math.max(1, Math.min(PROCESS_OWNERSHIP_LOCK_WAIT_MS, waitMs - (performance.now() - started))));
         lastDecision = result.decision;
         if (result.lease) return new ResourceLease(this, result.lease, result.lease.request);
+        if (!resourceAdmissionDecisionRetryable(lastDecision)) throw new ResourceAdmissionError(lastDecision);
         const elapsed = performance.now() - started;
         if (elapsed >= waitMs) throw new ResourceAdmissionError(lastDecision);
         const remaining = Math.max(1, waitMs - elapsed);

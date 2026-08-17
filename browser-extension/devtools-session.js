@@ -8,7 +8,7 @@
     if (!Number.isInteger(tabId) || tabId < 1) throw new Error("DevTools session requires a valid tab");
     if (typeof operation !== "function") throw new Error("DevTools session requires an operation");
     const previous = tabQueues.get(tabId) || Promise.resolve();
-    const current = previous.catch(() => {}).then(() => {
+    const current = previous.catch(() => { /* A prior tab operation must not poison the serialized queue. */ }).then(() => {
       options.beforeAttach?.();
       return withDebugger(tabId, operation);
     });
@@ -29,7 +29,8 @@
     } finally { if (attached) await detachQuietly(target); }
   }
   async function detachQuietly(target) {
-    try { await deadline(Promise.resolve().then(() => chrome.debugger.detach(target)), DETACH_TIMEOUT_MS, "DevTools detach"); } catch {}
+    try { await deadline(Promise.resolve().then(() => chrome.debugger.detach(target)), DETACH_TIMEOUT_MS, "DevTools detach"); }
+    catch { /* Session ownership is already ending; detach is bounded best-effort cleanup. */ }
   }
   async function deadline(operation, timeoutMs, label) {
     if (typeof globalThis.setTimeout !== "function") return operation;

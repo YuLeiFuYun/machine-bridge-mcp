@@ -34,7 +34,7 @@ export class PendingCallDeadlines {
 
   armOperation(record: PendingCallRecord, delayMs: number, expire: (id: string) => void): void {
     if (record.timeout) this.scheduler.clearTimeout(record.timeout);
-    const delay = positiveDelay(delayMs);
+    const delay = boundedPendingDelayMs(delayMs);
     record.remainingTimeoutMs = delay;
     record.deadlineAt = this.clock() + delay;
     record.timeout = this.scheduler.setTimeout(() => expire(record.id), delay);
@@ -48,7 +48,7 @@ export class PendingCallDeadlines {
 
   armReconnect(record: PendingCallRecord, delayMs: number, expire: (id: string) => void): void {
     if (record.reconnectTimeout) this.scheduler.clearTimeout(record.reconnectTimeout);
-    const delay = positiveDelay(delayMs);
+    const delay = boundedPendingDelayMs(delayMs);
     record.reconnectDeadlineAt = this.clock() + delay;
     record.reconnectTimeout = this.scheduler.setTimeout(() => expire(record.id), delay);
   }
@@ -66,6 +66,10 @@ export class PendingCallDeadlines {
   }
 }
 
-function positiveDelay(value: unknown): number {
-  return Math.max(1, Math.floor(Number(value) || 1));
+export function boundedPendingDelayMs(value: unknown, maximum = 2_147_483_647): number {
+  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new TypeError("pending-call delay maximum must be a positive safe integer");
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new RangeError(`pending-call delay must be an integer from 1 to ${maximum}`);
+  }
+  return value;
 }

@@ -1,6 +1,7 @@
 import { toolCallAdmission, toolCallCapacityConfig, type ToolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { PendingCallRegistrationError, type PendingCallOutcome, type PendingCallRecord, type PendingCallSettlement, type RegisterPendingCall } from "./pending-call-contract.ts";
-import { PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
+import { boundedPendingDelayMs, PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
 import { pendingRegistrySnapshot } from "./pending-call-capacity.ts";
 import { recordMatchesAuthorityRevocation, type AuthorityRevocation } from "../shared/authority-revocation.mjs";
 type PendingCallRegistryOptions = PendingCallDeadlineOptions & {
@@ -43,7 +44,6 @@ export class PendingCallRegistry {
     const record = this.byId.get(id);
     return !record || record.socket !== socket ? Promise.resolve(false) : this.finish(id, { ok: true, value });
   }
-
   reject(id: string, error: Error, socket?: WebSocket): Promise<boolean> {
     const record = this.byId.get(id);
     return !record || (socket && record.socket !== socket) ? Promise.resolve(false) : this.finish(id, { ok: false, error });
@@ -70,7 +70,7 @@ export class PendingCallRegistry {
 
   detachSocket(socket: WebSocket, graceMs: number, createError: (record: PendingCallRecord) => Error): number {
     const records = [...this.byId.values()].filter((record) => record.socket === socket);
-    const maximumGrace = Math.max(1, Math.floor(Number(graceMs) || 1));
+    const maximumGrace = boundedPendingDelayMs(graceMs, relayContract.reconnectGraceMs);
     for (const record of records) {
       record.socket = undefined;
       record.onReconnectTimeout = createError;
@@ -118,7 +118,7 @@ export class PendingCallRegistry {
 
   private add(input: RegisterPendingCall, settlement: PendingCallSettlement): void {
     const startedAt = this.deadlines.now();
-    const timeoutMs = Math.max(1, Math.floor(Number(input.timeoutMs) || 1));
+    const timeoutMs = boundedPendingDelayMs(input.timeoutMs, relayContract.maximumRelayToolTimeoutMs);
     const abortHandler = input.signal ? () => { void this.expire(input.id, input.onAbort, "pending daemon call was cancelled"); } : undefined;
     const record: PendingCallRecord = {
       id: input.id, socket: input.socket, daemonInstanceId: input.daemonInstanceId, clientRequestKey: input.clientRequestKey,

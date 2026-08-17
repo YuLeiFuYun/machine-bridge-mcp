@@ -4,7 +4,6 @@ import { BridgeError } from "./errors.mjs";
 import { prepareResourceBuildCommand } from "./resource-build-root.mjs";
 import { applyResourceProcessPriority } from "./resource-process-priority.mjs";
 import { releaseControlWorkspaceForCommand } from "./resource-release-control-workspace.mjs";
-
 export async function acquireProcessResources(coordinator, command, args, environment, options = {}) {
   if (!coordinator) return { lease: null, environment, request: null, command, args };
   const request = resourceCommandProfile(command, args, { priority: options.priority, environment, releaseControlWorkspace: await releaseControlWorkspaceForCommand(command, args, options.cwd, environment) });
@@ -21,8 +20,10 @@ export async function acquireProcessResources(coordinator, command, args, enviro
     const coordinatorBusy = ["MBM_RESOURCE_TRANSACTION_BUSY", "MBM_RESOURCE_STAGING_BUSY"].includes(error?.code);
     if (!(error instanceof ResourceAdmissionError) && !coordinatorBusy) throw error;
     const decision = error instanceof ResourceAdmissionError ? error.decision : { state: "unknown", reason: "coordinator_busy" };
-    throw new BridgeError("unavailable", "local heavy-resource capacity is temporarily unavailable", {
-      retryable: true,
+    const retryable = error instanceof ResourceAdmissionError ? error.retryable !== false : true;
+    const message = retryable ? "local heavy-resource capacity is temporarily unavailable" : "local heavy-resource request exceeds the configured launch capacity; reduce explicit parallelism or resource demand";
+    throw new BridgeError("unavailable", message, {
+      retryable,
       details: {
         reason: "resource_admission",
         pressure_state: decision?.state || "unknown",
@@ -44,7 +45,6 @@ export async function acquireProcessResources(coordinator, command, args, enviro
     throw error;
   }
 }
-
 export function bindProcessResources(lease, child) {
   return lease?.bindProcess?.(child, { processGroupIsolated: process.platform !== "win32" }) ?? Promise.resolve();
 }

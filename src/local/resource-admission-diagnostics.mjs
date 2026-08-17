@@ -1,3 +1,10 @@
+const LOGGABLE_ADMISSION_REASONS = new Set([
+  "resource_capacity", "project_resource_busy", "host_pressure_red", "disk_reserve_floor",
+  "cpu_reservation", "io_reservation", "memory_reservation", "cpu_pressure_window",
+  "cpu_request_exceeds_launch_window", "fairness_wait", "coordinator_busy", "resource_busy",
+]);
+const LOGGABLE_PRESSURE_STATES = new Set(["green", "yellow", "red", "unknown"]);
+
 export function resourceAdmissionGuardrailSnapshot() {
   return {
     scope: "machine-user-cross-process",
@@ -7,6 +14,16 @@ export function resourceAdmissionGuardrailSnapshot() {
     light_operations_bypass: true,
     default_compiler_jobs: 3,
     hard_resource_quota: false,
+  };
+}
+
+export function resourceAdmissionLogFields(error) {
+  if (error?.details?.reason !== "resource_admission") return {};
+  const reason = String(error.details.admission_reason || "resource_busy");
+  const pressure = String(error.details.pressure_state || "unknown");
+  return {
+    resource_admission_reason: LOGGABLE_ADMISSION_REASONS.has(reason) ? reason : "resource_busy",
+    resource_pressure_state: LOGGABLE_PRESSURE_STATES.has(pressure) ? pressure : "unknown",
   };
 }
 

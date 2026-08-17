@@ -143,7 +143,8 @@ export class BrowserBrokerRoutes {
   close(message) {
     this.rejectAll(message);
     for (const client of this.clients) {
-      try { client.close(1001, "runtime stopped"); } catch {}
+      try { client.close(1001, "runtime stopped"); }
+      catch { /* Runtime shutdown is already authoritative; a concurrently closed broker client needs no retry. */ }
     }
     this.clients.clear();
   }

@@ -9,6 +9,7 @@ import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { ProcessOutputStream } from "../src/local/process-output-stream.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
+import { ResourceAdmissionError } from "../src/local/resource-admission.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import { toolResult } from "../src/local/tools.mjs";
 import { textToolResult } from "../src/worker/mcp-jsonrpc.ts";
@@ -53,6 +54,7 @@ try {
   testOutputStreamOffsets();
   testCompactProjection();
   await testExecutionSurfaceMarkers();
+  await testRemoteSessionAdmissionIsFailFast();
   await testSuccessfulContinuation();
   await testFailureContinuation();
   await testSessionReleaseAfterBinding();
@@ -91,6 +93,64 @@ async function testExecutionSurfaceMarkers() {
   assert.equal(page.running, false, "execution-surface session fixture did not exit");
   assert.equal(page.stdout.data, EXECUTION_SURFACE.processSession,
     "process session omitted its execution-surface marker");
+}
+
+async function testRemoteSessionAdmissionIsFailFast() {
+  const waits = [];
+  let spawnCount = 0;
+  const manager = new ProcessSessionManager({
+    workspace: root,
+    policy,
+    authorizeTool() {},
+    runtimeDir: root,
+    processTracker: tracker,
+    resourceCoordinator: {
+      async acquire(_request, options) {
+        waits.push(options.waitMs);
+        throw new ResourceAdmissionError({ state: "red", reason: "host_pressure_red" });
+      },
+    },
+    resolveCwd: async () => root,
+    displayPath: (value) => value,
+    throwIfCancelled() {},
+    spawnProcess() {
+      spawnCount += 1;
+      throw new Error("resource-denied session must not spawn");
+    },
+  });
+  await assert.rejects(
+    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { authority: { origin: "relay" } }),
+    (error) => {
+      assert(error instanceof BridgeError, "remote resource pressure did not cross the process boundary as a BridgeError");
+      assert.equal(error.code, "unavailable", "remote resource pressure lost its retryable unavailable classification");
+      assert.equal(error.retryable, true, "remote resource pressure became non-retryable");
+      assert.deepEqual(publicError(error).details, {
+        reason: "resource_admission",
+        pressure_state: "red",
+        admission_reason: "host_pressure_red",
+      }, "remote resource pressure lost its bounded admission diagnosis");
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { authority: { origin: "local" } }),
+    (error) => error instanceof BridgeError && error.code === "unavailable",
+  );
+  assert.deepEqual(waits, [0, 10_000],
+    "process-session resource admission did not separate remote reply safety from local operator patience");
+  assert.equal(spawnCount, 0, "resource-admission failure reached child-process spawn");
+  manager.resourceCoordinator.acquire = async () => {
+    throw new ResourceAdmissionError({ state: "green", reason: "cpu_request_exceeds_launch_window" });
+  };
+  await assert.rejects(
+    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { authority: { origin: "relay" } }),
+    (error) => error instanceof BridgeError
+      && error.code === "unavailable"
+      && error.retryable === false
+      && error.message.includes("reduce explicit parallelism")
+      && publicError(error).details?.admission_reason === "cpu_request_exceeds_launch_window",
+    "structurally impossible resource demand remained a retryable temporary-pressure error",
+  );
 }
 
 function testOutputStreamOffsets() {

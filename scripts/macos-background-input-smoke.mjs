@@ -380,10 +380,10 @@ try {
 } finally {
   if (fixturePid && frontBefore) {
     const current = await frontmostApplication().catch(() => null);
-    if (current?.pid === fixturePid) await restoreFrontmost(frontBefore.pid).catch(() => {});
+    if (current?.pid === fixturePid) await restoreFrontmost(frontBefore.pid).catch(() => { /* Preserve the smoke-test result; frontmost restoration is best-effort cleanup. */ });
   }
-  if (fixturePid) await terminatePid(fixturePid).catch(() => {});
-  await rm(root, { recursive: true, force: true }).catch(() => {});
+  if (fixturePid) await terminatePid(fixturePid).catch(() => { /* Fixture termination is best-effort cleanup after the primary result is known. */ });
+  await rm(root, { recursive: true, force: true }).catch(() => { /* Temporary fixture removal is best-effort cleanup. */ });
 }
 
 async function frontmostApplication() {

@@ -60,7 +60,9 @@ export class AppAutomationManager {
 
   async probeVisualPointCapability(context = {}) {
     if (this.backgroundVisualBackend !== "skylight-experimental" || !this.backgroundInputService) return this.visualPointCapability();
-    if (typeof this.backgroundInputService.probe === "function") await this.backgroundInputService.probe(context).catch(() => {});
+    if (typeof this.backgroundInputService.probe === "function") {
+      await this.backgroundInputService.probe(context).catch(() => { /* Optional capability probing must not fail application inventory. */ });
+    }
     return this.visualPointCapability();
   }
 
@@ -496,7 +498,7 @@ export class AppAutomationManager {
         await handle.close();
       }
     } finally {
-      await rm(directory, { recursive: true, force: true }).catch(() => {});
+      await rm(directory, { recursive: true, force: true }).catch(() => { /* Screenshot staging cleanup is best-effort after settlement. */ });
     }
   }
 
@@ -950,7 +952,8 @@ function selectMacWindow(value) {
   }).filter(Boolean);
   if (!normalized.length) throw new Error("application has no capturable on-screen window");
   let frontBounds = null;
-  try { frontBounds = requiredWindowBounds(value?.front_bounds); } catch {}
+  try { frontBounds = requiredWindowBounds(value?.front_bounds); }
+  catch { /* Invalid optional front-window bounds fall through to the explicit ambiguity checks below. */ }
   if (!frontBounds) {
     if (normalized.length === 1) return { ...normalized[0], process_id: processId, process_generation: processGeneration };
     throw new Error("application front window is ambiguous without Accessibility bounds");

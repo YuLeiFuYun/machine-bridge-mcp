@@ -85,7 +85,7 @@ export class SecurityAuditLog {
       ]);
     } finally {
       clearTimeout(timer);
-      await worker.terminate().catch(() => {});
+      await worker.terminate().catch(() => { /* Audit shutdown already owns the terminal state; worker termination is best-effort cleanup. */ });
       if (this.worker === worker) this.worker = null;
       this.failPending(false);
     }

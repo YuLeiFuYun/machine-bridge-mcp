@@ -286,9 +286,12 @@ export class LocalRuntime {
       });
     }
     try {
-      await this.relay.start();
+      const relayReady = await this.relay.start();
+      if (this.lifecycle.snapshot().state !== "starting") return;
+      if (relayReady !== true) throw new BridgeError("cancelled", "runtime relay startup was cancelled", { retryable: true });
       this.lifecycle.markRunning();
     } catch (error) {
+      if (this.lifecycle.snapshot().state !== "starting") return;
       this.lifecycle.markFailed(error);
       throw error;
     }

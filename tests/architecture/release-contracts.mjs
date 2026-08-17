@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { FAST_CHECK_TASKS, FULL_CHECK_TASKS, PLATFORM_CHECK_TASKS } from "../../scripts/check-plan.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const relayContract = JSON.parse(readFileSync(join(root, "src", "shared", "relay-contract.json"), "utf8"));
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 if (/not found\|does not exist\|could not find/i.test(cliSource) || !cliSource.includes("if (result.code === 0)")) {
   throw new Error("Worker deletion regained stderr-text-based success classification");
@@ -406,6 +407,8 @@ if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAcces
 }
 const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
+const verificationIdleSleepGuardSource = readFileSync(join(root, "scripts", "verification-idle-sleep-guard.mjs"), "utf8");
+const checkRunnerTestSource = readFileSync(join(root, "tests", "check-runner-test.mjs"), "utf8");
 const verificationGenerationGuardSource = readFileSync(join(root, "scripts", "verification-generation-guard.mjs"), "utf8");
 if (!checkEntrypointSource.includes("runVerificationPlan")
     || !checkEntrypointSource.includes("runWithStableGeneration")
@@ -417,6 +420,13 @@ if (!checkEntrypointSource.includes("runVerificationPlan")
     || !verificationStateSource.includes('"release-acceptance"')
     || !checkEntrypointSource.includes('value !== undefined && value !== ""')
     || !checkEntrypointSource.includes("MBM_CHECK_CONCURRENCY must be an integer from 1 to 16")
+    || !checkEntrypointSource.includes("rerunVerificationUnderIdleSleepGuard")
+    || !verificationIdleSleepGuardSource.includes('"/usr/bin/caffeinate"')
+    || !verificationIdleSleepGuardSource.includes('["-i", executable, ...argv]')
+    || !verificationIdleSleepGuardSource.includes("MBM_CHECK_IDLE_SLEEP_GUARD")
+    || !verificationIdleSleepGuardSource.includes("shell: false")
+    || !checkRunnerTestSource.includes("already-guarded verification recursively invoked caffeinate")
+    || !checkRunnerTestSource.includes("non-macOS verification spawned caffeinate")
     || !verificationGenerationGuardSource.includes("if (after !== before)")
     || !verificationGenerationGuardSource.includes("discard this run")
     || !checkRunnerSource.includes("process.execPath")
@@ -454,6 +464,18 @@ const workerDeploymentSource = readFileSync(join(root, "src", "local", "worker-d
 const workerFingerprintSource = readFileSync(join(root, "src", "local", "worker-deployment-fingerprint.mjs"), "utf8");
 if (!workerDeploymentSource.includes('export { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs"')) {
   throw new Error("Worker deployment state machine lost its dedicated fingerprint boundary");
+}
+const workerAuthProbe = workerDeploymentSource.indexOf('const whoami = await runWranglerFn(["whoami"]');
+const workerJsonAuthGuard = workerDeploymentSource.indexOf("if (args.json) throw workerAuthenticationRequiredError()");
+const workerInteractiveLogin = workerDeploymentSource.indexOf('await runWranglerFn(["login"]');
+const workerAuthRecheck = workerDeploymentSource.indexOf('const verified = await runWranglerFn(["whoami"]');
+const workerDeployStart = workerDeploymentSource.indexOf('logger.info?.("Deploying Cloudflare Worker")');
+if ([workerAuthProbe, workerJsonAuthGuard, workerInteractiveLogin, workerAuthRecheck, workerDeployStart].some((value) => value < 0)
+    || workerAuthProbe > workerJsonAuthGuard
+    || workerJsonAuthGuard > workerInteractiveLogin
+    || workerInteractiveLogin > workerAuthRecheck
+    || workerAuthRecheck > workerDeployStart) {
+  throw new Error("Worker deployment regained interactive Wrangler login in JSON mode or lost post-login authentication verification");
 }
 for (const required of ["mbm-worker-deploy-v5", "addFingerprintField", "source.files.length", 'replaceAll(path.sep, "/")', "readBoundedRegularFileSync", "rejectMultipleLinks: true", "lstatSync", "realpathSync", "requireRealDeploymentRoot", "collectRequiredHashPath", "must not be a symbolic link", "required source is missing"]) {
   if (!workerFingerprintSource.includes(required)) throw new Error(`Worker deployment fingerprint lost fail-closed v5 boundary: ${required}`);
@@ -590,11 +612,17 @@ const candidateReleaseRuntimeLock = candidateStartSource.indexOf("await withRele
 const candidatePersistentPrefix = candidateStartSource.indexOf("const installPrefix = createCandidateRuntimePrefix");
 const candidateInstallCall = candidateStartSource.indexOf("installCandidateRuntime({ installPrefix, manifest, tarball })");
 const candidatePersistentActivationCall = candidateStartSource.indexOf("activatePersistentCandidate({");
-if ([candidateReleaseRuntimeLock, candidatePersistentPrefix, candidateInstallCall, candidatePersistentActivationCall].some((value) => value < 0)
+const candidateWorkerAuthPreflight = candidateStartSource.indexOf("await preflightPersistentActivationWorkerAuth({");
+if ([candidateWorkerAuthPreflight, candidateReleaseRuntimeLock, candidatePersistentPrefix, candidateInstallCall, candidatePersistentActivationCall].some((value) => value < 0)
+    || candidateWorkerAuthPreflight > candidateReleaseRuntimeLock
     || candidateReleaseRuntimeLock > candidatePersistentPrefix
     || candidatePersistentPrefix > candidateInstallCall
     || candidateInstallCall > candidatePersistentActivationCall) {
-  throw new Error("persistent candidate runtime construction/activation escaped the global release-runtime lock");
+  throw new Error("persistent candidate activation lost pre-handoff Wrangler authentication or escaped the global release-runtime lock");
+}
+const persistentActivationAuthSource = readFileSync(join(root, "scripts", "persistent-activation-process.mjs"), "utf8");
+for (const required of ["preflightPersistentActivationWorkerAuth", "EXECUTION_SURFACE.managedJob", '["whoami"]', '["login"]', "worker_authentication_required", "sideEffectsStarted = false"]) {
+  if (!persistentActivationAuthSource.includes(required)) throw new Error(`persistent activation Wrangler-auth preflight drifted: ${required}`);
 }
 if (!cliSource.includes("await withReleaseRuntimeLock(stateRoot, () => uninstallStateRoot({ stateRoot, deleteRemote }))")) {
   throw new Error("uninstall no longer serializes state removal against persistent candidate runtime construction");
@@ -1254,6 +1282,81 @@ for (const stale of [
 if (!architecture.includes("State schema version 6") || !architecture.includes("monotonic elapsed time") || !architecture.includes("Persisted timestamps and retention/credential expiry continue to use wall time")) {
   throw new Error("architecture documentation omitted the current state schema or monotonic deadline contract");
 }
+const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
+if (!workerToolTimeoutSource.includes("relayContract.processSessionStartExecutionTimeoutMs")) {
+  throw new Error("process-session startup timeout drifted out of the shared relay contract");
+}
+const serverInfoToolDeliverySource = readFileSync(join(root, "src", "worker", "server-info-tool-delivery.ts"), "utf8");
+if (!serverInfoToolDeliverySource.includes("remote_process_session_start_execution_max_ms")
+    || serverInfoToolDeliverySource.includes("remote_process_foreground_execution_max_ms")
+    || "maximumProcessForegroundExecutionTimeoutMs" in relayContract) {
+  throw new Error("server_info or relay contract retained the obsolete request-scoped process foreground budget");
+}
+if (relayContract.newCallReconnectGraceMs !== 5_000
+    || relayContract.defaultRemoteToolExecutionTimeoutMs !== 20_000
+    || relayContract.processSessionStartExecutionTimeoutMs !== 10_000) {
+  throw new Error("hosted reply-safety timing contract drifted from the incident-reviewed budget");
+}
+const resourceAdmissionPolicySource = readFileSync(join(root, "src", "local", "resource-admission-policy.mjs"), "utf8");
+const resourceAdmissionSource = readFileSync(join(root, "src", "local", "resource-admission.mjs"), "utf8");
+for (const [source, required] of [
+  [resourceAdmissionPolicySource, "cpu_request_exceeds_launch_window"],
+  [resourceAdmissionPolicySource, "resourceAdmissionDecisionRetryable"],
+  [resourceAdmissionSource, "!resourceAdmissionDecisionRetryable(lastDecision)"],
+  [resourceProcessAdmissionSource, "reduce explicit parallelism or resource demand"],
+]) {
+  if (!source.includes(required)) throw new Error(`resource admission lost structural-capacity fail-fast contract: ${required}`);
+}
+const readme = readFileSync(join(root, "README.md"), "utf8");
+const testingDoc = readFileSync(join(root, "docs", "TESTING.md"), "utf8");
+const loggingDoc = readFileSync(join(root, "docs", "LOGGING.md"), "utf8");
+const operationsDoc = readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8");
+const privacyDoc = readFileSync(join(root, "docs", "PRIVACY.md"), "utf8");
+const serverMetadata = readFileSync(join(root, "src", "shared", "server-metadata.json"), "utf8");
+for (const [file, content, stale] of [
+  ["README.md", readme, "ordinary daemon tools use at most 30 seconds"],
+  ["docs/ARCHITECTURE.md", architecture, "may wait at most ten seconds"],
+  ["docs/ARCHITECTURE.md", architecture, "process-session startup defaults to ten seconds"],
+  ["docs/ARCHITECTURE.md", architecture, "general host snapshot as fresh for 1.5 seconds"],
+  ["docs/ARCHITECTURE.md", architecture, "ordinary daemon tools at 30 seconds"],
+  ["docs/TESTING.md", testingDoc, "hosted timeout projection (30-second ordinary"],
+  ["docs/TESTING.md", testingDoc, "Ordinary daemon tools use at most 30 seconds"],
+  ["docs/TESTING.md", testingDoc, "a 60-second call that spends ten seconds in recovery"],
+  ["docs/OPERATIONS.md", operationsDoc, "process timeout above 30 seconds"],
+  ["src/shared/server-metadata.json", serverMetadata, "Ordinary daemon-backed tools use at most 30 seconds"],
+  ["src/shared/server-metadata.json", serverMetadata, "are capped at 30 seconds"],
+  ["src/shared/server-metadata.json", serverMetadata, "For multi-step, remote, long-running, or cleanup-sensitive work"],
+]) {
+  if (content.includes(stale)) throw new Error(`${file} retained stale hosted timing guidance: ${stale}`);
+}
+for (const [file, content, required] of [
+  ["README.md", readme, "ordinary daemon tools default to 20 seconds of execution plus a separate five-second Worker settlement margin"],
+  ["docs/ARCHITECTURE.md", architecture, "currently waits at most five seconds"],
+  ["docs/ARCHITECTURE.md", architecture, "relay-origin `start_process` performs one admission attempt without queueing"],
+  ["docs/ARCHITECTURE.md", architecture, "same-project general host snapshot as fresh for 500 milliseconds"],
+  ["docs/ARCHITECTURE.md", architecture, "cpu_request_exceeds_launch_window"],
+  ["docs/ARCHITECTURE.md", architecture, "explicit stop while the first connection is still waiting for readiness"],
+  ["docs/ARCHITECTURE.md", architecture, "malformed internal timing cannot become an infinite timer"],
+  ["docs/TESTING.md", testingDoc, "relay-origin `start_process` defaults to zero admission wait"],
+  ["docs/TESTING.md", testingDoc, "shared five-second new-call recovery budget"],
+  ["docs/TESTING.md", testingDoc, "Ordinary daemon tools default to 20 seconds plus the separate Worker settlement margin"],
+  ["docs/TESTING.md", testingDoc, "explicit stop-before-first-readiness settlement"],
+  ["docs/TESTING.md", testingDoc, "reject non-finite, non-positive, non-integer, and over-contract operation/reconnect delays"],
+  ["docs/TESTING.md", testingDoc, "owner-authorized remote release verification"],
+  ["docs/TESTING.md", testingDoc, "larger explicit step timeout"],
+  ["docs/TESTING.md", testingDoc, "eight-worker fixed request on an idle eight-core interactive host fails immediately"],
+  ["docs/LOGGING.md", loggingDoc, "resource_admission_reason"],
+  ["docs/OPERATIONS.md", operationsDoc, "Durable process execution is a separate 1–600-second contract"],
+  ["docs/PRIVACY.md", privacyDoc, "including DPoP-proof-shaped compact tokens"],
+  ["docs/PRIVACY.md", privacyDoc, "not a generic IP-address anonymizer"],
+  ["src/shared/server-metadata.json", serverMetadata, "durable-first jobs with a 10-second acceptance budget"],
+  ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
+  ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
+  ["src/shared/server-metadata.json", serverMetadata, "owner-authorized multi-step"],
+  ["src/shared/server-metadata.json", serverMetadata, "execution budget above 600 seconds"],
+]) {
+  if (!content.includes(required)) throw new Error(`${file} omitted current hosted timing/diagnostic guidance: ${required}`);
+}
 
 const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
 if (!engineering.includes("default profile is intentionally `full`") || !engineering.includes("`.project-local/`") || !engineering.includes("`Object.hasOwn`")) {
@@ -1301,7 +1404,7 @@ for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const releasingGuide = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
-for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-confirm", "npm run release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "A TTY is optional", "Conversational authorization is sufficient", "owner or an authorized agent runs exactly"]) {
+for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-confirm", "npm run release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "A TTY is optional", "Conversational authorization is sufficient", "owner or an authorized agent runs exactly", "600-second durable-process ceiling", "detached `start_job`", "larger explicit step timeout"]) {
   if (!releasingGuide.includes(required)) throw new Error(`release guide omitted explicit-authorization publication contract: ${required}`);
 }
 for (const stale of ["owner-terminal attempt", "real owner-terminal activation", "The coding agent must stop and present this command", "After the owner command completes"]) {
@@ -1317,7 +1420,7 @@ if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || 
   throw new Error("generated MCP tool reference is missing or malformed");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
-for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable"]) {
+for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
 }
 if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {

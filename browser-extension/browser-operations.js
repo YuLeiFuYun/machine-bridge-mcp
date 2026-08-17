@@ -534,7 +534,7 @@
         try {
           const [execution] = await executePageAutomation({ tabId: tab.id, frameIds: [extensionFrameId] }, "documentState", {});
           frameState = execution?.result || null;
-        } catch {}
+        } catch { /* Missing frame state fails closed below as a stale snapshot target. */ }
       }
       if (!frameState
           || exactOptionalAuthorityString(frameState.epoch, 9000) !== exactOptionalAuthorityString(params.expectedFrameDocumentEpoch, 9000)
@@ -552,7 +552,7 @@
             expectedIdentity: params.expectedIdentity,
           });
           identityMatched = execution?.result?.attached === true && execution?.result?.matched === true;
-        } catch {}
+        } catch { /* Failed identity read leaves identityMatched=false and fails closed below. */ }
       }
       if (!identityMatched) throw new Error("snapshot_backend_target_changed_before_dispatch");
     }
@@ -566,7 +566,7 @@
           try {
             const [execution] = await executePageAutomation({ tabId: tab.id, frameIds: [destinationExtensionFrameId] }, "documentState", {});
             frameState = execution?.result || null;
-          } catch {}
+          } catch { /* Missing destination frame state fails closed below as a stale snapshot target. */ }
         }
         if (!frameState
             || exactOptionalAuthorityString(frameState.epoch, 9000) !== exactOptionalAuthorityString(params.destinationExpectedFrameDocumentEpoch, 9000)
@@ -584,7 +584,7 @@
               expectedIdentity: params.destinationExpectedIdentity,
             });
             identityMatched = execution?.result?.attached === true && execution?.result?.matched === true;
-          } catch {}
+          } catch { /* Failed destination identity read fails closed below before dispatch. */ }
         }
         if (!identityMatched) throw new Error("snapshot_backend_target_changed_before_dispatch");
       }

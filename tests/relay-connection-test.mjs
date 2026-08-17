@@ -577,6 +577,28 @@ assert(connectingSockets.length === 2, "a timed-out CONNECTING socket did not en
 assert(connectingEvents.some((event) => event.level === "debug" && event.message === "remote relay transport connection timed out"), "connection-attempt timeout was not diagnosable at debug level");
 connectingConnection.stop();
 
+const stoppedStartScheduler = new ManualScheduler();
+const stoppedStartSockets = [];
+const stoppedStartConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      stoppedStartSockets.push(this);
+    }
+  },
+  scheduler: stoppedStartScheduler,
+  now: () => stoppedStartScheduler.now,
+  reconnectDelay: () => 5,
+});
+const stoppedStart = stoppedStartConnection.start();
+assert(stoppedStartSockets.length === 1, "stop-before-ready fixture did not begin relay startup");
+stoppedStartConnection.stop();
+assert(await stoppedStart === false, "relay stop left the first-start readiness promise unsettled");
+assert(stoppedStartScheduler.tasks.size === 0, "relay stop left startup timers armed after settling the pending start");
+
 const repeatScheduler = new ManualScheduler();
 const repeatSockets = [];
 const repeatEvents = [];

@@ -4,6 +4,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVerificationPlan } from "../scripts/check-runner.mjs";
+import {
+  rerunVerificationUnderIdleSleepGuard,
+  VERIFICATION_IDLE_SLEEP_GUARD_ENV,
+} from "../scripts/verification-idle-sleep-guard.mjs";
 import { runWithStableGeneration } from "../scripts/verification-generation-guard.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-check-runner-test-"));
@@ -160,6 +164,57 @@ if (task === "noisy-success") {
     concurrency: 0,
   }), /verification concurrency/);
 
+  const awake = controlledGuardSpawn();
+  const awakeRun = rerunVerificationUnderIdleSleepGuard({
+    platform: "darwin",
+    env: { PATH: "/usr/bin" },
+    execPath: "/test/node",
+    argv: ["/repo/scripts/run-checks.mjs", "fast"],
+    spawnProcess: awake.spawn,
+  });
+  await turn();
+  assert.equal(awake.invocations.length, 1, "macOS verification did not establish exactly one idle-sleep guard");
+  assert.equal(awake.invocations[0].executable, "/usr/bin/caffeinate", "macOS verification used an unexpected wake-lock executable");
+  assert.deepEqual(awake.invocations[0].args, ["-i", "/test/node", "/repo/scripts/run-checks.mjs", "fast"],
+    "macOS verification idle-sleep guard did not wrap the exact Node entrypoint argv");
+  assert.equal(awake.invocations[0].options.env[VERIFICATION_IDLE_SLEEP_GUARD_ENV], "1",
+    "macOS verification idle-sleep guard did not prevent recursive wrapping");
+  assert.equal(awake.invocations[0].options.shell, false, "verification idle-sleep guard regained shell interpretation");
+  awake.child.emit("close", 0, null);
+  assert.equal(await awakeRun, 0, "verification idle-sleep guard lost the wrapped check exit status");
+
+  const alreadyGuarded = controlledGuardSpawn();
+  assert.equal(await rerunVerificationUnderIdleSleepGuard({
+    platform: "darwin",
+    env: { [VERIFICATION_IDLE_SLEEP_GUARD_ENV]: "1" },
+    execPath: "/test/node",
+    argv: ["/repo/scripts/run-checks.mjs", "full"],
+    spawnProcess: alreadyGuarded.spawn,
+  }), null, "already-guarded verification recursively invoked caffeinate");
+  assert.equal(alreadyGuarded.invocations.length, 0, "already-guarded verification spawned a second idle-sleep guard");
+
+  const nonDarwin = controlledGuardSpawn();
+  assert.equal(await rerunVerificationUnderIdleSleepGuard({
+    platform: "linux",
+    env: {},
+    execPath: "/test/node",
+    argv: ["/repo/scripts/run-checks.mjs", "fast"],
+    spawnProcess: nonDarwin.spawn,
+  }), null, "non-macOS verification gained a platform-specific wake-lock dependency");
+  assert.equal(nonDarwin.invocations.length, 0, "non-macOS verification spawned caffeinate");
+
+  await assert.rejects(
+    () => rerunVerificationUnderIdleSleepGuard({
+      platform: "darwin",
+      env: {},
+      execPath: "/test/node",
+      argv: ["/repo/scripts/run-checks.mjs", "fast"],
+      spawnProcess() { throw new Error("missing caffeinate"); },
+    }),
+    /could not start the macOS verification idle-sleep guard/,
+    "verification silently continued after failing to establish its macOS idle-sleep guard",
+  );
+
   console.log("bounded parallel check runner test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
@@ -187,6 +242,19 @@ function controlledSpawn() {
       assert(child, `missing controlled child for ${task}`);
       children.delete(task);
       child.emit("close", code);
+    },
+  };
+}
+
+function controlledGuardSpawn() {
+  const child = new EventEmitter();
+  const invocations = [];
+  return {
+    child,
+    invocations,
+    spawn(executable, args, options) {
+      invocations.push({ executable, args, options });
+      return child;
     },
   };
 }

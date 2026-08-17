@@ -63,7 +63,9 @@ export async function proxyMcpResponseStream(input: {
   const cancel = (reason: unknown, closeResponse = true): boolean => {
     if (!finish()) return false;
     upstreamController.abort(reason);
-    void reader.cancel(reason).catch(() => {}).finally(() => releaseReaderQuietly(reader));
+    void reader.cancel(reason)
+      .catch(() => { /* Public-stream cancellation is already authoritative; upstream cancel is best-effort cleanup. */ })
+      .finally(() => releaseReaderQuietly(reader));
     if (closeResponse) closePublic();
     input.ctx.waitUntil(cancelCall(input.bridge, input.request, streamId));
     return true;

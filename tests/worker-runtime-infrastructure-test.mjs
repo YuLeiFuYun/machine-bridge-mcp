@@ -13,7 +13,7 @@ import {
   admitGlobalStatefulRequest, admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
   outerWorkerErrorClass, statefulRateLimitKey, statefulRouteClass, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
-import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS, REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
+import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
 import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import {
@@ -77,6 +77,7 @@ class TestWebSocket {
 await testRequestKeyReuse();
 await testAuthorityRevocationPending();
 await testRegistrationFailures();
+await testInvalidPendingDelays();
 await testPendingControlCapacity();
 await testTerminalPaths();
 await testReconnectRebinding();
@@ -181,6 +182,30 @@ async function testRegistrationFailures() {
   }), "limit_exceeded", true);
   await limitRegistry.resolve("first", socket, { ok: true });
   await first;
+}
+
+async function testInvalidPendingDelays() {
+  const socket = {};
+  for (const timeoutMs of [Number.POSITIVE_INFINITY, Number.NaN, 0, -1, relayContract.maximumRelayToolTimeoutMs + 1]) {
+    const registry = new PendingCallRegistry(1);
+    expectThrow(() => registry.register({
+      id: `invalid-delay-${String(timeoutMs)}`, tool: "read_file", socket, timeoutMs,
+      onTimeout: () => new Error("timeout"),
+    }), "pending-call delay must be an integer");
+    assert(registry.snapshot().active === 0, "invalid operation timeout mutated pending state before rejection");
+  }
+
+  const registry = new PendingCallRegistry(1);
+  const pending = registry.register({
+    id: "invalid-reconnect-delay", tool: "read_file", socket, timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  });
+  expectThrow(() => registry.detachSocket(socket, Number.POSITIVE_INFINITY, () => new Error("reconnect timeout")),
+    "pending-call delay must be an integer");
+  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 0,
+    "invalid reconnect grace partially detached the pending call");
+  await registry.resolve("invalid-reconnect-delay", socket, true);
+  assert(await pending === true, "invalid reconnect grace corrupted the original pending call");
 }
 
 async function testPendingControlCapacity() {
@@ -859,7 +884,8 @@ function testWorkerRuntimeConfig() {
 
 function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
-  assert(relayContract.newCallReconnectGraceMs === 10_000, "brief relay outages regained immediate new-call interruption");
+  assert(relayContract.newCallReconnectGraceMs === 5_000,
+    "new calls can still spend an excessive share of the host reply window waiting for relay recovery");
   assert(relayContract.streamHeartbeatMs === 5_000, "SSE heartbeat interval drifted from the reply-liveness contract");
   assert(!("streamResumeRetentionMs" in relayContract)
     && !("maximumResumableStreams" in relayContract)
@@ -872,15 +898,16 @@ function testRelayTimeoutContract() {
   assert(bootstrapBudget.executionTimeoutMs === 10_000 && bootstrapBudget.settlementTimeoutMs === 15_000,
     "bootstrap execution and settlement deadlines were not separated");
   const ordinaryBudget = daemonToolTimeoutBudget("read_file", {});
-  assert(ordinaryBudget.executionTimeoutMs === 30_000 && ordinaryBudget.settlementTimeoutMs === 35_000,
+  assert(ordinaryBudget.executionTimeoutMs === 20_000 && ordinaryBudget.settlementTimeoutMs === 25_000,
     "ordinary remote tool execution regained the full host-interaction window");
-  assert(relayContract.defaultRemoteToolExecutionTimeoutMs === 30_000,
+  assert(relayContract.defaultRemoteToolExecutionTimeoutMs === 20_000,
     "ordinary remote tool budget drifted from its reply-safe ceiling");
   assert(relayContract.maximumInteractiveExecutionTimeoutMs === 45_000, "interactive relay deadline lost its host-delivery margin");
   assert(REMOTE_FOREGROUND_TIMEOUT_SECONDS === 45, "remote foreground schema limit drifted from the relay execution budget");
-  assert(relayContract.maximumProcessForegroundExecutionTimeoutMs === 30_000
-    && REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS === 30,
-  "remote process foreground budget lost its host-settlement reserve");
+  assert(!("maximumProcessForegroundExecutionTimeoutMs" in relayContract),
+    "relay contract retained the obsolete request-scoped remote process execution budget");
+  assert(relayContract.processSessionStartExecutionTimeoutMs === 10_000,
+    "remote process-session startup budget drifted from its short request-owned envelope");
   assert(relayContract.durableProcessAcceptanceTimeoutMs === 10_000
     && relayContract.maximumDurableProcessExecutionTimeoutMs === 600_000
     && REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS === 600
@@ -985,7 +1012,8 @@ function testRelayTimeoutContract() {
     && maximumReadBudget.executionTimeoutMs === 10_000 && maximumReadBudget.settlementTimeoutMs === 15_000,
   "remote process polling did not retain its short settlement budget");
   const startProcessBudget = daemonToolTimeoutBudget("start_process", {});
-  assert(startProcessBudget.executionTimeoutMs === 20_000 && startProcessBudget.settlementTimeoutMs === 25_000,
+  assert(startProcessBudget.executionTimeoutMs === relayContract.processSessionStartExecutionTimeoutMs
+    && startProcessBudget.settlementTimeoutMs === relayContract.processSessionStartExecutionTimeoutMs + relayContract.workerSettlementOverheadMs,
     "process-session startup regained an interruption-prone remote deadline");
   assert(relayContract.maximumExecutionTimeoutMs === 45_000
     && relayContract.maximumRelayToolTimeoutMs === 50_000,

@@ -18,7 +18,6 @@ export {
   remoteForegroundDefaultSeconds,
   remoteForegroundMaximumSeconds,
   REMOTE_FOREGROUND_TIMEOUT_SECONDS,
-  REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS,
 } from "../shared/foreground-timeout.mjs";
 
 export type DaemonToolTimeoutBudget = Readonly<{ executionTimeoutMs: number; settlementTimeoutMs: number }>;
@@ -40,7 +39,9 @@ function toolExecutionTimeoutMs(name: string, args: Record<string, unknown>): nu
       : 0;
     return Math.min(relayContract.defaultRemoteToolExecutionTimeoutMs, waitMs + 5_000);
   }
-  if (name === "start_process") return Math.min(20_000, relayContract.defaultRemoteToolExecutionTimeoutMs);
+  if (name === "start_process") {
+    return Math.min(relayContract.processSessionStartExecutionTimeoutMs, relayContract.defaultRemoteToolExecutionTimeoutMs);
+  }
   if (isRemoteDurableProcessTool(name)) return durableProcessAcceptanceTimeoutMs(name, args);
   if (!isConfigurableForegroundTool(name)) return relayContract.defaultRemoteToolExecutionTimeoutMs;
 

@@ -66,7 +66,11 @@ assert.equal(foregroundResourceWaitMs(10_000), 2_000, "short foreground work gai
 assert.equal(foregroundResourceWaitMs(1_000), 1_000, "resource admission exceeded the entire short execution deadline");
 assert.equal(foregroundResourceWaitMs(60_000, 300_000), 300_000, "explicit diagnostic resource wait was not preserved");
 assert.equal(processSessionResourceWaitMs(), 10_000, "process-session startup retained the interruption-prone two-second admission window");
+assert.equal(processSessionResourceWaitMs(undefined, { remote: true }), 0,
+  "remote process-session startup can still queue behind host pressure until the MCP response budget is consumed");
 assert.equal(processSessionResourceWaitMs(1_234), 1_234, "explicit process-session admission wait was not preserved");
+assert.equal(processSessionResourceWaitMs(1_234, { remote: true }), 1_234,
+  "explicit remote process-session admission wait was silently replaced by the fail-fast default");
 assert.throws(() => foregroundResourceWaitMs(60_000, -1), /non-negative/, "negative explicit resource wait was accepted");
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const releaseControlOptions = { releaseControlWorkspace: true };
@@ -1011,6 +1015,19 @@ const unobservedRecentDecision = evaluateResourceAdmission({
   ...green, sampled_at_ms: hierarchyNow - 1, cpu_busy_cores: 3.5, load1: 0,
 }, [observedRecentLease], { ...resourceCommandProfile("pytest", ["-q"]), contention_key: null }, hierarchyNow + 1_000);
 assert.equal(unobservedRecentDecision.reason, "cpu_pressure_window", "post-sample CPU reservation was not protected from oversubscription");
+const quietInteractiveHost = { ...green, platform: "darwin", cpu_busy_cores: 0, load1: 0 };
+const explicitPytestEight = resourceCommandProfile("pytest", ["-n", "8", "-q"], { priority: "interactive" });
+const explicitPytestSeven = resourceCommandProfile("pytest", ["-n", "7", "-q"], { priority: "interactive" });
+assert.equal(
+  evaluateResourceAdmission(quietInteractiveHost, [], explicitPytestEight, hierarchyNow + 1_000).reason,
+  "cpu_request_exceeds_launch_window",
+  "fixed CPU fan-out above the best-case launch window remained disguised as transient CPU pressure",
+);
+assert.equal(
+  evaluateResourceAdmission(quietInteractiveHost, [], explicitPytestSeven, hierarchyNow + 1_000).admitted,
+  true,
+  "fixed CPU fan-out at the best-case interactive launch limit was rejected",
+);
 
 const fairnessNow = Date.now();
 const backgroundWaiter = waiter("background", fairnessNow - 10_000, resourceCommandProfile("pytest", ["-q"], { priority: "background" }), "a");
@@ -1040,6 +1057,12 @@ assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], blockingLeas
 assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], [], quietHost, evaluateResourceAdmission, fairnessNow).waiter_id, "protected-large", "protected waiter was not selected after capacity drained");
 const impossibleOld = waiter("interactive", fairnessNow - 10 * 60_000, { ...cargo, cpu: 20, unbounded: false }, "impossible-old");
 assert.equal(selectedResourceWaiter([impossibleOld, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow).waiter_id, "small", "structurally impossible waiter incorrectly drained the queue");
+const impossibleLaunchWindow = waiter("interactive", fairnessNow - 10 * 60_000, explicitPytestEight, "impossible-launch-window");
+assert.equal(
+  selectedResourceWaiter([impossibleLaunchWindow, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow).waiter_id,
+  "small",
+  "CPU request above the best-case launch window incorrectly reserved a protected drain",
+);
 const diskDrainHost = { ...quietHost, disk_free_bytes: 120 * GIB, disk_total_bytes: 500 * GIB };
 const diskBlockingLease = [{
   acquired_at: new Date(fairnessNow - 60_000).toISOString(),
@@ -1599,6 +1622,20 @@ try {
     sleep: async () => {}, random: () => 0,
   });
   await assert.rejects(() => blockedCoordinator.acquire(cargo), (error) => error instanceof ResourceAdmissionError && error.retryable === true);
+  let structuralSleeps = 0;
+  const structurallyBlockedCoordinator = new ResourceCoordinator({
+    root: `${root}-structural-cpu`,
+    sampleHost: () => ({ ...quietInteractiveHost, sampled_at_ms: Date.now() }),
+    sleep: async () => { structuralSleeps += 1; }, random: () => 0,
+  });
+  await assert.rejects(
+    () => structurallyBlockedCoordinator.acquire(explicitPytestEight, { cwd: root, waitMs: 300_000 }),
+    (error) => error instanceof ResourceAdmissionError
+      && error.retryable === false
+      && error.decision?.reason === "cpu_request_exceeds_launch_window",
+    "structurally impossible fixed CPU fan-out did not fail without a pointless long retry window",
+  );
+  assert.equal(structuralSleeps, 0, "structurally impossible fixed CPU fan-out entered the resource retry sleep loop");
   const livenessCoordinator = new ResourceCoordinator({
     root: `${root}-liveness`, sampleHost: () => ({ ...red, sampled_at_ms: Date.now() }), random: () => 0,
   });
@@ -1643,6 +1680,7 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true });
   rmSync(`${root}-blocked`, { recursive: true, force: true });
+  rmSync(`${root}-structural-cpu`, { recursive: true, force: true });
   rmSync(`${root}-sampling`, { recursive: true, force: true });
   rmSync(`${root}-singleflight`, { recursive: true, force: true });
   rmSync(`${root}-cross-scope`, { recursive: true, force: true });

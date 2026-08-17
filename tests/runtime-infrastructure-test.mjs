@@ -30,6 +30,8 @@ import relayContract from "../src/shared/relay-contract.json" with { type: "json
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
 import { startAutostartLogMaintenance } from "../src/local/autostart-log-maintenance.mjs";
 import { createSecurityAuditFailureReporter } from "../src/local/security-audit-warning.mjs";
+import { resourceAdmissionLogFields } from "../src/local/resource-admission-diagnostics.mjs";
+import { LifecycleController } from "../src/local/lifecycle.mjs";
 
 const PROCESS_FIXTURE_TIMEOUT_MS = 30_000;
 
@@ -50,6 +52,7 @@ await testRelayResumeReconciliation();
 testRelayToolTimeoutNormalization();
 testRelayHandshakeDiagnostics();
 testRuntimeConvenienceMethods();
+await testRuntimeStartStopRace();
 testRelayReconnectDelivery();
 testAutostartLogMaintenance();
 await testProcessExecutionNoShell();
@@ -366,6 +369,45 @@ async function testToolExecutor() {
   assert(events.some((event) => event.name === "tool.call.started") && events.some((event) => event.name === "tool.call.failed"), "structured lifecycle events were not emitted");
   assert(registry.snapshot().active === 0, "tool executor leaked call lifecycle state");
 
+  const resourceEvents = [];
+  const resourceExecutor = new ToolExecutor({
+    handlers: {
+      list_roots: async () => {
+        throw new BridgeError("unavailable", "local heavy-resource capacity is temporarily unavailable", {
+          retryable: true,
+          details: { reason: "resource_admission", pressure_state: "red", admission_reason: "host_pressure_red" },
+        });
+      },
+    },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, category: "ordinary operation" }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    logger: { event(level, name, fields) { resourceEvents.push({ level, name, fields }); } },
+  });
+  await expectReject(
+    () => resourceExecutor.execute("list_roots", {}, { callId: "resource-pressure", origin: "stdio" }),
+    "unavailable",
+    "local heavy-resource capacity is temporarily unavailable",
+  );
+  const resourceFailure = resourceEvents.find((event) => event.name === "tool.call.failed");
+  assert(resourceFailure?.level === "debug"
+    && resourceFailure.fields?.resource_admission_reason === "host_pressure_red"
+    && resourceFailure.fields?.resource_pressure_state === "red",
+  "resource-admission failure lost its coarse privacy-safe debug diagnosis");
+  const redactedResourceFields = resourceAdmissionLogFields({
+    details: { reason: "resource_admission", admission_reason: "private/path/value", pressure_state: "red\nsecret" },
+  });
+  assert(redactedResourceFields.resource_admission_reason === "resource_busy"
+    && redactedResourceFields.resource_pressure_state === "unknown"
+    && Object.keys(redactedResourceFields).length === 2,
+  "resource-admission debug projection allowed free-form diagnostic text into logs");
+  const unrelatedResourceFields = resourceAdmissionLogFields({
+    details: { reason: "unrelated", admission_reason: "host_pressure_red", pressure_state: "red" },
+  });
+  assert(Object.keys(unrelatedResourceFields).length === 0, "non-resource failures gained resource-admission log fields");
+
   let releaseAudit;
   let auditQueued = 0;
   const auditPending = new Promise((resolvePromise) => { releaseAudit = resolvePromise; });
@@ -525,19 +567,21 @@ async function testRelayReadinessStateGuards() {
 
 async function testDuplicateRelayCallId() {
   let violation = "";
+  const callId = "call_duplicate_12345678";
   const runtime = {
-    activeRelayCalls: new Set(["duplicate-call"]),
+    activeRelayCalls: new Set([callId]),
     handleRelayProtocolViolation(reason) { violation = reason; },
   };
   await LocalRuntime.prototype.handleRelayToolCall.call(runtime, {
     type: "tool_call",
-    id: "duplicate-call",
+    id: callId,
     tool: "read_file",
     arguments: { path: "README.md" },
     authorization: { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, family_id: `mcp_family_${"c".repeat(43)}`, role: "owner" },
+    timeout_ms: 5_000,
   }, { sessionId: 1 });
   assert(violation === "duplicate_tool_call_id", "duplicate relay call ID was not rejected as a protocol error");
-  assert(runtime.activeRelayCalls.has("duplicate-call"), "duplicate relay call removed the original call lifecycle");
+  assert(runtime.activeRelayCalls.has(callId), "duplicate relay call removed the original call lifecycle");
 }
 
 function testRelayCancellationSuppression() {
@@ -747,14 +791,42 @@ function testRelayToolTimeoutNormalization() {
     timeout_ms: relayContract.maximumRelayToolTimeoutMs,
   });
   assert(accepted.ok && accepted.timeoutMs === relayContract.maximumRelayToolTimeoutMs, "local relay rejected the shared maximum call deadline");
-  const clamped = normalizeRelayToolCall({
-    id: "call_timeout_clamped_12345678",
+  for (const timeout_ms of [relayContract.maximumRelayToolTimeoutMs + 1, -1, "5000", undefined]) {
+    const rejected = normalizeRelayToolCall({
+      id: "call_timeout_rejected_12345678",
+      tool: "exec_command",
+      arguments: { command: "true" },
+      authorization,
+      ...(timeout_ms === undefined ? {} : { timeout_ms }),
+    });
+    assert(!rejected.ok, `local relay accepted malformed timeout ${String(timeout_ms)}`);
+  }
+  const invalidId = normalizeRelayToolCall({
+    id: "arbitrary id with spaces",
     tool: "exec_command",
     arguments: { command: "true" },
     authorization,
-    timeout_ms: relayContract.maximumRelayToolTimeoutMs + 60_000,
+    timeout_ms: 5_000,
   });
-  assert(clamped.ok && clamped.timeoutMs === relayContract.maximumRelayToolTimeoutMs, "local relay accepted a deadline above the shared contract");
+  assert(!invalidId.ok && invalidId.id === "", "local relay accepted an invalid call-id shape");
+  const invalidTool = normalizeRelayToolCall({
+    id: "call_invalid_tool_12345678",
+    tool: "Exec Command",
+    arguments: { command: "true" },
+    authorization,
+    timeout_ms: 5_000,
+  });
+  assert(!invalidTool.ok, "local relay accepted an invalid tool-name shape");
+  for (const malformedAuthorization of [
+    { ...authorization, account_version: "1" },
+    { ...authorization, role: 1 },
+  ]) {
+    const rejected = normalizeRelayToolCall({
+      id: "call_invalid_authority_12345678", tool: "exec_command", arguments: { command: "true" },
+      authorization: malformedAuthorization, timeout_ms: 5_000,
+    });
+    assert(!rejected.ok, "local relay coerced malformed authorization fields instead of rejecting the envelope");
+  }
 }
 
 function testRuntimeConvenienceMethods() {
@@ -788,6 +860,24 @@ function testRuntimeConvenienceMethods() {
     ["disconnected"],
     ["ready"],
   ]), "runtime relay-recovery delegation drifted");
+}
+
+async function testRuntimeStartStopRace() {
+  let rejectRelayStart;
+  const lifecycle = new LifecycleController("test runtime");
+  const runtime = {
+    relay: { start: () => new Promise((_, reject) => { rejectRelayStart = reject; }) },
+    lifecycle,
+    policy: { profile: "agent" },
+  };
+  const starting = LocalRuntime.prototype.start.call(runtime);
+  await Promise.resolve();
+  assert(lifecycle.snapshot().state === "starting", "runtime start-stop fixture did not enter starting state");
+  lifecycle.beginStop();
+  lifecycle.markStopped();
+  rejectRelayStart(new Error("relay stopped during startup"));
+  await starting;
+  assert(lifecycle.snapshot().state === "stopped", "a late relay-start rejection overwrote an already-stopped runtime lifecycle");
 }
 
 function testRelayReconnectDelivery() {

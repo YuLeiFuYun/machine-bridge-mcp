@@ -15,6 +15,16 @@ import {
 
 const DEFAULT_DEPLOYMENT_HEALTH_ATTEMPTS = 20;
 
+async function ensureWranglerAuthenticated({ args, runWranglerFn, stateRoot, logger }) {
+  const whoami = await runWranglerFn(["whoami"], { capture: true, allowFailure: true, stateRoot });
+  if (whoami.code === 0) return;
+  if (args.json) throw workerAuthenticationRequiredError();
+  logger.info?.("Wrangler is not logged in; opening Cloudflare login");
+  await runWranglerFn(["login"], { stateRoot });
+  const verified = await runWranglerFn(["whoami"], { capture: true, allowFailure: true, stateRoot });
+  if (verified.code !== 0) throw workerAuthenticationRequiredError();
+}
+
 export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   const logger = options.logger || console;
   const expectedVersion = options.expectedVersion || currentPackageVersion(options.packageRoot || packageRoot);
@@ -49,11 +59,7 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   }
 
   logger.info?.("Checking Cloudflare Wrangler login");
-  const whoami = await runWranglerFn(["whoami"], { capture: true, allowFailure: true, stateRoot: wranglerStateRoot });
-  if (whoami.code !== 0) {
-    logger.info?.("Wrangler is not logged in; opening Cloudflare login");
-    await runWranglerFn(["login"], { stateRoot: wranglerStateRoot });
-  }
+  await ensureWranglerAuthenticated({ args, runWranglerFn, stateRoot: wranglerStateRoot, logger });
 
   logger.info?.("Deploying Cloudflare Worker");
   const deploy = await withSecretsFileFn(state, secretFile => runWranglerFn([
@@ -141,6 +147,15 @@ function workerVerificationGuidance(reason) {
     return "Retry after the service recovers, or run machine-mcp doctor for the current health result.";
   }
   return "Run machine-mcp doctor and inspect the health endpoint before forcing another deployment.";
+}
+
+function workerAuthenticationRequiredError() {
+  const error = new Error(
+    "Cloudflare Wrangler is not authenticated; JSON mode will not start an interactive login. Complete Wrangler authentication in an ordinary owner terminal before retrying.",
+  );
+  error.code = "worker_authentication_required";
+  error.sideEffectsStarted = false;
+  return error;
 }
 
 function currentPackageVersion(root) {

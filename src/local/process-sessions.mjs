@@ -109,7 +109,7 @@ export class ProcessSessionManager {
 
     const executionEnvironment = withExecutionSurface(executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir }), EXECUTION_SURFACE.processSession);
     const admitted = await acquireProcessResources(this.resourceCoordinator, argv[0], argv.slice(1), executionEnvironment, {
-      cwd, priority: "interactive", waitMs: processSessionResourceWaitMs(this.resourceWaitMs), signal: context.signal,
+      cwd, priority: "interactive", waitMs: processSessionResourceWaitMs(this.resourceWaitMs, { remote: context?.authority?.origin === "relay" }), signal: context.signal,
     });
     const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
     let child;

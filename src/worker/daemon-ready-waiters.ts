@@ -1,3 +1,4 @@
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { WorkerToolError } from "./errors.ts";
 import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
 import { assertWorkerPendingCallAdmission, type PendingCapacitySnapshot } from "./pending-call-capacity.ts";
@@ -5,7 +6,6 @@ import { assertWorkerPendingCallAdmission, type PendingCapacitySnapshot } from "
 type ReadyWaiter = Readonly<{ tool: string; resolve: (socket: WebSocket) => void }>;
 type WaitOptions = Readonly<{ graceMs?: number; signal?: AbortSignal; tool?: string; pending?: PendingCapacitySnapshot }>;
 
-const DEFAULT_GRACE_MS = 10_000;
 const waitersByRegistry = new WeakMap<DaemonSocketRegistry, Set<ReadyWaiter>>();
 
 export async function waitForReadyDaemon(
@@ -14,7 +14,7 @@ export async function waitForReadyDaemon(
 ): Promise<WebSocket> {
   const immediate = registry.readySockets()[0];
   if (immediate) return immediate;
-  const graceMs = positiveInteger(options.graceMs, DEFAULT_GRACE_MS);
+  const graceMs = positiveInteger(options.graceMs, relayContract.newCallReconnectGraceMs);
   if (options.signal?.aborted) throw cancelledError();
   const waiters = waitersByRegistry.get(registry) ?? new Set<ReadyWaiter>();
   const tool = String(options.tool || "unknown");

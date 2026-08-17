@@ -103,13 +103,13 @@ export async function runtimeSelfTest() {
     restricted.relayCallRecovery.isRecoverable = () => true;
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
-      id: "durable-missing-recovery-key",
+      id: "call_durable_missing_recovery_key",
       tool: "run_process",
       arguments: { argv: [process.execPath, "-e", "process.stdout.write('must-not-run')"], timeout_seconds: 10 },
       timeout_ms: 10000,
       authorization: ownerAuthorization,
     }), { sessionId: 1, authenticated: true, ready: true });
-    const missingRecoveryKey = relayMessages.find((value) => value.type === "tool_result" && value.id === "durable-missing-recovery-key");
+    const missingRecoveryKey = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_durable_missing_recovery_key");
     if (missingRecoveryKey?.ok !== false || missingRecoveryKey.error?.code !== "invalid_request"
         || missingRecoveryKey.error?.details?.side_effects_started !== false
         || missingRecoveryKey.error?.details?.recovery_credential_required !== "idempotency_key") {
@@ -118,7 +118,7 @@ export async function runtimeSelfTest() {
     relayMessages.length = 0;
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
-      id: "deadline-call",
+      id: "call_deadline_12345678",
       tool: "run_process",
       arguments: {
         argv: [process.execPath, "-e", "setTimeout(() => process.stdout.write('durable-ok'), 50)"],
@@ -128,13 +128,13 @@ export async function runtimeSelfTest() {
       timeout_ms: 10000,
       authorization: ownerAuthorization,
     }), { sessionId: 1, authenticated: true, ready: true });
-    const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
+    const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_deadline_12345678");
     if (deadlineResult?.ok !== true || deadlineResult.result?.execution_mode !== "durable_job"
         || typeof deadlineResult.result?.job_id !== "string" || deadlineResult.result?.recovery?.tool !== "read_job"
         || deadlineResult.result?.idempotency_key_accepted !== true) {
       throw new Error(`remote process did not settle as a recoverable durable acceptance: ${JSON.stringify(deadlineResult)}`);
     }
-    if (restricted.callRegistry.cancel("deadline-call", "deadline exceeded", "timeout") !== false) {
+    if (restricted.callRegistry.cancel("call_deadline_12345678", "deadline exceeded", "timeout") !== false) {
       throw new Error("durable process acceptance remained owned by the completed MCP call lifecycle");
     }
     const durableDeadlineJob = await waitForManagedJob(restricted.managedJobManager, deadlineResult.result.job_id);
@@ -144,7 +144,7 @@ export async function runtimeSelfTest() {
     relayMessages.length = 0;
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
-      id: "durable-long-timeout",
+      id: "call_durable_long_timeout",
       tool: "run_process",
       arguments: {
         argv: [process.execPath, "-e", "process.stdout.write('durable-long-timeout-ok')"],
@@ -154,7 +154,7 @@ export async function runtimeSelfTest() {
       timeout_ms: 10000,
       authorization: ownerAuthorization,
     }), { sessionId: 1, authenticated: true, ready: true });
-    const longTimeoutResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "durable-long-timeout");
+    const longTimeoutResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_durable_long_timeout");
     if (longTimeoutResult?.ok !== true || longTimeoutResult.result?.execution_timeout_seconds !== 600
         || typeof longTimeoutResult.result?.job_id !== "string") {
       throw new Error(`relay durable-process validation rejected the Worker-advertised 600 second execution budget: ${JSON.stringify(longTimeoutResult)}`);
@@ -164,8 +164,8 @@ export async function runtimeSelfTest() {
       throw new Error("600 second durable-process contract did not survive daemon validation and execute normally");
     }
     relayMessages.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
-    const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "call_invalid_args_12345678", tool: "read_file", arguments: [], timeout_ms: 5000, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
+    const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_invalid_args_12345678");
     if (invalidEnvelope?.ok !== false || invalidEnvelope.error?.code !== "invalid_request" || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
     await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
     await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
@@ -374,7 +374,7 @@ export async function runtimeSelfTest() {
     }
 
     logEvents.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" }, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "call_fast_success_12345678", tool: "read_file", arguments: { path: "visible.txt" }, timeout_ms: 5000, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     if (logEvents.some(event => event.level === "info" && event.event === "tool.call.completed")) {
       throw new Error("remote daemon emitted routine success at info level");
     }
@@ -388,10 +388,10 @@ export async function runtimeSelfTest() {
       relayMessages.push(value);
       return true;
     };
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "call_failed_12345678", tool: "read_file", arguments: { path: "missing-file.txt" }, timeout_ms: 5000, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     restricted.relay.send = originalSend;
     restricted.relayCallRecovery.isRecoverable = originalRecoverable;
-    const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
+    const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_failed_12345678");
     if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");
     if (logEvents.some(event => event.level === "warn" && event.event === "tool.call.failed")) {
       throw new Error("remote daemon emitted per-tool failure noise at warn level");

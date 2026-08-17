@@ -3,6 +3,7 @@ import catalog from "../shared/tool-catalog.json" with { type: "json" };
 import { compileToolArgumentValidators } from "../shared/tool-argument-validation.mjs";
 import { isRemoteDurableProcessTool, remoteDurableProcessTimeoutSeconds } from "../shared/foreground-timeout.mjs";
 import { BridgeError, errorCode, normalizeBridgeError } from "./errors.mjs";
+import { resourceAdmissionLogFields } from "./resource-admission-diagnostics.mjs";
 import { normalizeToolResult } from "./tool-result-boundary.mjs";
 import { createSecurityAuditFailureReporter } from "./security-audit-warning.mjs";
 import { enqueueSecurityAudit } from "./security-audit-dispatch.mjs";
@@ -139,11 +140,13 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       const status = code === "cancelled" ? "cancelled" : code === "timeout" ? "timeout" : "failed";
       observability.finish(operation.tool, { status, durationMs, errorCode: code, slow: durationMs >= slowMs });
       enqueueSecurityAudit(securityAudit, operation, { outcome: status, durationMs, errorCode: code }, auditFailureReporter);
+      const resourceAdmission = resourceAdmissionLogFields(normalized);
       logger.event?.("debug", "tool.call.failed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin,
         duration_ms: durationMs, error_code: code, retryable: normalized.retryable,
         authority_role: operation.context.authority?.principal?.role || "local",
         risk_category: operation.context.operationAuthorization?.category || "ordinary",
+        ...resourceAdmission,
       }, "Tool call failed");
       throw normalized;
     }

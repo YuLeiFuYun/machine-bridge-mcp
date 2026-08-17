@@ -140,6 +140,9 @@ export class RelayConnection {
   }
 
   stop() {
+    const settlePendingStart = this.connectedOnceResolve;
+    this.connectedOnceResolve = null;
+    this.connectedOnceReject = null;
     this.closed = true;
     this.authenticated = false;
     this.ready = false;
@@ -159,6 +162,7 @@ export class RelayConnection {
     }
     this.resetOutage();
     this.reconnectAttempt = 0;
+    settlePendingStart?.(false);
   }
 
   send(value) {

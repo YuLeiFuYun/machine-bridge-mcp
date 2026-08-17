@@ -819,7 +819,9 @@ try {
   assert(firstStatus.tool_delivery?.host_may_expose_subset === true, "Worker server_info omitted host-side filtering boundary");
   assert(firstStatus.tool_delivery?.remote_process_delivery_mode === "durable_job"
     && firstStatus.tool_delivery?.remote_process_acceptance_max_ms === 10_000
-    && firstStatus.tool_delivery?.remote_process_execution_timeout_max_ms === 600_000,
+    && firstStatus.tool_delivery?.remote_process_execution_timeout_max_ms === 600_000
+    && firstStatus.tool_delivery?.remote_process_session_start_execution_max_ms === 10_000
+    && !("remote_process_foreground_execution_max_ms" in firstStatus.tool_delivery),
   "Worker server_info lost the separated durable-process acceptance/execution contract");
 
   const timedOutCandidate = await connectDaemon(base);
@@ -1027,7 +1029,7 @@ try {
   "remote tools/list lost the durable-process execution and recovery contract");
   const remoteBrowserWait = remoteAgentTools.find((tool) => tool.name === "browser_wait");
   assert(remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.maximum === 45
-    && remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.default === 30,
+    && remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.default === 20,
   "remote tools/list lost the reply-safe browser foreground timeout contract");
   const remoteReadProcess = remoteAgentTools.find((tool) => tool.name === "read_process");
   assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 5000,
