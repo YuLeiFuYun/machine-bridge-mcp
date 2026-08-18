@@ -656,10 +656,10 @@ export async function runtimeSelfTest() {
     if (!visibleRoots.roots.some(root => root.path === path.parse(workspace).root)) throw new Error("explicit absolute-path mode omitted filesystem root");
     if (unrestrictedVisible.runtimeInfo().workspace_name !== path.basename(workspace)) throw new Error("explicit absolute-path mode omitted workspace basename");
   } finally {
-    restricted.stop();
-    unrestricted.stop();
-    unrestrictedVisible.stop();
-    fullAuthority.stop();
+    await restricted.stop();
+    await unrestricted.stop();
+    await unrestrictedVisible.stop();
+    await fullAuthority.stop();
     if (previousSecret === undefined) delete process.env.MBM_DAEMON_SELFTEST_SECRET;
     else process.env.MBM_DAEMON_SELFTEST_SECRET = previousSecret;
     await rm(workspace, { recursive: true, force: true }).catch(() => {});
