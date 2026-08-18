@@ -78,8 +78,8 @@ testBoundedOutput();
 console.log("runtime infrastructure test ok");
 
 function testRemoteActivityIdleSleepGuard() {
-  assert(DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS === 5 * 60_000,
-    "remote activity idle-sleep guard lost its bounded five-minute default grace");
+  assert(DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS === 30 * 60_000,
+    "remote activity idle-sleep guard lost its bounded thirty-minute default grace");
 
   const timers = [];
   const spawned = [];
@@ -91,6 +91,28 @@ function testRemoteActivityIdleSleepGuard() {
     child.kill = (signal) => { child.killed = true; child.killSignal = signal; return true; };
     return child;
   };
+  const defaultTimers = [];
+  const defaultChild = fakeChild();
+  const defaultGuard = new RemoteActivityIdleSleepGuard({
+    platform: "darwin",
+    daemonPid: 4242,
+    spawnProcess() { return defaultChild; },
+    setTimer(callback, delay) {
+      const timer = { callback, delay, unref() { this.unrefCalled = true; } };
+      defaultTimers.push(timer);
+      return timer;
+    },
+    clearTimer() {},
+    logger: { event() {} },
+  });
+  assert(defaultGuard.beginActivity() === true && defaultGuard.endActivity() === true
+    && defaultTimers.length === 1 && defaultTimers[0].delay === 30 * 60_000
+    && defaultTimers[0].unrefCalled === true && defaultGuard.snapshot().grace_ms === 30 * 60_000,
+  "default remote inactivity lease did not retain the macOS assertion for thirty minutes after settlement");
+  defaultTimers[0].callback();
+  assert(defaultChild.killed === true && defaultGuard.snapshot().active === false,
+    "default remote inactivity lease did not release after its full thirty-minute window");
+
   const guard = new RemoteActivityIdleSleepGuard({
     platform: "darwin",
     daemonPid: 4242,
