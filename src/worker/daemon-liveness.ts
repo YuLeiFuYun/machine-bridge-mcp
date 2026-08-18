@@ -1,10 +1,13 @@
 /**
  * Worker-side authenticated daemon liveness.
  *
- * Local daemons heartbeat about every 25s and treat 75s of silence as half-open.
- * The Worker must apply a symmetric bound: role=daemon + readyState=OPEN is not
- * enough after Durable Object hibernation or a half-closed transport, because
- * those sockets still look connected while tool_call never returns.
+ * Local daemons send an application heartbeat about every 25s so this attachment
+ * stays fresh, while an independent protocol-level ping/pong watchdog detects a
+ * black-holed transport on a much shorter interval without waking the Durable
+ * Object. The Worker still applies a wider application-liveness bound:
+ * role=daemon + readyState=OPEN is not enough after Durable Object hibernation or
+ * a half-closed transport, because those sockets can still look connected while
+ * tool_call never returns.
  */
 export const DAEMON_LIVENESS_TIMEOUT_MS = 90_000;
 export const DAEMON_READY_TIMEOUT_MS = 15_000;

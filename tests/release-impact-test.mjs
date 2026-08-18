@@ -34,6 +34,11 @@ try {
   expectStatus(0, "repository-only ignore change should not require an npm version bump");
   rmSync(join(temp, ".gitignore"), { force: true });
 
+  mkdirSync(join(temp, "tests"), { recursive: true });
+  writeFileSync(join(temp, "tests", "regression.mjs"), "export {};\n");
+  expectStatus(0, "test-only change outside package files should not require an npm version bump");
+  rmSync(join(temp, "tests"), { recursive: true, force: true });
+
   writeFileSync(join(temp, "README.md"), "changed\n");
   expectStatus(1, "packaged documentation change without version bump should fail");
 

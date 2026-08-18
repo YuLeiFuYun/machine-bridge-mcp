@@ -52,18 +52,18 @@ export function pruneAndReadResourceWaiters(waitersDir, entries, now = Date.now(
   return waiters;
 }
 
-export function selectedResourceWaiter(waiters, leases, host, evaluate, now = Date.now()) {
+export function selectedResourceWaiter(waiters, leases, host, evaluate, now = Date.now()) { return resourceWaiterSelectionState(waiters, leases, host, evaluate, now).selected; }
+export function resourceWaiterDrainActive(waiters, leases, host, evaluate, now = Date.now()) { return resourceWaiterSelectionState(waiters, leases, host, evaluate, now).drainActive; }
+function resourceWaiterSelectionState(waiters, leases, host, evaluate, now) {
   const ranked = [...waiters].sort((left, right) => compareWaiters(left, right, now));
   const selected = ranked.find((waiter) => evaluate(host, leases, waiter.request, now, waiter).admitted) || null;
   const protectedWaiter = leases.length ? ranked.find((waiter) => {
     const current = evaluate(host, leases, waiter.request, now, waiter); const empty = evaluate(host, [], waiter.request, now, waiter);
-    return resourceWaiterProtected(waiter, now) && LEASE_DRAIN_REASONS.has(current.reason)
-      && (empty.admitted || empty.reason === "cpu_pressure_window");
+    return resourceWaiterProtected(waiter, now) && LEASE_DRAIN_REASONS.has(current.reason) && (empty.admitted || empty.reason === "cpu_pressure_window");
   }) : null;
-  if (protectedWaiter && (!selected || compareWaiters(protectedWaiter, selected, now) <= 0)) return null;
-  return selected;
+  const drainActive = Boolean(protectedWaiter && (!selected || compareWaiters(protectedWaiter, selected, now) <= 0));
+  return { selected: drainActive ? null : selected, drainActive };
 }
-
 export function resourceWaiterRank(waiter, now = Date.now()) {
   const base = waiterBaseRank(waiter);
   const enqueued = Date.parse(String(waiter?.enqueued_at || ""));

@@ -32,26 +32,26 @@ export function reviewablePlan(plan) {
 }
 
 /**
+ * Project owner-only managed-job timing out of delegated result reads.
+ * @param {Record<string, unknown> | null | undefined} result
+ * @param {{includeResourceAdmissionTiming?: boolean}} [options]
+ */
+export function projectManagedJobResult(result, { includeResourceAdmissionTiming = false } = {}) {
+  if (!result || includeResourceAdmissionTiming) return result;
+  const projectSteps = (/** @type {unknown} */ steps) => Array.isArray(steps) ? steps.map((/** @type {unknown} */ step) => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) return step;
+    const { resource_admission_ms: _resourceAdmissionMs, ...projected } = /** @type {Record<string, unknown>} */ (step);
+    return projected;
+  }) : steps;
+  return { ...result, steps: projectSteps(result.steps), finally_steps: projectSteps(result.finally_steps) };
+}
+
+/**
  * Return the stable public status shape without runner identity or internal paths.
- * @param {{
- *   job_id?: unknown,
- *   name?: unknown,
- *   status?: unknown,
- *   created_at?: unknown,
- *   started_at?: unknown,
- *   finished_at?: unknown,
- *   current_phase?: unknown,
- *   current_step?: unknown,
- *   approval?: unknown,
- *   plan_sha256?: unknown,
- *   cleanup_guarantee?: unknown,
- *   error_class?: unknown,
- *   recovery_attempts?: unknown,
- *   result_persisted?: unknown,
- *   terminal_record_error_class?: unknown,
- *   artifact_cleanup_pending?: unknown,
- *   artifact_cleanup_error_class?: unknown
- * }} status
+ * @param {{job_id?: unknown, name?: unknown, status?: unknown, created_at?: unknown, started_at?: unknown,
+ * finished_at?: unknown, current_phase?: unknown, current_step?: unknown, approval?: unknown, plan_sha256?: unknown,
+ * cleanup_guarantee?: unknown, error_class?: unknown, recovery_attempts?: unknown, result_persisted?: unknown,
+ * terminal_record_error_class?: unknown, artifact_cleanup_pending?: unknown, artifact_cleanup_error_class?: unknown}} status
  */
 export function publicStatus(status) {
   return {

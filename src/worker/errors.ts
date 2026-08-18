@@ -67,6 +67,19 @@ export function dispatchedDaemonDisconnectError(message: string, recovery?: Reco
   );
 }
 
+export function daemonCallNotReceivedAfterReconnectError(recovery?: Record<string, unknown>): WorkerToolError {
+  return new WorkerToolError(
+    "unavailable",
+    "daemon reconnect confirmed the tool call was not received; retry the call",
+    true,
+    {
+      side_effects_started: false,
+      reason: "daemon_call_not_received_after_reconnect",
+      ...(recovery ? { recovery } : {}),
+    },
+  );
+}
+
 export function revokedDaemonAuthorityError(): WorkerToolError {
   return new WorkerToolError("authorization_denied", "tool call authority was revoked", false, {
     side_effects_started: true,

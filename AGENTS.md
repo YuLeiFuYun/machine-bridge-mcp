@@ -37,6 +37,7 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
 - These channels publish only to npm dist-tags `dev`, `beta`, and `next`; none may become `latest`.
 - The exact candidate must be persistently activated on the owner machine before the first GitHub push.
 - Immediately before live activation, the coding agent runs `node scripts/start-release-candidate.mjs --install-only`; this non-live `--install-only` preflight must prove current source identity, package modes, exact tarball integrity, and disposable installability without Worker/service activation or activation evidence.
+- Persistent activation also preflights Cloudflare Wrangler authentication before service handoff. Detached `start_job` activation must fail before live mutation rather than starting interactive Wrangler login; an ordinary owner terminal may complete login before handoff. The inner `activate --json` path must never start interactive login.
 - After explicit owner authorization for activation, the owner or the authorized agent executes the single guarded command:
 
   ```sh
@@ -87,6 +88,7 @@ Explicit conversational authorization from the repository owner is sufficient us
 ## Validation expectations
 
 - Run targeted behavior tests while iterating and one `npm run check` / `check:full` on the frozen tree before candidate preparation. Successful full verification writes a short-lived ignored receipt bound to the exact generation; `release:candidate` must consume it rather than repeating the complete suite.
+- When that frozen `check:full` is launched remotely through Machine Bridge, use owner-authorized detached `start_job` with a step timeout above 600 seconds if the suite may cross the durable-process ceiling; do not let `run_process`'s 600-second step limit become the release gate's effective timeout.
 - Lock, state deletion, service lifecycle, release activation, detached process, credential, browser, or application changes require behavior, concurrency, and fault-injection tests; source-string checks alone are insufficient.
 - Run both dependency audits, Worker dry-run, registry signature verification, SBOM generation, package inspection, privacy history, and complete diff/status review for a versioned candidate.
 - Update tests, `CHANGELOG.md`, `docs/AUDIT.md`, release guidance, architecture, threat model, and operations whenever their contracts change.

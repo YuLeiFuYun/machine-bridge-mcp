@@ -207,7 +207,7 @@
         await send("Input.dispatchMouseEvent", {
           type: "mouseReleased", x: lastPoint.x, y: lastPoint.y, button: "left", buttons: 0, clickCount: 1,
         });
-      } catch {}
+      } catch { /* Preserve the primary drag failure; releasing an already-lost pointer is best-effort cleanup. */ }
       throw error;
     }
   }

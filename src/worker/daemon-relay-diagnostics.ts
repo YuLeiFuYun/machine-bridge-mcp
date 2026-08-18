@@ -6,6 +6,11 @@ const NETWORK_ROUTES = new Set([
   "system-network-stack",
   "invalid-application-proxy-configuration",
 ]);
+const TRANSPORTS = new Set(["websocket", "https"]);
+const CONNECT_STAGES = new Set([
+  "idle", "socket_constructing", "proxy_connecting", "tcp_connecting", "dns_resolved",
+  "tcp_connected", "tls_established", "http_rejected", "websocket_open",
+]);
 const TRANSPORT_ERROR_CLASSES = new Set([
   "cancelled", "timeout", "authentication_failed", "authorization_denied", "policy_denied",
   "invalid_request", "not_found", "conflict", "limit_exceeded", "permission_denied",
@@ -24,6 +29,7 @@ const CLOSE_CATEGORIES = new Set([
   "relay_handshake_timeout",
   "relay_readiness_timeout",
   "relay_heartbeat_timeout",
+  "relay_transport_timeout",
   "relay_transport_error",
   "relay_protocol_error",
   "relay_proxy_configuration",
@@ -36,7 +42,11 @@ const CLOSE_CATEGORIES = new Set([
 
 export interface DaemonRelayDiagnostics {
   schema_version: 1;
+  transport: string;
   network_route: string;
+  last_connect_stage: string;
+  last_connect_duration_ms: number;
+  last_connect_http_status: number | null;
   outage_count: number;
   outage_active: boolean;
   outage_started_at: string | null;
@@ -47,6 +57,7 @@ export interface DaemonRelayDiagnostics {
   last_transport_error_class: string | null;
   last_disconnected_at: string | null;
   previous_ready_duration_ms: number;
+  previous_ready_inbound_silence_ms: number;
 }
 
 export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagnostics | undefined {
@@ -55,7 +66,11 @@ export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagn
   if (candidate.schema_version !== 1) return undefined;
   return {
     schema_version: 1,
+    transport: enumText(candidate.transport, TRANSPORTS, "websocket"),
     network_route: enumText(candidate.network_route, NETWORK_ROUTES, "unresolved"),
+    last_connect_stage: enumText(candidate.last_connect_stage, CONNECT_STAGES, "idle"),
+    last_connect_duration_ms: boundedInteger(candidate.last_connect_duration_ms, 0, 10 * 60_000, 0),
+    last_connect_http_status: nullableInteger(candidate.last_connect_http_status, 100, 599),
     outage_count: boundedInteger(candidate.outage_count, 0, 1_000_000_000, 0),
     outage_active: candidate.outage_active === true,
     outage_started_at: timestamp(candidate.outage_started_at),
@@ -66,6 +81,7 @@ export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagn
     last_transport_error_class: nullableEnum(candidate.last_transport_error_class, TRANSPORT_ERROR_CLASSES),
     last_disconnected_at: timestamp(candidate.last_disconnected_at),
     previous_ready_duration_ms: boundedInteger(candidate.previous_ready_duration_ms, 0, 365 * 24 * 60 * 60_000, 0),
+    previous_ready_inbound_silence_ms: boundedInteger(candidate.previous_ready_inbound_silence_ms, 0, 31 * 24 * 60 * 60_000, 0),
   };
 }
 

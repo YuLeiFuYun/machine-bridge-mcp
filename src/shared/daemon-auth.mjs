@@ -1,7 +1,9 @@
 export const DAEMON_AUTH_SCHEME = "device-signature-v1";
 export const DAEMON_PREFLIGHT_SCHEME = "device-preflight-v1";
+export const DAEMON_HTTP_RELAY_SCHEME = "device-http-relay-v1";
 export const DAEMON_AUTH_CHALLENGE_TTL_SECONDS = 30;
 export const DAEMON_PREFLIGHT_TTL_SECONDS = 5 * 60;
+export const DAEMON_HTTP_RELAY_TTL_SECONDS = 30;
 
 
 export function daemonPreflightTranscript(input = {}) {
@@ -25,6 +27,21 @@ export function daemonAuthTranscript(input = {}) {
     requiredText(input.version, "version", 1, 64),
     requiredText(input.instanceId, "instance id", 16, 128),
     requiredInteger(input.issuedAt, "issued at"),
+  ];
+  return values.join("\0");
+}
+
+export function daemonHttpRelayTranscript(input = {}) {
+  const values = [
+    DAEMON_HTTP_RELAY_SCHEME,
+    "POST",
+    "/daemon/http",
+    requiredOrigin(input.workerOrigin),
+    requiredText(input.server, "server", 1, 128),
+    requiredText(input.version, "version", 1, 64),
+    requiredText(input.nonce, "HTTP relay nonce", 24, 128),
+    requiredInteger(input.issuedAt, "HTTP relay issued at"),
+    requiredText(input.bodySha256, "HTTP relay body SHA-256", 43, 43),
   ];
   return values.join("\0");
 }

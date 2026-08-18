@@ -42,6 +42,8 @@ export class BrowserBridgeManager {
     this.extensionInfo = null;
     this.proxyExtensionInfo = null;
     this.proxyExtensionReloadRequired = false;
+    this.extensionConnectionGeneration = 0;
+    this.proxyExtensionConnectionGeneration = 0;
     this.extensionReloadRequiredFlag = false;
     this.recoveryTimer = null;
     this.stopping = false;
@@ -53,6 +55,7 @@ export class BrowserBridgeManager {
       extensionConnected: () => this.extensionConnected(),
       extensionStatusInfo: () => this.extensionStatusInfo(),
       extensionReloadRequired: () => this.extensionReloadRequired(),
+      extensionGeneration: () => this.extensionConnectionGeneration,
     });
     this.startPromise = null;
     this.startGeneration = 0;
@@ -70,6 +73,7 @@ export class BrowserBridgeManager {
         extensionConnected: this.extensionConnected(),
         extensionInfo: this.extensionStatusInfo(),
         extensionReloadRequired: this.extensionReloadRequired(),
+        extensionGeneration: this.server ? this.extensionConnectionGeneration : this.proxyExtensionConnectionGeneration,
         ...this.brokerRoutes.snapshot(),
       }),
       createPairingLaunch: (port) => startBrowserPairingLaunch({ brokerPort: port, extensionToken: this.extensionToken }),
@@ -80,6 +84,7 @@ export class BrowserBridgeManager {
       readResourceText: (name) => this.readResourceText(name),
       readResourceBinary: (name) => this.readResourceBinary(name),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
+      logger: this.logger,
     });
   }
 
@@ -271,6 +276,7 @@ export class BrowserBridgeManager {
           this.proxyExtensionInfo = claimedExtension ? normalizeCompatibleExtensionInfo(message.extension_info) : null;
           this.proxyExtensionConnected = claimedExtension && Boolean(this.proxyExtensionInfo);
           this.proxyExtensionReloadRequired = message.extension_reload_required === true || (claimedExtension && !this.proxyExtensionInfo);
+          this.proxyExtensionConnectionGeneration = this.proxyExtensionConnected ? runtimeExtensionGeneration(message.extension_generation) : 0;
           finish(true);
           return;
         }
@@ -283,6 +289,7 @@ export class BrowserBridgeManager {
           this.proxyExtensionConnected = false;
           this.proxyExtensionInfo = null;
           this.proxyExtensionReloadRequired = false;
+          this.proxyExtensionConnectionGeneration = 0;
           this.rejectPending("browser broker disconnected");
           if (settled) this.scheduleBrokerRecovery();
         }
@@ -349,7 +356,9 @@ export class BrowserBridgeManager {
         return;
       }
       clearTimeout(socket.handshakeTimer);
-      if (!safeSocketSend(socket, { type: "hello_ack", role: "extension", protocol: BROWSER_EXTENSION_PROTOCOL })) {
+      if (!safeSocketSend(socket, {
+        type: "hello_ack", role: "extension", protocol: BROWSER_EXTENSION_PROTOCOL, pong_watchdog: true,
+      })) {
         closeProtocolSocket(socket, 1011, "extension acknowledgement failed");
         return;
       }
@@ -359,6 +368,7 @@ export class BrowserBridgeManager {
       const previous = this.socket;
       this.socket = socket;
       this.extensionInfo = info;
+      this.extensionConnectionGeneration = nextExtensionGeneration(this.extensionConnectionGeneration);
       if (previous && previous !== socket) {
         this.rejectPending("browser extension was replaced; retry the browser request");
         this.rejectProxyRoutes("browser extension was replaced; retry the browser request");
@@ -372,7 +382,13 @@ export class BrowserBridgeManager {
       closeProtocolSocket(socket, 1002, "extension hello required; reload the extension");
       return;
     }
-    if (message.type === "ping") return;
+    if (message.type === "ping") {
+      const seq = Number.isSafeInteger(message.seq) && message.seq > 0 ? message.seq : undefined;
+      if (!safeSocketSend(socket, { type: "pong", ...(seq ? { seq } : {}) })) {
+        closeProtocolSocket(socket, 1011, "extension pong delivery failed");
+      }
+      return;
+    }
     if (message.type !== "response" || typeof message.id !== "string") {
       this.markExtensionReloadRequired();
       closeProtocolSocket(socket, 1002, "invalid extension protocol message");
@@ -392,6 +408,7 @@ export class BrowserBridgeManager {
       this.proxyExtensionInfo = claimedExtension ? normalizeCompatibleExtensionInfo(message.extension_info) : null;
       this.proxyExtensionConnected = claimedExtension && Boolean(this.proxyExtensionInfo);
       this.proxyExtensionReloadRequired = message.extension_reload_required === true || (claimedExtension && !this.proxyExtensionInfo);
+      this.proxyExtensionConnectionGeneration = this.proxyExtensionConnected ? runtimeExtensionGeneration(message.extension_generation) : 0;
       if (!this.proxyExtensionConnected) this.rejectPending("browser extension disconnected");
       return true;
     }
@@ -463,6 +480,7 @@ export class BrowserBridgeManager {
     this.proxyExtensionConnected = false;
     this.proxyExtensionInfo = null;
     this.proxyExtensionReloadRequired = false;
+    this.proxyExtensionConnectionGeneration = 0;
     this.extensionReloadRequiredFlag = false;
     try { this.wss?.close(); }
     catch { /* Listener shutdown may race a prior close; ownership state is already terminal. */ }
@@ -493,4 +511,12 @@ export class BrowserBridgeManager {
       : this.proxyExtensionReloadRequired;
   }
 
+}
+
+function nextExtensionGeneration(value) {
+  return Number.isSafeInteger(value) && value > 0 && value < Number.MAX_SAFE_INTEGER ? value + 1 : 1;
+}
+
+function runtimeExtensionGeneration(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : 1;
 }

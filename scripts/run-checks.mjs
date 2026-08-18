@@ -3,6 +3,7 @@ import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 import { FAST_CHECK_TASKS, SERIAL_FAST_CHECK_TASKS, checkTasks } from "./check-plan.mjs";
 import { runVerificationPlan } from "./check-runner.mjs";
+import { rerunVerificationUnderIdleSleepGuard } from "./verification-idle-sleep-guard.mjs";
 import { runWithStableGeneration } from "./verification-generation-guard.mjs";
 import {
   captureVerificationRunGeneration,
@@ -10,6 +11,9 @@ import {
   clearFullVerificationReceipt,
   writeFullVerificationReceipt,
 } from "./verification-state.mjs";
+
+const guardedExitCode = await rerunVerificationUnderIdleSleepGuard();
+if (guardedExitCode !== null) process.exit(guardedExitCode);
 
 const mode = process.argv[2] || "full";
 const root = fileURLToPath(new URL("../", import.meta.url));

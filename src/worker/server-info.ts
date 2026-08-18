@@ -1,5 +1,6 @@
 import { remoteToolDeliveryContract } from "./server-info-tool-delivery.ts";
-import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import type { DaemonRegistry } from "./daemon-registry.ts";
+import { readyDaemonChannels } from "./daemon-channel.ts";
 import type { WorkerObservability } from "./observability.ts";
 import { hiddenWorkerActivity, hiddenWorkerPending, projectDaemonStatus, workerGlobalActivityVisible } from "./server-info-activity.ts";
 export type ServerInfoDetail = "summary" | "full";
@@ -14,7 +15,7 @@ type ServerInfoInput = {
   effectiveTools: string[];
   advertisedTools: string[];
   pendingSnapshot: Record<string, unknown>;
-  daemonRegistry: DaemonSocketRegistry;
+  daemonRegistry: DaemonRegistry;
   observability: WorkerObservability;
 };
 
@@ -88,15 +89,19 @@ function buildServerInfoSummary(
   };
 }
 
-function liveSocketSnapshot(registry: DaemonSocketRegistry) {
+function liveSocketSnapshot(registry: DaemonRegistry) {
   const probing = registry.probingSockets().length;
-  const ready = registry.readySockets().length;
-  const candidates = registry.candidateSockets().length;
+  const httpReady = typeof registry.httpReadyChannels === "function" ? registry.httpReadyChannels().length : 0;
+  const ready = readyDaemonChannels(registry).length;
+  const httpCandidates = typeof registry.httpCandidates === "function" ? registry.httpCandidates().length : 0;
+  const candidates = registry.candidateSockets().length + httpCandidates;
   return {
-    authenticated: registry.readyRoleSockets().length + probing,
+    authenticated: registry.readyRoleSockets().length + httpReady + probing + httpCandidates,
     ready,
     probing,
     candidates,
+    https_fallback_ready: httpReady,
+    https_fallback_candidates: httpCandidates,
   };
 }
 

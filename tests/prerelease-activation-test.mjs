@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVATION_SCHEMA_VERSION, assertPrereleaseActivationRuntimeRoot, prereleaseActivationPath, readPrereleaseActivation, validatePrereleaseActivation, writePrereleaseActivation } from "../scripts/prerelease-activation.mjs";
 import { discoverForegroundDaemonRecovery, foregroundPid } from "../scripts/foreground-daemon-recovery.mjs";
-import { assertPersistentActivationExecutionSurface, persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
+import { assertPersistentActivationExecutionSurface, persistentActivationSpawnOptions, persistentCandidateFailureMessage, preflightPersistentActivationWorkerAuth, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
 import { inspectGlobalPackageInstallation } from "../scripts/global-package-installation.mjs";
 import { canonicalActivationRecoveryDetail, normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
@@ -195,6 +195,65 @@ try {
     () => assertPersistentActivationExecutionSurface({ MBM_EXECUTION_SURFACE: "synthetic_unknown_surface" }),
     "cannot run from unknown",
   );
+  const managedAuthCalls = [];
+  let managedAuthError = null;
+  try {
+    await preflightPersistentActivationWorkerAuth({
+      surface: EXECUTION_SURFACE.managedJob,
+      stateRoot: join(root, "managed-auth-state"),
+      packageRoot: root,
+      runWrangler: async (args, options) => {
+        managedAuthCalls.push({ args, options });
+        return { code: 1, stdout: "", stderr: "not authenticated" };
+      },
+    });
+  } catch (error) { managedAuthError = error; }
+  assert(managedAuthError?.code === "worker_authentication_required"
+      && managedAuthError?.sideEffectsStarted === false,
+  "managed-job activation did not fail closed on missing Wrangler authentication");
+  assert(JSON.stringify(managedAuthCalls.map(call => call.args)) === JSON.stringify([["whoami"]])
+      && managedAuthCalls[0]?.options?.capture === true
+      && managedAuthCalls[0]?.options?.allowFailure === true,
+  "managed-job activation attempted interactive Wrangler login or used an uncaptured auth probe");
+
+  const localAuthCalls = [];
+  let localWhoamiCount = 0;
+  const localAuth = await preflightPersistentActivationWorkerAuth({
+    surface: "local",
+    stateRoot: join(root, "local-auth-state"),
+    packageRoot: root,
+    runWrangler: async (args, options) => {
+      localAuthCalls.push({ args, options });
+      if (args[0] === "login") return { code: 0, stdout: "", stderr: "" };
+      localWhoamiCount += 1;
+      return localWhoamiCount === 1
+        ? { code: 1, stdout: "", stderr: "not authenticated" }
+        : { code: 0, stdout: "authenticated", stderr: "" };
+    },
+  });
+  assert(localAuth.authenticated === true && localAuth.login_performed === true,
+    "ordinary local activation did not report verified preflight login");
+  assert(JSON.stringify(localAuthCalls.map(call => call.args)) === JSON.stringify([["whoami"], ["login"], ["whoami"]])
+      && localAuthCalls[1]?.options?.capture !== true,
+    "ordinary local activation did not complete interactive login before the verification recheck");
+
+  let localAuthFailure = null;
+  const failedLocalCalls = [];
+  try {
+    await preflightPersistentActivationWorkerAuth({
+      surface: "local",
+      stateRoot: join(root, "failed-local-auth-state"),
+      packageRoot: root,
+      runWrangler: async (args) => {
+        failedLocalCalls.push(args);
+        return { code: args[0] === "login" ? 0 : 1, stdout: "", stderr: "not authenticated" };
+      },
+    });
+  } catch (error) { localAuthFailure = error; }
+  assert(localAuthFailure?.code === "worker_authentication_required"
+      && localAuthFailure?.sideEffectsStarted === false
+      && JSON.stringify(failedLocalCalls) === JSON.stringify([["whoami"], ["login"], ["whoami"]]),
+    "ordinary local activation accepted an unsuccessful Wrangler-login recheck");
   const recoveryRoot = join(root, "recovery-runtime");
   const workspace = join(recoveryRoot, "workspace");
   const stateRoot = join(recoveryRoot, "state");

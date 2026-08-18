@@ -1,5 +1,6 @@
 const DEFAULT_MINIMUM_WAIT_MS = 2_000;
 const DEFAULT_MAXIMUM_WAIT_MS = 10_000;
+const REMOTE_PROCESS_SESSION_WAIT_MS = 0;
 const MAXIMUM_CONFIGURED_WAIT_MS = 30 * 60_000;
 const DEFAULT_TIMEOUT_FRACTION = 0.2;
 
@@ -10,8 +11,9 @@ export function foregroundResourceWaitMs(executionTimeoutMs, configuredWaitMs = 
   return Math.min(timeout, DEFAULT_MAXIMUM_WAIT_MS, Math.max(DEFAULT_MINIMUM_WAIT_MS, proportional));
 }
 
-export function processSessionResourceWaitMs(configuredWaitMs = undefined) {
-  return configuredWaitMs === undefined ? DEFAULT_MAXIMUM_WAIT_MS : configuredResourceWaitMs(configuredWaitMs);
+export function processSessionResourceWaitMs(configuredWaitMs = undefined, options = {}) {
+  if (configuredWaitMs !== undefined) return configuredResourceWaitMs(configuredWaitMs);
+  return options.remote === true ? REMOTE_PROCESS_SESSION_WAIT_MS : DEFAULT_MAXIMUM_WAIT_MS;
 }
 
 function configuredResourceWaitMs(value) {

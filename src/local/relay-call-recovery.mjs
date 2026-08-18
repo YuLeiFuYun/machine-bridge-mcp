@@ -74,21 +74,25 @@ export class RelayCallRecovery {
   /** @param {unknown} callId */
   discard(callId) { return this.pendingResults.delete(String(callId)); }
 
+  ownedCallIds() { return [...new Set([...this.activeCallIds(), ...this.pendingResults.keys()])]; }
+
   /** @param {Iterable<string>} resumedCallIds @param {(callId: string) => boolean} cancelCall */
   reconcile(resumedCallIds, cancelCall) {
     const resumed = new Set(resumedCallIds);
-    let cancelled = 0;
-    let discarded = 0;
-    for (const callId of this.activeCallIds()) {
-      if (!resumed.has(callId) && cancelCall(callId)) cancelled += 1;
-    }
+    const active = [...this.activeCallIds()];
+    const locallyOwned = new Set(this.ownedCallIds());
+    const missing = [...resumed].filter((callId) => !locallyOwned.has(callId));
+    let cancelled = 0; let discarded = 0;
+    for (const callId of active) if (!resumed.has(callId) && cancelCall(callId)) cancelled += 1;
     for (const callId of [...this.pendingResults.keys()]) {
       if (!resumed.has(callId) && this.pendingResults.delete(callId)) discarded += 1;
     }
-    if (cancelled > 0 || discarded > 0) {
-      this.logger.event?.("debug", "relay.calls.reconciled", { cancelled_calls: cancelled, discarded_results: discarded },
-        "Cancelled relay work that no longer had a waiting client after reconnect");
-    }
+    if (cancelled > 0 || discarded > 0 || missing.length > 0) this.logger.event?.(
+      "debug", "relay.calls.reconciled",
+      { cancelled_calls: cancelled, discarded_results: discarded, missing_resumed_calls: missing.length },
+      "Reconciled local relay-call ownership against the Worker reconnect set",
+    );
+    return missing;
   }
 
   disconnected() {
@@ -102,9 +106,7 @@ export class RelayCallRecovery {
 
   ready() { this.clearTimer(); this.retryUnacknowledged("reconnected"); }
 
-  pulse() {
-    this.retryUnacknowledged("heartbeat");
-  }
+  pulse() { this.retryUnacknowledged("heartbeat"); }
 
   /** @param {string} reason */
   retryUnacknowledged(reason) {
@@ -157,10 +159,7 @@ export class RelayCallRecovery {
 }
 
 /** @param {unknown} value @param {number} fallback */
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
-}
+function positiveInteger(value, fallback) { const number = Number(value); return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback; }
 
 /** @param {unknown} value */
 function shortCallId(value) {

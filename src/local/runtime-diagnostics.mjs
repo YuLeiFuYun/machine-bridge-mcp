@@ -56,7 +56,7 @@ export async function diagnoseRuntime({
   } catch (error) {
     checks.push({ layer: "local-filesystem", ok: false, error_class: classifyOperationalError(error) });
   } finally {
-    await rm(probe, { force: true }).catch(() => {});
+    await rm(probe, { force: true }).catch(() => { /* Diagnostic scratch cleanup cannot change the already-observed probe result. */ });
   }
   if (policy.execMode === "direct" || policy.execMode === "shell") {
     const direct = await runFixedInternal(

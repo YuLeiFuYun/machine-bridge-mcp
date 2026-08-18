@@ -30,6 +30,9 @@ import relayContract from "../src/shared/relay-contract.json" with { type: "json
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
 import { startAutostartLogMaintenance } from "../src/local/autostart-log-maintenance.mjs";
 import { createSecurityAuditFailureReporter } from "../src/local/security-audit-warning.mjs";
+import { resourceAdmissionLogFields } from "../src/local/resource-admission-diagnostics.mjs";
+import { LifecycleController } from "../src/local/lifecycle.mjs";
+import { DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS, RemoteActivityIdleSleepGuard } from "../src/local/remote-activity-idle-sleep-guard.mjs";
 
 const PROCESS_FIXTURE_TIMEOUT_MS = 30_000;
 
@@ -50,6 +53,8 @@ await testRelayResumeReconciliation();
 testRelayToolTimeoutNormalization();
 testRelayHandshakeDiagnostics();
 testRuntimeConvenienceMethods();
+await testRuntimeStartStopRace();
+testRemoteActivityIdleSleepGuard();
 testRelayReconnectDelivery();
 testAutostartLogMaintenance();
 await testProcessExecutionNoShell();
@@ -71,6 +76,133 @@ testErrors();
 testWorkspaceShellSelection();
 testBoundedOutput();
 console.log("runtime infrastructure test ok");
+
+function testRemoteActivityIdleSleepGuard() {
+  assert(DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS === 5 * 60_000,
+    "remote activity idle-sleep guard lost its bounded five-minute default grace");
+
+  const timers = [];
+  const spawned = [];
+  const fakeChild = () => {
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.killed = false;
+    child.unref = () => { child.unrefCalled = true; };
+    child.kill = (signal) => { child.killed = true; child.killSignal = signal; return true; };
+    return child;
+  };
+  const guard = new RemoteActivityIdleSleepGuard({
+    platform: "darwin",
+    daemonPid: 4242,
+    graceMs: 5_000,
+    spawnProcess(executable, args, options) {
+      const child = fakeChild();
+      spawned.push({ executable, args, options, child });
+      return child;
+    },
+    setTimer(callback, delay) {
+      const timer = { callback, delay, cleared: false, unref() { this.unrefCalled = true; } };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer(timer) { timer.cleared = true; },
+    logger: { event() {} },
+  });
+  assert(guard.beginActivity() === true && spawned.length === 1 && timers.length === 0,
+    "first remote activity did not establish a handler-lifetime idle-sleep guard");
+  assert(spawned[0].executable === "/usr/bin/caffeinate"
+    && JSON.stringify(spawned[0].args) === JSON.stringify(["-i", "-w", "4242"]),
+  "idle-sleep guard did not bind caffeinate to daemon lifetime");
+  assert(spawned[0].options.stdio === "ignore" && spawned[0].options.shell === false && spawned[0].child.unrefCalled === true,
+    "idle-sleep guard retained unnecessary child I/O/event-loop ownership or regained shell interpretation");
+  assert(guard.beginActivity() === true && spawned.length === 1 && timers.length === 0,
+    "concurrent remote activity spawned a duplicate guard or started inactivity grace before settlement");
+  assert(guard.endActivity() === true && timers.length === 0,
+    "settling one of multiple remote activities started inactivity grace too early");
+  assert(guard.endActivity() === true && timers.length === 1 && timers[0].delay === 5_000 && timers[0].unrefCalled === true,
+    "last remote activity settlement did not start one unreferenced inactivity grace timer");
+  assert(guard.endActivity() === true && timers.length === 1 && timers[0].cleared === false,
+    "surplus activity settlement extended or replaced an already-running inactivity grace");
+  assert(guard.beginActivity() === true && timers[0].cleared === true && spawned.length === 1,
+    "new activity failed to cancel the inactivity grace or spawned a duplicate caffeinate child");
+  timers[0].callback();
+  assert(spawned[0].child.killed === false,
+    "stale inactivity timer released the guard while a newer activity was running");
+  assert(guard.endActivity() === true && timers.length === 2,
+    "newly settled activity did not restart the full inactivity grace");
+  timers[1].callback();
+  assert(spawned[0].child.killed === true && spawned[0].child.killSignal === "SIGTERM" && guard.snapshot().active === false,
+    "idle-sleep guard did not release after the last activity plus inactivity grace");
+
+  let unsupportedSpawned = false;
+  const unsupported = new RemoteActivityIdleSleepGuard({
+    platform: "linux",
+    spawnProcess() { unsupportedSpawned = true; return fakeChild(); },
+  });
+  assert(unsupported.beginActivity() === false && unsupported.endActivity() === false && unsupportedSpawned === false
+    && unsupported.snapshot().supported === false && unsupported.snapshot().enabled === false,
+  "non-macOS runtime attempted to establish or report support for a platform-specific idle-sleep guard");
+
+  const failureEvents = [];
+  let failureTimers = 0;
+  const unavailable = new RemoteActivityIdleSleepGuard({
+    platform: "darwin",
+    daemonPid: 4242,
+    graceMs: 5_000,
+    spawnProcess() { throw new Error("FORBIDDEN_DETAIL_MARKER FORBIDDEN_LOCATION_MARKER"); },
+    setTimer() { failureTimers += 1; throw new Error("timer should not be armed"); },
+    logger: { event(level, name, fields, message) { failureEvents.push({ level, name, fields, message }); } },
+  });
+  const firstUnavailableBegin = unavailable.beginActivity();
+  const repeatedUnavailableBegin = unavailable.beginActivity();
+  const firstUnavailableEnd = unavailable.endActivity();
+  const repeatedUnavailableEnd = unavailable.endActivity();
+  assert(firstUnavailableBegin === false && repeatedUnavailableBegin === false
+    && firstUnavailableEnd === false && repeatedUnavailableEnd === false && failureTimers === 0,
+  "failed idle-sleep process setup armed timers or escaped as a tool-call failure");
+  assert(failureEvents.length === 1 && failureEvents[0].level === "warn"
+    && failureEvents[0].name === "runtime.idle_sleep_guard.unavailable"
+    && Object.keys(failureEvents[0].fields).join(",") === "error_class"
+    && !JSON.stringify(failureEvents[0]).includes("FORBIDDEN_DETAIL_MARKER")
+    && !JSON.stringify(failureEvents[0]).includes("FORBIDDEN_LOCATION_MARKER"),
+  "idle-sleep guard failure logging exposed sensitive process error text or failed to suppress duplicate error classes");
+
+  const timerFailureChild = fakeChild();
+  const timerFailureEvents = [];
+  const timerFailure = new RemoteActivityIdleSleepGuard({
+    platform: "darwin",
+    daemonPid: 4242,
+    graceMs: 5_000,
+    spawnProcess() { return timerFailureChild; },
+    setTimer() { throw new Error("FORBIDDEN_TIMER_DETAIL_MARKER"); },
+    logger: { event(level, name, fields) { timerFailureEvents.push({ level, name, fields }); } },
+  });
+  assert(timerFailure.beginActivity() === true && timerFailure.endActivity() === false && timerFailureChild.killed === true
+    && timerFailure.snapshot().active === false && timerFailureEvents.length === 1
+    && !JSON.stringify(timerFailureEvents[0]).includes("FORBIDDEN_TIMER_DETAIL_MARKER"),
+  "idle-sleep timer setup failure blocked fail-open cleanup or left an active power assertion");
+
+  const unexpectedChild = fakeChild();
+  const unexpectedEvents = [];
+  const unexpected = new RemoteActivityIdleSleepGuard({
+    platform: "darwin", daemonPid: 4242, graceMs: 5_000,
+    spawnProcess() { return unexpectedChild; },
+    logger: { event(level, name, fields) { unexpectedEvents.push({ level, name, fields }); } },
+  });
+  assert(unexpected.beginActivity() === true, "unexpected-exit fixture failed to establish the guard");
+  unexpectedChild.emit("exit", 1, null);
+  assert(unexpected.snapshot().active === false && unexpectedEvents.length === 1
+    && unexpectedEvents[0].name === "runtime.idle_sleep_guard.unavailable" && unexpected.endActivity() === false,
+  "unexpected idle-sleep child exit during active work was silent or armed an invalid grace timer");
+
+  const loggingFailure = new RemoteActivityIdleSleepGuard({
+    platform: "darwin", daemonPid: 4242, graceMs: 5_000,
+    spawnProcess() { throw new Error("FORBIDDEN_LOGGING_FAILURE_MARKER"); },
+    logger: { event() { throw new Error("logger unavailable"); } },
+  });
+  assert(loggingFailure.beginActivity() === false && loggingFailure.endActivity() === false,
+    "auxiliary idle-sleep logging failure escaped into tool settlement");
+}
 
 async function testWorkspaceSearchFanout() {
   const files = Array.from({ length: 20 }, (_value, index) => `/synthetic/file-${String(index).padStart(2, "0")}`);
@@ -366,6 +498,86 @@ async function testToolExecutor() {
   assert(events.some((event) => event.name === "tool.call.started") && events.some((event) => event.name === "tool.call.failed"), "structured lifecycle events were not emitted");
   assert(registry.snapshot().active === 0, "tool executor leaked call lifecycle state");
 
+  let authorizedRelayActivityStarts = 0;
+  let authorizedRelayActivityEnds = 0;
+  let authorizedHandlerRuns = 0;
+  const activityExecutor = new ToolExecutor({
+    handlers: { read_file: async ({ path }) => {
+      authorizedHandlerRuns += 1;
+      if (path === "handler-failure.txt") throw new BridgeError("unavailable", "handler failed after activity start");
+      return "authorized";
+    } },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, source: "trusted-owner", category: "ordinary operation", scopes: [] }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    logger: { event() {} },
+    onAuthorizedRelayActivityStart() { authorizedRelayActivityStarts += 1; },
+    onAuthorizedRelayActivityEnd() { authorizedRelayActivityEnds += 1; },
+  });
+  assert(await activityExecutor.execute("read_file", { path: "authorized.txt" }, {
+    callId: "authorized-activity", origin: "relay", authorization: { role: "owner" },
+  }) === "authorized", "authorized relay activity did not reach its handler");
+  assert(authorizedRelayActivityStarts === 1 && authorizedRelayActivityEnds === 1 && authorizedHandlerRuns === 1,
+    "authorized schema-valid relay activity did not hold one balanced auxiliary activity lease");
+  await expectReject(() => activityExecutor.execute("read_file", {}, {
+    callId: "invalid-activity", origin: "relay", authorization: { role: "owner" },
+  }), "invalid_request", "tool arguments do not match the input schema");
+  await expectReject(() => activityExecutor.execute("read_file", { path: "denied.txt" }, {
+    callId: "denied-activity", origin: "relay", authorization: { role: "viewer" },
+  }), "policy_denied", "account denied");
+  assert(authorizedRelayActivityStarts === 1 && authorizedRelayActivityEnds === 1 && authorizedHandlerRuns === 1,
+    "invalid or unauthorized relay traffic was able to hold remote activity or invoke a handler");
+  assert(await activityExecutor.execute("read_file", { path: "local.txt" }, {
+    callId: "local-activity", origin: "stdio",
+  }) === "authorized" && authorizedRelayActivityStarts === 1 && authorizedRelayActivityEnds === 1 && authorizedHandlerRuns === 2,
+  "local activity incorrectly held the remote idle-sleep lease");
+  await expectReject(() => activityExecutor.execute("read_file", { path: "handler-failure.txt" }, {
+    callId: "failing-activity", origin: "relay", authorization: { role: "owner" },
+  }), "unavailable", "handler failed after activity start");
+  assert(authorizedRelayActivityStarts === 2 && authorizedRelayActivityEnds === 2 && authorizedHandlerRuns === 3,
+    "relay handler failure leaked or skipped the balanced remote-activity end hook");
+
+  const resourceEvents = [];
+  const resourceExecutor = new ToolExecutor({
+    handlers: {
+      list_roots: async () => {
+        throw new BridgeError("unavailable", "local heavy-resource capacity is temporarily unavailable", {
+          retryable: true,
+          details: { reason: "resource_admission", pressure_state: "red", admission_reason: "host_pressure_red" },
+        });
+      },
+    },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, category: "ordinary operation" }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    logger: { event(level, name, fields) { resourceEvents.push({ level, name, fields }); } },
+  });
+  await expectReject(
+    () => resourceExecutor.execute("list_roots", {}, { callId: "resource-pressure", origin: "stdio" }),
+    "unavailable",
+    "local heavy-resource capacity is temporarily unavailable",
+  );
+  const resourceFailure = resourceEvents.find((event) => event.name === "tool.call.failed");
+  assert(resourceFailure?.level === "debug"
+    && resourceFailure.fields?.resource_admission_reason === "host_pressure_red"
+    && resourceFailure.fields?.resource_pressure_state === "red",
+  "resource-admission failure lost its coarse privacy-safe debug diagnosis");
+  const redactedResourceFields = resourceAdmissionLogFields({
+    details: { reason: "resource_admission", admission_reason: "private/path/value", pressure_state: "red\nsecret" },
+  });
+  assert(redactedResourceFields.resource_admission_reason === "resource_busy"
+    && redactedResourceFields.resource_pressure_state === "unknown"
+    && Object.keys(redactedResourceFields).length === 2,
+  "resource-admission debug projection allowed free-form diagnostic text into logs");
+  const unrelatedResourceFields = resourceAdmissionLogFields({
+    details: { reason: "unrelated", admission_reason: "host_pressure_red", pressure_state: "red" },
+  });
+  assert(Object.keys(unrelatedResourceFields).length === 0, "non-resource failures gained resource-admission log fields");
+
   let releaseAudit;
   let auditQueued = 0;
   const auditPending = new Promise((resolvePromise) => { releaseAudit = resolvePromise; });
@@ -521,23 +733,40 @@ async function testRelayReadinessStateGuards() {
   runtime.relay = { status: () => ({ ready: true, authenticated: true }) };
   await LocalRuntime.prototype.handleMessage.call(runtime, JSON.stringify({ type: "tool_call" }), { sessionId: 7, ready: false });
   assert(violation === "tool_call_before_ready" && toolCalls === 0, "explicit ready:false must remain fail-closed even when live status is ready");
+
+  // A valid ready tool call must reach local ownership before the async control-message path can yield.
+  // The HTTPS fallback commits its transport sequence immediately after onMessage returns a Promise;
+  // this ordering prevents an acknowledged-but-unowned execution gap.
+  let controlChecks = 0;
+  toolCalls = 0;
+  runtime.handleRelayControlMessage = async () => { controlChecks += 1; return false; };
+  runtime.handleRelayToolCall = async () => { toolCalls += 1; };
+  runtime.relay = { status: () => ({ ready: true, authenticated: true }) };
+  const ownedImmediately = LocalRuntime.prototype.handleMessage.call(
+    runtime, JSON.stringify({ type: "tool_call" }), { sessionId: 7, authenticated: true, ready: true },
+  );
+  assert(toolCalls === 1 && controlChecks === 0,
+    "ready relay tool call yielded through the async control path before local execution ownership was established");
+  await ownedImmediately;
 }
 
 async function testDuplicateRelayCallId() {
   let violation = "";
+  const callId = "call_duplicate_12345678";
   const runtime = {
-    activeRelayCalls: new Set(["duplicate-call"]),
+    activeRelayCalls: new Set([callId]),
     handleRelayProtocolViolation(reason) { violation = reason; },
   };
   await LocalRuntime.prototype.handleRelayToolCall.call(runtime, {
     type: "tool_call",
-    id: "duplicate-call",
+    id: callId,
     tool: "read_file",
     arguments: { path: "README.md" },
     authorization: { account_id: "acct_testowner_12345678901234567890", account_version: 1, client_id: `mcp_client_${"c".repeat(43)}`, family_id: `mcp_family_${"c".repeat(43)}`, role: "owner" },
+    timeout_ms: 5_000,
   }, { sessionId: 1 });
   assert(violation === "duplicate_tool_call_id", "duplicate relay call ID was not rejected as a protocol error");
-  assert(runtime.activeRelayCalls.has("duplicate-call"), "duplicate relay call removed the original call lifecycle");
+  assert(runtime.activeRelayCalls.has(callId), "duplicate relay call removed the original call lifecycle");
 }
 
 function testRelayCancellationSuppression() {
@@ -576,12 +805,18 @@ async function testRelayResumeReconciliation() {
   });
   runtime.relayCallRecovery.pendingResults.set("call_keep_12345678", { id: "call_keep_12345678" });
   runtime.relayCallRecovery.pendingResults.set("call_discard_12345678", { id: "call_discard_12345678" });
-  LocalRuntime.prototype.reconcileRelayCalls.call(runtime, ["call_keep_12345678"]);
+  const missingResumedCalls = LocalRuntime.prototype.reconcileRelayCalls.call(runtime, ["call_keep_12345678", "call_missing_12345678"]);
+  assert(JSON.stringify(missingResumedCalls) === JSON.stringify(["call_missing_12345678"]),
+    "reconnect reconciliation did not prove which Worker-resumed call was never received by the daemon");
   assert(cancelled.join(",") === "call_cancel_12345678", "reconnect reconciliation cancelled the wrong active call");
   assert(runtime.suppressedRelayResults.get("call_cancel_12345678") === "caller_no_longer_waiting", "orphaned active call result was not suppressed");
   assert(runtime.relayCallRecovery.pendingResults.has("call_keep_12345678")
     && !runtime.relayCallRecovery.pendingResults.has("call_discard_12345678"), "reconnect reconciliation retained an orphaned queued result");
-  assert(events.some((event) => event.name === "relay.calls.reconciled"), "reconnect reconciliation was not observable");
+  const reconciledEvent = events.find((event) => event.name === "relay.calls.reconciled");
+  assert(reconciledEvent?.fields?.missing_resumed_calls === 1,
+    "reconnect reconciliation did not expose the aggregate daemon-proven missing-call count");
+  assert(!JSON.stringify(reconciledEvent?.fields || {}).includes("call_missing_12345678"),
+    "reconnect reconciliation log fields leaked a raw resumed call ID");
 
   const revocationAttempts = [];
   const aggregateRevocationRuntime = {
@@ -603,11 +838,13 @@ async function testRelayResumeReconciliation() {
   let acknowledged = "";
   const cancelledControlCalls = [];
   let revokedAuthority;
+  let resumeAck;
   let revocationAck;
   let revocationInterrupt = null;
   const controlRuntime = {
     relayResumeSessionId: 0,
-    reconcileRelayCalls(ids) { this.resumed = ids; },
+    relayResumeMissingIds: [],
+    reconcileRelayCalls(ids) { this.resumed = ids; return ["call_missing_12345678"]; },
     cancelRelayCall(id, reason) { cancelledControlCalls.push({ id, reason }); return true; },
     applyAuthorityRevocation(value) { revokedAuthority = value; },
     handleRelayProtocolViolation(reason) { violation = reason; },
@@ -619,7 +856,11 @@ async function testRelayResumeReconciliation() {
       acknowledge() {},
       confirmReady() { confirmed += 1; return true; },
       interrupt(category) { revocationInterrupt = category; return true; },
-      sendForSession(message, sessionId) { revocationAck = { message, sessionId }; return { ok: true }; },
+      sendForSession(message, sessionId) {
+        if (message?.type === "resume_calls_ack") resumeAck = { message, sessionId };
+        else revocationAck = { message, sessionId };
+        return { ok: true };
+      },
     },
   };
   await LocalRuntime.prototype.handleRelayControlMessage.call(
@@ -628,6 +869,35 @@ async function testRelayResumeReconciliation() {
     { sessionId: 17, authenticated: true, ready: false },
   );
   assert(controlRuntime.relayResumeSessionId === 17 && controlRuntime.resumed[0] === "call_valid_12345678", "valid resume_calls did not establish the reconnect contract");
+  assert(resumeAck === undefined
+    && JSON.stringify(controlRuntime.relayResumeMissingIds) === JSON.stringify(["call_missing_12345678"]),
+  "resume reconciliation acknowledged missing ownership before local ready_ack completed");
+  let failedResumeInterrupt = null;
+  const failedResumeRuntime = {
+    relayResumeSessionId: 0,
+    relayResumeMissingIds: [],
+    reconcileRelayCalls() { return []; },
+    handleRelayProtocolViolation() {},
+    relay: {
+      sendForSession() { return { ok: false }; },
+      confirmReady() { return true; },
+      interrupt(category) { failedResumeInterrupt = category; return true; },
+    },
+  };
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    failedResumeRuntime,
+    { type: "resume_calls", ids: [] },
+    { sessionId: 18, authenticated: true, ready: false },
+  );
+  assert(failedResumeRuntime.relayResumeSessionId === 18 && failedResumeInterrupt === null,
+    "resume reconciliation attempted acknowledgement before local readiness");
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    failedResumeRuntime,
+    { type: "ready_ack" },
+    { sessionId: 18, authenticated: true, ready: false },
+  );
+  assert(failedResumeRuntime.relayResumeSessionId === 18 && failedResumeInterrupt === "relay_transport_error",
+    "failed post-readiness resume acknowledgement was treated as a completed relay reconciliation");
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     {
@@ -664,7 +934,10 @@ async function testRelayResumeReconciliation() {
     { type: "ready_ack" },
     { sessionId: 17, authenticated: true, ready: false },
   );
-  assert(confirmed === 1 && controlRuntime.relayResumeSessionId === 0, "ready_ack was not gated by resume reconciliation");
+  assert(confirmed === 1 && controlRuntime.relayResumeSessionId === 0
+    && resumeAck?.sessionId === 17
+    && JSON.stringify(resumeAck.message?.missing_ids) === JSON.stringify(["call_missing_12345678"]),
+  "ready_ack did not complete local readiness before sending the missing-call proof");
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "tool_result_ack", id: "call_valid_12345678" },
@@ -718,16 +991,23 @@ function testRelayHandshakeDiagnostics() {
     last_transport_error_class: "ECONNRESET",
     last_disconnected_at: "2026-08-04T11:36:20.000Z",
     last_ready_duration_ms: 123456,
+    last_ready_inbound_silence_ms: 15000,
   });
   assert(diagnostics.schema_version === 1
     && diagnostics.network_route === "system-network-stack"
     && diagnostics.outage_count === 4
     && diagnostics.outage_attempts === 2
     && diagnostics.last_close_category === "relay_heartbeat_timeout"
-    && diagnostics.previous_ready_duration_ms === 123456,
+    && diagnostics.previous_ready_duration_ms === 123456
+    && diagnostics.previous_ready_inbound_silence_ms === 15000,
   "relay handshake diagnostics lost bounded outage evidence");
-  const bounded = relayHandshakeDiagnostics({ outage_count: -1, outage_duration_ms: Number.POSITIVE_INFINITY });
-  assert(bounded.outage_count === 0 && bounded.outage_duration_ms === 0,
+  const bounded = relayHandshakeDiagnostics({
+    outage_count: -1,
+    outage_duration_ms: Number.POSITIVE_INFINITY,
+    last_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
+  });
+  assert(bounded.outage_count === 0 && bounded.outage_duration_ms === 0
+    && bounded.previous_ready_inbound_silence_ms === 0,
     "relay handshake diagnostics accepted invalid numeric fields");
 }
 
@@ -747,14 +1027,42 @@ function testRelayToolTimeoutNormalization() {
     timeout_ms: relayContract.maximumRelayToolTimeoutMs,
   });
   assert(accepted.ok && accepted.timeoutMs === relayContract.maximumRelayToolTimeoutMs, "local relay rejected the shared maximum call deadline");
-  const clamped = normalizeRelayToolCall({
-    id: "call_timeout_clamped_12345678",
+  for (const timeout_ms of [relayContract.maximumRelayToolTimeoutMs + 1, -1, "5000", undefined]) {
+    const rejected = normalizeRelayToolCall({
+      id: "call_timeout_rejected_12345678",
+      tool: "exec_command",
+      arguments: { command: "true" },
+      authorization,
+      ...(timeout_ms === undefined ? {} : { timeout_ms }),
+    });
+    assert(!rejected.ok, `local relay accepted malformed timeout ${String(timeout_ms)}`);
+  }
+  const invalidId = normalizeRelayToolCall({
+    id: "arbitrary id with spaces",
     tool: "exec_command",
     arguments: { command: "true" },
     authorization,
-    timeout_ms: relayContract.maximumRelayToolTimeoutMs + 60_000,
+    timeout_ms: 5_000,
   });
-  assert(clamped.ok && clamped.timeoutMs === relayContract.maximumRelayToolTimeoutMs, "local relay accepted a deadline above the shared contract");
+  assert(!invalidId.ok && invalidId.id === "", "local relay accepted an invalid call-id shape");
+  const invalidTool = normalizeRelayToolCall({
+    id: "call_invalid_tool_12345678",
+    tool: "Exec Command",
+    arguments: { command: "true" },
+    authorization,
+    timeout_ms: 5_000,
+  });
+  assert(!invalidTool.ok, "local relay accepted an invalid tool-name shape");
+  for (const malformedAuthorization of [
+    { ...authorization, account_version: "1" },
+    { ...authorization, role: 1 },
+  ]) {
+    const rejected = normalizeRelayToolCall({
+      id: "call_invalid_authority_12345678", tool: "exec_command", arguments: { command: "true" },
+      authorization: malformedAuthorization, timeout_ms: 5_000,
+    });
+    assert(!rejected.ok, "local relay coerced malformed authorization fields instead of rejecting the envelope");
+  }
 }
 
 function testRuntimeConvenienceMethods() {
@@ -788,6 +1096,24 @@ function testRuntimeConvenienceMethods() {
     ["disconnected"],
     ["ready"],
   ]), "runtime relay-recovery delegation drifted");
+}
+
+async function testRuntimeStartStopRace() {
+  let rejectRelayStart;
+  const lifecycle = new LifecycleController("test runtime");
+  const runtime = {
+    relay: { start: () => new Promise((_, reject) => { rejectRelayStart = reject; }) },
+    lifecycle,
+    policy: { profile: "agent" },
+  };
+  const starting = LocalRuntime.prototype.start.call(runtime);
+  await Promise.resolve();
+  assert(lifecycle.snapshot().state === "starting", "runtime start-stop fixture did not enter starting state");
+  lifecycle.beginStop();
+  lifecycle.markStopped();
+  rejectRelayStart(new Error("relay stopped during startup"));
+  await starting;
+  assert(lifecycle.snapshot().state === "stopped", "a late relay-start rejection overwrote an already-stopped runtime lifecycle");
 }
 
 function testRelayReconnectDelivery() {
@@ -1804,6 +2130,14 @@ function testRuntimeInfoProjection() {
     policy: null,
     tool_delivery: null,
     runtime: {
+      relay: {
+        authenticated: true, ready: true, closed: false, transport: "https", network_route: "system-network-stack",
+        reconnect_attempt: 2, outage_active: false, outage_count: 4, outage_duration_ms: 321,
+        last_close_category: "relay_connect_timeout", last_close_code: 1006, last_transport_error_class: "network_error",
+        https_fallback_active: true, websocket_ready: false,
+        https_fallback: { session_id: "must_not_escape_summary", outbound_queue: ["content"] },
+        heartbeat: { application_inbound_silence_ms: 999 }, websocket_outage_duration_ms: 888,
+      },
       processes: null,
       process_sessions: [],
       managed_jobs: { active: 2, retained: 3, maximum: 9, staged: 1, capacity: { retained_state: 9, retired_state: 6, retired_unreadable: 2 } },
@@ -1811,7 +2145,11 @@ function testRuntimeInfoProjection() {
   }, "summary");
   assert(summary.detail === "summary" && summary.policy && Object.keys(summary.policy).length === 0
     && summary.tool_delivery.daemon_advertised_tool_count === 0
-    && summary.runtime.lifecycle === null && summary.runtime.relay === null
+    && summary.runtime.lifecycle === null && summary.runtime.relay?.ready === true
+    && summary.runtime.relay?.transport === "https" && summary.runtime.relay?.outage_count === 4
+    && summary.runtime.relay?.https_fallback_active === true && summary.runtime.relay?.websocket_ready === false
+    && !("https_fallback" in summary.runtime.relay) && !("heartbeat" in summary.runtime.relay)
+    && !("websocket_outage_duration_ms" in summary.runtime.relay)
     && summary.runtime.processes.active_processes === 0 && summary.runtime.processes.draining_processes === 0
     && summary.runtime.process_sessions.active === 0 && !("staged" in summary.runtime.process_sessions)
     && summary.runtime.managed_jobs.active === 2 && summary.runtime.managed_jobs.staged === 1

@@ -40,8 +40,10 @@ await runSelfTestPhase("Worker source", workerSourceSelfTest);
 console.log("local daemon/state/cli/log/service/worker self-test ok");
 
 async function runSelfTestPhase(name, callback) {
+  console.log(`local self-test phase started: ${name}`);
   try {
     await callback();
+    console.log(`local self-test phase completed: ${name}`);
   } catch (error) {
     throw new Error(`local self-test phase failed (${name}): ${String(error?.message || error)}`, { cause: error });
   }
@@ -563,9 +565,27 @@ async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [],
   return child;
 }
 
-function waitForChildExit(child) {
+function waitForChildExit(child, timeoutMs = DAEMON_FIXTURE_TIMEOUT_MS) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolvePromise) => { child.once("exit", resolvePromise); });
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    let timeout;
+    const onExit = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolvePromise();
+    };
+    timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.off("exit", onExit);
+      rejectPromise(new Error(`daemon fixture did not exit within ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.once("exit", onExit);
+    if (child.exitCode !== null || child.signalCode !== null) onExit();
+  });
 }
 
 function isProcessAlive(pid) {

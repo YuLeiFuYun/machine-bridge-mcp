@@ -79,13 +79,13 @@ export class SecurityAuditLog {
       return await Promise.race([
         closing,
         new Promise((resolvePromise) => {
-          timer = setTimeout(() => resolvePromise(false), Math.max(1, Number(timeoutMs) || CLOSE_TIMEOUT_MS));
+          timer = setTimeout(() => resolvePromise(false), normalizeCloseTimeoutMs(timeoutMs));
           timer.unref?.();
         }),
       ]);
     } finally {
       clearTimeout(timer);
-      await worker.terminate().catch(() => {});
+      await worker.terminate().catch(() => { /* Audit shutdown already owns the terminal state; worker termination is best-effort cleanup. */ });
       if (this.worker === worker) this.worker = null;
       this.failPending(false);
     }
@@ -146,13 +146,23 @@ export class SecurityAuditLog {
     const worker = this.worker;
     this.worker = null;
     this.failPending(false);
-    if (!this.closed) void worker?.terminate?.().catch?.(() => {});
+    if (!this.closed) void worker?.terminate?.().catch?.(() => {
+      // The audit worker has already failed and pending records were settled false;
+      // termination is best-effort cleanup and cannot restore audit availability.
+    });
   }
 
   failPending(value) {
     for (const pending of this.pending.values()) pending.resolve(value);
     this.pending.clear();
   }
+}
+
+function normalizeCloseTimeoutMs(value) {
+  let numeric;
+  try { numeric = Number(value); } catch { return CLOSE_TIMEOUT_MS; }
+  if (!Number.isFinite(numeric) || numeric <= 0) return CLOSE_TIMEOUT_MS;
+  return Math.min(CLOSE_TIMEOUT_MS, Math.max(1, numeric));
 }
 
 function initializingSnapshot() {

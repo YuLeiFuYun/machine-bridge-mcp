@@ -1168,6 +1168,24 @@ try {
   const discardedResult = await waitForJob(manager, discarded.job_id);
   const discardedStep = discardedResult.result.steps[0];
   assert(discardedStep.output_discarded === true && discardedStep.stdout === "" && discardedStep.stderr === "", "discard output mode retained output");
+  assert(Number.isFinite(discardedStep.resource_admission_ms) && discardedStep.resource_admission_ms >= 0
+    && discardedStep.resource_admission_ms <= discardedStep.duration_ms,
+  "managed job result omitted or invalidated owner resource admission timing");
+
+  const delegatedTimingContext = { authority: { owner: false, principal: {
+    kind: "account", accountId: `acct_${"t".repeat(32)}`, accountVersion: 1,
+    clientId: `mcp_client_${"t".repeat(43)}`, familyId: `mcp_family_${"t".repeat(43)}`, role: "operator",
+  } } };
+  const delegatedTiming = manager.createJob({
+    name: "delegated timing projection",
+    steps: [{ argv: [process.execPath, "-e", "process.stdout.write('ok')"], timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+  }, { launch: true, executionPriority: "interactive" }, delegatedTimingContext);
+  const delegatedTimingRead = await waitForJob(manager, delegatedTiming.job_id, null, MANAGED_JOB_TEST_WAIT_MS, delegatedTimingContext);
+  assert(!Object.hasOwn(delegatedTimingRead.result.steps[0], "resource_admission_ms"),
+    "delegated managed-job read exposed machine-user resource admission timing");
+  const ownerTimingRead = manager.read({ job_id: delegatedTiming.job_id });
+  assert(Number.isFinite(ownerTimingRead.result.steps[0].resource_admission_ms),
+    "owner managed-job read lost resource admission timing needed for queue diagnosis");
 
   const descendantPidFile = join(workspace, "managed-descendant.pid");
   const treeOrderFile = join(workspace, "managed-tree-order.txt");
@@ -1188,7 +1206,7 @@ try {
   assert(Number.isInteger(treeRunnerPid) && treeRunnerPid > 0, "managed job private runner claim omitted the runner pid");
   assert(typeof treeRunnerClaim.processStartedAt === "string" && !("launchToken" in treeRunnerClaim),
     "runner did not atomically upgrade its provisional claim to an exact token-free identity");
-  const descendantPid = Number(await waitForFileText(descendantPidFile, MANAGED_JOB_TREE_READY_MS));
+  const descendantPid = Number(await waitForManagedJobFixtureFileText(manager, treeTimeout.job_id, descendantPidFile, MANAGED_JOB_TREE_READY_MS));
   assert(Number.isInteger(descendantPid) && descendantPid > 0, "managed job process-tree fixture published an invalid descendant pid");
   const treeTimeoutResult = await waitForJob(manager, treeTimeout.job_id, null, MANAGED_JOB_TEST_WAIT_MS);
   assert(treeTimeoutResult.result.steps[0].timed_out === true, "managed job process-tree fixture did not time out");
@@ -1321,7 +1339,7 @@ try {
     }],
   });
   await waitForRunning(changedResourceManager, changedResourceJob.job_id);
-  const changedResourceChildPid = Number(await waitForFileText(changedResourceReadyFile, MANAGED_JOB_TREE_READY_MS));
+  const changedResourceChildPid = Number(await waitForManagedJobFixtureFileText(changedResourceManager, changedResourceJob.job_id, changedResourceReadyFile, MANAGED_JOB_TREE_READY_MS));
   assert(Number.isInteger(changedResourceChildPid) && changedResourceChildPid > 0,
     "resource-recovery fixture did not prove the original resource was materialized before interruption");
   const changedResourceDir = join(jobRoot, changedResourceJob.job_id);
@@ -1574,14 +1592,14 @@ async function waitForRunning(manager, jobId, timeoutMs = MANAGED_JOB_TEST_WAIT_
   throw new Error("timed out waiting for managed job to start");
 }
 
-async function waitForJob(manager, jobId, terminal = null, timeoutMs = MANAGED_JOB_TEST_WAIT_MS) {
+async function waitForJob(manager, jobId, terminal = null, timeoutMs = MANAGED_JOB_TEST_WAIT_MS, context = {}) {
   const terminalStates = terminal || new Set([
     "succeeded", "failed", "cancelled", "succeeded_cleanup_failed", "failed_cleanup_failed",
     "cancelled_cleanup_failed", "recovered", "recovery_failed",
   ]);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = manager.read({ job_id: jobId });
+    const value = manager.read({ job_id: jobId }, context);
     if (isSettledTerminalJob(value, terminalStates)) return value;
     await delay(50);
   }
@@ -1597,7 +1615,7 @@ function isSettledTerminalJob(value, terminalStates) {
   return terminalStates.has(value.status) && value.artifact_cleanup_pending !== true;
 }
 
-async function waitForFileText(file, timeoutMs) {
+async function waitForManagedJobFixtureFileText(manager, jobId, file, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -1606,9 +1624,20 @@ async function waitForFileText(file, timeoutMs) {
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
+    const value = manager.read({ job_id: jobId });
+    if (!["queued", "running", "cleaning"].includes(value.status)) {
+      throw new Error(`managed job fixture ended before publishing ${file}: ${await managedJobFixtureDiagnostics(jobId, value)}`);
+    }
     await delay(50);
   }
-  throw new Error(`timed out waiting for managed job fixture file: ${file}`);
+  const value = manager.read({ job_id: jobId });
+  throw new Error(`timed out waiting for managed job fixture file ${file}: ${await managedJobFixtureDiagnostics(jobId, value)}`);
+}
+
+async function managedJobFixtureDiagnostics(jobId, value) {
+  let runnerStderr = "";
+  try { runnerStderr = (await readFile(join(jobRoot, jobId, "runner.err.log"), "utf8")).slice(-2048); } catch {}
+  return `status=${value.status}; phase=${value.current_phase || "none"}; result=${JSON.stringify(value.result || null)}; runner_stderr=${runnerStderr}`;
 }
 
 async function waitForPidExit(pid, timeoutMs) {

@@ -12,7 +12,7 @@ import { ACTIVATION_SCHEMA_VERSION, writePrereleaseActivation } from "./prerelea
 import { verifyTarball } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { discoverForegroundDaemonRecovery } from "./foreground-daemon-recovery.mjs";
-import { assertPersistentActivationExecutionSurface, persistentActivationSpawnOptions, persistentCandidateFailureMessage, validateActivationRecoveryPayload } from "./persistent-activation-process.mjs";
+import { assertPersistentActivationExecutionSurface, persistentActivationSpawnOptions, persistentCandidateFailureMessage, preflightPersistentActivationWorkerAuth, validateActivationRecoveryPayload } from "./persistent-activation-process.mjs";
 import { assertCandidateMatchesCurrentSource, validateCandidateManifest } from "./release-candidate-manifest.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { createHardenedNpmSession, settleHardenedNpmSession } from "./hardened-npm-session.mjs";
@@ -36,9 +36,10 @@ const lifecycleNpmCli = process.env.npm_execpath;
 let sourceNpmCli = lifecycleNpmCli;
 let npmCli = "";
 let npmSession = null;
+let persistentExecutionSurface = "local";
 
 try {
-  if (persistentActivation) assertPersistentActivationExecutionSurface(process.env);
+  if (persistentActivation) persistentExecutionSurface = assertPersistentActivationExecutionSurface(process.env);
   if (installOnly) sourceNpmCli = resolveNpmCli({ allowLifecycleNpmCli: false, allowFallbackLocations: false });
   if (!sourceNpmCli) throw new Error("candidate live startup must run through npm so npm_execpath is available");
   const currentPackage = readJson(join(root, "package.json"), "current package");
@@ -72,6 +73,13 @@ try {
     "--install-only", "--allow-worker-deploy", "--activate-service",
   ].includes(value));
   if (persistentActivation) {
+    await preflightPersistentActivationWorkerAuth({
+      surface: persistentExecutionSurface,
+      stateRoot,
+      packageRoot: root,
+      npmCli,
+      env: process.env,
+    });
     await withReleaseRuntimeLock(stateRoot, async () => {
       const installPrefix = createCandidateRuntimePrefix({ stateRoot, version: manifest.package_version, shasum: manifest.shasum });
       const installedPackage = installCandidateRuntime({ installPrefix, manifest, tarball });

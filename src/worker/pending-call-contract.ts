@@ -1,4 +1,5 @@
 import type { AuthorityRevocation } from "../shared/authority-revocation.mjs";
+import type { DaemonChannel } from "./daemon-channel.ts";
 
 export type PendingCallOutcome =
   | { ok: true; value: unknown }
@@ -22,7 +23,7 @@ export class PendingCallRegistrationError extends Error {
 
 export interface PendingCallRecord {
   id: string;
-  socket?: WebSocket;
+  socket?: DaemonChannel;
   daemonInstanceId?: string;
   reconnectTimeout?: ReturnType<typeof setTimeout>;
   reconnectDeadlineAt?: number;
@@ -40,6 +41,7 @@ export interface PendingCallRecord {
   deadlineAt: number;
   remainingTimeoutMs: number;
   onTimeout: (record: PendingCallRecord) => Error;
+  redeliverAfterProvenMissing?: (record: PendingCallRecord, channel: DaemonChannel) => boolean;
   settlement: PendingCallSettlement;
   signal?: AbortSignal;
   abortHandler?: () => void;
@@ -47,7 +49,7 @@ export interface PendingCallRecord {
 
 export interface RegisterPendingCall {
   id: string;
-  socket: WebSocket;
+  socket: DaemonChannel;
   daemonInstanceId?: string;
   clientRequestKey?: string;
   authority?: AuthorityRevocation;
@@ -55,6 +57,7 @@ export interface RegisterPendingCall {
   recovery?: Record<string, unknown>;
   timeoutMs: number;
   onTimeout: (record: PendingCallRecord) => Error;
+  redeliverAfterProvenMissing?: (record: PendingCallRecord, channel: DaemonChannel) => boolean;
   signal?: AbortSignal;
   onAbort?: (record: PendingCallRecord) => Error;
 }

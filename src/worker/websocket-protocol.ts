@@ -1,5 +1,19 @@
+const RELAY_CALL_ID = /^call_[A-Za-z0-9_-]{8,240}$/;
+
 export function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function daemonResumeMissingCallIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > 32) return null;
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const id of value) {
+    if (typeof id !== "string" || !RELAY_CALL_ID.test(id) || seen.has(id)) return null;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
 }
 
 export function rejectDaemonMessage(ws: WebSocket, error: string, closeCode: number, closeReason: string): void {

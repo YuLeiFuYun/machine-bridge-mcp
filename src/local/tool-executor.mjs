@@ -3,6 +3,7 @@ import catalog from "../shared/tool-catalog.json" with { type: "json" };
 import { compileToolArgumentValidators } from "../shared/tool-argument-validation.mjs";
 import { isRemoteDurableProcessTool, remoteDurableProcessTimeoutSeconds } from "../shared/foreground-timeout.mjs";
 import { BridgeError, errorCode, normalizeBridgeError } from "./errors.mjs";
+import { resourceAdmissionLogFields } from "./resource-admission-diagnostics.mjs";
 import { normalizeToolResult } from "./tool-result-boundary.mjs";
 import { createSecurityAuditFailureReporter } from "./security-audit-warning.mjs";
 import { enqueueSecurityAudit } from "./security-audit-dispatch.mjs";
@@ -23,6 +24,8 @@ export class ToolExecutor {
     this.observability = options.observability;
     this.securityAudit = options.securityAudit || null;
     this.logger = options.logger || console;
+    this.onAuthorizedRelayActivityStart = typeof options.onAuthorizedRelayActivityStart === "function" ? options.onAuthorizedRelayActivityStart : null;
+    this.onAuthorizedRelayActivityEnd = typeof options.onAuthorizedRelayActivityEnd === "function" ? options.onAuthorizedRelayActivityEnd : null;
     this.safeMessage = typeof options.safeMessage === "function" ? options.safeMessage : (error) => String(error?.message || error || "operation failed");
     this.slowMs = Number.isFinite(Number(options.slowMs)) ? Math.max(1, Number(options.slowMs)) : 30_000;
     this.pipeline = composeMiddleware([
@@ -30,7 +33,7 @@ export class ToolExecutor {
       observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs),
       authorizeMiddleware(this.policyGate, this.accountAccessGate, this.operationAuthorizer, this.callRegistry),
       validateArgumentsMiddleware(),
-    ], invokeHandler(this.handlers));
+    ], invokeHandler(this.handlers, this.onAuthorizedRelayActivityStart, this.onAuthorizedRelayActivityEnd));
   }
 
   execute(tool, args = {}, request = {}) {
@@ -139,23 +142,32 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       const status = code === "cancelled" ? "cancelled" : code === "timeout" ? "timeout" : "failed";
       observability.finish(operation.tool, { status, durationMs, errorCode: code, slow: durationMs >= slowMs });
       enqueueSecurityAudit(securityAudit, operation, { outcome: status, durationMs, errorCode: code }, auditFailureReporter);
+      const resourceAdmission = resourceAdmissionLogFields(normalized);
       logger.event?.("debug", "tool.call.failed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin,
         duration_ms: durationMs, error_code: code, retryable: normalized.retryable,
         authority_role: operation.context.authority?.principal?.role || "local",
         risk_category: operation.context.operationAuthorization?.category || "ordinary",
+        ...resourceAdmission,
       }, "Tool call failed");
       throw normalized;
     }
   };
 }
 
-function invokeHandler(handlers) {
+function invokeHandler(handlers, onAuthorizedRelayActivityStart, onAuthorizedRelayActivityEnd) {
   return async (operation) => {
     const handler = handlers[operation.tool];
     if (typeof handler !== "function") throw new Error(`runtime handler is missing for tool: ${operation.tool}`);
-    return handler(operation.args, operation.context);
+    const relayActivity = operation.context.origin === "relay";
+    if (relayActivity) bestEffortActivityHook(onAuthorizedRelayActivityStart);
+    try { return await handler(operation.args, operation.context); }
+    finally { if (relayActivity) bestEffortActivityHook(onAuthorizedRelayActivityEnd); }
   };
+}
+
+function bestEffortActivityHook(callback) {
+  try { callback?.(); } catch { /* Auxiliary power-management hooks must not change tool settlement. */ }
 }
 
 

@@ -59,7 +59,7 @@ function downloadAttempt(artifact, options) {
         }
         chunks.push(buffer);
       });
-      response.once("error", (error) => finish(error));
+      response.once("error", (error) => finish(error)); response.once("aborted", () => finish(Object.assign(new Error(`${artifact.name} tarball response aborted`), { code: "ECONNRESET" })));
       response.once("end", () => finish(null, Buffer.concat(chunks, total)));
     });
     try { request.end(); } catch (error) { finish(error); }
@@ -95,7 +95,7 @@ function normalizeProxyEnvironment(source) {
 }
 function retryableDownloadError(error) {
   const status = Number(error?.statusCode || 0);
-  return TRANSIENT_NETWORK_CODES.has(String(error?.code || "")) || status === 429 || (status >= 500 && status <= 599);
+  return TRANSIENT_NETWORK_CODES.has(String(error?.code || "")) || String(error?.message || "").trim().toLowerCase() === "aborted" || status === 429 || (status >= 500 && status <= 599);
 }
 function retryDelay(attempt, options) {
   const milliseconds = Math.min(RETRY_BASE_MS * attempt, 3_000);

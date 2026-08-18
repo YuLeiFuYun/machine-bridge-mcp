@@ -1,5 +1,4 @@
 export const REMOTE_FOREGROUND_TIMEOUT_SECONDS: number;
-export const REMOTE_PROCESS_FOREGROUND_TIMEOUT_SECONDS: number;
 export const REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS: number;
 export const REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS: number;
 export function isConfigurableForegroundTool(name: string): boolean;

@@ -231,6 +231,8 @@ try {
   assert.equal(configurationProbes, 1);
 
   await verifyDeploymentPropagationBudget();
+  await verifyJsonDeploymentNeverStartsInteractiveLogin();
+  await verifyInteractiveLoginIsRecheckedBeforeDeploy();
   await verifyRecordedCurrentDeploymentDoesNotRedeploy();
   await verifyDeploymentIdempotency();
   await verifyPersistedDeploymentIdempotency();
@@ -267,6 +269,59 @@ async function verifyDeploymentPropagationBudget() {
   const serializedLogs = JSON.stringify(logs);
   assert(!serializedLogs.includes(state.worker.url) && !serializedLogs.includes(state.worker.name),
     "routine Worker deployment logs retained the private Worker endpoint or workspace-derived Worker name");
+}
+
+async function verifyJsonDeploymentNeverStartsInteractiveLogin() {
+  const state = workerState("mbm-json-auth-test");
+  const calls = [];
+  let error = null;
+  try {
+    await ensureWorkerDeployment(state, { json: true }, {
+      packageRoot: root,
+      expectedVersion: version,
+      runWrangler: async (args, options) => {
+        calls.push({ args, options });
+        return { code: 1, stdout: "", stderr: "not authenticated" };
+      },
+      saveState: () => {},
+      logger: quietLogger(),
+    });
+  } catch (failure) { error = failure; }
+  assert.equal(error?.code, "worker_authentication_required");
+  assert.equal(error?.sideEffectsStarted, false);
+  assert.deepEqual(calls.map(call => call.args), [["whoami"]]);
+  assert.equal(calls[0]?.options?.capture, true);
+  assert.equal(calls[0]?.options?.allowFailure, true);
+}
+
+async function verifyInteractiveLoginIsRecheckedBeforeDeploy() {
+  const state = workerState("mbm-login-recheck-test");
+  const calls = [];
+  let whoamiCount = 0;
+  await ensureWorkerDeployment(state, {}, {
+    packageRoot: root,
+    expectedVersion: version,
+    runWrangler: async (args, options) => {
+      calls.push({ args, options });
+      if (args[0] === "whoami") {
+        whoamiCount += 1;
+        return whoamiCount === 1
+          ? { code: 1, stdout: "", stderr: "not authenticated" }
+          : { code: 0, stdout: "authenticated", stderr: "" };
+      }
+      if (args[0] === "login") return { code: 0, stdout: "", stderr: "" };
+      return { code: 0, stdout: "Deployed https://mbm-login-recheck-test.account-example.workers.dev", stderr: "" };
+    },
+    withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
+    saveState: () => {},
+    retryHealth: async () => ({ ok: true, version, networkRoute: "direct" }),
+    logger: quietLogger(),
+  });
+  assert.deepEqual(calls.map(call => call.args[0]), ["whoami", "login", "whoami", "deploy"]);
+  assert.equal(calls[0]?.options?.capture, true);
+  assert.notEqual(calls[1]?.options?.capture, true);
+  assert.equal(calls[2]?.options?.capture, true);
+  assert.equal(calls[3]?.options?.capture, true);
 }
 
 function verifyWorkerFingerprintPathBoundaries() {

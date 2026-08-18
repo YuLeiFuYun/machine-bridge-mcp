@@ -1,8 +1,10 @@
 import { toolCallAdmission, toolCallCapacityConfig, type ToolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { PendingCallRegistrationError, type PendingCallOutcome, type PendingCallRecord, type PendingCallSettlement, type RegisterPendingCall } from "./pending-call-contract.ts";
-import { PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
+import { boundedPendingDelayMs, PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
 import { pendingRegistrySnapshot } from "./pending-call-capacity.ts";
 import { recordMatchesAuthorityRevocation, type AuthorityRevocation } from "../shared/authority-revocation.mjs";
+import type { DaemonChannel } from "./daemon-channel.ts";
 type PendingCallRegistryOptions = PendingCallDeadlineOptions & {
   reservedCapacity?: number;
   reservedTools?: Iterable<string>;
@@ -16,14 +18,11 @@ export class PendingCallRegistry {
     this.capacity = toolCallCapacityConfig(maximum, options.reservedCapacity, options.reservedTools);
     this.deadlines = new PendingCallDeadlines(options);
   }
-  get size(): number { return this.byId.size; }
-  hasRequestKey(requestKey?: string): boolean { return Boolean(requestKey && this.byRequestKey.has(requestKey)); }
-  resultOwnership(id: string, socket: WebSocket): "owned" | "missing" | "stale" {
+  get size(): number { return this.byId.size; } hasRequestKey(requestKey?: string): boolean { return Boolean(requestKey && this.byRequestKey.has(requestKey)); }
+  resultOwnership(id: string, socket: DaemonChannel): "owned" | "missing" | "stale" {
     const record = this.byId.get(id); return !record ? "missing" : record.socket === socket ? "owned" : "stale";
   }
-  nextDeadlineDelayMs(): number {
-    return Math.min(Number.POSITIVE_INFINITY, ...[...this.byId.values()].map((record) => this.deadlines.nextDelayMs(record)));
-  }
+  nextDeadlineDelayMs(): number { return Math.min(Number.POSITIVE_INFINITY, ...[...this.byId.values()].map((record) => this.deadlines.nextDelayMs(record))); }
   async expireDue(now = this.deadlines.now()): Promise<number> {
     const due = [...this.byId.values()].filter((record) => this.deadlines.isDue(record, now));
     let expired = 0;
@@ -39,19 +38,15 @@ export class PendingCallRegistry {
     this.add(input, { resolve: resolveResult, reject: rejectResult });
     return result;
   }
-  resolve(id: string, socket: WebSocket, value: unknown): Promise<boolean> {
-    const record = this.byId.get(id);
-    return !record || record.socket !== socket ? Promise.resolve(false) : this.finish(id, { ok: true, value });
+  resolve(id: string, socket: DaemonChannel, value: unknown): Promise<boolean> {
+    const record = this.byId.get(id); return !record || record.socket !== socket ? Promise.resolve(false) : this.finish(id, { ok: true, value });
   }
-
-  reject(id: string, error: Error, socket?: WebSocket): Promise<boolean> {
-    const record = this.byId.get(id);
-    return !record || (socket && record.socket !== socket) ? Promise.resolve(false) : this.finish(id, { ok: false, error });
+  reject(id: string, error: Error, socket?: DaemonChannel): Promise<boolean> {
+    const record = this.byId.get(id); return !record || (socket && record.socket !== socket) ? Promise.resolve(false) : this.finish(id, { ok: false, error });
   }
 
   async cancelRequest(requestKey: string, onCancel: (record: PendingCallRecord) => Error): Promise<boolean> {
-    const id = this.byRequestKey.get(requestKey);
-    return id ? this.fail(id, onCancel, "pending daemon call was cancelled") : false;
+    const id = this.byRequestKey.get(requestKey); return id ? this.fail(id, onCancel, "pending daemon call was cancelled") : false;
   }
 
   async cancelAuthority(revocation: AuthorityRevocation, onCancel: (record: PendingCallRecord) => Error): Promise<number> {
@@ -61,16 +56,22 @@ export class PendingCallRegistry {
     return cancelled;
   }
 
-  async rejectSocket(socket: WebSocket, createError: (record: PendingCallRecord) => Error): Promise<number> {
+  async rejectSocket(socket: DaemonChannel, createError: (record: PendingCallRecord) => Error): Promise<number> {
     const ids = [...this.byId.values()].filter((record) => record.socket === socket).map((record) => record.id);
+    return this.rejectSocketIds(ids, socket, createError, "pending daemon call failed");
+  }
+
+  async rejectSocketIds(ids: Iterable<string>, socket: DaemonChannel, createError: (record: PendingCallRecord) => Error, fallback = "pending daemon call was not received", beforeReject?: (record: PendingCallRecord) => boolean): Promise<number> {
     let rejected = 0;
-    for (const id of ids) rejected += Number(await this.fail(id, createError, "pending daemon call failed"));
+    for (const id of ids) {
+      const record = this.byId.get(id); if (record?.socket === socket && beforeReject?.(record) !== true) rejected += Number(await this.fail(id, createError, fallback));
+    }
     return rejected;
   }
 
-  detachSocket(socket: WebSocket, graceMs: number, createError: (record: PendingCallRecord) => Error): number {
+  detachSocket(socket: DaemonChannel, graceMs: number, createError: (record: PendingCallRecord) => Error): number {
     const records = [...this.byId.values()].filter((record) => record.socket === socket);
-    const maximumGrace = Math.max(1, Math.floor(Number(graceMs) || 1));
+    const maximumGrace = boundedPendingDelayMs(graceMs, relayContract.reconnectGraceMs);
     for (const record of records) {
       record.socket = undefined;
       record.onReconnectTimeout = createError;
@@ -81,7 +82,7 @@ export class PendingCallRegistry {
     return records.length;
   }
 
-  rebindInstance(daemonInstanceId: string, socket: WebSocket): string[] {
+  rebindInstance(daemonInstanceId: string, socket: DaemonChannel): string[] {
     if (!daemonInstanceId) return [];
     const rebound: string[] = [];
     for (const record of this.byId.values()) {
@@ -118,7 +119,7 @@ export class PendingCallRegistry {
 
   private add(input: RegisterPendingCall, settlement: PendingCallSettlement): void {
     const startedAt = this.deadlines.now();
-    const timeoutMs = Math.max(1, Math.floor(Number(input.timeoutMs) || 1));
+    const timeoutMs = boundedPendingDelayMs(input.timeoutMs, relayContract.maximumRelayToolTimeoutMs);
     const abortHandler = input.signal ? () => { void this.expire(input.id, input.onAbort, "pending daemon call was cancelled"); } : undefined;
     const record: PendingCallRecord = {
       id: input.id, socket: input.socket, daemonInstanceId: input.daemonInstanceId, clientRequestKey: input.clientRequestKey,
@@ -129,7 +130,7 @@ export class PendingCallRegistry {
       } : {}),
       tool: String(input.tool || "unknown"), ...(input.recovery ? { recovery: input.recovery } : {}),
       startedAt, deadlineAt: startedAt + timeoutMs, remainingTimeoutMs: timeoutMs,
-      onTimeout: input.onTimeout, settlement, signal: input.signal, abortHandler,
+      onTimeout: input.onTimeout, redeliverAfterProvenMissing: input.redeliverAfterProvenMissing, settlement, signal: input.signal, abortHandler,
     };
     this.byId.set(input.id, record);
     if (input.clientRequestKey) this.byRequestKey.set(input.clientRequestKey, input.id);
@@ -166,7 +167,6 @@ export class PendingCallRegistry {
     outcome.ok ? record.settlement.resolve(outcome.value) : record.settlement.reject(outcome.error);
     return true;
   }
-
   private take(id: string): PendingCallRecord | undefined {
     const record = this.byId.get(id);
     if (!record) return undefined;

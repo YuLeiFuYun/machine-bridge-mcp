@@ -290,8 +290,8 @@ export class MacosBackgroundInputService {
       await chmod(output, 0o700);
       return output;
     } finally {
-      await rm(temporary, { force: true }).catch(() => {});
-      await rm(temporarySource, { force: true }).catch(() => {});
+      await rm(temporary, { force: true }).catch(() => { /* Preserve the primary native-helper result; temp cleanup is best-effort. */ });
+      await rm(temporarySource, { force: true }).catch(() => { /* Preserve the primary native-helper result; source cleanup is best-effort. */ });
     }
   }
 }

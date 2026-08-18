@@ -1,4 +1,5 @@
 // @ts-check
+import { compactRuntimeRelay } from "./runtime-info-relay-projection.mjs";
 
 export function projectRuntimeInfo(info, detail = "full") {
   if (detail !== "summary") return info;
@@ -20,7 +21,7 @@ export function projectRuntimeInfo(info, detail = "full") {
     },
     runtime: {
       lifecycle: runtime.lifecycle ?? null,
-      relay: runtime.relay ?? null,
+      relay: compactRuntimeRelay(runtime.relay),
       processes: compactProcesses(runtime.processes),
       process_sessions: compactCapacity(runtime.process_sessions),
       managed_jobs: compactCapacity(runtime.managed_jobs),

@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 const serviceWorkerSource = await readFile(new URL("../browser-extension/service-worker.js", import.meta.url), "utf8");
 const brokerAuthSource = await readFile(new URL("../browser-extension/broker-auth.js", import.meta.url), "utf8");
 const pairingBootstrapSource = await readFile(new URL("../browser-extension/pairing-bootstrap.js", import.meta.url), "utf8");
+const brokerLivenessSource = await readFile(new URL("../browser-extension/broker-liveness.js", import.meta.url), "utf8");
 const browserErrorBoundarySource = await readFile(new URL("../browser-extension/browser-error-boundary.js", import.meta.url), "utf8");
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const browserOperationsSource = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");
@@ -15,6 +16,7 @@ await testPairingGrantBoundary();
 await testInternalDelayService();
 testBrowserOperationScalarExactness();
 await testHandshakeReadiness();
+await testBrokerPongWatchdog();
 await testFailedReplacementPreservesPairing();
 await testSocketReplacementCleanup();
 await testResponseDeliveryFailureClosesSocket();
@@ -184,6 +186,66 @@ async function testHandshakeReadiness() {
   assert(mismatched.ok === false && mismatched.requires_manual_repair === true, "a different authenticated broker candidate bypassed explicit repair confirmation");
   const decorated = await api.pairConfiguration("ws://127.0.0.1:39393/extension?unexpected=1", "z".repeat(32), { replace: false });
   assert(decorated.ok === false && decorated.error === "invalid_pairing_material", "pairing accepted a decorated broker endpoint");
+}
+
+async function testBrokerPongWatchdog() {
+  const token = "w".repeat(32);
+  const endpoint = "ws://127.0.0.1:39393/extension";
+  const instances = [];
+  const sent = [];
+  const timers = new Map();
+  let nextTimer = 1;
+  let keepalive = null;
+  class MockWebSocket {
+    static OPEN = 1;
+    static CONNECTING = 0;
+    constructor() { this.readyState = MockWebSocket.CONNECTING; instances.push(this); }
+    send(value) { sent.push(JSON.parse(value)); }
+    close(code = 1000, reason = "") { this.readyState = 3; this.closeInfo = { code, reason }; this.onclose?.({ code, reason }); }
+    open() { this.readyState = MockWebSocket.OPEN; this.onopen?.(); }
+    receive(value) { this.onmessage?.({ data: JSON.stringify(value) }); }
+  }
+  const context = createContext({
+    brokerTokens: { "39393": token },
+    WebSocket: MockWebSocket,
+    setTimeout(callback, delay) {
+      const id = nextTimer++;
+      timers.set(id, { callback, delay });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    setInterval(callback, delay) { keepalive = { callback, delay }; return 1; },
+    clearInterval() {},
+    chrome: baseChrome(),
+  });
+  const api = loadServiceWorker(context, ["connect"]);
+  const ready = api.connect(endpoint, token);
+  await waitForCondition(() => instances.length === 1);
+  const socket = instances[0];
+  socket.open();
+  socket.receive({ type: "hello", role: "extension", protocol: 3 });
+  await tick();
+  socket.receive({ type: "hello_ack", role: "extension", protocol: 3, pong_watchdog: true });
+  await ready;
+  assert(keepalive?.delay === 20_000, "browser extension keepalive interval drifted");
+
+  keepalive.callback();
+  assert(sent.at(-1)?.type === "ping" && sent.at(-1)?.seq === 1,
+    "pong-watchdog broker did not receive a sequenced extension ping");
+  const firstPongTimer = [...timers.entries()].find(([, timer]) => timer.delay === 10_000);
+  assert(firstPongTimer, "sequenced browser ping did not arm its bounded pong timeout");
+  socket.receive({ type: "pong", seq: 1 });
+  assert(!timers.has(firstPongTimer[0]), "valid browser broker pong did not clear the watchdog timeout");
+  assert(socket.readyState === MockWebSocket.OPEN, "valid browser broker pong closed the extension socket");
+
+  keepalive.callback();
+  assert(sent.at(-1)?.type === "ping" && sent.at(-1)?.seq === 2,
+    "subsequent browser keepalive did not advance its transport sequence");
+  const secondPongTimer = [...timers.entries()].find(([, timer]) => timer.delay === 10_000);
+  assert(secondPongTimer, "second browser ping did not arm a pong timeout");
+  secondPongTimer[1].callback();
+  assert(socket.closeInfo?.code === 1012 && socket.closeInfo.reason.includes("pong timed out"),
+    "silent half-open browser broker was not closed after bounded pong silence");
 }
 
 async function testFailedReplacementPreservesPairing() {
@@ -2019,6 +2081,7 @@ function loadServiceWorker(context, names) {
   vm.runInContext(browserErrorBoundarySource, context, { filename: "browser-error-boundary.js" });
   vm.runInContext(brokerAuthSource, context, { filename: "broker-auth.js" });
   vm.runInContext(pairingBootstrapSource, context, { filename: "pairing-bootstrap.js" });
+  vm.runInContext(brokerLivenessSource, context, { filename: "broker-liveness.js" });
   vm.runInContext(`${serviceWorkerSource}\nglobalThis.__machineBridgeServiceWorkerTest = { ${names.join(", ")} };`, context, { filename: "service-worker.js" });
   return context.__machineBridgeServiceWorkerTest;
 }

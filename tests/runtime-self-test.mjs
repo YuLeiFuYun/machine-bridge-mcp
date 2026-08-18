@@ -6,9 +6,10 @@ import { policyProfile } from "../src/local/policy.mjs";
 import { delegatedProcessIsolationStatus } from "../src/local/delegated-process-sandbox.mjs";
 import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_GRACE_MS } from "../src/local/process-tree.mjs";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
+import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 
 const SUCCESS_PROCESS_TIMEOUT_SECONDS = 30;
-const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000;
+const SELF_TEST_RESOURCE_WAIT_MS = 10_000;
 const RUNTIME_GIT_FIXTURE_TIMEOUT_MS = 30_000;
 // Detached runner startup is OS-scheduled and can exceed ten seconds on loaded shared CI hosts.
 // This is a harness settlement budget, not a production execution or acceptance SLA.
@@ -43,6 +44,7 @@ export async function runtimeSelfTest() {
     logger,
     processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
     resourceCoordinatorRoot,
+    resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
     jobRoot: join(jobState, "restricted"),
     securityStateRoot: join(jobState, "security-state"),
   });
@@ -56,6 +58,7 @@ export async function runtimeSelfTest() {
     logger,
     processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
     resourceCoordinatorRoot,
+    resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
     jobRoot: join(jobState, "unrestricted"),
   });
   const unrestrictedVisible = new LocalRuntime({
@@ -68,6 +71,7 @@ export async function runtimeSelfTest() {
     logger,
     processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
     resourceCoordinatorRoot,
+    resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
     jobRoot: join(jobState, "unrestricted-visible"),
   });
   const fullAuthority = new LocalRuntime({
@@ -79,6 +83,7 @@ export async function runtimeSelfTest() {
     logger,
     processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
     resourceCoordinatorRoot,
+    resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
     jobRoot: join(jobState, "full-authority"),
     resources: { "owner-secret": { kind: "file", path: protectedResource } },
     securityStateRoot: join(jobState, "full-authority-control"),
@@ -103,13 +108,13 @@ export async function runtimeSelfTest() {
     restricted.relayCallRecovery.isRecoverable = () => true;
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
-      id: "durable-missing-recovery-key",
+      id: "call_durable_missing_recovery_key",
       tool: "run_process",
       arguments: { argv: [process.execPath, "-e", "process.stdout.write('must-not-run')"], timeout_seconds: 10 },
       timeout_ms: 10000,
       authorization: ownerAuthorization,
     }), { sessionId: 1, authenticated: true, ready: true });
-    const missingRecoveryKey = relayMessages.find((value) => value.type === "tool_result" && value.id === "durable-missing-recovery-key");
+    const missingRecoveryKey = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_durable_missing_recovery_key");
     if (missingRecoveryKey?.ok !== false || missingRecoveryKey.error?.code !== "invalid_request"
         || missingRecoveryKey.error?.details?.side_effects_started !== false
         || missingRecoveryKey.error?.details?.recovery_credential_required !== "idempotency_key") {
@@ -118,7 +123,7 @@ export async function runtimeSelfTest() {
     relayMessages.length = 0;
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
-      id: "deadline-call",
+      id: "call_deadline_12345678",
       tool: "run_process",
       arguments: {
         argv: [process.execPath, "-e", "setTimeout(() => process.stdout.write('durable-ok'), 50)"],
@@ -128,13 +133,13 @@ export async function runtimeSelfTest() {
       timeout_ms: 10000,
       authorization: ownerAuthorization,
     }), { sessionId: 1, authenticated: true, ready: true });
-    const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "deadline-call");
+    const deadlineResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_deadline_12345678");
     if (deadlineResult?.ok !== true || deadlineResult.result?.execution_mode !== "durable_job"
         || typeof deadlineResult.result?.job_id !== "string" || deadlineResult.result?.recovery?.tool !== "read_job"
         || deadlineResult.result?.idempotency_key_accepted !== true) {
       throw new Error(`remote process did not settle as a recoverable durable acceptance: ${JSON.stringify(deadlineResult)}`);
     }
-    if (restricted.callRegistry.cancel("deadline-call", "deadline exceeded", "timeout") !== false) {
+    if (restricted.callRegistry.cancel("call_deadline_12345678", "deadline exceeded", "timeout") !== false) {
       throw new Error("durable process acceptance remained owned by the completed MCP call lifecycle");
     }
     const durableDeadlineJob = await waitForManagedJob(restricted.managedJobManager, deadlineResult.result.job_id);
@@ -144,7 +149,7 @@ export async function runtimeSelfTest() {
     relayMessages.length = 0;
     await restricted.handleMessage(JSON.stringify({
       type: "tool_call",
-      id: "durable-long-timeout",
+      id: "call_durable_long_timeout",
       tool: "run_process",
       arguments: {
         argv: [process.execPath, "-e", "process.stdout.write('durable-long-timeout-ok')"],
@@ -154,7 +159,7 @@ export async function runtimeSelfTest() {
       timeout_ms: 10000,
       authorization: ownerAuthorization,
     }), { sessionId: 1, authenticated: true, ready: true });
-    const longTimeoutResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "durable-long-timeout");
+    const longTimeoutResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_durable_long_timeout");
     if (longTimeoutResult?.ok !== true || longTimeoutResult.result?.execution_timeout_seconds !== 600
         || typeof longTimeoutResult.result?.job_id !== "string") {
       throw new Error(`relay durable-process validation rejected the Worker-advertised 600 second execution budget: ${JSON.stringify(longTimeoutResult)}`);
@@ -164,8 +169,8 @@ export async function runtimeSelfTest() {
       throw new Error("600 second durable-process contract did not survive daemon validation and execute normally");
     }
     relayMessages.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "invalid-args", tool: "read_file", arguments: [], authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
-    const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "invalid-args");
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "call_invalid_args_12345678", tool: "read_file", arguments: [], timeout_ms: 5000, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
+    const invalidEnvelope = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_invalid_args_12345678");
     if (invalidEnvelope?.ok !== false || invalidEnvelope.error?.code !== "invalid_request" || !String(invalidEnvelope.error?.message || "").includes("invalid tool_call envelope")) throw new Error("invalid relay arguments were accepted");
     await writeFile(join(workspace, ".env"), "SECRET=visible", "utf8");
     await writeFile(join(workspace, "visible.txt"), "needle", "utf8");
@@ -374,7 +379,7 @@ export async function runtimeSelfTest() {
     }
 
     logEvents.length = 0;
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "fast-success", tool: "read_file", arguments: { path: "visible.txt" }, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "call_fast_success_12345678", tool: "read_file", arguments: { path: "visible.txt" }, timeout_ms: 5000, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     if (logEvents.some(event => event.level === "info" && event.event === "tool.call.completed")) {
       throw new Error("remote daemon emitted routine success at info level");
     }
@@ -388,10 +393,10 @@ export async function runtimeSelfTest() {
       relayMessages.push(value);
       return true;
     };
-    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "failed-call", tool: "read_file", arguments: { path: "missing-file.txt" }, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
+    await restricted.handleMessage(JSON.stringify({ type: "tool_call", id: "call_failed_12345678", tool: "read_file", arguments: { path: "missing-file.txt" }, timeout_ms: 5000, authorization: ownerAuthorization }), { sessionId: 1, authenticated: true, ready: true });
     restricted.relay.send = originalSend;
     restricted.relayCallRecovery.isRecoverable = originalRecoverable;
-    const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "failed-call");
+    const failedResult = relayMessages.find((value) => value.type === "tool_result" && value.id === "call_failed_12345678");
     if (failedResult?.ok !== false) throw new Error("failed tool call did not return an error result");
     if (logEvents.some(event => event.level === "warn" && event.event === "tool.call.failed")) {
       throw new Error("remote daemon emitted per-tool failure noise at warn level");
@@ -545,7 +550,10 @@ export async function runtimeSelfTest() {
     const status = await restricted.gitStatus({ path: "nested-repo" });
     if (status.code !== 0 || !status.stdout.includes("tracked.txt")) throw new Error("nested git status detection failed");
 
-    const command = await restricted.execCommand("node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"", SUCCESS_PROCESS_TIMEOUT_SECONDS);
+    const command = await restricted.execCommand({
+      command: "node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"",
+      timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS,
+    });
     if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
     const fullServerInfo = restricted.serverInfo({ detail: "full" });
     const compactServerInfo = restricted.serverInfo({ detail: "summary" });
@@ -585,10 +593,10 @@ export async function runtimeSelfTest() {
     }
     const isolatedHome = await restricted.runDirectProcess({ argv: [process.execPath, "-e", "process.stdout.write(process.env.HOME || '')"], timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS });
     if (!isolatedHome.stdout.includes("machine-bridge-mcp-") || isolatedHome.stdout === process.env.HOME) throw new Error("minimal command environment did not isolate HOME");
-    await expectReject(() => restricted.execCommand(`printf '${"x".repeat(MAX_COMMAND_BYTES)}'`, 5), "maximum size");
-    await expectReject(() => restricted.execCommand("printf 'x\0y'", 5), "NUL byte");
+    await expectReject(() => restricted.execCommand({ command: `printf '${"x".repeat(MAX_COMMAND_BYTES)}'`, timeout_seconds: 5 }), "maximum size");
+    await expectReject(() => restricted.execCommand({ command: "printf 'x\0y'", timeout_seconds: 5 }), "NUL byte");
     if (process.platform !== "win32") {
-      await expectReject(() => restricted.execCommand("sleep 5", 1), "command timed out");
+      await expectReject(() => restricted.execCommand({ command: "sleep 5", timeout_seconds: 1 }), "command timed out");
       await waitForProcessTrackerIdle(restricted, PROCESS_TREE_ESCALATION_WAIT_MS);
       const trackedBeforeInterruption = restricted.processTracker.snapshot().active_processes;
       const interrupted = restricted.runProcess("sleep", ["30"], 60_000)
@@ -601,7 +609,7 @@ export async function runtimeSelfTest() {
 
       const descendantPidFile = join(workspace, "timeout-descendant.pid");
       const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
-      await expectReject(() => restricted.execCommand(descendantCommand, 1), "command timed out");
+      await expectReject(() => restricted.execCommand({ command: descendantCommand, timeout_seconds: 1 }), "command timed out");
       const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
       if (!await waitForProcessExit(descendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
         try { process.kill(descendantPid, "SIGKILL"); } catch {}

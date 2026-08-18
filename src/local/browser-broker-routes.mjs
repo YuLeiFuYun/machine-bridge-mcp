@@ -2,12 +2,12 @@ import { randomBytes } from "node:crypto";
 import { clampInt } from "./browser-command.mjs";
 import { browserPostDispatchTransportFailure, closeProtocolSocket, normalizeRuntimeBrowserRequest, parseBrowserSocketMessage, safeSocketSend } from "./browser-extension-protocol.mjs";
 export class BrowserBrokerRoutes {
-  constructor({ maximum, getExtensionSocket, extensionConnected, extensionStatusInfo, extensionReloadRequired }) {
+  constructor({ maximum, getExtensionSocket, extensionConnected, extensionStatusInfo, extensionReloadRequired, extensionGeneration = () => 0 }) {
     this.maximum = maximum;
     this.getExtensionSocket = getExtensionSocket;
     this.extensionConnected = extensionConnected;
     this.extensionStatusInfo = extensionStatusInfo;
-    this.extensionReloadRequired = extensionReloadRequired;
+    this.extensionReloadRequired = extensionReloadRequired; this.extensionGeneration = extensionGeneration;
     this.clients = new Set();
     this.routes = new Map();
   }
@@ -26,6 +26,7 @@ export class BrowserBrokerRoutes {
       extension_connected: this.extensionConnected(),
       extension_info: this.extensionStatusInfo(),
       extension_reload_required: this.extensionReloadRequired(),
+      extension_generation: this.extensionGeneration(),
     });
   }
 
@@ -125,6 +126,7 @@ export class BrowserBrokerRoutes {
       extension_connected: connected,
       extension_info: connected ? this.extensionStatusInfo() : null,
       extension_reload_required: this.extensionReloadRequired(),
+      extension_generation: connected ? this.extensionGeneration() : 0,
     };
     for (const client of this.clients) safeSocketSend(client, message);
   }
@@ -143,7 +145,8 @@ export class BrowserBrokerRoutes {
   close(message) {
     this.rejectAll(message);
     for (const client of this.clients) {
-      try { client.close(1001, "runtime stopped"); } catch {}
+      try { client.close(1001, "runtime stopped"); }
+      catch { /* Runtime shutdown is already authoritative; a concurrently closed broker client needs no retry. */ }
     }
     this.clients.clear();
   }

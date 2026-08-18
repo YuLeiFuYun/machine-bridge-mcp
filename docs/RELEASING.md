@@ -69,6 +69,8 @@ npm pack --dry-run
 
 A successful `npm run check` / `check:full` writes an ignored owner-local `.project-local/full-verification.json` receipt after the stable-generation guard completes. It records only synthetic verification metadata: the exact source-generation digest, package name/version, Node version, platform/architecture, and verification timestamp. The receipt is valid for at most six hours. Starting another full run deletes the prior receipt before any test executes, and any source/package/runtime drift makes it unusable. This is a local execution cache, not acceptance or publication authority.
 
+When the frozen full gate is launched remotely through Machine Bridge, do not make the 600-second durable-process ceiling an accidental release deadline. A real install/integration phase can make `check:full` exceed that duration even when every test passes. Owner-authorized remote verification should run the single `npm run check:full` step through detached `start_job` with a larger explicit step timeout and then inspect `read_job`; local terminal execution remains `npm run check:full` directly. The full-verification receipt is written by the suite only after the exact-tree run succeeds, independent of which valid execution carrier launched it.
+
 Generate the exact tarball. The prepare/record/verify commands bootstrap ephemeral hardened npm and do not regenerate acceptance bytes through the ambient npm bundle:
 
 ```sh
@@ -103,9 +105,12 @@ A TTY is not required. Conversational authorization is sufficient when it is exp
 
 The **execution carrier is part of the safety contract**. This command intentionally stops and replaces the currently running Machine Bridge login daemon. Do not launch persistent activation through `run_process`, `exec_command`, `run_local_command`, or `start_process`: those children/process sessions belong to the current daemon and are terminated when that daemon drains its process tree. The packaged activation guard rejects those surfaces before Worker or service mutation. An authorized coding agent that executes activation through Machine Bridge must use a detached `start_job` step and inspect it with `read_job`; the managed-job runner is independent of the daemon and continues across the handoff. Running the exact command directly in an ordinary owner terminal is also valid.
 
+Cloudflare Wrangler authentication is also a **pre-handoff** requirement. The release wrapper performs a captured `wrangler whoami` before it enters the persistent release-runtime/service transaction. A detached managed job never starts interactive Wrangler login: if the preflight is unauthenticated it fails before Worker or service mutation and the owner completes Wrangler authentication in an ordinary terminal before retrying. An ordinary owner-terminal activation may open Wrangler login at this outer preflight boundary, while the existing login daemon is still untouched, and then requires a second captured `whoami`. Once the inner `machine-mcp activate --json` transaction begins, machine-readable Worker deployment will not open an interactive login; authentication loss at that point fails into the existing rollback path instead of holding the service offline or contaminating the JSON result channel.
+
 The command:
 
 - verifies that the pending manifest still matches the current packaged source, then verifies the exact pending tarball;
+- verifies Wrangler authentication before entering the release-runtime/service transaction; managed-job activation fails before live mutation rather than attempting interactive login, while an ordinary owner terminal may authenticate and must pass a post-login `whoami` recheck;
 - installs it under the owner-only ordinary Machine Bridge profile state root, separate from both the normal global installation and the machine-service control root;
 - acquires the machine-global service lock before the workspace startup lock and rejects a foreground or unverifiable daemon before changing the service manager;
 - stops only a verified existing service daemon;

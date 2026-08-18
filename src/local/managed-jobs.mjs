@@ -12,7 +12,7 @@ import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock, acquireRecoveryLock } from "./managed-job-lock.mjs";
-import { publicStatus, reviewablePlan } from "./managed-job-projection.mjs";
+import { projectManagedJobResult, publicStatus, reviewablePlan } from "./managed-job-projection.mjs";
 import { atomicWriteJson, readBoundedFile, readJson, readRequiredJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "./managed-job-directory.mjs";
@@ -297,7 +297,7 @@ export class ManagedJobManager {
       : status;
     return {
       ...publicStatus(projectedStatus),
-      ...(result ? { result } : {}),
+      ...(result ? { result: projectManagedJobResult(result, { includeResourceAdmissionTiming: context?.authority?.owner !== false }) } : {}),
     };
   }
 

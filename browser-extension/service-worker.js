@@ -1,4 +1,4 @@
-importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-session.js", "devtools-input.js", "devtools-observation.js", "browser-operations.js");
+importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "broker-liveness.js", "devtools-session.js", "devtools-input.js", "devtools-observation.js", "browser-operations.js"); const brokerLiveness = globalThis.__machineBridgeBrokerLiveness;
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
@@ -45,7 +45,8 @@ async function handleActionClick(tab) {
     } catch {
       // A token-free or stale pairing tab has no isolated bootstrap material; fall through to the explicit re-pair instruction.
     }
-    await setPairingPageStatus(tab.id, "Pairing grant unavailable. Run pair_browser_extension with opening enabled again.").catch(() => {});
+    await setPairingPageStatus(tab.id, "Pairing grant unavailable. Run pair_browser_extension with opening enabled again.")
+      .catch(() => { /* The stale pairing tab may already be gone; status decoration is best-effort. */ });
     return;
   }
   const current = await chrome.storage.local.get(["endpoint"]);
@@ -69,7 +70,7 @@ function setConnectionState(state) {
 function ignoreBrowserApiCall(operation) {
   try {
     const value = operation();
-    if (value && typeof value.catch === "function") value.catch(() => {});
+    if (value && typeof value.catch === "function") value.catch(() => { /* Browser UI decoration is optional. */ });
   } catch {
     // Browser UI decoration is optional and must not disrupt broker connectivity.
   }
@@ -120,10 +121,14 @@ async function pairConfiguration(rawEndpoint, rawToken, { replace }) {
     const connectedSocket = await connect(endpoint, token, { reconnect: false });
     await chrome.storage.local.set({ endpoint, token });
     connectedSocket.reconnectEnabled = true;
-    if (connectedSocket.readyState !== WebSocket.OPEN || connectedSocket.bridgeReady !== true) void connect(endpoint, token).catch(() => {});
+    if (connectedSocket.readyState !== WebSocket.OPEN || connectedSocket.bridgeReady !== true) {
+      void connect(endpoint, token).catch(() => { /* The reconnect state machine owns subsequent retries. */ });
+    }
     return { ok: true, replaced: alreadyPaired && !samePairing };
   } catch (error) {
-    if (current.endpoint && current.token) void connect(current.endpoint, current.token).catch(() => {});
+    if (current.endpoint && current.token) {
+      void connect(current.endpoint, current.token).catch(() => { /* Preserve the primary pairing error; prior-pair recovery is best-effort. */ });
+    }
     throw error;
   }
 }
@@ -150,7 +155,7 @@ async function connectFromStorage() {
   const value = await chrome.storage.local.get(["endpoint", "token"]);
   if (value.endpoint && value.token) {
     setConnectionState("connecting");
-    void connect(value.endpoint, value.token).catch(() => {});
+    void connect(value.endpoint, value.token).catch(() => { /* Connection close/retry state is reflected by the socket lifecycle. */ });
   } else {
     setConnectionState("unconfigured");
   }
@@ -164,6 +169,7 @@ async function connect(endpoint, token, { reconnect = true } = {}) {
     socket.reconnectEnabled = false;
     clearInterval(socket.keepaliveTimer);
     socket.keepaliveTimer = null;
+    brokerLiveness.clear(socket);
     cancelRequestsForSocket(socket);
     closeSocketQuietly(socket);
     socket = null;
@@ -182,6 +188,7 @@ async function connect(endpoint, token, { reconnect = true } = {}) {
   ws.machineBridgeToken = token;
   ws.reconnectEnabled = reconnect;
   ws.keepaliveTimer = null;
+  brokerLiveness.initialize(ws);
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
     const settle = (error = null) => {
@@ -200,10 +207,11 @@ async function connect(endpoint, token, { reconnect = true } = {}) {
       }, HANDSHAKE_TIMEOUT_MS);
     };
     ws.onmessage = (event) => void handleMessage(ws, event.data, () => settle());
-    ws.onerror = () => {};
+    ws.onerror = () => { /* WebSocket close owns failure settlement and reconnect classification. */ };
     ws.onclose = () => {
       clearTimeout(ws.handshakeTimer);
       clearInterval(ws.keepaliveTimer);
+      brokerLiveness.clear(ws);
       ws.keepaliveTimer = null;
       cancelRequestsForSocket(ws);
       if (!ws.bridgeReady) settle(new Error("browser broker handshake failed"));
@@ -226,7 +234,9 @@ function extensionBrokerProtocol(endpoint, token) { return browserBrokerAuth().e
 function scheduleReconnect(endpoint, token) {
   clearTimeout(reconnectTimer);
   const delay = Math.min(30000, 1000 * 2 ** Math.min(reconnectAttempt++, 5));
-  reconnectTimer = setTimeout(() => { void connect(endpoint, token).catch(() => {}); }, delay);
+  reconnectTimer = setTimeout(() => {
+    void connect(endpoint, token).catch(() => { /* A failed attempt schedules or awaits the next reconnect trigger. */ });
+  }, delay);
 }
 
 async function handleMessage(ws, raw, onReady = () => {}) {
@@ -261,15 +271,13 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     }
     clearTimeout(ws.handshakeTimer);
     ws.bridgeReady = true;
+    brokerLiveness.negotiate(ws, message.pong_watchdog);
     reconnectAttempt = 0;
     setConnectionState("connected");
     clearInterval(ws.keepaliveTimer);
-    ws.keepaliveTimer = setInterval(() => {
-      if (socket === ws && ws.bridgeReady && ws.readyState === WebSocket.OPEN
-          && !sendSocketQuietly(ws, JSON.stringify({ type: "ping" }))) {
-        closeSocketQuietly(ws, 1011, "browser extension keepalive failed");
-      }
-    }, 20000);
+    ws.keepaliveTimer = setInterval(() => brokerLiveness.keepalive(
+      ws, socket === ws, sendSocketQuietly, closeSocketQuietly,
+    ), 20000);
     onReady();
     return;
   }
@@ -277,6 +285,7 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     closeSocketQuietly(ws, 1002, "browser broker acknowledgement required");
     return;
   }
+  if (message?.type === "pong") return brokerLiveness.handlePong(ws, message, closeSocketQuietly);
   if (message?.type === "cancel" && typeof message.id === "string") {
     const state = activeRequests.get(message.id);
     if (state) state.cancelled = true;

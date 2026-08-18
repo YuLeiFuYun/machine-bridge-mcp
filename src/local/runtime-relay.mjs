@@ -1,47 +1,21 @@
 import { Buffer } from "node:buffer";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
-import { RelayConnection } from "./relay-connection.mjs";
-import { relayHandshakeDiagnostics } from "./relay-peer-diagnostics.mjs";
-import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
-import { MCP_SUPPORTED_PROTOCOL_VERSIONS, SERVER_NAME } from "./tools.mjs";
+import { ResilientRelayConnection } from "./resilient-relay-connection.mjs";
+import { createDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
+import { SERVER_NAME } from "./tools.mjs";
 import { normalizeAccountRole } from "./account-access.mjs";
-import { clampInteger } from "./numbers.mjs";
 import { isPlainRecord } from "./records.mjs";
-export const MAX_RELAY_MESSAGE_BYTES = 8 * 1024 * 1024;
+import { MAX_RELAY_MESSAGE_BYTES, runtimeRelayConnectionOptions } from "./runtime-relay-connection-options.mjs";
+export { MAX_RELAY_MESSAGE_BYTES } from "./runtime-relay-connection-options.mjs";
+const RELAY_CALL_ID = /^call_[A-Za-z0-9_-]{8,240}$/; const RELAY_TOOL_NAME = /^[a-z][a-z0-9_]{0,127}$/;
 export function createRuntimeRelayConnection(runtime, { workerUrl, deviceIdentity, expectedVersion, onFatal }) {
   if (!workerUrl || !deviceIdentity) return null;
   const sessionIdentity = deviceIdentity?.certificate ? validateDeviceSessionIdentity(deviceIdentity)
     : createDeviceSessionIdentity(deviceIdentity, workerUrl, SERVER_NAME, String(expectedVersion || ""));
-  return new RelayConnection({
-    workerUrl,
-    logger: runtime.logger,
-    maxPayload: MAX_RELAY_MESSAGE_BYTES,
-    expectedServer: SERVER_NAME,
-    expectedVersion: String(expectedVersion || ""),
-    connectionHeaders: () => createDaemonPreflightHeaders(
-      sessionIdentity, workerUrl, SERVER_NAME, String(expectedVersion || ""),
-    ),
-    helloMessage: async (welcome, relayStatus) => ({
-      type: "hello",
-      instance_id: runtime.relayInstanceId,
-      tools: runtime.tools(),
-      policy: runtime.policy,
-      protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
-      relay_diagnostics: relayHandshakeDiagnostics(relayStatus),
-      authentication: await createDaemonAuthentication(sessionIdentity, welcome, runtime.relayInstanceId),
-    }),
+  return new ResilientRelayConnection(runtimeRelayConnectionOptions(runtime, {
+    workerUrl, sessionIdentity, expectedVersion, onFatal,
     onMessage: (data, relayContext) => handleRelayData(runtime, data, relayContext),
-    onDisconnect: () => runtime.handleRelayDisconnect(),
-    onReady: () => runtime.handleRelayReady(),
-    onSuperseded: async () => {
-      await runtime.stop();
-      await runtime.onSuperseded?.();
-    },
-    onFatal: async (error) => {
-      await runtime.stop();
-      await onFatal?.(error);
-    },
-  });
+  }));
 }
 
 export function normalizeRelayResumeCalls(message) {
@@ -49,7 +23,7 @@ export function normalizeRelayResumeCalls(message) {
   const ids = [];
   const seen = new Set();
   for (const value of message.ids) {
-    if (typeof value !== "string" || !/^call_[A-Za-z0-9_-]{8,240}$/.test(value) || seen.has(value)) {
+    if (typeof value !== "string" || !RELAY_CALL_ID.test(value) || seen.has(value)) {
       return { ok: false, ids: [] };
     }
     seen.add(value);
@@ -59,18 +33,21 @@ export function normalizeRelayResumeCalls(message) {
 }
 
 export function normalizeRelayToolCall(message) {
-  const id = typeof message.id === "string" && message.id.length <= 256 ? message.id : "";
-  const tool = typeof message.tool === "string" && message.tool.length <= 128 ? message.tool : "";
+  const id = typeof message.id === "string" && RELAY_CALL_ID.test(message.id) ? message.id : "";
+  const tool = typeof message.tool === "string" && RELAY_TOOL_NAME.test(message.tool) ? message.tool : "";
   const argumentsValue = message.arguments === undefined ? {} : message.arguments;
   const authorization = normalizeRelayAuthorization(message.authorization);
-  if (!id || !tool || !isPlainRecord(argumentsValue) || !authorization) return { ok: false, id };
+  const timeoutMs = message.timeout_ms;
+  if (!id || !tool || !isPlainRecord(argumentsValue) || !authorization
+      || typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs)
+      || timeoutMs < 1000 || timeoutMs > relayContract.maximumRelayToolTimeoutMs) return { ok: false, id };
   return {
     ok: true,
     id,
     tool,
     arguments: argumentsValue,
     authorization,
-    timeoutMs: clampInteger(message.timeout_ms, 60_000, 1000, relayContract.maximumRelayToolTimeoutMs),
+    timeoutMs,
   };
 }
 
@@ -86,11 +63,11 @@ function handleRelayData(runtime, data, relayContext = {}) {
 function normalizeRelayAuthorization(value) {
   if (!isPlainRecord(value)) return null;
   const accountId = typeof value.account_id === "string" && /^acct_[A-Za-z0-9_-]{20,96}$/.test(value.account_id) ? value.account_id : "";
-  const accountVersion = Number(value.account_version);
+  const accountVersion = value.account_version;
   const clientId = typeof value.client_id === "string" && /^mcp_client_[A-Za-z0-9_-]{43}$/.test(value.client_id) ? value.client_id : "";
   const familyId = typeof value.family_id === "string" && /^mcp_family_[A-Za-z0-9_-]{43}$/.test(value.family_id) ? value.family_id : "";
   let role;
-  try { role = normalizeAccountRole(value.role); } catch { return null; }
-  if (!accountId || !clientId || !familyId || !Number.isInteger(accountVersion) || accountVersion < 1) return null;
+  try { role = typeof value.role === "string" ? normalizeAccountRole(value.role) : null; } catch { return null; }
+  if (!accountId || !clientId || !familyId || !role || !Number.isSafeInteger(accountVersion) || accountVersion < 1) return null;
   return Object.freeze({ account_id: accountId, account_version: accountVersion, client_id: clientId, family_id: familyId, role });
 }

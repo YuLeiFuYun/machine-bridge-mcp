@@ -93,7 +93,7 @@ function replaceStableFile(destination, relativePath, bytes) {
     if (fd !== undefined) closeSync(fd);
   }
   try { replaceFileSync(temporary, target); }
-  catch (error) { try { unlinkSync(temporary); } catch {} throw error; }
+  catch (error) { try { unlinkSync(temporary); } catch { /* Preserve the primary publication error; temp cleanup is best-effort. */ } throw error; }
 }
 
 function removeStaleEntries(destination, snapshot) {

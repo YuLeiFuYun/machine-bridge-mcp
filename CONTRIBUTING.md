@@ -34,6 +34,8 @@ An npm version is required when a change affects `package.json`, `package-lock.j
 
 Repository-only infrastructure changes, such as a `.github/` workflow update, do not require a synthetic npm version when package bytes are unchanged. They still require review and all applicable CI, dependency-review, CodeQL, governance, and Scorecard checks.
 
+Repository tests are verification inputs, not npm tarball entries under the current `package.json.files` manifest. A `tests/**`-only change therefore does not itself change package bytes; if a bug fix also changes shipped source, scripts, metadata, or documentation, that packaged change still requires the prerelease/version flow and the regression test remains mandatory verification evidence.
+
 ## Required prerelease flow for an npm-package change
 
 1. choose a `dev`, `beta`, or `rc` version; version 3 and later must not begin as stable;

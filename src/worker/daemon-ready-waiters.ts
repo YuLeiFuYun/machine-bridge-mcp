@@ -1,20 +1,20 @@
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { WorkerToolError } from "./errors.ts";
-import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import { readyDaemonChannels, type DaemonChannel, type ReadyDaemonRegistry } from "./daemon-channel.ts";
 import { assertWorkerPendingCallAdmission, type PendingCapacitySnapshot } from "./pending-call-capacity.ts";
 
-type ReadyWaiter = Readonly<{ tool: string; resolve: (socket: WebSocket) => void }>;
+type ReadyWaiter = Readonly<{ tool: string; resolve: (socket: DaemonChannel) => void }>;
 type WaitOptions = Readonly<{ graceMs?: number; signal?: AbortSignal; tool?: string; pending?: PendingCapacitySnapshot }>;
 
-const DEFAULT_GRACE_MS = 10_000;
-const waitersByRegistry = new WeakMap<DaemonSocketRegistry, Set<ReadyWaiter>>();
+const waitersByRegistry = new WeakMap<ReadyDaemonRegistry, Set<ReadyWaiter>>();
 
 export async function waitForReadyDaemon(
-  registry: DaemonSocketRegistry,
+  registry: ReadyDaemonRegistry,
   options: WaitOptions = {},
-): Promise<WebSocket> {
-  const immediate = registry.readySockets()[0];
+): Promise<DaemonChannel> {
+  const immediate = readyDaemonChannels(registry)[0];
   if (immediate) return immediate;
-  const graceMs = positiveInteger(options.graceMs, DEFAULT_GRACE_MS);
+  const graceMs = positiveInteger(options.graceMs, relayContract.newCallReconnectGraceMs);
   if (options.signal?.aborted) throw cancelledError();
   const waiters = waitersByRegistry.get(registry) ?? new Set<ReadyWaiter>();
   const tool = String(options.tool || "unknown");
@@ -22,10 +22,10 @@ export async function waitForReadyDaemon(
   for (const waiter of waiters) byTool[waiter.tool] = (byTool[waiter.tool] ?? 0) + 1;
   assertWorkerPendingCallAdmission({ active: (options.pending?.active ?? 0) + waiters.size, by_tool: byTool }, tool);
   waitersByRegistry.set(registry, waiters);
-  return new Promise<WebSocket>((resolvePromise, rejectPromise) => {
+  return new Promise<DaemonChannel>((resolvePromise, rejectPromise) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const finish = (socket?: WebSocket, error?: Error) => {
+    const finish = (socket?: DaemonChannel, error?: Error) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
@@ -39,14 +39,14 @@ export async function waitForReadyDaemon(
     const abort = () => finish(undefined, cancelledError());
     waiters.add(waiter);
     options.signal?.addEventListener("abort", abort, { once: true });
-    timer = setTimeout(() => finish(registry.readySockets()[0]), graceMs);
-    const raced = registry.readySockets()[0];
+    timer = setTimeout(() => finish(readyDaemonChannels(registry)[0]), graceMs);
+    const raced = readyDaemonChannels(registry)[0];
     if (raced) finish(raced);
   });
 }
 
-export function notifyReadyDaemon(registry: DaemonSocketRegistry): number {
-  const socket = registry.readySockets()[0];
+export function notifyReadyDaemon(registry: ReadyDaemonRegistry): number {
+  const socket = readyDaemonChannels(registry)[0];
   const waiters = waitersByRegistry.get(registry);
   if (!socket || !waiters?.size) return 0;
   const count = waiters.size;
@@ -55,7 +55,7 @@ export function notifyReadyDaemon(registry: DaemonSocketRegistry): number {
   return count;
 }
 
-export function readyDaemonWaiterSnapshot(registry: DaemonSocketRegistry): PendingCapacitySnapshot {
+export function readyDaemonWaiterSnapshot(registry: ReadyDaemonRegistry): PendingCapacitySnapshot {
   const waiters = waitersByRegistry.get(registry) ?? new Set<ReadyWaiter>();
   const by_tool: Record<string, number> = {};
   for (const waiter of waiters) by_tool[waiter.tool] = (by_tool[waiter.tool] ?? 0) + 1;

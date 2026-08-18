@@ -2,6 +2,11 @@ import { aggregateResourceLeases, resourceRequestIncrement } from "./resource-le
 import { unobservedResourceCpu } from "./resource-cpu-window.mjs";
 import { resourceDiskHardFloorBytes } from "./resource-disk-headroom.mjs";
 import { optionalResourceNumber, resourcePressureState } from "./resource-pressure.mjs";
+const NON_RETRYABLE_ADMISSION_REASONS = new Set(["cpu_request_exceeds_launch_window"]);
+
+export function resourceAdmissionDecisionRetryable(decision) {
+  return !NON_RETRYABLE_ADMISSION_REASONS.has(decision?.reason);
+}
 
 export function evaluateResourceAdmission(host, leases, request, _now = Date.now(), context = {}) {
   if (!request?.heavy) return { admitted: true, state: "light", reason: "light_bypass" };
@@ -27,6 +32,10 @@ export function evaluateResourceAdmission(host, leases, request, _now = Date.now
     pressure_reasons: pressure.reasons, limits, used, requested, reservation: declared,
     cpu_window: { observed_busy_cores: optionalResourceNumber(host?.cpu_busy_cores), unobserved_reserved_cpu: unobservedCpu },
   };
+  const bestCaseCpuLimit = resourceLimits(cpuCores, totalMemoryMb, request.priority, "green").cpu;
+  if (!request.unbounded && requested.cpu > bestCaseCpuLimit + 0.25) {
+    return { ...decision, reason: "cpu_request_exceeds_launch_window" };
+  }
   const ignoredContention = new Set(accounting.ancestorLeaseIds || []);
   if (request.contention_key && leases.some((lease) => lease?.request?.contention_key === request.contention_key
       && !ignoredContention.has(lease?.lease_id))) return { ...decision, reason: "project_resource_busy" };
