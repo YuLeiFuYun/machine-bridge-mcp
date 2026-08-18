@@ -71,7 +71,7 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
     checks.push(check("full-parent-environment", inherited.code === 0 && inherited.stdout === "visible"));
 
     const shellCommand = process.platform === "win32" ? "[Console]::Out.Write('full-shell')" : "printf full-shell";
-    const shell = await runtime.execCommand(shellCommand, 10);
+    const shell = await runtime.execCommand({ command: shellCommand, timeout_seconds: 10 });
     checks.push(check("shell-execution", shell.code === 0 && shell.stdout.trim() === "full-shell"));
 
     const key = await generateSshKeyPair({

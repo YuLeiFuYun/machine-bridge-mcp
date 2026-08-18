@@ -24,10 +24,7 @@ export async function runRuntimeLocalCommand(runtime, args, context = {}) {
   return runtime.managedJobManager.startDurableProcess(prepared, context);
 }
 
-export function runRuntimeExecCommand(runtime, input, timeoutOrContext = {}, maybeContext = {}) {
-  const legacyCall = typeof input === "string";
-  const args = legacyCall ? { command: input, timeout_seconds: timeoutOrContext } : input;
-  const context = legacyCall ? maybeContext : timeoutOrContext;
+export function runRuntimeExecCommand(runtime, args, context = {}) {
   if (usesDurableProcessDelivery(args, context)) {
     const prepared = prepareDurableShellProcess(runtime.processExecutionService, args, context);
     return runtime.managedJobManager.startDurableProcess(prepared, context);

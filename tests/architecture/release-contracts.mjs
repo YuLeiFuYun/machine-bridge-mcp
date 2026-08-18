@@ -48,6 +48,20 @@ if ((cliActivateSource.match(/provisionInitialOwner: false/g) || []).length !== 
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+if ((packageJson.files || []).some((entry) => {
+  const normalized = String(entry).replace(/^\.\//, "").replace(/\/$/, "");
+  return normalized === "tests" || normalized.startsWith("tests/");
+})) {
+  throw new Error("repository verification tests unexpectedly became npm tarball content; update release-impact policy and documentation explicitly before shipping that change");
+}
+const contributingSource = readFileSync(join(root, "CONTRIBUTING.md"), "utf8");
+if (!contributingSource.includes("Repository tests are verification inputs, not npm tarball entries under the current `package.json.files` manifest")) {
+  throw new Error("contributor package-impact guidance no longer distinguishes test evidence from npm tarball bytes");
+}
+const releaseImpactTestSource = readFileSync(join(root, "tests", "release-impact-test.mjs"), "utf8");
+if (!releaseImpactTestSource.includes("test-only change outside package files should not require an npm version bump")) {
+  throw new Error("release-impact regression lost the test-only non-package case");
+}
 const npmrcSource = readFileSync(join(root, ".npmrc"), "utf8");
 if (!/^engine-strict=true$/m.test(npmrcSource) || !/^save-exact=true$/m.test(npmrcSource)) {
   throw new Error("repository npm configuration must enforce engines and preserve exact dependency pins on future saves");
@@ -402,14 +416,75 @@ if (!fullAccessSource.includes('resourceCoordinatorRoot: join(root, "resource-co
     || fullAccessSource.includes("const FULL_ACCESS_RESOURCE_WAIT_MS = 5 * 60_000")) {
   throw new Error("full-access diagnostic lost its isolated, short-bounded process resource admission contract");
 }
+const runtimeProcessRoutingSource = readFileSync(join(root, "src", "local", "runtime-process-routing.mjs"), "utf8");
+if (!runtimeProcessRoutingSource.includes("runRuntimeExecCommand(runtime, args, context = {})")
+    || runtimeProcessRoutingSource.includes("legacyCall")
+    || runtimeProcessRoutingSource.includes("timeoutOrContext")
+    || !fullAccessSource.includes("runtime.execCommand({ command: shellCommand, timeout_seconds: 10 })")) {
+  throw new Error("runtime exec_command regained the obsolete string/timeout overload instead of the public argument-record contract");
+}
+const runtimeSelfTestSource = readFileSync(join(root, "tests", "runtime-self-test.mjs"), "utf8");
+if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
+    || !runtimeSelfTestSource.includes("resourceCoordinatorOptions: { sampleHost: healthyResourceHost }")
+    || runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000")
+    || !localSelfTestSource.includes("function waitForChildExit(child, timeoutMs = DAEMON_FIXTURE_TIMEOUT_MS)")
+    || !localSelfTestSource.includes('child.once("exit", onExit);\n    if (child.exitCode !== null || child.signalCode !== null) onExit();')
+    || !localSelfTestSource.includes("local self-test phase started:")
+    || !localSelfTestSource.includes("local self-test phase completed:")) {
+  throw new Error("runtime/local self-test lost deterministic host-pressure isolation, child-exit bounds, or phase observability");
+}
 if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAccessSource.includes("TERMINAL_JOB_STATES")) {
   throw new Error("full-access diagnostic regained a divergent managed-job terminal-state enum");
 }
 const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
 const verificationIdleSleepGuardSource = readFileSync(join(root, "scripts", "verification-idle-sleep-guard.mjs"), "utf8");
+const macosIdleSleepAssertionSource = readFileSync(join(root, "src", "local", "macos-idle-sleep-assertion.mjs"), "utf8");
+const remoteActivityIdleSleepGuardSource = readFileSync(join(root, "src", "local", "remote-activity-idle-sleep-guard.mjs"), "utf8");
+const processSessionRemoteActivitySource = readFileSync(join(root, "src", "local", "process-session-remote-activity.mjs"), "utf8");
+const processSessionsSource = readFileSync(join(root, "src", "local", "process-sessions.mjs"), "utf8");
+const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
+const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
+const toolExecutorSource = readFileSync(join(root, "src", "local", "tool-executor.mjs"), "utf8");
+const runtimeDiagnosticStateSource = readFileSync(join(root, "src", "local", "runtime-diagnostic-state.mjs"), "utf8");
 const checkRunnerTestSource = readFileSync(join(root, "tests", "check-runner-test.mjs"), "utf8");
 const verificationGenerationGuardSource = readFileSync(join(root, "scripts", "verification-generation-guard.mjs"), "utf8");
+if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
+    || !macosIdleSleepAssertionSource.includes('["-i", "-w", String(this.processId)]')
+    || !macosIdleSleepAssertionSource.includes('shell: false')
+    || macosIdleSleepAssertionSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
+    || !remoteActivityIdleSleepGuardSource.includes('from "./macos-idle-sleep-assertion.mjs"')
+    || remoteActivityIdleSleepGuardSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
+    || !remoteActivityIdleSleepGuardSource.includes('DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS = 5 * 60_000')
+    || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities += 1;')
+    || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities > 0 || !this.assertion.snapshot().active')
+    || !runtimeSource.includes('onAuthorizedRelayActivityStart: () => this.remoteActivityIdleSleepGuard.beginActivity()')
+    || !runtimeSource.includes('onAuthorizedRelayActivityEnd: () => this.remoteActivityIdleSleepGuard.endActivity()')
+    || !toolExecutorSource.includes('invokeHandler(this.handlers, this.onAuthorizedRelayActivityStart, this.onAuthorizedRelayActivityEnd)')
+    || !toolExecutorSource.includes('finally { if (relayActivity) bestEffortActivityHook(onAuthorizedRelayActivityEnd); }')
+    || !runtimeSource.includes('this.remoteActivityIdleSleepGuard.stop();')
+    || !runtimeDiagnosticStateSource.includes('idle_sleep_guard: state.idleSleepGuard ?? null')) {
+  throw new Error("runtime remote-activity idle-sleep guard lost its bounded fixed-command lifecycle or diagnostic projection");
+}
+const processSessionAdmissionIndex = processSessionsSource.indexOf("const admitted = await acquireProcessResources");
+const processSessionActivityIndex = processSessionsSource.indexOf("beginRemoteProcessSessionActivity(context, this.remoteActivityGuard)");
+if (!processSessionRemoteActivitySource.includes('context?.origin !== "relay"')
+    || !runtimeSource.includes('remoteActivityGuard: this.remoteActivityIdleSleepGuard')
+    || processSessionAdmissionIndex < 0 || processSessionActivityIndex <= processSessionAdmissionIndex
+    || !processSessionsSource.includes('endRemoteProcessSessionActivity(remoteActivityHeld, this.remoteActivityGuard);')
+    || runtimeSource.indexOf("this.remoteActivityIdleSleepGuard.stop();") < runtimeSource.indexOf("await this.processSessionManager.clearAndWait();")) {
+  throw new Error("remote process-session idle-sleep activity lost its post-admission child-lifetime ownership boundary");
+}
+const managedJobClaimIndex = managedJobRunnerSource.indexOf("await confirmRunnerClaim({");
+const managedJobRemoteOwnerIndex = managedJobRunnerSource.indexOf('if (initial.owner_kind === "account")');
+const managedJobAssertionIndex = managedJobRunnerSource.indexOf("jobIdleSleepAssertion = new MacosIdleSleepAssertion");
+const managedJobMainIndex = managedJobRunnerSource.indexOf("await main(plan, initial);");
+const managedJobReleaseIndex = managedJobRunnerSource.indexOf("jobIdleSleepAssertion?.release();");
+if (managedJobClaimIndex < 0 || managedJobRemoteOwnerIndex <= managedJobClaimIndex
+    || managedJobAssertionIndex <= managedJobRemoteOwnerIndex || managedJobMainIndex <= managedJobAssertionIndex || managedJobReleaseIndex <= managedJobMainIndex
+    || !managedJobRunnerSource.includes("managed job idle-sleep assertion unavailable: error_class=")) {
+  throw new Error("managed-job runner idle-sleep assertion lost its confirmed-ownership lifetime or coarse failure logging");
+}
 if (!checkEntrypointSource.includes("runVerificationPlan")
     || !checkEntrypointSource.includes("runWithStableGeneration")
     || !checkEntrypointSource.includes("captureVerificationRunGeneration")
@@ -420,6 +495,7 @@ if (!checkEntrypointSource.includes("runVerificationPlan")
     || !verificationStateSource.includes('"release-acceptance"')
     || !checkEntrypointSource.includes('value !== undefined && value !== ""')
     || !checkEntrypointSource.includes("MBM_CHECK_CONCURRENCY must be an integer from 1 to 16")
+    || !checkEntrypointSource.includes("Math.min(4, availableParallelism())")
     || !checkEntrypointSource.includes("rerunVerificationUnderIdleSleepGuard")
     || !verificationIdleSleepGuardSource.includes('"/usr/bin/caffeinate"')
     || !verificationIdleSleepGuardSource.includes('["-i", executable, ...argv]')
@@ -860,7 +936,7 @@ const cliOptionsSource = readFileSync(join(root, "src", "local", "cli-options.mj
 for (const removed of ["approval: new Set", "approve: 2", "APPROVAL_POSITIONAL_LIMITS", "approval(args)"]) {
   if (cliOptionsSource.includes(removed)) throw new Error(`removed approval CLI parsing surface returned: ${removed}`);
 }
-const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
+const managedJobProjectionSource = readFileSync(join(root, "src", "local", "managed-job-projection.mjs"), "utf8");
 const managedJobRetentionSource = readFileSync(join(root, "src", "local", "managed-job-retention.mjs"), "utf8");
 const managedJobTerminalSource = readFileSync(join(root, "src", "local", "managed-job-terminal.mjs"), "utf8");
 const managedJobClaimSource = readFileSync(join(root, "src", "local", "managed-job-runner-claim.mjs"), "utf8");
@@ -872,6 +948,21 @@ const managedJobsIntegrationSource = readFileSync(join(root, "tests", "managed-j
 if (!managedJobsIntegrationSource.includes("RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500")
     || !/withResourceTransactionLock\(coordinatorRoot,[\s\S]{0,400}\{ timeoutMs: 30_000 \}\)/.test(managedJobsIntegrationSource)) {
   throw new Error("managed-job resource-contention regression lost its setup/acquisition timing separation");
+}
+if (!managedJobRunnerSource.includes('current_phase: "resource_admission"')
+    || !managedJobRunnerSource.includes("onAdmissionStart?.();")
+    || !managedJobRunnerSource.includes("onAdmissionComplete?.();")
+    || !managedJobRunnerSource.includes("await releaseProcessResources(admitted.lease)")
+    || !managedJobRunnerSource.includes("managed job admission status update and resource lease cleanup both failed")
+    || !managedJobRunnerSource.includes("resource_admission_ms: raw.resourceAdmissionMs")
+    || !managedJobRunnerSource.includes('current_phase: phase === "finally_steps" && recover ? "recovery-cleanup" : phase')) {
+  throw new Error("managed-job status lost explicit pre-spawn resource-admission observability, phase restoration, or admission-status failure cleanup");
+}
+if (!managedJobProjectionSource.includes("resource_admission_ms: _resourceAdmissionMs")
+    || !managedJobSource.includes("projectManagedJobResult(result, { includeResourceAdmissionTiming: context?.authority?.owner !== false })")
+    || !managedJobsIntegrationSource.includes("delegated managed-job read exposed machine-user resource admission timing")
+    || !managedJobsIntegrationSource.includes("owner managed-job read lost resource admission timing needed for queue diagnosis")) {
+  throw new Error("managed-job admission timing lost its owner-only projection or delegated privacy regression");
 }
 if (!managedJobTerminalSource.includes('export const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"])')
     || !managedJobRunnerSource.includes("ACTIVE_JOB_STATES.has(status.status)")
@@ -1288,14 +1379,29 @@ if (!workerToolTimeoutSource.includes("relayContract.processSessionStartExecutio
 }
 const serverInfoToolDeliverySource = readFileSync(join(root, "src", "worker", "server-info-tool-delivery.ts"), "utf8");
 if (!serverInfoToolDeliverySource.includes("remote_process_session_start_execution_max_ms")
+    || !serverInfoToolDeliverySource.includes("managed_job_resource_admission_wait_max_ms")
     || serverInfoToolDeliverySource.includes("remote_process_foreground_execution_max_ms")
+    || serverInfoToolDeliverySource.includes("remote_process_resource_admission_wait_max_ms")
     || "maximumProcessForegroundExecutionTimeoutMs" in relayContract) {
-  throw new Error("server_info or relay contract retained the obsolete request-scoped process foreground budget");
+  throw new Error("server_info or relay contract retained an obsolete/mis-scoped process timing projection");
 }
-if (relayContract.newCallReconnectGraceMs !== 5_000
+if (relayContract.newCallReconnectGraceMs !== 15_000
+    || relayContract.transportPingIntervalMs !== 5_000
+    || relayContract.transportPongTimeoutMs !== 10_000
+    || relayContract.daemonApplicationHeartbeatIntervalMs !== 25_000
+    || relayContract.daemonApplicationHeartbeatTimeoutMs !== 75_000
+    || relayContract.httpFallbackPollIntervalMs !== 1_000
+    || relayContract.httpFallbackMinimumRequestIntervalMs !== 750
+    || relayContract.httpFallbackActivationDelayMs !== 1_500
+    || relayContract.httpFallbackRequestTimeoutMs !== 7_000
+    || relayContract.httpFallbackLivenessTimeoutMs !== 12_000
+    || relayContract.httpFallbackRequestTimeoutMs * 2 > relayContract.newCallReconnectGraceMs
+    || 60_000 / relayContract.httpFallbackMinimumRequestIntervalMs > 80
+    || relayContract.transportPingIntervalMs + relayContract.transportPongTimeoutMs >= relayContract.defaultRemoteToolExecutionTimeoutMs
     || relayContract.defaultRemoteToolExecutionTimeoutMs !== 20_000
-    || relayContract.processSessionStartExecutionTimeoutMs !== 10_000) {
-  throw new Error("hosted reply-safety timing contract drifted from the incident-reviewed budget");
+    || relayContract.processSessionStartExecutionTimeoutMs !== 10_000
+    || relayContract.maximumManagedJobResourceAdmissionWaitMs !== 1_800_000) {
+  throw new Error("relay liveness, hosted reply-safety, or managed-job admission timing contract drifted from the incident-reviewed budget");
 }
 const resourceAdmissionPolicySource = readFileSync(join(root, "src", "local", "resource-admission-policy.mjs"), "utf8");
 const resourceAdmissionSource = readFileSync(join(root, "src", "local", "resource-admission.mjs"), "utf8");
@@ -1309,12 +1415,15 @@ for (const [source, required] of [
 }
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const testingDoc = readFileSync(join(root, "docs", "TESTING.md"), "utf8");
+const computerUseDoc = readFileSync(join(root, "docs", "COMPUTER_USE.md"), "utf8");
 const loggingDoc = readFileSync(join(root, "docs", "LOGGING.md"), "utf8");
 const operationsDoc = readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8");
 const privacyDoc = readFileSync(join(root, "docs", "PRIVACY.md"), "utf8");
 const serverMetadata = readFileSync(join(root, "src", "shared", "server-metadata.json"), "utf8");
 for (const [file, content, stale] of [
   ["README.md", readme, "ordinary daemon tools use at most 30 seconds"],
+  ["README.md", readme, "Remote foreground process, shell, browser, and application calls are bounded to 60 seconds"],
+  ["docs/COMPUTER_USE.md", computerUseDoc, "The first mandatory post observation keeps the normal read-only action timeout"],
   ["docs/ARCHITECTURE.md", architecture, "may wait at most ten seconds"],
   ["docs/ARCHITECTURE.md", architecture, "process-session startup defaults to ten seconds"],
   ["docs/ARCHITECTURE.md", architecture, "general host snapshot as fresh for 1.5 seconds"],
@@ -1322,6 +1431,9 @@ for (const [file, content, stale] of [
   ["docs/TESTING.md", testingDoc, "hosted timeout projection (30-second ordinary"],
   ["docs/TESTING.md", testingDoc, "Ordinary daemon tools use at most 30 seconds"],
   ["docs/TESTING.md", testingDoc, "a 60-second call that spends ten seconds in recovery"],
+  ["docs/TESTING.md", testingDoc, "`full-access:test` exercises the same real-machine wait path with an explicit five-minute cooperative admission budget"],
+  ["docs/TESTING.md", testingDoc, "`local-self-test` uses the same five-minute budget"],
+  ["docs/TESTING.md", testingDoc, "`agent-context-test` uses the same test-only five-minute budget"],
   ["docs/OPERATIONS.md", operationsDoc, "process timeout above 30 seconds"],
   ["src/shared/server-metadata.json", serverMetadata, "Ordinary daemon-backed tools use at most 30 seconds"],
   ["src/shared/server-metadata.json", serverMetadata, "are capped at 30 seconds"],
@@ -1330,26 +1442,86 @@ for (const [file, content, stale] of [
   if (content.includes(stale)) throw new Error(`${file} retained stale hosted timing guidance: ${stale}`);
 }
 for (const [file, content, required] of [
-  ["README.md", readme, "ordinary daemon tools default to 20 seconds of execution plus a separate five-second Worker settlement margin"],
-  ["docs/ARCHITECTURE.md", architecture, "currently waits at most five seconds"],
+  ["README.md", readme, "Hosted synchronous calls otherwise retain their ordinary 20-second execution plus separate five-second Worker settlement margin"],
+  ["README.md", readme, "compound `computer_observe` / `computer_act` retain 30-second defaults"],
+  ["README.md", readme, "scheduling-responsive daemon"],
+  ["README.md", readme, "WSS black-hole detection is therefore bounded to fifteen seconds"],
+  ["README.md", readme, "The daemon sends `resume_calls_ack.missing_ids` only after replacement readiness"],
+  ["docs/COMPUTER_USE.md", computerUseDoc, "one end-to-end observation budget"],
+  ["docs/COMPUTER_USE.md", computerUseDoc, "Every post-action capture, including the first mandatory one, is capped by both"],
+  ["docs/ARCHITECTURE.md", architecture, "compound `computer_observe` and `computer_act` default to 30 seconds"],
+  ["docs/ARCHITECTURE.md", architecture, "protocol-level WebSocket Ping/Pong watchdog"],
+  ["docs/ARCHITECTURE.md", architecture, "full transport-detection horizon"],
+  ["docs/ARCHITECTURE.md", architecture, "scheduling-responsive daemon"],
+  ["docs/ARCHITECTURE.md", architecture, "`resume_calls_ack.missing_ids`"],
+  ["docs/ARCHITECTURE.md", architecture, "no possibly executed tool call is automatically replayed"],
+  ["docs/ARCHITECTURE.md", architecture, "`previous_ready_inbound_silence_ms`"],
+  ["docs/TESTING.md", testingDoc, "compound `computer_observe`/`computer_act` default to 30 seconds"],
+  ["docs/TESTING.md", testingDoc, "five-second protocol-level transport probe"],
+  ["docs/TESTING.md", testingDoc, "ten-second inbound-silence termination with a fifteen-second probe-plus-timeout detection upper bound while the daemon is scheduling-responsive"],
+  ["docs/TESTING.md", testingDoc, "same-instance `resume_calls_ack.missing_ids` settlement"],
+  ["docs/TESTING.md", testingDoc, "`previous_ready_inbound_silence_ms` retention"],
+  ["docs/OPERATIONS.md", operationsDoc, "compound `computer_observe` and `computer_act` default to 30 seconds"],
+  ["docs/OPERATIONS.md", operationsDoc, "WebSocket remains preferred and uses a five-second protocol-level probe with a ten-second inbound-silence timeout"],
+  ["docs/OPERATIONS.md", operationsDoc, "`resume_calls_ack.missing_ids`"],
+  ["docs/OPERATIONS.md", operationsDoc, "`previous_ready_inbound_silence_ms` measures how long"],
+  ["docs/OPERATIONS.md", operationsDoc, "`server_info.daemon.previous_connection` retains only the last verified channel's transport"],
+  ["docs/OPERATIONS.md", operationsDoc, "`diagnose_runtime.runtime.idle_sleep_guard`"],
+  ["docs/TESTING.md", testingDoc, "distinct from production ownership"],
+  ["docs/TESTING.md", testingDoc, "full execution lifetime"],
+  ["docs/ARCHITECTURE.md", architecture, "fixed five-minute inactivity grace begins only after the last handler settles"],
+  ["docs/ARCHITECTURE.md", architecture, "Remote account managed-job runners do not depend on daemon ownership"],
+  ["docs/OPERATIONS.md", operationsDoc, "the five-minute default inactivity grace begins only after the last one settles"],
+  ["docs/OPERATIONS.md", operationsDoc, "A remote `start_process` extends the same assertion only after resource admission succeeds"],
+  ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold `/usr/bin/caffeinate -i -w <runner-pid>`"],
+  ["docs/LOGGING.md", loggingDoc, "classify ten seconds without inbound transport proof as `relay_transport_timeout`"],
+  ["docs/LOGGING.md", loggingDoc, "`daemon.calls.not_received_after_reconnect` retains the same aggregate-only `calls` shape"],
+  ["docs/LOGGING.md", loggingDoc, "`daemon.calls.redelivered_after_proven_non_delivery` with only an aggregate `calls` count"],
+  ["docs/LOGGING.md", loggingDoc, "runtime.idle_sleep_guard.unavailable"],
+  ["docs/LOGGING.md", loggingDoc, "`previous_ready_inbound_silence_ms`"],
+  ["docs/ARCHITECTURE.md", architecture, "waits at most fifteen seconds"],
+  ["docs/ARCHITECTURE.md", architecture, "`daemon-last-observation.ts` owns one in-memory, privacy-bounded last-verified-channel observation"],
   ["docs/ARCHITECTURE.md", architecture, "relay-origin `start_process` performs one admission attempt without queueing"],
   ["docs/ARCHITECTURE.md", architecture, "same-project general host snapshot as fresh for 500 milliseconds"],
   ["docs/ARCHITECTURE.md", architecture, "cpu_request_exceeds_launch_window"],
   ["docs/ARCHITECTURE.md", architecture, "explicit stop while the first connection is still waiting for readiness"],
   ["docs/ARCHITECTURE.md", architecture, "malformed internal timing cannot become an infinite timer"],
+  ["docs/ARCHITECTURE.md", architecture, "Detached managed-job steps use the shared durable-delivery admission ceiling"],
+  ["docs/ARCHITECTURE.md", architecture, "`waiters.drain_active`"],
   ["docs/TESTING.md", testingDoc, "relay-origin `start_process` defaults to zero admission wait"],
-  ["docs/TESTING.md", testingDoc, "shared five-second new-call recovery budget"],
+  ["docs/TESTING.md", testingDoc, "shared fifteen-second new-call recovery budget"],
+  ["docs/TESTING.md", testingDoc, "same-ID transparent redelivery only after post-readiness `resume_calls_ack.missing_ids`"],
   ["docs/TESTING.md", testingDoc, "Ordinary daemon tools default to 20 seconds plus the separate Worker settlement margin"],
   ["docs/TESTING.md", testingDoc, "explicit stop-before-first-readiness settlement"],
   ["docs/TESTING.md", testingDoc, "reject non-finite, non-positive, non-integer, and over-contract operation/reconnect delays"],
   ["docs/TESTING.md", testingDoc, "owner-authorized remote release verification"],
   ["docs/TESTING.md", testingDoc, "larger explicit step timeout"],
   ["docs/TESTING.md", testingDoc, "eight-worker fixed request on an idle eight-core interactive host fails immediately"],
+  ["docs/TESTING.md", testingDoc, "privacy-safe `drain_active` fairness signal"],
+  ["docs/TESTING.md", testingDoc, "`read_job.current_phase=resource_admission` distinguishes that state from child execution"],
+  ["docs/TESTING.md", testingDoc, "local/owner completed-step reads expose `resource_admission_ms` alongside total `duration_ms` while delegated non-owner reads omit that machine-user scheduling timing"],
+  ["docs/TESTING.md", testingDoc, "Tests are verification inputs but are not npm tarball entries under the current `package.json.files` manifest"],
+  ["docs/TESTING.md", testingDoc, "defaults to at most four workers and is further bounded by Node's `availableParallelism()`"],
+  ["docs/TESTING.md", testingDoc, "`full-access:test` uses an isolated resource coordinator, a synthetic healthy-host sampler, and an explicit ten-second process-admission budget"],
+  ["docs/TESTING.md", testingDoc, "`local-self-test` keeps process-admission behavior deterministic instead of inheriting shared-host pressure"],
+  ["docs/TESTING.md", testingDoc, "`agent-context-test` likewise uses an isolated coordinator, synthetic healthy-host sampling, and a ten-second test-only resource-admission budget"],
   ["docs/LOGGING.md", loggingDoc, "resource_admission_reason"],
+  ["docs/OPERATIONS.md", operationsDoc, "managed runner can separately wait up to thirty minutes for cooperative machine-user resource admission"],
+  ["docs/OPERATIONS.md", operationsDoc, "`server_info.tool_delivery.managed_job_resource_admission_wait_max_ms`"],
+  ["docs/OPERATIONS.md", operationsDoc, "`read_job.current_phase` is `resource_admission`"],
+  ["docs/OPERATIONS.md", operationsDoc, "delegated non-owner reads omit that machine-user scheduling timing"],
+  ["docs/OPERATIONS.md", operationsDoc, "`waiters.drain_active`"],
+  ["docs/OPERATIONS.md", operationsDoc, "`pressure.state=green` means the sampled host/reservation pressure is within limits, not that fairness can admit every queued root immediately"],
   ["docs/OPERATIONS.md", operationsDoc, "Durable process execution is a separate 1–600-second contract"],
   ["docs/PRIVACY.md", privacyDoc, "including DPoP-proof-shaped compact tokens"],
   ["docs/PRIVACY.md", privacyDoc, "not a generic IP-address anonymizer"],
-  ["src/shared/server-metadata.json", serverMetadata, "durable-first jobs with a 10-second acceptance budget"],
+  ["src/shared/server-metadata.json", serverMetadata, "durable-first one-step jobs with a 10-second acceptance budget"],
+  ["src/shared/server-metadata.json", serverMetadata, "WebSocket remains the preferred daemon transport: protocol-level Ping runs every 5 seconds"],
+  ["src/shared/server-metadata.json", serverMetadata, "A new daemon-backed call may wait at most 15 seconds for verified recovery"],
+  ["src/shared/server-metadata.json", serverMetadata, "A resume_calls_ack.missing_ids entry proves the same daemon has neither active-call nor retained-result ownership"],
+  ["src/shared/server-metadata.json", serverMetadata, "previous_ready_inbound_silence_ms"],
+  ["src/shared/server-metadata.json", serverMetadata, "separate pre-spawn resource-admission wait of up to 30 minutes"],
+  ["src/shared/server-metadata.json", serverMetadata, "read_job.current_phase=resource_admission"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "owner-authorized multi-step"],

@@ -46,11 +46,9 @@ import { RuntimeResourceService } from "./runtime-resource-service.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage } from "./runtime-paths.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { ResourceCoordinator } from "./resource-admission.mjs";
+import { RemoteActivityIdleSleepGuard } from "./remote-activity-idle-sleep-guard.mjs";
 import { runRuntimeDirectProcess, runRuntimeExecCommand, runRuntimeLocalCommand } from "./runtime-process-routing.mjs";
-import {
-  resolveTaskCapabilities as resolveRuntimeTaskCapabilities,
-  sessionBootstrap as buildRuntimeSessionBootstrap,
-} from "./runtime-capabilities.mjs";
+import { resolveTaskCapabilities as resolveRuntimeTaskCapabilities, sessionBootstrap as buildRuntimeSessionBootstrap } from "./runtime-capabilities.mjs";
 
 const SLOW_TOOL_CALL_MS = 30_000;
 
@@ -82,7 +80,8 @@ export class LocalRuntime {
     this.relayInstanceId = `daemon_${randomBytes(18).toString("base64url")}`;
     this.activeRelayCalls = new Set();
     this.suppressedRelayResults = new Map();
-    this.relayResumeSessionId = 0;
+    this.relayResumeSessionId = 0; this.relayResumeMissingIds = [];
+    this.remoteActivityIdleSleepGuard = new RemoteActivityIdleSleepGuard({ logger: this.logger });
     this.callRegistry = new CallRegistry({
       maximum: MAX_CONCURRENT_TOOL_CALLS,
       reserved: RESERVED_CONTROL_TOOL_CALLS,
@@ -142,6 +141,7 @@ export class LocalRuntime {
       },
       displayPath: (value, context) => this.displayPath(value, context),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
+      remoteActivityGuard: this.remoteActivityIdleSleepGuard,
     });
     this.agentContextManager = new AgentContextManager({
       workspace: this.workspace,
@@ -219,6 +219,8 @@ export class LocalRuntime {
       observability: this.observability,
       securityAudit: this.securityAudit,
       logger: this.logger,
+      onAuthorizedRelayActivityStart: () => this.remoteActivityIdleSleepGuard.beginActivity(),
+      onAuthorizedRelayActivityEnd: () => this.remoteActivityIdleSleepGuard.endActivity(),
       safeMessage: (error, args, context) => this.safeErrorMessage(error, args, context),
       slowMs: SLOW_TOOL_CALL_MS,
     });
@@ -235,7 +237,6 @@ export class LocalRuntime {
       terminate: () => this.terminateActiveProcesses("SIGTERM", true),
     });
   }
-
   tools() { return this.policyGate.names().filter((name) => name !== "server_info"); }
 
   effectiveToolNames(context = {}) {
@@ -305,6 +306,7 @@ export class LocalRuntime {
       await this.callRegistry.cancelAllAndWait("runtime stopped");
       await this.processTracker.drain("SIGKILL");
       await this.processSessionManager.clearAndWait();
+      this.remoteActivityIdleSleepGuard.stop();
       await this.securityAudit.close();
       this.browserBridgeManager?.stop();
       rmSync(this.runtimeDir, { recursive: true, force: true });
@@ -322,31 +324,28 @@ export class LocalRuntime {
   async handleMessage(raw, relayContext = {}) {
     let message;
     try { message = JSON.parse(raw); } catch {
-      this.handleRelayProtocolViolation("invalid_server_json");
+      this.handleRelayProtocolViolation("invalid_server_json", relayContext);
       return;
     }
-    if (!isPlainRecord(message)) {
-      this.handleRelayProtocolViolation("invalid_server_message");
-      return;
+    if (!isPlainRecord(message)) return this.handleRelayProtocolViolation("invalid_server_message", relayContext);
+    if (message.type === "tool_call") {
+      if (!isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("tool_call_before_ready", relayContext);
+      return this.handleRelayToolCall(message, relayContext);
     }
     if (await this.handleRelayControlMessage(message, relayContext)) return;
     if (message.type === "relay_probe") {
-      if (isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("unexpected_relay_probe");
+      if (isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("unexpected_relay_probe", relayContext);
       this.handleRelayProbe(message, relayContext);
       return;
     }
-    if (message.type !== "tool_call") return this.handleRelayProtocolViolation("unexpected_server_message_type");
-    if (!isRelayReadyContext(relayContext, this.relay)) return this.handleRelayProtocolViolation("tool_call_before_ready");
-    await this.handleRelayToolCall(message);
+    return this.handleRelayProtocolViolation("unexpected_server_message_type", relayContext);
   }
 
-  handleRelayControlMessage(message, relayContext = {}) {
-    return handleRuntimeRelayControlMessage(this, message, relayContext);
-  }
+  handleRelayControlMessage(message, relayContext = {}) { return handleRuntimeRelayControlMessage(this, message, relayContext); }
 
-  handleRelayProtocolViolation(errorCode) {
+  handleRelayProtocolViolation(errorCode, relayContext = {}) {
     if (this.relay) {
-      this.relay.handleServerError({ type: "error", error: errorCode });
+      this.relay.handleServerError({ type: "error", error: errorCode }, relayContext);
       return;
     }
     this.logger.error?.("remote relay protocol error; upgrade and redeploy both components, then restart the daemon");
@@ -355,14 +354,14 @@ export class LocalRuntime {
   handleRelayProbe(message, relayContext = {}) {
     const id = typeof message?.id === "string" && /^probe_[A-Za-z0-9_-]{8,240}$/.test(message.id) ? message.id : "";
     const relaySessionId = Number(relayContext.sessionId) || 0;
-    if (!id || !relaySessionId) return this.handleRelayProtocolViolation("invalid_relay_probe");
+    if (!id || !relaySessionId) return this.handleRelayProtocolViolation("invalid_relay_probe", relayContext);
     const outcome = this.relay?.sendForSession?.({ type: "relay_probe_result", id }, relaySessionId);
     if (!outcome?.ok && !["send_failed", "transport_unavailable", "session_ended"].includes(outcome?.reason)) {
       this.handleRelayProtocolViolation("relay_probe_delivery_failed");
     }
   }
 
-  async handleRelayToolCall(message) {
+  async handleRelayToolCall(message, relayContext = {}) {
     const envelope = normalizeRelayToolCall(message);
     if (!envelope.ok) {
       this.logger.warn?.("Received an invalid tool request from the relay; the request was rejected.");
@@ -378,7 +377,7 @@ export class LocalRuntime {
       return;
     }
     if (this.activeRelayCalls.has(envelope.id)) {
-      this.handleRelayProtocolViolation("duplicate_tool_call_id");
+      this.handleRelayProtocolViolation("duplicate_tool_call_id", relayContext);
       return;
     }
     this.activeRelayCalls.add(envelope.id);
@@ -430,14 +429,17 @@ export class LocalRuntime {
   }
 
   reconcileRelayCalls(resumedCallIds) {
-    this.relayCallRecovery.reconcile(
+    return this.relayCallRecovery.reconcile(
       resumedCallIds,
       (callId) => this.cancelRelayCall(callId, "caller_no_longer_waiting"),
     );
   }
 
+  relayOwnedCallIds() { return this.relayCallRecovery?.ownedCallIds?.() ?? [...this.activeRelayCalls]; }
+
   handleRelayDisconnect() {
     this.relayResumeSessionId = 0;
+    this.relayResumeMissingIds = [];
     this.relayCallRecovery.disconnected();
   }
 
@@ -528,6 +530,7 @@ export class LocalRuntime {
         processes: this.processTracker.snapshot(),
         executionGuardrails: executionGuardrailsSnapshot(),
         securityAudit: this.securityAudit.snapshot(),
+        idleSleepGuard: this.remoteActivityIdleSleepGuard.snapshot(),
       },
       throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
     }, context);
@@ -562,7 +565,7 @@ export class LocalRuntime {
 
   runLocalCommand(args, context = {}) { return runRuntimeLocalCommand(this, args, context); }
 
-  execCommand(input, timeoutOrContext = {}, maybeContext = {}) { return runRuntimeExecCommand(this, input, timeoutOrContext, maybeContext); }
+  execCommand(args, context = {}) { return runRuntimeExecCommand(this, args, context); }
 
   terminateActiveProcesses(signal = "SIGTERM", escalate = false) {
     this.processExecutionService.terminateAll(signal, escalate);

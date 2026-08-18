@@ -66,6 +66,7 @@ export function relayCloseUserCause(category) {
     relay_handshake_timeout: "relay authentication acknowledgement timed out",
     relay_readiness_timeout: "end-to-end relay readiness verification timed out",
     relay_heartbeat_timeout: "relay stopped responding",
+    relay_transport_timeout: "relay transport stopped responding",
     relay_transport_error: "relay transport error",
     relay_protocol_error: "relay protocol error",
     relay_proxy_configuration: "relay proxy configuration invalid",
@@ -115,10 +116,13 @@ export function isSupersededClose(code, reason) {
   return Number(code) === 1012 && String(reason || "") === "replaced by verified daemon";
 }
 
-export function reconnectDelay(attempt, random = Math.random) {
+export function reconnectDelay(attempt, random = Math.random, previousAttemptDurationMs = 0, connectTimeoutMs = 15_000) {
   const safeAttempt = Math.max(0, Number.isFinite(Number(attempt)) ? Number(attempt) : 0);
   const base = Math.min(1000 * (2 ** Math.min(safeAttempt, 4)), 15_000);
-  return base + Math.floor(random() * 500);
+  const spent = Math.max(0, Number(previousAttemptDurationMs) || 0);
+  const connectBudget = Math.max(1, Number(connectTimeoutMs) || 15_000);
+  const remaining = spent >= connectBudget * 0.8 ? Math.max(250, base - spent) : base;
+  return remaining + Math.floor((typeof random === "function" ? random() : Math.random()) * 500);
 }
 
 export function sanitizeProtocolErrorCode(value) {

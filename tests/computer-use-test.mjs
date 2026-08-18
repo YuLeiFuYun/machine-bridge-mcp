@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { ComputerUseManager } from "../src/local/computer-use.mjs";
 import { ComputerUseSnapshotStore } from "../src/local/computer-use-snapshot-store.mjs";
+import { computerActRemainingTimeoutSeconds } from "../src/local/computer-use-deadline.mjs";
 import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation } from "../src/local/computer-use-observation.mjs";
 import { BridgeError } from "../src/local/errors.mjs";
 
@@ -28,6 +29,7 @@ await crossFrameCheckNoopStillUsesBackendIdentityGate();
 await crossFrameCheckHandlesLastHopDesiredStateRace();
 await crossFrameSubmitUsesTrustedBackendBinding();
 await backendTrustedUnavailableFallsBackOnlyInAutoMode();
+await quarantinedTrustedBackendFallsBackToDomInAutoMode();
 await backendPostFocusFailureNeverFallsBackInAutoMode();
 await backendPostDispatchWaitFailureNeverFallsBackInAutoMode();
 await domMutationFailureStaysUnknownInComputerUse();
@@ -125,6 +127,12 @@ await applicationCheckAndUncheckUseDesiredStateReadback();
 await applicationVerificationPollsReadOnlyPostState();
 await applicationVerificationRetriesTransientPostCaptureFailure();
 await applicationVerificationCapsCaptureTimeoutToRemainingBudget();
+computerUseDeadlineIntegerProjectionStaysWithinBudget();
+await computerObserveUsesOneEndToEndTimeoutBudget();
+await computerActUsesOneEndToEndTimeoutBudget();
+await computerActPreflightDeadlinePreservesDefiniteTimeout();
+await computerActDeadlineExhaustionBeforeDispatchIsDefinite();
+await computerActDeadlineExhaustionAfterDispatchRequiresReobserve();
 await applicationVerificationCancellationPreservesCompletedDispatch();
 await applicationVerificationLateCaptureFailureIsInconclusive();
 await applicationCheckAlreadySatisfiedIsVerifiedNoop();
@@ -804,6 +812,32 @@ async function backendTrustedUnavailableFallsBackOnlyInAutoMode() {
     (error) => error instanceof BridgeError && error.code === "unavailable" && error.details?.reason === "snapshot_backend_trusted_input_unavailable",
   );
   assert.equal(strictCalls.some((entry) => entry.kind === "act"), false, "explicit trusted mode silently fell back after backend geometry became unavailable");
+}
+
+async function quarantinedTrustedBackendFallsBackToDomInAutoMode() {
+  const calls = [];
+  const before = browserSnapshot("https://example.test/backend-quarantined", "e-quarantined-backend", "doc-quarantined-backend");
+  before.frames[0].elements[0]._machine_backend_node_id = 91;
+  before.frames[0].elements[0]._machine_cdp_frame_id = "cdp-main";
+  const browser = browserStub({
+    inspectQueue: [before, structuredClone(before)],
+    calls,
+    backendNodeActionError: new BridgeError("unavailable", "trusted browser input is quarantined for the current extension connection after an ambiguous dispatch", {
+      retryable: false,
+      details: { reason: "browser_trusted_input_quarantined", side_effects_started: false },
+    }),
+    actResult: { ok: true, tab_id: 41, url: before.url, title: "Example", input_mode: "dom", trusted_input_fallback: true },
+  });
+  const manager = managerWith({ browser });
+  const observed = await manager.observe({ surface: "browser", include_screenshot: false });
+  const acted = await manager.act({
+    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-quarantined-backend" },
+    include_post_screenshot: false, input_mode: "auto",
+  });
+  assert.equal(acted.dispatch.input_mode, "dom", "Computer Use did not preserve the daemon-side quarantine fallback transport");
+  assert.equal(acted.dispatch.trusted_input_fallback, true, "Computer Use did not expose the trusted-input quarantine fallback");
+  assert.equal(calls.filter((entry) => entry.kind === "backend-act").length, 1, "Computer Use retried the quarantined trusted backend");
+  assert.equal(calls.filter((entry) => entry.kind === "act").length, 1, "Computer Use did not take the single DOM fallback path after definite quarantine preflight");
 }
 
 async function backendPostFocusFailureNeverFallsBackInAutoMode() {
@@ -3256,9 +3290,183 @@ async function applicationVerificationCapsCaptureTimeoutToRemainingBudget() {
   });
   assert.equal(acted.effect_status, "confirmed");
   const inspectCalls = calls.filter((entry) => entry.kind === "inspect-app");
-  assert.deepEqual(inspectCalls.slice(-2).map((entry) => entry.args.timeout_seconds), [30, 1],
-    "application verifier did not preserve the normal first post-capture timeout and cap only the retry to remaining verification budget");
+  assert.deepEqual(inspectCalls.slice(-2).map((entry) => entry.args.timeout_seconds), [1, 1],
+    "application verifier let the first post-capture escape the declared verification budget");
   assert.equal(calls.filter((entry) => entry.kind === "operate").length, 1);
+}
+
+function computerUseDeadlineIntegerProjectionStaysWithinBudget() {
+  const deadline = { remainingMs: () => 999 };
+  assert.equal(computerActRemainingTimeoutSeconds(deadline, 30), 0,
+    "Computer Use rounded a sub-second remainder up to a one-second child timeout beyond the end-to-end deadline");
+  deadline.remainingMs = () => 1_000;
+  assert.equal(computerActRemainingTimeoutSeconds(deadline, 30), 1,
+    "Computer Use discarded one full child-timeout second from the remaining execution budget");
+  deadline.remainingMs = () => 1_999;
+  assert.equal(computerActRemainingTimeoutSeconds(deadline, 30), 1,
+    "Computer Use child timeout exceeded the whole-second execution budget remaining");
+}
+
+async function computerObserveUsesOneEndToEndTimeoutBudget() {
+  const calls = [];
+  let clock = 1000;
+  const applications = appStub({
+    inspectQueue: [appSnapshot(false, false)],
+    screenshotResult: { screenshot: { mime_type: "image/png", data: PNG_A_BASE64, source: "macos_window" } },
+    calls,
+  });
+  const captureApplication = applications.captureApplication.bind(applications);
+  applications.captureApplication = async (args) => {
+    const result = await captureApplication(args);
+    clock += 6_000;
+    return result;
+  };
+  const inspectApplication = applications.inspectApplication.bind(applications);
+  applications.inspectApplication = async (args) => {
+    const result = await inspectApplication(args);
+    clock += 1_000;
+    return result;
+  };
+  const manager = managerWith({ applications, now: () => clock });
+  await manager.observe({
+    surface: "application", application: "Notes", include_screenshot: true, timeout_seconds: 10,
+  });
+  const capture = calls.find((entry) => entry.kind === "capture-app");
+  const inspect = calls.find((entry) => entry.kind === "inspect-app");
+  assert.equal(capture.args.timeout_seconds, 10);
+  assert(inspect.args.timeout_seconds <= 4,
+    "computer_observe gave AX inspection the full original timeout after screenshot capture consumed budget");
+}
+
+async function computerActUsesOneEndToEndTimeoutBudget() {
+  const calls = [];
+  let clock = 1000;
+  let consumeBudget = false;
+  const applications = appStub({
+    inspectQueue: [appSnapshot(false, false), appSnapshot(false, false), appSnapshot(false, true)],
+    calls,
+    operateApplicationResult: { ok: true, matched: 1, selected_index: 0, element: { focused: true, sensitive: false } },
+  });
+  const inspectApplication = applications.inspectApplication.bind(applications);
+  applications.inspectApplication = async (args) => {
+    const result = await inspectApplication(args);
+    if (consumeBudget) clock += 9_000;
+    return result;
+  };
+  const operateApplication = applications.operateApplication.bind(applications);
+  applications.operateApplication = async (args) => {
+    const result = await operateApplication(args);
+    if (consumeBudget) clock += 8_000;
+    return result;
+  };
+  const manager = managerWith({ applications, now: () => clock });
+  const observed = await manager.observe({ surface: "application", application: "Notes", include_screenshot: false });
+  consumeBudget = true;
+  const acted = await manager.act({
+    surface: "application", snapshot_id: observed.snapshot_id, action: "focus", target: { ref: "a0" },
+    post_screenshot: "never", timeout_seconds: 30, verify_timeout_seconds: 30,
+  });
+  assert.equal(acted.effect_status, "confirmed");
+  const operate = calls.find((entry) => entry.kind === "operate");
+  assert(operate.args.timeout_seconds < 30,
+    "computer_act gave mutation dispatch the full original timeout after preflight had already consumed budget");
+  const postInspect = calls.filter((entry) => entry.kind === "inspect-app").at(-1);
+  assert(postInspect.args.timeout_seconds <= 13,
+    "computer_act post-observation ignored time already consumed by preflight and dispatch");
+}
+
+async function computerActPreflightDeadlinePreservesDefiniteTimeout() {
+  const calls = [];
+  let clock = 1000;
+  const browser = browserStub({
+    inspectQueue: [browserSnapshot("https://example.test/preflight-deadline", "e-deadline", "doc-deadline")],
+    calls,
+  });
+  const listTabs = browser.listTabs.bind(browser);
+  browser.listTabs = async (args) => {
+    const result = await listTabs(args);
+    clock += 1_000;
+    return result;
+  };
+  const manager = managerWith({ browser, now: () => clock });
+  const observed = await manager.observe({ surface: "browser", include_screenshot: false });
+  await assert.rejects(
+    () => manager.act({
+      surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-deadline" },
+      post_screenshot: "never", timeout_seconds: 1,
+    }),
+    (error) => error instanceof BridgeError
+      && error.code === "timeout"
+      && error.details?.reason === "computer_action_deadline_exhausted"
+      && error.details?.side_effects_started === false,
+  );
+  assert.equal(calls.some((entry) => entry.kind === "act"), false,
+    "computer_act preflight deadline exhaustion reached browser mutation dispatch");
+  assert.doesNotThrow(() => manager.snapshots.get(observed.snapshot_id),
+    "computer_act consumed snapshot mutation authority even though the end-to-end deadline expired before dispatch");
+}
+
+async function computerActDeadlineExhaustionBeforeDispatchIsDefinite() {
+  const calls = [];
+  let clock = 1000;
+  let consumeBudget = false;
+  const applications = appStub({
+    inspectQueue: [appSnapshot(false, false), appSnapshot(false, false)],
+    calls,
+  });
+  const inspectApplication = applications.inspectApplication.bind(applications);
+  applications.inspectApplication = async (args) => {
+    const result = await inspectApplication(args);
+    if (consumeBudget) clock += 1_000;
+    return result;
+  };
+  const manager = managerWith({ applications, now: () => clock });
+  const observed = await manager.observe({ surface: "application", application: "Notes", include_screenshot: false });
+  consumeBudget = true;
+  await assert.rejects(
+    () => manager.act({
+      surface: "application", snapshot_id: observed.snapshot_id, action: "focus", target: { ref: "a0" },
+      post_screenshot: "never", timeout_seconds: 1,
+    }),
+    (error) => error instanceof BridgeError
+      && error.code === "timeout"
+      && error.details?.reason === "computer_action_deadline_exhausted"
+      && error.details?.side_effects_started === false,
+  );
+  assert.equal(calls.some((entry) => entry.kind === "operate"), false,
+    "computer_act dispatched a mutation after its end-to-end deadline was exhausted in preflight");
+}
+
+async function computerActDeadlineExhaustionAfterDispatchRequiresReobserve() {
+  const calls = [];
+  let clock = 1000;
+  let consumeBudget = false;
+  const applications = appStub({
+    inspectQueue: [appSnapshot(false, false), appSnapshot(false, false)],
+    calls,
+    operateApplicationResult: { ok: true, matched: 1, selected_index: 0, element: { focused: true, sensitive: false } },
+  });
+  const operateApplication = applications.operateApplication.bind(applications);
+  applications.operateApplication = async (args) => {
+    const result = await operateApplication(args);
+    if (consumeBudget) clock += 2_000;
+    return result;
+  };
+  const manager = managerWith({ applications, now: () => clock });
+  const observed = await manager.observe({ surface: "application", application: "Notes", include_screenshot: false });
+  consumeBudget = true;
+  const acted = await manager.act({
+    surface: "application", snapshot_id: observed.snapshot_id, action: "focus", target: { ref: "a0" },
+    post_screenshot: "never", timeout_seconds: 2, verify_timeout_seconds: 2,
+  });
+  assert.equal(acted.dispatch_status, "completed");
+  assert.equal(acted.effect_status, "unknown");
+  assert.equal(acted.verification.inconclusive, true);
+  assert.match(acted.post_observation_error, /error_class=timeout/);
+  assert.equal(acted.retry_guidance.same_action_retry_allowed, false);
+  assert.equal(acted.retry_guidance.disposition, "reobserve_before_retry");
+  assert.equal(calls.filter((entry) => entry.kind === "operate").length, 1,
+    "post-dispatch deadline exhaustion replayed the application mutation");
 }
 
 async function applicationVerificationCancellationPreservesCompletedDispatch() {
@@ -4424,7 +4632,7 @@ function managerWith({
   });
 }
 
-function browserStub({ inspectQueue, tabUrl = null, calls = [], actError = null, pointActionError = null, backendNodeActionError = null, documentStateEpoch = null, documentStateHistoryEntryKey = null, documentStateViewport = null, documentStateError = null, enhanced = false, screenshotHashes = [], checkedState = null, backendToggleNoInput = false, backendTogglePreFocusNoInput = false, postDispatchWaitError = null, backendBindingConfidence = "high" }) {
+function browserStub({ inspectQueue, tabUrl = null, calls = [], actError = null, actResult = null, pointActionError = null, backendNodeActionError = null, documentStateEpoch = null, documentStateHistoryEntryKey = null, documentStateViewport = null, documentStateError = null, enhanced = false, screenshotHashes = [], checkedState = null, backendToggleNoInput = false, backendTogglePreFocusNoInput = false, postDispatchWaitError = null, backendBindingConfidence = "high" }) {
   const queue = [...inspectQueue];
   let initialUrl = tabUrl || queue[0]?.url || "https://example.test/";
   let observedEpoch = queue[0]?.frames?.[0]?.document?.epoch ?? "doc-default";
@@ -4548,7 +4756,7 @@ function browserStub({ inspectQueue, tabUrl = null, calls = [], actError = null,
     async act(args) {
       calls.push({ kind: "act", args });
       if (actError) throw actError;
-      return { ok: true, tab_id: 41, url: initialUrl, title: "Example", input_mode: "trusted", trusted_input_fallback: false };
+      return actResult || { ok: true, tab_id: 41, url: initialUrl, title: "Example", input_mode: "trusted", trusted_input_fallback: false };
     },
   };
 }

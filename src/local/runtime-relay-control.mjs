@@ -4,25 +4,16 @@ import { normalizeAuthorityRevocation } from "../shared/authority-revocation.mjs
 
 export async function handleRuntimeRelayControlMessage(runtime, message, relayContext = {}) {
   if (message.type === "welcome") {
-    runtime.relay?.observeWelcome(message);
+    runtime.relay?.observeWelcome(message, relayContext);
     return true;
   }
   if (message.type === "hello_ack") {
     runtime.relayResumeSessionId = 0;
-    runtime.relay?.acknowledge(message);
+    runtime.relayResumeMissingIds = [];
+    runtime.relay?.acknowledge(message, relayContext);
     return true;
   }
-  if (message.type === "resume_calls") {
-    const sessionId = Number(relayContext.sessionId) || 0;
-    const resume = normalizeRelayResumeCalls(message);
-    if (!resume.ok || !sessionId || relayContext.authenticated !== true || relayContext.ready === true) {
-      runtime.handleRelayProtocolViolation("invalid_resume_calls");
-      return true;
-    }
-    runtime.reconcileRelayCalls(resume.ids);
-    runtime.relayResumeSessionId = sessionId;
-    return true;
-  }
+  if (message.type === "resume_calls") return handleResumeCalls(runtime, message, relayContext);
   if (message.type === "authority_revoke") {
     const sessionId = Number(relayContext.sessionId) || 0;
     const revocationId = String(message.revocation_id || "");
@@ -46,8 +37,20 @@ export async function handleRuntimeRelayControlMessage(runtime, message, relayCo
       runtime.handleRelayProtocolViolation("resume_calls_required");
       return true;
     }
-    runtime.relay?.confirmReady(message);
+    if (!runtime.relay?.confirmReady(message, relayContext)) {
+      runtime.relay?.interrupt?.("relay_transport_error");
+      return true;
+    }
+    const acknowledgement = runtime.relay?.sendForSession?.({
+      type: "resume_calls_ack",
+      missing_ids: Array.isArray(runtime.relayResumeMissingIds) ? runtime.relayResumeMissingIds : [],
+    }, sessionId);
+    if (!acknowledgement?.ok) {
+      runtime.relay?.interrupt?.("relay_transport_error");
+      return true;
+    }
     runtime.relayResumeSessionId = 0;
+    runtime.relayResumeMissingIds = [];
     return true;
   }
   if (message.type === "pong") {
@@ -65,7 +68,7 @@ export async function handleRuntimeRelayControlMessage(runtime, message, relayCo
     return true;
   }
   if (message.type === "error") {
-    runtime.relay?.handleServerError(message);
+    runtime.relay?.handleServerError(message, relayContext);
     return true;
   }
   if (message.type === "cancel_call") {
@@ -79,4 +82,17 @@ export async function handleRuntimeRelayControlMessage(runtime, message, relayCo
     return true;
   }
   return false;
+}
+
+function handleResumeCalls(runtime, message, relayContext) {
+  const sessionId = Number(relayContext.sessionId) || 0;
+  const resume = normalizeRelayResumeCalls(message);
+  if (!resume.ok || !sessionId || relayContext.authenticated !== true || relayContext.ready === true) {
+    runtime.handleRelayProtocolViolation("invalid_resume_calls");
+    return true;
+  }
+  const missingIds = runtime.reconcileRelayCalls(resume.ids);
+  runtime.relayResumeSessionId = sessionId;
+  runtime.relayResumeMissingIds = Array.isArray(missingIds) ? missingIds : [];
+  return true;
 }

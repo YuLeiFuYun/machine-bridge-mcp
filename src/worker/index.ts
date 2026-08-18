@@ -4,9 +4,10 @@ import { PendingCallRegistrationError } from "./pending-call-contract.ts";
 import { PendingCallRegistry } from "./pending-calls.ts";
 import { MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission, pendingCapacityProjection } from "./pending-call-capacity.ts";
 import { PendingAdmissionGate } from "./pending-admission.ts";
-import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import { daemonLivenessDeadlineMs, isFreshDaemonCandidate } from "./daemon-liveness.ts";
-import { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import { DaemonRegistry } from "./daemon-registry.ts";
+import type { DaemonChannel } from "./daemon-channel.ts";
+import { trySendDaemonChannel } from "./daemon-channel.ts";
 import { notifyReadyDaemon, readyDaemonWaiterSnapshot } from "./daemon-ready-waiters.ts";
 import { readyDaemonForDispatch } from "./daemon-ready-dispatch.ts";
 import { daemonToolTimeoutBudgetAfterDelay } from "./daemon-recovery-budget.ts";
@@ -15,6 +16,8 @@ import { sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
 import { sanitizeDaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
+import { handleDaemonHttpRelay } from "./daemon-http-controller.ts";
+import { handleReadyDaemonMessage } from "./daemon-ready-messages.ts";
 import { McpController } from "./mcp-controller.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { removedProtocolResponse } from "./mcp-removed-protocol.ts";
@@ -24,13 +27,13 @@ import { buildServerInfoResult, serverInfoDetail } from "./server-info.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
 import { daemonToolTimeoutBudget, isRemoteDurableProcessTool } from "./tool-timeout.ts";
 import { WorkerObservability } from "./observability.ts";
-import { daemonToolError, dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
+import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access.ts";
 import type { AuthorizedToken } from "./access.ts";
 import { OAuthController } from "./oauth-controller.ts";
 import {
-  acknowledgeAuthorityRevocation, authorityRevocationAckId, authorityRevocations, authorityRevocationWireMessage,
+  authorityRevocations, authorityRevocationWireMessage,
 } from "./authority-revocations.ts";
 import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority.ts";
 import { serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./tool-catalog.ts";
@@ -54,7 +57,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.97";
+const SERVER_VERSION = "3.0.0-beta.102";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -62,7 +65,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS);
   private readonly observability = new WorkerObservability();
   private readonly oauth: OAuthController;
-  private readonly daemonRegistry: DaemonSocketRegistry;
+  private readonly daemonRegistry: DaemonRegistry;
   private readonly pendingAdmission = new PendingAdmissionGate();
   private readonly mcp: McpController;
 
@@ -72,7 +75,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       ctx, env, SERVER_NAME, SERVER_VERSION,
       (event) => this.observability.oauthRefreshEvent(event),
     );
-    this.daemonRegistry = new DaemonSocketRegistry(ctx);
+    this.daemonRegistry = new DaemonRegistry(ctx);
     this.mcp = new McpController({
       capabilities: MCP_SERVER_CAPABILITIES,
       serverInfo: MCP_SERVER_INFO,
@@ -122,6 +125,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         if (request.method !== "GET") return methodNotAllowed("GET");
         return await this.acceptDaemonWebSocket(request);
       }
+      if (url.pathname === "/daemon/http") {
+        if (request.method !== "POST") return methodNotAllowed("POST");
+        return await this.acceptDaemonHttp(request);
+      }
       if (url.pathname === "/mcp") return await this.handleMcp(request, base);
       return json({ error: "not_found" }, 404);
     } catch (error) {
@@ -153,10 +160,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }, () => revokedDaemonAuthorityError());
     }
     if (cancelled > 0) this.observability.event("info", "authority.revocation.pending_calls_cancelled", { calls: cancelled });
-    for (const socket of this.daemonRegistry.readySockets()) {
+    for (const socket of this.daemonRegistry.readyChannels()) {
       for (const revocation of queued) {
-        if (trySendWebSocket(socket, authorityRevocationWireMessage(revocation))) continue;
-        await this.invalidateDaemonSocket(socket, "failed to deliver authority revocation", "daemon authority revocation send failed", "daemon_transport_error");
+        if (trySendDaemonChannel(socket, authorityRevocationWireMessage(revocation))) continue;
+        await this.invalidateDaemonChannel(socket, "failed to deliver authority revocation", "daemon_transport_error");
         break;
       }
     }
@@ -311,7 +318,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return;
       }
       const previousSockets = this.daemonRegistry.readyRoleSockets().filter((socket) => socket !== ws);
+      const previousHttpChannels = this.daemonRegistry.httpReadyChannels();
       const fallbackSocket = previousSockets.find((socket) => this.daemonRegistry.readyAttachment(socket)?.instanceId === daemonInstanceId);
+      const fallbackHttp = previousHttpChannels.find((channel) => this.daemonRegistry.readyAttachment(channel)?.instanceId === daemonInstanceId);
       const reboundCallIds = this.pending.rebindInstance(daemonInstanceId, ws);
       if (reboundCallIds.length > 0) {
         this.observability.event("info", "daemon.calls.rebound", { rebound_calls: reboundCallIds.length });
@@ -324,6 +333,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         await this.invalidateDaemonSocket(ws, "daemon readiness acknowledgement failed", "daemon ready timeout", "daemon_ready_timeout");
         if (fallbackSocket?.readyState === WebSocket.OPEN) {
           this.pending.rebindInstance(daemonInstanceId, fallbackSocket);
+        } else if (fallbackHttp?.readyState === 1) {
+          this.pending.rebindInstance(daemonInstanceId, fallbackHttp);
         }
         await this.scheduleRuntimeAlarm();
         return;
@@ -335,6 +346,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         closeWebSocketQuietly(previous, 1012, "replaced by verified daemon");
         if (cleanup) await cleanup.task;
       }
+      for (const previous of previousHttpChannels) {
+        await this.detachDaemonChannelCalls(previous, "HTTPS fallback replaced by verified WebSocket");
+        this.daemonRegistry.http.close(previous);
+      }
       await this.scheduleRuntimeAlarm();
       return;
     }
@@ -344,34 +359,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return;
     }
 
-    if (body.type === "authority_revoke_ack") {
-      const revocationId = authorityRevocationAckId(body.revocation_id);
-      if (!revocationId) {
-        rejectDaemonMessage(ws, "invalid_authority_revoke_ack", 1002, "invalid authority revocation acknowledgement");
-        return;
-      }
-      if (!this.touchDaemonSocket(ws)) return;
-      await acknowledgeAuthorityRevocation(this.ctx.storage, revocationId);
-      await this.scheduleRuntimeAlarm();
-      return;
-    }
-
-    if (body.type !== "tool_result" || typeof body.id !== "string") {
-      rejectDaemonMessage(ws, "unknown_message_type", 1002, "unknown daemon message type");
-      return;
-    }
-
     if (!this.touchDaemonSocket(ws)) return;
-    const outcome: PendingCallOutcome = body.ok === false
-      ? { ok: false, error: daemonToolError(body.error) }
-      : { ok: true, value: body.result };
-    const ownership = this.pending.resultOwnership(body.id, ws);
-    const transientMatched = ownership === "owned" && (outcome.ok
-      ? await this.pending.resolve(body.id, ws, outcome.value)
-      : await this.pending.reject(body.id, outcome.error, ws));
-    if (transientMatched || ownership === "missing") trySendWebSocket(ws, { type: "tool_result_ack", id: body.id });
-    this.observability.daemonTerminalResult(transientMatched ? "committed"
-      : ownership === "missing" ? "owner_missing_acknowledged" : "stale_connection_rejected");
+    const handled = await handleReadyDaemonMessage({
+      channel: ws, body, pending: this.pending, storage: this.ctx.storage, observability: this.observability,
+    });
+    if (!handled.ok) {
+      rejectDaemonMessage(ws, handled.errorCode ?? "unknown_message_type", 1002, handled.errorMessage ?? "invalid daemon message");
+      return;
+    }
     await this.scheduleRuntimeAlarm();
   }
 
@@ -525,6 +520,18 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           ...(recovery ? { recovery } : {}),
           timeoutMs: dispatchBudget.settlementTimeoutMs,
           onTimeout: (record) => this.daemonCallTimeout(record, name),
+          redeliverAfterProvenMissing: (record, channel) => {
+            const remainingExecutionMs = Math.min(dispatchBudget.executionTimeoutMs,
+              Math.floor(record.startedAt + dispatchBudget.executionTimeoutMs - performance.now()));
+            if (remainingExecutionMs < 1_000) return false;
+            return trySendDaemonChannel(channel, {
+              type: "tool_call", id: record.id, tool: name, arguments: args, timeout_ms: remainingExecutionMs,
+              authorization: {
+                account_id: authorized.accountId, account_version: authorized.accountVersion,
+                client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
+              },
+            });
+          },
           signal,
           onAbort: (record) => this.daemonCallCancellation(record),
         });
@@ -538,7 +545,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     await this.scheduleRuntimeAlarm();
     this.observability.callStarted(name);
     try {
-      socket.send(JSON.stringify({
+      if (!trySendDaemonChannel(socket, {
           type: "tool_call", id, tool: name, arguments: args, timeout_ms: dispatchBudget.executionTimeoutMs,
           authorization: {
             account_id: authorized.accountId,
@@ -547,10 +554,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
             family_id: authorized.familyId,
             role: authorized.role,
           },
-      }));
+      })) throw new Error("daemon channel send failed");
     } catch {
       await this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
-      await this.invalidateDaemonSocket(socket, "failed to send daemon tool call", "daemon send failed");
+      await this.invalidateDaemonChannel(socket, "failed to send daemon tool call", "daemon_transport_error");
     }
     try {
       const value = await result;
@@ -562,24 +569,39 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
   }
   private daemonCallTimeout(record: import("./pending-call-contract.ts").PendingCallRecord, name: string): Error {
-    const terminationRequested = Boolean(record.socket && trySendWebSocket(record.socket, { type: "cancel_call", id: record.id }));
+    const terminationRequested = Boolean(record.socket && trySendDaemonChannel(record.socket, { type: "cancel_call", id: record.id }));
     return dispatchedDaemonTimeoutError(name, terminationRequested, record.recovery);
   }
   private daemonCallCancellation(record: import("./pending-call-contract.ts").PendingCallRecord): Error {
-    const terminationRequested = Boolean(record.socket && trySendWebSocket(record.socket, { type: "cancel_call", id: record.id }));
+    const terminationRequested = Boolean(record.socket && trySendDaemonChannel(record.socket, { type: "cancel_call", id: record.id }));
     return dispatchedDaemonCancellationError("tool call cancelled when its HTTP response stream closed", terminationRequested, record.recovery);
   }
 
   private async cancelClientRequest(requestKey?: string): Promise<void> {
     if (!requestKey) return;
     const cancelledTransient = await this.pending.cancelRequest(requestKey, (record) => {
-      const terminationRequested = Boolean(record.socket && trySendWebSocket(record.socket, { type: "cancel_call", id: record.id }));
+      const terminationRequested = Boolean(record.socket && trySendDaemonChannel(record.socket, { type: "cancel_call", id: record.id }));
       return dispatchedDaemonCancellationError("tool call cancelled by client", terminationRequested, record.recovery);
     });
     if (cancelledTransient) {
       await this.scheduleRuntimeAlarm();
       return;
     }
+  }
+  private async acceptDaemonHttp(request: Request): Promise<Response> {
+    if (!this.env.DAEMON_DEVICE_PUBLIC_KEY) return json({ error: "daemon_device_identity_not_configured" }, 503);
+    return handleDaemonHttpRelay({
+      request, storage: this.ctx.storage, registry: this.daemonRegistry, pending: this.pending,
+      observability: this.observability, publicKeyJson: this.env.DAEMON_DEVICE_PUBLIC_KEY,
+      server: SERVER_NAME, version: SERVER_VERSION,
+      scheduleAlarm: () => this.scheduleRuntimeAlarm(),
+      detachChannel: async (channel, message) => { await this.detachDaemonChannelCalls(channel, message); },
+      retireWebSocket: async (socket, message) => {
+        const cleanup = this.cleanupDaemonSocket(socket, message);
+        closeWebSocketQuietly(socket, 1012, "HTTPS fallback handover");
+        if (cleanup) await cleanup.task;
+      },
+    });
   }
   private async acceptDaemonWebSocket(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected Upgrade: websocket", { status: 426 });
@@ -643,7 +665,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
   private daemonAdvertisedTools(): Set<string> {
     this.reclaimStaleDaemonSockets();
-    const socket = this.daemonRegistry.readySockets()[0];
+    const socket = this.daemonRegistry.readyChannels()[0];
     if (!socket) return new Set();
     const attachment = this.daemonRegistry.readyAttachment(socket);
     if (!attachment?.tools) return new Set();
@@ -664,14 +686,34 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private async detachDaemonSocketCalls(
     ws: WebSocket, message: string, attachment = this.daemonRegistry.attachment(ws),
   ): Promise<number> {
+    return this.detachDaemonChannelCalls(ws, message, attachment);
+  }
+
+  private async detachDaemonChannelCalls(
+    socket: DaemonChannel, message: string, attachment = this.daemonRegistry.readyAttachment(socket),
+  ): Promise<number> {
     if (!attachment?.instanceId) {
-      return await this.pending.rejectSocket(ws, (record) => dispatchedDaemonDisconnectError(message, record.recovery));
+      return await this.pending.rejectSocket(socket, (record) => dispatchedDaemonDisconnectError(message, record.recovery));
     }
     return this.pending.detachSocket(
-      ws,
+      socket,
       DAEMON_RECONNECT_GRACE_MS,
       (record) => dispatchedDaemonDisconnectError(`${message}; reconnect grace expired`, record.recovery),
     );
+  }
+
+  private async invalidateDaemonChannel(
+    socket: DaemonChannel, message: string, errorCode = "daemon_transport_error", reschedule = true,
+  ): Promise<void> {
+    if (socket.daemonTransport !== "https") {
+      await this.invalidateDaemonSocket(socket as WebSocket, message, "daemon transport failed", errorCode);
+      return;
+    }
+    this.daemonRegistry.rememberDisconnected(socket);
+    await this.detachDaemonChannelCalls(socket, message);
+    this.daemonRegistry.http.close(socket as import("./daemon-http-channel.ts").DaemonHttpChannel);
+    this.observability.event("warn", "daemon.https_fallback.disconnected", { error_class: errorCode });
+    if (reschedule) await this.scheduleRuntimeAlarm();
   }
 
   private reclaimStaleDaemonSockets(now = Date.now()): void {
@@ -681,6 +723,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       retainWorkerTask(this.ctx,
         this.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout"),
         (error) => this.observability.event("error", "daemon.socket.cleanup.failed",
+          { error_class: workerErrorClass(error) }));
+    }
+    for (const channel of this.daemonRegistry.http.staleReady(now)) {
+      retainWorkerTask(this.ctx,
+        this.invalidateDaemonChannel(channel, "HTTPS fallback became unresponsive", "daemon_liveness_timeout"),
+        (error) => this.observability.event("error", "daemon.https_fallback.cleanup.failed",
           { error_class: workerErrorClass(error) }));
     }
   }
@@ -705,6 +753,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       daemonRegistry: this.daemonRegistry,
       invalidateDaemonSocket: (socket: WebSocket, message: string, closeReason: string, errorCode?: string) =>
         this.invalidateDaemonSocket(socket, message, closeReason, errorCode, false),
+      invalidateDaemonChannel: (channel: DaemonChannel, message: string, errorCode?: string) =>
+        this.invalidateDaemonChannel(channel, message, errorCode, false),
       onScheduleError: (error: unknown) => this.observability.event(
         "error", "runtime.alarm.schedule.failed", { error_class: workerErrorClass(error) },
       ),

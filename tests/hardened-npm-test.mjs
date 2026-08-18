@@ -120,6 +120,18 @@ try {
   assert.equal(transientRequest.calls, 3, "hardened npm did not retry transient timeout/503 failures to success");
   assert.deepEqual(retryDelays, [750, 1500], "hardened npm transient retry lost bounded linear backoff");
 
+  for (const firstFailure of [{ responseError: new Error("aborted") }, { responseAborted: true }]) {
+    const abortedRequest = fakeDownloadSequence([
+      { statusCode: 200, ...firstFailure },
+      { statusCode: 200, body: bytesByName.get("npm") },
+    ]);
+    const recovered = await downloadHardenedNpmArtifact(artifacts[0], {
+      request: abortedRequest, proxyAgentForUrl: () => ({ agent: null }), sleep: () => {},
+    });
+    assert.deepEqual(recovered, bytesByName.get("npm"), "hardened npm did not recover from an aborted registry response");
+    assert.equal(abortedRequest.calls, 2, "hardened npm did not retry an aborted registry response exactly once before success");
+  }
+
   const slowScheduler = createManualTimerScheduler();
   const slowBody = bytesByName.get("npm");
   const slowDownload = await downloadHardenedNpmArtifact(artifacts[0], {
@@ -302,6 +314,7 @@ function fakeDownloadSequence(outcomes) {
         };
         request.emit("response", response);
         if (outcome.statusCode === 200) {
+          if (outcome.responseAborted) { response.emit("aborted"); return; }
           if (outcome.responseError) { response.emit("error", outcome.responseError); return; }
           if (outcome.body?.length) response.emit("data", outcome.body);
           if (!response.destroyedError) response.emit("end");

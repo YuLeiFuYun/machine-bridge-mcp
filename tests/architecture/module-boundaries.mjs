@@ -29,7 +29,7 @@ for (const file of graph.keys()) visitModule(file, []);
 
 const adapterModules = new Set([
   "cli.mjs", "cli-service.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs",
-  "service-restart-handoff.mjs", "service-restart-scheduler.mjs", "windows-service.mjs", "windows-service-convergence.mjs", "relay-connection.mjs", "runtime-relay.mjs", "worker-deployment.mjs", "hardened-npm.mjs", "hardened-npm-download.mjs", "hardened-npm-extract.mjs", "hardened-npm-verification.mjs", "wrangler-toolchain.mjs", "wrangler-toolchain-verification.mjs",
+  "service-restart-handoff.mjs", "service-restart-scheduler.mjs", "windows-service.mjs", "windows-service-convergence.mjs", "relay-connection.mjs", "runtime-relay.mjs", "macos-idle-sleep-assertion.mjs", "remote-activity-idle-sleep-guard.mjs", "worker-deployment.mjs", "hardened-npm.mjs", "hardened-npm-download.mjs", "hardened-npm-extract.mjs", "hardened-npm-verification.mjs", "wrangler-toolchain.mjs", "wrangler-toolchain-verification.mjs",
 ]);
 const boundaryModules = new Set([
   "agent-context.mjs",
@@ -41,6 +41,8 @@ const boundaryModules = new Set([
   "browser-command.mjs",
   "browser-operation-service.mjs",
   "computer-use.mjs",
+  "computer-use-deadline.mjs",
+  "computer-use-dispatch-settlement.mjs",
   "computer-use-expectation.mjs",
   "computer-use-observation.mjs",
   "computer-use-application-observation.mjs",
@@ -56,6 +58,7 @@ const boundaryModules = new Set([
   "npm-cli.mjs",
   "worker-health.mjs",
   "process-sessions.mjs",
+  "process-session-remote-activity.mjs",
   "process-output-stream.mjs",
   "process-result-projection.mjs",
   "process-nonreplayable-settlement.mjs",
@@ -151,6 +154,7 @@ const boundaryModules = new Set([
   "runtime-paths.mjs",
   "relay-call-recovery.mjs",
   "relay-connection-classification.mjs",
+  "relay-liveness.mjs",
   "browser-request-registry.mjs",
   "browser-request-settlement.mjs",
   "browser-bridge-http.mjs",
@@ -228,8 +232,10 @@ const lineLimits = Object.freeze({
   "src/local/process-output-stream.mjs": 110,
   "src/local/process-result-projection.mjs": 60,
   "src/local/process-sessions.mjs": 340,
+  "src/local/process-session-remote-activity.mjs": 20,
   "src/local/relay-connection.mjs": 680,
   "src/local/relay-connection-classification.mjs": 160,
+  "src/local/relay-liveness.mjs": 110,
   "src/local/relay-heartbeat.mjs": 130,
   "src/local/process-contract.mjs": 40,
   "src/local/process-tree.mjs": 70,
@@ -306,6 +312,8 @@ const lineLimits = Object.freeze({
   "src/local/workspace-search.mjs": 80,
   "src/local/workspace-file-service.mjs": 430,
   "src/local/tool-executor.mjs": 180,
+  "src/local/macos-idle-sleep-assertion.mjs": 80,
+  "src/local/remote-activity-idle-sleep-guard.mjs": 80,
   "src/local/security-audit-log.mjs": 220,
   "src/local/security-audit-storage.mjs": 230,
   "src/local/security-audit-state.mjs": 180,
@@ -371,6 +379,8 @@ const lineLimits = Object.freeze({
   "src/local/browser-broker-server.mjs": 90,
   "src/local/browser-operation-service.mjs": 360,
   "src/local/computer-use.mjs": 2280,
+  "src/local/computer-use-deadline.mjs": 80,
+  "src/local/computer-use-dispatch-settlement.mjs": 80,
   "src/local/computer-use-arguments.mjs": 310,
   "src/local/computer-use-expectation.mjs": 210,
   "src/local/computer-use-observation.mjs": 780,
@@ -420,6 +430,14 @@ const lineLimits = Object.freeze({
   "src/worker/tool-catalog.ts": 80,
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
+  "src/worker/daemon-channel.ts": 50,
+  "src/worker/daemon-registry.ts": 70,
+  "src/worker/daemon-http-auth.ts": 90,
+  "src/worker/daemon-http-channel.ts": 130,
+  "src/worker/daemon-http-controller.ts": 190,
+  "src/worker/daemon-http-protocol.ts": 80,
+  "src/worker/daemon-http-registry.ts": 100,
+  "src/worker/daemon-ready-messages.ts": 80,
   "src/worker/daemon-ready-waiters.ts": 80,
   "src/worker/daemon-ready-dispatch.ts": 30,
   "src/worker/daemon-recovery-budget.ts": 30,
@@ -436,6 +454,7 @@ const lineLimits = Object.freeze({
   "browser-extension/browser-operations.js": 1920,
   "browser-extension/page-automation.js": 1200,
   "browser-extension/devtools-observation.js": 460,
+  "browser-extension/broker-liveness.js": 50,
   "browser-extension/service-worker.js": 370,
 });
 for (const [name, maximum] of Object.entries(lineLimits)) {
@@ -463,14 +482,30 @@ for (const name of ["app-automation.mjs", "browser-bridge.mjs", "managed-jobs.mj
 }
 
 const computerUseSource = readFileSync(join(localRoot, "computer-use.mjs"), "utf8");
+const computerUseDeadlineSource = readFileSync(join(localRoot, "computer-use-deadline.mjs"), "utf8");
+const computerUseDispatchSettlementSource = readFileSync(join(localRoot, "computer-use-dispatch-settlement.mjs"), "utf8");
 const computerUseSnapshotStoreSource = readFileSync(join(localRoot, "computer-use-snapshot-store.mjs"), "utf8");
 const appAutomationDurationSource = readFileSync(join(localRoot, "app-automation.mjs"), "utf8");
 if (!computerUseSource.includes('from "./computer-use-snapshot-store.mjs"')
+    || !computerUseSource.includes('from "./computer-use-deadline.mjs"')
     || !computerUseSource.includes('from "./monotonic-deadline.mjs"')
     || !computerUseSource.includes("now = () => performance.now()")
     || computerUseSource.includes("now = () => Date.now()")
     || !computerUseSnapshotStoreSource.includes("performance.now()")) {
   throw new Error("Computer Use snapshot/verification duration state lost its monotonic clock boundary");
+}
+if (computerUseDeadlineSource.includes("COMPUTER_USE_SETTLEMENT_RESERVE_MS")
+    || !computerUseDeadlineSource.includes("Math.floor(remainingMs / 1000)")
+    || computerUseDeadlineSource.includes("Math.ceil(remainingMs / 1000)")
+    || !computerUseDeadlineSource.includes('reason: "computer_action_deadline_exhausted"')
+    || !computerUseDeadlineSource.includes('reason: "computer_observe_deadline_exhausted"')) {
+  throw new Error("Computer Use deadline budgeting escaped its dedicated monotonic-budget boundary");
+}
+if (!computerUseSource.includes('from "./computer-use-dispatch-settlement.mjs"')
+    || !computerUseDispatchSettlementSource.includes("UNKNOWN_MUTATION_ERROR_PREFIXES")
+    || !computerUseDispatchSettlementSource.includes("settleComputerUseDispatch")
+    || computerUseSource.includes("UNKNOWN_MUTATION_ERROR_PREFIXES")) {
+  throw new Error("Computer Use ambiguous mutation settlement escaped its dedicated boundary");
 }
 if (!appAutomationDurationSource.includes("expires_at: this.now() + VALUE_VERIFICATION_TTL_MS")
     || !appAutomationDurationSource.includes("const now = this.now()")
@@ -1220,12 +1255,34 @@ for (const duplicate of [
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
   "observability", "mcp-access", "mcp-controller", "mcp-stream-proxy-contract", "server-info",
-  "worker-entry", "tool-timeout", "daemon-liveness", "daemon-sockets", "daemon-status",
+  "worker-entry", "tool-timeout", "daemon-liveness", "daemon-registry", "daemon-channel", "daemon-status",
+  "daemon-http-controller", "daemon-ready-messages",
 ]) {
   if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
 }
 for (const module of ["worker-static-routes", "worker-edge-guard", "worker-edge-log", "worker-rate-limit-key", "mcp-response-proxy", "mcp-stream-proxy-contract"]) {
   if (!workerEntryBoundary.includes(`./${module}`)) throw new Error(`outer Worker entry lost boundary module: ${module}`);
+}
+const daemonHttpControllerBoundary = readFileSync(join(root, "src", "worker", "daemon-http-controller.ts"), "utf8");
+for (const required of [
+  "verifyDaemonHttpRelayRequest", "daemon_http_sequence_gap", "daemon_http_ready_before_control_ack",
+  'message.payload.type === "https_ready"', "channel.verifyReady()", 'relayResponse("probing"',
+]) {
+  if (!daemonHttpControllerBoundary.includes(required)) throw new Error(`HTTPS relay lost verified-ready/exactly-once boundary: ${required}`);
+}
+const daemonHttpAuthBoundary = readFileSync(join(root, "src", "worker", "daemon-http-auth.ts"), "utf8");
+for (const required of ["DAEMON_HTTP_RELAY_TTL_SECONDS", "X-Bridge-Body-SHA256", "consumeBoundedNonce", "verifyP256Signature"]) {
+  if (!daemonHttpAuthBoundary.includes(required)) throw new Error(`HTTPS relay lost signed body/replay protection: ${required}`);
+}
+const relayContractBoundary = JSON.parse(readFileSync(join(root, "src", "shared", "relay-contract.json"), "utf8"));
+if (relayContractBoundary.newCallReconnectGraceMs !== 15_000
+    || relayContractBoundary.httpFallbackRequestTimeoutMs >= relayContractBoundary.newCallReconnectGraceMs
+    || Math.ceil(60_000 / relayContractBoundary.httpFallbackMinimumRequestIntervalMs) >= 120) {
+  throw new Error("HTTPS relay fallback recovery/rate-limit contract drifted");
+}
+const brokerLivenessBoundary = readFileSync(join(root, "browser-extension", "broker-liveness.js"), "utf8");
+for (const required of ["PONG_TIMEOUT_MS", 'type: "ping"', "pingSequence", "browser broker pong timed out"]) {
+  if (!brokerLivenessBoundary.includes(required)) throw new Error(`browser broker liveness guard lost boundary: ${required}`);
 }
 const mcpResponseProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-response-proxy.ts"), "utf8");
 for (const required of ["proxyMcpResponseStream", '"direct"', '"cancel"', "waitUntil", "cancelCall"]) {
@@ -1275,7 +1332,7 @@ if (!daemonCleanupBoundary.includes("beginCleanup") || daemonCleanupBoundary.inc
   throw new Error("daemon socket cleanup must remain idempotent and scheduling-free");
 }
 const daemonDetachBoundary = /private async detachDaemonSocketCalls[\s\S]*?private reclaimStaleDaemonSockets/.exec(workerIndexBoundary)?.[0] || "";
-if (!daemonDetachBoundary.includes("this.pending.rejectSocket(ws, (record) => dispatchedDaemonDisconnectError(message, record.recovery))")) {
+if (!daemonDetachBoundary.includes("this.pending.rejectSocket(socket, (record) => dispatchedDaemonDisconnectError(message, record.recovery))")) {
   throw new Error("identity-damaged daemon socket cleanup regained retryable settlement for already-dispatched calls");
 }
 const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?private cleanupDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";
@@ -1292,7 +1349,7 @@ const daemonTouchBoundary = /private touchDaemonSocket[\s\S]*?private async inva
 if (daemonTouchBoundary.includes("scheduleRuntimeAlarm")) {
   throw new Error("daemon activity touch regained implicit alarm scheduling");
 }
-const daemonResultBoundary = /const outcome: PendingCallOutcome[\s\S]*?async webSocketClose/.exec(workerIndexBoundary)?.[0] || "";
+const daemonResultBoundary = /handleReadyDaemonMessage\(\{[\s\S]*?async webSocketClose/.exec(workerIndexBoundary)?.[0] || "";
 if ((daemonResultBoundary.match(/scheduleRuntimeAlarm/g) || []).length !== 1) {
   throw new Error("daemon terminal result must coalesce liveness and pending-call alarm scheduling");
 }
@@ -1357,7 +1414,7 @@ for (const forbidden of [
 }
 
 const daemonStatusBoundary = readFileSync(join(root, "src", "worker", "daemon-status.ts"), "utf8");
-for (const required of ["daemonStatusSnapshot", "readySockets", "readyAttachment", "DAEMON_READY_TIMEOUT_MS", "DAEMON_LIVENESS_TIMEOUT_MS"]) {
+for (const required of ["daemonStatusSnapshot", "readyDaemonChannels", "readyAttachment", "DAEMON_READY_TIMEOUT_MS", "DAEMON_LIVENESS_TIMEOUT_MS"]) {
   if (!daemonStatusBoundary.includes(required)) throw new Error(`daemon status projection lost bounded readiness/liveness state: ${required}`);
 }
 if (workerIndexBoundary.includes("connected: sockets.length > 0")) {

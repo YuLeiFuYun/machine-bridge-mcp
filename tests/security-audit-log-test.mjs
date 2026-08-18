@@ -149,6 +149,31 @@ try {
     rmSync(overflowRoot, { recursive: true, force: true });
   }
 
+  for (const [label, timeoutMs] of [["non-finite", Number.POSITIVE_INFINITY], ["oversized", Number.MAX_SAFE_INTEGER]]) {
+    const closeTimeoutRoot = mkdtempSync(path.join(tmpdir(), "mbm-security-audit-close-timeout-"));
+    try {
+      class HangingCloseWorker extends EventEmitter {
+        static last = null;
+        constructor() { super(); this.lastMessage = null; HangingCloseWorker.last = this; }
+        postMessage(message) { this.lastMessage = message; }
+        terminate() { return Promise.resolve(0); }
+      }
+      const hanging = new SecurityAuditLog({ root: closeTimeoutRoot, WorkerClass: HangingCloseWorker });
+      let settled = false;
+      const closing = hanging.close({ timeoutMs }).then((value) => {
+        settled = true;
+        return value;
+      });
+      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 20); });
+      assert(settled === false, `${label} audit close timeout collapsed into an immediate timer`);
+      const closeId = HangingCloseWorker.last?.lastMessage?.id;
+      HangingCloseWorker.last?.emit("message", { type: "closed", id: closeId });
+      assert(await closing === true, `audit close did not settle from the worker after ${label} timeout normalization`);
+    } finally {
+      rmSync(closeTimeoutRoot, { recursive: true, force: true });
+    }
+  }
+
   console.log("security audit log test ok");
 } finally {
   rmSync(root, { recursive: true, force: true });

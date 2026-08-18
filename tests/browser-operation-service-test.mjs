@@ -12,12 +12,13 @@ const bridge = {
   runtime_clients: 2,
   routed_requests: 3,
   port: 42123,
+  extensionGeneration: 1,
   extensionReloadRequired: false,
   extensionInfo: {
     extension_id: "abcdefghijklmnopabcdefghijklmnop",
     protocol: 3,
     version: "3.0.0-beta.70",
-    capabilities: ["computer_observation_v1", "cdp_accessibility_snapshot", "cdp_surface_screenshot", "backend_node_trusted_input"],
+    capabilities: ["trusted_input", "computer_observation_v1", "cdp_accessibility_snapshot", "cdp_surface_screenshot", "backend_node_trusted_input"],
   },
 };
 
@@ -50,6 +51,8 @@ const status = await service.status();
 assert.equal(status.connected, true);
 assert.equal(status.computer_observation_v1, true);
 assert.equal(status.cdp_surface_screenshot, true);
+assert.equal(status.trusted_input, true);
+assert.equal(status.trusted_input_quarantined, false);
 assert.equal(status.endpoint, "ws://127.0.0.1:42123/extension");
 
 const pairClosed = await service.pair({ open: false });
@@ -124,5 +127,71 @@ for (const tool of [
 ]) {
   assert(authorized.includes(tool), `missing authorization coverage for ${tool}`);
 }
+
+const healthBridge = {
+  ...bridge,
+  extensionGeneration: 10,
+  extensionInfo: { ...bridge.extensionInfo, capabilities: [...bridge.extensionInfo.capabilities] },
+};
+const healthRequests = [];
+let trustedFailures = 0;
+const healthService = new BrowserOperationService({
+  authorizeTool() {},
+  async ensureStarted() {},
+  request: async (method, params) => {
+    healthRequests.push({ method, params });
+    if (method === "action" && params.inputMode === "auto" && trustedFailures++ === 0) {
+      throw new Error("trusted browser input may have been partially dispatched; the action outcome is unknown. Inspect the page before retrying.");
+    }
+    return { ok: true, input_mode: params.inputMode || "" };
+  },
+  bridgeStatus: () => healthBridge,
+  createPairingLaunch: async () => ({ url: "", close() {} }),
+  extensionPath: "/synthetic/extension",
+  expectedExtensionVersion: healthBridge.extensionInfo.version,
+  expectedExtensionId: healthBridge.extensionInfo.extension_id,
+  runProcess: async () => ({ code: 0 }),
+  readResourceText: async () => "value",
+  readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "/synthetic/file" }),
+});
+
+await assert.rejects(
+  healthService.act({ action: "hover", selector: { ref: "e1" }, input_mode: "auto" }),
+  /trusted browser input may have been partially dispatched/,
+  "the first ambiguous trusted action must remain unknown and must not be replayed",
+);
+assert.equal(healthRequests.length, 1);
+const quarantinedStatus = await healthService.status();
+assert.equal(quarantinedStatus.trusted_input, false);
+assert.equal(quarantinedStatus.trusted_input_quarantined, true);
+assert.equal(quarantinedStatus.trusted_input_health, "quarantined");
+assert.equal(quarantinedStatus.backend_node_trusted_input, false);
+
+const fallback = await healthService.act({ action: "hover", selector: { ref: "e1" }, input_mode: "auto" });
+assert.equal(healthRequests.length, 2);
+assert.equal(healthRequests[1].params.inputMode, "dom", "quarantined auto actions must bypass trusted preparation before extension dispatch");
+assert.equal(fallback.trusted_input_fallback, true);
+assert.equal(fallback.fallback_reason, "trusted_input_quarantined_after_ambiguous_failure");
+
+await assert.rejects(
+  healthService.act({ action: "hover", selector: { ref: "e1" }, input_mode: "trusted" }),
+  (error) => error?.code === "unavailable" && error?.details?.reason === "browser_trusted_input_quarantined" && error?.details?.side_effects_started === false,
+  "explicit trusted input must fail definitely before dispatch while quarantined",
+);
+assert.equal(healthRequests.length, 2, "explicit trusted quarantine failure must not reach the extension");
+
+await assert.rejects(
+  healthService.backendNodeAction({ action: "hover", backend_node_id: 7, timeout_seconds: 5 }),
+  (error) => error?.code === "unavailable" && error?.details?.reason === "browser_trusted_input_quarantined",
+  "snapshot backend trusted input must fail before mutation while quarantined",
+);
+assert.equal(healthRequests.length, 2, "snapshot backend quarantine failure must not reach the extension");
+
+healthBridge.extensionGeneration = 11;
+const recoveredStatus = await healthService.status();
+assert.equal(recoveredStatus.trusted_input, true, "a fresh extension connection generation resets the quarantine");
+assert.equal(recoveredStatus.trusted_input_quarantined, false);
+await healthService.act({ action: "hover", selector: { ref: "e1" }, input_mode: "trusted" });
+assert.equal(healthRequests.length, 3, "a fresh extension connection may attempt trusted input once again");
 
 console.log("browser operation service test ok");

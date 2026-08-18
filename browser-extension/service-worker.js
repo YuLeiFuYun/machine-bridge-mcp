@@ -1,4 +1,4 @@
-importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-session.js", "devtools-input.js", "devtools-observation.js", "browser-operations.js");
+importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "broker-liveness.js", "devtools-session.js", "devtools-input.js", "devtools-observation.js", "browser-operations.js"); const brokerLiveness = globalThis.__machineBridgeBrokerLiveness;
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
@@ -169,6 +169,7 @@ async function connect(endpoint, token, { reconnect = true } = {}) {
     socket.reconnectEnabled = false;
     clearInterval(socket.keepaliveTimer);
     socket.keepaliveTimer = null;
+    brokerLiveness.clear(socket);
     cancelRequestsForSocket(socket);
     closeSocketQuietly(socket);
     socket = null;
@@ -187,6 +188,7 @@ async function connect(endpoint, token, { reconnect = true } = {}) {
   ws.machineBridgeToken = token;
   ws.reconnectEnabled = reconnect;
   ws.keepaliveTimer = null;
+  brokerLiveness.initialize(ws);
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
     const settle = (error = null) => {
@@ -209,6 +211,7 @@ async function connect(endpoint, token, { reconnect = true } = {}) {
     ws.onclose = () => {
       clearTimeout(ws.handshakeTimer);
       clearInterval(ws.keepaliveTimer);
+      brokerLiveness.clear(ws);
       ws.keepaliveTimer = null;
       cancelRequestsForSocket(ws);
       if (!ws.bridgeReady) settle(new Error("browser broker handshake failed"));
@@ -268,15 +271,13 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     }
     clearTimeout(ws.handshakeTimer);
     ws.bridgeReady = true;
+    brokerLiveness.negotiate(ws, message.pong_watchdog);
     reconnectAttempt = 0;
     setConnectionState("connected");
     clearInterval(ws.keepaliveTimer);
-    ws.keepaliveTimer = setInterval(() => {
-      if (socket === ws && ws.bridgeReady && ws.readyState === WebSocket.OPEN
-          && !sendSocketQuietly(ws, JSON.stringify({ type: "ping" }))) {
-        closeSocketQuietly(ws, 1011, "browser extension keepalive failed");
-      }
-    }, 20000);
+    ws.keepaliveTimer = setInterval(() => brokerLiveness.keepalive(
+      ws, socket === ws, sendSocketQuietly, closeSocketQuietly,
+    ), 20000);
     onReady();
     return;
   }
@@ -284,6 +285,7 @@ async function handleMessage(ws, raw, onReady = () => {}) {
     closeSocketQuietly(ws, 1002, "browser broker acknowledgement required");
     return;
   }
+  if (message?.type === "pong") return brokerLiveness.handlePong(ws, message, closeSocketQuietly);
   if (message?.type === "cancel" && typeof message.id === "string") {
     const state = activeRequests.get(message.id);
     if (state) state.cancelled = true;

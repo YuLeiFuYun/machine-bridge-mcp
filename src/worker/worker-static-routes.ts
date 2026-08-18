@@ -8,6 +8,7 @@ const STATEFUL_METHODS = new Map([
   ["/admin/accounts", "GET, POST, PATCH, DELETE"],
   ["/admin/accounts/rotate-password", "POST"],
   ["/admin/clients", "GET, DELETE"],
+  ["/daemon/http", "POST"],
   ["/daemon/ws", "GET"],
   ["/mcp", "GET, POST"],
   ["/oauth/authorize", "GET, POST"],

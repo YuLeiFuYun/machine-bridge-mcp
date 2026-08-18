@@ -6,7 +6,6 @@ import { sanitizeDaemonAttachment, type DaemonAttachment } from "./daemon-socket
 interface WebSocketContext {
   getWebSockets(): WebSocket[];
 }
-
 export interface DaemonSocketCleanup { task: Promise<void>; first: boolean }
 export class DaemonSocketRegistry {
   private readonly context: WebSocketContext;
@@ -28,6 +27,7 @@ export class DaemonSocketRegistry {
   readySockets(now = Date.now()): WebSocket[] {
     return this.readyRoleSockets().filter((socket) => isLiveDaemonAttachment(this.readyAttachment(socket), now));
   }
+  readyChannels(now = Date.now()): WebSocket[] { return this.readySockets(now); }
 
   nonReadySockets(): WebSocket[] {
     return this.context.getWebSockets().filter((socket) => {

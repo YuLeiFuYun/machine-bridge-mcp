@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.97",
+  "version": "3.0.0-beta.102",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -69,6 +69,7 @@
     "network-retry:test": "node tests/network-retry-test.mjs",
     "release-diagnostic:test": "node tests/release-diagnostic-test.mjs",
     "relay:test": "node tests/relay-connection-test.mjs",
+    "relay-http-fallback:test": "node tests/relay-http-fallback-test.mjs",
     "install:test": "node tests/install-smoke-test.mjs",
     "secure-file:test": "node tests/secure-file-test.mjs",
     "worker-secret-file:test": "node tests/worker-secret-file-test.mjs",

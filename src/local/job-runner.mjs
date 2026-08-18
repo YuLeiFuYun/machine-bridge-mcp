@@ -11,6 +11,8 @@ import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, processState } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { managedJobCancellationRequested } from "./managed-job-cancellation.mjs";
+import { MacosIdleSleepAssertion } from "./macos-idle-sleep-assertion.mjs";
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
 import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus, managedJobFinalStatus, persistManagedJobTerminal } from "./managed-job-terminal.mjs";
 import { sanitizeLogText } from "./log.mjs";
@@ -66,6 +68,7 @@ let activeChildCancellationAware = false;
 let activeChildTermination = null;
 let cancelRequested = false;
 let runnerClaimConfirmed = false;
+let jobIdleSleepAssertion = null;
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => requestCancellation());
 }
@@ -76,6 +79,10 @@ try {
   await confirmRunnerClaim({
     file: runnerPidFile, pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT, launchToken,
   });
+  if (initial.owner_kind === "account") {
+    jobIdleSleepAssertion = new MacosIdleSleepAssertion({ logger: managedJobIdleSleepLogger() });
+    jobIdleSleepAssertion.acquire();
+  }
   if (recover) await releaseRecoveryClaim();
   runnerClaimConfirmed = true;
   const plan = readJson(planFile, 1024 * 1024);
@@ -84,6 +91,8 @@ try {
 } catch (error) {
   recordFatalRunnerError(error);
   process.exitCode = 1;
+} finally {
+  jobIdleSleepAssertion?.release();
 }
 
 
@@ -126,7 +135,7 @@ async function main(plan, initial) {
       for (let index = 0; index < plan.steps.length; index += 1) {
         if (isCancellationRequested()) throw new JobCancelledError();
         updateStatus(status, { status: "running", current_phase: "steps", current_step: index });
-        const result = await runStep(plan.steps[index], index, "steps", plan, resourceContext, true, captureBudget);
+        const result = await runStep(plan.steps[index], index, "steps", plan, resourceContext, true, captureBudget, status);
         mainResults.push(result);
         if (result.timed_out && !plan.steps[index].allow_failure) throw new Error(`step ${index + 1} timed out`);
         if (result.code !== 0 && !plan.steps[index].allow_failure) throw new Error(`step ${index + 1} exited ${result.code}`);
@@ -139,7 +148,7 @@ async function main(plan, initial) {
     try {
       for (let index = 0; index < plan.finally_steps.length; index += 1) {
         updateStatus(status, { status: "cleaning", current_phase: recover ? "recovery-cleanup" : "finally_steps", current_step: index });
-        const result = await runStep(plan.finally_steps[index], index, "finally_steps", plan, resourceContext, false, captureBudget);
+        const result = await runStep(plan.finally_steps[index], index, "finally_steps", plan, resourceContext, false, captureBudget, status);
         cleanupResults.push(result);
         if (result.timed_out && !plan.finally_steps[index].allow_failure && !cleanupError) cleanupError = new Error(`cleanup step ${index + 1} timed out`);
         if (result.code !== 0 && !plan.finally_steps[index].allow_failure && !cleanupError) cleanupError = new Error(`cleanup step ${index + 1} exited ${result.code}`);
@@ -283,7 +292,14 @@ function reportTerminalPersistenceFailure(terminal) {
   catch { /* Persistence outcome is authoritative even if its fallback diagnostic cannot be written. */ }
 }
 
-async function runStep(step, index, phase, plan, resourceContext, cancellationAware, captureBudget) {
+function managedJobIdleSleepLogger() {
+  return { event(_level, _name, fields) {
+    try { process.stderr.write(`managed job idle-sleep assertion unavailable: error_class=${sanitizeLogText(fields?.error_class || "unknown", 64)}\n`); }
+    catch { /* Auxiliary power diagnostics must not replace managed-job settlement. */ }
+  } };
+}
+
+async function runStep(step, index, phase, plan, resourceContext, cancellationAware, captureBudget, status) {
   const argv = step.argv.map((value) => substitute(value, plan, resourceContext));
   const envOverrides = Object.fromEntries(Object.entries(step.env || {}).map(([key, value]) => [key, substitute(value, plan, resourceContext)]));
   const envResourceValues = Object.fromEntries(Object.entries(step.env_resources || {}).map(([key, name]) => [key, resourceEnvValue(name, resourceContext.bytes)]));
@@ -309,6 +325,16 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
     resourcePriority: plan?.execution_priority === "interactive" ? "interactive" : "background",
     delegatedProcess: plan?.delegated_process === true,
     workspace: plan.workspace,
+    onAdmissionStart: () => updateStatus(status, {
+      status: phase === "steps" ? "running" : "cleaning",
+      current_phase: "resource_admission",
+      current_step: index,
+    }),
+    onAdmissionComplete: () => updateStatus(status, {
+      status: phase === "steps" ? "running" : "cleaning",
+      current_phase: phase === "finally_steps" && recover ? "recovery-cleanup" : phase,
+      current_step: index,
+    }),
   });
   return {
     index,
@@ -319,6 +345,7 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
     signal: raw.signal,
     timed_out: raw.timedOut,
     duration_ms: performance.now() - started,
+    resource_admission_ms: raw.resourceAdmissionMs,
     stdout: step.capture_output === "discard" ? "" : redactOutput(raw.stdout, resourceContext),
     stderr: step.capture_output === "discard" ? "" : redactOutput(raw.stderr, resourceContext),
     output_discarded: step.capture_output === "discard",
@@ -329,12 +356,32 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
   };
 }
 
-async function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget, resourcePriority = "background", delegatedProcess = false, workspace = "" }) {
+async function spawnStep(argv, {
+  cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget,
+  resourcePriority = "background", delegatedProcess = false, workspace = "",
+  onAdmissionStart = null, onAdmissionComplete = null,
+}) {
   if (cancellationAware && isCancellationRequested()) throw new JobCancelledError();
-  const admitted = await acquireProcessResources(resourceCoordinator, argv[0], argv.slice(1), env, {
-    cwd, priority: resourcePriority, waitMs: 30 * 60_000,
-    cancelCheck: () => { if (cancellationAware && isCancellationRequested()) throw new JobCancelledError(); },
-  });
+  const admissionStarted = performance.now();
+  onAdmissionStart?.();
+  let admitted;
+  let resourceAdmissionMs = 0;
+  try {
+    admitted = await acquireProcessResources(resourceCoordinator, argv[0], argv.slice(1), env, {
+      cwd, priority: resourcePriority, waitMs: relayContract.maximumManagedJobResourceAdmissionWaitMs,
+      cancelCheck: () => { if (cancellationAware && isCancellationRequested()) throw new JobCancelledError(); },
+    });
+    onAdmissionComplete?.();
+    resourceAdmissionMs = performance.now() - admissionStarted;
+  } catch (error) {
+    if (admitted?.lease) {
+      try { await releaseProcessResources(admitted.lease); }
+      catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "managed job admission status update and resource lease cleanup both failed");
+      }
+    }
+    throw error;
+  }
   return new Promise((resolvePromise, rejectPromise) => {
     let child;
     try {
@@ -419,7 +466,7 @@ async function spawnStep(argv, { cwd, env, input, timeoutMs, cancellationAware, 
           resolvePromise({
             code: Number.isInteger(code) ? code : 1,
             signal: signal ? String(signal) : null,
-            timedOut, stdout, stderr, stdoutTruncated, stderrTruncated,
+            timedOut, resourceAdmissionMs, stdout, stderr, stdoutTruncated, stderrTruncated,
           });
         });
       },

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
+import { performance } from "node:perf_hooks";
 import { executionEnv } from "./shell.mjs";
 import { attachChildProcessSettlement } from "./child-process-settlement.mjs";
 import { assertOwnedByContext, principalBinding, visibleToContext } from "./authority-context.mjs";
@@ -17,15 +18,12 @@ import { boundedErrorMessage, notifySessionWaiters, sessionHasOutputAfter, waitF
 import { terminateProcessSessions } from "./process-session-termination.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
 import { processSessionResourceWaitMs } from "./resource-foreground-wait.mjs";
+import { beginRemoteProcessSessionActivity, endRemoteProcessSessionActivity } from "./process-session-remote-activity.mjs";
 import { EXECUTION_SURFACE, withExecutionSurface } from "./execution-surface.mjs";
-import {
-  MAX_PROCESS_SESSIONS, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_SESSION_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS,
-} from "./execution-limits.mjs";
-
+import { MAX_PROCESS_SESSIONS, MAX_PROCESS_SESSION_OUTPUT_BYTES, MAX_PROCESS_SESSION_STDIN_BYTES, PROCESS_SESSION_RETENTION_MS } from "./execution-limits.mjs";
 const PROCESS_SESSION_TERMINATION_SETTLEMENT_MS = 5_000;
-
 export class ProcessSessionManager {
-  constructor({ workspace, policy, authorizeTool = null, policyForContext = null, runtimeDir, processTracker, resourceCoordinator = null, resourceWaitMs = undefined, terminationSettlementWaitMs = PROCESS_SESSION_TERMINATION_SETTLEMENT_MS, resolveCwd, displayPath, throwIfCancelled, terminateTree = terminateProcessTree, spawnProcess = spawn, childSettlementOptions = {} }) {
+  constructor({ workspace, policy, authorizeTool = null, policyForContext = null, runtimeDir, processTracker, resourceCoordinator = null, resourceWaitMs = undefined, terminationSettlementWaitMs = PROCESS_SESSION_TERMINATION_SETTLEMENT_MS, resolveCwd, displayPath, throwIfCancelled, terminateTree = terminateProcessTree, spawnProcess = spawn, childSettlementOptions = {}, remoteActivityGuard = null, now = () => performance.now(), wallNow = Date.now }) {
     this.workspace = workspace;
     this.policy = policy;
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
@@ -41,6 +39,9 @@ export class ProcessSessionManager {
     this.terminateTree = typeof terminateTree === "function" ? terminateTree : terminateProcessTree;
     this.spawnProcess = spawnProcess;
     this.childSettlementOptions = childSettlementOptions;
+    this.remoteActivityGuard = remoteActivityGuard;
+    this.now = typeof now === "function" ? now : () => performance.now();
+    this.wallNow = typeof wallNow === "function" ? wallNow : Date.now;
     this.sessions = new Map();
   }
 
@@ -72,11 +73,11 @@ export class ProcessSessionManager {
     for (const session of this.sessions.values()) notifySessionWaiters(session);
   }
 
-  retainCompletedOutput({ command, cwd, stdout, stderr, exitCode, startedAt, closedAt = Date.now() }, context = {}) {
+  retainCompletedOutput({ command, cwd, stdout, stderr, exitCode, startedAt, closedAt = this.wallNow() }, context = {}) {
     this.prune();
     this.evictExitedForCapacity();
     if (this.sessions.size >= MAX_PROCESS_SESSIONS) return null;
-    const completedAt = Number.isFinite(Number(closedAt)) ? Number(closedAt) : Date.now();
+    const completedAt = Number.isFinite(Number(closedAt)) ? Number(closedAt) : this.wallNow();
     const session = {
       id: `proc_${randomBytes(24).toString("base64url")}`,
       child: null,
@@ -85,7 +86,7 @@ export class ProcessSessionManager {
       stdout,
       stderr,
       startedAt: Number.isFinite(Number(startedAt)) ? Number(startedAt) : completedAt,
-      lastActivity: completedAt,
+      lastActivityMonotonic: this.now(),
       closedAt: completedAt,
       exitCode: Number.isInteger(exitCode) ? exitCode : null,
       signal: null,
@@ -106,21 +107,23 @@ export class ProcessSessionManager {
     this.evictExitedForCapacity();
     if (this.sessions.size >= MAX_PROCESS_SESSIONS) throw new Error(`process session limit reached (${MAX_PROCESS_SESSIONS})`);
     this.throwIfCancelled(context);
-
     const executionEnvironment = withExecutionSurface(executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir }), EXECUTION_SURFACE.processSession);
     const admitted = await acquireProcessResources(this.resourceCoordinator, argv[0], argv.slice(1), executionEnvironment, {
       cwd, priority: "interactive", waitMs: processSessionResourceWaitMs(this.resourceWaitMs, { remote: context?.authority?.origin === "relay" }), signal: context.signal,
     });
     const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
+    const remoteActivityHeld = beginRemoteProcessSessionActivity(context, this.remoteActivityGuard);
     let child;
     try {
       child = this.spawnProcess(launch.command, launch.args, { cwd, env: admitted.environment, detached: process.platform !== "win32", windowsHide: true });
     } catch (error) {
+      endRemoteProcessSessionActivity(remoteActivityHeld, this.remoteActivityGuard);
       await releaseProcessResources(admitted.lease);
       throw error;
     }
     let resolveResourceBindingSettled;
     const resourceBindingSettled = new Promise((resolvePromise) => { resolveResourceBindingSettled = resolvePromise; });
+    const startedAt = this.wallNow();
     const session = {
       id: `proc_${randomBytes(24).toString("base64url")}`,
       child,
@@ -128,8 +131,8 @@ export class ProcessSessionManager {
       cwd,
       stdout: new ProcessOutputStream(MAX_PROCESS_SESSION_OUTPUT_BYTES),
       stderr: new ProcessOutputStream(MAX_PROCESS_SESSION_OUTPUT_BYTES),
-      startedAt: Date.now(),
-      lastActivity: Date.now(),
+      startedAt,
+      lastActivityMonotonic: this.now(),
       closedAt: null,
       exitCode: null,
       signal: null,
@@ -146,12 +149,12 @@ export class ProcessSessionManager {
 
     child.stdout.on("data", (chunk) => {
       session.stdout.append(chunk);
-      session.lastActivity = Date.now();
+      this.markActivity(session);
       notifySessionWaiters(session);
     });
     child.stderr.on("data", (chunk) => {
       session.stderr.append(chunk);
-      session.lastActivity = Date.now();
+      this.markActivity(session);
       notifySessionWaiters(session);
     });
     attachChildProcessSettlement(child, {
@@ -159,10 +162,11 @@ export class ProcessSessionManager {
       onSettle: (code, signal) => {
         session.exitCode = Number.isInteger(code) ? code : null;
         session.signal = signal ? String(signal) : null;
-        session.closedAt = Date.now();
-        session.lastActivity = Date.now();
+        session.closedAt = this.wallNow();
+        this.markActivity(session);
         session.stdinClosed = true;
         this.untrackChild(child);
+        endRemoteProcessSessionActivity(remoteActivityHeld, this.remoteActivityGuard);
         void session.resourceBindingSettled.then(() => releaseProcessResourcesQuietly(session.resourceLease));
         if (session.startupFailed) this.sessions.delete(session.id);
         notifySessionWaiters(session);
@@ -171,7 +175,7 @@ export class ProcessSessionManager {
 
     child.on("error", (error) => {
       session.stderr.append(Buffer.from(`${boundedErrorMessage(error)}\n`));
-      session.lastActivity = Date.now();
+      this.markActivity(session);
       notifySessionWaiters(session);
     });
     try {
@@ -198,7 +202,7 @@ export class ProcessSessionManager {
     let terminationRequested = false;
     try { terminationRequested = this.terminateTree(session.child, "SIGKILL") === true; }
     catch { /* The returned settlement metadata records that child termination could not be confirmed. */ }
-    session.lastActivity = Date.now();
+    this.markActivity(session);
     const code = errorCode(error);
     return new BridgeError(code, "process session start failed after the child was spawned", {
       cause: error instanceof Error ? error : undefined,
@@ -232,7 +236,7 @@ export class ProcessSessionManager {
       }
     }
     this.throwIfCancelled(context);
-    session.lastActivity = Date.now();
+    this.markActivity(session);
     return {
       ...this.summary(session, context),
       stdout: session.stdout.read(stdoutOffset, maxBytes),
@@ -257,7 +261,7 @@ export class ProcessSessionManager {
       session.child.stdin.end();
       session.stdinClosed = true;
     }
-    session.lastActivity = Date.now();
+    this.markActivity(session);
     return { ...this.summary(session, context), bytes_written: Buffer.byteLength(data) };
   }
 
@@ -275,7 +279,7 @@ export class ProcessSessionManager {
         onTerminationSettled: () => { session.terminationTimer = null; },
       });
     }
-    session.lastActivity = Date.now();
+    this.markActivity(session);
     return {
       ...this.summary(session, context),
       termination_requested: wasRunning,
@@ -311,9 +315,9 @@ export class ProcessSessionManager {
   }
 
   prune() {
-    const cutoff = Date.now() - PROCESS_SESSION_RETENTION_MS;
+    const cutoff = this.now() - PROCESS_SESSION_RETENTION_MS;
     for (const [id, session] of this.sessions) {
-      if (session.closedAt !== null && session.lastActivity < cutoff) this.sessions.delete(id);
+      if (session.closedAt !== null && session.lastActivityMonotonic < cutoff) this.sessions.delete(id);
     }
   }
 
@@ -321,19 +325,14 @@ export class ProcessSessionManager {
     if (this.sessions.size < MAX_PROCESS_SESSIONS) return;
     const exited = [...this.sessions.values()]
       .filter((session) => session.closedAt !== null)
-      .sort((left, right) => left.lastActivity - right.lastActivity);
+      .sort((left, right) => left.lastActivityMonotonic - right.lastActivityMonotonic);
     for (const session of exited) {
       if (this.sessions.size < MAX_PROCESS_SESSIONS) break;
       this.sessions.delete(session.id);
     }
   }
 
-
-  trackChild(child, callId) {
-    this.processTracker.track(child, callId);
-  }
-
-  untrackChild(child) {
-    this.processTracker.untrack(child);
-  }
+  markActivity(session) { session.lastActivityMonotonic = this.now(); }
+  trackChild(child, callId) { this.processTracker.track(child, callId); }
+  untrackChild(child) { this.processTracker.untrack(child); }
 }

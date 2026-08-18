@@ -4,6 +4,7 @@ import {
   validateNavigationUrl,
 } from "./browser-command.mjs";
 import { BrowserComputerObservationService } from "./browser-computer-observation-service.mjs";
+import { BrowserTrustedInputHealth, TRUSTED_INPUT_QUARANTINE_FALLBACK } from "./browser-trusted-input-health.mjs";
 import {
   boundedBrowserValue, normalizeMimeType, normalizeUploadFilename, optionalStringArray, prepareBrowserFormField,
   resolveBrowserActionValue, validateBrowserResource,
@@ -25,6 +26,7 @@ export class BrowserOperationService {
     readResourceText,
     readResourceBinary,
     throwIfCancelled = () => {},
+    logger = null,
   }) {
     this.authorizeTool = authorizeTool;
     this.ensureStarted = ensureStarted;
@@ -38,9 +40,10 @@ export class BrowserOperationService {
     this.readResourceText = readResourceText;
     this.readResourceBinary = readResourceBinary;
     this.throwIfCancelled = throwIfCancelled;
+    this.trustedInputHealth = new BrowserTrustedInputHealth({ logger });
     this.computerObservation = new BrowserComputerObservationService({
       authorizeTool: (tool) => this.authorizeTool(tool),
-      request: (...args) => this.request(...args),
+      request: (...args) => this.requestComputerObservation(...args),
       bridgeStatus: () => this.bridgeStatus(),
       inspectPage: (args, context) => this.inspectPage(args, context),
       screenshot: (args, context) => this.screenshot(args, context),
@@ -51,6 +54,7 @@ export class BrowserOperationService {
     await this.ensureStarted(context);
     const bridge = this.bridgeStatus();
     const extension = bridge.extensionInfo;
+    const trustedHealth = this.trustedInputHealth.status(bridge);
     return {
       available: true,
       connected: bridge.extensionConnected,
@@ -77,7 +81,9 @@ export class BrowserOperationService {
       source_access: true,
       semantic_snapshot_refs: true,
       actionability_waits: true,
-      trusted_input: true,
+      trusted_input: trustedHealth.available,
+      trusted_input_quarantined: trustedHealth.quarantined,
+      trusted_input_health: !bridge.extensionConnected ? "disconnected" : trustedHealth.quarantined ? "quarantined" : trustedHealth.supported ? "ready" : "unsupported",
       input_modes: ["auto", "trusted", "dom"],
       complex_form_fill: true,
       tab_management: true,
@@ -86,7 +92,7 @@ export class BrowserOperationService {
       computer_observation_v1: extension?.capabilities?.includes("computer_observation_v1") === true,
       cdp_accessibility_snapshot: extension?.capabilities?.includes("cdp_accessibility_snapshot") === true,
       cdp_surface_screenshot: extension?.capabilities?.includes("cdp_surface_screenshot") === true,
-      backend_node_trusted_input: extension?.capabilities?.includes("backend_node_trusted_input") === true,
+      backend_node_trusted_input: extension?.capabilities?.includes("backend_node_trusted_input") === true && !trustedHealth.quarantined,
       restricted_pages: ["browser-internal pages", "extension stores", "some PDF/plugin viewers", "pages blocked by enterprise policy"],
       security: {
         loopback_only: true,
@@ -183,6 +189,7 @@ export class BrowserOperationService {
     if (!["fill", "type_text"].includes(action) && (args.value !== undefined || args.value_resource !== undefined)) throw new Error(`value and value_resource are not valid for snapshot backend ${action}`);
     if (action !== "press" && args.key !== undefined) throw new Error(`key is not valid for snapshot backend ${action}`);
     this.computerObservation.preflightBackendNodeAction(args);
+    this.trustedInputHealth.assertTrustedAvailable(this.bridgeStatus());
     const resolved = await resolveBrowserActionValue(args, this.readResourceText);
     return this.computerObservation.backendNodeAction({ ...args, value: resolved.value ?? undefined }, context);
   }
@@ -220,6 +227,8 @@ export class BrowserOperationService {
     if (payload.inputMode === "trusted" && !["click", "double_click", "hover", "press", "type_text"].includes(action)) {
       throw new Error("input_mode=trusted supports click, double_click, hover, press, and type_text only");
     }
+    const trustedDecision = this.trustedInputHealth.pageInputMode({ inputMode: payload.inputMode, action, bridge: this.bridgeStatus() });
+    payload.inputMode = trustedDecision.inputMode;
     const resolvedValue = await resolveBrowserActionValue(args, this.readResourceText);
     payload.value = resolvedValue.value;
     if (payload.value !== null && !["fill", "select", "press", "type_text"].includes(action)) {
@@ -227,12 +236,34 @@ export class BrowserOperationService {
     }
     const pageAction = !["navigate", "reload", "back", "forward"].includes(action);
     const defaultTimeout = pageAction ? Math.min(120, Math.max(30, payload.elementTimeoutMs / 1000 + 5)) : 30;
-    const response = await this.request("action", payload, clampInt(args.timeout_seconds, defaultTimeout, 1, 120), context);
+    let response;
+    try {
+      response = await this.request("action", payload, clampInt(args.timeout_seconds, defaultTimeout, 1, 120), context);
+    } catch (error) {
+      this.trustedInputHealth.noteAmbiguousFailure(error, this.bridgeStatus());
+      throw error;
+    }
     return {
       ...response,
+      ...(trustedDecision.fallback ? {
+        input_mode: "dom",
+        trusted_input_fallback: true,
+        fallback_reason: TRUSTED_INPUT_QUARANTINE_FALLBACK,
+      } : {}),
       value_source: resolvedValue.source,
       value_exposed: false,
     };
+  }
+
+  async requestComputerObservation(method, params, timeoutSeconds, context) {
+    const trustedMethod = method === "point_action" || method === "backend_node_action";
+    if (trustedMethod) this.trustedInputHealth.assertTrustedAvailable(this.bridgeStatus());
+    try {
+      return await this.request(method, params, timeoutSeconds, context);
+    } catch (error) {
+      if (trustedMethod) this.trustedInputHealth.noteAmbiguousFailure(error, this.bridgeStatus());
+      throw error;
+    }
   }
 
   async fillForm(args = {}, context = {}) {

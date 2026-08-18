@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
+import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
 import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
 import { accountRoleToolNames } from "../src/worker/access.ts";
 import { workspaceTools } from "../src/worker/tool-catalog.ts";
@@ -820,9 +821,10 @@ try {
   assert(firstStatus.tool_delivery?.remote_process_delivery_mode === "durable_job"
     && firstStatus.tool_delivery?.remote_process_acceptance_max_ms === 10_000
     && firstStatus.tool_delivery?.remote_process_execution_timeout_max_ms === 600_000
+    && firstStatus.tool_delivery?.managed_job_resource_admission_wait_max_ms === 1_800_000
     && firstStatus.tool_delivery?.remote_process_session_start_execution_max_ms === 10_000
     && !("remote_process_foreground_execution_max_ms" in firstStatus.tool_delivery),
-  "Worker server_info lost the separated durable-process acceptance/execution contract");
+  "Worker server_info lost the separated durable-process acceptance/execution or managed-job admission contract");
 
   const timedOutCandidate = await connectDaemon(base);
   daemonSockets.push(timedOutCandidate);
@@ -1210,6 +1212,201 @@ try {
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: reconnectRelay.id, ok: true, result: { resumed: true } }));
   const reconnectResult = await reconnectCall;
   assert(reconnectResult.body.result?.structuredContent?.resumed === true, "MCP request did not complete after same-instance daemon reconnect");
+
+  const fallbackRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const fallbackCall = toolCallRequest(base, ownerAccessToken, 8880, "list_dir", { path: "." });
+  const fallbackRelay = await fallbackRelayPromise;
+  const fallbackBaseline = await callServerInfo(base, ownerAccessToken, 8881);
+  const fallbackOwnerMissing = fallbackBaseline.worker?.observability?.terminal_results?.owner_missing_acknowledged ?? 0;
+  const fallbackPreviousSocket = candidateDaemon;
+  const fallbackPreviousClosed = waitForWsClose(fallbackPreviousSocket);
+  fallbackPreviousSocket.terminate();
+  await fallbackPreviousClosed;
+
+  const fallbackSessionId = `relay_http_${randomBytes(32).toString("base64url")}`;
+  const fallbackBase = {
+    protocol: 1,
+    session_id: fallbackSessionId,
+    instance_id: candidateInstanceId,
+    ack_worker_seq: 0,
+    owned_call_ids: [fallbackRelay.id],
+    messages: [],
+    tools: candidateTools,
+    policy: candidatePolicy,
+    relay_diagnostics: {
+      schema_version: 1, transport: "https", network_route: "system-network-stack",
+      outage_count: 1, outage_active: true, outage_duration_ms: 1,
+    },
+  };
+  const fallbackProbing = await daemonHttpExchange(fallbackBase);
+  assert(fallbackProbing.response.status === 200
+    && fallbackProbing.body.phase === "probing"
+    && /^activate_[A-Za-z0-9_-]{43}$/.test(fallbackProbing.body.activation_token || ""),
+  "signed HTTPS fallback did not enter bounded probing on its first authenticated exchange");
+  const fallbackResume = fallbackProbing.body.messages?.find((message) => message.payload?.type === "resume_calls")?.payload;
+  const fallbackReadyAck = fallbackProbing.body.messages?.find((message) => message.payload?.type === "ready_ack")?.payload;
+  assert(fallbackResume?.ids?.length === 1 && fallbackResume.ids[0] === fallbackRelay.id,
+    "HTTPS fallback did not rebind exactly the same-instance in-flight call");
+  assert(fallbackReadyAck?.server === "machine-bridge-mcp" && fallbackReadyAck?.version === pkg.version,
+    "HTTPS fallback omitted the verified ready acknowledgement");
+  const fallbackProbeStatus = await callServerInfo(base, ownerAccessToken, 8882);
+  assert(fallbackProbeStatus.worker?.sockets_live?.https_fallback_ready === 0
+    && fallbackProbeStatus.daemon?.connected === false,
+  "probing HTTPS fallback was advertised as ready before the local runtime proved ready_ack delivery");
+  const ackWorkerSeq = Math.max(...fallbackProbing.body.messages.map((message) => message.seq));
+  const fallbackVerified = await daemonHttpExchange({
+    ...fallbackBase,
+    activation_token: fallbackProbing.body.activation_token,
+    ack_worker_seq: ackWorkerSeq,
+    messages: [
+      { seq: 1, payload: { type: "https_ready" } },
+      { seq: 2, payload: { type: "resume_calls_ack", missing_ids: [] } },
+    ],
+  });
+  assert(fallbackVerified.response.status === 200 && fallbackVerified.body.phase === "ready"
+    && fallbackVerified.body.ack_daemon_seq === 2,
+  "HTTPS fallback did not become ready after explicit local verified-ready proof");
+  const fallbackReadyStatus = await callServerInfo(base, ownerAccessToken, 8882);
+  assert(fallbackReadyStatus.worker?.sockets_live?.https_fallback_ready === 1
+    && fallbackReadyStatus.daemon?.connected === true,
+  "server_info did not report the ready HTTPS daemon fallback");
+
+  const fallbackResultExchange = {
+    ...fallbackBase,
+    activation_token: fallbackProbing.body.activation_token,
+    ack_worker_seq: ackWorkerSeq,
+    messages: [{ seq: 3, payload: { type: "tool_result", id: fallbackRelay.id, ok: true, result: { https_fallback: true } } }],
+  };
+  const lostFallbackResponse = await daemonHttpExchange(fallbackResultExchange);
+  assert(lostFallbackResponse.response.status === 200 && lostFallbackResponse.body.ack_daemon_seq === 3,
+    "HTTPS fallback did not commit the first daemon result sequence");
+  const fallbackResult = await fallbackCall;
+  assert(fallbackResult.body.result?.structuredContent?.https_fallback === true,
+    "MCP request did not settle through the HTTPS fallback");
+  const replayedFallbackResponse = await daemonHttpExchange(fallbackResultExchange);
+  assert(replayedFallbackResponse.response.status === 200 && replayedFallbackResponse.body.ack_daemon_seq === 3,
+    "lost HTTPS response retry did not converge on the already-committed daemon sequence");
+  const fallbackAfterReplay = await callServerInfo(base, ownerAccessToken, 8883);
+  assert((fallbackAfterReplay.worker?.observability?.terminal_results?.owner_missing_acknowledged ?? 0) === fallbackOwnerMissing,
+    "replayed HTTPS transport sequence re-entered tool-result handling instead of being deduplicated");
+
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const fallbackHandoverProbe = await beginDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  await completeDaemonProbe(candidateDaemon, fallbackHandoverProbe);
+  const fallbackHandoverStatus = await callServerInfo(base, ownerAccessToken, 8884);
+  assert(fallbackHandoverStatus.worker?.sockets_live?.ready === 1
+    && fallbackHandoverStatus.worker?.sockets_live?.https_fallback_ready === 0,
+  "verified WebSocket did not reclaim primary daemon ownership from HTTPS fallback");
+  const fallbackStandby = await daemonHttpExchange(fallbackResultExchange);
+  assert(fallbackStandby.response.status === 409 && fallbackStandby.body.error === "unknown_daemon_http_session",
+    "superseded HTTPS fallback session was not rejected after verified WSS reclaimed ownership");
+
+  const asymmetricRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const asymmetricCall = toolCallRequest(base, ownerAccessToken, 8890, "list_dir", { path: "." });
+  const asymmetricRelay = await asymmetricRelayPromise;
+  const asymmetricSessionId = `relay_http_${randomBytes(32).toString("base64url")}`;
+  const asymmetricBase = {
+    protocol: 1,
+    session_id: asymmetricSessionId,
+    instance_id: candidateInstanceId,
+    takeover_websocket: true,
+    ack_worker_seq: 0,
+    owned_call_ids: [asymmetricRelay.id],
+    messages: [],
+    tools: candidateTools,
+    policy: candidatePolicy,
+    relay_diagnostics: { schema_version: 1, transport: "https", outage_active: true, outage_count: 1 },
+  };
+  const invalidTakeover = await daemonHttpExchange({
+    ...asymmetricBase,
+    activation_token: `activate_${"z".repeat(43)}`,
+  });
+  assert(invalidTakeover.response.status === 409,
+    "invalid new HTTPS takeover session was not rejected before transport ownership changed");
+  const afterInvalidTakeover = await callServerInfo(base, ownerAccessToken, 8890);
+  assert(afterInvalidTakeover.worker?.sockets_live?.ready === 1
+    && afterInvalidTakeover.worker?.sockets_live?.https_fallback_ready === 0,
+  "invalid signed HTTPS takeover request retired the healthy WebSocket before candidate validation");
+
+  const asymmetricPreviousSocket = candidateDaemon;
+  const asymmetricPreviousClosed = waitForWsClose(asymmetricPreviousSocket);
+  const asymmetricProbing = await daemonHttpExchange(asymmetricBase);
+  assert(asymmetricProbing.response.status === 200 && asymmetricProbing.body.phase === "probing",
+    "authenticated same-instance HTTPS takeover was blocked by the Worker-side zombie WebSocket");
+  await asymmetricPreviousClosed;
+  const asymmetricResume = asymmetricProbing.body.messages?.find((message) => message.payload?.type === "resume_calls")?.payload;
+  assert(asymmetricResume?.ids?.length === 1 && asymmetricResume.ids[0] === asymmetricRelay.id,
+    "same-instance HTTPS takeover lost the in-flight WebSocket call during ownership transfer");
+  const asymmetricAckWorkerSeq = Math.max(...asymmetricProbing.body.messages.map((message) => message.seq));
+  const asymmetricVerified = await daemonHttpExchange({
+    ...asymmetricBase,
+    activation_token: asymmetricProbing.body.activation_token,
+    ack_worker_seq: asymmetricAckWorkerSeq,
+    messages: [
+      { seq: 1, payload: { type: "https_ready" } },
+      { seq: 2, payload: { type: "resume_calls_ack", missing_ids: [] } },
+    ],
+  });
+  assert(asymmetricVerified.response.status === 200 && asymmetricVerified.body.phase === "ready",
+    "same-instance HTTPS takeover did not finish verified readiness after retiring the zombie WebSocket");
+  const asymmetricResult = await daemonHttpExchange({
+    ...asymmetricBase,
+    activation_token: asymmetricProbing.body.activation_token,
+    ack_worker_seq: asymmetricAckWorkerSeq,
+    messages: [{ seq: 3, payload: {
+      type: "tool_result", id: asymmetricRelay.id, ok: true, result: { asymmetric_https_takeover: true },
+    } }],
+  });
+  assert(asymmetricResult.response.status === 200 && asymmetricResult.body.ack_daemon_seq === 3,
+    "same-instance HTTPS takeover did not acknowledge the transferred call result");
+  const asymmetricSettled = await asymmetricCall;
+  assert(asymmetricSettled.body.result?.structuredContent?.asymmetric_https_takeover === true,
+    "in-flight call did not settle after asymmetric WebSocket-to-HTTPS takeover");
+
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const asymmetricReturnProbe = await beginDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  await completeDaemonProbe(candidateDaemon, asymmetricReturnProbe);
+  const asymmetricReturnStatus = await callServerInfo(base, ownerAccessToken, 8891);
+  assert(asymmetricReturnStatus.worker?.sockets_live?.ready === 1
+    && asymmetricReturnStatus.worker?.sockets_live?.https_fallback_ready === 0,
+  "WebSocket did not reclaim primary ownership after asymmetric HTTPS takeover recovery");
+
+  const missingOwnershipRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const missingOwnershipCall = toolCallRequest(base, ownerAccessToken, 8804, "list_dir", { path: "." });
+  const missingOwnershipRelay = await missingOwnershipRelayPromise;
+  const missingOwnershipPreviousSocket = candidateDaemon;
+  const missingOwnershipPreviousClosed = waitForWsClose(missingOwnershipPreviousSocket);
+  missingOwnershipPreviousSocket.terminate();
+  await missingOwnershipPreviousClosed;
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const missingOwnershipResume = await sendDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  assert(missingOwnershipResume.ids.length === 1 && missingOwnershipResume.ids[0] === missingOwnershipRelay.id,
+    "same-instance reconnect did not carry the simulated undelivered call into resume reconciliation");
+  const missingOwnershipRedelivery = waitForWsMessage(candidateDaemon, "tool_call");
+  candidateDaemon.send(JSON.stringify({
+    type: "resume_calls_ack",
+    missing_ids: [missingOwnershipRelay.id],
+  }));
+  const redeliveredMissingOwnership = await missingOwnershipRedelivery;
+  assert(redeliveredMissingOwnership.id === missingOwnershipRelay.id
+    && redeliveredMissingOwnership.tool === missingOwnershipRelay.tool
+    && JSON.stringify(redeliveredMissingOwnership.arguments) === JSON.stringify(missingOwnershipRelay.arguments)
+    && Number.isInteger(redeliveredMissingOwnership.timeout_ms)
+    && redeliveredMissingOwnership.timeout_ms > 0
+    && redeliveredMissingOwnership.timeout_ms <= missingOwnershipRelay.timeout_ms,
+  "daemon-proven non-delivery did not redeliver the exact original call inside its remaining execution budget");
+  candidateDaemon.send(JSON.stringify({
+    type: "tool_result", id: missingOwnershipRelay.id, ok: true,
+    result: { proven_non_delivery_redelivered: true },
+  }));
+  const missingOwnershipResult = await missingOwnershipCall;
+  assert(missingOwnershipResult.response.status === 200
+    && missingOwnershipResult.body.result?.isError !== true
+    && missingOwnershipResult.body.result?.structuredContent?.proven_non_delivery_redelivered === true,
+  "daemon-proven non-delivery did not recover transparently through one safe same-id transport redelivery");
 
   const idlessMessages = captureWsMessageTypes(candidateDaemon);
   const idlessBody = currentMcpRequest(250, "tools/call", { name: "server_info", arguments: {} });
@@ -1874,6 +2071,21 @@ function encodeMcpHeaderValue(value) {
 
 function toolCallRequest(origin, accessToken, id, name, argumentsValue) {
   return currentMcpCall(origin, accessToken, id, "tools/call", { name, arguments: argumentsValue });
+}
+
+async function daemonHttpExchange(body) {
+  const serialized = JSON.stringify(body);
+  const headers = createDaemonHttpRelayHeaders(
+    DAEMON_SESSION_IDENTITY, base, "machine-bridge-mcp", pkg.version, serialized,
+  );
+  const response = await trackHttpRequest(fetch(`${base}/daemon/http`, {
+    method: "POST", headers, body: serialized, signal: AbortSignal.timeout(10_000),
+  }));
+  const text = await response.text();
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch { throw new Error(`daemon HTTP exchange returned non-JSON status=${response.status}: ${text.slice(0, 256)}`); }
+  return { response, body: parsed };
 }
 
 async function callTool(origin, accessToken, id, name, argumentsValue) {

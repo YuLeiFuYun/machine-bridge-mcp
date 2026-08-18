@@ -13,6 +13,7 @@ class FakeSocket extends EventEmitter {
     this.options = options;
     this.readyState = FakeSocket.CONNECTING;
     this.sent = [];
+    this.pings = [];
     this.terminated = false;
   }
 
@@ -24,6 +25,11 @@ class FakeSocket extends EventEmitter {
   send(value) {
     if (this.readyState !== FakeSocket.OPEN) throw new Error("socket is not open");
     this.sent.push(String(value));
+  }
+
+  ping(value = "") {
+    if (this.readyState !== FakeSocket.OPEN) throw new Error("socket is not open");
+    this.pings.push(String(value));
   }
 
   close(code = 1000, reason = "") {
@@ -156,6 +162,8 @@ assert(connection.status().authenticated === true && connection.status().ready =
 const authenticatedRelaySession = connection.currentSessionId();
 assert(authenticatedRelaySession > 0, "authenticated relay did not establish a session for the readiness probe");
 assert(connection.sendForSession({ type: "relay_probe_result", id: "probe_test-ready" }, authenticatedRelaySession).ok === true, "readiness probe result could not use the authenticated session before ready state");
+assert(connection.sendForSession({ type: "resume_calls_ack", missing_ids: [] }, authenticatedRelaySession).ok === true,
+  "resume reconciliation acknowledgement could not use the authenticated session before ready state");
 assert(connection.sendForSession({ type: "authority_revoke_ack", revocation_id: `revoke_${"r".repeat(43)}` }, authenticatedRelaySession).ok === true,
   "authority revocation acknowledgement could not use the authenticated session before ready state");
 let startedResolved = false;
@@ -175,6 +183,11 @@ connection.onMessage = preReadyOnMessage;
 connection.confirmReady({ type: "ready_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 await started;
 assert(events.some((event) => event.level === "info" && event.message.includes("end-to-end result delivery verified")), "relay did not report verified readiness");
+const ordinarySendCount = sockets[0].sent.length;
+assert(connection.send({ type: "test_ready_send" }) === true
+  && JSON.parse(sockets[0].sent.at(-1)).type === "test_ready_send"
+  && sockets[0].sent.length === ordinarySendCount + 1,
+"verified-ready relay did not accept one ordinary business send through the public send path");
 const firstRelaySession = connection.currentSessionId();
 assert(firstRelaySession > 0, "authenticated relay did not receive a session generation");
 let inboundMessageContext = null;
@@ -245,6 +258,92 @@ scheduler.advance(20);
 assert(sockets[3].terminated, "unacknowledged relay transport was not terminated after the handshake timeout");
 connection.stop();
 
+const transportWatchdogScheduler = new ManualScheduler();
+const transportWatchdogSockets = [];
+const transportWatchdogConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      transportWatchdogSockets.push(this);
+    }
+  },
+  scheduler: transportWatchdogScheduler,
+  now: () => transportWatchdogScheduler.now,
+  reconnectDelay: () => 100,
+  outageWarnAfterMs: 100,
+});
+transportWatchdogConnection.start();
+transportWatchdogSockets[0].open();
+transportWatchdogConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(transportWatchdogConnection, "test");
+transportWatchdogScheduler.advance(5_000);
+assert(transportWatchdogSockets[0].pings.length === 1,
+  "ready relay did not send the foreground-safe protocol-level transport probe within five seconds");
+assert(transportWatchdogSockets[0].sent.every((value) => JSON.parse(value).type !== "heartbeat"),
+  "transport probe woke the Worker through the application heartbeat path");
+transportWatchdogSockets[0].emit("pong");
+for (let index = 0; index < 4; index += 1) {
+  transportWatchdogScheduler.advance(5_000);
+  assert(!transportWatchdogSockets[0].terminated,
+    "fresh protocol-level pong did not preserve a proven-live transport");
+  transportWatchdogSockets[0].emit("pong");
+}
+assert(transportWatchdogSockets[0].sent.some((value) => JSON.parse(value).type === "heartbeat"),
+  "fast transport watchdog displaced the low-frequency application heartbeat required for Worker liveness");
+transportWatchdogScheduler.advance(10_000);
+assert(transportWatchdogSockets[0].terminated,
+  "black-holed ready relay survived longer than the ten-second transport-liveness window");
+const transportWatchdogStatus = transportWatchdogConnection.status();
+assert(transportWatchdogStatus.last_close_category === "relay_transport_timeout"
+  && transportWatchdogStatus.last_ready_inbound_silence_ms === 10_000
+  && transportWatchdogStatus.heartbeat?.interval_ms === 5_000
+  && transportWatchdogStatus.heartbeat?.timeout_ms === 10_000
+  && transportWatchdogStatus.application_heartbeat_interval_ms === 25_000
+  && transportWatchdogStatus.application_heartbeat_timeout_ms === 75_000
+  && transportWatchdogStatus.heartbeat?.application_heartbeat_timeout_ms === 75_000,
+"transport watchdog diagnostics lost the fast half-open contract or the pre-disconnect silence evidence");
+transportWatchdogConnection.stop();
+
+const applicationLivenessScheduler = new ManualScheduler();
+const applicationLivenessSockets = [];
+const applicationLivenessConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      applicationLivenessSockets.push(this);
+    }
+  },
+  scheduler: applicationLivenessScheduler,
+  now: () => applicationLivenessScheduler.now,
+  reconnectDelay: () => 100,
+  transportPingIntervalMs: 5,
+  transportPongTimeoutMs: 15,
+  applicationHeartbeatIntervalMs: 5,
+  applicationHeartbeatTimeoutMs: 15,
+  outageWarnAfterMs: 100,
+});
+applicationLivenessConnection.start();
+applicationLivenessSockets[0].open();
+applicationLivenessConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(applicationLivenessConnection, "test");
+for (let index = 0; index < 2; index += 1) {
+  applicationLivenessScheduler.advance(5);
+  applicationLivenessSockets[0].emit("pong");
+  assert(!applicationLivenessSockets[0].terminated,
+    "healthy protocol-level Pong was incorrectly treated as application-heartbeat failure before its deadline");
+}
+applicationLivenessScheduler.advance(5);
+assert(applicationLivenessSockets[0].terminated
+  && applicationLivenessConnection.status().last_close_category === "relay_heartbeat_timeout",
+"protocol-level Pong incorrectly masked a silent Worker application path");
+applicationLivenessConnection.stop();
+
 const heartbeatScheduler = new ManualScheduler();
 const heartbeatSockets = [];
 let heartbeatConnection;
@@ -291,6 +390,8 @@ const stalledHeartbeatConnection = new RelayConnection({
   reconnectDelay: () => 100,
   heartbeatIntervalMs: 5,
   heartbeatTimeoutMs: 10,
+  applicationHeartbeatIntervalMs: 5,
+  applicationHeartbeatTimeoutMs: 10,
   heartbeatStallThresholdMs: 5,
   heartbeatRecoveryGraceMs: 10,
   handshakeTimeoutMs: 20,
@@ -987,6 +1088,70 @@ assert(relayCloseCategory(1008, "daemon hello timeout") === "relay_handshake_tim
 assert(relayCloseCategory(1008, "daemon ready timeout") === "relay_readiness_timeout", "daemon ready timeout was misclassified");
 assert(relayCloseCategory(1011, "") === "relay_internal_error", "1011 close classification failed");
 assert(reconnectDelay(0, () => 0) === 1000 && reconnectDelay(99, () => 0) === 15_000, "reconnect backoff bounds changed");
+assert(reconnectDelay(4, () => 0, 15_000, 15_000) === 250,
+  "a connection attempt that already consumed its full deadline was followed by another full idle backoff");
+assert(reconnectDelay(4, () => 0, 100, 15_000) === 15_000,
+  "fast connection failures no longer retain exponential reconnect backoff");
+
+{
+  const monotonicScheduler = new ManualScheduler();
+  const monotonicSockets = [];
+  let wallNow = Date.UTC(2026, 7, 18, 4, 0, 0);
+  const monotonicConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) { super(url, options); monotonicSockets.push(this); }
+    },
+    scheduler: monotonicScheduler,
+    now: () => monotonicScheduler.now,
+    wallNow: () => wallNow,
+    reconnectDelay: () => 100,
+  });
+  const monotonicReady = monotonicConnection.start();
+  monotonicSockets[0].open();
+  monotonicConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(monotonicConnection, "test");
+  await monotonicReady;
+  monotonicScheduler.advance(100);
+  wallNow += 7 * 24 * 60 * 60_000;
+  monotonicSockets[0].remoteClose(1006, "");
+  const jumpedForward = monotonicConnection.status();
+  assert(jumpedForward.last_ready_duration_ms === 100 && jumpedForward.outage_duration_ms === 0,
+    "wall-clock jump changed relay elapsed-duration accounting");
+  assert(jumpedForward.last_disconnected_at === new Date(wallNow).toISOString()
+    && jumpedForward.outage_started_at === new Date(wallNow).toISOString(),
+  "operator timestamps stopped using wall clock after monotonic deadline migration");
+  wallNow -= 14 * 24 * 60 * 60_000;
+  monotonicScheduler.advance(50);
+  assert(monotonicConnection.status().outage_duration_ms === 50,
+    "backward wall-clock jump changed relay outage duration");
+  monotonicConnection.stop();
+}
+
+{
+  const stageScheduler = new ManualScheduler();
+  const stageSockets = [];
+  const stageConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) { super(url, options); stageSockets.push(this); }
+    },
+    scheduler: stageScheduler,
+    now: () => stageScheduler.now,
+    reconnectDelay: () => 100,
+  });
+  void stageConnection.start().catch(() => {});
+  stageScheduler.advance(7);
+  stageSockets[0].fail(new Error("Unexpected server response: 503"));
+  const failedStage = stageConnection.status();
+  assert(failedStage.last_connect_stage === "http_rejected"
+    && failedStage.last_connect_http_status === 503
+    && failedStage.last_connect_duration_ms === 7,
+  "relay connection failure did not preserve bounded phase/status/duration diagnostics");
+  stageConnection.stop();
+}
 
 const directProxy = proxyAgentForWebSocket("wss://relay.example.invalid/daemon/ws", () => "");
 assert(directProxy.agent === null && directProxy.mode === "direct", "NO_PROXY/direct relay routing did not bypass proxy construction");

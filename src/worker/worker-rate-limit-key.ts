@@ -17,7 +17,7 @@ export function globalStatefulRateLimitKey(request: Request): string {
 
 export function statefulRouteClass(pathname: string): string {
   if (pathname === "/mcp") return "mcp";
-  if (pathname === "/daemon/ws") return "daemon";
+  if (pathname === "/daemon/ws" || pathname === "/daemon/http") return "daemon";
   if (pathname.startsWith("/oauth/")) return "oauth";
   if (pathname.startsWith("/admin/")) return "admin";
   return "other";

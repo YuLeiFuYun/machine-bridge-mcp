@@ -17,12 +17,13 @@ import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDe
 import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import {
-  daemonToolError, dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError,
+  daemonCallNotReceivedAfterReconnectError, daemonToolError, dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError,
   dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError,
 } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
 import { WorkerObservability } from "../src/worker/observability.ts";
 import { daemonStatusSnapshot } from "../src/worker/daemon-status.ts";
+import { DaemonLastObservation } from "../src/worker/daemon-last-observation.ts";
 import { buildServerInfoResult, serverInfoDetail } from "../src/worker/server-info.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { retainWorkerTask } from "../src/worker/worker-task-lifetime.ts";
@@ -32,7 +33,7 @@ import {
   textToolResult,
 } from "../src/worker/mcp-jsonrpc.ts";
 import {
-  closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
+  closeWebSocketQuietly, daemonErrorCloseCode, daemonResumeMissingCallIds, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "../src/worker/websocket-protocol.ts";
 import {
@@ -287,6 +288,26 @@ async function testReconnectRebinding() {
   assert(registry.snapshot().detached === 0, "rebound call remained marked detached");
   assert(await registry.resolve("reconnect", socketB, { resumed: true }), "rebound call rejected the replacement socket result");
   assert((await resumed).resumed === true, "rebound call lost its result");
+
+  const notReceived = registry.register({
+    id: "not-received", tool: "list_dir", socket: socketA, daemonInstanceId: "daemon_same_instance_1234",
+    timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+    redeliverAfterProvenMissing: () => true,
+  });
+  registry.detachSocket(socketA, 1000, () => new Error("reconnect timeout"));
+  assert(registry.rebindInstance("daemon_same_instance_1234", socketB).includes("not-received"),
+    "daemon-proven non-delivery fixture did not rebind the pending call");
+  let redelivered = 0;
+  assert(await registry.rejectSocketIds(["not-received", "unknown"], socketB,
+    () => daemonCallNotReceivedAfterReconnectError(), undefined, (record) => {
+      const handled = record.redeliverAfterProvenMissing?.(record, socketB) === true;
+      if (handled) redelivered += 1;
+      return handled;
+    }) === 0 && redelivered === 1,
+  "daemon-proven non-delivery did not preserve a safely redelivered pending call");
+  assert(await registry.resolve("not-received", socketB, { redelivered: true }),
+    "redelivered pending call no longer accepted its replacement-channel result");
+  assert((await notReceived).redelivered === true, "safe redelivery lost the original pending settlement");
 
   const expiring = registry.register({
     id: "expire", tool: "read_file", socket: socketA, daemonInstanceId: "daemon_expiring_instance_1",
@@ -588,6 +609,45 @@ async function testRuntimeAlarmCoordinator() {
   assert(validSocketAlarm === Date.parse("2026-08-04T00:00:25.000Z"),
     "event-time alarm scheduling did not select the earliest valid daemon deadline");
 
+  const staleHttpChannel = { daemonTransport: "https", sessionId: "relay_http_alarm_stale_12345678" };
+  const httpInvalidations = [];
+  let httpCandidatesSwept = 0;
+  let httpAlarm = null;
+  const httpRegistry = {
+    candidateSockets() { return []; }, probingSockets() { return []; }, readyRoleSockets() { return []; },
+    httpCandidates(at) { assert(at === 7000, "HTTP candidate sweep received the wrong alarm time"); httpCandidatesSwept += 1; },
+    http: {
+      staleOwned(at) { assert(at === 7000, "HTTP stale-owner sweep received the wrong alarm time"); return [staleHttpChannel]; },
+      nextDeadline(at) { assert(at === 7000, "HTTP fallback deadline received the wrong alarm time"); return 7040; },
+    },
+  };
+  await processRuntimeAlarm({
+    ...context,
+    storage: { async getAlarm() { return null; }, async setAlarm(value) { httpAlarm = Number(value); }, async deleteAlarm() { httpAlarm = null; } },
+    pending: { async expireDue() { return 0; }, nextDeadlineDelayMs() { return Number.POSITIVE_INFINITY; } },
+    daemonRegistry: httpRegistry,
+    async invalidateDaemonSocket() { throw new Error("HTTP-only alarm fixture unexpectedly invalidated WebSocket state"); },
+    async invalidateDaemonChannel(channel, message, errorCode) { httpInvalidations.push({ channel, message, errorCode }); },
+  }, 7000);
+  assert(httpCandidatesSwept === 1 && httpInvalidations.length === 1
+    && httpInvalidations[0].channel === staleHttpChannel
+    && httpInvalidations[0].errorCode === "daemon_liveness_timeout"
+    && httpAlarm === 7040,
+  "runtime alarm did not expire a stale HTTPS fallback channel and retain its next transport deadline");
+
+  httpCandidatesSwept = 0;
+  httpAlarm = null;
+  await scheduleRuntimeAlarm({
+    ...context,
+    storage: { async getAlarm() { return null; }, async setAlarm(value) { httpAlarm = Number(value); }, async deleteAlarm() { httpAlarm = null; } },
+    pending: { async expireDue() { return 0; }, nextDeadlineDelayMs() { return Number.POSITIVE_INFINITY; } },
+    daemonRegistry: httpRegistry,
+    async invalidateDaemonSocket() { throw new Error("HTTP-only schedule fixture unexpectedly invalidated WebSocket state"); },
+    async invalidateDaemonChannel() { throw new Error("event-time HTTP scheduling must not invalidate a channel directly"); },
+  }, 7000);
+  assert(httpCandidatesSwept === 1 && httpAlarm === 7040,
+    "event-time alarm scheduling omitted the HTTPS fallback liveness deadline");
+
 }
 
 async function testTimeoutCallbackFailure() {
@@ -826,13 +886,15 @@ function testDaemonRelayDiagnostics() {
     last_transport_error_class: "network_error",
     last_disconnected_at: "2026-08-04T11:36:20.000Z",
     previous_ready_duration_ms: 123456,
+    previous_ready_inbound_silence_ms: 15000,
   });
   assert(diagnostics?.outage_count === 8
     && diagnostics.outage_attempts === 2
     && diagnostics.last_close_category === "relay_heartbeat_timeout"
     && diagnostics.last_close_code === 1006
     && diagnostics.last_transport_error_class === "network_error"
-    && diagnostics.outage_started_at === "2026-08-04T11:36:20.000Z",
+    && diagnostics.outage_started_at === "2026-08-04T11:36:20.000Z"
+    && diagnostics.previous_ready_inbound_silence_ms === 15000,
   "Worker relay diagnostics sanitizer lost valid bounded evidence");
   const readyDiagnostics = relayDiagnosticsAfterReady(diagnostics);
   assert(readyDiagnostics?.outage_active === false && readyDiagnostics.outage_duration_ms === 9000,
@@ -846,11 +908,13 @@ function testDaemonRelayDiagnostics() {
   assert(rejected === undefined, "Worker relay diagnostics accepted an unknown schema");
   const bounded = sanitizeDaemonRelayDiagnostics({
     schema_version: 1, network_route: "private-route", outage_count: -1, outage_duration_ms: Number.POSITIVE_INFINITY,
+    previous_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
     last_close_category: "private-category", last_close_code: 99999, last_transport_error_class: "x".repeat(200),
   });
   assert(bounded?.network_route === "unresolved"
     && bounded.outage_count === 0
     && bounded.outage_duration_ms === 0
+    && bounded.previous_ready_inbound_silence_ms === 0
     && bounded.last_close_category === null
     && bounded.last_close_code === null
     && bounded.last_transport_error_class === null,
@@ -884,8 +948,22 @@ function testWorkerRuntimeConfig() {
 
 function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
-  assert(relayContract.newCallReconnectGraceMs === 5_000,
-    "new calls can still spend an excessive share of the host reply window waiting for relay recovery");
+  assert(relayContract.newCallReconnectGraceMs === 15_000,
+    "new-call recovery no longer covers the bounded HTTPS fallback window before the original execution budget is reduced");
+  assert(relayContract.httpFallbackMinimumRequestIntervalMs >= 750
+    && Math.ceil(60_000 / relayContract.httpFallbackMinimumRequestIntervalMs) < 120,
+  "HTTPS fallback can consume the full daemon route rate-limit budget without headroom");
+  assert(relayContract.httpFallbackRequestTimeoutMs < relayContract.newCallReconnectGraceMs
+    && relayContract.httpFallbackLivenessTimeoutMs <= relayContract.newCallReconnectGraceMs,
+  "HTTPS fallback request/liveness windows no longer fit inside new-call recovery grace");
+  assert(relayContract.transportPingIntervalMs === 5_000
+    && relayContract.transportPongTimeoutMs === 10_000
+    && relayContract.transportPingIntervalMs + relayContract.transportPongTimeoutMs < relayContract.defaultRemoteToolExecutionTimeoutMs,
+  "relay transport watchdog worst-case detection horizon can no longer leave reconnect headroom inside the ordinary foreground execution window");
+  assert(relayContract.daemonApplicationHeartbeatIntervalMs === 25_000
+    && relayContract.daemonApplicationHeartbeatTimeoutMs === 75_000
+    && DAEMON_LIVENESS_TIMEOUT_MS > relayContract.daemonApplicationHeartbeatTimeoutMs,
+  "application heartbeat timeout and Worker daemon-liveness fallback drifted out of their layered recovery contract");
   assert(relayContract.streamHeartbeatMs === 5_000, "SSE heartbeat interval drifted from the reply-liveness contract");
   assert(!("streamResumeRetentionMs" in relayContract)
     && !("maximumResumableStreams" in relayContract)
@@ -910,6 +988,7 @@ function testRelayTimeoutContract() {
     "remote process-session startup budget drifted from its short request-owned envelope");
   assert(relayContract.durableProcessAcceptanceTimeoutMs === 10_000
     && relayContract.maximumDurableProcessExecutionTimeoutMs === 600_000
+    && relayContract.maximumManagedJobResourceAdmissionWaitMs === 1_800_000
     && REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS === 600
     && REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS === 600,
   "durable remote process acceptance/execution budgets drifted from their separated contract");
@@ -941,6 +1020,12 @@ function testRelayTimeoutContract() {
   const browserForegroundBudget = daemonToolTimeoutBudget("browser_action", { timeout_seconds: 45 });
   assert(browserForegroundBudget.executionTimeoutMs === 45_000 && browserForegroundBudget.settlementTimeoutMs === 50_000,
     "non-process configurable foreground tool lost its reply-safe maximum budget");
+  const computerObserveDefaultBudget = daemonToolTimeoutBudget("computer_observe", {});
+  const computerActDefaultBudget = daemonToolTimeoutBudget("computer_act", {});
+  assert(computerObserveDefaultBudget.executionTimeoutMs === 30_000 && computerObserveDefaultBudget.settlementTimeoutMs === 35_000,
+    "compound Computer Use observation default is shorter than its local end-to-end capture budget");
+  assert(computerActDefaultBudget.executionTimeoutMs === 30_000 && computerActDefaultBudget.settlementTimeoutMs === 35_000,
+    "compound Computer Use action default is shorter than its local end-to-end action budget");
   for (const requested of [46, "45"]) {
     let rejected;
     try { daemonToolTimeoutBudget("browser_action", { timeout_seconds: requested }); }
@@ -975,6 +1060,8 @@ function testRelayTimeoutContract() {
   "Worker tool argument validator accepted an unknown field or lost its stable issue keyword");
   assert(validateWorkerToolArguments("missing_tool", {}).known === false,
     "Worker tool argument validator treated an unknown tool as a known schema");
+  assert(remoteForegroundMaximumSeconds.length === 1,
+    "remote foreground maximum implementation drifted from its declared one-parameter API");
   const configurableRemoteTools = workspaceTools.filter((tool) => tool.inputSchema?.properties?.timeout_seconds);
   for (const tool of configurableRemoteTools) {
     const timeout = tool.inputSchema.properties.timeout_seconds;
@@ -1001,8 +1088,10 @@ function testRelayTimeoutContract() {
   const remoteExecDescription = String(remoteExec?.description || "");
   assert(remoteExecDescription.includes("one-step durable job")
     && remoteExecDescription.includes("job_id")
-    && remoteExecDescription.includes("read_job"),
-  "remote exec_command description omitted the durable execution and recovery contract");
+    && remoteExecDescription.includes("read_job")
+    && remoteExecDescription.includes("30 minutes pre-spawn")
+    && remoteExecDescription.includes("current_phase=resource_admission"),
+  "remote exec_command description omitted the durable execution, pre-spawn admission, or recovery contract");
   const remoteReadProcess = workspaceTools.find((tool) => tool.name === "read_process");
   assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 5_000,
     "remote read_process schema regained a long blocking poll");
@@ -1145,6 +1234,12 @@ function testWorkerErrors() {
   const durableDisconnected = publicWorkerToolError(dispatchedDaemonDisconnectError("daemon disconnected", durableRecovery));
   assert(durableDisconnected.details?.recovery?.idempotency_key === "worker-timeout-recovery",
     "durable process daemon disconnect lost its idempotent replay recovery contract");
+  const notReceived = publicWorkerToolError(daemonCallNotReceivedAfterReconnectError(durableRecovery));
+  assert(notReceived.code === "unavailable" && notReceived.retryable === true
+    && notReceived.details?.side_effects_started === false
+    && notReceived.details?.reason === "daemon_call_not_received_after_reconnect"
+    && notReceived.details?.recovery?.idempotency_key === "worker-timeout-recovery",
+  "daemon-proven non-delivery did not become a safe retry with the durable recovery credential intact");
   const cancelUnknown = publicWorkerToolError(dispatchedDaemonCancellationError("cancelled after disconnect", false));
   assert(cancelUnknown.code === "cancelled" && cancelUnknown.details?.termination_requested === false
     && cancelUnknown.details?.effect_settlement === "unknown",
@@ -1158,9 +1253,26 @@ function testWorkerErrors() {
     "malformed daemon error did not collapse to the bounded public fallback");
   const hidden = publicWorkerToolError(new Error("private internal details"));
   assert(hidden.message === "tool execution failed" && !hidden.message.includes("private"), "Worker exposed raw internal exception text");
+  assert(JSON.stringify(daemonResumeMissingCallIds(["call_valid_12345678"])) === JSON.stringify(["call_valid_12345678"]),
+    "Worker rejected a bounded valid resume acknowledgement call ID");
+  assert(daemonResumeMissingCallIds(["call_duplicate_12345678", "call_duplicate_12345678"]) === null
+    && daemonResumeMissingCallIds(["invalid"]) === null
+    && daemonResumeMissingCallIds(null) === null,
+  "Worker accepted malformed or duplicate resume acknowledgement call IDs");
 }
 
 function testDaemonAndServerInfoProjection() {
+  const lastObservation = new DaemonLastObservation();
+  lastObservation.remember({ daemonTransport: "https" }, {
+    role: "daemon", connectedAt: "2026-08-10T00:00:00.000Z", lastSeenAt: "2026-08-10T00:00:01.000Z",
+    instanceId: "daemon_private_instance_1234", policy: { profile: "full" }, tools: ["read_file"],
+    relayDiagnostics: { schema_version: 1, transport: "https", outage_count: 4 },
+  }, true);
+  const retainedObservation = lastObservation.snapshot();
+  assert(retainedObservation?.transport === "https" && retainedObservation.relayDiagnostics?.outage_count === 4
+    && !("tools" in retainedObservation) && !("policy" in retainedObservation) && !("instanceId" in retainedObservation),
+  "last daemon observation retained authority, tool, or instance identity instead of only forensic transport state");
+
   const socket = {};
   const attachment = {
     connectedAt: "2026-08-10T00:00:00.000Z",
@@ -1188,6 +1300,22 @@ function testDaemonAndServerInfoProjection() {
   }, true);
   assert(emptyDaemon.connected === false && emptyDaemon.tool_count === 0 && emptyDaemon.policy === null,
     "empty daemon status invented a connected daemon");
+  const disconnectedDaemon = daemonStatusSnapshot({
+    readySockets() { return []; },
+    readyAttachment() { return undefined; },
+    lastDaemonObservation() {
+      return {
+        transport: "websocket", connectedAt: "2026-08-10T00:00:00.000Z",
+        lastSeenAt: "2026-08-10T00:00:03.000Z", disconnectedAt: "2026-08-10T00:00:04.000Z",
+        relayDiagnostics: { schema_version: 1, transport: "websocket", outage_count: 2 },
+      };
+    },
+  }, false);
+  assert(disconnectedDaemon.connected === false
+    && disconnectedDaemon.previous_connection?.transport === "websocket"
+    && disconnectedDaemon.previous_connection?.disconnected_at === "2026-08-10T00:00:04.000Z"
+    && disconnectedDaemon.previous_connection?.relay_transport?.outage_count === 2,
+  "disconnected daemon status discarded the privacy-bounded last verified transport observation");
 
   const pendingSnapshot = {
     active: 2, pre_dispatch_waiters: 1, capacity_active: 3,

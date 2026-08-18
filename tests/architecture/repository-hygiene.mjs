@@ -26,9 +26,21 @@ const repositoryFiles = execFileSync(resolveTrustedGitExecutable({ workspace: ro
   .filter(Boolean);
 for (const name of repositoryFiles.filter((value) => /^(?:src|scripts|browser-extension)\/.*\.(?:js|mjs|ts)$/.test(value))) {
   const source = readFileSync(join(root, name), "utf8");
-  if (/catch\s*(?:\([^)]*\)\s*)?\{\s*\}/.test(source) || /\.catch\(\(\)\s*=>\s*\{\s*\}\)/.test(source)) {
+  if (hasUnexplainedCatchAndContinue(source)) {
     throw new Error(`production catch-and-continue path requires an explanatory comment or explicit handling: ${name}`);
   }
+}
+assert.equal(hasUnexplainedCatchAndContinue("try { work(); } catch {}"), true);
+assert.equal(hasUnexplainedCatchAndContinue("promise.catch(() => {})"), true);
+assert.equal(hasUnexplainedCatchAndContinue("promise.catch?.(() => {})"), true);
+assert.equal(hasUnexplainedCatchAndContinue("promise.catch?. (() => {})"), true);
+assert.equal(hasUnexplainedCatchAndContinue("promise.catch((error) => {})"), true);
+assert.equal(hasUnexplainedCatchAndContinue("promise.catch(async error => {})"), true);
+assert.equal(hasUnexplainedCatchAndContinue("promise.catch?.(() => { /* best-effort cleanup */ })"), false);
+
+function hasUnexplainedCatchAndContinue(source) {
+  return /catch\s*(?:\([^)]*\)\s*)?\{\s*\}/.test(source)
+    || /\.catch(?:\?\.)?\s*\(\s*(?:async\s+)?(?:\(\s*[^)]*\s*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{\s*\}\s*\)/.test(source);
 }
 const workflowFiles = repositoryFiles.filter((name) => /^\.github\/workflows\/.*\.ya?ml$/i.test(name));
 for (const name of workflowFiles) {

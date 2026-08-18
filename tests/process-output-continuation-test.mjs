@@ -9,6 +9,7 @@ import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { ProcessOutputStream } from "../src/local/process-output-stream.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
+import { PROCESS_SESSION_RETENTION_MS } from "../src/local/execution-limits.mjs";
 import { ResourceAdmissionError } from "../src/local/resource-admission.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import { toolResult } from "../src/local/tools.mjs";
@@ -53,8 +54,10 @@ const service = new ProcessExecutionService({
 try {
   testOutputStreamOffsets();
   testCompactProjection();
+  testProcessSessionRetentionUsesMonotonicTime();
   await testExecutionSurfaceMarkers();
   await testRemoteSessionAdmissionIsFailFast();
+  await testRemoteSessionActivityLifetime();
   await testSuccessfulContinuation();
   await testFailureContinuation();
   await testSessionReleaseAfterBinding();
@@ -69,6 +72,30 @@ try {
 } finally {
   await sessions.clearAndWait();
   await rm(root, { recursive: true, force: true });
+}
+
+function testProcessSessionRetentionUsesMonotonicTime() {
+  let monotonicNow = 1000;
+  let wallNow = Date.UTC(2026, 7, 18, 4, 0, 0);
+  const manager = new ProcessSessionManager({
+    workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
+    resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {},
+    now: () => monotonicNow, wallNow: () => wallNow,
+  });
+  const retained = manager.retainCompletedOutput({
+    command: "fixture", cwd: root,
+    stdout: new ProcessOutputStream(1024), stderr: new ProcessOutputStream(1024), exitCode: 0,
+    startedAt: wallNow - 1000, closedAt: wallNow,
+  });
+  assert(retained?.session_id, "monotonic retention fixture was not retained");
+  wallNow += 30 * 24 * 60 * 60_000;
+  assert(manager.get(retained.session_id), "forward wall-clock jump expired a daemon-lifetime process session");
+  wallNow -= 60 * 24 * 60 * 60_000;
+  monotonicNow += PROCESS_SESSION_RETENTION_MS - 1;
+  assert(manager.get(retained.session_id), "backward wall-clock jump altered process-session retention age");
+  monotonicNow += 2;
+  assert.throws(() => manager.get(retained.session_id), /expired/,
+    "process session did not expire after its monotonic retention interval elapsed");
 }
 
 async function testExecutionSurfaceMarkers() {
@@ -98,6 +125,7 @@ async function testExecutionSurfaceMarkers() {
 async function testRemoteSessionAdmissionIsFailFast() {
   const waits = [];
   let spawnCount = 0;
+  let activityStarts = 0;
   const manager = new ProcessSessionManager({
     workspace: root,
     policy,
@@ -113,13 +141,14 @@ async function testRemoteSessionAdmissionIsFailFast() {
     resolveCwd: async () => root,
     displayPath: (value) => value,
     throwIfCancelled() {},
+    remoteActivityGuard: { beginActivity() { activityStarts += 1; }, endActivity() {} },
     spawnProcess() {
       spawnCount += 1;
       throw new Error("resource-denied session must not spawn");
     },
   });
   await assert.rejects(
-    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { authority: { origin: "relay" } }),
+    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { origin: "relay", authority: { origin: "relay" } }),
     (error) => {
       assert(error instanceof BridgeError, "remote resource pressure did not cross the process boundary as a BridgeError");
       assert.equal(error.code, "unavailable", "remote resource pressure lost its retryable unavailable classification");
@@ -133,17 +162,18 @@ async function testRemoteSessionAdmissionIsFailFast() {
     },
   );
   await assert.rejects(
-    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { authority: { origin: "local" } }),
+    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { origin: "local", authority: { origin: "local" } }),
     (error) => error instanceof BridgeError && error.code === "unavailable",
   );
   assert.deepEqual(waits, [0, 10_000],
     "process-session resource admission did not separate remote reply safety from local operator patience");
   assert.equal(spawnCount, 0, "resource-admission failure reached child-process spawn");
+  assert.equal(activityStarts, 0, "remote process-session activity started before resource admission succeeded");
   manager.resourceCoordinator.acquire = async () => {
     throw new ResourceAdmissionError({ state: "green", reason: "cpu_request_exceeds_launch_window" });
   };
   await assert.rejects(
-    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { authority: { origin: "relay" } }),
+    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { origin: "relay", authority: { origin: "relay" } }),
     (error) => error instanceof BridgeError
       && error.code === "unavailable"
       && error.retryable === false
@@ -151,6 +181,41 @@ async function testRemoteSessionAdmissionIsFailFast() {
       && publicError(error).details?.admission_reason === "cpu_request_exceeds_launch_window",
     "structurally impossible resource demand remained a retryable temporary-pressure error",
   );
+  assert.equal(activityStarts, 0, "structurally impossible remote session demand retained idle-sleep activity");
+}
+
+async function testRemoteSessionActivityLifetime() {
+  let starts = 0;
+  let ends = 0;
+  const guard = { beginActivity() { starts += 1; }, endActivity() { ends += 1; } };
+  const manager = new ProcessSessionManager({
+    workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
+    resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {}, remoteActivityGuard: guard,
+  });
+  const remoteContext = { origin: "relay", authority: { origin: "relay" } };
+  try {
+    const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 150)"] }, remoteContext);
+    assert.deepEqual({ starts, ends }, { starts: 1, ends: 0 },
+      "remote process session did not retain activity after its start handler settled");
+    const exited = await manager.read({ session_id: started.session_id, wait_ms: 2_000, wait_for_exit: true }, remoteContext);
+    assert.equal(exited.running, false, "remote process-session activity fixture did not settle");
+    assert.deepEqual({ starts, ends }, { starts: 1, ends: 1 },
+      "remote process session did not release activity when its child settled");
+    const local = await manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] });
+    await manager.read({ session_id: local.session_id, wait_ms: 2_000, wait_for_exit: true });
+    assert.deepEqual({ starts, ends }, { starts: 1, ends: 1 }, "local process session changed remote idle-sleep activity state");
+  } finally {
+    await manager.clearAndWait();
+  }
+
+  const failing = new ProcessSessionManager({
+    workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
+    resourceCoordinator: { acquire: async () => ({ async bindProcess() {}, async release() {} }) },
+    resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {}, remoteActivityGuard: guard,
+    spawnProcess() { throw new Error("synthetic spawn failure"); },
+  });
+  await assert.rejects(() => failing.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, remoteContext), /synthetic spawn failure/);
+  assert.deepEqual({ starts, ends }, { starts: 2, ends: 2 }, "remote process-session spawn failure leaked its activity hold");
 }
 
 function testOutputStreamOffsets() {
@@ -556,7 +621,7 @@ async function testSessionAuthorityRevocation() {
       id: failedKillId,
       child: { pid: 99_999_998 },
       closedAt: null,
-      lastActivity: Date.now(),
+      lastActivityMonotonic: performance.now(),
       waiters: new Set(),
       owner_kind: "local",
     });

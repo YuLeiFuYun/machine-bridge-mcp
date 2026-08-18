@@ -1,9 +1,6 @@
-import {
-  DAEMON_HELLO_TIMEOUT_MS,
-  daemonLivenessDeadlineMs,
-  daemonReadyDeadlineMs,
-} from "./daemon-liveness.ts";
-import type { DaemonSocketRegistry } from "./daemon-sockets.ts";
+import { DAEMON_HELLO_TIMEOUT_MS, daemonLivenessDeadlineMs, daemonReadyDeadlineMs } from "./daemon-liveness.ts";
+import type { DaemonChannel } from "./daemon-channel.ts";
+import type { DaemonRegistry } from "./daemon-registry.ts";
 import type { PendingCallRegistry } from "./pending-calls.ts";
 import { writeEarliestRuntimeAlarm, type AlarmStorage } from "./runtime-alarm-storage.ts";
 
@@ -16,8 +13,9 @@ type InvalidateDaemonSocket = (
 interface RuntimeAlarmContext {
   storage: AlarmStorage;
   pending: PendingCallRegistry;
-  daemonRegistry: DaemonSocketRegistry;
+  daemonRegistry: DaemonRegistry;
   invalidateDaemonSocket: InvalidateDaemonSocket;
+  invalidateDaemonChannel: (channel: DaemonChannel, message: string, errorCode?: string) => Promise<void>;
   onScheduleError: (error: unknown) => void;
   onAlarmMutation?: (action: "set" | "delete" | "noop") => void;
 }
@@ -61,6 +59,13 @@ export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Da
       continue;
     }
     nextDeadline = Math.min(nextDeadline, deadline);
+  }
+  if (context.daemonRegistry.http) {
+    context.daemonRegistry.httpCandidates(now);
+    for (const channel of context.daemonRegistry.http.staleOwned(now)) {
+      await context.invalidateDaemonChannel(channel, "HTTPS fallback became unresponsive", "daemon_liveness_timeout");
+    }
+    nextDeadline = Math.min(nextDeadline, context.daemonRegistry.http.nextDeadline(now));
   }
   nextDeadline = Math.min(nextDeadline, pendingAlarmDeadline(context, now));
   await writeEarliestRuntimeAlarm({
@@ -110,6 +115,10 @@ export async function scheduleRuntimeAlarm(context: RuntimeAlarmContext, now = D
       }
       nextDeadline = Math.min(nextDeadline, deadline);
     }
+    if (context.daemonRegistry.http) {
+      context.daemonRegistry.httpCandidates(now);
+      nextDeadline = Math.min(nextDeadline, context.daemonRegistry.http.nextDeadline(now));
+    }
     const currentAlarm = await context.storage.getAlarm();
     nextDeadline = Math.min(nextDeadline, pendingAlarmDeadline(context, now));
     await writeEarliestRuntimeAlarm({
@@ -121,7 +130,6 @@ export async function scheduleRuntimeAlarm(context: RuntimeAlarmContext, now = D
     catch { /* The error observer must not recursively fail the Durable Object alarm callback. */ }
   }
 }
-
 function pendingAlarmDeadline(context: RuntimeAlarmContext, now: number): number {
   const delay = context.pending.nextDeadlineDelayMs();
   return Number.isFinite(delay) ? now + Math.max(1, Math.ceil(delay)) : Number.POSITIVE_INFINITY;

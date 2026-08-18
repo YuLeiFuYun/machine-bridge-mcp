@@ -40,7 +40,7 @@ function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
     timeout.maximum = REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS;
     timeout.default = REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS;
     schema.required = [...new Set([...(schema.required || []), "idempotency_key"])];
-    definition.description = `${String(definition.description)} Remote calls require an idempotency_key known to the caller before dispatch, then commit as one-step durable jobs before execution; timeout_seconds controls the detached step rather than the MCP response lifetime. Reuse the same key after an ambiguous acceptance response to recover the same job, and use the returned job_id with read_job after successful acceptance.`;
+    definition.description = `${String(definition.description)} Remote calls require an idempotency_key known to the caller before dispatch, then commit as one-step durable jobs before execution; timeout_seconds controls child execution after resource admission rather than the MCP response lifetime. The managed runner may wait up to ${relayContract.maximumManagedJobResourceAdmissionWaitMs / 60_000} minutes pre-spawn for cooperative resource admission; read_job reports current_phase=resource_admission while no child has started. Reuse the same key after an ambiguous acceptance response to recover the same job, and use the returned job_id with read_job after successful acceptance.`;
     return definition;
   }
   if (!isConfigurableForegroundTool(definition.name)) return definition;

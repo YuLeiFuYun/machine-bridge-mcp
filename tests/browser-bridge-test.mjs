@@ -55,7 +55,8 @@ try {
   assert(initial.broker_role === "owner", "first browser bridge did not become owner");
   assert(initial.runtime_clients === 0 && initial.routed_requests === 0, "browser status omitted read-only broker load diagnostics");
   assert(initial.connected === false, "browser bridge unexpectedly reported an extension");
-  assert(initial.semantic_snapshot_refs === true && initial.actionability_waits === true && initial.trusted_input === true, "browser status omitted production interaction capabilities");
+  assert(initial.semantic_snapshot_refs === true && initial.actionability_waits === true, "browser status omitted production interaction capabilities");
+  assert(initial.trusted_input === false && initial.trusted_input_health === "disconnected", "browser status advertised trusted input without a connected extension");
   assert(initial.tab_management === true && initial.explicit_waits === true, "browser status omitted tab or wait capabilities");
   const disconnectedClientStatus = await client.status();
   assert(disconnectedClientStatus.broker_role === "client" && disconnectedClientStatus.connected === false, "broker client incorrectly reported an extension before pairing");
@@ -192,7 +193,11 @@ try {
   assert(health.expected_extension_id === EXPECTED_EXTENSION_ID && health.extension_id === EXPECTED_EXTENSION_ID, "browser health endpoint omitted the pinned extension identity");
   assert(health.controls_extension_profile === true && health.machine_bridge_launches_browser === false, "browser health endpoint omitted the extension-profile execution model");
   assert(health.profile_identity_verifiable === false, "browser health endpoint falsely claimed it can identify the daily browser profile");
-  extension.send(JSON.stringify({ type: "ping" }));
+  const extensionPong = onceMessage(extension);
+  extension.send(JSON.stringify({ type: "ping", seq: 17 }));
+  const pongMessage = JSON.parse(Buffer.from(await extensionPong).toString("utf8"));
+  assert(pongMessage.type === "pong" && pongMessage.seq === 17,
+    "browser broker did not prove extension-path liveness with the matching pong sequence");
 
   const tabs = await owner.listTabs({});
   assert(tabs.tabs[0].id === 7, "owner browser request was not routed to the extension");
@@ -275,6 +280,7 @@ try {
   const clientStatus = await client.status();
   assert(clientStatus.broker_role === "client" && clientStatus.connected === true, "second runtime did not join the machine-level browser broker");
   assert(clientStatus.extension_protocol === 3 && clientStatus.extension_capabilities.includes("trusted_input"), "broker client lost extension capability metadata");
+  assert(clientStatus.trusted_input === true && clientStatus.trusted_input_quarantined === false, "broker client did not expose healthy trusted input after pairing");
   const proxiedTabs = await client.listTabs({});
   assert(proxiedTabs.tabs[0].title === "Example", "broker client request was not proxied to the extension");
 
@@ -709,7 +715,9 @@ function attachExtensionResponder(socket) {
       return;
     }
     if (handshakeStage === "broker-ack") {
-      assert(message.type === "hello_ack" && message.role === "extension" && message.protocol === 3, "broker extension acknowledgement was invalid");
+      assert(message.type === "hello_ack" && message.role === "extension" && message.protocol === 3
+        && message.pong_watchdog === true,
+      "broker extension acknowledgement omitted the negotiated pong watchdog");
       handshakeStage = "ready";
       clearTimeout(timer);
       resolveReady();

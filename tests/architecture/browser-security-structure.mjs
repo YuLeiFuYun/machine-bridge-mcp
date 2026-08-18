@@ -72,6 +72,7 @@ const appAutomationSource = readFileSync(join(root, "src", "local", "app-automat
 const appAutomationJxaSource = readFileSync(join(root, "src", "local", "app-automation-macos-jxa.mjs"), "utf8");
 const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+const workerReadyMessagesSource = readFileSync(join(root, "src", "worker", "daemon-ready-messages.ts"), "utf8");
 const workerWebSocketProtocolSource = readFileSync(join(root, "src", "worker", "websocket-protocol.ts"), "utf8");
 const workerObservabilitySource = readFileSync(join(root, "src", "worker", "observability.ts"), "utf8");
 const workerOAuthControllerSource = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
@@ -204,9 +205,10 @@ for (const required of [
 ]) {
   if (!workerObservabilitySource.includes(required)) throw new Error(`Worker terminal-result observability lost disposition: ${required}`);
 }
-if (!workerSource.includes("this.pending.resultOwnership(body.id, ws)")
-    || !workerSource.includes('ownership === "missing"')
-    || !workerSource.includes('ownership === "missing" ? "owner_missing_acknowledged" : "stale_connection_rejected"')) {
+if (!workerSource.includes('from "./daemon-ready-messages.ts"')
+    || !workerReadyMessagesSource.includes("pending.resultOwnership(body.id, channel)")
+    || !workerReadyMessagesSource.includes('ownership === "missing"')
+    || !workerReadyMessagesSource.includes('ownership === "missing" ? "owner_missing_acknowledged" : "stale_connection_rejected"')) {
   throw new Error("Worker result handling no longer separates acknowledged owner-missing late results from rejected stale connections");
 }
 

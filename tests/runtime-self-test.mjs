@@ -6,9 +6,10 @@ import { policyProfile } from "../src/local/policy.mjs";
 import { delegatedProcessIsolationStatus } from "../src/local/delegated-process-sandbox.mjs";
 import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_GRACE_MS } from "../src/local/process-tree.mjs";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
+import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 
 const SUCCESS_PROCESS_TIMEOUT_SECONDS = 30;
-const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000;
+const SELF_TEST_RESOURCE_WAIT_MS = 10_000;
 const RUNTIME_GIT_FIXTURE_TIMEOUT_MS = 30_000;
 // Detached runner startup is OS-scheduled and can exceed ten seconds on loaded shared CI hosts.
 // This is a harness settlement budget, not a production execution or acceptance SLA.
@@ -43,6 +44,7 @@ export async function runtimeSelfTest() {
     logger,
     processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
     resourceCoordinatorRoot,
+    resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
     jobRoot: join(jobState, "restricted"),
     securityStateRoot: join(jobState, "security-state"),
   });
@@ -56,6 +58,7 @@ export async function runtimeSelfTest() {
     logger,
     processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
     resourceCoordinatorRoot,
+    resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
     jobRoot: join(jobState, "unrestricted"),
   });
   const unrestrictedVisible = new LocalRuntime({
@@ -68,6 +71,7 @@ export async function runtimeSelfTest() {
     logger,
     processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
     resourceCoordinatorRoot,
+    resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
     jobRoot: join(jobState, "unrestricted-visible"),
   });
   const fullAuthority = new LocalRuntime({
@@ -79,6 +83,7 @@ export async function runtimeSelfTest() {
     logger,
     processResourceWaitMs: SELF_TEST_RESOURCE_WAIT_MS,
     resourceCoordinatorRoot,
+    resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
     jobRoot: join(jobState, "full-authority"),
     resources: { "owner-secret": { kind: "file", path: protectedResource } },
     securityStateRoot: join(jobState, "full-authority-control"),
@@ -545,7 +550,10 @@ export async function runtimeSelfTest() {
     const status = await restricted.gitStatus({ path: "nested-repo" });
     if (status.code !== 0 || !status.stdout.includes("tracked.txt")) throw new Error("nested git status detection failed");
 
-    const command = await restricted.execCommand("node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"", SUCCESS_PROCESS_TIMEOUT_SECONDS);
+    const command = await restricted.execCommand({
+      command: "node -e \"process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || 'unset')\"",
+      timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS,
+    });
     if (command.stdout !== "unset") throw new Error("exec_command inherited unallowlisted environment variables");
     const fullServerInfo = restricted.serverInfo({ detail: "full" });
     const compactServerInfo = restricted.serverInfo({ detail: "summary" });
@@ -585,10 +593,10 @@ export async function runtimeSelfTest() {
     }
     const isolatedHome = await restricted.runDirectProcess({ argv: [process.execPath, "-e", "process.stdout.write(process.env.HOME || '')"], timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS });
     if (!isolatedHome.stdout.includes("machine-bridge-mcp-") || isolatedHome.stdout === process.env.HOME) throw new Error("minimal command environment did not isolate HOME");
-    await expectReject(() => restricted.execCommand(`printf '${"x".repeat(MAX_COMMAND_BYTES)}'`, 5), "maximum size");
-    await expectReject(() => restricted.execCommand("printf 'x\0y'", 5), "NUL byte");
+    await expectReject(() => restricted.execCommand({ command: `printf '${"x".repeat(MAX_COMMAND_BYTES)}'`, timeout_seconds: 5 }), "maximum size");
+    await expectReject(() => restricted.execCommand({ command: "printf 'x\0y'", timeout_seconds: 5 }), "NUL byte");
     if (process.platform !== "win32") {
-      await expectReject(() => restricted.execCommand("sleep 5", 1), "command timed out");
+      await expectReject(() => restricted.execCommand({ command: "sleep 5", timeout_seconds: 1 }), "command timed out");
       await waitForProcessTrackerIdle(restricted, PROCESS_TREE_ESCALATION_WAIT_MS);
       const trackedBeforeInterruption = restricted.processTracker.snapshot().active_processes;
       const interrupted = restricted.runProcess("sleep", ["30"], 60_000)
@@ -601,7 +609,7 @@ export async function runtimeSelfTest() {
 
       const descendantPidFile = join(workspace, "timeout-descendant.pid");
       const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
-      await expectReject(() => restricted.execCommand(descendantCommand, 1), "command timed out");
+      await expectReject(() => restricted.execCommand({ command: descendantCommand, timeout_seconds: 1 }), "command timed out");
       const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
       if (!await waitForProcessExit(descendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
         try { process.kill(descendantPid, "SIGKILL"); } catch {}

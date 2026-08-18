@@ -5,6 +5,7 @@ import { availableParallelism, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ResourceAdmissionError, ResourceCoordinator, ResourceLease } from "../src/local/resource-admission.mjs";
+import { resourceAdmissionDiagnostic } from "../src/local/resource-admission-diagnostics.mjs";
 import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } from "../src/local/resource-admission-policy.mjs";
 import { applyResourceProfileEnv, resourceCommandEffectiveCwd, resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
 import { freshResourceHostSnapshot } from "../src/local/resource-host-cache.mjs";
@@ -32,7 +33,7 @@ import { releaseControlWorkspaceForCommand, releaseControlWorkspaceMatches } fro
 import { RESOURCE_STAGING_BUSY_CODE } from "../src/local/resource-staging-recovery.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
-import { createResourceWaiter, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
+import { createResourceWaiter, resourceWaiterDrainActive, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
 
 const GIB = 1024 ** 3;
 let hostSampleReads = 0;
@@ -861,6 +862,34 @@ const refreshedHost = await freshResourceHostSnapshot({
 });
 assert.equal(quickRefreshes, 1, "stale quick CPU evidence survived beyond the 500ms recovery window");
 assert.equal(refreshedHost.cpu_busy_cores, 1, "stale CPU pressure was returned after the quick-host freshness window");
+const cachedIoHost = {
+  ...cachedHost,
+  io_sampled: true,
+  io_sampled_at_ms: 1_000,
+  disk_mb_per_s: 77,
+  disk_iops: 770,
+};
+const refreshedCpuWithIoHint = await freshResourceHostSnapshot({
+  cached: cachedIoHost, current: 1_600, cwd: "/tmp", request: { resource_class: "adaptive" }, scope: cacheScope,
+  sampleHost: async (options) => {
+    assert.equal(options.quick, true);
+    return { ...green, sampled_at_ms: 1_600, cpu_busy_cores: 2, io_sampled: false, disk_mb_per_s: null, disk_iops: null };
+  },
+});
+assert.equal(refreshedCpuWithIoHint.cpu_busy_cores, 2, "quick CPU refresh did not publish current CPU evidence");
+assert.equal(refreshedCpuWithIoHint.disk_mb_per_s, 77, "non-I/O refresh discarded a valid scope-local I/O hint");
+assert.equal(refreshedCpuWithIoHint.disk_iops, 770, "non-I/O refresh discarded cached scope-local IOPS");
+assert.equal(refreshedCpuWithIoHint.io_sampled, true, "cached I/O hint lost its sampled marker during quick CPU refresh");
+const refreshedIoWithinFreshWindow = await freshResourceHostSnapshot({
+  cached: cachedIoHost, current: 1_700, cwd: "/tmp", request: { resource_class: "io" }, scope: cacheScope,
+  sampleHost: async (options) => {
+    assert.equal(options.quick, true);
+    return { ...green, sampled_at_ms: 1_700, cpu_busy_cores: 3, io_sampled: false, disk_mb_per_s: null, disk_iops: null };
+  },
+});
+assert.equal(refreshedIoWithinFreshWindow.cpu_busy_cores, 3, "fresh-I/O fast path did not refresh CPU evidence");
+assert.equal(refreshedIoWithinFreshWindow.disk_mb_per_s, 77, "fresh-I/O fast path reprobed or discarded cached throughput");
+assert.equal(refreshedIoWithinFreshWindow.disk_iops, 770, "fresh-I/O fast path reprobed or discarded cached IOPS");
 let crossScopeOptions = null;
 const crossScopeCached = { ...cachedHost, io_sampled: true, io_sampled_at_ms: 1_000, disk_mb_per_s: 999, disk_iops: 9999 };
 const crossScopeHost = await freshResourceHostSnapshot({
@@ -1047,16 +1076,32 @@ const blockingLease = [{
 const youngLarge = waiter("interactive", fairnessNow - 30_000, cargo, "young-large");
 const fittingSmall = waiter("background", fairnessNow - 1_000, resourceCommandProfile("pytest", ["-q"], { priority: "background" }), "small");
 assert.equal(selectedResourceWaiter([youngLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow).waiter_id, "small", "young blocked waiter disabled work-conserving backfill");
+assert.equal(resourceWaiterDrainActive([youngLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow), false,
+  "young blocked waiter incorrectly reported an active fairness drain");
 const protectedLarge = waiter("interactive", fairnessNow - 121_000, cargo, "protected-large");
 assert.equal(resourceWaiterProtected(protectedLarge, fairnessNow), true);
 const protectedQueue = resourceWaiterQueueSnapshot([protectedLarge, fittingSmall], fairnessNow);
 assert.equal(protectedQueue.protected, 1, "queue diagnostics lost protected-waiter count");
 assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow), null, "starved feasible waiter did not reserve a drain window");
+assert.equal(resourceWaiterDrainActive([protectedLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow), true,
+  "active protected fairness drain was not exposed to diagnostics");
+const fairnessDiagnostic = await resourceAdmissionDiagnostic(async () => ({
+  healthy: true, pressure: { state: "green" }, active_leases: 1,
+  waiters: { active: 2, protected: 1, drain_active: true },
+}), () => "synthetic_error");
+assert.deepEqual(fairnessDiagnostic.check, {
+  layer: "local-resource-admission", ok: true, pressure_state: "green",
+  active_leases: 1, active_waiters: 2, fairness_drain_active: true,
+}, "resource admission diagnostic did not preserve the privacy-safe fairness drain projection");
 const locallyBusyHost = { ...quietHost, cpu_busy_cores: 4.5 };
 assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], blockingLease, locallyBusyHost, evaluateResourceAdmission, fairnessNow), null, "local CPU already visible in host metrics defeated starvation drain");
 assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], [], quietHost, evaluateResourceAdmission, fairnessNow).waiter_id, "protected-large", "protected waiter was not selected after capacity drained");
+assert.equal(resourceWaiterDrainActive([protectedLarge, fittingSmall], [], quietHost, evaluateResourceAdmission, fairnessNow), false,
+  "fairness drain remained active after blocking reservations disappeared");
 const impossibleOld = waiter("interactive", fairnessNow - 10 * 60_000, { ...cargo, cpu: 20, unbounded: false }, "impossible-old");
 assert.equal(selectedResourceWaiter([impossibleOld, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow).waiter_id, "small", "structurally impossible waiter incorrectly drained the queue");
+assert.equal(resourceWaiterDrainActive([impossibleOld, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow), false,
+  "structurally impossible waiter was misreported as a fairness drain");
 const impossibleLaunchWindow = waiter("interactive", fairnessNow - 10 * 60_000, explicitPytestEight, "impossible-launch-window");
 assert.equal(
   selectedResourceWaiter([impossibleLaunchWindow, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow).waiter_id,
@@ -1324,6 +1369,7 @@ try {
   let snapshot = await coordinator.snapshot({ cwd: root });
   assert.equal(snapshot.active_leases, 1);
   assert.equal(snapshot.resources.cpu, 3);
+  assert.equal(snapshot.waiters.drain_active, false, "resource snapshot reported a fairness drain without an aged protected waiter");
   await lease.bindProcess({ pid: process.pid }, { processGroupIsolated: false });
   const files = await import("node:fs").then((fs) => fs.readdirSync(join(root, "leases")));
   const persisted = JSON.parse(readFileSync(join(root, "leases", files[0]), "utf8"));

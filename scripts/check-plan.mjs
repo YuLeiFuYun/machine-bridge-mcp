@@ -67,6 +67,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "lifecycle:test",
   "logging-structure:test",
   "worker-runtime-infrastructure:test",
+  "relay-http-fallback:test",
   "mcp-protocol:test",
   "mcp-controller:test",
   "mcp-response-proxy:test",

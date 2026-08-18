@@ -8,11 +8,10 @@ import {
   requiredString, requiredStringAllowEmpty, requiredSurface, requiredTargetRef, shouldIncludePostScreenshot,
   validateActionDispatchArguments, validateDragTargets, validateObserveArgs, validateSurfaceActionArgs,
 } from "./computer-use-arguments.mjs";
-import {
-  applicationStateActionTargetSupported, applicationVerificationTarget, normalizeExpectation,
-  validateApplicationStateActionTarget, validateExpectationPrerequisites,
-} from "./computer-use-expectation.mjs";
+import { applicationStateActionTargetSupported, applicationVerificationTarget, normalizeExpectation, validateApplicationStateActionTarget, validateExpectationPrerequisites } from "./computer-use-expectation.mjs";
 import { ComputerUseSnapshotStore } from "./computer-use-snapshot-store.mjs";
+import { computerActPostObservationTimeoutError, computerActRemainingTimeoutSeconds, computerActVerificationTimeoutProbe, publicPostObservationError, requiredComputerActRemainingTimeoutSeconds, requiredComputerObserveRemainingTimeoutSeconds } from "./computer-use-deadline.mjs";
+import { settleComputerUseDispatch } from "./computer-use-dispatch-settlement.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation } from "./computer-use-observation.mjs";
 import { buildRetryGuidance } from "./computer-use-recovery.mjs";
@@ -74,6 +73,8 @@ export class ComputerUseManager {
 
     const action = surface === "browser" ? normalizeBrowserAction(args.action) : normalizeApplicationAction(args.action);
     validateSurfaceActionArgs(surface, action, args);
+    const actionTimeoutSeconds = clampInt(args.timeout_seconds, 30, 1, 60);
+    const actionDeadline = createMonotonicDeadline(actionTimeoutSeconds * 1000, this.now);
     const target = this.resolveTarget(snapshot.observation, snapshot.privateState, surface, action, args.target);
     const destination = action === "drag"
       ? this.resolveTarget(snapshot.observation, snapshot.privateState, surface, action, args.destination)
@@ -85,35 +86,34 @@ export class ComputerUseManager {
     const postScreenshotPolicy = normalizePostScreenshotPolicy(args, surface);
     validateExpectationPrerequisites(expectation, snapshot.observation, postScreenshotPolicy);
     const postObservationDetail = normalizePostObservationDetail(args.post_observation_detail, surface);
-    await this.preflight(snapshot.observation, snapshot.privateState, surface, action, target, context);
-    if (destination) await this.preflight(snapshot.observation, snapshot.privateState, surface, action, destination, context);
+    await this.preflight(snapshot.observation, snapshot.privateState, surface, action, target, context, actionDeadline);
+    if (destination) await this.preflight(snapshot.observation, snapshot.privateState, surface, action, destination, context, actionDeadline);
+    const dispatchTimeoutSeconds = requiredComputerActRemainingTimeoutSeconds(actionDeadline, actionTimeoutSeconds);
     this.snapshots.claim(snapshotId, snapshot);
 
-    let dispatchStatus = "completed";
-    let dispatchResult = null;
-    let dispatchError = "";
-    try {
-      dispatchResult = surface === "browser"
-        ? await this.dispatchBrowser(snapshot.observation, snapshot.privateState, action, target, args, context, destination)
-        : await this.dispatchApplication(snapshot.observation, snapshot.privateState, action, target, args, context, destination);
-    } catch (error) {
-      if (!isUnknownOutcomeError(error)) throw error;
-      dispatchStatus = "unknown";
-      dispatchError = publicUnknownOutcomeError(surface, error);
-    }
+    const dispatchArgs = { ...args, timeout_seconds: dispatchTimeoutSeconds };
+    const { dispatchStatus, dispatchResult, dispatchError } = await settleComputerUseDispatch(surface, async () => (
+      surface === "browser"
+        ? await this.dispatchBrowser(snapshot.observation, snapshot.privateState, action, target, dispatchArgs, context, destination)
+        : await this.dispatchApplication(snapshot.observation, snapshot.privateState, action, target, dispatchArgs, context, destination)
+    ));
 
     let verificationProbe = { requested: Boolean(expectation), matched: false, reason: expectation ? "not_checked" : "not_requested" };
     if (surface === "browser" && expectation) {
-      verificationProbe = await this.verifyBrowserExpectation(
-        snapshot.observation,
-        target,
-        expectation,
-        verifyTimeoutSeconds,
-        context,
-      );
+      const browserVerifyTimeoutSeconds = computerActRemainingTimeoutSeconds(actionDeadline, verifyTimeoutSeconds);
+      verificationProbe = browserVerifyTimeoutSeconds > 0
+        ? await this.verifyBrowserExpectation(
+          snapshot.observation,
+          target,
+          expectation,
+          browserVerifyTimeoutSeconds,
+          context,
+        )
+        : computerActVerificationTimeoutProbe();
     }
 
     const includePostScreenshot = shouldIncludePostScreenshot(postScreenshotPolicy, { surface, target, expectation, dispatchStatus });
+    const initialPostCaptureTimeoutSeconds = computerActRemainingTimeoutSeconds(actionDeadline, actionTimeoutSeconds);
     const applicationPostArgs = surface === "application" ? {
       surface,
       application: snapshot.observation.target.application,
@@ -123,42 +123,54 @@ export class ComputerUseManager {
       include_values: false,
       include_menus: args.include_menus === true,
       focus_query: applicationPostFocusQuery(target),
-      timeout_seconds: clampInt(args.timeout_seconds, 30, 1, 60),
+      timeout_seconds: Math.max(1, initialPostCaptureTimeoutSeconds),
     } : null;
     let postCapture = null;
     let postCaptureError = "";
     let observedDiff = null;
     if (surface === "application" && expectation) {
-      const verified = await this.verifyApplicationPostAction({
-        beforeObservation: snapshot.observation,
-        beforePrivateState: snapshot.privateState,
-        target,
-        expectation,
-        args,
-        dispatchResult,
-        captureArgs: applicationPostArgs,
-        timeoutSeconds: verifyTimeoutSeconds,
-      }, context);
-      postCapture = verified.postCapture;
-      postCaptureError = verified.postCaptureError;
-      observedDiff = verified.observedDiff;
-      verificationProbe = verified.verificationProbe;
+      const applicationVerifyTimeoutSeconds = computerActRemainingTimeoutSeconds(actionDeadline, verifyTimeoutSeconds);
+      if (applicationVerifyTimeoutSeconds > 0) {
+        const verified = await this.verifyApplicationPostAction({
+          beforeObservation: snapshot.observation,
+          beforePrivateState: snapshot.privateState,
+          target,
+          expectation,
+          args,
+          dispatchResult,
+          captureArgs: applicationPostArgs,
+          timeoutSeconds: applicationVerifyTimeoutSeconds,
+          operationDeadline: actionDeadline,
+        }, context);
+        postCapture = verified.postCapture;
+        postCaptureError = verified.postCaptureError;
+        observedDiff = verified.observedDiff;
+        verificationProbe = verified.verificationProbe;
+      } else {
+        verificationProbe = computerActVerificationTimeoutProbe();
+        postCaptureError = computerActPostObservationTimeoutError(surface);
+      }
     } else {
-      try {
-        postCapture = await this.capture(surface === "browser" ? {
-          surface,
-          tab_id: snapshot.observation.target.tab_id,
-          include_screenshot: includePostScreenshot,
-          max_elements: clampInt(args.post_max_elements, 180, 1, 1000),
-          max_ax_nodes: clampInt(args.post_max_ax_nodes, 180, 1, 2000),
-          max_frames: 16,
-          ax_depth: 10,
-          include_values: false,
-          focus_query: browserPostFocusQuery(target),
-          timeout_seconds: clampInt(args.timeout_seconds, 30, 1, 60),
-        } : applicationPostArgs, context);
-      } catch (error) {
-        postCaptureError = publicPostObservationError(surface, error);
+      const postCaptureTimeoutSeconds = computerActRemainingTimeoutSeconds(actionDeadline, actionTimeoutSeconds);
+      if (postCaptureTimeoutSeconds > 0) {
+        try {
+          postCapture = await this.capture(surface === "browser" ? {
+            surface,
+            tab_id: snapshot.observation.target.tab_id,
+            include_screenshot: includePostScreenshot,
+            max_elements: clampInt(args.post_max_elements, 180, 1, 1000),
+            max_ax_nodes: clampInt(args.post_max_ax_nodes, 180, 1, 2000),
+            max_frames: 16,
+            ax_depth: 10,
+            include_values: false,
+            focus_query: browserPostFocusQuery(target),
+            timeout_seconds: postCaptureTimeoutSeconds,
+          } : { ...applicationPostArgs, timeout_seconds: postCaptureTimeoutSeconds }, context, surface === "application" ? actionDeadline : null);
+        } catch (error) {
+          postCaptureError = publicPostObservationError(surface, error);
+        }
+      } else {
+        postCaptureError = computerActPostObservationTimeoutError(surface);
       }
       observedDiff = postCapture
         ? observationDiff(snapshot.observation, postCapture.observation, snapshot.privateState, postCapture.privateState)
@@ -229,11 +241,41 @@ export class ComputerUseManager {
     });
   }
 
-  async capture(args, context) {
+  async capture(args, context, operationDeadline = null) {
     const surface = requiredSurface(args.surface);
     validateObserveArgs(surface, args);
     if (surface === "browser") return this.captureBrowser(args, context);
-    return this.captureApplication(args, context);
+    return this.captureApplication(args, context, operationDeadline);
+  }
+
+  async captureApplicationScreenshot({ application, screenshotRequested, timeoutSeconds, captureDeadline }, context) {
+    let screenshot = null;
+    let screenshotError = "";
+    if (screenshotRequested && typeof this.applications.captureApplication === "function") {
+      try {
+        screenshot = await this.applications.captureApplication({
+          application,
+          timeout_seconds: requiredComputerObserveRemainingTimeoutSeconds(captureDeadline, timeoutSeconds),
+        }, context);
+      } catch (error) {
+        screenshotError = applicationScreenshotError(error);
+      }
+    }
+    const screenshotPayload = screenshot?.screenshot;
+    const screenshotBytes = screenshotPayload?.mime_type === "image/png" ? applicationScreenshotBytes(screenshotPayload?.data) : null;
+    const image = screenshotBytes ? { type: "image", data: screenshotPayload.data, mimeType: "image/png" } : null;
+    const screenshotSource = image && typeof screenshotPayload?.source === "string" ? screenshotPayload.source : image ? "unknown" : "none";
+    const screenshotSha256 = screenshotBytes ? createHash("sha256").update(screenshotBytes).digest("hex") : "";
+    return {
+      screenshot,
+      screenshotError,
+      image,
+      screenshotSource,
+      screenshotSha256,
+      windowBinding: applicationWindowBinding(screenshot, screenshotSha256),
+      screenshotProcessId: optionalPrivateApplicationProcessId(screenshot?._machine_process_id),
+      screenshotProcessGeneration: optionalPrivateApplicationProcessGeneration(screenshot?._machine_process_generation),
+    };
   }
 
   async captureBrowser(args, context) {
@@ -255,7 +297,7 @@ export class ComputerUseManager {
     return { observation, privateState, imageContent };
   }
 
-  async captureApplication(args, context) {
+  async captureApplication(args, context, operationDeadline = null) {
     const application = requiredString(args.application, "application", 300);
     const maxElements = clampInt(args.max_elements, 200, 1, 500);
     const maxDepth = clampInt(args.max_depth, 6, 1, 12);
@@ -263,28 +305,12 @@ export class ComputerUseManager {
     const includeMenus = optionalBoolean(args.include_menus, "include_menus", false);
     const focusQuery = optionalApplicationFocusQuery(args.focus_query);
     const timeoutSeconds = clampInt(args.timeout_seconds, 30, 1, 60);
+    const captureDeadline = operationDeadline || createMonotonicDeadline(timeoutSeconds * 1000, this.now);
     const screenshotRequested = optionalBoolean(args.include_screenshot, "include_screenshot", true);
-    let screenshot = null;
-    let screenshotError = "";
-    if (screenshotRequested && typeof this.applications.captureApplication === "function") {
-      try {
-        screenshot = await this.applications.captureApplication({
-          application,
-          timeout_seconds: timeoutSeconds,
-        }, context);
-      } catch (error) {
-        screenshotError = applicationScreenshotError(error);
-      }
-    }
-    const screenshotPayload = screenshot?.screenshot;
-    const screenshotBytes = screenshotPayload?.mime_type === "image/png"
-      ? applicationScreenshotBytes(screenshotPayload?.data) : null;
-    const image = screenshotBytes ? { type: "image", data: screenshotPayload.data, mimeType: "image/png" } : null;
-    const screenshotSource = image && typeof screenshotPayload?.source === "string" ? screenshotPayload.source : image ? "unknown" : "none";
-    const screenshotSha256 = screenshotBytes ? createHash("sha256").update(screenshotBytes).digest("hex") : "";
-    const windowBinding = applicationWindowBinding(screenshot, screenshotSha256);
-    const screenshotProcessId = optionalPrivateApplicationProcessId(screenshot?._machine_process_id);
-    const screenshotProcessGeneration = optionalPrivateApplicationProcessGeneration(screenshot?._machine_process_generation);
+    const {
+      screenshotError, image, screenshotSource, screenshotSha256, windowBinding,
+      screenshotProcessId, screenshotProcessGeneration,
+    } = await this.captureApplicationScreenshot({ application, screenshotRequested, timeoutSeconds, captureDeadline }, context);
     const inspected = await this.applications.inspectApplication({
       application,
       include_process_id: true,
@@ -296,7 +322,7 @@ export class ComputerUseManager {
       include_menus: includeMenus,
       include_geometry: true,
       include_window_state: Boolean(windowBinding),
-      timeout_seconds: timeoutSeconds,
+      timeout_seconds: requiredComputerObserveRemainingTimeoutSeconds(captureDeadline, timeoutSeconds),
     }, context);
     validateApplicationInspectionEvidence(inspected);
     const applicationProcessId = requiredPrivateApplicationProcessId(inspected?._machine_process_id);
@@ -314,6 +340,7 @@ export class ComputerUseManager {
       applicationProcessId,
       applicationProcessGeneration,
       timeoutSeconds,
+      captureDeadline,
       context,
     });
     const visualPointCapability = typeof this.applications.visualPointCapability === "function"
@@ -399,7 +426,7 @@ export class ComputerUseManager {
   }
 
   async revalidateApplicationWindow({
-    application, windowBinding, inspected, applicationProcessId, applicationProcessGeneration, timeoutSeconds, context,
+    application, windowBinding, inspected, applicationProcessId, applicationProcessGeneration, timeoutSeconds, captureDeadline, context,
   }) {
     if (!windowBinding) return { windowCoherent: null, windowRevalidationError: "" };
     if (inspected?._machine_window_state_checked === true) {
@@ -417,12 +444,13 @@ export class ComputerUseManager {
     if (typeof this.applications.inspectApplicationWindow !== "function") {
       return { windowCoherent: null, windowRevalidationError: "" };
     }
+    const revalidationTimeoutSeconds = requiredComputerObserveRemainingTimeoutSeconds(captureDeadline, timeoutSeconds);
     try {
       const currentWindow = await this.applications.inspectApplicationWindow({
         application,
         expected_process_id: applicationProcessId,
         expected_process_generation: applicationProcessGeneration,
-        timeout_seconds: timeoutSeconds,
+        timeout_seconds: revalidationTimeoutSeconds,
       }, context);
       return { windowCoherent: sameApplicationWindowIdentity(windowBinding, currentWindow), windowRevalidationError: "" };
     } catch (error) {
@@ -484,15 +512,19 @@ export class ComputerUseManager {
     };
   }
 
-  async preflight(observation, privateState, surface, action, target, context) {
-    if (surface === "browser") return this.preflightBrowser(observation, privateState, action, target, context);
+  async preflight(observation, privateState, surface, action, target, context, actionDeadline = null) {
+    if (surface === "browser") {
+      return this.preflightBrowser(observation, privateState, action, target, context, actionDeadline);
+    }
 
     const expectedProcessId = requiredPrivateApplicationProcessId(privateState?.application_process_id);
     const expectedProcessGeneration = requiredPrivateApplicationProcessGeneration(privateState?.application_process_generation);
     if (action === "activate") return;
     if (target?.kind === "point") {
       if (target.semantic_delivery) {
-        await this.preflightApplicationSemanticPoint(observation, target, expectedProcessId, expectedProcessGeneration, context);
+        await this.preflightApplicationSemanticPoint(
+          observation, target, expectedProcessId, expectedProcessGeneration, context, actionDeadline,
+        );
         return;
       }
       const visualPointMethod = action === "drag"
@@ -518,7 +550,7 @@ export class ComputerUseManager {
         include_values: false,
         include_menus: inspection.include_menus,
         include_geometry: applicationTargetHasGeometry(target),
-        timeout_seconds: 10,
+        timeout_seconds: requiredComputerActRemainingTimeoutSeconds(actionDeadline, 10),
       }, context);
     } catch (error) {
       if (applicationProcessIdentityError(error)) {
@@ -543,8 +575,11 @@ export class ComputerUseManager {
     }
   }
 
-  async preflightBrowser(observation, privateState, action, target, context) {
-    const tabs = await this.browser.listTabs({ include_pinned: true, timeout_seconds: 5 }, context);
+  async preflightBrowser(observation, privateState, action, target, context, actionDeadline = null) {
+    const tabs = await this.browser.listTabs({
+      include_pinned: true,
+      timeout_seconds: requiredComputerActRemainingTimeoutSeconds(actionDeadline, 5),
+    }, context);
     const tab = (tabs.tabs || []).find((item) => item.id === observation.target.tab_id || item.tab_id === observation.target.tab_id);
     if (!tab) throw staleSnapshot("browser tab no longer exists");
     const tabUrl = typeof tab.url === "string" ? tab.url : "";
@@ -554,8 +589,12 @@ export class ComputerUseManager {
     let currentDocument = null;
     let documentStateError = null;
     if (semanticEpoch && typeof this.browser.documentState === "function") {
+      const documentStateTimeoutSeconds = requiredComputerActRemainingTimeoutSeconds(actionDeadline, 5);
       try {
-        currentDocument = await this.browser.documentState({ tab_id: observation.target.tab_id, timeout_seconds: 5 }, context);
+        currentDocument = await this.browser.documentState({
+          tab_id: observation.target.tab_id,
+          timeout_seconds: documentStateTimeoutSeconds,
+        }, context);
         if (currentDocument?.document_epoch !== undefined && currentDocument?.document_epoch !== null
             && (typeof currentDocument.document_epoch !== "string" || currentDocument.document_epoch !== semanticEpoch)) {
           throw staleSnapshot("browser document was replaced after the snapshot");
@@ -576,13 +615,14 @@ export class ComputerUseManager {
       }
       if (!sameVisualViewport(target.viewport, currentDocument.viewport)) throw staleSnapshot("browser viewport changed after the screenshot");
     } else if (target) {
+      const targetWaitTimeoutSeconds = requiredComputerActRemainingTimeoutSeconds(actionDeadline, 1);
       try {
         await this.browser.wait({
           tab_id: observation.target.tab_id,
           frame_id: target.frame_id,
           selector: { ref: target.ref },
           state: "attached",
-          timeout_seconds: 1,
+          timeout_seconds: targetWaitTimeoutSeconds,
         }, context);
       } catch {
         throw staleSnapshot("browser target ref is no longer attached");
@@ -590,19 +630,22 @@ export class ComputerUseManager {
     }
   }
 
-  async preflightApplicationSemanticPoint(observation, target, expectedProcessId, expectedProcessGeneration, context) {
+  async preflightApplicationSemanticPoint(
+    observation, target, expectedProcessId, expectedProcessGeneration, context, actionDeadline = null,
+  ) {
     if (typeof this.applications.captureApplication !== "function") {
       throw new BridgeError("unavailable", "cannot revalidate the application screenshot before semantic point delivery", {
         details: { reason: "application_visual_preflight_unavailable" },
       });
     }
+    const screenshotTimeoutSeconds = requiredComputerActRemainingTimeoutSeconds(actionDeadline, 10);
     let captured;
     try {
       captured = await this.applications.captureApplication({
         application: observation.target.application,
         expected_process_id: expectedProcessId,
         expected_process_generation: expectedProcessGeneration,
-        timeout_seconds: 10,
+        timeout_seconds: screenshotTimeoutSeconds,
       }, context);
     } catch (error) {
       if (applicationProcessIdentityError(error)) {
@@ -634,7 +677,7 @@ export class ComputerUseManager {
         include_values: false,
         include_menus: inspection.include_menus,
         include_geometry: applicationTargetHasGeometry(target),
-        timeout_seconds: 10,
+        timeout_seconds: requiredComputerActRemainingTimeoutSeconds(actionDeadline, 10),
       }, context);
     } catch (error) {
       if (applicationProcessIdentityError(error)) {
@@ -666,7 +709,7 @@ export class ComputerUseManager {
         application: observation.target.application,
         expected_process_id: expectedProcessId,
         expected_process_generation: expectedProcessGeneration,
-        timeout_seconds: 10,
+        timeout_seconds: requiredComputerActRemainingTimeoutSeconds(actionDeadline, 10),
       }, context).catch(() => null);
       if (!sameApplicationWindowIdentity(target.window_binding, currentWindow)) {
         throw staleSnapshot("application window changed during semantic point preflight");
@@ -1062,6 +1105,7 @@ export class ComputerUseManager {
     dispatchResult,
     captureArgs,
     timeoutSeconds,
+    operationDeadline = null,
   }, context) {
     const deadline = createMonotonicDeadline(timeoutSeconds * 1000, this.now);
     const retainedHandle = typeof dispatchResult?._machine_value_verification_handle === "string"
@@ -1087,11 +1131,20 @@ export class ComputerUseManager {
         let captured = null;
         let captureError = "";
         const configuredCaptureTimeoutSeconds = clampInt(captureArgs.timeout_seconds, 30, 1, 60);
-        const captureTimeoutSeconds = captureAttempts === 0
-          ? configuredCaptureTimeoutSeconds
-          : Math.max(1, Math.min(configuredCaptureTimeoutSeconds, Math.ceil(remainingBeforeCaptureMs / 1000)));
+        const operationTimeoutSeconds = computerActRemainingTimeoutSeconds(operationDeadline, configuredCaptureTimeoutSeconds);
+        const captureTimeoutSeconds = Math.min(
+          Math.max(1, Math.min(configuredCaptureTimeoutSeconds, Math.ceil(remainingBeforeCaptureMs / 1000))),
+          operationTimeoutSeconds,
+        );
+        if (operationTimeoutSeconds <= 0) {
+          if (!postCapture) {
+            postCaptureError = computerActPostObservationTimeoutError("application");
+            verificationProbe = computerActVerificationTimeoutProbe();
+          }
+          break;
+        }
         captureAttempts += 1;
-        try { captured = await this.capture({ ...captureArgs, timeout_seconds: captureTimeoutSeconds }, context); }
+        try { captured = await this.capture({ ...captureArgs, timeout_seconds: captureTimeoutSeconds }, context, operationDeadline); }
         catch (error) {
           captureError = publicPostObservationError("application", error);
           if (errorCode(error) === "cancelled") {
@@ -1109,13 +1162,15 @@ export class ComputerUseManager {
           let valueProbe = null;
           if (expectation.target_value_matches !== undefined) {
             const remainingValueVerificationMs = deadline.remainingMs();
+            const operationValueTimeoutSeconds = computerActRemainingTimeoutSeconds(operationDeadline, 60);
+            const valueTimeoutSeconds = Math.min(Math.max(1, Math.ceil(remainingValueVerificationMs / 1000)), operationValueTimeoutSeconds);
             valueProbe = processChanged
               ? { available: false, matched: false, reason: "application_process_changed" }
-              : remainingValueVerificationMs <= 0
+              : remainingValueVerificationMs <= 0 || operationValueTimeoutSeconds <= 0
                 ? { available: false, matched: false, reason: "verification_deadline_elapsed" }
                 : await this.verifyApplicationValueExpectation(
                     captured, target, args, dispatchResult, context,
-                    Math.max(1, Math.ceil(remainingValueVerificationMs / 1000)),
+                    valueTimeoutSeconds,
                   );
           }
           verificationProbe = verifyApplicationExpectation(
@@ -1135,7 +1190,10 @@ export class ComputerUseManager {
         } else {
           postCaptureError = captureError;
         }
-        const remainingMs = deadline.remainingMs();
+        const remainingMs = Math.min(
+          deadline.remainingMs(),
+          operationDeadline?.remainingMs?.() ?? Number.POSITIVE_INFINITY,
+        );
         if (remainingMs <= 0 || captureAttempts >= APPLICATION_VERIFY_MAX_CAPTURES) {
           if (postCaptureError) verificationProbe = { ...verificationProbe, matched: false, inconclusive: true, reason: "post_conditions_inconclusive" };
           break;
@@ -1763,41 +1821,6 @@ function sanitizeDispatchPoint(point) {
     return { css_x: point.x, css_y: point.y };
   }
   return null;
-}
-
-const UNKNOWN_MUTATION_ERROR_PREFIXES = Object.freeze([
-  "browser mutation request may have been dispatched;",
-  "browser mutation may have completed;",
-  "browser action may have been dispatched;",
-  "trusted browser input may have been partially dispatched;",
-  "browser tab mutation may have been dispatched;",
-  "browser screenshot temporary tab activation may have been dispatched;",
-  "browser screenshot restoration may have been dispatched;",
-  "application visual input may have been partially dispatched;",
-  "application launch may have been partially dispatched;",
-  "application accessibility mutation may have been partially dispatched;",
-  "application activation may have been partially dispatched;",
-  "application checked-state input may have been partially dispatched;",
-  "application accessibility input may have been partially dispatched;",
-  "application value input may have been partially dispatched;",
-  "application keystroke may have been partially dispatched;",
-  "application key_press may have been partially dispatched;",
-]);
-
-function isUnknownOutcomeError(error) {
-  const message = String(error?.message || error || "").toLowerCase();
-  return UNKNOWN_MUTATION_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix));
-}
-
-function publicUnknownOutcomeError(surface, error) {
-  const normalizedSurface = surface === "application" ? "application" : "browser";
-  const inspection = normalizedSurface === "application" ? "Inspect the application" : "Inspect browser state";
-  return `${normalizedSurface} mutation may have been dispatched; the outcome is unknown. ${inspection} before retrying. (error_class=${errorCode(error)})`;
-}
-
-function publicPostObservationError(surface, error) {
-  const normalizedSurface = surface === "application" ? "application" : "browser";
-  return `${normalizedSurface} post observation unavailable (error_class=${errorCode(error)})`;
 }
 
 function staleSnapshot(detail) {

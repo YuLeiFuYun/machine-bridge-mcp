@@ -1,47 +1,21 @@
 import { Buffer } from "node:buffer";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
-import { RelayConnection } from "./relay-connection.mjs";
-import { relayHandshakeDiagnostics } from "./relay-peer-diagnostics.mjs";
-import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
-import { MCP_SUPPORTED_PROTOCOL_VERSIONS, SERVER_NAME } from "./tools.mjs";
+import { ResilientRelayConnection } from "./resilient-relay-connection.mjs";
+import { createDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
+import { SERVER_NAME } from "./tools.mjs";
 import { normalizeAccountRole } from "./account-access.mjs";
 import { isPlainRecord } from "./records.mjs";
-export const MAX_RELAY_MESSAGE_BYTES = 8 * 1024 * 1024;
+import { MAX_RELAY_MESSAGE_BYTES, runtimeRelayConnectionOptions } from "./runtime-relay-connection-options.mjs";
+export { MAX_RELAY_MESSAGE_BYTES } from "./runtime-relay-connection-options.mjs";
 const RELAY_CALL_ID = /^call_[A-Za-z0-9_-]{8,240}$/; const RELAY_TOOL_NAME = /^[a-z][a-z0-9_]{0,127}$/;
 export function createRuntimeRelayConnection(runtime, { workerUrl, deviceIdentity, expectedVersion, onFatal }) {
   if (!workerUrl || !deviceIdentity) return null;
   const sessionIdentity = deviceIdentity?.certificate ? validateDeviceSessionIdentity(deviceIdentity)
     : createDeviceSessionIdentity(deviceIdentity, workerUrl, SERVER_NAME, String(expectedVersion || ""));
-  return new RelayConnection({
-    workerUrl,
-    logger: runtime.logger,
-    maxPayload: MAX_RELAY_MESSAGE_BYTES,
-    expectedServer: SERVER_NAME,
-    expectedVersion: String(expectedVersion || ""),
-    connectionHeaders: () => createDaemonPreflightHeaders(
-      sessionIdentity, workerUrl, SERVER_NAME, String(expectedVersion || ""),
-    ),
-    helloMessage: async (welcome, relayStatus) => ({
-      type: "hello",
-      instance_id: runtime.relayInstanceId,
-      tools: runtime.tools(),
-      policy: runtime.policy,
-      protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
-      relay_diagnostics: relayHandshakeDiagnostics(relayStatus),
-      authentication: await createDaemonAuthentication(sessionIdentity, welcome, runtime.relayInstanceId),
-    }),
+  return new ResilientRelayConnection(runtimeRelayConnectionOptions(runtime, {
+    workerUrl, sessionIdentity, expectedVersion, onFatal,
     onMessage: (data, relayContext) => handleRelayData(runtime, data, relayContext),
-    onDisconnect: () => runtime.handleRelayDisconnect(),
-    onReady: () => runtime.handleRelayReady(),
-    onSuperseded: async () => {
-      await runtime.stop();
-      await runtime.onSuperseded?.();
-    },
-    onFatal: async (error) => {
-      await runtime.stop();
-      await onFatal?.(error);
-    },
-  });
+  }));
 }
 
 export function normalizeRelayResumeCalls(message) {

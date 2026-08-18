@@ -39,6 +39,7 @@ export async function resourceAdmissionDiagnostic(snapshotFunction, classifyErro
         pressure_state: snapshot?.pressure?.state || "unknown",
         active_leases: Number(snapshot?.active_leases) || 0,
         active_waiters: Number(snapshot?.waiters?.active) || 0,
+        fairness_drain_active: snapshot?.waiters?.drain_active === true,
       },
     };
   } catch (error) {

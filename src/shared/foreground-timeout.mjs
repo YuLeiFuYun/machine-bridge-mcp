@@ -12,6 +12,11 @@ const REMOTE_DURABLE_PROCESS_TOOLS = new Set([
   "exec_command", "run_process", "run_local_command",
 ]);
 
+const REMOTE_FOREGROUND_DEFAULT_SECONDS_BY_TOOL = new Map([
+  ["computer_observe", 30],
+  ["computer_act", 30],
+]);
+
 export const REMOTE_FOREGROUND_TIMEOUT_SECONDS = Math.floor(
   relayContract.maximumInteractiveExecutionTimeoutMs / 1000,
 );
@@ -38,11 +43,13 @@ export function isConfigurableForegroundTool(name) {
 }
 
 export function remoteForegroundDefaultSeconds(name) {
-  if (CONFIGURABLE_FOREGROUND_TOOLS.has(name)) return 20;
+  if (CONFIGURABLE_FOREGROUND_TOOLS.has(name)) {
+    return REMOTE_FOREGROUND_DEFAULT_SECONDS_BY_TOOL.get(name) ?? 20;
+  }
   return Math.min(60, remoteForegroundMaximumSeconds(name));
 }
 
-export function remoteForegroundMaximumSeconds() {
+export function remoteForegroundMaximumSeconds(_name) {
   return REMOTE_FOREGROUND_TIMEOUT_SECONDS;
 }
 

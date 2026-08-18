@@ -24,6 +24,8 @@ export class ToolExecutor {
     this.observability = options.observability;
     this.securityAudit = options.securityAudit || null;
     this.logger = options.logger || console;
+    this.onAuthorizedRelayActivityStart = typeof options.onAuthorizedRelayActivityStart === "function" ? options.onAuthorizedRelayActivityStart : null;
+    this.onAuthorizedRelayActivityEnd = typeof options.onAuthorizedRelayActivityEnd === "function" ? options.onAuthorizedRelayActivityEnd : null;
     this.safeMessage = typeof options.safeMessage === "function" ? options.safeMessage : (error) => String(error?.message || error || "operation failed");
     this.slowMs = Number.isFinite(Number(options.slowMs)) ? Math.max(1, Number(options.slowMs)) : 30_000;
     this.pipeline = composeMiddleware([
@@ -31,7 +33,7 @@ export class ToolExecutor {
       observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs),
       authorizeMiddleware(this.policyGate, this.accountAccessGate, this.operationAuthorizer, this.callRegistry),
       validateArgumentsMiddleware(),
-    ], invokeHandler(this.handlers));
+    ], invokeHandler(this.handlers, this.onAuthorizedRelayActivityStart, this.onAuthorizedRelayActivityEnd));
   }
 
   execute(tool, args = {}, request = {}) {
@@ -153,12 +155,19 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
   };
 }
 
-function invokeHandler(handlers) {
+function invokeHandler(handlers, onAuthorizedRelayActivityStart, onAuthorizedRelayActivityEnd) {
   return async (operation) => {
     const handler = handlers[operation.tool];
     if (typeof handler !== "function") throw new Error(`runtime handler is missing for tool: ${operation.tool}`);
-    return handler(operation.args, operation.context);
+    const relayActivity = operation.context.origin === "relay";
+    if (relayActivity) bestEffortActivityHook(onAuthorizedRelayActivityStart);
+    try { return await handler(operation.args, operation.context); }
+    finally { if (relayActivity) bestEffortActivityHook(onAuthorizedRelayActivityEnd); }
   };
+}
+
+function bestEffortActivityHook(callback) {
+  try { callback?.(); } catch { /* Auxiliary power-management hooks must not change tool settlement. */ }
 }
 
 
