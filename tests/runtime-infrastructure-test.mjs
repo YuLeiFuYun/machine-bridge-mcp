@@ -153,8 +153,12 @@ function testRemoteActivityIdleSleepGuard() {
     setTimer() { failureTimers += 1; throw new Error("timer should not be armed"); },
     logger: { event(level, name, fields, message) { failureEvents.push({ level, name, fields, message }); } },
   });
-  assert(unavailable.beginActivity() === false && unavailable.beginActivity() === false
-    && unavailable.endActivity() === false && unavailable.endActivity() === false && failureTimers === 0,
+  const firstUnavailableBegin = unavailable.beginActivity();
+  const repeatedUnavailableBegin = unavailable.beginActivity();
+  const firstUnavailableEnd = unavailable.endActivity();
+  const repeatedUnavailableEnd = unavailable.endActivity();
+  assert(firstUnavailableBegin === false && repeatedUnavailableBegin === false
+    && firstUnavailableEnd === false && repeatedUnavailableEnd === false && failureTimers === 0,
   "failed idle-sleep process setup armed timers or escaped as a tool-call failure");
   assert(failureEvents.length === 1 && failureEvents[0].level === "warn"
     && failureEvents[0].name === "runtime.idle_sleep_guard.unavailable"
