@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { FAST_CHECK_TASKS, FULL_CHECK_TASKS, PLATFORM_CHECK_TASKS } from "../../scripts/check-plan.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const readLfSource = (...segments) => readFileSync(join(root, ...segments), "utf8").replace(/\r\n/g, "\n");
 const relayContract = JSON.parse(readFileSync(join(root, "src", "shared", "relay-contract.json"), "utf8"));
 const cliSource = readFileSync(join(root, "src", "local", "cli.mjs"), "utf8");
 if (/not found\|does not exist\|could not find/i.test(cliSource) || !cliSource.includes("if (result.code === 0)")) {
@@ -156,7 +157,7 @@ if (packageJson.scripts?.["worker-oauth-controller:test"] !== "node tests/worker
 if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
 if (packageJson.scripts?.["cli-service:test"] !== "node tests/cli-service-test.mjs") throw new Error("CLI service adapter regression test is missing");
 if (packageJson.scripts?.["service-restart:test"] !== "node tests/service-restart-handoff-test.mjs") throw new Error("service restart/status boundary regression test is missing");
-const stateSource = readFileSync(join(root, "src", "local", "state.mjs"), "utf8");
+const stateSource = readLfSource("src", "local", "state.mjs");
 const daemonProcessSource = readFileSync(join(root, "src", "local", "daemon-process.mjs"), "utf8");
 const stateInventorySource = readFileSync(join(root, "src", "local", "state-inventory.mjs"), "utf8");
 const stateOwnerLockInventorySource = readFileSync(join(root, "src", "local", "state-owner-lock-inventory.mjs"), "utf8");
@@ -209,7 +210,7 @@ for (const required of ["runtime-boundaries:test", "worker-oauth-controller:test
 for (const required of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
   if (!PLATFORM_CHECK_TASKS.includes(required)) throw new Error(`platform check plan omits required task: ${required}`);
 }
-const localSelfTestSource = readFileSync(join(root, "tests", "local-self-test.mjs"), "utf8");
+const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
 for (const required of ["mbm-resource-cli-coordinator-", "mbm-resource-cli-build-", "resourceCliEnv", "previousResourceRoot", "previousBuildRoot", "delete process.env.AGENT_RESOURCE_COORDINATOR_ROOT", "delete process.env.AGENT_BUILD_ROOT"]) {
   if (!localSelfTestSource.includes(required)) throw new Error(`local resource CLI self-test lost isolated resource roots or environment restoration: ${required}`);
 }
@@ -1254,7 +1255,7 @@ const expectedCodeql = new Set([
 if (acceptedCodeql.size !== expectedCodeql.size || [...expectedCodeql].some((item) => !acceptedCodeql.has(item))) {
   throw new Error("CodeQL exception inventory contains an unreviewed or missing exact finding");
 }
-const processExecutionSource = readFileSync(join(root, "src", "local", "process-execution.mjs"), "utf8");
+const processExecutionSource = readLfSource("src", "local", "process-execution.mjs");
 const shellSource = readFileSync(join(root, "src", "local", "shell.mjs"), "utf8");
 if (!processExecutionSource.includes('import { spawn } from "node:child_process";')
     || !processExecutionSource.includes("function spawnDirectProcess")
