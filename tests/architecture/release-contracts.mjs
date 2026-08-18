@@ -456,7 +456,7 @@ if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
     || macosIdleSleepAssertionSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
     || !remoteActivityIdleSleepGuardSource.includes('from "./macos-idle-sleep-assertion.mjs"')
     || remoteActivityIdleSleepGuardSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
-    || !remoteActivityIdleSleepGuardSource.includes('DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS = 5 * 60_000')
+    || !remoteActivityIdleSleepGuardSource.includes('DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS = 30 * 60_000')
     || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities += 1;')
     || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities > 0 || !this.assertion.snapshot().active')
     || !runtimeSource.includes('onAuthorizedRelayActivityStart: () => this.remoteActivityIdleSleepGuard.beginActivity()')
@@ -1470,9 +1470,9 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "`diagnose_runtime.runtime.idle_sleep_guard`"],
   ["docs/TESTING.md", testingDoc, "distinct from production ownership"],
   ["docs/TESTING.md", testingDoc, "full execution lifetime"],
-  ["docs/ARCHITECTURE.md", architecture, "fixed five-minute inactivity grace begins only after the last handler settles"],
+  ["docs/ARCHITECTURE.md", architecture, "fixed thirty-minute inactivity grace begins only after the last handler settles"],
   ["docs/ARCHITECTURE.md", architecture, "Remote account managed-job runners do not depend on daemon ownership"],
-  ["docs/OPERATIONS.md", operationsDoc, "the five-minute default inactivity grace begins only after the last one settles"],
+  ["docs/OPERATIONS.md", operationsDoc, "the thirty-minute default inactivity grace begins only after the last one settles"],
   ["docs/OPERATIONS.md", operationsDoc, "A remote `start_process` extends the same assertion only after resource admission succeeds"],
   ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold `/usr/bin/caffeinate -i -w <runner-pid>`"],
   ["docs/LOGGING.md", loggingDoc, "classify ten seconds without inbound transport proof as `relay_transport_timeout`"],

@@ -1,6 +1,6 @@
 import { MacosIdleSleepAssertion } from "./macos-idle-sleep-assertion.mjs";
 
-export const DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS = 5 * 60_000;
+export const DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS = 30 * 60_000;
 
 export class RemoteActivityIdleSleepGuard {
   constructor({ platform = process.platform, daemonPid = process.pid, graceMs = DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS,
