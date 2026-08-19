@@ -38,7 +38,12 @@ export function classifyRelayTransportError(error) {
   if (directStatus === 401 || directStatus === 403) return "authentication_failed";
   const match = /^Unexpected server response: (\d{3})$/.exec(String(error?.message || ""));
   if (match && [401, 403].includes(Number(match[1]))) return "authentication_failed";
-  return classifyOperationalError(error);
+  const direct = classifyOperationalError(error);
+  if (direct !== "execution_failed") return direct;
+  const nested = Array.isArray(error?.errors) ? error.errors.map(classifyOperationalError) : [];
+  if (nested.includes("network_error")) return "network_error";
+  if (nested.includes("timeout")) return "timeout";
+  return direct;
 }
 
 export function relayHttpStatusFromError(error) {
@@ -83,9 +88,13 @@ export function tracedTlsConnection(onStage = () => {}) {
     }
     onStage("tcp_connecting");
     const socket = tlsConnect(connectOptions);
-    socket.once("lookup", () => onStage("dns_resolved"));
+    socket.once("lookup", (error) => observeTlsLookup(onStage, error));
     socket.once("connect", () => onStage("tcp_connected"));
     socket.once("secureConnect", () => onStage("tls_established"));
     return socket;
   };
+}
+
+export function observeTlsLookup(onStage, error) {
+  if (!error) onStage("dns_resolved");
 }

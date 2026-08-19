@@ -18,6 +18,8 @@ const instanceId = `daemon_${"a".repeat(24)}`;
 const issuedAt = 1_800_000_000;
 const rootIdentity = createDeviceIdentity();
 const sessionIdentity = createDeviceSessionIdentity(rootIdentity, workerOrigin, server, version, issuedAt * 1000);
+const historicalIssuedAt = 1_700_000_000;
+const historicalSessionIdentity = createDeviceSessionIdentity(rootIdentity, workerOrigin, server, version, historicalIssuedAt * 1000);
 
 class MemoryStorage {
   constructor(initial = {}) { this.values = new Map(Object.entries(structuredClone(initial))); }
@@ -27,6 +29,13 @@ class MemoryStorage {
 
 assert(validateDeviceIdentity(rootIdentity) === rootIdentity, "generated root device identity did not validate");
 assert(validateDeviceSessionIdentity(sessionIdentity, issuedAt * 1000) === sessionIdentity, "generated session device identity did not validate");
+assert(validateDeviceSessionIdentity(historicalSessionIdentity, historicalIssuedAt * 1000) === historicalSessionIdentity,
+  "synthetic historical device-session creation ignored its explicit clock during finalization");
+const historicalPreflightHeaders = new Headers(createDaemonPreflightHeaders(
+  historicalSessionIdentity, workerOrigin, server, version, historicalIssuedAt * 1000,
+));
+assert(historicalPreflightHeaders.get("X-Bridge-Device-Certificate"),
+  "synthetic historical preflight switched back to real wall time while encoding the session certificate");
 assert(rootIdentity.keyId === deviceKeyId(rootIdentity.publicJwk), "root device key id was not deterministic");
 assert(sessionIdentity.keyId === deviceKeyId(sessionIdentity.publicJwk), "session device key id was not deterministic");
 assert(rootIdentity.keyId !== sessionIdentity.keyId, "session identity reused the long-term root key");
@@ -107,6 +116,10 @@ const otherRoot = createDeviceIdentity();
 assert(!await verifyDaemonPreflight({ publicKeyJson: publicDeviceJwkJson(otherRoot), headers: preflightHeaders, workerOrigin, server, version, now: issuedAt }), "session certificate was accepted under another enrolled root");
 assert(!await verifyDaemonPreflight({ publicKeyJson: rootPublicJson, headers: preflightHeaders, workerOrigin, server, version: "3.0.1", now: issuedAt }), "session certificate was reusable for another package version");
 assert(!await verifyDaemonPreflight({ publicKeyJson: rootPublicJson, headers: preflightHeaders, workerOrigin, server, version, now: issuedAt + 24 * 60 * 60 + 1 }), "expired device session certificate was accepted");
+let localExpiryError = null;
+try { validateDeviceSessionIdentity(sessionIdentity, (issuedAt + 24 * 60 * 60 + 1) * 1000); } catch (error) { localExpiryError = error; }
+assert(localExpiryError?.code === "device_session_expired",
+  "expired local device session did not expose the stable supervised-restart error code");
 
 const challenge = createDaemonChallenge(workerOrigin, issuedAt);
 const sanitizedAttachment = sanitizeDaemonChallengeAttachment({

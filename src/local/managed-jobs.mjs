@@ -5,13 +5,14 @@ import { assertStateMaintenanceAvailable } from "./state.mjs";
 import { ensureOwnerOnlyDir, inspectPathIfPresentSync } from "./secure-file.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError } from "./errors.mjs";
-import { assertOwnedByContext, principalBinding, visibleToContext } from "./authority-context.mjs";
+import { assertOwnedByContext, principalBinding } from "./authority-context.mjs";
 import { recordMatchesAuthorityRevocation } from "../shared/authority-revocation.mjs";
 import { startDurableProcessJob } from "./managed-job-durable-process.mjs";
 import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./managed-job-plan.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
-import { clampInteger } from "./numbers.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock, acquireRecoveryLock } from "./managed-job-lock.mjs";
+import { hostedManagedJobStatus } from "./managed-job-hosted-status.mjs";
+import { listManagedJobs } from "./managed-job-listing.mjs";
 import { projectManagedJobResult, publicStatus, reviewablePlan } from "./managed-job-projection.mjs";
 import { atomicWriteJson, readBoundedFile, readJson, readRequiredJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
@@ -246,31 +247,11 @@ export class ManagedJobManager {
     this.authorizeTool("list_jobs");
     this.assertMaintenanceAvailable();
     this.prune();
-    const limit = clampInteger(args.limit, 20, 1, MAX_JOBS);
-    const jobs = [];
-    for (const entry of safeReadDir(this.jobRoot)) {
-      if (!MANAGED_JOB_ID.test(entry.name)) continue;
-      if (!entry.isDirectory()) {
-        this.logger.warn?.("managed job entry has the wrong type; retaining it for inspection", { error_class: "integrity_error" });
-        if (context?.authority?.owner !== false) jobs.push({ job_id: entry.name, name: "unavailable", status: "unreadable", error_class: "integrity_error" });
-        continue;
-      }
-      const dir = join(this.jobRoot, entry.name);
-      try {
-        this.reconcileStatus(dir);
-        const status = readJson(join(dir, "status.json"), 256 * 1024, "job status");
-        if (!status || !visibleToContext(status, context)) continue;
-        assertManagedJobDirectoryIdentity(dir, status);
-        assertKnownManagedJobStatus(status);
-        jobs.push(publicStatus(status));
-      } catch (error) {
-        this.logger.warn?.("managed job status is unreadable; retaining it for inspection", { error_class: resourceErrorClass(error) });
-        if (context?.authority?.owner !== false) jobs.push({ job_id: entry.name, name: "unavailable", status: "unreadable", error_class: resourceErrorClass(error) });
-      }
-    }
-    jobs.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-    const ownerCapacity = context?.authority?.owner !== false ? { capacity: managedJobCapacitySnapshot(this.jobRoot) } : {};
-    return { jobs: jobs.slice(0, limit), retained: jobs.length, maximum: MAX_JOBS, ...ownerCapacity };
+    return listManagedJobs({
+      jobRoot: this.jobRoot, args, context, logger: this.logger,
+      reconcileStatus: (dir) => this.reconcileStatus(dir),
+      assertKnownStatus: (dir, status) => { assertManagedJobDirectoryIdentity(dir, status); assertKnownManagedJobStatus(status); },
+    });
   }
 
   read(args = {}, context = {}) {
@@ -297,6 +278,7 @@ export class ManagedJobManager {
       : status;
     return {
       ...publicStatus(projectedStatus),
+      ...hostedManagedJobStatus(projectedStatus, context),
       ...(result ? { result: projectManagedJobResult(result, { includeResourceAdmissionTiming: context?.authority?.owner !== false }) } : {}),
     };
   }

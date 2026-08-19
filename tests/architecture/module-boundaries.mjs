@@ -231,12 +231,30 @@ const lineLimits = Object.freeze({
   "src/local/process-foreground-timeout.mjs": 60,
   "src/local/process-output-stream.mjs": 110,
   "src/local/process-result-projection.mjs": 60,
+  "src/local/managed-job-hosted-status.mjs": 40,
+  "src/local/managed-job-listing.mjs": 60,
+  "src/local/process-session-read.mjs": 70,
+  "src/local/process-session-remote-poll.mjs": 50,
+  "src/local/resource-admission-diagnostic-error.mjs": 35,
   "src/local/process-sessions.mjs": 340,
   "src/local/process-session-remote-activity.mjs": 20,
   "src/local/relay-connection.mjs": 680,
+  "src/local/relay-connect-timing.mjs": 70,
   "src/local/relay-connection-classification.mjs": 160,
   "src/local/relay-liveness.mjs": 110,
+  "src/local/relay-inbound-state.mjs": 50,
+  "src/local/relay-liveness-actions.mjs": 70,
+  "src/local/relay-transport-probe.mjs": 40,
+  "src/local/relay-transport-probe-send.mjs": 40,
+  "src/local/relay-transport-confirmation.mjs": 85,
+  "src/local/relay-transport-error-state.mjs": 60,
   "src/local/relay-heartbeat.mjs": 130,
+  "src/local/relay-heartbeat-transport-state.mjs": 40,
+  "src/local/relay-heartbeat-options.mjs": 40,
+  "src/local/relay-heartbeat-stall.mjs": 60,
+  "src/local/relay-probe-deadline.mjs": 50,
+  "src/local/relay-probe-dispatch.mjs": 60,
+  "src/local/relay-probe-dispatch-metrics.mjs": 35,
   "src/local/process-contract.mjs": 40,
   "src/local/process-tree.mjs": 70,
   "src/local/process-tree-signal.mjs": 50,
@@ -1339,6 +1357,14 @@ const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?private cleanu
 if (daemonWebSocketErrorBoundary.indexOf("const cleanup = this.cleanupDaemonSocket")
   > daemonWebSocketErrorBoundary.indexOf('daemon.websocket.error')) {
   throw new Error("daemon WebSocket error logging occurs before cleanup ownership is claimed");
+}
+const daemonWebSocketCloseBoundary = /async webSocketClose[\s\S]*?async webSocketError/.exec(workerIndexBoundary)?.[0] || "";
+if (!daemonWebSocketCloseBoundary.includes('daemon.websocket.closed')
+    || !daemonWebSocketCloseBoundary.includes("was_clean")
+    || !daemonWebSocketCloseBoundary.includes("close_code")
+    || daemonWebSocketCloseBoundary.includes("close_reason")
+    || daemonWebSocketCloseBoundary.includes("String(_reason")) {
+  throw new Error("daemon WebSocket close diagnostics lost bounded code/clean metadata or started logging close reasons");
 }
 const daemonHeartbeatBoundary = /if \(body\.type === "heartbeat"[\s\S]*?if \(socketAttachment\.role === "probing"\)/.exec(workerIndexBoundary)?.[0] || "";
 if (daemonHeartbeatBoundary.indexOf("trySendWebSocket") < 0

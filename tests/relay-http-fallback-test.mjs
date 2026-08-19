@@ -77,6 +77,50 @@ function testTransportSequences() {
     "single unsendable Worker fallback payload exceeded envelope limit without rejection");
 }
 
+async function testHttpFallbackFailureClassification() {
+  const connection = new DaemonHttpRelayConnection({ workerUrl: ORIGIN });
+  connection.handleFailure(Object.assign(new Error("timeout"), { code: "daemon_http_timeout" }));
+  assert.equal(connection.status().last_transport_error_class, "timeout",
+    "HTTPS fallback request timeout collapsed into a generic execution failure");
+  assert.equal(connection.status().last_transport_error_reason, "connection_timeout",
+    "HTTPS fallback timeout lost the privacy-safe transport reason");
+  await connection.handleResponse(200, JSON.stringify({ protocol: 1, phase: "standby", ack_daemon_seq: 0, messages: [] }));
+  assert.equal(connection.status().last_ready_at, null,
+    "successful standby probe was mislabeled as a verified HTTPS-fallback ready transition");
+  assert.equal(typeof connection.status().last_success_at, "string",
+    "successful HTTPS fallback response did not expose its distinct request-success timestamp");
+  assert.equal(connection.status().last_transport_error_class, "timeout");
+  assert.equal(connection.status().last_transport_error_reason, "connection_timeout");
+  assert.equal(connection.status().http_poll_failures, 0,
+    "successful HTTPS fallback response did not reset current failure count while retaining historical error evidence");
+  connection.handleFailure(Object.assign(new Error("unsupported"), { code: "daemon_http_unsupported" }));
+  assert.equal(connection.status().last_transport_error_class, "unavailable",
+    "unsupported HTTPS fallback collapsed into a generic execution failure");
+  connection.handleFailure(new AggregateError([
+    Object.assign(new Error("v6 timeout"), { code: "ETIMEDOUT" }),
+    Object.assign(new Error("v4 unreachable"), { code: "ENETUNREACH" }),
+  ]));
+  assert.equal(connection.status().last_transport_error_class, "network_error");
+  assert.equal(connection.status().last_transport_error_reason, "multi_address_failure",
+    "HTTPS fallback lost Happy Eyeballs aggregate network evidence");
+
+  const protocolFailure = new DaemonHttpRelayConnection({
+    workerUrl: ORIGIN, failureBackoffBaseMs: 10, failureBackoffMaximumMs: 40,
+  });
+  await protocolFailure.handleResponse(409, "");
+  assert.equal(protocolFailure.status().last_transport_error_class, "conflict",
+    "HTTPS fallback session conflict was not retained as bounded diagnostic evidence");
+  assert.equal(protocolFailure.status().http_poll_failures, 1);
+  assert.equal(protocolFailure.nextPollDelay(), 10,
+    "HTTPS fallback session conflict bypassed the first bounded retry backoff");
+  await protocolFailure.handleResponse(200, "not-json");
+  assert.equal(protocolFailure.status().last_transport_error_class, "protocol_error",
+    "malformed HTTPS fallback response was not classified as a protocol failure");
+  assert.equal(protocolFailure.status().http_poll_failures, 2);
+  assert.equal(protocolFailure.nextPollDelay(), 20,
+    "repeated fallback protocol/session failures bypassed exponential retry backoff");
+}
+
 async function testLocalLostResponseDoesNotReplayToolCall() {
   const root = createDeviceIdentity();
   const session = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, NOW);
@@ -154,6 +198,10 @@ async function testLocalLostResponseDoesNotReplayToolCall() {
   assert.equal(readyEvents, 0, "lost verified-ready response falsely completed local readiness");
   await runNext(scheduler); // retry same proof, Worker phase ready, receive tool_call seq 3
   assert.equal(readyEvents, 1, "HTTPS fallback did not reach ready after bidirectional verified-ready proof");
+  assert.equal(typeof connection.status().last_ready_at, "string",
+    "verified HTTPS fallback readiness did not publish its distinct ready timestamp");
+  assert.equal(typeof connection.status().last_success_at, "string",
+    "verified HTTPS fallback readiness lost the general successful-exchange timestamp");
   await runNext(scheduler); // duplicate tool_call seq 3
   assert.equal(toolCallExecutions, 1, "duplicate HTTP transport delivery replayed a tool_call side effect");
   for (let index = 1; index < requests.length; index += 1) {
@@ -195,6 +243,92 @@ async function testSessionResetDoesNotCommitPriorInboundSequence() {
   connection.stop();
 }
 
+async function testTakeoverPreemptsStandbyRequest() {
+  const root = createDeviceIdentity();
+  const session = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, NOW);
+  const scheduler = new ManualScheduler();
+  const requests = [];
+  let firstAborted = false;
+  const connectionId = `connection_${"q".repeat(43)}`;
+  const connection = new DaemonHttpRelayConnection({
+    workerUrl: ORIGIN, deviceIdentity: session, expectedServer: SERVER, expectedVersion: VERSION,
+    instanceId: "instance_takeover123456", scheduler, now: () => scheduler.now, wallNow: () => NOW + scheduler.now,
+    minimumRequestIntervalMs: 1, pollIntervalMs: 1000, requestTimeoutMs: 8000, livenessTimeoutMs: 12000,
+    descriptor: () => ({ tools: ["list_dir"], policy: { profile: "full" }, relayDiagnostics: {} }),
+    ownedCallIds: () => [],
+    postRequest: ({ body, signal }) => {
+      requests.push(JSON.parse(body));
+      if (requests.length > 1) return Promise.resolve(response({ protocol: 1, phase: "standby", ack_daemon_seq: 0, messages: [] }));
+      return new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          firstAborted = true;
+          reject(Object.assign(new Error("standby request superseded"), { code: "ECONNABORTED" }));
+        }, { once: true });
+      });
+    },
+  });
+  connection.start();
+  await runNext(scheduler);
+  assert.equal(requests.length, 1, "fallback prewarm fixture did not start its standby request");
+  connection.start({ takeoverWebSocket: true, takeoverWebSocketConnectionId: connectionId });
+  assert.equal(firstAborted, true, "takeover left an obsolete standby HTTP request occupying the fallback channel");
+  await runNext(scheduler);
+  assert.equal(requests.length, 2, "takeover did not dispatch immediately after aborting standby prewarm");
+  assert.equal(requests[1].takeover_websocket, true);
+  assert.equal(requests[1].takeover_websocket_connection_id, connectionId,
+    "takeover replacement request lost its exact WebSocket-generation binding");
+  connection.stop();
+}
+
+async function testStandbyAndFailureBackoff() {
+  const root = createDeviceIdentity();
+  const session = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, NOW);
+  const scheduler = new ManualScheduler();
+  const requests = [];
+  const takeoverConnectionId = `connection_${"b".repeat(43)}`;
+  const connection = new DaemonHttpRelayConnection({
+    workerUrl: ORIGIN, deviceIdentity: session, expectedServer: SERVER, expectedVersion: VERSION,
+    instanceId: "instance_backoff123456", scheduler, now: () => scheduler.now, wallNow: () => NOW + scheduler.now,
+    minimumRequestIntervalMs: 1, pollIntervalMs: 1000, standbyRetryIntervalMs: 50,
+    failureBackoffBaseMs: 10, failureBackoffMaximumMs: 40,
+    requestTimeoutMs: 8000, livenessTimeoutMs: 12000,
+    descriptor: () => ({ tools: ["list_dir"], policy: { profile: "full" }, relayDiagnostics: {} }),
+    ownedCallIds: () => [],
+    postRequest: async ({ body }) => {
+      requests.push({ at: scheduler.now, body: JSON.parse(body) });
+      if (requests.length === 1 || requests.length === 4 || requests.length >= 5) {
+        return response({ protocol: 1, phase: "standby", ack_daemon_seq: 0, messages: [] });
+      }
+      throw Object.assign(new Error("synthetic fast network failure"), { code: "ECONNRESET" });
+    },
+  });
+  connection.start();
+  await runNext(scheduler);
+  scheduler.advance(49); await flushAsync();
+  assert.equal(requests.length, 1, "successful standby prewarm still retried at the old sub-second cadence");
+  scheduler.advance(1); await flushAsync();
+  assert.equal(requests.length, 2);
+  scheduler.advance(9); await flushAsync();
+  assert.equal(requests.length, 2, "first fast fallback failure ignored its retry backoff");
+  scheduler.advance(1); await flushAsync();
+  assert.equal(requests.length, 3);
+  scheduler.advance(19); await flushAsync();
+  assert.equal(requests.length, 3, "second fast fallback failure ignored exponential retry backoff");
+  scheduler.advance(1); await flushAsync();
+  assert.equal(requests.length, 4);
+  assert.deepEqual(requests.map((request) => request.at), [0, 50, 60, 80],
+    "fallback standby/failure retries did not follow the bounded 50/10/20 millisecond fixture cadence");
+
+  connection.start({ takeoverWebSocket: true, takeoverWebSocketConnectionId: takeoverConnectionId });
+  await runNext(scheduler);
+  assert.equal(requests.length, 5, "exact-generation takeover did not preempt the longer standby retry timer");
+  assert.equal(requests[4].at, 81, "takeover preemption bypassed or exceeded the minimum request interval");
+  assert.equal(requests[4].body.takeover_websocket, true);
+  assert.equal(requests[4].body.takeover_websocket_connection_id, takeoverConnectionId,
+    "preempted fallback request lost its exact WebSocket-generation takeover binding");
+  connection.stop();
+}
+
 async function testPrimaryFallbackHandover() {
   const scheduler = new ManualScheduler();
   const ready = [];
@@ -222,13 +356,36 @@ async function testPrimaryFallbackHandover() {
   assert.equal(relay.send({ type: "one" }), true);
   assert.equal(ws.sent.length, 1, "ready WSS was not the preferred send path");
 
+  ws.emitDegraded();
+  scheduler.advance(0);
+  assert.equal(http.started, true, "WSS liveness suspicion did not prewarm the HTTPS fallback path");
+  assert.equal(relay.status().https_fallback_warming, true,
+    "fallback prewarm was not distinguishable from an inactive or ready fallback in diagnostics");
+  assert.equal(http.startOptions?.takeoverWebSocket, false,
+    "fallback prewarm prematurely took ownership away from a WSS still under confirmation");
+  ws.emitRecovered();
+  assert.equal(http.stopped, true, "recovered WSS left a standby HTTPS fallback polling indefinitely");
+  assert.equal(relay.status().https_fallback_warming, false,
+    "recovered WSS left stale fallback-warming diagnostics behind");
+
   ws.emitDisconnect();
   scheduler.advance(0);
   assert.equal(http.started, true, "HTTPS fallback did not start immediately after WSS loss");
   assert.equal(http.startOptions?.takeoverWebSocket, true,
     "established WSS loss did not authorize same-instance HTTPS takeover of a Worker-side zombie socket");
+  assert.equal(http.startOptions?.takeoverWebSocketConnectionId, `connection_${"a".repeat(43)}`,
+    "HTTPS fallback takeover was not bound to the disconnected WebSocket generation");
+  ws.lastErrorClass = "network_error"; ws.lastErrorReason = "network_unreachable";
+  ws.lastErrorReady = true; ws.lastErrorAuthenticated = true;
+  http.lastErrorClass = "timeout"; http.lastErrorReason = "connection_timeout";
+  http.lastErrorReady = false; http.lastErrorAuthenticated = true;
   http.emitReady();
   assert.equal(relay.status().transport, "https");
+  assert.equal(relay.status().last_transport_error_class, "timeout");
+  assert.equal(relay.status().last_transport_error_reason, "connection_timeout");
+  assert.equal(relay.status().last_transport_error_ready, false);
+  assert.equal(relay.status().last_transport_error_authenticated, true,
+    "active HTTPS projection mixed WSS error context with fallback error classification");
   assert.equal(relay.status().outage_active, false,
     "ready HTTPS fallback still reported the bridge as globally unavailable");
   assert.equal(relay.send({ type: "two" }), true);
@@ -255,6 +412,10 @@ function response(body) { return { statusCode: 200, body: JSON.stringify(body), 
 
 async function runNext(scheduler) {
   scheduler.runNext();
+  await flushAsync();
+}
+
+async function flushAsync() {
   await new Promise((resolve) => { setImmediate(resolve); });
 }
 
@@ -295,10 +456,17 @@ class FakeRelayBase {
   constructor(options) {
     this.options = options; this.started = false; this.stopped = false; this.ready = false; this.sent = []; this.sessionId = 7;
     this.startOptions = undefined;
+    this.lastErrorClass = null; this.lastErrorReason = "unknown"; this.lastErrorReady = false; this.lastErrorAuthenticated = false;
   }
-  start(options = {}) { this.started = true; this.startOptions = options; return new Promise(() => {}); }
+  start(options = {}) { this.started = true; this.stopped = false; this.startOptions = options; return new Promise(() => {}); }
   stop() { this.stopped = true; this.ready = false; }
-  status() { return { ready: this.ready, closed: !this.started || this.stopped, transport: this.kind }; }
+  status() { return {
+    ready: this.ready, closed: !this.started || this.stopped, transport: this.kind,
+    last_transport_error_class: this.lastErrorClass,
+    last_transport_error_reason: this.lastErrorReason,
+    last_transport_error_ready: this.lastErrorReady,
+    last_transport_error_authenticated: this.lastErrorAuthenticated,
+  }; }
   currentSessionId() { return this.ready ? this.sessionId : 0; }
   send(value) { if (!this.ready) return false; this.sent.push(value); return true; }
   sendForSession(value, sessionId) { return this.ready && sessionId === this.sessionId && this.send(value)
@@ -315,6 +483,9 @@ class FakeRelayBase {
 class FakeWebSocketRelay extends FakeRelayBase {
   static instances = [];
   constructor(options) { super(options); this.kind = "websocket"; FakeWebSocketRelay.instances.push(this); }
+  takeoverConnectionId() { return `connection_${"a".repeat(43)}`; }
+  emitDegraded() { this.options.onDegraded?.({ category: "relay_transport_timeout" }); }
+  emitRecovered() { this.options.onRecovered?.({ category: "relay_transport_timeout" }); }
 }
 class FakeHttpRelay extends FakeRelayBase {
   static instances = [];
@@ -323,7 +494,10 @@ class FakeHttpRelay extends FakeRelayBase {
 
 await testSignedHttpRelayAuthentication();
 testTransportSequences();
+await testHttpFallbackFailureClassification();
 await testLocalLostResponseDoesNotReplayToolCall();
 await testSessionResetDoesNotCommitPriorInboundSequence();
+await testTakeoverPreemptsStandbyRequest();
+await testStandbyAndFailureBackoff();
 await testPrimaryFallbackHandover();
 console.log("relay HTTP fallback reliability test ok");

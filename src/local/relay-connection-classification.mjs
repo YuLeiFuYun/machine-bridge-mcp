@@ -50,6 +50,9 @@ export function relayFatalMessage(category) {
   if (category === "relay_proxy_configuration") {
     return "remote relay proxy configuration is invalid; check HTTP_PROXY, HTTPS_PROXY, and NO_PROXY";
   }
+  if (category === "relay_device_session_expired") {
+    return "daemon device session expired; restart the daemon to obtain a fresh root-signed session certificate";
+  }
   return "remote relay rejected the daemon connection; verify credentials or redeploy the Worker";
 }
 
@@ -67,9 +70,11 @@ export function relayCloseUserCause(category) {
     relay_readiness_timeout: "end-to-end relay readiness verification timed out",
     relay_heartbeat_timeout: "relay stopped responding",
     relay_transport_timeout: "relay transport stopped responding",
+    relay_transport_send_timeout: "local relay transport send queue stopped making progress",
     relay_transport_error: "relay transport error",
     relay_protocol_error: "relay protocol error",
     relay_proxy_configuration: "relay proxy configuration invalid",
+    relay_device_session_expired: "daemon device session certificate expired",
     invalid_transport_payload: "invalid transport payload",
     message_too_large: "message exceeded the relay limit",
     normal_close: "connection closed",
@@ -85,7 +90,12 @@ export function welcomeMismatch(message, expectedServer = "", expectedVersion = 
   if (expectedServer && message.server !== expectedServer) return "server_identity_mismatch";
   if (expectedVersion && message.version !== expectedVersion) return "server_version_mismatch";
   if (typeof message.server !== "string" || !message.server || typeof message.version !== "string" || !message.version) return "incomplete_welcome";
+  if (!relayConnectionId(message.connection_id)) return "invalid_connection_identity";
   return "";
+}
+
+export function relayConnectionId(value) {
+  return typeof value === "string" && /^connection_[A-Za-z0-9_-]{43}$/.test(value) ? value : "";
 }
 
 export function acknowledgementMismatch(message, expectedServer = "", expectedVersion = "") {
@@ -116,7 +126,7 @@ export function isSupersededClose(code, reason) {
   return Number(code) === 1012 && String(reason || "") === "replaced by verified daemon";
 }
 
-export function reconnectDelay(attempt, random = Math.random, previousAttemptDurationMs = 0, connectTimeoutMs = 15_000) {
+export function reconnectDelay(attempt, random = Math.random, previousAttemptDurationMs = 0, connectTimeoutMs = 30_000) {
   const safeAttempt = Math.max(0, Number.isFinite(Number(attempt)) ? Number(attempt) : 0);
   const base = Math.min(1000 * (2 ** Math.min(safeAttempt, 4)), 15_000);
   const spent = Math.max(0, Number(previousAttemptDurationMs) || 0);

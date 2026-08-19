@@ -1093,6 +1093,17 @@ assert.deepEqual(fairnessDiagnostic.check, {
   layer: "local-resource-admission", ok: true, pressure_state: "green",
   active_leases: 1, active_waiters: 2, fairness_drain_active: true,
 }, "resource admission diagnostic did not preserve the privacy-safe fairness drain projection");
+const busyDiagnostic = await resourceAdmissionDiagnostic(async () => {
+  throw Object.assign(new Error("synthetic coordinator contention"), { code: "MBM_RESOURCE_TRANSACTION_BUSY" });
+}, () => "execution_failed");
+assert.deepEqual(busyDiagnostic.snapshot, {
+  healthy: false, snapshot_available: false, retryable: true,
+  error_class: "unavailable", reason: "coordinator_busy",
+}, "resource admission diagnostic misclassified transient coordinator contention as an execution failure");
+assert.deepEqual(busyDiagnostic.check, {
+  layer: "local-resource-admission", ok: false, snapshot_available: false, retryable: true,
+  error_class: "unavailable", reason: "coordinator_busy",
+}, "resource admission diagnostic lost the retryable coordinator-busy cause");
 const locallyBusyHost = { ...quietHost, cpu_busy_cores: 4.5 };
 assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], blockingLease, locallyBusyHost, evaluateResourceAdmission, fairnessNow), null, "local CPU already visible in host metrics defeated starvation drain");
 assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], [], quietHost, evaluateResourceAdmission, fairnessNow).waiter_id, "protected-large", "protected waiter was not selected after capacity drained");

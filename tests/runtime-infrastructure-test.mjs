@@ -863,6 +863,8 @@ async function testRelayResumeReconciliation() {
   let resumeAck;
   let revocationAck;
   let revocationInterrupt = null;
+  let applicationPongs = 0;
+  let recoveryPulses = 0;
   const controlRuntime = {
     relayResumeSessionId: 0,
     relayResumeMissingIds: [],
@@ -871,11 +873,12 @@ async function testRelayResumeReconciliation() {
     applyAuthorityRevocation(value) { revokedAuthority = value; },
     handleRelayProtocolViolation(reason) { violation = reason; },
     relayCallRecovery: {
-      pulse() {},
+      pulse() { recoveryPulses += 1; },
       acknowledge(id) { acknowledged = id; return true; },
     },
     relay: {
       acknowledge() {},
+      observeApplicationPong() { applicationPongs += 1; return true; },
       confirmReady() { confirmed += 1; return true; },
       interrupt(category) { revocationInterrupt = category; return true; },
       sendForSession(message, sessionId) {
@@ -885,6 +888,13 @@ async function testRelayResumeReconciliation() {
       },
     },
   };
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "pong", ts: 123 },
+    { sessionId: 17, authenticated: true, ready: true, transport: "websocket" },
+  );
+  assert(applicationPongs === 1 && recoveryPulses === 1,
+    "application pong did not separately confirm WSS transport liveness and pulse retained tool results");
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "resume_calls", ids: ["call_valid_12345678"] },
@@ -1003,6 +1013,7 @@ async function testRelayResumeReconciliation() {
 function testRelayHandshakeDiagnostics() {
   const diagnostics = relayHandshakeDiagnostics({
     network_route: "system-network-stack",
+    connect_timeout_ms: 30000,
     outage_count: 4,
     outage_active: true,
     outage_started_at: "2026-08-04T11:36:20.000Z",
@@ -1011,24 +1022,82 @@ function testRelayHandshakeDiagnostics() {
     last_close_category: "relay_heartbeat_timeout",
     last_close_code: 1006,
     last_transport_error_class: "ECONNRESET",
+    last_transport_error_reason: "connection_reset",
+    last_transport_error_ready: false,
+    last_transport_error_authenticated: false,
+    heartbeat: {
+      last_probe_buffered_bytes: 4096, max_probe_buffered_bytes: 8192,
+      last_probe_dispatch_ms: 17, max_probe_dispatch_ms: 44,
+      last_probe_dispatch_timeout_age_ms: 0,
+      last_probe_timeout_age_ms: 10000, transport_confirmation_dispatch_timeout_ms: 30000,
+      last_transport_confirmation_dispatch_ms: 19, max_transport_confirmation_dispatch_ms: 47,
+      last_transport_confirmation_dispatch_timeout_age_ms: 30000, transport_confirmation_timeout_ms: 15000,
+      last_transport_confirmation_ms: 2300, max_transport_confirmation_ms: 4100,
+      last_transport_confirmation_timeout_age_ms: 15000,
+    },
     last_disconnected_at: "2026-08-04T11:36:20.000Z",
+    last_connect_milestones_ms: { socket_constructing: 0, dns_resolved: 31, tcp_connected: 44, tls_established: 87, injected: 5 },
+    last_failed_connect_stage: "tls_established",
+    last_failed_connect_duration_ms: 93,
+    last_failed_connect_milestones_ms: { socket_constructing: 0, dns_resolved: 30, tcp_connected: 43, tls_established: 93, injected: 6 },
+    last_failed_connect_http_status: 503,
     last_ready_duration_ms: 123456,
     last_ready_inbound_silence_ms: 15000,
   });
   assert(diagnostics.schema_version === 1
     && diagnostics.network_route === "system-network-stack"
+    && diagnostics.connect_timeout_ms === 30000
     && diagnostics.outage_count === 4
     && diagnostics.outage_attempts === 2
     && diagnostics.last_close_category === "relay_heartbeat_timeout"
+    && diagnostics.last_connect_milestones_ms.dns_resolved === 31
+    && diagnostics.last_connect_milestones_ms.tls_established === 87
+    && diagnostics.last_connect_milestones_ms.injected === undefined
+    && diagnostics.last_failed_connect_stage === "tls_established"
+    && diagnostics.last_failed_connect_duration_ms === 93
+    && diagnostics.last_failed_connect_milestones_ms.tls_established === 93
+    && diagnostics.last_failed_connect_milestones_ms.injected === undefined
+    && diagnostics.last_failed_connect_http_status === 503
+    && diagnostics.last_transport_error_reason === "connection_reset"
+    && diagnostics.last_transport_error_ready === false
+    && diagnostics.last_transport_error_authenticated === false
+    && diagnostics.last_probe_buffered_bytes === 4096
+    && diagnostics.max_probe_buffered_bytes === 8192
+    && diagnostics.last_probe_dispatch_ms === 17
+    && diagnostics.max_probe_dispatch_ms === 44
+    && diagnostics.last_probe_timeout_age_ms === 10000
+    && diagnostics.transport_confirmation_dispatch_timeout_ms === 30000
+    && diagnostics.last_transport_confirmation_dispatch_ms === 19
+    && diagnostics.max_transport_confirmation_dispatch_ms === 47
+    && diagnostics.last_transport_confirmation_dispatch_timeout_age_ms === 30000
+    && diagnostics.transport_confirmation_timeout_ms === 15000
+    && diagnostics.last_transport_confirmation_ms === 2300
+    && diagnostics.max_transport_confirmation_ms === 4100
+    && diagnostics.last_transport_confirmation_timeout_age_ms === 15000
     && diagnostics.previous_ready_duration_ms === 123456
     && diagnostics.previous_ready_inbound_silence_ms === 15000,
   "relay handshake diagnostics lost bounded outage evidence");
   const bounded = relayHandshakeDiagnostics({
     outage_count: -1,
     outage_duration_ms: Number.POSITIVE_INFINITY,
+    last_connect_milestones_ms: { dns_resolved: Number.POSITIVE_INFINITY, tcp_connected: -1 },
+    last_failed_connect_stage: "private_stage",
+    last_failed_connect_duration_ms: Number.POSITIVE_INFINITY,
+    last_failed_connect_milestones_ms: { tls_established: -1 },
+    last_failed_connect_http_status: 999,
+    last_transport_error_reason: "private-network-detail",
+    heartbeat: { last_probe_buffered_bytes: Number.POSITIVE_INFINITY, last_probe_dispatch_ms: -1 },
     last_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
   });
   assert(bounded.outage_count === 0 && bounded.outage_duration_ms === 0
+    && Object.keys(bounded.last_connect_milestones_ms).length === 0
+    && bounded.last_failed_connect_stage === null
+    && bounded.last_failed_connect_duration_ms === 0
+    && Object.keys(bounded.last_failed_connect_milestones_ms).length === 0
+    && bounded.last_failed_connect_http_status === null
+    && bounded.last_transport_error_reason === "unknown"
+    && bounded.last_probe_buffered_bytes === 0
+    && bounded.last_probe_dispatch_ms === 0
     && bounded.previous_ready_inbound_silence_ms === 0,
     "relay handshake diagnostics accepted invalid numeric fields");
 }

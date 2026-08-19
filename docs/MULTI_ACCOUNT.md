@@ -39,7 +39,7 @@ List accounts:
 machine-mcp account list
 ```
 
-Create an account. The generated password is displayed once:
+Create an account. The generated password is displayed once. Treat this stdout as a secret; JSON/automation output that contains the one-time password must not be copied to shared logs or support artifacts:
 
 ```sh
 machine-mcp account add alice reviewer

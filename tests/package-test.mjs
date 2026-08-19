@@ -80,7 +80,17 @@ try {
   for (const module of [
     "browser-request-registry.mjs", "browser-bridge-http.mjs", "browser-broker-routes.mjs", "browser-broker-server.mjs", "windows-launcher.mjs",
     "managed-job-lock.mjs", "managed-job-projection.mjs", "managed-job-storage.mjs", "managed-job-runner.mjs",
-    "managed-job-cancellation.mjs", "managed-job-directory.mjs",
+    "managed-job-cancellation.mjs", "managed-job-directory.mjs", "managed-job-hosted-status.mjs", "managed-job-listing.mjs",
+    "resource-admission-diagnostic-error.mjs",
+    "relay-probe-deadline.mjs",
+    "relay-probe-dispatch.mjs",
+    "relay-heartbeat-stall.mjs",
+    "relay-heartbeat-options.mjs",
+    "relay-connect-timing.mjs",
+    "relay-transport-probe.mjs",
+    "relay-transport-probe-send.mjs",
+    "relay-transport-error-state.mjs",
+    "process-session-read.mjs", "process-session-remote-poll.mjs",
   ]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted local boundary ${module}`);
   }

@@ -4,7 +4,7 @@ import { PendingAdmissionGate } from "../src/worker/pending-admission.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
 import { notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../src/worker/daemon-ready-waiters.ts";
 import { readyDaemonForDispatch } from "../src/worker/daemon-ready-dispatch.ts";
-import { daemonToolTimeoutBudgetAfterDelay } from "../src/worker/daemon-recovery-budget.ts";
+import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "../src/worker/daemon-recovery-budget.ts";
 import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
 import { respondWithoutDurableObject } from "../src/worker/worker-static-routes.ts";
@@ -25,6 +25,7 @@ import { WorkerObservability } from "../src/worker/observability.ts";
 import { daemonStatusSnapshot } from "../src/worker/daemon-status.ts";
 import { DaemonLastObservation } from "../src/worker/daemon-last-observation.ts";
 import { buildServerInfoResult, serverInfoDetail } from "../src/worker/server-info.ts";
+import { remoteToolDeliveryContract } from "../src/worker/server-info-tool-delivery.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { retainWorkerTask } from "../src/worker/worker-task-lifetime.ts";
 import { applyCors, corsPreflight, searchParamsObject } from "../src/worker/http.ts";
@@ -876,6 +877,7 @@ function testDaemonRelayDiagnostics() {
   const diagnostics = sanitizeDaemonRelayDiagnostics({
     schema_version: 1,
     network_route: "system-network-stack",
+    connect_timeout_ms: 30000,
     outage_count: 8,
     outage_active: true,
     outage_started_at: "2026-08-04T11:36:20.000Z",
@@ -884,15 +886,62 @@ function testDaemonRelayDiagnostics() {
     last_close_category: "relay_heartbeat_timeout",
     last_close_code: 1006,
     last_transport_error_class: "network_error",
+    last_transport_error_reason: "network_unreachable",
+    last_transport_error_ready: false,
+    last_transport_error_authenticated: false,
+    last_probe_buffered_bytes: 4096,
+    max_probe_buffered_bytes: 8192,
+    last_probe_dispatch_ms: 17,
+    max_probe_dispatch_ms: 44,
+    last_probe_dispatch_timeout_age_ms: 0,
+    last_probe_timeout_age_ms: 10000,
+    transport_confirmation_dispatch_timeout_ms: 30000,
+    last_transport_confirmation_dispatch_ms: 19,
+    max_transport_confirmation_dispatch_ms: 47,
+    last_transport_confirmation_dispatch_timeout_age_ms: 30000,
+    transport_confirmation_timeout_ms: 15000,
+    last_transport_confirmation_ms: 2300,
+    max_transport_confirmation_ms: 4100,
+    last_transport_confirmation_timeout_age_ms: 15000,
     last_disconnected_at: "2026-08-04T11:36:20.000Z",
+    last_connect_milestones_ms: { socket_constructing: 0, dns_resolved: 17, tcp_connected: 29, tls_established: 51, private_stage: 7 },
+    last_failed_connect_stage: "tls_established",
+    last_failed_connect_duration_ms: 61,
+    last_failed_connect_milestones_ms: { socket_constructing: 0, dns_resolved: 16, tcp_connected: 28, tls_established: 61, private_stage: 8 },
+    last_failed_connect_http_status: 503,
     previous_ready_duration_ms: 123456,
     previous_ready_inbound_silence_ms: 15000,
   });
   assert(diagnostics?.outage_count === 8
+    && diagnostics.connect_timeout_ms === 30000
     && diagnostics.outage_attempts === 2
     && diagnostics.last_close_category === "relay_heartbeat_timeout"
     && diagnostics.last_close_code === 1006
     && diagnostics.last_transport_error_class === "network_error"
+    && diagnostics.last_transport_error_reason === "network_unreachable"
+    && diagnostics.last_probe_buffered_bytes === 4096
+    && diagnostics.max_probe_buffered_bytes === 8192
+    && diagnostics.last_probe_dispatch_ms === 17
+    && diagnostics.max_probe_dispatch_ms === 44
+    && diagnostics.last_probe_timeout_age_ms === 10000
+    && diagnostics.transport_confirmation_dispatch_timeout_ms === 30000
+    && diagnostics.last_transport_confirmation_dispatch_ms === 19
+    && diagnostics.max_transport_confirmation_dispatch_ms === 47
+    && diagnostics.last_transport_confirmation_dispatch_timeout_age_ms === 30000
+    && diagnostics.transport_confirmation_timeout_ms === 15000
+    && diagnostics.last_transport_confirmation_ms === 2300
+    && diagnostics.max_transport_confirmation_ms === 4100
+    && diagnostics.last_transport_confirmation_timeout_age_ms === 15000
+    && diagnostics.last_connect_milestones_ms.dns_resolved === 17
+    && diagnostics.last_connect_milestones_ms.tls_established === 51
+    && diagnostics.last_connect_milestones_ms.private_stage === undefined
+    && diagnostics.last_failed_connect_stage === "tls_established"
+    && diagnostics.last_failed_connect_duration_ms === 61
+    && diagnostics.last_failed_connect_milestones_ms.tls_established === 61
+    && diagnostics.last_failed_connect_milestones_ms.private_stage === undefined
+    && diagnostics.last_failed_connect_http_status === 503
+    && diagnostics.last_transport_error_ready === false
+    && diagnostics.last_transport_error_authenticated === false
     && diagnostics.outage_started_at === "2026-08-04T11:36:20.000Z"
     && diagnostics.previous_ready_inbound_silence_ms === 15000,
   "Worker relay diagnostics sanitizer lost valid bounded evidence");
@@ -908,12 +957,28 @@ function testDaemonRelayDiagnostics() {
   assert(rejected === undefined, "Worker relay diagnostics accepted an unknown schema");
   const bounded = sanitizeDaemonRelayDiagnostics({
     schema_version: 1, network_route: "private-route", outage_count: -1, outage_duration_ms: Number.POSITIVE_INFINITY,
+    last_connect_milestones_ms: { dns_resolved: Number.POSITIVE_INFINITY, tcp_connected: -1 },
+    last_failed_connect_stage: "private_stage", last_failed_connect_duration_ms: Number.POSITIVE_INFINITY,
+    last_failed_connect_milestones_ms: { tls_established: -1 }, last_failed_connect_http_status: 999,
     previous_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
     last_close_category: "private-category", last_close_code: 99999, last_transport_error_class: "x".repeat(200),
+    last_transport_error_reason: "private-network-detail",
+    last_probe_buffered_bytes: Number.POSITIVE_INFINITY, last_probe_dispatch_ms: -1,
+    last_transport_error_ready: "yes", last_transport_error_authenticated: 1,
   });
   assert(bounded?.network_route === "unresolved"
     && bounded.outage_count === 0
     && bounded.outage_duration_ms === 0
+    && Object.keys(bounded.last_connect_milestones_ms).length === 0
+    && bounded.last_failed_connect_stage === null
+    && bounded.last_failed_connect_duration_ms === 0
+    && Object.keys(bounded.last_failed_connect_milestones_ms).length === 0
+    && bounded.last_failed_connect_http_status === null
+    && bounded.last_transport_error_reason === "unknown"
+    && bounded.last_probe_buffered_bytes === 0
+    && bounded.last_probe_dispatch_ms === 0
+    && bounded.last_transport_error_ready === false
+    && bounded.last_transport_error_authenticated === false
     && bounded.previous_ready_inbound_silence_ms === 0
     && bounded.last_close_category === null
     && bounded.last_close_code === null
@@ -1017,6 +1082,14 @@ function testRelayTimeoutContract() {
     && exhaustedRecoveryError.retryable === true
     && exhaustedRecoveryError.details?.side_effects_started === false,
   "daemon recovery could dispatch after consuming the complete foreground execution window");
+  const originalDeadlineExpiry = daemonReconnectExpiry({ remainingTimeoutMs: 20_000 }, relayContract.reconnectGraceMs);
+  assert(originalDeadlineExpiry.reason === "original_call_deadline_expired_during_reconnect"
+    && originalDeadlineExpiry.message === "original call deadline expired during reconnect",
+  "disconnect diagnostics mislabeled the original foreground deadline as the longer reconnect grace");
+  const reconnectGraceExpiry = daemonReconnectExpiry({ remainingTimeoutMs: relayContract.reconnectGraceMs }, relayContract.reconnectGraceMs);
+  assert(reconnectGraceExpiry.reason === "reconnect_grace_expired"
+    && reconnectGraceExpiry.message === "reconnect grace expired",
+  "disconnect diagnostics failed to report a full reconnect-grace expiry when it is the actual limiter");
   const browserForegroundBudget = daemonToolTimeoutBudget("browser_action", { timeout_seconds: 45 });
   assert(browserForegroundBudget.executionTimeoutMs === 45_000 && browserForegroundBudget.settlementTimeoutMs === 50_000,
     "non-process configurable foreground tool lost its reply-safe maximum budget");
@@ -1084,21 +1157,65 @@ function testRelayTimeoutContract() {
       && budget.settlementTimeoutMs === expectedDefault * 1000 + relayContract.workerSettlementOverheadMs,
     `remote ${tool.name} runtime default did not preserve a distinct settlement margin`);
   }
+  const remoteBrowserDescription = String(workspaceTools.find((tool) => tool.name === "browser_action")?.description || "");
+  assert(remoteBrowserDescription.includes("request-bounded")
+    && remoteBrowserDescription.includes("split longer browser/application workflows")
+    && remoteBrowserDescription.includes("run_process/start_job")
+    && remoteBrowserDescription.includes("start_process only when interactive stdin or incremental process output")
+    && !remoteBrowserDescription.includes("use process sessions or managed jobs for longer work"),
+  "configurable foreground guidance still routes generic long browser/application work into process sessions");
   const remoteExec = workspaceTools.find((tool) => tool.name === "exec_command");
   const remoteExecDescription = String(remoteExec?.description || "");
   assert(remoteExecDescription.includes("one-step durable job")
     && remoteExecDescription.includes("job_id")
     && remoteExecDescription.includes("read_job")
     && remoteExecDescription.includes("30 minutes pre-spawn")
-    && remoteExecDescription.includes("current_phase=resource_admission"),
-  "remote exec_command description omitted the durable execution, pre-spawn admission, or recovery contract");
+    && remoteExecDescription.includes("current_phase=resource_admission")
+    && remoteExecDescription.includes("status checkpoint")
+    && remoteExecDescription.includes("stop polling"),
+  "remote exec_command description omitted the durable execution, pre-spawn admission, recovery, or host-turn handoff contract");
+  const remoteStartJobDescription = String(workspaceTools.find((tool) => tool.name === "start_job")?.description || "");
+  const remoteListJobsDescription = String(workspaceTools.find((tool) => tool.name === "list_jobs")?.description || "");
+  const remoteReadJobDescription = String(workspaceTools.find((tool) => tool.name === "read_job")?.description || "");
+  assert(remoteStartJobDescription.includes("background execution")
+    && remoteStartJobDescription.includes("read_job at most once")
+    && remoteStartJobDescription.includes("stop polling"),
+  "remote start_job description omitted the background handoff contract");
+  assert(remoteListJobsDescription.includes("inventory checkpoint")
+    && remoteListJobsDescription.includes("Do not repeat list_jobs")
+    && remoteListJobsDescription.includes("hand the turn back"),
+  "remote list_jobs description can still induce same-response active-job polling");
+  assert(remoteReadJobDescription.includes("status checkpoints")
+    && remoteReadJobDescription.includes("at most once")
+    && remoteReadJobDescription.includes("stop polling")
+    && remoteReadJobDescription.includes("active/non-terminal")
+    && remoteReadJobDescription.includes("later user turn"),
+  "remote read_job description can still induce same-turn terminal polling");
+  const remoteStartProcess = workspaceTools.find((tool) => tool.name === "start_process");
+  const remoteStartProcessDescription = String(remoteStartProcess?.description || "");
+  assert(remoteStartProcessDescription.includes("interactive stdin or incremental-output")
+    && remoteStartProcessDescription.includes("run_process")
+    && remoteStartProcessDescription.includes("read_process at most once")
+    && remoteStartProcessDescription.includes("running=true")
+    && remoteStartProcessDescription.includes("even when new output was returned")
+    && remoteStartProcessDescription.includes("stop polling"),
+  "remote start_process description omitted the hosted-response anti-polling contract");
   const remoteReadProcess = workspaceTools.find((tool) => tool.name === "read_process");
-  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 5_000,
+  const remoteReadProcessDescription = String(remoteReadProcess?.description || "");
+  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1_000,
     "remote read_process schema regained a long blocking poll");
+  assert(remoteReadProcessDescription.includes("status checkpoints")
+    && remoteReadProcessDescription.includes("at most once")
+    && remoteReadProcessDescription.includes("running=true")
+    && remoteReadProcessDescription.includes("even when output was returned")
+    && remoteReadProcessDescription.includes("stop polling")
+    && remoteReadProcessDescription.includes("run_process/read_job")
+    && !remoteReadProcessDescription.includes("poll again"),
+  "remote read_process description can still induce repeated same-response live-session polling");
   const immediateReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 0 });
-  const maximumReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 5_000 });
+  const maximumReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 1_000 });
   assert(immediateReadBudget.executionTimeoutMs === 5_000 && immediateReadBudget.settlementTimeoutMs === 10_000
-    && maximumReadBudget.executionTimeoutMs === 10_000 && maximumReadBudget.settlementTimeoutMs === 15_000,
+    && maximumReadBudget.executionTimeoutMs === 6_000 && maximumReadBudget.settlementTimeoutMs === 11_000,
   "remote process polling did not retain its short settlement budget");
   const startProcessBudget = daemonToolTimeoutBudget("start_process", {});
   assert(startProcessBudget.executionTimeoutMs === relayContract.processSessionStartExecutionTimeoutMs
@@ -1107,6 +1224,12 @@ function testRelayTimeoutContract() {
   assert(relayContract.maximumExecutionTimeoutMs === 45_000
     && relayContract.maximumRelayToolTimeoutMs === 50_000,
   "relay envelope can still hold a synchronous remote tool beyond the reply-safe ceiling");
+  const deliveryContract = remoteToolDeliveryContract();
+  assert(deliveryContract.remote_process_blocking_poll_wait_max_ms === 1_000
+    && deliveryContract.remote_process_blocking_poll_cooldown_ms === 15_000
+    && !("remote_process_poll_wait_max_ms" in deliveryContract)
+    && !("remote_process_poll_cooldown_ms" in deliveryContract),
+  "server_info tool-delivery projection retained ambiguous process-poll field names");
 }
 
 function testWorkerPolicyParity() {
@@ -1212,12 +1335,16 @@ function testWorkerErrors() {
   assert(unknown.code === "execution_failed", "Worker accepted an unregistered daemon error code");
   const directUnknown = new WorkerToolError("future_custom_code", "unsupported");
   assert(directUnknown.code === "execution_failed", "WorkerToolError accepted an unregistered direct code");
-  const disconnected = publicWorkerToolError(dispatchedDaemonDisconnectError("daemon disconnected; reconnect grace expired"));
+  const disconnected = publicWorkerToolError(dispatchedDaemonDisconnectError(
+    "daemon disconnected; original call deadline expired during reconnect", undefined,
+    "original_call_deadline_expired_during_reconnect",
+  ));
   assert(disconnected.code === "unavailable" && disconnected.retryable === false
     && disconnected.details?.side_effects_started === true
     && disconnected.details?.termination_requested === false
-    && disconnected.details?.effect_settlement === "unknown",
-  "dispatched daemon reconnect expiry advertised unknown side effects as safely retryable");
+    && disconnected.details?.effect_settlement === "unknown"
+    && disconnected.details?.reason === "original_call_deadline_expired_during_reconnect",
+  "dispatched daemon reconnect deadline lost its safe cause or advertised unknown side effects as safely retryable");
   const timedOut = publicWorkerToolError(dispatchedDaemonTimeoutError("exec_command"));
   assert(timedOut.code === "timeout" && timedOut.retryable === false
     && timedOut.details?.termination_requested === true && timedOut.details?.effect_settlement === "pending",

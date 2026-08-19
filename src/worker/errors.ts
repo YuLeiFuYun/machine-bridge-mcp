@@ -53,7 +53,7 @@ function dispatchedDaemonCancellationStateError(code: "cancelled" | "timeout", m
   );
 }
 
-export function dispatchedDaemonDisconnectError(message: string, recovery?: Record<string, unknown>): WorkerToolError {
+export function dispatchedDaemonDisconnectError(message: string, recovery?: Record<string, unknown>, reason?: string): WorkerToolError {
   return new WorkerToolError(
     "unavailable",
     message,
@@ -62,6 +62,7 @@ export function dispatchedDaemonDisconnectError(message: string, recovery?: Reco
       side_effects_started: true,
       termination_requested: false,
       effect_settlement: "unknown",
+      ...(reason ? { reason } : {}),
       ...(recovery ? { recovery } : {}),
     },
   );

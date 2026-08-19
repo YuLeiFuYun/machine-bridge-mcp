@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { BridgeError, publicError } from "../src/local/errors.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { ProcessOutputStream } from "../src/local/process-output-stream.mjs";
+import { completeProcessSessionRead } from "../src/local/process-session-read.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
 import { PROCESS_SESSION_RETENTION_MS } from "../src/local/execution-limits.mjs";
@@ -55,9 +56,12 @@ try {
   testOutputStreamOffsets();
   testCompactProjection();
   testProcessSessionRetentionUsesMonotonicTime();
+  testRemoteReadCompletionUsesFinalSessionState();
   await testExecutionSurfaceMarkers();
   await testRemoteSessionAdmissionIsFailFast();
   await testRemoteSessionActivityLifetime();
+  await testRemoteBlockingPollCooldown();
+  await testRemoteReadCancellationAfterHelperResolution();
   await testSuccessfulContinuation();
   await testFailureContinuation();
   await testSessionReleaseAfterBinding();
@@ -184,6 +188,98 @@ async function testRemoteSessionAdmissionIsFailFast() {
   assert.equal(activityStarts, 0, "structurally impossible remote session demand retained idle-sleep activity");
 }
 
+async function testRemoteBlockingPollCooldown() {
+  const manager = new ProcessSessionManager({
+    workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
+    resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {},
+  });
+  const remoteContext = { origin: "relay", authority: { origin: "relay" } };
+  try {
+    const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 2500)"] }, remoteContext);
+    const immediate = await manager.read({ session_id: started.session_id, wait_ms: 0 }, remoteContext);
+    assert.equal(immediate.running, true, "remote polling fixture exited before the immediate checkpoint");
+    assert.equal(immediate.status_polling_mode, "checkpoint", "remote process read omitted checkpoint semantics");
+    assert.equal(immediate.blocking_poll_throttled, false, "non-blocking status checkpoint was marked as throttled");
+    assert.equal(immediate.next_blocking_poll_after_ms, 0,
+      "non-blocking status checkpoint incorrectly armed the blocking-poll cooldown");
+
+    const firstStartedAt = Date.now();
+    const first = await manager.read({ session_id: started.session_id, wait_ms: 5_000 }, remoteContext);
+    const firstElapsed = Date.now() - firstStartedAt;
+    assert.equal(first.running, true, "remote polling fixture exited before the first blocking read");
+    assert(firstElapsed >= 700 && firstElapsed < 2_000,
+      "daemon-side remote polling did not clamp a stale/oversized request to the one-second hosted wait");
+    assert.equal(first.blocking_poll_throttled, false, "first remote blocking read was throttled unexpectedly");
+    assert.equal(first.status_polling_mode, "checkpoint", "first remote blocking read lost checkpoint semantics");
+    assert.equal(first.host_turn_handoff_recommended, true,
+      "running remote process did not recommend yielding the hosted response");
+    assert(first.next_blocking_poll_after_ms > 0, "running remote process omitted the next blocking-poll cooldown hint");
+
+    const secondStartedAt = Date.now();
+    const second = await manager.read({ session_id: started.session_id, wait_ms: 5_000 }, remoteContext);
+    const secondElapsed = Date.now() - secondStartedAt;
+    assert.equal(second.running, true, "remote polling fixture exited before the repeated read");
+    assert.equal(second.blocking_poll_throttled, true, "repeated remote blocking read was not converted to an immediate status read");
+    assert(secondElapsed < firstElapsed,
+      "repeated remote blocking read still consumed the original synchronous wait budget");
+    assert(second.next_blocking_poll_after_ms > 0, "throttled remote poll omitted its remaining cooldown");
+
+    const exiting = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 150)"] }, remoteContext);
+    const settled = await manager.read({ session_id: exiting.session_id, wait_ms: 5_000 }, remoteContext);
+    assert.equal(settled.running, false, "remote process that exited during the checkpoint was still reported running");
+    assert.equal(settled.status_polling_mode, "checkpoint", "settled remote process lost checkpoint semantics");
+    assert.equal(settled.host_turn_handoff_recommended, false,
+      "settled remote process incorrectly recommended handing the hosted turn back for more polling");
+    assert.equal(settled.blocking_poll_throttled, false, "settled first blocking checkpoint was marked as throttled");
+    assert.equal(settled.next_blocking_poll_after_ms, 0,
+      "settled remote process retained a blocking-poll cooldown after exit");
+
+    const outputFirst = await manager.start({
+      argv: [process.execPath, "-e", "process.stdout.write('ready\\n'); setTimeout(() => {}, 2500)"],
+    }, remoteContext);
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 100); });
+    const exitWaitStartedAt = Date.now();
+    const exitWait = await manager.read({ session_id: outputFirst.session_id, wait_ms: 5_000, wait_for_exit: true }, remoteContext);
+    const exitWaitElapsed = Date.now() - exitWaitStartedAt;
+    assert.equal(exitWait.running, true, "wait_for_exit fixture exited before the hosted clamp was exercised");
+    assert(exitWaitElapsed >= 700 && exitWaitElapsed < 2_000,
+      "wait_for_exit bypassed the one-second hosted clamp when output was already available");
+    assert(exitWait.stdout.data.includes("ready"), "wait_for_exit checkpoint lost output that was available before the wait");
+    assert.equal(exitWait.blocking_poll_throttled, false, "first wait_for_exit checkpoint was throttled unexpectedly");
+    assert(exitWait.next_blocking_poll_after_ms > 0,
+      "wait_for_exit checkpoint did not arm the blocking cooldown for a still-running session");
+  } finally {
+    await manager.clearAndWait();
+  }
+}
+
+async function testRemoteReadCancellationAfterHelperResolution() {
+  let readChecks = 0;
+  let cancelled = false;
+  const manager = new ProcessSessionManager({
+    workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
+    resolveCwd: async () => root, displayPath: (value) => value,
+    throwIfCancelled(context) {
+      if (context?.phase !== "read-cancellation-race") return;
+      readChecks += 1;
+      if (readChecks === 2) queueMicrotask(() => { cancelled = true; });
+      if (cancelled) throw new BridgeError("cancelled", "cancelled after read helper resolution", { retryable: false });
+    },
+  });
+  try {
+    const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 2500)"] });
+    let cancellationError = null;
+    try {
+      await manager.read({ session_id: started.session_id, wait_ms: 0 }, { phase: "read-cancellation-race" });
+    } catch (error) { cancellationError = error; }
+    assert(cancellationError instanceof BridgeError && cancellationError.code === "cancelled",
+      "process read missed cancellation scheduled between helper resolution and manager continuation");
+    assert(readChecks >= 3, "process read did not re-check cancellation after awaiting the read helper");
+  } finally {
+    await manager.clearAndWait();
+  }
+}
+
 async function testRemoteSessionActivityLifetime() {
   let starts = 0;
   let ends = 0;
@@ -216,6 +312,21 @@ async function testRemoteSessionActivityLifetime() {
   });
   await assert.rejects(() => failing.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, remoteContext), /synthetic spawn failure/);
   assert.deepEqual({ starts, ends }, { starts: 2, ends: 2 }, "remote process-session spawn failure leaked its activity hold");
+}
+
+function testRemoteReadCompletionUsesFinalSessionState() {
+  const session = { closedAt: 100, lastRemoteBlockingReadAt: null };
+  const completed = completeProcessSessionRead({
+    remoteRead: { remote: true, blocking: true, pollThrottled: false },
+    stdout: { data: "" }, stderr: { data: "" },
+  }, session, 200);
+  assert.equal(completed.status_polling_mode, "checkpoint", "completed remote read lost checkpoint metadata");
+  assert.equal(completed.host_turn_handoff_recommended, false,
+    "remote read completion used a stale pre-exit running state for hosted-turn handoff");
+  assert.equal(completed.next_blocking_poll_after_ms, 0,
+    "remote read completion retained a blocking cooldown after the session had exited");
+  assert.equal(session.lastRemoteBlockingReadAt, null,
+    "remote read completion armed a blocking cooldown after the session had exited");
 }
 
 function testOutputStreamOffsets() {

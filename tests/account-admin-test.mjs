@@ -52,6 +52,8 @@ assert(/^account_password_[A-Za-z0-9_-]{43}$/.test(generated), "generated accoun
 const origin = "https://bridge.example.test";
 const now = 1_800_000_000_000;
 const sessionIdentity = createDeviceSessionIdentity(createDeviceIdentity(), origin, "machine-bridge-mcp", "3.0.0", now);
+const historicalNow = 1_700_000_000_000;
+const historicalSessionIdentity = createDeviceSessionIdentity(createDeviceIdentity(), origin, "machine-bridge-mcp", "3.0.0", historicalNow);
 
 const requests = [];
 const accounts = [
@@ -99,6 +101,18 @@ assert(deterministicHeaders["X-Bridge-Admin-Time"] === "1800000000", "account ad
 assert(deterministicHeaders["X-Bridge-Admin-Key"] === sessionIdentity.keyId, "account admin request lost its ephemeral key binding");
 assert(/^[A-Za-z0-9_-]{86}$/.test(deterministicHeaders["X-Bridge-Admin-Signature"]), "account admin P-256 signature has the wrong encoding");
 assert(!deterministicHeaders["X-Bridge-Device-Certificate"].includes('"d"'), "account admin header exposed private key material");
+const historicalHeaders = accountAdminRequestHeaders({
+  sessionIdentity: historicalSessionIdentity,
+  origin,
+  method: "GET",
+  pathname: "/admin/accounts",
+  now: historicalNow,
+  nonce: "h".repeat(32),
+});
+assert(historicalHeaders["X-Bridge-Admin-Time"] === "1700000000"
+  && /^[A-Za-z0-9_-]{86}$/.test(historicalHeaders["X-Bridge-Admin-Signature"])
+  && historicalHeaders["X-Bridge-Device-Certificate"],
+"synthetic historical account-admin signing switched back to real wall time inside session helpers");
 
 const client = new AccountAdminClient({ workerUrl: origin, sessionIdentity, fetchImpl });
 assert((await client.list()).accounts.length === 2, "account list response was not returned");

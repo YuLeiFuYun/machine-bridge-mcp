@@ -1,9 +1,13 @@
+import { RelayProbeDeadline } from "./relay-probe-deadline.mjs";
+import { RelayProbeDispatch } from "./relay-probe-dispatch.mjs";
+import { RelayHeartbeatStall } from "./relay-heartbeat-stall.mjs";
+import { normalizeRelayHeartbeatTiming } from "./relay-heartbeat-options.mjs";
+import { advanceRelayTransportState } from "./relay-heartbeat-transport-state.mjs";
+import { RelayTransportConfirmation } from "./relay-transport-confirmation.mjs";
+
 export class RelayHeartbeatMonitor {
   constructor(options = {}) {
-    this.intervalMs = positiveInteger(options.intervalMs, 25_000);
-    this.timeoutMs = positiveInteger(options.timeoutMs, 75_000);
-    this.stallThresholdMs = positiveInteger(options.stallThresholdMs, Math.max(1000, Math.floor(this.intervalMs / 2)));
-    this.recoveryGraceMs = positiveInteger(options.recoveryGraceMs, Math.max(this.intervalMs, Math.min(this.timeoutMs, 30_000)));
+    Object.assign(this, normalizeRelayHeartbeatTiming(options));
     this.scheduler = options.scheduler;
     this.now = options.now;
     this.logger = options.logger || console;
@@ -11,14 +15,13 @@ export class RelayHeartbeatMonitor {
     this.lastInboundAt = options.lastInboundAt;
     this.sendHeartbeat = options.sendHeartbeat;
     this.onTimeout = options.onTimeout;
-    this.timer = null;
-    this.expectedAt = 0;
-    this.recoveryUntil = 0;
-    this.lastEventLoopLagMs = 0;
-    this.maxEventLoopLagMs = 0;
-    this.eventLoopStallCount = 0;
-    this.lastEventLoopStallAt = 0;
-    this.lastEventLoopStallWarnAt = 0;
+    this.probeDeadline = new RelayProbeDeadline(options.timeoutAfterProbe);
+    this.probeDispatch = new RelayProbeDispatch(options.timeoutAfterProbe);
+    this.confirmation = new RelayTransportConfirmation({ enabled: options.timeoutAfterProbe,
+      timeoutMs: options.confirmationTimeoutMs, dispatchTimeoutMs: this.dispatchTimeoutMs,
+      sendConfirmation: options.sendConfirmation, onSuspect: options.onSuspect, onRecovered: options.onRecovered });
+    this.stall = new RelayHeartbeatStall({ logger: this.logger, timeoutMs: this.timeoutMs, wallNow: options.wallNow });
+    this.timer = null; this.expectedAt = 0; this.recoveryUntil = 0;
   }
 
   start() {
@@ -34,9 +37,13 @@ export class RelayHeartbeatMonitor {
     this.timer = null;
     this.expectedAt = 0;
     this.recoveryUntil = 0;
+    this.probeDeadline.reset(); this.probeDispatch.reset(); this.confirmation.reset();
   }
 
   observeInbound() {
+    this.probeDispatch.observeProof();
+    this.probeDeadline.observe(this.now());
+    this.confirmation.observe(this.now());
     this.recoveryUntil = 0;
   }
 
@@ -48,42 +55,44 @@ export class RelayHeartbeatMonitor {
       recovery_grace_ms: this.recoveryGraceMs,
       recovery_active: this.recoveryUntil > current,
       recovery_remaining_ms: this.recoveryUntil > current ? this.recoveryUntil - current : 0,
-      last_event_loop_lag_ms: this.lastEventLoopLagMs,
-      max_event_loop_lag_ms: this.maxEventLoopLagMs,
-      event_loop_stall_count: this.eventLoopStallCount,
-      last_event_loop_stall_at: isoTimestamp(this.lastEventLoopStallAt),
+      ...this.stall.snapshot(),
+      dispatch_timeout_ms: this.probeDeadline.enabled ? this.dispatchTimeoutMs : 0,
+      ...this.probeDispatch.snapshot(current),
+      ...this.probeDeadline.snapshot(current),
+      ...this.confirmation.snapshot(current),
     };
   }
 
   tick() {
-    if (!this.isActive()) return;
     const now = this.now();
     const expectedAt = this.expectedAt || now;
     const eventLoopLagMs = Math.max(0, now - expectedAt);
     this.expectedAt = now + this.intervalMs;
-    this.lastEventLoopLagMs = eventLoopLagMs;
-    this.maxEventLoopLagMs = Math.max(this.maxEventLoopLagMs, eventLoopLagMs);
+    if (!this.isActive()) return;
+    this.stall.recordLag(eventLoopLagMs);
 
     if (eventLoopLagMs >= this.stallThresholdMs) {
       const silentForMs = Math.max(0, now - this.lastInboundAt());
       const staleAfterLongPause = eventLoopLagMs > this.timeoutMs + this.recoveryGraceMs
         && silentForMs > this.timeoutMs;
-      this.observeEventLoopStall(now, eventLoopLagMs, !staleAfterLongPause);
+      this.stall.observe(now, eventLoopLagMs, this.recoveryGraceMs, !staleAfterLongPause);
       if (staleAfterLongPause) {
         this.recoveryUntil = 0;
-        this.onTimeout({ silentForMs, eventLoopLagMs });
+        this.onTimeout({ silentForMs, eventLoopLagMs, probeAgeMs: this.probeDeadline.age(now) });
         return;
       }
       this.recoveryUntil = Math.max(this.recoveryUntil, now + this.recoveryGraceMs);
-      this.sendHeartbeat(now);
+      this.probeDeadline.reset(); this.confirmation.cancel(now, "local_event_loop_stall");
+      if (!this.probeDispatch.pending()) this.sendProbe(now);
       return;
     }
     if (now < this.recoveryUntil) {
-      this.sendHeartbeat(now);
+      if (!this.probeDeadline.outstanding() && !this.probeDispatch.pending()) this.sendProbe(now);
       return;
     }
 
     const silentForMs = Math.max(0, now - this.lastInboundAt());
+    if (advanceRelayTransportState(this, now, silentForMs, eventLoopLagMs)) return;
     if (silentForMs >= this.timeoutMs) {
       this.onTimeout({ silentForMs, eventLoopLagMs });
       return;
@@ -91,29 +100,16 @@ export class RelayHeartbeatMonitor {
     this.sendHeartbeat(now);
   }
 
-  observeEventLoopStall(now, lagMs, relayDisconnectDeferred = true) {
-    this.eventLoopStallCount += 1;
-    this.lastEventLoopStallAt = now;
-    if (this.lastEventLoopStallWarnAt && now - this.lastEventLoopStallWarnAt < this.timeoutMs) return;
-    this.lastEventLoopStallWarnAt = now;
-    this.logger.warn?.(
-      relayDisconnectDeferred
-        ? "local event loop stalled; relay liveness decision deferred"
-        : "local event loop resumed after a long pause; reconnecting stale relay transport",
-      {
-        event: "runtime.event_loop.stall",
-        lag_ms: lagMs,
-        recovery_grace_ms: this.recoveryGraceMs,
-        relay_disconnect_deferred: relayDisconnectDeferred,
-      },
-    );
+  sendProbe(now) {
+    if (!this.probeDeadline.enabled) return this.sendHeartbeat(now);
+    const token = this.probeDispatch.begin(now);
+    const sent = this.sendHeartbeat(now, () => {
+      const dispatchedAt = this.now();
+      const completed = this.probeDispatch.complete(token, dispatchedAt);
+      if (completed && !completed.satisfiedByProof) this.probeDeadline.sent(dispatchedAt, true);
+    });
+    if (sent === false) this.probeDispatch.cancel(token);
+    return sent;
   }
-}
 
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
-}
-function isoTimestamp(value) {
-  return Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 }

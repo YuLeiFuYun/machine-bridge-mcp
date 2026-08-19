@@ -52,7 +52,7 @@ export async function createDeviceSessionForRoot(identity, workerOrigin, server,
   validatePublicDeviceRoot(identity);
   const draft = createDeviceSessionDraft(identity, workerOrigin, server, version, now);
   const signature = signWithMacosSecureDeviceRoot(identity, draft.transcript, { profileDir, reason });
-  return finalizeDeviceSessionIdentity(draft, signature);
+  return finalizeDeviceSessionIdentity(draft, signature, now);
 }
 
 export function deviceRootProviderStatus(identity, { env = process.env } = {}) {

@@ -53,10 +53,7 @@ export async function handleRuntimeRelayControlMessage(runtime, message, relayCo
     runtime.relayResumeMissingIds = [];
     return true;
   }
-  if (message.type === "pong") {
-    runtime.relayCallRecovery.pulse();
-    return true;
-  }
+  if (message.type === "pong") return handlePong(runtime, relayContext);
   if (message.type === "tool_result_ack") {
     if (!isRelayReadyContext(relayContext, runtime.relay)
         || typeof message.id !== "string"
@@ -94,5 +91,11 @@ function handleResumeCalls(runtime, message, relayContext) {
   const missingIds = runtime.reconcileRelayCalls(resume.ids);
   runtime.relayResumeSessionId = sessionId;
   runtime.relayResumeMissingIds = Array.isArray(missingIds) ? missingIds : [];
+  return true;
+}
+
+function handlePong(runtime, relayContext) {
+  runtime.relay?.observeApplicationPong?.(relayContext);
+  runtime.relayCallRecovery.pulse();
   return true;
 }

@@ -109,6 +109,7 @@ export async function diagnoseRuntime({
       system_network_stack_scope: "application proxy selection only; an operating-system VPN or TUN may still intercept the relay connection",
       tunnel_default_route_detected: "the operating-system route is carried by a VPN/TUN; node selection and repair remain outside Machine Bridge",
       managed_job_accepted_then_later_tools_blocked: "job continues independently; inspect with local CLI or a later read_job call",
+      resource_admission_snapshot_busy: "snapshot_available=false with reason=coordinator_busy means the bounded diagnostic could not acquire a live coordinator transaction/staging lock; retry later and do not infer corruption or a Green pressure state from that unavailable snapshot",
     },
     policy,
     ...diagnosticControlPlaneState({ ...controlPlaneState, resourceAdmission }, relay),

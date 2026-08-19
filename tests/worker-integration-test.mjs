@@ -1034,8 +1034,16 @@ try {
     && remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.default === 20,
   "remote tools/list lost the reply-safe browser foreground timeout contract");
   const remoteReadProcess = remoteAgentTools.find((tool) => tool.name === "read_process");
-  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 5000,
-    "remote tools/list regained a long blocking process poll");
+  const remoteReadProcessDescription = String(remoteReadProcess?.description || "");
+  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1000
+    && remoteReadProcessDescription.includes("status checkpoints")
+    && remoteReadProcessDescription.includes("running=true")
+    && remoteReadProcessDescription.includes("stop polling"),
+  "remote tools/list lost the one-second process checkpoint/handoff contract");
+  const remoteListJobsDescription = String(remoteAgentTools.find((tool) => tool.name === "list_jobs")?.description || "");
+  assert(remoteListJobsDescription.includes("inventory checkpoint")
+    && remoteListJobsDescription.includes("Do not repeat list_jobs"),
+  "remote tools/list left list_jobs usable as a same-response wait loop");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
   const overLimit = await callTool(base, ownerAccessToken, 2502, "run_process", {
     argv: ["must-not-run"], timeout_seconds: 601, idempotency_key: "worker-over-limit",
@@ -1302,6 +1310,55 @@ try {
   assert(fallbackStandby.response.status === 409 && fallbackStandby.body.error === "unknown_daemon_http_session",
     "superseded HTTPS fallback session was not rejected after verified WSS reclaimed ownership");
 
+  const staleTakeoverConnectionId = candidateDaemon.mbmWelcome?.connection_id;
+  assert(/^connection_[A-Za-z0-9_-]{43}$/.test(String(staleTakeoverConnectionId || "")),
+    "Worker welcome did not expose the connection identity required for generation-bound fallback takeover");
+  const stalePreviousSocket = candidateDaemon;
+  const stalePreviousClosed = waitForWsClose(stalePreviousSocket);
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const recoveredProbe = await beginDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  await completeDaemonProbe(candidateDaemon, recoveredProbe);
+  await stalePreviousClosed;
+  const staleTakeoverSessionId = `relay_http_${randomBytes(32).toString("base64url")}`;
+  const staleTakeover = await daemonHttpExchange({
+    protocol: 1,
+    session_id: staleTakeoverSessionId,
+    instance_id: candidateInstanceId,
+    takeover_websocket: true,
+    takeover_websocket_connection_id: staleTakeoverConnectionId,
+    ack_worker_seq: 0,
+    owned_call_ids: [],
+    messages: [],
+    tools: candidateTools,
+    policy: candidatePolicy,
+    relay_diagnostics: { schema_version: 1, transport: "https", outage_active: true, outage_count: 1 },
+  });
+  assert(staleTakeover.response.status === 200 && staleTakeover.body.phase === "standby",
+    "stale HTTPS takeover was not fenced off after a newer same-instance WebSocket became ready");
+  const afterStaleTakeover = await callServerInfo(base, ownerAccessToken, 8885);
+  assert(afterStaleTakeover.worker?.sockets_live?.ready === 1
+    && afterStaleTakeover.worker?.sockets_live?.https_fallback_ready === 0,
+  "stale HTTPS takeover retired the newer verified WebSocket generation");
+  const legacyTakeover = await daemonHttpExchange({
+    protocol: 1,
+    session_id: `relay_http_${randomBytes(32).toString("base64url")}`,
+    instance_id: candidateInstanceId,
+    takeover_websocket: true,
+    ack_worker_seq: 0,
+    owned_call_ids: [],
+    messages: [],
+    tools: candidateTools,
+    policy: candidatePolicy,
+    relay_diagnostics: { schema_version: 1, transport: "https", outage_active: true, outage_count: 1 },
+  });
+  assert(legacyTakeover.response.status === 200 && legacyTakeover.body.phase === "standby",
+    "rolling beta.103 fallback request was rejected instead of degrading safely without generation takeover");
+  const afterLegacyTakeover = await callServerInfo(base, ownerAccessToken, 8886);
+  assert(afterLegacyTakeover.worker?.sockets_live?.ready === 1
+    && afterLegacyTakeover.worker?.sockets_live?.https_fallback_ready === 0,
+  "legacy instance-only fallback takeover was allowed to retire a beta.104 ready WebSocket");
+
   const asymmetricRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const asymmetricCall = toolCallRequest(base, ownerAccessToken, 8890, "list_dir", { path: "." });
   const asymmetricRelay = await asymmetricRelayPromise;
@@ -1311,6 +1368,7 @@ try {
     session_id: asymmetricSessionId,
     instance_id: candidateInstanceId,
     takeover_websocket: true,
+    takeover_websocket_connection_id: candidateDaemon.mbmWelcome.connection_id,
     ack_worker_seq: 0,
     owned_call_ids: [asymmetricRelay.id],
     messages: [],

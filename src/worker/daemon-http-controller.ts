@@ -46,14 +46,14 @@ export async function handleDaemonHttpRelay(input: {
   }
   const readySockets = input.registry.readySockets();
   if (readySockets.length > 0) {
-    if (channel || !exchange.takeoverWebSocket || readySockets.some((socket) =>
-      input.registry.readyAttachment(socket)?.instanceId !== exchange.instanceId)) {
+    const takeoverTarget = exchange.takeoverWebSocket ? readySockets.find((socket) =>
+      input.registry.readyAttachment(socket)?.connectionId === exchange.takeoverWebSocketConnectionId) : undefined;
+    if (channel || !takeoverTarget || readySockets.length !== 1
+        || input.registry.readyAttachment(takeoverTarget)?.instanceId !== exchange.instanceId) {
       if (channel) input.registry.http.close(channel);
       return relayResponse("standby", null, 0, []);
     }
-    for (const socket of readySockets) {
-      await input.retireWebSocket(socket, "authenticated HTTPS fallback replacing same-instance WebSocket");
-    }
+    await input.retireWebSocket(takeoverTarget, "authenticated HTTPS fallback replacing targeted WebSocket generation");
   }
 
   if (!channel) {

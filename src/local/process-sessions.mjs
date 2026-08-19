@@ -11,10 +11,10 @@ import { validateArgv } from "./process-contract.mjs";
 import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError, errorCode } from "./errors.mjs";
-import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
-import { boundedErrorMessage, notifySessionWaiters, sessionHasOutputAfter, waitForSessionChange, waitForSpawn } from "./process-session-events.mjs";
+import { boundedErrorMessage, notifySessionWaiters, waitForSpawn } from "./process-session-events.mjs";
+import { completeProcessSessionRead, readProcessSession } from "./process-session-read.mjs";
 import { terminateProcessSessions } from "./process-session-termination.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
 import { processSessionResourceWaitMs } from "./resource-foreground-wait.mjs";
@@ -215,32 +215,16 @@ export class ProcessSessionManager {
       },
     });
   }
-
   async read(args, context = {}) {
     this.authorizeTool("read_process");
     const session = this.get(args.session_id, context);
-    const stdoutOffset = clampInteger(args.stdout_offset, 0, 0, Number.MAX_SAFE_INTEGER);
-    const stderrOffset = clampInteger(args.stderr_offset, 0, 0, Number.MAX_SAFE_INTEGER);
-    const maxBytes = clampInteger(args.max_bytes, 64 * 1024, 1, 256 * 1024);
-    const waitMs = clampInteger(args.wait_ms, 0, 0, 30_000);
-    this.throwIfCancelled(context);
-    const waitForExit = args.wait_for_exit === true;
-    if (waitMs > 0 && session.closedAt === null) {
-      const deadline = createMonotonicDeadline(waitMs);
-      if (waitForExit) {
-        while (session.closedAt === null && !deadline.expired()) {
-          await waitForSessionChange(session, Math.max(1, deadline.remainingMs()), () => this.throwIfCancelled(context));
-        }
-      } else if (!sessionHasOutputAfter(session, stdoutOffset, stderrOffset)) {
-        await waitForSessionChange(session, waitMs, () => this.throwIfCancelled(context));
-      }
-    }
+    const pendingRead = await readProcessSession({ args, context, session, throwIfCancelled: this.throwIfCancelled, now: this.now });
     this.throwIfCancelled(context);
     this.markActivity(session);
+    const read = completeProcessSessionRead(pendingRead, session, this.now());
     return {
       ...this.summary(session, context),
-      stdout: session.stdout.read(stdoutOffset, maxBytes),
-      stderr: session.stderr.read(stderrOffset, maxBytes),
+      ...read,
     };
   }
 
