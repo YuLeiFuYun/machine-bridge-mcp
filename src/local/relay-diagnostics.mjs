@@ -17,9 +17,10 @@ export function relayStatusSnapshot(state, now = Date.now()) {
     network_route: state.networkRoute,
     network_route_scope: state.networkRouteScope,
     transport: "websocket",
-    last_connect_stage: state.lastConnectStage || "idle",
-    last_connect_duration_ms: Math.max(0, Math.round(Number(state.lastConnectDurationMs) || 0)),
-    last_connect_http_status: Number.isInteger(state.lastConnectHttpStatus) ? state.lastConnectHttpStatus : null,
+    connect_timeout_ms: state.connectTimeoutMs,
+    handshake_timeout_ms: state.handshakeTimeoutMs,
+    readiness_timeout_ms: state.readinessTimeoutMs,
+    ...connectTimingFields(state),
     reconnect_attempt: state.reconnectAttempt,
     outage_active: state.outageStartedAt > 0,
     outage_count: state.outageCount,
@@ -28,7 +29,8 @@ export function relayStatusSnapshot(state, now = Date.now()) {
     outage_duration_ms: state.outageStartedAt > 0 ? Math.max(0, current - state.outageStartedAt) : 0,
     last_close_category: state.outageCount > 0 ? state.lastCloseCategory : null,
     last_close_code: state.outageCount > 0 ? state.lastCloseCode : null,
-    last_transport_error_class: state.outageCount > 0 ? (state.lastTransportErrorClass || null) : null,
+    last_transport_error_class: state.outageCount > 0 ? (state.transportError?.errorClass || null) : null,
+    ...(state.transportError?.snapshot?.() || {}),
     last_disconnected_at: isoTimestamp(state.lastDisconnectedAt),
     last_ready_at: isoTimestamp(state.lastReadyWallAt),
     last_ready_duration_ms: state.lastReadyDurationMs,
@@ -56,11 +58,10 @@ export function relayOutageFields(state, now, cause) {
     network_route: state.networkRoute,
     network_route_scope: state.networkRouteScope,
     transport: "websocket",
-    last_connect_stage: state.lastConnectStage || "idle",
-    last_connect_duration_ms: Math.max(0, Math.round(Number(state.lastConnectDurationMs) || 0)),
-    last_connect_http_status: Number.isInteger(state.lastConnectHttpStatus) ? state.lastConnectHttpStatus : null,
+    ...connectTimingFields(state),
     next_reconnect_in_ms: state.nextReconnectAt > 0 ? Math.max(0, state.nextReconnectAt - current) : 0,
-    ...(state.lastTransportErrorClass ? { error_class: state.lastTransportErrorClass } : {}),
+    ...(state.transportError?.errorClass ? { error_class: state.transportError.errorClass } : {}),
+    ...(state.transportError?.snapshot?.() || {}),
   };
 }
 
@@ -75,10 +76,9 @@ export function relayRecoveryFields(state, outageMs) {
     network_route: state.networkRoute,
     network_route_scope: state.networkRouteScope,
     transport: "websocket",
-    last_connect_stage: state.lastConnectStage || "idle",
-    last_connect_duration_ms: Math.max(0, Math.round(Number(state.lastConnectDurationMs) || 0)),
-    last_connect_http_status: Number.isInteger(state.lastConnectHttpStatus) ? state.lastConnectHttpStatus : null,
-    ...(state.lastTransportErrorClass ? { error_class: state.lastTransportErrorClass } : {}),
+    ...connectTimingFields(state),
+    ...(state.transportError?.errorClass ? { error_class: state.transportError.errorClass } : {}),
+    ...(state.transportError?.snapshot?.() || {}),
   };
 }
 
@@ -88,4 +88,12 @@ function isoTimestamp(value) {
 
 function roundSeconds(milliseconds) {
   return Math.max(1, Math.round(Number(milliseconds || 0) / 1000));
+}
+
+function connectTimingFields(state) {
+  const value = state.connectTiming?.snapshot?.();
+  return value && typeof value === "object" ? value : {
+    last_connect_stage: "idle", last_connect_duration_ms: 0,
+    last_connect_milestones_ms: {}, last_connect_http_status: null,
+  };
 }

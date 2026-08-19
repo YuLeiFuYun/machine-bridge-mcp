@@ -234,6 +234,8 @@ read_job
 cancel_job
 ```
 
+In hosted remote use, successful `start_job` acceptance hands execution to durable background ownership; it is not a reason to keep the current assistant response open. Use `read_job` at most once as an active-job status checkpoint in that response, and use `list_jobs` as a one-shot inventory checkpoint rather than a substitute wait loop. If the returned job remains active/non-terminal, return its `job_id`, status, and current phase to the user and inspect it again only in a later user turn or on an explicit independent request. Local terminal inspection keeps its normal operator-driven behavior.
+
 From the local terminal:
 
 ```sh

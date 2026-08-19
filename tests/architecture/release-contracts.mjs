@@ -133,6 +133,18 @@ for (const file of ["generate-worker-types.mjs", "run-worker-dry-run.mjs", "wran
 }
 if (packageJson.scripts?.["worker:types"] !== "node scripts/generate-worker-types.mjs") throw new Error("generated Worker types are not isolated behind the cross-platform generator");
 if (packageJson.scripts?.["worker:dry-run"] !== "node scripts/run-worker-dry-run.mjs") throw new Error("Worker deployment dry-run bypasses the bounded Wrangler lifecycle adapter");
+const workerTypesGeneratorSource = readFileSync(join(root, "scripts", "generate-worker-types.mjs"), "utf8");
+const workerToolCatalogSource = readFileSync(join(root, "src", "worker", "tool-catalog.ts"), "utf8");
+if (workerToolCatalogSource.includes("use process sessions or managed jobs for longer work")
+    || !workerToolCatalogSource.includes("split longer browser/application workflows into independently terminal calls")
+    || !workerToolCatalogSource.includes("start_process only when interactive stdin or incremental process output is actually required")) {
+  throw new Error("Worker configurable-foreground guidance can still route generic long work into process sessions");
+}
+if (!workerTypesGeneratorSource.includes("relative(cwd, targetPath)")
+    || !workerTypesGeneratorSource.includes("Wrangler types target must remain inside its working directory")
+    || workerTypesGeneratorSource.includes('args: ["types", targetPath]')) {
+  throw new Error("Worker type generation can leak or escape through an absolute generated-file path");
+}
 const wranglerLifecycleSource = readFileSync(join(root, "scripts", "wrangler-command-lifecycle.mjs"), "utf8");
 for (const required of ["completionMarker", 'child.kill("SIGTERM")', 'child.kill("SIGKILL")', "completed but did not exit", "timed out after"]) {
   if (!wranglerLifecycleSource.includes(required)) throw new Error(`bounded Wrangler lifecycle contract regressed: ${required}`);
@@ -1388,21 +1400,63 @@ if (!serverInfoToolDeliverySource.includes("remote_process_session_start_executi
 }
 if (relayContract.newCallReconnectGraceMs !== 15_000
     || relayContract.transportPingIntervalMs !== 5_000
+    || relayContract.transportPingDispatchTimeoutMs !== 30_000
     || relayContract.transportPongTimeoutMs !== 10_000
+    || relayContract.transportApplicationConfirmationTimeoutMs !== 15_000
+    || relayContract.transportPingDispatchTimeoutMs <= relayContract.transportPongTimeoutMs
     || relayContract.daemonApplicationHeartbeatIntervalMs !== 25_000
     || relayContract.daemonApplicationHeartbeatTimeoutMs !== 75_000
     || relayContract.httpFallbackPollIntervalMs !== 1_000
     || relayContract.httpFallbackMinimumRequestIntervalMs !== 750
+    || relayContract.httpFallbackStandbyRetryIntervalMs !== 5_000
+    || relayContract.httpFallbackFailureBackoffBaseMs !== 1_000
+    || relayContract.httpFallbackFailureBackoffMaximumMs !== 5_000
     || relayContract.httpFallbackActivationDelayMs !== 1_500
     || relayContract.httpFallbackRequestTimeoutMs !== 7_000
     || relayContract.httpFallbackLivenessTimeoutMs !== 12_000
     || relayContract.httpFallbackRequestTimeoutMs * 2 > relayContract.newCallReconnectGraceMs
     || 60_000 / relayContract.httpFallbackMinimumRequestIntervalMs > 80
-    || relayContract.transportPingIntervalMs + relayContract.transportPongTimeoutMs >= relayContract.defaultRemoteToolExecutionTimeoutMs
     || relayContract.defaultRemoteToolExecutionTimeoutMs !== 20_000
     || relayContract.processSessionStartExecutionTimeoutMs !== 10_000
     || relayContract.maximumManagedJobResourceAdmissionWaitMs !== 1_800_000) {
   throw new Error("relay liveness, hosted reply-safety, or managed-job admission timing contract drifted from the incident-reviewed budget");
+}
+const relayHeartbeatSource = readFileSync(join(root, "src", "local", "relay-heartbeat.mjs"), "utf8");
+const relayLivenessSource = readFileSync(join(root, "src", "local", "relay-liveness.mjs"), "utf8");
+const relayInboundStateSource = readFileSync(join(root, "src", "local", "relay-inbound-state.mjs"), "utf8");
+const relayProbeDispatchSource = readFileSync(join(root, "src", "local", "relay-probe-dispatch.mjs"), "utf8");
+const relayTransportProbeSendSource = readFileSync(join(root, "src", "local", "relay-transport-probe-send.mjs"), "utf8");
+const relayLivenessActionsSource = readFileSync(join(root, "src", "local", "relay-liveness-actions.mjs"), "utf8");
+const relayConnectionSource = readFileSync(join(root, "src", "local", "relay-connection.mjs"), "utf8");
+const relayTransportConfirmationSource = readFileSync(join(root, "src", "local", "relay-transport-confirmation.mjs"), "utf8");
+const httpRelayConnectionSource = readFileSync(join(root, "src", "local", "daemon-http-relay-connection.mjs"), "utf8");
+const deviceIdentitySource = readFileSync(join(root, "src", "local", "device-identity.mjs"), "utf8");
+const deviceSessionAuthSource = readFileSync(join(root, "src", "shared", "device-session-auth.mjs"), "utf8");
+if (!relayHeartbeatSource.includes("probeDispatch.complete")
+    || !relayHeartbeatSource.includes("satisfiedByProof")
+    || !relayHeartbeatSource.includes("probeDeadline.sent(dispatchedAt, true)")
+    || !relayLivenessSource.includes("this.inbound.observeApplicationInbound(this.application)")
+    || !relayLivenessSource.includes("this.inbound.observeApplicationProof(this.transport, this.application)")
+    || !relayInboundStateSource.includes("observeApplicationInbound(application)")
+    || !relayInboundStateSource.includes("observeApplicationProof(transport, application)")
+    || !relayInboundStateSource.includes("transport.observeInbound();\n    application.observeInbound();")
+    || relayProbeDispatchSource.includes("satisfiedByInbound")
+    || relayProbeDispatchSource.includes("last_probe_dispatch_inbound_recovery_age_ms")
+    || !relayTransportProbeSendSource.includes("socket.ping((error) =>")
+    || !relayLivenessActionsSource.includes("relay_transport_send_timeout")
+    || !relayConnectionSource.includes("observeApplicationPong(relayContext = {})")
+    || !relayConnectionSource.includes("if (this.socket !== socket || this.closed) return;")
+    || !relayConnectionSource.includes("const DEFAULT_CONNECT_TIMEOUT_MS = 30_000")
+    || !relayConnectionSource.includes("perMessageDeflate: false")
+    || !relayTransportConfirmationSource.includes("this.dispatch.cancel(token)")
+    || !relayTransportConfirmationSource.includes("transport_confirmation_pending")
+    || !httpRelayConnectionSource.includes("this.standbyRetryIntervalMs")
+    || !httpRelayConnectionSource.includes("this.consecutiveFailures > 0")
+    || !httpRelayConnectionSource.includes("this.pollTimerDueAt <= dueAt")
+    || !deviceSessionAuthSource.includes("24 * 60 * 60")
+    || !deviceIdentitySource.includes('code: "device_session_expired"')
+    || !relayConnectionSource.includes("relay_device_session_expired")) {
+  throw new Error("relay Ping/confirmation/connect hardening or 24-hour daemon-session recovery contract regressed");
 }
 const resourceAdmissionPolicySource = readFileSync(join(root, "src", "local", "resource-admission-policy.mjs"), "utf8");
 const resourceAdmissionSource = readFileSync(join(root, "src", "local", "resource-admission.mjs"), "utf8");
@@ -1420,6 +1474,8 @@ const computerUseDoc = readFileSync(join(root, "docs", "COMPUTER_USE.md"), "utf8
 const loggingDoc = readFileSync(join(root, "docs", "LOGGING.md"), "utf8");
 const operationsDoc = readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8");
 const privacyDoc = readFileSync(join(root, "docs", "PRIVACY.md"), "utf8");
+const managedJobsDoc = readFileSync(join(root, "docs", "MANAGED_JOBS.md"), "utf8");
+const multiAccountDoc = readFileSync(join(root, "docs", "MULTI_ACCOUNT.md"), "utf8");
 const serverMetadata = readFileSync(join(root, "src", "shared", "server-metadata.json"), "utf8");
 for (const [file, content, stale] of [
   ["README.md", readme, "ordinary daemon tools use at most 30 seconds"],
@@ -1445,25 +1501,29 @@ for (const [file, content, stale] of [
 for (const [file, content, required] of [
   ["README.md", readme, "Hosted synchronous calls otherwise retain their ordinary 20-second execution plus separate five-second Worker settlement margin"],
   ["README.md", readme, "compound `computer_observe` / `computer_act` retain 30-second defaults"],
-  ["README.md", readme, "scheduling-responsive daemon"],
-  ["README.md", readme, "WSS black-hole detection is therefore bounded to fifteen seconds"],
+  ["README.md", readme, "independent fifteen-second application-confirmation window"],
+  ["README.md", readme, "A protocol Pong or explicit application `pong` during that second stage preserves WSS"],
+  ["README.md", readme, "WSS connect attempts have a thirty-second outer budget"],
   ["README.md", readme, "The daemon sends `resume_calls_ack.missing_ids` only after replacement readiness"],
   ["docs/COMPUTER_USE.md", computerUseDoc, "one end-to-end observation budget"],
   ["docs/COMPUTER_USE.md", computerUseDoc, "Every post-action capture, including the first mandatory one, is capped by both"],
   ["docs/ARCHITECTURE.md", architecture, "compound `computer_observe` and `computer_act` default to 30 seconds"],
-  ["docs/ARCHITECTURE.md", architecture, "protocol-level WebSocket Ping/Pong watchdog"],
-  ["docs/ARCHITECTURE.md", architecture, "full transport-detection horizon"],
-  ["docs/ARCHITECTURE.md", architecture, "scheduling-responsive daemon"],
+  ["docs/ARCHITECTURE.md", architecture, "fifteen-second application-confirmation window"],
+  ["docs/ARCHITECTURE.md", architecture, "thirty-second per-attempt connect budget"],
+  ["docs/ARCHITECTURE.md", architecture, "application heartbeat/confirmation is gated on verified readiness"],
   ["docs/ARCHITECTURE.md", architecture, "`resume_calls_ack.missing_ids`"],
   ["docs/ARCHITECTURE.md", architecture, "no possibly executed tool call is automatically replayed"],
   ["docs/ARCHITECTURE.md", architecture, "`previous_ready_inbound_silence_ms`"],
   ["docs/TESTING.md", testingDoc, "compound `computer_observe`/`computer_act` default to 30 seconds"],
   ["docs/TESTING.md", testingDoc, "five-second protocol-level transport probe"],
-  ["docs/TESTING.md", testingDoc, "ten-second inbound-silence termination with a fifteen-second probe-plus-timeout detection upper bound while the daemon is scheduling-responsive"],
+  ["docs/TESTING.md", testingDoc, "thirty-second local sender-dispatch bound, full ten-second response deadline measured only from confirmed probe dispatch"],
   ["docs/TESTING.md", testingDoc, "same-instance `resume_calls_ack.missing_ids` settlement"],
   ["docs/TESTING.md", testingDoc, "`previous_ready_inbound_silence_ms` retention"],
   ["docs/OPERATIONS.md", operationsDoc, "compound `computer_observe` and `computer_act` default to 30 seconds"],
-  ["docs/OPERATIONS.md", operationsDoc, "WebSocket remains preferred and uses a five-second protocol-level probe with a ten-second inbound-silence timeout"],
+  ["docs/OPERATIONS.md", operationsDoc, "while a confirmed Ping retains its full ten-second Pong deadline"],
+  ["docs/OPERATIONS.md", operationsDoc, "`last_connect_milestones_ms` contains only bounded relative timings"],
+  ["docs/OPERATIONS.md", operationsDoc, "takeover of the Worker-issued `connection_id` for that exact disconnected WebSocket generation"],
+  ["docs/LOGGING.md", loggingDoc, "`daemon.websocket.closed` records only a bounded close code plus `was_clean`"],
   ["docs/OPERATIONS.md", operationsDoc, "`resume_calls_ack.missing_ids`"],
   ["docs/OPERATIONS.md", operationsDoc, "`previous_ready_inbound_silence_ms` measures how long"],
   ["docs/OPERATIONS.md", operationsDoc, "`server_info.daemon.previous_connection` retains only the last verified channel's transport"],
@@ -1475,7 +1535,7 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "the thirty-minute default inactivity grace begins only after the last one settles"],
   ["docs/OPERATIONS.md", operationsDoc, "A remote `start_process` extends the same assertion only after resource admission succeeds"],
   ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold `/usr/bin/caffeinate -i -w <runner-pid>`"],
-  ["docs/LOGGING.md", loggingDoc, "classify ten seconds without inbound transport proof as `relay_transport_timeout`"],
+  ["docs/LOGGING.md", loggingDoc, "opens one fifteen-second application-confirmation window"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.not_received_after_reconnect` retains the same aggregate-only `calls` shape"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.redelivered_after_proven_non_delivery` with only an aggregate `calls` count"],
   ["docs/LOGGING.md", loggingDoc, "runtime.idle_sleep_guard.unavailable"],
@@ -1507,28 +1567,68 @@ for (const [file, content, required] of [
   ["docs/TESTING.md", testingDoc, "`local-self-test` keeps process-admission behavior deterministic instead of inheriting shared-host pressure"],
   ["docs/TESTING.md", testingDoc, "`agent-context-test` likewise uses an isolated coordinator, synthetic healthy-host sampling, and a ten-second test-only resource-admission budget"],
   ["docs/LOGGING.md", loggingDoc, "resource_admission_reason"],
+  ["docs/LOGGING.md", loggingDoc, "reason=coordinator_busy"],
   ["docs/OPERATIONS.md", operationsDoc, "managed runner can separately wait up to thirty minutes for cooperative machine-user resource admission"],
+  ["docs/OPERATIONS.md", operationsDoc, "snapshot_available=false"],
+  ["docs/OPERATIONS.md", operationsDoc, "reason=coordinator_busy"],
   ["docs/OPERATIONS.md", operationsDoc, "`server_info.tool_delivery.managed_job_resource_admission_wait_max_ms`"],
   ["docs/OPERATIONS.md", operationsDoc, "`read_job.current_phase` is `resource_admission`"],
+  ["docs/OPERATIONS.md", operationsDoc, "hosted remote projection caps each blocking wait at 1 second"],
+  ["docs/OPERATIONS.md", operationsDoc, "`status_polling_mode=checkpoint`"],
+  ["docs/OPERATIONS.md", operationsDoc, "`blocking_poll_throttled`"],
+  ["docs/OPERATIONS.md", operationsDoc, "`next_blocking_poll_after_ms`"],
+  ["docs/OPERATIONS.md", operationsDoc, "`last_transport_error_reason`"],
+  ["docs/OPERATIONS.md", operationsDoc, "`relay_transport_send_timeout`"],
+  ["docs/OPERATIONS.md", operationsDoc, "`relay_device_session_expired`"],
+  ["docs/OPERATIONS.md", operationsDoc, "thirty-second bounded dispatch window"],
+  ["docs/OPERATIONS.md", operationsDoc, "original call deadline expired during reconnect"],
+  ["docs/OPERATIONS.md", operationsDoc, "Treat `read_job` as a checkpoint"],
+  ["docs/OPERATIONS.md", operationsDoc, "`list_jobs` is a one-shot inventory checkpoint"],
   ["docs/OPERATIONS.md", operationsDoc, "delegated non-owner reads omit that machine-user scheduling timing"],
   ["docs/OPERATIONS.md", operationsDoc, "`waiters.drain_active`"],
   ["docs/OPERATIONS.md", operationsDoc, "`pressure.state=green` means the sampled host/reservation pressure is within limits, not that fairness can admit every queued root immediately"],
   ["docs/OPERATIONS.md", operationsDoc, "Durable process execution is a separate 1–600-second contract"],
   ["docs/PRIVACY.md", privacyDoc, "including DPoP-proof-shaped compact tokens"],
   ["docs/PRIVACY.md", privacyDoc, "not a generic IP-address anonymizer"],
+  ["docs/PRIVACY.md", privacyDoc, "Wrangler-generated `.wrangler/` files are ignored"],
+  ["docs/PRIVACY.md", privacyDoc, "working-directory-relative output path"],
+  ["docs/PRIVACY.md", privacyDoc, "`.git/worktrees/*/gitdir` can legitimately contain absolute local filesystem paths"],
+  ["docs/PRIVACY.md", privacyDoc, "Treat that stdout/JSON as secret material"],
+  ["docs/MULTI_ACCOUNT.md", multiAccountDoc, "must not be copied to shared logs or support artifacts"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "Use `read_job` at most once as an active-job status checkpoint"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "`list_jobs` as a one-shot inventory checkpoint"],
   ["src/shared/server-metadata.json", serverMetadata, "durable-first one-step jobs with a 10-second acceptance budget"],
-  ["src/shared/server-metadata.json", serverMetadata, "WebSocket remains the preferred daemon transport: protocol-level Ping runs every 5 seconds"],
+  ["src/shared/server-metadata.json", serverMetadata, "WebSocket remains the preferred daemon transport: a protocol-level Ping is attempted every 5 seconds"],
   ["src/shared/server-metadata.json", serverMetadata, "A new daemon-backed call may wait at most 15 seconds for verified recovery"],
   ["src/shared/server-metadata.json", serverMetadata, "A resume_calls_ack.missing_ids entry proves the same daemon has neither active-call nor retained-result ownership"],
   ["src/shared/server-metadata.json", serverMetadata, "previous_ready_inbound_silence_ms"],
   ["src/shared/server-metadata.json", serverMetadata, "separate pre-spawn resource-admission wait of up to 30 minutes"],
   ["src/shared/server-metadata.json", serverMetadata, "read_job.current_phase=resource_admission"],
+  ["src/shared/server-metadata.json", serverMetadata, "Hosted read-only status and diagnostic tools are checkpoints, not wait loops"],
+  ["src/shared/server-metadata.json", serverMetadata, "Do not repeatedly call read_process, read_job, list_jobs, server_info, diagnose_runtime"],
+  ["src/shared/server-metadata.json", serverMetadata, "Treat read_job as a status checkpoint"],
+  ["src/shared/server-metadata.json", serverMetadata, "Treat list_jobs as a one-shot inventory checkpoint"],
+  ["src/shared/server-metadata.json", serverMetadata, "stop polling until a later user turn or explicit request"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "owner-authorized multi-step"],
   ["src/shared/server-metadata.json", serverMetadata, "execution budget above 600 seconds"],
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted current hosted timing/diagnostic guidance: ${required}`);
+}
+if (serverMetadata.includes("inspect completion with read_job") || serverMetadata.includes("use short polling")) {
+  throw new Error("shared server guidance can still induce same-response durable/process polling loops");
+}
+if (operationsDoc.includes("Use short `read_process` polls")
+  || operationsDoc.includes("read the job to a terminal state")
+  || operationsDoc.includes("hosted remote projection caps each wait at 5 seconds")
+  || operationsDoc.includes("one blocking `read_process` checkpoint")) {
+  throw new Error("operations guidance can still induce same-response process/job polling loops");
+}
+for (const stale of ["`poll_throttled`", "`next_poll_after_ms`", "`remote_process_poll_wait_max_ms`", "`remote_process_poll_cooldown_ms`"]) {
+  if (readme.includes(stale) || architecture.includes(stale) || operationsDoc.includes(stale) || testingDoc.includes(stale) || serverMetadata.includes(stale)) {
+    throw new Error(`current hosted documentation retained ambiguous process-poll field name: ${stale}`);
+  }
 }
 
 const engineering = readFileSync(join(root, "docs", "ENGINEERING.md"), "utf8");
@@ -1591,6 +1691,11 @@ const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf
 const sharedToolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
 if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || !toolReference.includes(`Tool count: **${sharedToolCatalog.length}**`)) {
   throw new Error("generated MCP tool reference is missing or malformed");
+}
+const obsoleteLongWorkGuidance = "use process sessions or managed jobs for longer work";
+if (sharedToolCatalog.some((tool) => String(tool?.description || "").includes(obsoleteLongWorkGuidance))
+    || toolReference.includes(obsoleteLongWorkGuidance)) {
+  throw new Error("current tool catalog/reference still routes generic browser/application work into process sessions");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
 for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {

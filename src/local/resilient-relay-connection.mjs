@@ -21,6 +21,8 @@ export class ResilientRelayConnection {
       ...options.websocket,
       onReady: (event) => this.handleReady("websocket", event),
       onDisconnect: () => this.handleDisconnect("websocket"),
+      onDegraded: (event) => this.handleDegraded(event),
+      onRecovered: (event) => this.handleRecovered(event),
     });
     this.http = new HttpRelayClass({
       ...options.http,
@@ -65,6 +67,9 @@ export class ResilientRelayConnection {
         transport: "https",
         network_route: http.network_route,
         last_transport_error_class: http.last_transport_error_class,
+        last_transport_error_reason: http.last_transport_error_reason,
+        last_transport_error_ready: http.last_transport_error_ready === true,
+        last_transport_error_authenticated: http.last_transport_error_authenticated === true,
         outage_active: false,
         outage_duration_ms: this.fallbackRecoveredOutageMs,
         https_fallback_active: true,
@@ -73,12 +78,14 @@ export class ResilientRelayConnection {
         websocket_outage_active: websocket.outage_active === true,
         websocket_outage_duration_ms: Number(websocket.outage_duration_ms) || 0,
         websocket_reconnect_attempt: Number(websocket.reconnect_attempt) || 0,
+        https_fallback_warming: false,
       };
     }
     return {
       ...websocket,
       transport: "websocket",
       https_fallback_active: false,
+      https_fallback_warming: http.closed === false && http.ready !== true,
       https_fallback: http,
     };
   }
@@ -115,6 +122,9 @@ export class ResilientRelayConnection {
   confirmReady(message, relayContext = {}) {
     return relayContext?.transport === "https" ? this.http.confirmReady(message) : this.websocket.confirmReady(message);
   }
+  observeApplicationPong(relayContext = {}) {
+    return relayContext?.transport === "https" ? false : this.websocket.observeApplicationPong(relayContext);
+  }
   handleServerError(message, relayContext = {}) {
     if (relayContext?.transport === "https") return this.http.interrupt(message?.error);
     return this.websocket.handleServerError(message);
@@ -142,7 +152,8 @@ export class ResilientRelayConnection {
     if (this.closed) return;
     if (transport === "websocket") {
       const wasPrimary = this.activeTransport === "websocket";
-      this.armFallback(0, wasPrimary);
+      const takeoverConnectionId = wasPrimary ? String(this.websocket.takeoverConnectionId?.() || "") : "";
+      this.armFallback(0, takeoverConnectionId);
       if (!wasPrimary) return;
     } else if (this.activeTransport !== "https") return;
     this.activeTransport = "";
@@ -150,17 +161,29 @@ export class ResilientRelayConnection {
     catch { /* The transport is already unavailable; observer failure must not block failover/reconnect. */ }
   }
 
-  armFallback(delay, takeoverWebSocket = false) {
+  handleDegraded() {
+    if (this.closed || this.activeTransport !== "websocket") return;
+    this.armFallback(0, "", true);
+  }
+
+  handleRecovered() {
+    if (this.closed || this.activeTransport !== "websocket") return;
+    this.clearFallbackTimer();
+    if (this.http.status().ready !== true) this.http.stop();
+  }
+
+  armFallback(delay, takeoverWebSocketConnectionId = "", allowReadyWebSocket = false) {
     if (this.closed) return;
+    const takeoverWebSocket = /^connection_[A-Za-z0-9_-]{43}$/.test(String(takeoverWebSocketConnectionId || ""));
     if (this.http.status().closed === false) {
-      if (takeoverWebSocket) this.http.start({ takeoverWebSocket: true });
+      if (takeoverWebSocket) this.http.start({ takeoverWebSocket: true, takeoverWebSocketConnectionId });
       return;
     }
     if (this.fallbackTimer) return;
     this.fallbackTimer = this.scheduler.setTimeout(() => {
       this.fallbackTimer = null;
-      if (this.closed || this.websocket.status().ready === true) return;
-      this.http.start({ takeoverWebSocket });
+      if (this.closed || (!allowReadyWebSocket && this.websocket.status().ready === true)) return;
+      this.http.start({ takeoverWebSocket, ...(takeoverWebSocket ? { takeoverWebSocketConnectionId } : {}) });
     }, Math.max(0, Number(delay) || 0));
     this.fallbackTimer?.unref?.();
   }

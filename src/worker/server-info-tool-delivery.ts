@@ -9,7 +9,8 @@ export function remoteToolDeliveryContract(): Record<string, unknown> {
     remote_process_execution_timeout_max_ms: relayContract.maximumDurableProcessExecutionTimeoutMs,
     managed_job_resource_admission_wait_max_ms: relayContract.maximumManagedJobResourceAdmissionWaitMs,
     remote_default_tool_execution_max_ms: relayContract.defaultRemoteToolExecutionTimeoutMs,
-    remote_process_poll_wait_max_ms: relayContract.maximumProcessReadWaitMs,
+    remote_process_blocking_poll_wait_max_ms: relayContract.maximumProcessReadWaitMs,
+    remote_process_blocking_poll_cooldown_ms: relayContract.remoteProcessBlockingPollCooldownMs,
     worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
   };
 }

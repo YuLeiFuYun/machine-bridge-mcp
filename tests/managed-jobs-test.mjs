@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activeManagedJobs, inspectResourceFile, launchRunner, ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { hostedManagedJobListStatus, hostedManagedJobStatus } from "../src/local/managed-job-hosted-status.mjs";
 import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local/managed-job-storage.mjs";
 import { normalizeResourceRegistry } from "../src/local/managed-job-plan.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent } from "../src/local/managed-job-runner.mjs";
@@ -48,6 +49,28 @@ function testManagedStateIdentityRetry() {
   "managed job state identity retry became unbounded or lost its stable error classification");
   assert(resourceErrorClass(Object.assign(new Error("corrupt terminal state"), { code: "integrity_error" })) === "integrity_error",
     "managed-job diagnostics collapsed an integrity failure into generic resource unavailability");
+}
+
+function testHostedManagedJobStatusProjection() {
+  const relayContext = { authority: { origin: "relay" } };
+  for (const status of ["queued", "running", "cleaning", "interrupted"]) {
+    const projected = hostedManagedJobStatus({ status }, relayContext);
+    assert(projected.host_turn_handoff_recommended === true && projected.status_polling_mode === "checkpoint",
+      `active managed-job state ${status} did not hand the hosted turn back`);
+  }
+  const terminal = hostedManagedJobStatus({ status: "succeeded" }, relayContext);
+  assert(terminal.host_turn_handoff_recommended === false && terminal.status_polling_mode === "checkpoint",
+    "terminal managed-job status incorrectly recommended hosted-turn handoff");
+  assert(Object.keys(hostedManagedJobStatus({ status: "running" }, {})).length === 0,
+    "local managed-job status gained relay-only hosted-turn metadata");
+  const activeListing = hostedManagedJobListStatus([{ status: "succeeded" }, { status: "cleaning" }], relayContext);
+  assert(activeListing.host_turn_handoff_recommended === true && activeListing.status_polling_mode === "checkpoint",
+    "remote list_jobs did not hand back a visible active job");
+  const terminalListing = hostedManagedJobListStatus([{ status: "succeeded" }], relayContext);
+  assert(terminalListing.host_turn_handoff_recommended === false && terminalListing.status_polling_mode === "checkpoint",
+    "terminal-only remote list_jobs incorrectly recommended handoff");
+  assert(Object.keys(hostedManagedJobListStatus([{ status: "running" }], {})).length === 0,
+    "local list_jobs gained relay-only hosted-turn metadata");
 }
 
 async function setRunnerFixtureState(jobRoot, jobId, queued) {
@@ -363,6 +386,7 @@ await writeFile(helperFile, "temporary", "utf8");
 try {
   testTerminalPersistenceBoundary();
   testManagedStateIdentityRetry();
+  testHostedManagedJobStatusProjection();
   await testRunnerClaimBoundary();
   await testRecoveryClaimFailurePreservesRetryState();
   await testManagedJobCapacityBoundary();
@@ -695,6 +719,11 @@ try {
     const delayedStatus = manager.read({ job_id: delayedId });
     assert(delayedStatus.status === "queued" && Number(delayedStatus.recovery_attempts || 0) === 0,
       `an active provisional runner was mistaken for an interrupted job after the recovery grace period: status=${JSON.stringify(delayedStatus)} claim=${await readFile(join(delayedDir, "runner.pid"), "utf8").catch(() => "missing")}`);
+    const remoteDelayedStatus = manager.read({ job_id: delayedId }, { authority: { origin: "relay", owner: true } });
+    assert(remoteDelayedStatus.host_turn_handoff_recommended === true && remoteDelayedStatus.status_polling_mode === "checkpoint",
+      "remote active read_job did not recommend handing the hosted turn back instead of polling to terminal state");
+    assert(!("host_turn_handoff_recommended" in delayedStatus) && !("status_polling_mode" in delayedStatus),
+      "local read_job unexpectedly gained hosted-turn polling metadata");
     const inFlightFinishedAt = new Date().toISOString();
     await writeFile(join(delayedDir, "result.json"), `${JSON.stringify({
       job_id: delayedId, name: "provisional runner identity", status: "succeeded",
@@ -706,6 +735,9 @@ try {
       && coherentTerminalRead.result_persisted === true
       && coherentTerminalRead.artifact_cleanup_pending === true,
     "read_job combined an active status generation with a newer terminal result generation");
+    const remoteTerminalRead = manager.read({ job_id: delayedId }, { authority: { origin: "relay", owner: true } });
+    assert(remoteTerminalRead.host_turn_handoff_recommended === false && remoteTerminalRead.status_polling_mode === "checkpoint",
+      "remote terminal read_job incorrectly recommended handing off an already settled job");
     await writeFile(join(delayedDir, "result.json"), `${JSON.stringify({
       job_id: delayedId, status: "running", steps: [], finally_steps: [], finished_at: inFlightFinishedAt,
     })}\n`, { mode: 0o600 });

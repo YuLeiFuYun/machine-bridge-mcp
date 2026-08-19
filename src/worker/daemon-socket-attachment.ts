@@ -50,6 +50,6 @@ export function sanitizeDaemonInstanceId(value: unknown): string | undefined {
   return typeof value === "string" && /^daemon_[A-Za-z0-9_-]{16,96}$/.test(value) ? value : undefined;
 }
 
-function sanitizeConnectionId(value: unknown): string | undefined {
+export function sanitizeConnectionId(value: unknown): string | undefined {
   return typeof value === "string" && /^connection_[A-Za-z0-9_-]{43}$/.test(value) ? value : undefined;
 }

@@ -10,7 +10,7 @@ import type { DaemonChannel } from "./daemon-channel.ts";
 import { trySendDaemonChannel } from "./daemon-channel.ts";
 import { notifyReadyDaemon, readyDaemonWaiterSnapshot } from "./daemon-ready-waiters.ts";
 import { readyDaemonForDispatch } from "./daemon-ready-dispatch.ts";
-import { daemonToolTimeoutBudgetAfterDelay } from "./daemon-recovery-budget.ts";
+import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "./daemon-recovery-budget.ts";
 import { daemonStatusSnapshot } from "./daemon-status.ts";
 import { sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
 import { sanitizeDaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
@@ -57,7 +57,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.103";
+const SERVER_VERSION = "3.0.0-beta.104";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -370,8 +370,12 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     await this.scheduleRuntimeAlarm();
   }
 
-  async webSocketClose(ws: WebSocket): Promise<void> {
+  async webSocketClose(ws: WebSocket, code: number, _reason: string, wasClean: boolean): Promise<void> {
     const cleanup = this.cleanupDaemonSocket(ws, "daemon disconnected");
+    if (cleanup?.first) this.observability.event("info", "daemon.websocket.closed", {
+      close_code: Number.isInteger(code) && code >= 1000 && code <= 4999 ? code : 0,
+      was_clean: wasClean === true,
+    });
     if (cleanup) { await cleanup.task; await this.scheduleRuntimeAlarm(); }
   }
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
@@ -623,16 +627,18 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       closeWebSocketQuietly(socket, 1012, "replaced by newer daemon candidate");
     }
 
+    const connectionId = randomToken("connection");
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
     this.observability.socketCandidate();
-    this.daemonRegistry.beginCandidate(server, challenge, preflight, randomToken("connection"));
+    this.daemonRegistry.beginCandidate(server, challenge, preflight, connectionId);
     await this.scheduleRuntimeAlarm();
     const welcomed = trySendWebSocket(server, {
       type: "welcome",
       server: SERVER_NAME,
       version: SERVER_VERSION,
+      connection_id: connectionId,
       worker_origin: workerOrigin,
       authentication: {
         scheme: challenge.scheme,
@@ -698,7 +704,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return this.pending.detachSocket(
       socket,
       DAEMON_RECONNECT_GRACE_MS,
-      (record) => dispatchedDaemonDisconnectError(`${message}; reconnect grace expired`, record.recovery),
+      (record) => {
+        const expiry = daemonReconnectExpiry(record, DAEMON_RECONNECT_GRACE_MS);
+        return dispatchedDaemonDisconnectError(`${message}; ${expiry.message}`, record.recovery, expiry.reason);
+      },
     );
   }
 

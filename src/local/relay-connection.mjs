@@ -3,6 +3,9 @@ import { performance } from "node:perf_hooks";
 import { classifyOperationalError } from "./log.mjs";
 import { proxyAgentForWebSocket } from "./network-proxy.mjs";
 import { RelayLiveness } from "./relay-liveness.mjs";
+import { relayLivenessActions } from "./relay-liveness-actions.mjs";
+import { RelayConnectTiming } from "./relay-connect-timing.mjs";
+import { RelayTransportErrorState } from "./relay-transport-error-state.mjs";
 import {
   boundedPositiveInteger, classifyRelayTransportError, formatAttempts, formatDuration, normalizeWorkerUrl, redactUrl,
   relayHttpStatusFromError, sanitizeCloseReason, terminateSocket, tracedTlsConnection,
@@ -12,13 +15,13 @@ import {
 } from "./relay-diagnostics.mjs";
 import {
   acknowledgementMismatch, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory, relayCloseUserCause,
-  relayFatalMessage, relayOutageUserAction, relayServerErrorReconnectCategory, sanitizeProtocolErrorCode, welcomeMismatch,
+  relayConnectionId, relayFatalMessage, relayOutageUserAction, relayServerErrorReconnectCategory, sanitizeProtocolErrorCode, welcomeMismatch,
 } from "./relay-connection-classification.mjs";
 export {
   acknowledgementMismatch, isRelayReadyContext, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory,
   relayOutageUserAction, relayServerErrorReconnectCategory, welcomeMismatch,
 } from "./relay-connection-classification.mjs";
-const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const DEFAULT_READINESS_TIMEOUT_MS = 15_000;
 const DEFAULT_OUTAGE_WARN_AFTER_MS = 10_000;
@@ -42,6 +45,8 @@ export class RelayConnection {
     this.onMessage = typeof options.onMessage === "function" ? options.onMessage : () => {};
     this.onDisconnect = typeof options.onDisconnect === "function" ? options.onDisconnect : () => {};
     this.onReady = typeof options.onReady === "function" ? options.onReady : () => {};
+    this.onDegraded = typeof options.onDegraded === "function" ? options.onDegraded : () => {};
+    this.onRecovered = typeof options.onRecovered === "function" ? options.onRecovered : () => {};
     this.onSuperseded = typeof options.onSuperseded === "function" ? options.onSuperseded : () => {};
     this.onFatal = typeof options.onFatal === "function" ? options.onFatal : () => {};
     this.WebSocketClass = options.WebSocketClass || WebSocket;
@@ -86,7 +91,7 @@ export class RelayConnection {
     this.outageCount = 0;
     this.lastCloseCategory = "connection_interrupted";
     this.lastCloseCode = 0;
-    this.lastTransportErrorClass = "";
+    this.transportError = new RelayTransportErrorState();
     this.lastDisconnectedAt = 0;
     this.lastReadyAt = 0;
     this.lastReadyWallAt = 0;
@@ -94,42 +99,27 @@ export class RelayConnection {
     this.lastReconnectDelayMs = 0;
     this.nextReconnectAt = 0;
     this.nextReconnectWallAt = 0;
-    this.connectAttemptStartedAt = null;
-    this.lastConnectDurationMs = 0;
-    this.lastConnectStage = "idle";
-    this.lastConnectHttpStatus = null;
+    this.connectTiming = new RelayConnectTiming(this.now);
     this.pendingCloseCategory = "";
     this.connectedOnce = null;
     this.connectedOnceResolve = null;
     this.connectedOnceReject = null;
     this.sessionGeneration = 0;
     this.activeSessionId = 0;
+    this.workerConnectionId = "";
+    this.lastDisconnectedWorkerConnectionId = "";
     this.liveness = new RelayLiveness({
       ...options,
       scheduler: this.scheduler,
       now: this.now,
+      wallNow: this.wallNow,
       logger: this.logger,
       currentSocket: () => this.socket,
       isActive: () => !this.closed && this.authenticated && this.isSocketOpen(this.socket),
-      sendApplicationHeartbeat: (_now, socket) => this.sendOnSocket(socket, { type: "heartbeat", ts: this.wallNow() }),
-      onTransportError: (error, socket) => {
-        this.lastTransportErrorClass = classifyRelayTransportError(error);
-        this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, "relay_transport_error");
-        this.logger.debug?.("remote relay transport ping failed", { error_class: this.lastTransportErrorClass });
-        terminateSocket(socket);
-      },
-      onTransportTimeout: ({ silentForMs, eventLoopLagMs }, socket) => {
-        if (!socket) return;
-        this.logger.debug?.("remote relay transport pong timed out", { silent_for_ms: silentForMs, event_loop_lag_ms: eventLoopLagMs });
-        this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, "relay_transport_timeout");
-        terminateSocket(socket);
-      },
-      onApplicationTimeout: ({ silentForMs, eventLoopLagMs }, socket) => {
-        if (!socket) return;
-        this.logger.debug?.("remote relay application heartbeat timed out", { silent_for_ms: silentForMs, event_loop_lag_ms: eventLoopLagMs });
-        this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, "relay_heartbeat_timeout");
-        terminateSocket(socket);
-      },
+      isApplicationActive: () => !this.closed && this.ready && this.isSocketOpen(this.socket),
+      sendApplicationHeartbeat: (_now, socket, onDispatched) =>
+        this.sendOnSocket(socket, { type: "heartbeat", ts: this.wallNow() }, onDispatched),
+      ...relayLivenessActions(this),
     });
   }
 
@@ -139,6 +129,10 @@ export class RelayConnection {
 
   currentSessionId() {
     return this.authenticated ? this.activeSessionId : 0;
+  }
+
+  takeoverConnectionId() {
+    return this.lastDisconnectedWorkerConnectionId;
   }
 
   start() {
@@ -161,6 +155,8 @@ export class RelayConnection {
     this.ready = false;
     this.readinessProbeDelivered = false;
     this.activeSessionId = 0;
+    this.workerConnectionId = "";
+    this.lastDisconnectedWorkerConnectionId = "";
     this.liveness.stop();
     this.clearTimer("connectTimer", "clearTimeout");
     this.clearTimer("handshakeTimer", "clearTimeout");
@@ -194,6 +190,14 @@ export class RelayConnection {
     return { ok: true, reason: "sent" };
   }
 
+  observeApplicationPong(relayContext = {}) {
+    const sessionId = Number(relayContext?.sessionId) || 0;
+    if (relayContext?.transport && relayContext.transport !== "websocket") return false;
+    if (!sessionId || sessionId !== this.activeSessionId || !this.ready || !this.isSocketOpen(this.socket)) return false;
+    this.liveness.observeApplicationPong();
+    return true;
+  }
+
   interrupt(category = "relay_transport_error") {
     if (this.closed || !this.socket) return false;
     this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, category);
@@ -210,6 +214,7 @@ export class RelayConnection {
       this.failPermanently("relay_protocol_mismatch");
       return false;
     }
+    this.workerConnectionId = relayConnectionId(message.connection_id);
     this.logger.debug?.("remote relay welcome received");
     Promise.resolve(this.helloMessage(message, this.status())).then((hello) => {
       if (this.socket !== socket || this.closed || this.authenticated) return;
@@ -217,7 +222,8 @@ export class RelayConnection {
     }).catch((error) => {
       if (this.socket !== socket || this.closed || this.authenticated) return;
       this.logger.debug?.("could not create daemon authentication proof", { error_class: classifyOperationalError(error) });
-      this.failPermanently("relay_authentication_failed");
+      this.failPermanently(error?.code === "device_session_expired"
+        ? "relay_device_session_expired" : "relay_authentication_failed");
     });
     return true;
   }
@@ -242,6 +248,7 @@ export class RelayConnection {
       if (this.socket !== socket || this.closed || this.ready) return;
       this.logger.debug?.("remote relay end-to-end readiness probe timed out", { timeout_ms: this.readinessTimeoutMs });
       this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, "relay_readiness_timeout");
+      this.connectTiming.captureFailure();
       terminateSocket(socket);
     }, this.readinessTimeoutMs);
     this.readinessTimer?.unref?.();
@@ -325,9 +332,7 @@ export class RelayConnection {
   connect() {
     if (this.closed || this.socket) return;
     const wsUrl = `${this.workerUrl.replace(/^http/i, "ws")}/daemon/ws`;
-    this.connectAttemptStartedAt = this.now();
-    this.lastConnectStage = "socket_constructing";
-    this.lastConnectHttpStatus = null;
+    this.connectTiming.begin();
     this.logger.debug?.("connecting to remote relay", { endpoint: redactUrl(wsUrl), attempt: this.reconnectAttempt + 1 });
     let socket;
     try {
@@ -335,27 +340,32 @@ export class RelayConnection {
       const headers = this.connectionHeaders();
       if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw new Error("relay connection headers are invalid");
       this.networkRoute = proxy?.agent ? "application-http-proxy" : "system-network-stack";
-      this.lastConnectStage = proxy?.agent ? "proxy_connecting" : "tcp_connecting";
+      this.connectTiming.observe(proxy?.agent ? "proxy_connecting" : "tcp_connecting");
       socket = new this.WebSocketClass(wsUrl, {
         headers,
         maxPayload: this.maxPayload,
+        perMessageDeflate: false,
         ...(proxy?.agent ? { agent: proxy.agent } : {}),
         ...(!proxy?.agent && this.WebSocketClass === WebSocket ? {
-          createConnection: tracedTlsConnection((stage) => this.observeConnectStage(stage)),
+          createConnection: tracedTlsConnection((stage) => this.connectTiming.observe(stage)),
         } : {}),
       });
       this.logger.debug?.("remote relay network route selected", { route: this.networkRoute });
     } catch (error) {
+      if (error?.code === "device_session_expired") {
+        this.failPermanently("relay_device_session_expired");
+        return;
+      }
       if (error?.code === "relay_proxy_configuration") {
         this.networkRoute = "invalid-application-proxy-configuration";
         this.failPermanently("relay_proxy_configuration");
         return;
       }
-      this.lastTransportErrorClass = classifyRelayTransportError(error);
+      const errorClass = this.transportError.record(classifyRelayTransportError(error), { error });
       this.lastCloseCode = 0;
       this.lastDisconnectedAt = this.wallNow();
-      this.finishConnectAttempt();
-      this.logger.debug?.("remote relay connection could not be created", { error_class: this.lastTransportErrorClass });
+      this.connectTiming.captureFailure();
+      this.logger.debug?.("remote relay connection could not be created", { error_class: errorClass });
       this.scheduleReconnect("connection_interrupted");
       return;
     }
@@ -365,7 +375,7 @@ export class RelayConnection {
       if (this.socket !== socket || this.closed || this.isSocketOpen(socket)) return;
       this.logger.debug?.("remote relay transport connection timed out", { timeout_ms: this.connectTimeoutMs });
       this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, "relay_connect_timeout");
-      this.finishConnectAttempt();
+      this.connectTiming.captureFailure();
       terminateSocket(socket);
     }, this.connectTimeoutMs);
     this.connectTimer?.unref?.();
@@ -378,13 +388,14 @@ export class RelayConnection {
         return;
       }
       this.logger.debug?.("remote relay transport opened; awaiting device challenge");
-      this.observeConnectStage("websocket_open");
-      this.finishConnectAttempt();
+      this.connectTiming.observe("websocket_open");
+      this.connectTiming.finish();
       this.clearTimer("handshakeTimer", "clearTimeout");
       this.handshakeTimer = this.scheduler.setTimeout(() => {
         if (this.socket !== socket || this.closed || this.ready) return;
         this.logger.debug?.("remote relay authentication acknowledgement timed out", { timeout_ms: this.handshakeTimeoutMs });
         this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, "relay_handshake_timeout");
+        this.connectTiming.captureFailure();
         terminateSocket(socket);
       }, this.handshakeTimeoutMs);
       this.handshakeTimer?.unref?.();
@@ -419,12 +430,15 @@ export class RelayConnection {
       if (this.socket !== socket) return;
       const wasReady = this.ready;
       const wasAuthenticated = this.authenticated;
+      const disconnectedWorkerConnectionId = this.workerConnectionId;
       const readyInboundSilenceMs = this.liveness.silenceMs(this.now());
       this.socket = null;
       this.authenticated = false;
       this.ready = false;
       this.readinessProbeDelivered = false;
       this.activeSessionId = 0;
+      this.workerConnectionId = "";
+      if (wasReady && disconnectedWorkerConnectionId) this.lastDisconnectedWorkerConnectionId = disconnectedWorkerConnectionId;
       this.liveness.stop();
       this.clearTimer("connectTimer", "clearTimeout");
       this.clearTimer("handshakeTimer", "clearTimeout");
@@ -432,7 +446,9 @@ export class RelayConnection {
       const reasonText = sanitizeCloseReason(reason);
       const category = this.pendingCloseCategory || relayCloseCategory(code, reasonText);
       this.pendingCloseCategory = "";
-      if (category !== "relay_transport_error") this.lastTransportErrorClass = "";
+      if (category !== "relay_transport_error") {
+        this.transportError.clear();
+      }
       const disconnectedAt = this.now();
       const connectedForMs = wasAuthenticated && this.connectedAt > 0 ? Math.max(0, disconnectedAt - this.connectedAt) : 0;
       if (wasReady) this.lastReadyInboundSilenceMs = readyInboundSilenceMs;
@@ -477,15 +493,12 @@ export class RelayConnection {
 
     socket.on("error", (error) => {
       if (this.socket !== socket || this.closed) return;
-      this.lastTransportErrorClass = classifyRelayTransportError(error);
+      const errorClass = this.transportError.record(classifyRelayTransportError(error), { error, ready: this.ready, authenticated: this.authenticated });
       const httpStatus = relayHttpStatusFromError(error);
-      if (httpStatus) {
-        this.lastConnectStage = "http_rejected";
-        this.lastConnectHttpStatus = httpStatus;
-      }
-      this.finishConnectAttempt();
-      this.logger.debug?.("remote relay transport error", { error_class: this.lastTransportErrorClass });
-      if (this.lastTransportErrorClass === "authentication_failed") {
+      if (httpStatus) this.connectTiming.rejectHttp(httpStatus);
+      if (!this.ready) this.connectTiming.captureFailure();
+      this.logger.debug?.("remote relay transport error", { error_class: errorClass });
+      if (errorClass === "authentication_failed") {
         this.failPermanently("relay_authentication_failed");
         return;
       }
@@ -538,7 +551,7 @@ export class RelayConnection {
   scheduleReconnect(category) {
     if (this.closed || this.reconnectTimer) return;
     this.recordOutage(category);
-    const delay = this.reconnectDelay(this.reconnectAttempt++, Math.random, this.lastConnectDurationMs, this.connectTimeoutMs);
+    const delay = this.reconnectDelay(this.reconnectAttempt++, Math.random, this.connectTiming.durationMs, this.connectTimeoutMs);
     this.lastReconnectDelayMs = delay;
     this.nextReconnectAt = this.now() + delay;
     this.nextReconnectWallAt = this.wallNow() + delay;
@@ -560,18 +573,31 @@ export class RelayConnection {
     this.reconnectTimer?.unref?.();
   }
 
-  sendOnSocket(socket, value) {
+  sendOnSocket(socket, value, onWritten = null) {
     if (!this.isSocketOpen(socket)) return false;
     try {
-      socket.send(JSON.stringify(value));
+      const callback = typeof onWritten === "function" ? (error) => {
+        if (this.socket !== socket || this.closed) return;
+        if (error) this.recordSendFailure(error, socket);
+        try { onWritten(error || null, this.now()); }
+        catch (observerError) {
+          this.logger.error?.("relay send completion observer failed", { error_class: classifyOperationalError(observerError) });
+        }
+      } : undefined;
+      socket.send(JSON.stringify(value), callback);
       return true;
     } catch (error) {
-      this.lastTransportErrorClass = classifyRelayTransportError(error);
-      this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, "relay_transport_error");
-      this.logger.debug?.("remote relay send failed", { error_class: this.lastTransportErrorClass });
-      terminateSocket(socket);
+      this.recordSendFailure(error, socket);
       return false;
     }
+  }
+
+  recordSendFailure(error, socket) {
+    const errorClass = this.transportError.record(classifyRelayTransportError(error),
+      { error, ready: this.ready, authenticated: this.authenticated });
+    this.pendingCloseCategory = preferredRelayCloseCategory(this.pendingCloseCategory, "relay_transport_error");
+    this.logger.debug?.("remote relay send failed", { error_class: errorClass });
+    terminateSocket(socket);
   }
 
   recordOutage(category) {
@@ -644,14 +670,4 @@ export class RelayConnection {
     return Boolean(socket && socket.readyState === this.WebSocketClass.OPEN);
   }
 
-  observeConnectStage(stage) {
-    if (!Number.isFinite(this.connectAttemptStartedAt)) return;
-    this.lastConnectStage = String(stage || "socket_constructing");
-  }
-
-  finishConnectAttempt() {
-    if (!Number.isFinite(this.connectAttemptStartedAt)) return;
-    this.lastConnectDurationMs = Math.max(0, this.now() - this.connectAttemptStartedAt);
-    this.connectAttemptStartedAt = null;
-  }
 }

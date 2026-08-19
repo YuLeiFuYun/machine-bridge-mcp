@@ -135,8 +135,8 @@ export function accountAdminRequestHeaders({
     "X-Bridge-Admin-Nonce": nonce,
     "X-Bridge-Admin-Body-SHA256": bodyHash,
     "X-Bridge-Admin-Key": sessionIdentity.keyId,
-    "X-Bridge-Admin-Signature": signWithDeviceSessionIdentity(sessionIdentity, transcript),
-    "X-Bridge-Device-Certificate": encodeDeviceSessionCertificate(sessionIdentity),
+    "X-Bridge-Admin-Signature": signWithDeviceSessionIdentity(sessionIdentity, transcript, now),
+    "X-Bridge-Device-Certificate": encodeDeviceSessionCertificate(sessionIdentity, now),
   };
 }
 

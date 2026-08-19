@@ -12,7 +12,7 @@ export function createDaemonHttpRelayHeaders(identity, workerOrigin, server, ver
   const bodySha256 = createHash("sha256").update(body).digest("base64url");
   const signature = signWithDeviceSessionIdentity(identity, daemonHttpRelayTranscript({
     workerOrigin, server, version, nonce, issuedAt, bodySha256,
-  }));
+  }), now);
   return {
     "content-type": "application/json; charset=utf-8",
     "X-Bridge-Device-Scheme": DAEMON_HTTP_RELAY_SCHEME,
@@ -21,6 +21,6 @@ export function createDaemonHttpRelayHeaders(identity, workerOrigin, server, ver
     "X-Bridge-Device-Time": String(issuedAt),
     "X-Bridge-Body-SHA256": bodySha256,
     "X-Bridge-Device-Signature": signature,
-    [SESSION_CERTIFICATE_HEADER]: encodeDeviceSessionCertificate(identity),
+    [SESSION_CERTIFICATE_HEADER]: encodeDeviceSessionCertificate(identity, now),
   };
 }

@@ -1,3 +1,5 @@
+import { resourceAdmissionDiagnosticError } from "./resource-admission-diagnostic-error.mjs";
+
 const LOGGABLE_ADMISSION_REASONS = new Set([
   "resource_capacity", "project_resource_busy", "host_pressure_red", "disk_reserve_floor",
   "cpu_reservation", "io_reservation", "memory_reservation", "cpu_pressure_window",
@@ -43,10 +45,6 @@ export async function resourceAdmissionDiagnostic(snapshotFunction, classifyErro
       },
     };
   } catch (error) {
-    const errorClass = classifyError(error);
-    return {
-      snapshot: { healthy: false, error_class: errorClass },
-      check: { layer: "local-resource-admission", ok: false, error_class: errorClass },
-    };
+    return resourceAdmissionDiagnosticError(error, classifyError);
   }
 }

@@ -1,6 +1,42 @@
 import { EventEmitter } from "node:events";
 import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, relayOutageUserAction, welcomeMismatch } from "../src/local/relay-connection.mjs";
+import { classifyRelayTransportError, observeTlsLookup } from "../src/local/relay-connection-support.mjs";
+import { classifyRelayTransportErrorReason } from "../src/local/relay-transport-error-state.mjs";
+import { RelayTransportConfirmation } from "../src/local/relay-transport-confirmation.mjs";
 import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
+
+const TEST_CONNECTION_ID = `connection_${"a".repeat(43)}`;
+const lookupStages = [];
+observeTlsLookup((stage) => lookupStages.push(stage), Object.assign(new Error("dns unavailable"), { code: "EAI_AGAIN" }));
+assert(lookupStages.length === 0, "failed DNS lookup was mislabeled as dns_resolved");
+observeTlsLookup((stage) => lookupStages.push(stage), null);
+assert(lookupStages.length === 1 && lookupStages[0] === "dns_resolved", "successful DNS lookup lost its milestone");
+const aggregateNetworkError = new AggregateError([
+  Object.assign(new Error("v6 timeout"), { code: "ETIMEDOUT" }),
+  Object.assign(new Error("v4 unreachable"), { code: "ENETUNREACH" }),
+]);
+assert(classifyRelayTransportError(aggregateNetworkError) === "network_error",
+  "Happy Eyeballs aggregate network failure collapsed into generic execution failure");
+assert(classifyRelayTransportErrorReason(aggregateNetworkError) === "multi_address_failure",
+  "mixed Happy Eyeballs failure leaked or lost its privacy-safe multi-address classification");
+
+{
+  const callbacks = [];
+  const confirmation = new RelayTransportConfirmation({
+    enabled: true, timeoutMs: 15, dispatchTimeoutMs: 30,
+    sendConfirmation: (_now, callback) => { callbacks.push(callback); return true; },
+  });
+  assert(confirmation.begin(1), "first transport confirmation did not start");
+  confirmation.reset();
+  assert(confirmation.begin(2), "replacement transport confirmation did not start");
+  callbacks[0](new Error("stale confirmation send failure"), 3);
+  assert(confirmation.dispatchPending(),
+    "stale confirmation callback from an old generation cleared the replacement confirmation");
+  callbacks[1](null, 4);
+  assert(confirmation.responsePending(), "current confirmation dispatch callback did not arm its response deadline");
+  confirmation.observe(5);
+  assert(!confirmation.pending(), "confirmed transport did not settle the replacement confirmation round");
+}
 
 class FakeSocket extends EventEmitter {
   static CONNECTING = 0;
@@ -22,14 +58,17 @@ class FakeSocket extends EventEmitter {
     this.emit("open");
   }
 
-  send(value) {
+  send(value, callback) {
     if (this.readyState !== FakeSocket.OPEN) throw new Error("socket is not open");
     this.sent.push(String(value));
+    callback?.();
   }
 
-  ping(value = "") {
+  ping(value = "", callback) {
     if (this.readyState !== FakeSocket.OPEN) throw new Error("socket is not open");
+    if (typeof value === "function") { callback = value; value = ""; }
     this.pings.push(String(value));
+    callback?.();
   }
 
   close(code = 1000, reason = "") {
@@ -50,6 +89,44 @@ class FakeSocket extends EventEmitter {
   fail(error = new Error("socket failure")) {
     this.emit("error", error);
   }
+}
+
+class DelayedSendSocket extends FakeSocket {
+  constructor(url, options) {
+    super(url, options);
+    this.pendingSendCallbacks = [];
+  }
+  send(value, callback) {
+    if (this.readyState !== FakeSocket.OPEN) throw new Error("socket is not open");
+    this.sent.push(String(value));
+    this.pendingSendCallbacks.push(callback);
+  }
+  flushSend(error = null) {
+    const callback = this.pendingSendCallbacks.shift();
+    callback?.(error);
+  }
+}
+
+{
+  const connection = new RelayConnection({ workerUrl: "https://relay.example.invalid", WebSocketClass: FakeSocket });
+  const oldSocket = new DelayedSendSocket("wss://relay.example.invalid/daemon/ws", {});
+  const newSocket = new FakeSocket("wss://relay.example.invalid/daemon/ws", {});
+  oldSocket.readyState = FakeSocket.OPEN;
+  newSocket.readyState = FakeSocket.OPEN;
+  connection.closed = false;
+  connection.authenticated = true;
+  connection.ready = true;
+  connection.socket = oldSocket;
+  let observed = 0;
+  assert(connection.sendOnSocket(oldSocket, { type: "heartbeat" }, () => { observed += 1; }),
+    "stale-send generation fixture could not queue its old-socket send");
+  connection.socket = newSocket;
+  connection.pendingCloseCategory = "";
+  connection.transportError.clear();
+  oldSocket.flushSend(Object.assign(new Error("old socket write failed late"), { code: "ECONNRESET" }));
+  assert(observed === 0 && connection.pendingCloseCategory === "" && connection.transportError.errorClass === "",
+    "late send callback from an old WebSocket generation poisoned the current relay generation");
+  connection.stop();
 }
 
 class ManualScheduler {
@@ -150,10 +227,12 @@ connection = new RelayConnection({
 
 const started = connection.start();
 assert(sockets.length === 1, "relay did not create the initial socket");
+assert(sockets[0].options.perMessageDeflate === false,
+  "daemon relay silently re-enabled per-message compression and its avoidable sender queueing state");
 sockets[0].open();
 assert(events.every((event) => event.level !== "info"), "transport open was incorrectly reported as authenticated readiness");
 assert(sockets[0].sent.length === 0, "relay sent daemon identity before receiving the Worker challenge");
-assert(connection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1" }), "valid relay welcome was rejected");
+assert(connection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1", connection_id: TEST_CONNECTION_ID }), "valid relay welcome was rejected");
 await Promise.resolve();
 assert(JSON.parse(sockets[0].sent[0]).type === "hello", "relay did not answer the Worker challenge with daemon hello");
 assert(events.every((event) => event.level !== "warn"), "valid relay welcome emitted a warning");
@@ -260,10 +339,11 @@ connection.stop();
 
 const transportWatchdogScheduler = new ManualScheduler();
 const transportWatchdogSockets = [];
+const transportWatchdogEvents = [];
 const transportWatchdogConnection = new RelayConnection({
   workerUrl: "https://relay.example.invalid",
   secret: "test-daemon-secret-123456",
-  logger: captureLogger([]),
+  logger: captureLogger(transportWatchdogEvents),
   WebSocketClass: class extends FakeSocket {
     constructor(url, options) {
       super(url, options);
@@ -273,6 +353,7 @@ const transportWatchdogConnection = new RelayConnection({
   scheduler: transportWatchdogScheduler,
   now: () => transportWatchdogScheduler.now,
   reconnectDelay: () => 100,
+  transportConfirmationTimeoutMs: 15_000,
   outageWarnAfterMs: 100,
 });
 transportWatchdogConnection.start();
@@ -293,19 +374,324 @@ for (let index = 0; index < 4; index += 1) {
 }
 assert(transportWatchdogSockets[0].sent.some((value) => JSON.parse(value).type === "heartbeat"),
   "fast transport watchdog displaced the low-frequency application heartbeat required for Worker liveness");
+transportWatchdogSockets[0].bufferedAmount = 4096;
 transportWatchdogScheduler.advance(10_000);
+assert(!transportWatchdogSockets[0].terminated,
+  "transport watchdog spent the ten-second Pong deadline from prior inbound silence instead of from probe dispatch");
+assert(transportWatchdogSockets[0].pings.length === 6,
+  "transport watchdog duplicated or lost the outstanding probe before its full response deadline");
+transportWatchdogScheduler.advance(5_000);
+assert(!transportWatchdogSockets[0].terminated,
+  "one missed protocol Pong still hard-terminated a relay before independent application confirmation");
+assert(JSON.parse(transportWatchdogSockets[0].sent.at(-1)).type === "heartbeat",
+  "first protocol-Pong miss did not request independent application-layer liveness confirmation");
+assert(transportWatchdogConnection.status().heartbeat?.transport_confirmation_pending === true
+  && transportWatchdogConnection.status().heartbeat?.transport_confirmation_timeout_ms === 15_000,
+"transport watchdog did not expose the bounded second-stage confirmation window");
+assert(transportWatchdogEvents.some((event) => event.level === "warn"
+  && event.fields?.event === "relay.transport.suspect"
+  && event.fields?.confirmation_timeout_ms === 15_000),
+"transport suspicion did not emit structured evidence before reconnecting");
+transportWatchdogScheduler.advance(10_000);
+assert(!transportWatchdogSockets[0].terminated,
+  "black-holed relay was terminated before the full application-confirmation window elapsed");
+transportWatchdogScheduler.advance(5_000);
 assert(transportWatchdogSockets[0].terminated,
-  "black-holed ready relay survived longer than the ten-second transport-liveness window");
+  "black-holed ready relay survived the bounded protocol-plus-application confirmation window");
 const transportWatchdogStatus = transportWatchdogConnection.status();
 assert(transportWatchdogStatus.last_close_category === "relay_transport_timeout"
-  && transportWatchdogStatus.last_ready_inbound_silence_ms === 10_000
+  && transportWatchdogStatus.connect_timeout_ms === 30_000
+  && transportWatchdogStatus.last_ready_inbound_silence_ms === 30_000
+  && transportWatchdogStatus.heartbeat?.last_probe_buffered_bytes === 4096
+  && transportWatchdogStatus.heartbeat?.max_probe_buffered_bytes === 4096
+  && transportWatchdogStatus.heartbeat?.probe_outstanding === false
+  && transportWatchdogStatus.heartbeat?.last_probe_timeout_age_ms === 10_000
+  && transportWatchdogStatus.heartbeat?.transport_confirmation_pending === false
+  && transportWatchdogStatus.heartbeat?.last_transport_confirmation_timeout_age_ms === 15_000
   && transportWatchdogStatus.heartbeat?.interval_ms === 5_000
   && transportWatchdogStatus.heartbeat?.timeout_ms === 10_000
   && transportWatchdogStatus.application_heartbeat_interval_ms === 25_000
   && transportWatchdogStatus.application_heartbeat_timeout_ms === 75_000
   && transportWatchdogStatus.heartbeat?.application_heartbeat_timeout_ms === 75_000,
 "transport watchdog diagnostics lost the fast half-open contract or the pre-disconnect silence evidence");
+assert(transportWatchdogEvents.some((event) => event.level === "warn"
+  && event.fields?.event === "relay.transport.confirmation_failed"
+  && event.fields?.confirmation_age_ms === 15_000),
+"confirmed transport blackhole did not emit structured second-stage failure evidence");
 transportWatchdogConnection.stop();
+
+{
+  const scheduler = new ManualScheduler();
+  const sockets = [];
+  const recoveryEvents = [];
+  let connection;
+  connection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid", logger: captureLogger(recoveryEvents),
+    WebSocketClass: class extends FakeSocket { constructor(url, options) { super(url, options); sockets.push(this); } },
+    scheduler, now: () => scheduler.now, reconnectDelay: () => 100,
+    transportPingIntervalMs: 5, transportPongTimeoutMs: 10, transportConfirmationTimeoutMs: 15,
+    applicationHeartbeatIntervalMs: 100, applicationHeartbeatTimeoutMs: 300,
+    onMessage: (raw, context) => {
+      const message = JSON.parse(Buffer.from(raw).toString("utf8"));
+      if (message.type === "pong") connection.observeApplicationPong(context);
+    },
+  });
+  connection.start(); sockets[0].open();
+  connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(connection, "test");
+  scheduler.advance(5);
+  scheduler.advance(10);
+  assert(!sockets[0].terminated && connection.status().heartbeat?.transport_confirmation_pending === true,
+    "transient transport silence did not enter second-stage confirmation");
+  sockets[0].emit("message", Buffer.from(JSON.stringify({ type: "tool_call", id: "call_inbound_only" })));
+  assert(connection.status().heartbeat?.transport_confirmation_pending === true,
+    "unrelated inbound application traffic falsely proved the daemon-to-Worker transport direction");
+  sockets[0].emit("message", Buffer.from(JSON.stringify({ type: "pong", ts: scheduler.now })));
+  assert(connection.status().heartbeat?.transport_confirmation_pending === false,
+    "application pong did not clear transport suspicion immediately");
+  assert(recoveryEvents.some((event) => event.level === "warn"
+    && event.fields?.event === "relay.transport.recovered"
+    && event.fields?.transport_confirmed === true),
+  "application confirmation recovery did not emit structured transport evidence");
+  scheduler.advance(5); sockets[0].emit("pong");
+  scheduler.advance(10); sockets[0].emit("pong");
+  assert(!sockets[0].terminated,
+    "relay was terminated after independent application traffic had disproved the transport timeout");
+  connection.stop();
+}
+
+{
+  class DelayedConfirmationSocket extends FakeSocket {
+    send(value, callback) {
+      const text = String(value);
+      if (typeof callback === "function" && JSON.parse(text).type === "heartbeat") {
+        if (this.readyState !== FakeSocket.OPEN) throw new Error("socket is not open");
+        this.sent.push(text); this.confirmationCallback = callback; return;
+      }
+      super.send(text, callback);
+    }
+    flushConfirmation(error = null) {
+      const callback = this.confirmationCallback; this.confirmationCallback = null; callback?.(error);
+    }
+  }
+  const scheduler = new ManualScheduler(); const sockets = [];
+  const connection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid", logger: captureLogger([]),
+    WebSocketClass: class extends DelayedConfirmationSocket { constructor(url, options) { super(url, options); sockets.push(this); } },
+    scheduler, now: () => scheduler.now, reconnectDelay: () => 100,
+    transportPingIntervalMs: 5, transportPongTimeoutMs: 10, transportConfirmationTimeoutMs: 15,
+    transportPingDispatchTimeoutMs: 30, applicationHeartbeatIntervalMs: 100, applicationHeartbeatTimeoutMs: 300,
+  });
+  connection.start(); sockets[0].open();
+  connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(connection, "test");
+  scheduler.advance(15);
+  assert(connection.status().heartbeat?.transport_confirmation_dispatch_pending === true,
+    "second-stage confirmation treated queued application heartbeat as already dispatched");
+  scheduler.advance(25);
+  assert(!sockets[0].terminated,
+    "second-stage response deadline was spent while its application heartbeat was still queued locally");
+  sockets[0].flushConfirmation();
+  assert(connection.status().heartbeat?.transport_confirmation_dispatch_pending === false
+    && connection.status().heartbeat?.transport_confirmation_age_ms === 0
+    && connection.status().heartbeat?.last_transport_confirmation_dispatch_ms === 25,
+  "second-stage confirmation did not start its response clock from actual sender completion");
+  scheduler.advance(10);
+  assert(!sockets[0].terminated, "dispatched confirmation lost part of its full response deadline");
+  scheduler.advance(5);
+  assert(sockets[0].terminated, "dispatched confirmation survived beyond its full response deadline");
+  connection.stop();
+}
+
+{
+  class StalledConfirmationSocket extends FakeSocket {
+    send(value, callback) {
+      const text = String(value);
+      if (typeof callback === "function" && JSON.parse(text).type === "heartbeat") {
+        if (this.readyState !== FakeSocket.OPEN) throw new Error("socket is not open");
+        this.sent.push(text); return;
+      }
+      super.send(text, callback);
+    }
+  }
+  const scheduler = new ManualScheduler(); const sockets = []; const events = [];
+  const connection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid", logger: captureLogger(events),
+    WebSocketClass: class extends StalledConfirmationSocket { constructor(url, options) { super(url, options); sockets.push(this); } },
+    scheduler, now: () => scheduler.now, reconnectDelay: () => 100,
+    transportPingIntervalMs: 5, transportPongTimeoutMs: 10, transportConfirmationTimeoutMs: 15,
+    transportPingDispatchTimeoutMs: 30, applicationHeartbeatIntervalMs: 100, applicationHeartbeatTimeoutMs: 300,
+  });
+  connection.start(); sockets[0].open();
+  connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(connection, "test"); scheduler.advance(45);
+  assert(sockets[0].terminated && connection.status().last_close_category === "relay_transport_send_timeout",
+    "stalled second-stage confirmation send was misclassified as remote response loss");
+  assert(connection.status().heartbeat?.last_transport_confirmation_dispatch_timeout_age_ms === 30,
+    "stalled confirmation send lost its bounded dispatch-timeout evidence");
+  assert(events.some((event) => event.fields?.event === "relay.transport.confirmation_send_timeout"),
+    "stalled confirmation send did not emit its distinct structured event");
+  connection.stop();
+}
+
+const delayedPingScheduler = new ManualScheduler();
+const delayedPingSockets = [];
+class DelayedPingSocket extends FakeSocket {
+  constructor(url, options) {
+    super(url, options);
+    this.pendingPingCallbacks = [];
+  }
+  ping(value = "", callback) {
+    if (this.readyState !== FakeSocket.OPEN) throw new Error("socket is not open");
+    if (typeof value === "function") { callback = value; value = ""; }
+    this.pings.push(String(value));
+    this.pendingPingCallbacks.push(callback);
+  }
+  flushPing(error = null) {
+    const callback = this.pendingPingCallbacks.shift();
+    callback?.(error);
+  }
+}
+const delayedPingConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  logger: captureLogger([]),
+  WebSocketClass: class extends DelayedPingSocket {
+    constructor(url, options) { super(url, options); delayedPingSockets.push(this); }
+  },
+  scheduler: delayedPingScheduler,
+  now: () => delayedPingScheduler.now,
+  reconnectDelay: () => 100,
+  transportPingIntervalMs: 5,
+  transportPongTimeoutMs: 10,
+  transportConfirmationTimeoutMs: 15,
+  transportPingDispatchTimeoutMs: 30,
+  applicationHeartbeatIntervalMs: 100,
+  applicationHeartbeatTimeoutMs: 300,
+});
+delayedPingConnection.start();
+delayedPingSockets[0].open();
+delayedPingConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(delayedPingConnection, "test");
+delayedPingScheduler.advance(5);
+assert(delayedPingSockets[0].pings.length === 1, "delayed-ping fixture did not queue the transport probe");
+delayedPingScheduler.advance(10);
+assert(!delayedPingSockets[0].terminated,
+  "transport Pong deadline started before the queued ping was actually dispatched");
+delayedPingSockets[0].flushPing();
+assert(delayedPingConnection.status().heartbeat?.last_probe_dispatch_ms === 10,
+  "transport probe did not record its local dispatch delay");
+delayedPingScheduler.advance(5);
+assert(!delayedPingSockets[0].terminated,
+  "transport probe timed out before the full Pong deadline elapsed from actual dispatch");
+delayedPingScheduler.advance(5);
+assert(!delayedPingSockets[0].terminated
+  && delayedPingConnection.status().heartbeat?.transport_confirmation_pending === true,
+"transport probe did not enter independent confirmation after the Pong deadline from actual dispatch");
+delayedPingScheduler.advance(15);
+assert(delayedPingSockets[0].terminated && delayedPingConnection.status().last_close_category === "relay_transport_timeout",
+  "transport probe did not enforce the second-stage confirmation deadline after actual dispatch");
+delayedPingConnection.stop();
+
+{
+  const scheduler = new ManualScheduler();
+  const sockets = [];
+  const connection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid", logger: captureLogger([]),
+    WebSocketClass: class extends DelayedPingSocket { constructor(url, options) { super(url, options); sockets.push(this); } },
+    scheduler, now: () => scheduler.now, reconnectDelay: () => 100,
+    transportPingIntervalMs: 5, transportPongTimeoutMs: 10, transportPingDispatchTimeoutMs: 30,
+    applicationHeartbeatIntervalMs: 100, applicationHeartbeatTimeoutMs: 300,
+  });
+  connection.start(); sockets[0].open();
+  connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(connection, "test");
+  scheduler.advance(5);
+  sockets[0].flushPing(Object.assign(new Error("reset during Ping write"), { code: "ECONNRESET" }));
+  const failedPing = connection.status();
+  assert(sockets[0].terminated
+    && failedPing.last_close_category === "relay_transport_error"
+    && failedPing.last_transport_error_class === "network_error"
+    && failedPing.last_transport_error_reason === "connection_reset",
+  "Ping sender callback error did not enter the transport-error reconnect path with bounded cause evidence");
+  connection.stop();
+}
+
+{
+  const scheduler = new ManualScheduler();
+  const sockets = [];
+  const connection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid", logger: captureLogger([]),
+    WebSocketClass: class extends DelayedPingSocket { constructor(url, options) { super(url, options); sockets.push(this); } },
+    scheduler, now: () => scheduler.now, reconnectDelay: () => 100,
+    transportPingIntervalMs: 5, transportPongTimeoutMs: 10, transportPingDispatchTimeoutMs: 30,
+    applicationHeartbeatIntervalMs: 100, applicationHeartbeatTimeoutMs: 300,
+  });
+  connection.start(); sockets[0].open();
+  connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(connection, "test");
+  scheduler.advance(5);
+  sockets[0].emit("pong");
+  assert(connection.status().heartbeat?.probe_dispatch_pending === true,
+    "fresh inbound transport proof forgot a Ping that was already queued in the WebSocket sender");
+  scheduler.advance(29);
+  assert(!sockets[0].terminated && connection.status().heartbeat?.probe_dispatch_pending === true,
+    "fresh inbound proof incorrectly cancelled a still-queued Ping before its bounded dispatch deadline");
+  sockets[0].flushPing();
+  assert(!sockets[0].terminated && connection.status().heartbeat?.probe_dispatch_pending === false,
+    "a queued Ping that completed inside its dispatch budget was treated as a transport send failure");
+  assert(sockets[0].pings.length === 1,
+    "fresh inbound transport proof caused a duplicate Ping while the earlier control frame was still queued");
+  const afterInboundRace = connection.status().heartbeat;
+  assert(afterInboundRace?.probe_dispatch_pending === false && afterInboundRace?.probe_outstanding === false,
+    "inbound liveness during local probe dispatch was turned into a stale future Pong deadline");
+  connection.stop();
+}
+
+{
+  const scheduler = new ManualScheduler();
+  const sockets = [];
+  const connection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid", logger: captureLogger([]),
+    WebSocketClass: class extends DelayedPingSocket { constructor(url, options) { super(url, options); sockets.push(this); } },
+    scheduler, now: () => scheduler.now, reconnectDelay: () => 100,
+    transportPingIntervalMs: 5, transportPongTimeoutMs: 10, transportPingDispatchTimeoutMs: 30,
+    applicationHeartbeatIntervalMs: 100, applicationHeartbeatTimeoutMs: 300,
+  });
+  connection.start(); sockets[0].open();
+  connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(connection, "test");
+  scheduler.advance(5);
+  sockets[0].emit("pong");
+  scheduler.advance(30);
+  assert(sockets[0].terminated
+    && connection.status().last_close_category === "relay_transport_send_timeout"
+    && connection.status().heartbeat?.last_probe_dispatch_timeout_age_ms === 30,
+  "fresh inbound traffic incorrectly masked a thirty-second local WebSocket send-queue stall");
+  connection.stop();
+}
+
+{
+  const scheduler = new ManualScheduler();
+  const sockets = [];
+  const connection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid", logger: captureLogger([]),
+    WebSocketClass: class extends DelayedPingSocket { constructor(url, options) { super(url, options); sockets.push(this); } },
+    scheduler, now: () => scheduler.now, reconnectDelay: () => 100,
+    transportPingIntervalMs: 5, transportPongTimeoutMs: 10, transportPingDispatchTimeoutMs: 5,
+    applicationHeartbeatIntervalMs: 100, applicationHeartbeatTimeoutMs: 300,
+  });
+  connection.start(); sockets[0].open();
+  connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(connection, "test");
+  scheduler.advance(5);
+  scheduler.advance(5);
+  const dispatchTimeout = connection.status();
+  assert(sockets[0].terminated && dispatchTimeout.last_close_category === "relay_transport_send_timeout"
+    && dispatchTimeout.heartbeat?.last_probe_dispatch_timeout_age_ms === 5
+    && dispatchTimeout.heartbeat?.probe_dispatch_pending === false,
+  "locally stalled WebSocket Ping dispatch did not enter the bounded transport-recovery path");
+  connection.stop();
+}
 
 const applicationLivenessScheduler = new ManualScheduler();
 const applicationLivenessSockets = [];
@@ -363,6 +749,7 @@ heartbeatConnection = new RelayConnection({
   handshakeTimeoutMs: 20,
   heartbeatIntervalMs: 5,
   heartbeatTimeoutMs: 10,
+  transportConfirmationTimeoutMs: 10,
   outageWarnAfterMs: 100,
 });
 heartbeatConnection.start();
@@ -370,12 +757,20 @@ heartbeatSockets[0].open();
 heartbeatConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
 completeRelayReadiness(heartbeatConnection, "test");
 heartbeatScheduler.advance(10);
-assert(heartbeatSockets[0].terminated, "silent relay connection was not terminated after heartbeat timeout");
+assert(!heartbeatSockets[0].terminated,
+  "legacy heartbeat options spent the transport response timeout before the probe was dispatched");
+heartbeatScheduler.advance(5);
+assert(!heartbeatSockets[0].terminated && heartbeatConnection.status().heartbeat?.transport_confirmation_pending === true,
+  "legacy heartbeat aliases bypassed second-stage application confirmation after the transport response timeout");
+heartbeatScheduler.advance(10);
+assert(heartbeatSockets[0].terminated,
+  "silent relay connection survived the legacy probe deadline plus bounded application confirmation");
 heartbeatConnection.stop();
 
 const stalledHeartbeatScheduler = new ManualScheduler();
 const stalledHeartbeatSockets = [];
 const stalledHeartbeatEvents = [];
+const stalledHeartbeatWallBase = Date.UTC(2026, 7, 19, 5, 0, 0);
 const stalledHeartbeatConnection = new RelayConnection({
   workerUrl: "https://relay.example.invalid",
   logger: captureLogger(stalledHeartbeatEvents),
@@ -387,6 +782,7 @@ const stalledHeartbeatConnection = new RelayConnection({
   },
   scheduler: stalledHeartbeatScheduler,
   now: () => stalledHeartbeatScheduler.now,
+  wallNow: () => stalledHeartbeatWallBase + stalledHeartbeatScheduler.now,
   reconnectDelay: () => 100,
   heartbeatIntervalMs: 5,
   heartbeatTimeoutMs: 10,
@@ -404,7 +800,9 @@ completeRelayReadiness(stalledHeartbeatConnection, "test");
 stalledHeartbeatScheduler.stall(20);
 assert(!stalledHeartbeatSockets[0].terminated, "local event-loop stall was misclassified as remote relay failure");
 assert(stalledHeartbeatConnection.status().heartbeat.event_loop_stall_count === 1
-  && stalledHeartbeatConnection.status().heartbeat.recovery_active,
+  && stalledHeartbeatConnection.status().heartbeat.recovery_active
+  && stalledHeartbeatConnection.status().heartbeat.last_event_loop_stall_at
+    === new Date(stalledHeartbeatWallBase + stalledHeartbeatScheduler.now).toISOString(),
 "local event-loop stall was not exposed through relay diagnostics");
 assert(stalledHeartbeatEvents.some((event) => event.level === "warn"
   && event.fields?.event === "runtime.event_loop.stall"
@@ -456,6 +854,30 @@ assert(resumedAfterLongPauseEvents.some((event) => event.level === "warn"
 resumedAfterLongPauseScheduler.advance(5);
 assert(resumedAfterLongPauseSockets.length === 2, "long local pause did not enter reconnect immediately");
 resumedAfterLongPauseConnection.stop();
+
+{
+  const scheduler = new ManualScheduler();
+  const sockets = [];
+  const connection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid", logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket { constructor(url, options) { super(url, options); sockets.push(this); } },
+    scheduler, now: () => scheduler.now, reconnectDelay: () => 5,
+    transportPingIntervalMs: 5, transportPongTimeoutMs: 10,
+    applicationHeartbeatIntervalMs: 5, applicationHeartbeatTimeoutMs: 20,
+    readinessTimeoutMs: 30,
+  });
+  connection.start(); sockets[0].open();
+  connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  scheduler.advance(5); sockets[0].emit("pong");
+  scheduler.advance(5); sockets[0].emit("pong");
+  assert(sockets[0].sent.every((value) => JSON.parse(value).type !== "heartbeat"),
+    "authenticated-but-probing relay sent application heartbeat before Worker readiness");
+  completeRelayReadiness(connection, "test");
+  scheduler.advance(5); sockets[0].emit("pong");
+  assert(sockets[0].sent.some((value) => JSON.parse(value).type === "heartbeat"),
+    "application heartbeat did not begin after verified relay readiness");
+  connection.stop();
+}
 
 const readinessScheduler = new ManualScheduler();
 const readinessSockets = [];
@@ -530,6 +952,11 @@ errorConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", v
 completeRelayReadiness(errorConnection, "test");
 errorSockets[0].fail(Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }));
 assert(errorSockets[0].terminated, "relay transport error did not force the close/reconnect path");
+assert(errorConnection.status().last_transport_error_class === "network_error"
+  && errorConnection.status().last_transport_error_reason === "connection_reset"
+  && errorConnection.status().last_transport_error_ready === true
+  && errorConnection.status().last_transport_error_authenticated === true,
+"ready-transport network failure lost its authenticated/ready context");
 errorScheduler.advance(5);
 assert(errorSockets.length === 2, "relay transport error did not schedule a reconnect");
 errorConnection.stop();
@@ -647,9 +1074,77 @@ const constructorConnection = new RelayConnection({
   outageWarnAfterMs: 100,
 });
 constructorConnection.start();
+assert(constructorConnection.status().last_transport_error_reason === "network_unreachable"
+  && constructorConnection.status().last_failed_connect_stage === "tcp_connecting",
+"pre-WebSocket network failure lost its privacy-safe errno class or last-entered connect phase");
 constructorScheduler.advance(5);
 assert(constructorAttempts === 2 && constructorSockets.length === 1, "synchronous WebSocket construction failure did not use reconnect backoff");
 constructorConnection.stop();
+
+const expiredSessionScheduler = new ManualScheduler();
+const expiredSessionSockets = [];
+let sessionExpired = false;
+let expiredSessionFatal = null;
+const expiredSessionConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  logger: captureLogger([]),
+  connectionHeaders: () => {
+    if (sessionExpired) throw Object.assign(new Error("device session certificate expired"), { code: "device_session_expired" });
+    return {};
+  },
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) { super(url, options); expiredSessionSockets.push(this); }
+  },
+  scheduler: expiredSessionScheduler,
+  now: () => expiredSessionScheduler.now,
+  reconnectDelay: () => 1,
+  onFatal: (error) => { expiredSessionFatal = error; },
+});
+expiredSessionConnection.start();
+expiredSessionSockets[0].open();
+expiredSessionConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(expiredSessionConnection, "test");
+sessionExpired = true;
+expiredSessionSockets[0].remoteClose(1006, "");
+expiredSessionScheduler.advance(1);
+await Promise.resolve();
+assert(expiredSessionConnection.status().closed === true
+  && expiredSessionFatal?.code === "relay_device_session_expired"
+  && expiredSessionSockets.length === 1,
+"expired daemon session entered an unrecoverable reconnect loop instead of requesting supervised restart");
+
+const expiredProofScheduler = new ManualScheduler();
+const expiredProofSockets = [];
+let expiredProofFatal = null;
+let expireProof = false;
+const expiredProofConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid", logger: captureLogger([]),
+  expectedServer: "machine-bridge-mcp", expectedVersion: "test",
+  helloMessage: async () => {
+    if (expireProof) throw Object.assign(new Error("device session certificate expired"), { code: "device_session_expired" });
+    return { type: "hello" };
+  },
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) { super(url, options); expiredProofSockets.push(this); }
+  },
+  scheduler: expiredProofScheduler, now: () => expiredProofScheduler.now,
+  reconnectDelay: () => 1,
+  onFatal: (error) => { expiredProofFatal = error; },
+});
+expiredProofConnection.start();
+expiredProofSockets[0].open();
+expiredProofConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(expiredProofConnection, "test");
+expireProof = true;
+expiredProofSockets[0].remoteClose(1006, "");
+expiredProofScheduler.advance(1);
+expiredProofSockets[1].open();
+assert(expiredProofConnection.observeWelcome({
+  type: "welcome", server: "machine-bridge-mcp", version: "test", connection_id: TEST_CONNECTION_ID,
+}), "valid welcome was rejected before the expiry-race authentication proof");
+await new Promise((resolve) => { setImmediate(resolve); });
+assert(expiredProofConnection.status().closed === true && expiredProofFatal?.code === "relay_device_session_expired",
+  "session expiry between preflight and challenge proof was misclassified as credential rejection");
 
 const connectingScheduler = new ManualScheduler();
 const connectingSockets = [];
@@ -796,8 +1291,9 @@ assert(mismatchSockets.length === 1, "non-transient relay mismatch entered the r
 assert(!mismatchEvents.some((event) => event.level === "error"), "initial relay mismatch logged before the CLI handled the rejected start");
 assert(mismatchError.message.includes("upgrade and redeploy"), "relay mismatch rejection did not provide corrective action");
 mismatchConnection.stop();
-assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1" }, "machine-bridge-mcp", "0.8.1") === "", "valid relay welcome metadata was rejected");
-assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version: "0.7.1" }, "machine-bridge-mcp", "0.8.1") === "server_version_mismatch", "relay welcome version mismatch was not classified");
+assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1", connection_id: TEST_CONNECTION_ID }, "machine-bridge-mcp", "0.8.1") === "", "valid relay welcome metadata was rejected");
+assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version: "0.7.1", connection_id: TEST_CONNECTION_ID }, "machine-bridge-mcp", "0.8.1") === "server_version_mismatch", "relay welcome version mismatch was not classified");
+assert(welcomeMismatch({ type: "welcome", server: "machine-bridge-mcp", version: "0.8.1" }, "machine-bridge-mcp", "0.8.1") === "invalid_connection_identity", "relay welcome accepted a missing takeover-generation identity");
 assert(acknowledgementMismatch({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" }, "machine-bridge-mcp", "0.8.1") === "", "valid relay acknowledgement was rejected");
 assert(acknowledgementMismatch({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.7.1" }, "machine-bridge-mcp", "0.8.1") === "server_version_mismatch", "relay version mismatch was not classified");
 assert(readinessMismatch({ type: "ready_ack", server: "machine-bridge-mcp", version: "0.8.1" }, "machine-bridge-mcp", "0.8.1") === "", "valid relay readiness acknowledgement was rejected");
@@ -891,7 +1387,7 @@ policyConnection.stop();
   });
   void staleProofConnection.start().catch(() => {});
   staleProofSockets[0].open();
-  staleProofConnection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "test" });
+  staleProofConnection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "test", connection_id: TEST_CONNECTION_ID });
   staleProofSockets[0].remoteClose(1006, "");
   staleProofScheduler.advance(5);
   assert(staleProofSockets.length === 2, "stale authentication proof setup did not reconnect");
@@ -927,7 +1423,7 @@ policyConnection.stop();
   });
   void helloSendConnection.start().catch(() => {});
   helloSendSockets[0].open();
-  helloSendConnection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "test" });
+  helloSendConnection.observeWelcome({ type: "welcome", server: "machine-bridge-mcp", version: "test", connection_id: TEST_CONNECTION_ID });
   await Promise.resolve();
   await Promise.resolve();
   assert(!helloSendFatal, "hello send transport failure was misclassified as authentication failure");
@@ -1143,13 +1639,32 @@ assert(reconnectDelay(4, () => 0, 100, 15_000) === 15_000,
     reconnectDelay: () => 100,
   });
   void stageConnection.start().catch(() => {});
-  stageScheduler.advance(7);
+  stageScheduler.advance(2);
+  stageConnection.connectTiming.observe("dns_resolved");
+  stageScheduler.advance(2);
+  stageConnection.connectTiming.observe("tcp_connected");
+  stageScheduler.advance(2);
+  stageConnection.connectTiming.observe("tls_established");
+  stageScheduler.advance(1);
   stageSockets[0].fail(new Error("Unexpected server response: 503"));
   const failedStage = stageConnection.status();
   assert(failedStage.last_connect_stage === "http_rejected"
     && failedStage.last_connect_http_status === 503
-    && failedStage.last_connect_duration_ms === 7,
-  "relay connection failure did not preserve bounded phase/status/duration diagnostics");
+    && failedStage.last_connect_duration_ms === 7
+    && failedStage.last_connect_milestones_ms.socket_constructing === 0
+    && failedStage.last_connect_milestones_ms.dns_resolved === 2
+    && failedStage.last_connect_milestones_ms.tcp_connected === 4
+    && failedStage.last_connect_milestones_ms.tls_established === 6
+    && failedStage.last_connect_milestones_ms.http_rejected === 7
+    && failedStage.last_failed_connect_stage === "http_rejected"
+    && failedStage.last_failed_connect_duration_ms === 7
+    && failedStage.last_failed_connect_milestones_ms.tls_established === 6
+    && failedStage.last_failed_connect_milestones_ms.http_rejected === 7
+    && failedStage.last_failed_connect_http_status === 503
+    && failedStage.last_transport_error_reason === "unknown"
+    && failedStage.last_transport_error_ready === false
+    && failedStage.last_transport_error_authenticated === false,
+  "relay connection failure did not preserve bounded current/failed phase and transport-context diagnostics");
   stageConnection.stop();
 }
 

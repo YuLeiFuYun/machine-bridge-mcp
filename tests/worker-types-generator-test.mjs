@@ -23,6 +23,7 @@ if (mode === "fail") process.exit(7);
 if (mode === "hang-before") setInterval(() => {}, 1000);
 else {
   if (command === "types") writeFileSync(process.argv[3], "interface Env {}\\n");
+  if (command === "types") process.stdout.write("types-target:" + process.argv[3] + "\\n");
   process.stdout.write(marker);
   if (mode === "hang-after") setInterval(() => {}, 1000);
   else if (mode === "normal-cleanup-race") setTimeout(() => process.exit(0), 250);
@@ -32,8 +33,14 @@ else {
   const normalTypes = capture();
   await runWranglerTypes(typesOptions("normal", normalTypes));
   assert.equal(await readFile(target, "utf8"), "interface Env {}\n", "normal Wrangler completion did not publish generated types");
+  assert(normalTypes.stdout.includes("types-target:worker-configuration.d.ts") && !normalTypes.stdout.includes(root),
+    "Wrangler types received an absolute generated-file path that can leak the local workspace path into generated comments");
   assert(normalTypes.stdout.includes(typesCompletionMarker), "normal Wrangler types output was not forwarded");
   assert(!normalTypes.stderr.includes("did not exit"), "normal Wrangler types exit was misclassified as a cleanup hang");
+  await assert.rejects(
+    runWranglerTypes({ ...commandOptions("normal", capture()), targetPath: join(root, "..", "worker-types-outside.d.ts") }),
+    /Wrangler types target must remain inside its working directory/,
+  );
 
   const hangingTypes = capture();
   await runWranglerTypes(typesOptions("hang-after", hangingTypes));

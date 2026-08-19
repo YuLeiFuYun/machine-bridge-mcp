@@ -29,7 +29,7 @@ export function createDeviceIdentity() {
 export function createDeviceSessionIdentity(rootIdentity, workerOrigin, server, version, now = Date.now()) {
   validateDeviceIdentity(rootIdentity);
   const draft = createDeviceSessionDraft(rootIdentity, workerOrigin, server, version, now);
-  return finalizeDeviceSessionIdentity(draft, signDeviceTranscript(rootIdentity, draft.transcript));
+  return finalizeDeviceSessionIdentity(draft, signDeviceTranscript(rootIdentity, draft.transcript), now);
 }
 
 export function createDeviceSessionDraft(rootIdentity, workerOrigin, server, version, now = Date.now()) {
@@ -75,14 +75,14 @@ export function createDeviceSessionDraft(rootIdentity, workerOrigin, server, ver
   };
 }
 
-export function finalizeDeviceSessionIdentity(draft, signature) {
+export function finalizeDeviceSessionIdentity(draft, signature, now = Date.now()) {
   if (!draft || typeof draft !== "object" || !draft.session || !draft.certificateBody) throw new Error("device session draft is invalid");
   if (!/^[A-Za-z0-9_-]{86}$/.test(String(signature || ""))) throw new Error("device session root signature is invalid");
   const identity = {
     ...draft.session,
     certificate: { ...draft.certificateBody, signature },
   };
-  return validateDeviceSessionIdentity(identity);
+  return validateDeviceSessionIdentity(identity, now);
 }
 
 export function validatePublicDeviceRoot(identity) {
@@ -113,17 +113,17 @@ export function createDaemonPreflightHeaders(identity, workerOrigin, server, ver
     "X-Bridge-Device-Nonce": nonce,
     "X-Bridge-Device-Time": String(issuedAt),
     "X-Bridge-Device-Signature": signature,
-    [SESSION_CERTIFICATE_HEADER]: encodeDeviceSessionCertificate(identity),
+    [SESSION_CERTIFICATE_HEADER]: encodeDeviceSessionCertificate(identity, now),
   };
 }
 
-export function encodeDeviceSessionCertificate(identity) {
-  validateDeviceSessionIdentity(identity);
+export function encodeDeviceSessionCertificate(identity, now = Date.now()) {
+  validateDeviceSessionIdentity(identity, now);
   return Buffer.from(JSON.stringify(identity.certificate), "utf8").toString("base64url");
 }
 
-export function signWithDeviceSessionIdentity(identity, transcript) {
-  validateDeviceSessionIdentity(identity);
+export function signWithDeviceSessionIdentity(identity, transcript, now = Date.now()) {
+  validateDeviceSessionIdentity(identity, now);
   const text = String(transcript || "");
   if (!text || Buffer.byteLength(text) > 64 * 1024) throw new Error("device session signing transcript is empty or too large");
   return signDeviceTranscript(identity, text);
@@ -177,7 +177,9 @@ export function validateDeviceSessionIdentity(identity, now = Date.now()) {
     throw new Error("device session certificate key mismatch");
   }
   const expiresAt = Number(certificate.expires_at);
-  if (!Number.isSafeInteger(expiresAt) || Math.floor(Number(now) / 1000) > expiresAt) throw new Error("device session certificate expired");
+  if (!Number.isSafeInteger(expiresAt) || Math.floor(Number(now) / 1000) > expiresAt) {
+    throw Object.assign(new Error("device session certificate expired"), { code: "device_session_expired" });
+  }
   if (!/^[A-Za-z0-9_-]{86}$/.test(String(certificate.signature || ""))) throw new Error("device session certificate signature is invalid");
   return identity;
 }

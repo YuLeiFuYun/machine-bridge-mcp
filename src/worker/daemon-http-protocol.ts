@@ -1,4 +1,4 @@
-import { sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
+import { sanitizeConnectionId, sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
 
 const SESSION_ID = /^relay_http_[A-Za-z0-9_-]{43}$/;
 const ACTIVATION_TOKEN = /^activate_[A-Za-z0-9_-]{43}$/;
@@ -10,6 +10,7 @@ export interface DaemonHttpExchange {
   activationToken: string;
   ackWorkerSeq: number;
   takeoverWebSocket: boolean;
+  takeoverWebSocketConnectionId: string;
   ownedCallIds: string[];
   messages: Array<{ seq: number; payload: Record<string, unknown> }>;
   tools: unknown;
@@ -27,12 +28,15 @@ export function normalizeDaemonHttpExchange(value: unknown): DaemonHttpExchange 
     : typeof body.activation_token === "string" && ACTIVATION_TOKEN.test(body.activation_token) ? body.activation_token : "invalid";
   const ackWorkerSeq = Number(body.ack_worker_seq);
   const takeoverWebSocket = body.takeover_websocket === undefined ? false : body.takeover_websocket;
+  const takeoverWebSocketConnectionId = body.takeover_websocket_connection_id === undefined ? ""
+    : sanitizeConnectionId(body.takeover_websocket_connection_id) ?? "invalid";
   const ownedCallIds = normalizeCallIds(body.owned_call_ids);
   const messages = normalizeMessages(body.messages);
   if (!sessionId || !instanceId || activationToken === "invalid" || !Number.isSafeInteger(ackWorkerSeq) || ackWorkerSeq < 0
-      || typeof takeoverWebSocket !== "boolean" || !ownedCallIds || !messages) return null;
+      || typeof takeoverWebSocket !== "boolean" || takeoverWebSocketConnectionId === "invalid"
+      || (!takeoverWebSocket && Boolean(takeoverWebSocketConnectionId)) || !ownedCallIds || !messages) return null;
   return {
-    sessionId, instanceId, activationToken, ackWorkerSeq, takeoverWebSocket, ownedCallIds, messages,
+    sessionId, instanceId, activationToken, ackWorkerSeq, takeoverWebSocket, takeoverWebSocketConnectionId, ownedCallIds, messages,
     tools: body.tools, policy: body.policy, relayDiagnostics: body.relay_diagnostics,
   };
 }

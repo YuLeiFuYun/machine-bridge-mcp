@@ -32,7 +32,9 @@ export function staleSchemaCompatibilityResult(
   return rpcResult(request.id, textToolResult({
     error: {
       code: "invalid_request",
-      message: "cached tool arguments exceed the current server limit; refresh tools/list and use short polling, start_process/read_process, or start_job/read_job instead of holding one response open",
+      message: toolName === "read_process"
+        ? "cached read_process arguments exceed the current server limit; refresh tools/list, use read_process at most once for a live session in the current hosted assistant response, and return progress whenever running=true even if output was returned; use run_process/read_job for non-interactive durable work"
+        : "cached tool arguments exceed the current server limit; refresh tools/list and use request-bounded execution or durable jobs instead of holding one response open",
       retryable: false,
       details: {
         side_effects_started: false,
