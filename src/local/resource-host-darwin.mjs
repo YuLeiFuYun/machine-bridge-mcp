@@ -1,14 +1,4 @@
-import { runResourceProbeAsync, runResourceProbeSync } from "./resource-probe-command.mjs";
-
-export function sampleDarwinHost(sample, options = {}) {
-  const run = options.runCommand || ((command, args, timeoutMs) => runResourceProbeSync(command, args, { timeoutMs }));
-  applyDarwinResults(sample, {
-    pressure: run("/usr/bin/memory_pressure", ["-Q"]),
-    vm: run("/usr/bin/vm_stat", []),
-    io: options.quick === true ? null : run("/usr/sbin/iostat", ["-Id", "disk0", "1", "2"], 2_200),
-    thermal: run("/usr/bin/pmset", ["-g", "therm"]),
-  }, options.quick !== true);
-}
+import { runResourceProbeAsync } from "./resource-probe-command.mjs";
 
 export async function sampleDarwinHostAsync(options = {}) {
   const run = options.runCommandAsync || ((command, args, timeoutMs) => runResourceProbeAsync(command, args, { timeoutMs }));

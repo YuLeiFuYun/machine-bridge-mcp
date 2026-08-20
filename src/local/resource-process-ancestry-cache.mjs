@@ -1,19 +1,10 @@
 const DEFAULT_CACHE_MS = 1_000;
 
-export function cachedResourceProcessParentSampler(sample, now = Date.now, cacheMs = DEFAULT_CACHE_MS) {
-  const ttl = Math.max(0, Number(cacheMs) || 0);
-  let sampledAt = null;
-  let cached = null;
-  return () => {
-    const current = Number(now());
-    if (cacheFresh(sampledAt, current, ttl)) return cached;
-    cached = normalizeSnapshot(sample());
-    sampledAt = finishedAt(now, current);
-    return cached;
-  };
+export function cachedResourceProcessParentSamplerAsync(sample, now = Date.now, cacheMs = DEFAULT_CACHE_MS) {
+  return cachedResourceProcessSnapshotSamplerAsync(sample, now, cacheMs);
 }
 
-export function cachedResourceProcessParentSamplerAsync(sample, now = Date.now, cacheMs = DEFAULT_CACHE_MS) {
+export function cachedResourceProcessSnapshotSamplerAsync(sample, now = Date.now, cacheMs = DEFAULT_CACHE_MS) {
   const ttl = Math.max(0, Number(cacheMs) || 0);
   let sampledAt = null;
   let cached = null;

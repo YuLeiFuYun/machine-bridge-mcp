@@ -45,6 +45,7 @@ const boundaryModules = new Set([
   "computer-use-dispatch-settlement.mjs",
   "computer-use-expectation.mjs",
   "computer-use-observation.mjs",
+  "computer-use-observation-contract.mjs",
   "computer-use-application-observation.mjs",
   "computer-use-recovery.mjs",
   "computer-use-snapshot-store.mjs",
@@ -73,6 +74,7 @@ const boundaryModules = new Set([
   "resource-command-profile.mjs",
   "resource-host-linux.mjs",
   "resource-host-snapshot.mjs",
+  "resource-lease-liveness.mjs",
   "resource-lease-accounting.mjs",
   "resource-coordinator-accounting.mjs",
   "resource-process-ancestry.mjs",
@@ -232,6 +234,7 @@ const lineLimits = Object.freeze({
   "src/local/process-output-stream.mjs": 110,
   "src/local/process-result-projection.mjs": 60,
   "src/local/managed-job-hosted-status.mjs": 40,
+  "src/local/managed-job-read-wait.mjs": 80,
   "src/local/managed-job-listing.mjs": 60,
   "src/local/process-session-read.mjs": 70,
   "src/local/process-session-remote-poll.mjs": 50,
@@ -290,6 +293,7 @@ const lineLimits = Object.freeze({
   "src/local/resource-host-darwin.mjs": 80,
   "src/local/resource-host-linux.mjs": 80,
   "src/local/resource-host-snapshot.mjs": 100,
+  "src/local/resource-lease-liveness.mjs": 50,
   "src/local/resource-lease-accounting.mjs": 130,
   "src/local/resource-cpu-window.mjs": 40,
   "src/local/resource-coordinator-accounting.mjs": 30,
@@ -402,6 +406,7 @@ const lineLimits = Object.freeze({
   "src/local/computer-use-arguments.mjs": 310,
   "src/local/computer-use-expectation.mjs": 210,
   "src/local/computer-use-observation.mjs": 780,
+  "src/local/computer-use-observation-contract.mjs": 130,
   "src/local/computer-use-application-observation.mjs": 240,
   "src/local/computer-use-recovery.mjs": 90,
   "src/local/computer-use-snapshot-store.mjs": 70,
@@ -535,25 +540,35 @@ const resourceAdmissionSource = readFileSync(join(localRoot, "resource-admission
 for (const required of ["createResourceWaiter", "selectedResourceWaiter", "process_group_isolated", "contention_key", "ResourceAdmissionError"]) {
   if (!resourceAdmissionSource.includes(required)) throw new Error(`resource admission lost durable/fair ownership contract: ${required}`);
 }
+for (const required of ["sampleProcessStartTimesAsync", "cachedResourceProcessSnapshotSamplerAsync", "pruneAndReadLeases(processStarts)", "pruneAndReadWaiters(processStarts)", 'recoverResourceDirectoryStaging(this.leasesDir, entries, "lease", processStarts)', 'recoverResourceDirectoryStaging(this.waitersDir, entries, "wait", processStarts)']) {
+  if (!resourceAdmissionSource.includes(required)) throw new Error(`resource coordinator lost lock-external async process-identity sampling: ${required}`);
+}
 if (!resourceAdmissionSource.includes('from "./resource-wait.mjs"') || resourceAdmissionSource.includes("timer.unref")) {
   throw new Error("resource admission wait liveness regressed to an unreferenced timer");
 }
 if (!resourceAdmissionSource.includes("withResourceTransactionLock") || resourceAdmissionSource.includes("withOwnerStateLock")) {
-  throw new Error("resource admission lost the beta.60-compatible transaction-lock boundary required for rolling activation");
+  throw new Error("resource admission lost the resource-specific transaction-lock boundary required for rolling activation");
 }
 for (const required of ["PROCESS_OWNERSHIP_LOCK_WAIT_MS = 30_000", "Math.min(PROCESS_OWNERSHIP_LOCK_WAIT_MS, waitMs - (performance.now() - started))", "}, PROCESS_OWNERSHIP_LOCK_WAIT_MS);"]) {
   if (!resourceAdmissionSource.includes(required)) throw new Error(`resource coordinator lost operation-bounded transaction-lock waiting: ${required}`);
 }
 const resourceTransactionLockSource = readFileSync(join(localRoot, "resource-transaction-lock.mjs"), "utf8");
-for (const required of ["mkdirSync(lockPath", 'OWNER_NAME = "owner.json"', "validDirectoryOwner", "validPriorFileOwner", "removeDirectoryGeneration", "recoverResourceTransactionOwnerStaging", "rmdirSync(lockPath)", "resource transaction lock was replaced before quarantine restore"]) {
+for (const required of ["createExclusiveFileSync(lockPath", "removeOwnedJsonFileSync(lockPath", "retryTransientMultipleLinksSync", 'OWNER_NAME = "owner.json"', "validDirectoryOwner", "validFileOwner", "removeDirectoryGeneration", "recoverResourceTransactionOwnerStaging", "rmdirSync(lockPath)", "resource transaction lock was replaced before quarantine restore"]) {
   if (!resourceTransactionLockSource.includes(required)) throw new Error(`resource transaction lock lost rolling-version ownership semantics: ${required}`);
+}
+if (resourceTransactionLockSource.includes("mkdirSync(lockPath") || resourceTransactionLockSource.includes("replaceFileAtomicallySync(join(lockPath, OWNER_NAME)")) {
+  throw new Error("resource transaction lock current writer regressed to the legacy visible-directory publication path");
 }
 const resourceStagingRecoverySource = readFileSync(join(localRoot, "resource-staging-recovery.mjs"), "utf8");
 for (const required of ["OWNER_STAGING", "recoverResourceTransactionOwnerStaging", "stagingPublisherMayBeCurrent", "unexpected owner-publication state"]) {
   if (!resourceStagingRecoverySource.includes(required)) throw new Error(`resource transaction owner-staging recovery regressed: ${required}`);
 }
-if (!resourceTransactionLockSource.includes('schema_version: 1') || !resourceTransactionLockSource.includes('kind: "file"')) {
-  throw new Error("resource transaction lock no longer interoperates with beta.60 directories and prior beta.61 owner-state files");
+if (!resourceStagingRecoverySource.includes("processStartTimeFromSnapshot")
+    || !resourceStagingRecoverySource.includes("recoverResourceDirectoryStaging(dir, entries, kind, processStarts = null)")) {
+  throw new Error("current lease/waiter staging recovery lost lock-external process-generation evidence");
+}
+if (!resourceTransactionLockSource.includes("owner?.schema_version === 1") || !resourceTransactionLockSource.includes('kind: "file"')) {
+  throw new Error("resource transaction lock no longer interoperates with beta.104 schema-1 directories and owner-state files");
 }
 const resourceWaitSource = readFileSync(join(localRoot, "resource-wait.mjs"), "utf8");
 for (const required of ["setTimeout", "removeEventListener", "signal?.aborted", "resourceRetryDelayMs", "resourceChangeSignal", "signalResourceChange", "waitForResourceChange", "WeakMap", "2 ** step"]) {
@@ -699,6 +714,13 @@ for (const required of ["elasticMemoryJobLimit", "elasticMemoryMb", "memory_over
 }
 const resourceWaitersSource = readFileSync(join(localRoot, "resource-waiters.mjs"), "utf8");
 if (!resourceWaitersSource.includes("resource waiter changed during stale pruning")) throw new Error("resource waiter stale pruning lost fail-closed ownership revalidation");
+if (!resourceWaitersSource.includes("processStartTimeFromSnapshot") || !resourceWaitersSource.includes("getProcessStartTime")) {
+  throw new Error("resource waiter pruning regained an implicit synchronous process-start probe");
+}
+const resourceLeaseLivenessSource = readFileSync(join(localRoot, "resource-lease-liveness.mjs"), "utf8");
+for (const required of ["resourceLeaseOwnerStatus", "resourceLeaseIsStale", "processStartTimeFromSnapshot", "pid_reused", "resourceProcessGroupAlive"]) {
+  if (!resourceLeaseLivenessSource.includes(required)) throw new Error(`resource lease liveness lost fail-closed generation evidence: ${required}`);
+}
 if (["elasticCompilerJobs", "preserveCompilerJobs"].some((marker) => resourceAdmissionSource.includes(marker)
     || resourceWaitersSource.includes(marker))) {
   throw new Error("elastic compiler marker leaked into persisted resource coordinator request schema");
@@ -715,8 +737,17 @@ for (const required of ["sampleDarwinHostAsync", "Promise.all", "memory_pressure
   if (!resourceDarwinHostSource.includes(required)) throw new Error(`Darwin resource host sampling lost parallel pressure probes: ${required}`);
 }
 const resourceProbeSource = readFileSync(join(localRoot, "resource-probe-command.mjs"), "utf8");
-for (const required of ["runResourceProbeAsync", "execFile", "runResourceProbeSync", "spawnSync", 'killSignal: "SIGKILL"']) {
-  if (!resourceProbeSource.includes(required)) throw new Error(`resource probe transport lost bounded sync/async execution: ${required}`);
+for (const required of ["runResourceProbeAsync", "execFile", 'killSignal: "SIGKILL"']) {
+  if (!resourceProbeSource.includes(required)) throw new Error(`resource probe transport lost bounded async execution: ${required}`);
+}
+if (resourceProbeSource.includes("runResourceProbeSync") || resourceProbeSource.includes("spawnSync")) {
+  throw new Error("resource probe transport regained a blocking child-process path");
+}
+if (!resourceTransactionLockSource.includes("await inspectProcessInstanceAsync")
+    || !resourceTransactionLockSource.includes("await recoverResourceTransactionOwnerStaging")
+    || !resourceStagingRecoverySource.includes("inspectProcessInstanceAsync")
+    || !resourceStagingRecoverySource.includes("processStartTimeFromSnapshot")) {
+  throw new Error("resource ownership recovery regained synchronous process-start identity sampling");
 }
 const resourceHostCacheSource = readFileSync(join(localRoot, "resource-host-cache.mjs"), "utf8");
 for (const required of ["HOST_SAMPLE_FRESH_MS = 500", "HOST_CPU_PREVIOUS_MAX_AGE_MS = 2_000", "HOST_IO_SAMPLE_FRESH_MS = 5_000", "HOST_IO_HINT_MAX_AGE_MS = 30_000", "cached?.sample_scope === scope", "previous: cpuPrevious", "withCachedIo(quick, scopedCached)", "io_sampled_at_ms"]) {
@@ -1153,6 +1184,18 @@ for (const required of ["includeContent = false", '"resource file", { verifyPath
   if (!managedJobPlanBoundary.includes(required)) throw new Error(`resource inspection lost validated-byte snapshot behavior: ${required}`);
 }
 const managedJobsBoundary = readFileSync(join(localRoot, "managed-jobs.mjs"), "utf8");
+const runtimeToolHandlersBoundary = readFileSync(join(localRoot, "runtime-tool-handlers.mjs"), "utf8");
+const managedJobReadWaitBoundary = readFileSync(join(localRoot, "managed-job-read-wait.mjs"), "utf8");
+if (managedJobsBoundary.includes("managed-job-read-wait") || !runtimeToolHandlersBoundary.includes("waitForManagedJobRead")
+    || !runtimeToolHandlersBoundary.includes("managedJobManager.readProgress")) {
+  throw new Error("hosted managed-job pacing leaked into the synchronous persistence manager or disappeared from the MCP handler boundary");
+}
+if (!managedJobsBoundary.includes("readProgress(args = {}, context = {})") || !managedJobsBoundary.includes("return publicStatus(status)")) {
+  throw new Error("managed-job long-poll lost its lightweight status-only progress probe");
+}
+for (const required of ["defaultManagedJobReadWaitMs", "managedJobReadPollIntervalMs", "managedJobReadReconcileIntervalMs", "readProgress", "createMonotonicDeadline", "throwIfCancelled", "managed_job_read_wait_timed_out"]) {
+  if (!managedJobReadWaitBoundary.includes(required)) throw new Error(`managed-job read pacing lost bounded server-side long-poll behavior: ${required}`);
+}
 const managedJobRetentionBoundary = readFileSync(join(localRoot, "managed-job-retention.mjs"), "utf8");
 const managedJobTerminalMaintenanceBoundary = readFileSync(join(localRoot, "managed-job-terminal-maintenance.mjs"), "utf8");
 const externalPlanBoundary = /export function loadManagedJobPlan[\s\S]*?function failRunnerLaunch/.exec(managedJobsBoundary)?.[0] || "";

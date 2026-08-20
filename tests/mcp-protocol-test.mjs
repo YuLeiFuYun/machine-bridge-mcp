@@ -141,7 +141,7 @@ assert.equal(discovery.cacheScope, "public");
 assert.equal(SERVER_NAME, "machine-bridge-mcp");
 assert.deepEqual(MCP_PROTOCOL_VERSIONS, [MCP_PROTOCOL_VERSION]);
 assert(MCP_INSTRUCTIONS.length > 0 && MCP_SERVER_CAPABILITIES.tools.listChanged === false);
-assert(MCP_DISCOVERY_TTL_MS > 0 && MCP_TOOL_LIST_TTL_MS > 0);
+assert(MCP_DISCOVERY_TTL_MS === 0 && MCP_TOOL_LIST_TTL_MS === 0, "discovery instructions and tool descriptions must not advertise reusable cross-release caches");
 assert.equal(mcpServerInfo("test").version, "test");
 
 const unknownVersionHeaders = new Headers({

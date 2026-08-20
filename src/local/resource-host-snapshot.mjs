@@ -1,20 +1,8 @@
 import { availableParallelism, cpus, freemem, loadavg, totalmem } from "node:os";
-import { statfsSync } from "node:fs";
 import { statfs } from "node:fs/promises";
-import { sampleDarwinHost, sampleDarwinHostAsync } from "./resource-host-darwin.mjs";
+import { sampleDarwinHostAsync } from "./resource-host-darwin.mjs";
 import { sampleLinuxHost } from "./resource-host-linux.mjs";
 const CPU_BUSY_SAMPLE_MS = 50;
-export function sampleResourceHost(options = {}) {
-  const cwd = options.cwd || process.cwd();
-  const platform = String(options.platform || process.platform);
-  const cpuCores = cpuCount(options);
-  const sample = baseSample(cpuCores, platform, options);
-  Object.assign(sample, diskStatsSync(cwd));
-  if (platform === "darwin") sampleDarwinHost(sample, options);
-  else if (platform === "linux") sampleLinuxHost(sample, options);
-  sample.sampled_at_ms = Date.now();
-  return sample;
-}
 export async function sampleResourceHostAsync(options = {}) {
   const cwd = options.cwd || process.cwd();
   const platform = String(options.platform || process.platform);
@@ -84,12 +72,6 @@ function cpuBusyWindow(cpuCores, startSample, end) {
   const busy = totalDelta > 0 && idleDelta >= 0 && idleDelta <= totalDelta
     ? Math.max(0, Math.min(cpuCores, cpuCores * (1 - idleDelta / totalDelta))) : null;
   return { busy, total: Number(end.total), idle: Number(end.idle) };
-}
-function diskStatsSync(cwd) {
-  try {
-    const value = statfsSync(cwd);
-    return { disk_free_bytes: Number(value.bavail) * Number(value.bsize), disk_total_bytes: Number(value.blocks) * Number(value.bsize) };
-  } catch { return { disk_free_bytes: null, disk_total_bytes: null }; }
 }
 async function diskStatsAsync(cwd) {
   try {

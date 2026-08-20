@@ -14,7 +14,7 @@ import {
   outerWorkerErrorClass, statefulRateLimitKey, statefulRouteClass, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
 import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
-import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { serverInfoTool, validateWorkerToolArguments, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import {
   daemonCallNotReceivedAfterReconnectError, daemonToolError, dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError,
@@ -1157,6 +1157,9 @@ function testRelayTimeoutContract() {
       && budget.settlementTimeoutMs === expectedDefault * 1000 + relayContract.workerSettlementOverheadMs,
     `remote ${tool.name} runtime default did not preserve a distinct settlement margin`);
   }
+  assert(String(serverInfoTool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)
+    && workspaceTools.every((tool) => String(tool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)),
+  "host-visible tool descriptions omitted the current schema generation marker");
   const remoteBrowserDescription = String(workspaceTools.find((tool) => tool.name === "browser_action")?.description || "");
   assert(remoteBrowserDescription.includes("request-bounded")
     && remoteBrowserDescription.includes("split longer browser/application workflows")
@@ -1171,52 +1174,67 @@ function testRelayTimeoutContract() {
     && remoteExecDescription.includes("read_job")
     && remoteExecDescription.includes("30 minutes pre-spawn")
     && remoteExecDescription.includes("current_phase=resource_admission")
-    && remoteExecDescription.includes("status checkpoint")
-    && remoteExecDescription.includes("stop polling"),
-  "remote exec_command description omitted the durable execution, pre-spawn admission, recovery, or host-turn handoff contract");
+    && remoteExecDescription.includes("bounded same-response read_job follow-up")
+    && remoteExecDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
+    && remoteExecDescription.includes(`Tool schema generation ${workerToolSchemaGeneration}.`),
+  "remote exec_command description omitted the durable execution, pre-spawn admission, recovery, or bounded follow-up contract");
   const remoteStartJobDescription = String(workspaceTools.find((tool) => tool.name === "start_job")?.description || "");
   const remoteListJobsDescription = String(workspaceTools.find((tool) => tool.name === "list_jobs")?.description || "");
-  const remoteReadJobDescription = String(workspaceTools.find((tool) => tool.name === "read_job")?.description || "");
-  assert(remoteStartJobDescription.includes("background execution")
-    && remoteStartJobDescription.includes("read_job at most once")
-    && remoteStartJobDescription.includes("stop polling"),
-  "remote start_job description omitted the background handoff contract");
-  assert(remoteListJobsDescription.includes("inventory checkpoint")
+  const remoteReadJob = workspaceTools.find((tool) => tool.name === "read_job");
+  const remoteReadJobDescription = String(remoteReadJob?.description || "");
+  assert(remoteStartJobDescription.includes("durable background ownership")
+    && remoteStartJobDescription.includes("bounded same-response read_job follow-up")
+    && remoteStartJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
+  "remote start_job description omitted the durable autonomous-follow-up contract");
+  assert(remoteListJobsDescription.includes("inventory operation")
     && remoteListJobsDescription.includes("Do not repeat list_jobs")
-    && remoteListJobsDescription.includes("hand the turn back"),
-  "remote list_jobs description can still induce same-response active-job polling");
-  assert(remoteReadJobDescription.includes("status checkpoints")
-    && remoteReadJobDescription.includes("at most once")
-    && remoteReadJobDescription.includes("stop polling")
-    && remoteReadJobDescription.includes("active/non-terminal")
-    && remoteReadJobDescription.includes("later user turn"),
-  "remote read_job description can still induce same-turn terminal polling");
+    && remoteListJobsDescription.includes("use read_job instead"),
+  "remote list_jobs description no longer routes known-job follow-up through read_job");
+  assert(remoteReadJob?.inputSchema?.properties?.wait_ms?.default === 40_000
+    && remoteReadJob?.inputSchema?.properties?.wait_ms?.maximum === 40_000
+    && remoteReadJobDescription.includes("server-side long-poll")
+    && remoteReadJobDescription.includes("wait up to 40 seconds")
+    && remoteReadJobDescription.includes("wait_ms=0")
+    && remoteReadJobDescription.includes("same assistant response")
+    && remoteReadJobDescription.includes("Do not busy-loop")
+    && remoteReadJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
+  "remote read_job schema/description lost paced same-turn autonomous follow-up");
+  const immediateJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 0 });
+  const defaultJobReadBudget = daemonToolTimeoutBudget("read_job", {});
+  const maximumJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 40_000 });
+  assert(immediateJobReadBudget.executionTimeoutMs === 5_000 && immediateJobReadBudget.settlementTimeoutMs === 10_000
+    && defaultJobReadBudget.executionTimeoutMs === 45_000 && defaultJobReadBudget.settlementTimeoutMs === 50_000
+    && maximumJobReadBudget.executionTimeoutMs === 45_000 && maximumJobReadBudget.settlementTimeoutMs === 50_000,
+  "remote read_job long-poll did not retain enough execution/settlement headroom without widening the relay ceiling");
   const remoteStartProcess = workspaceTools.find((tool) => tool.name === "start_process");
   const remoteStartProcessDescription = String(remoteStartProcess?.description || "");
   assert(remoteStartProcessDescription.includes("interactive stdin or incremental-output")
     && remoteStartProcessDescription.includes("run_process")
-    && remoteStartProcessDescription.includes("read_process at most once")
-    && remoteStartProcessDescription.includes("running=true")
-    && remoteStartProcessDescription.includes("even when new output was returned")
-    && remoteStartProcessDescription.includes("stop polling"),
-  "remote start_process description omitted the hosted-response anti-polling contract");
+    && remoteStartProcessDescription.includes("Bounded same-response read_process follow-up")
+    && remoteStartProcessDescription.includes("blocking-poll cooldown")
+    && remoteStartProcessDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
+  "remote start_process description omitted the paced hosted-follow-up contract");
   const remoteReadProcess = workspaceTools.find((tool) => tool.name === "read_process");
   const remoteReadProcessDescription = String(remoteReadProcess?.description || "");
-  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1_000,
-    "remote read_process schema regained a long blocking poll");
-  assert(remoteReadProcessDescription.includes("status checkpoints")
-    && remoteReadProcessDescription.includes("at most once")
-    && remoteReadProcessDescription.includes("running=true")
-    && remoteReadProcessDescription.includes("even when output was returned")
-    && remoteReadProcessDescription.includes("stop polling")
+  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1_000
+    && remoteReadProcess?.inputSchema?.properties?.wait_ms?.default === 1_000,
+    "remote read_process schema lost its one-second server-paced default/maximum");
+  assert(remoteReadProcessDescription.includes("paced follow-up")
+    && remoteReadProcessDescription.includes("same MCP call")
+    && remoteReadProcessDescription.includes("cooldown boundary")
+    && remoteReadProcessDescription.includes("same assistant response")
+    && remoteReadProcessDescription.includes("next_blocking_poll_after_ms")
+    && remoteReadProcessDescription.includes("must not busy-loop")
     && remoteReadProcessDescription.includes("run_process/read_job")
     && !remoteReadProcessDescription.includes("poll again"),
-  "remote read_process description can still induce repeated same-response live-session polling");
+  "remote read_process description lost server-paced same-response follow-up limits");
   const immediateReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 0 });
+  const defaultReadBudget = daemonToolTimeoutBudget("read_process", {});
   const maximumReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 1_000 });
   assert(immediateReadBudget.executionTimeoutMs === 5_000 && immediateReadBudget.settlementTimeoutMs === 10_000
-    && maximumReadBudget.executionTimeoutMs === 6_000 && maximumReadBudget.settlementTimeoutMs === 11_000,
-  "remote process polling did not retain its short settlement budget");
+    && defaultReadBudget.executionTimeoutMs === 20_000 && defaultReadBudget.settlementTimeoutMs === 25_000
+    && maximumReadBudget.executionTimeoutMs === 20_000 && maximumReadBudget.settlementTimeoutMs === 25_000,
+  "remote process polling budget cannot cover the server-paced default/cooldown without widening the relay ceiling");
   const startProcessBudget = daemonToolTimeoutBudget("start_process", {});
   assert(startProcessBudget.executionTimeoutMs === relayContract.processSessionStartExecutionTimeoutMs
     && startProcessBudget.settlementTimeoutMs === relayContract.processSessionStartExecutionTimeoutMs + relayContract.workerSettlementOverheadMs,
@@ -1224,12 +1242,22 @@ function testRelayTimeoutContract() {
   assert(relayContract.maximumExecutionTimeoutMs === 45_000
     && relayContract.maximumRelayToolTimeoutMs === 50_000,
   "relay envelope can still hold a synchronous remote tool beyond the reply-safe ceiling");
-  const deliveryContract = remoteToolDeliveryContract();
+  const deliveryContract = remoteToolDeliveryContract("test-version");
   assert(deliveryContract.remote_process_blocking_poll_wait_max_ms === 1_000
     && deliveryContract.remote_process_blocking_poll_cooldown_ms === 15_000
+    && deliveryContract.remote_managed_job_read_wait_default_ms === 40_000
+    && deliveryContract.remote_managed_job_read_wait_max_ms === 40_000
+    && deliveryContract.tool_schema_generation === workerToolSchemaGeneration
+    && deliveryContract.tool_schema_server_version === "test-version"
+    && deliveryContract.discovery_ttl_ms === 0
+    && deliveryContract.tool_list_ttl_ms === 0
+    && deliveryContract.host_visible_schema_known_to_server === false
+    && deliveryContract.host_schema_refresh_required_on_generation_change === true
+    && deliveryContract.host_turn_deadline_observable === false
+    && deliveryContract.managed_jobs_detached_from_mcp_response === true
     && !("remote_process_poll_wait_max_ms" in deliveryContract)
     && !("remote_process_poll_cooldown_ms" in deliveryContract),
-  "server_info tool-delivery projection retained ambiguous process-poll field names");
+  "server_info tool-delivery projection lost schema freshness evidence or retained ambiguous process-poll field names");
 }
 
 function testWorkerPolicyParity() {
@@ -1581,6 +1609,9 @@ function testWorkerObservability() {
   try {
     metrics.event("warn", "security.test", {
       access_token: "must-not-leak",
+      api_key: "opaque-api-value",
+      proof: "opaque-proof-value",
+      monkey: "safe-animal",
       path: "/mcp",
       detail: "Bearer abcdefghijklmnopqrstuvwxyz for operator@example.com under /Users/example/private",
       level: "info",
@@ -1592,7 +1623,10 @@ function testWorkerObservability() {
     console.warn = originalWarn;
   }
   const event = JSON.parse(lines[0]);
-  assert(event.access_token === "<redacted>" && !lines[0].includes("must-not-leak"), "Worker structured event leaked a sensitive field");
+  assert(event.access_token === "<redacted>" && event.api_key === "<redacted>" && event.proof === "<redacted>"
+    && !lines[0].includes("must-not-leak") && !lines[0].includes("opaque-api-value") && !lines[0].includes("opaque-proof-value"),
+  "Worker structured event leaked a sensitive field-name variant");
+  assert(event.monkey === "safe-animal", "Worker sensitive-key matching over-redacted an unrelated field name");
   assert(event.path === "/mcp", "Worker structured event removed a safe route field");
   assert(!lines[0].includes("abcdefghijklmnopqrstuvwxyz") && !lines[0].includes("operator@example.com") && !lines[0].includes("/Users/example"), "Worker structured event leaked a sensitive value embedded in a non-sensitive field");
   assert(event.detail.includes("Bearer <redacted>") && event.detail.includes("<redacted-email>") && event.detail.includes("<home>"), "Worker structured event did not retain redaction markers");
@@ -1671,27 +1705,36 @@ function testDaemonLiveness() {
 
 function testThrottledEdgeLogger() {
   let now = 1_000;
+  let wallNow = 1_700_000_000_000;
   const lines = [];
   const log = createThrottledEdgeLogger({
     intervalMs: 100,
-    now: () => now,
+    monotonicNow: () => now,
+    wallNow: () => wallNow,
     write: (level, text) => lines.push({ level, value: JSON.parse(text) }),
   });
   assert(log("warn", "rate.failure", {
     detail: "Bearer abcdefghijklmnopqrstuvwxyz for operator@example.com under /Users/example/private\nline",
     access_token: "must-not-leak",
+    apiKey: "opaque-api-value",
+    proof: "opaque-proof-value",
+    monkey: "safe-animal",
   }) === true, "first edge degradation log was suppressed");
   assert(log("warn", "rate.failure", { detail: "second" }) === false, "duplicate edge degradation log was not suppressed");
   assert(log("warn", "rate.failure", { detail: "third" }) === false, "repeated edge degradation log was not suppressed");
+  wallNow -= 60_000;
   now += 100;
-  assert(log("warn", "rate.failure", { detail: "reopened" }) === true, "edge degradation log did not reopen after its interval");
+  assert(log("warn", "rate.failure", { detail: "reopened" }) === true,
+    "edge degradation log did not reopen on monotonic time after a wall-clock rollback");
   assert(lines.length === 2 && lines[1].value.suppressed === 2, "edge log did not report its suppressed duplicate count");
   assert(lines[0].value.detail.includes("Bearer <redacted>")
     && lines[0].value.detail.includes("<redacted-email>") && lines[0].value.detail.includes("<home>")
     && lines[0].value.component === "worker-edge" && lines[0].value.access_token === "<redacted>"
-    && !JSON.stringify(lines[0]).includes("must-not-leak") && !JSON.stringify(lines[0]).includes("abcdefghijklmnopqrstuvwxyz")
+    && lines[0].value.apikey === "<redacted>" && lines[0].value.proof === "<redacted>" && lines[0].value.monkey === "safe-animal"
+    && !JSON.stringify(lines[0]).includes("must-not-leak") && !JSON.stringify(lines[0]).includes("opaque-api-value")
+    && !JSON.stringify(lines[0]).includes("opaque-proof-value") && !JSON.stringify(lines[0]).includes("abcdefghijklmnopqrstuvwxyz")
     && !JSON.stringify(lines[0]).includes("operator@example.com") && !JSON.stringify(lines[0]).includes("/Users/example"),
-  "edge log did not apply value-level privacy redaction, redact sensitive fields, or preserve authoritative metadata");
+  "edge log did not apply shared field/value privacy redaction without over-redacting unrelated names");
   now += 100;
   assert(log("warn", "prototype.fields", JSON.parse('{"__proto__":"ordinary-proto","constructor":"ordinary-constructor","private_key":"must-not-leak"}')) === true,
     "prototype-shaped edge log was unexpectedly suppressed");
@@ -1708,7 +1751,7 @@ function testThrottledEdgeLogger() {
   console.warn = (line) => defaultLines.push({ level: "warn", value: JSON.parse(String(line)) });
   console.error = (line) => defaultLines.push({ level: "error", value: JSON.parse(String(line)) });
   try {
-    const defaultLog = createThrottledEdgeLogger({ intervalMs: 0, now: () => defaultNow });
+    const defaultLog = createThrottledEdgeLogger({ intervalMs: 0, monotonicNow: () => defaultNow });
     assert(defaultLog("warn", "Default Writer", { count: 1, ok: true, empty: null, nested: { dropped: true } }),
       "default edge logger suppressed its first warning");
     defaultNow += 60_000;

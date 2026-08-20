@@ -1,7 +1,7 @@
 import process from "node:process";
 import os from "node:os";
 import { errorCode } from "./errors.mjs";
-import { sanitizePortableLogText } from "../shared/log-redaction.mjs";
+import { isSensitiveLogFieldName, sanitizePortableLogText } from "../shared/log-redaction.mjs";
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -17,7 +17,6 @@ const MAX_LOG_FIELD_CHARS = 4096;
 const MAX_LOG_ARRAY_ITEMS = 32;
 const MAX_LOG_OBJECT_KEYS = 48;
 const LEVEL_RANK = Object.freeze({ debug: 10, info: 20, success: 20, warn: 30, error: 40 });
-const SENSITIVE_KEY = /(authorization|cookie|password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)/i;
 const LOCAL_PATH_KEY = /(path|paths|cwd|workspace|directory|(?:^|[_-])dir(?:$|[_-])|root|home)/i;
 const HOME_PATHS = [...new Set([process.env.HOME, process.env.USERPROFILE, safeHomeDirectory()].filter(value => typeof value === "string" && value.length > 1))]
   .sort((left, right) => right.length - left.length);
@@ -92,9 +91,9 @@ export function createLogger(options = {}) {
     warn(message, fields) { write(stderr, "warn", "[warn]", COLORS.yellow, message, fields); },
     error(message, fields) { write(stderr, "error", "[error]", COLORS.red, message, fields); },
     debug(message, fields) { write(stderr, "debug", "[debug]", COLORS.gray, message, fields); },
-    plain(message = "") { if (!quiet) stdout.write(`${String(message)}\n`); },
+    rawPlain(message = "") { if (!quiet) stdout.write(`${String(message)}\n`); },
     safePlain(message = "") { if (!quiet) stdout.write(`${sanitizeLogText(message, MAX_LOG_MESSAGE_CHARS)}\n`); },
-    json(value) { stdout.write(`${JSON.stringify(value, null, 2)}\n`); },
+    rawJson(value) { stdout.write(`${JSON.stringify(value, null, 2)}\n`); },
   };
 }
 
@@ -127,7 +126,7 @@ export function formatFields(fields) {
 }
 
 function sanitizeLogValue(value, key = "", seen = new WeakSet(), depth = 0) {
-  if (SENSITIVE_KEY.test(key)) return "<redacted>";
+  if (isSensitiveLogFieldName(key)) return "<redacted>";
   if (LOCAL_PATH_KEY.test(key)) return "<local-path>";
   if (value instanceof Error) return sanitizeLogText(value.message || value.name);
   if (typeof value === "string") return sanitizeLogText(value);

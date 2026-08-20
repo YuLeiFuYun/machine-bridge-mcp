@@ -16,6 +16,11 @@ export function projectRuntimeInfo(info, detail = "full") {
     tool_delivery: {
       effective_tool_count: delivery.effective_tool_count ?? 0,
       daemon_advertised_tool_count: delivery.daemon_advertised_tool_count ?? 0,
+      tool_schema_generation: delivery.tool_schema_generation ?? null,
+      discovery_ttl_ms: delivery.discovery_ttl_ms ?? null,
+      tool_list_ttl_ms: delivery.tool_list_ttl_ms ?? null,
+      host_turn_deadline_observable: false,
+      managed_jobs_detached_from_mcp_response: delivery.managed_jobs_detached_from_mcp_response === true,
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
     },

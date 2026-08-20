@@ -171,6 +171,9 @@ try {
     assert(tools.has(required), `stdio default full profile omitted ${required}`);
   }
   assert(tools.get("write_file")?.annotations?.destructiveHint === true, "tool annotations missing");
+  assert(tools.get("read_job")?.inputSchema?.properties?.wait_ms?.default === 0
+    && tools.get("read_job")?.inputSchema?.properties?.wait_ms?.maximum === 40_000,
+  "stdio read_job lost its local immediate-default / bounded optional-wait contract");
 
   send({ jsonrpc: "2.0", id: 201, method: "tools/call", params: { name: "session_bootstrap", arguments: { path: "." } } });
   const bootstrap = await responseFor(201);
@@ -270,11 +273,19 @@ try {
   assert(serverInfo.result?.structuredContent?.enforcement?.host_policy_is_independent === true, "server_info did not disclose the independent host-policy boundary");
   assert(serverInfo.result?.structuredContent?.tool_delivery?.host_exposed_tools_known_to_server === false, "server_info incorrectly claimed visibility into host-exposed tools");
   assert(serverInfo.result?.structuredContent?.tool_delivery?.host_may_expose_subset === true, "server_info did not disclose host-side tool filtering");
+  assert(serverInfo.result?.structuredContent?.tool_delivery?.tool_schema_generation === 3
+    && serverInfo.result?.structuredContent?.tool_delivery?.discovery_ttl_ms === 0
+    && serverInfo.result?.structuredContent?.tool_delivery?.tool_list_ttl_ms === 0
+    && serverInfo.result?.structuredContent?.tool_delivery?.host_turn_deadline_observable === false
+    && serverInfo.result?.structuredContent?.tool_delivery?.managed_jobs_detached_from_mcp_response === true,
+  "stdio server_info lost schema freshness or external-host/durable-job boundary evidence");
   send({ jsonrpc: "2.0", id: 6000, method: "tools/call", params: { name: "server_info", arguments: { detail: "summary" } } });
   const compactServerInfo = await responseFor(6000);
   const compactInfo = compactServerInfo.result?.structuredContent;
   assert(compactInfo?.detail === "summary" && compactInfo?.policy?.profile === "full"
-    && compactInfo?.runtime?.lifecycle && compactInfo?.tool_delivery?.daemon_advertised_tool_count === serverInfo.result?.structuredContent?.tool_delivery?.daemon_advertised_tool_count,
+    && compactInfo?.runtime?.lifecycle && compactInfo?.tool_delivery?.daemon_advertised_tool_count === serverInfo.result?.structuredContent?.tool_delivery?.daemon_advertised_tool_count
+    && compactInfo?.tool_delivery?.tool_schema_generation === 3
+    && compactInfo?.tool_delivery?.host_turn_deadline_observable === false,
   "stdio compact server_info omitted core health or policy state");
   assert(!("tools" in compactInfo) && !("observability" in compactInfo) && !("security_audit" in compactInfo) && !("trust" in compactInfo)
     && JSON.stringify(compactInfo).length < JSON.stringify(serverInfo.result.structuredContent).length * 0.6,

@@ -194,12 +194,13 @@ assert.equal(staleReadPollSchema.result.structuredContent.error.code, "invalid_r
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.side_effects_started, false);
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.validation_issues[0].instancePath, "/wait_ms");
-assert(staleReadPollSchema.result.structuredContent.error.message.includes("at most once for a live session")
-  && staleReadPollSchema.result.structuredContent.error.message.includes("running=true")
-  && staleReadPollSchema.result.structuredContent.error.message.includes("even if output was returned")
+assert(staleReadPollSchema.result.structuredContent.error.message.includes("one-second limit")
+  && staleReadPollSchema.result.structuredContent.error.message.includes("next_blocking_poll_after_ms")
+  && staleReadPollSchema.result.structuredContent.error.message.includes("same MCP call")
+  && staleReadPollSchema.result.structuredContent.error.message.includes("instead of rapid retrying")
   && staleReadPollSchema.result.structuredContent.error.message.includes("run_process/read_job")
   && !staleReadPollSchema.result.structuredContent.error.message.includes("short polling"),
-"stale read_process compatibility guidance can still reintroduce same-turn polling loops");
+"stale read_process compatibility guidance lost server-paced follow-up limits");
 const malformedReadPoll = await jsonResult(await handle(request("tools/call", {
   name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: "5000" },
 }), { accept: "application/json" }));

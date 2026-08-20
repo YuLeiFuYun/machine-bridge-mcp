@@ -1,13 +1,25 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
+import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
+import { MCP_DISCOVERY_TTL_MS, MCP_TOOL_LIST_TTL_MS } from "./worker-mcp-config.ts";
 
-export function remoteToolDeliveryContract(): Record<string, unknown> {
+export function remoteToolDeliveryContract(serverVersion: string): Record<string, unknown> {
   return {
+    tool_schema_generation: Number(serverMetadata.toolSchemaGeneration),
+    tool_schema_server_version: String(serverVersion),
+    discovery_ttl_ms: MCP_DISCOVERY_TTL_MS,
+    tool_list_ttl_ms: MCP_TOOL_LIST_TTL_MS,
+    host_visible_schema_known_to_server: false,
+    host_schema_refresh_required_on_generation_change: true,
+    host_turn_deadline_observable: false,
+    managed_jobs_detached_from_mcp_response: true,
     remote_foreground_execution_max_ms: relayContract.maximumInteractiveExecutionTimeoutMs,
     remote_process_session_start_execution_max_ms: relayContract.processSessionStartExecutionTimeoutMs,
     remote_process_delivery_mode: "durable_job",
     remote_process_acceptance_max_ms: relayContract.durableProcessAcceptanceTimeoutMs,
     remote_process_execution_timeout_max_ms: relayContract.maximumDurableProcessExecutionTimeoutMs,
     managed_job_resource_admission_wait_max_ms: relayContract.maximumManagedJobResourceAdmissionWaitMs,
+    remote_managed_job_read_wait_default_ms: relayContract.defaultManagedJobReadWaitMs,
+    remote_managed_job_read_wait_max_ms: relayContract.maximumManagedJobReadWaitMs,
     remote_default_tool_execution_max_ms: relayContract.defaultRemoteToolExecutionTimeoutMs,
     remote_process_blocking_poll_wait_max_ms: relayContract.maximumProcessReadWaitMs,
     remote_process_blocking_poll_cooldown_ms: relayContract.remoteProcessBlockingPollCooldownMs,

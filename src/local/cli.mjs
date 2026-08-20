@@ -269,7 +269,7 @@ function reportExistingDaemon(args, state, owner, logger) {
   } else {
     logger.safePlain("  Run `machine-mcp service stop`, verify `machine-mcp service status`, then retry.");
   }
-  logger.plain(`  Workspace: ${state.workspace.path}`);
+  logger.rawPlain(`  Workspace: ${state.workspace.path}`);
 }
 
 export function runtimeStartRequiresMachineServiceLock(args = {}) {

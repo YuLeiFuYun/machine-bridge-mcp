@@ -1,4 +1,5 @@
 import { clampInteger } from "./numbers.mjs";
+import { waitForManagedJobRead } from "./managed-job-read-wait.mjs";
 
 const RUNTIME_TOOL_HANDLERS = Object.freeze({
   server_info: (runtime, args, context) => runtime.serverInfo(args, context),
@@ -47,7 +48,12 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   stage_job: (runtime, args, context) => runtime.managedJobManager.stage(args, context),
   start_job: (runtime, args, context) => runtime.managedJobManager.start(args, context),
   list_jobs: (runtime, args, context) => runtime.managedJobManager.list(args, context),
-  read_job: (runtime, args, context) => runtime.managedJobManager.read(args, context),
+  read_job: (runtime, args, context) => waitForManagedJobRead({
+    args, context,
+    readCurrent: () => runtime.managedJobManager.read(args, context),
+    readProgress: () => runtime.managedJobManager.readProgress(args, context),
+    throwIfCancelled: () => runtime.throwIfCancelled(context),
+  }),
   cancel_job: (runtime, args, context) => runtime.managedJobManager.cancel(args, context),
   run_process: (runtime, args, context) => runtime.runDirectProcess(args, context),
   start_process: (runtime, args, context) => runtime.processSessionManager.start(args, context),

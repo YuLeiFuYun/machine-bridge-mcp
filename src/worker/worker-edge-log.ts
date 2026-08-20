@@ -1,21 +1,22 @@
-import { sanitizePortableLogText } from "../shared/log-redaction.mjs";
+import { isSensitiveLogFieldName, sanitizePortableLogText } from "../shared/log-redaction.mjs";
 
 type EdgeLogLevel = "warn" | "error";
 type EdgeLogWriter = (level: EdgeLogLevel, text: string) => void;
-const SENSITIVE_FIELD = /(?:authorization|cookie|password|secret|token|key|credential|proof)/i;
 
 export function createThrottledEdgeLogger(options: {
   intervalMs?: number;
-  now?: () => number;
+  monotonicNow?: () => number;
+  wallNow?: () => number;
   write?: EdgeLogWriter;
 } = {}): (level: EdgeLogLevel, event: string, fields?: Record<string, unknown>) => boolean {
   const intervalMs = positiveInterval(options.intervalMs, 60_000);
-  const now = options.now ?? Date.now;
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
+  const wallNow = options.wallNow ?? Date.now;
   const write = options.write ?? defaultWrite;
   let nextAt = 0;
   let suppressed = 0;
   return (level, event, fields = {}) => {
-    const current = now();
+    const current = monotonicNow();
     if (current < nextAt) {
       suppressed += 1;
       return false;
@@ -23,7 +24,7 @@ export function createThrottledEdgeLogger(options: {
     const entry = {
       ...safeFields(fields),
       ...(suppressed > 0 ? { suppressed } : {}),
-      timestamp: new Date(current).toISOString(),
+      timestamp: new Date(wallNow()).toISOString(),
       level,
       component: "worker-edge",
       event: safeName(event),
@@ -40,7 +41,7 @@ function safeFields(fields: Record<string, unknown>): Record<string, unknown> {
   for (const [key, value] of Object.entries(fields).slice(0, 16)) {
     const name = safeName(key);
     if (!name) continue;
-    if (SENSITIVE_FIELD.test(name)) {
+    if (isSensitiveLogFieldName(key)) {
       out[name] = "<redacted>";
       continue;
     }

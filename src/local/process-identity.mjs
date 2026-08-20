@@ -39,6 +39,25 @@ export async function processStartTimeMsAsync(pid) {
   return result.ok ? parseTime(result.stdout) : null;
 }
 
+export async function sampleProcessStartTimesAsync(options = {}) {
+  const run = typeof options.run === "function" ? options.run : runBoundedAsync;
+  const [command, args] = processStartSnapshotCommand(options.platform || process.platform);
+  const result = await run(command, args);
+  if (!result?.ok) return null;
+  const starts = {};
+  for (const line of String(result.stdout || "").split(/\r?\n/)) {
+    const parsed = parseProcessStartSnapshotLine(line);
+    if (parsed) starts[String(parsed.pid)] = parsed.startedAt;
+  }
+  return starts;
+}
+
+export function processStartTimeFromSnapshot(snapshot, pid) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const key = String(pid);
+  return Object.hasOwn(snapshot, key) ? Number(snapshot[key]) : null;
+}
+
 export function processState(pid) {
   const parsed = normalizePid(pid);
   if (!parsed || process.platform === "win32") return "unknown";
@@ -134,12 +153,44 @@ export function inspectProcessInstance(owner, options = {}) {
   };
 }
 
+export async function inspectProcessInstanceAsync(owner, options = {}) {
+  const pid = normalizePid(owner?.pid);
+  if (!pid) return { current: false, alive: false, reclaimable: true, reason: "invalid_pid", pid: null };
+  const alive = (options.isAlive || isPidAlive)(pid);
+  if (!alive) return { current: false, alive: false, reclaimable: true, reason: "not_running", pid };
+  const observedStart = await (options.getProcessStartTimeAsync || processStartTimeMsAsync)(pid);
+  return inspectProcessInstance(owner, {
+    ...options,
+    isAlive: () => true,
+    getProcessStartTime: () => observedStart,
+  });
+}
+
 function processStartCommand(pid) {
   if (process.platform === "win32") {
     const command = `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CreationDate.ToUniversalTime().ToString('o')`;
     return ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]];
   }
   return ["ps", ["-p", String(pid), "-o", "lstart="]];
+}
+
+function processStartSnapshotCommand(platform) {
+  if (platform === "win32") {
+    return ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId)|$($_.CreationDate.ToUniversalTime().ToString('o'))\" }"]];
+  }
+  return ["ps", ["-axo", "pid=,lstart="]];
+}
+
+function parseProcessStartSnapshotLine(value) {
+  const line = String(value || "").trim();
+  if (!line) return null;
+  const pipe = /^([1-9][0-9]*)\|(.+)$/.exec(line);
+  const spaced = /^([1-9][0-9]*)\s+(.+)$/.exec(line);
+  const match = pipe || spaced;
+  if (!match) return null;
+  const startedAt = parseTime(match[2]);
+  return startedAt ? { pid: Number(match[1]), startedAt } : null;
 }
 
 function runBounded(command, args) {

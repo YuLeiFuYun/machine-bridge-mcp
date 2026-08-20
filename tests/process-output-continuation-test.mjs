@@ -198,36 +198,84 @@ async function testRemoteBlockingPollCooldown() {
     const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 2500)"] }, remoteContext);
     const immediate = await manager.read({ session_id: started.session_id, wait_ms: 0 }, remoteContext);
     assert.equal(immediate.running, true, "remote polling fixture exited before the immediate checkpoint");
-    assert.equal(immediate.status_polling_mode, "checkpoint", "remote process read omitted checkpoint semantics");
+    assert.equal(immediate.status_polling_mode, "paced_followup", "remote process read omitted paced follow-up semantics");
+    assert.equal(immediate.tool_schema_generation, 3, "remote process read omitted current tool schema generation");
+    assert.equal(immediate.host_turn_deadline_observable, false, "remote process read claimed visibility into an external host turn deadline");
     assert.equal(immediate.blocking_poll_throttled, false, "non-blocking status checkpoint was marked as throttled");
     assert.equal(immediate.next_blocking_poll_after_ms, 0,
       "non-blocking status checkpoint incorrectly armed the blocking-poll cooldown");
 
     const firstStartedAt = Date.now();
-    const first = await manager.read({ session_id: started.session_id, wait_ms: 5_000 }, remoteContext);
+    const first = await manager.read({ session_id: started.session_id }, remoteContext);
     const firstElapsed = Date.now() - firstStartedAt;
     assert.equal(first.running, true, "remote polling fixture exited before the first blocking read");
     assert(firstElapsed >= 700 && firstElapsed < 2_000,
-      "daemon-side remote polling did not clamp a stale/oversized request to the one-second hosted wait");
+      "relay-origin read_process without wait_ms did not default to the one-second server-paced wait");
     assert.equal(first.blocking_poll_throttled, false, "first remote blocking read was throttled unexpectedly");
-    assert.equal(first.status_polling_mode, "checkpoint", "first remote blocking read lost checkpoint semantics");
-    assert.equal(first.host_turn_handoff_recommended, true,
-      "running remote process did not recommend yielding the hosted response");
+    assert.equal(first.status_polling_mode, "paced_followup", "first remote blocking read lost paced follow-up semantics");
+    assert.equal(first.host_turn_handoff_recommended, false,
+      "running remote process still forced hosted-turn handoff");
     assert(first.next_blocking_poll_after_ms > 0, "running remote process omitted the next blocking-poll cooldown hint");
 
     const secondStartedAt = Date.now();
     const second = await manager.read({ session_id: started.session_id, wait_ms: 5_000 }, remoteContext);
     const secondElapsed = Date.now() - secondStartedAt;
-    assert.equal(second.running, true, "remote polling fixture exited before the repeated read");
-    assert.equal(second.blocking_poll_throttled, true, "repeated remote blocking read was not converted to an immediate status read");
-    assert(secondElapsed < firstElapsed,
-      "repeated remote blocking read still consumed the original synchronous wait budget");
-    assert(second.next_blocking_poll_after_ms > 0, "throttled remote poll omitted its remaining cooldown");
+    assert.equal(second.running, false, "cooldown-paced remote read returned a rapid running checkpoint instead of waiting for process exit");
+    assert.equal(second.status_polling_mode, "terminal", "cooldown-paced remote read lost terminal state reached during server-side pacing");
+    assert.equal(second.blocking_poll_throttled, true, "repeated remote blocking read did not disclose that its cooldown paced the call");
+    assert(secondElapsed >= 900 && secondElapsed < 3_000,
+      "repeated remote blocking read did not remain inside one MCP call until output/exit or cooldown progress");
+    assert.equal(second.next_blocking_poll_after_ms, 0, "terminal cooldown-paced read retained a future blocking-poll delay");
+
+    const outputPaced = await manager.start({
+      argv: [process.execPath, "-e", "setTimeout(() => process.stdout.write('first\\n'), 100); setTimeout(() => process.stdout.write('second\\n'), 450); setTimeout(() => {}, 2500)"],
+    }, remoteContext);
+    const outputArm = await manager.read({ session_id: outputPaced.session_id, wait_ms: 5_000 }, remoteContext);
+    assert(outputArm.running && outputArm.stdout.data.includes("first") && outputArm.next_blocking_poll_after_ms > 0,
+      "output-paced fixture did not arm the initial blocking cooldown");
+    const originalOutputCooldown = outputArm.next_blocking_poll_after_ms;
+    const outputPacedStartedAt = Date.now();
+    const outputDuringCooldown = await manager.read({
+      session_id: outputPaced.session_id, wait_ms: 5_000,
+      stdout_offset: outputArm.stdout.next_offset, stderr_offset: outputArm.stderr.next_offset,
+    }, remoteContext);
+    const outputPacedElapsed = Date.now() - outputPacedStartedAt;
+    assert(outputDuringCooldown.running && outputDuringCooldown.stdout.data.includes("second"),
+      "cooldown-paced read failed to return newly available output");
+    assert.equal(outputDuringCooldown.blocking_poll_throttled, true,
+      "output wakeup inside the cooldown lost its paced-read diagnostic");
+    assert(outputPacedElapsed >= 150 && outputPacedElapsed < 1_500,
+      "cooldown-paced output read did not return promptly when new output arrived");
+    assert(outputDuringCooldown.next_blocking_poll_after_ms > 0
+      && outputDuringCooldown.next_blocking_poll_after_ms < originalOutputCooldown,
+    "output wakeup incorrectly re-armed the full blocking cooldown");
+
+    const noisyExit = await manager.start({
+      argv: [process.execPath, "-e", [
+        "setTimeout(() => { const timer = setInterval(() => process.stdout.write('tick\\n'), 75);",
+        "setTimeout(() => { clearInterval(timer); process.exit(0); }, 2200); }, 1100);",
+      ].join(" ")],
+    }, remoteContext);
+    const noisyFirst = await manager.read({ session_id: noisyExit.session_id, wait_ms: 5_000 }, remoteContext);
+    assert.equal(noisyFirst.running, true, "noisy wait_for_exit fixture exited before arming its cooldown");
+    const noisyStartedAt = Date.now();
+    const noisySettled = await manager.read({
+      session_id: noisyExit.session_id, wait_ms: 5_000, wait_for_exit: true,
+    }, remoteContext);
+    const noisyElapsed = Date.now() - noisyStartedAt;
+    assert.equal(noisySettled.running, false,
+      "wait_for_exit cooldown was released by ordinary output before the process exited");
+    assert(noisyElapsed >= 1800 && noisyElapsed < 4000,
+      "wait_for_exit cooldown did not remain server-paced across ordinary output changes");
+    assert(noisySettled.stdout.data.includes("tick"),
+      "wait_for_exit cooldown lost output produced while the same MCP call remained open");
+    assert.equal(noisySettled.blocking_poll_throttled, true,
+      "wait_for_exit cooldown did not disclose server-side cooldown pacing");
 
     const exiting = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 150)"] }, remoteContext);
     const settled = await manager.read({ session_id: exiting.session_id, wait_ms: 5_000 }, remoteContext);
     assert.equal(settled.running, false, "remote process that exited during the checkpoint was still reported running");
-    assert.equal(settled.status_polling_mode, "checkpoint", "settled remote process lost checkpoint semantics");
+    assert.equal(settled.status_polling_mode, "terminal", "settled remote process retained live follow-up semantics");
     assert.equal(settled.host_turn_handoff_recommended, false,
       "settled remote process incorrectly recommended handing the hosted turn back for more polling");
     assert.equal(settled.blocking_poll_throttled, false, "settled first blocking checkpoint was marked as throttled");
@@ -320,7 +368,7 @@ function testRemoteReadCompletionUsesFinalSessionState() {
     remoteRead: { remote: true, blocking: true, pollThrottled: false },
     stdout: { data: "" }, stderr: { data: "" },
   }, session, 200);
-  assert.equal(completed.status_polling_mode, "checkpoint", "completed remote read lost checkpoint metadata");
+  assert.equal(completed.status_polling_mode, "terminal", "completed remote read retained live follow-up metadata");
   assert.equal(completed.host_turn_handoff_recommended, false,
     "remote read completion used a stale pre-exit running state for hosted-turn handoff");
   assert.equal(completed.next_blocking_poll_after_ms, 0,

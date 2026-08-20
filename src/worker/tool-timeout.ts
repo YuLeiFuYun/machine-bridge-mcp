@@ -8,7 +8,6 @@ import {
 } from "../shared/foreground-timeout.mjs";
 import { WorkerToolError } from "./errors.ts";
 import { durableProcessAcceptanceTimeoutMs } from "./durable-process-timeout.ts";
-
 export {
   isConfigurableForegroundTool,
   isRemoteDurableProcessTool,
@@ -36,15 +35,15 @@ function toolExecutionTimeoutMs(name: string, args: Record<string, unknown>): nu
   if (name === "read_process") {
     const waitMs = typeof args.wait_ms === "number" && Number.isSafeInteger(args.wait_ms)
       ? Math.max(0, Math.min(args.wait_ms, relayContract.maximumProcessReadWaitMs))
-      : 0;
-    return Math.min(relayContract.defaultRemoteToolExecutionTimeoutMs, waitMs + 5_000);
+      : relayContract.maximumProcessReadWaitMs;
+    return waitMs === 0 ? 5_000 : relayContract.defaultRemoteToolExecutionTimeoutMs;
   }
+  if (name === "read_job") return Math.min(relayContract.maximumInteractiveExecutionTimeoutMs, Math.max(0, Math.min(typeof args.wait_ms === "number" && Number.isSafeInteger(args.wait_ms) ? args.wait_ms : relayContract.defaultManagedJobReadWaitMs, relayContract.maximumManagedJobReadWaitMs)) + 5_000);
   if (name === "start_process") {
     return Math.min(relayContract.processSessionStartExecutionTimeoutMs, relayContract.defaultRemoteToolExecutionTimeoutMs);
   }
   if (isRemoteDurableProcessTool(name)) return durableProcessAcceptanceTimeoutMs(name, args);
   if (!isConfigurableForegroundTool(name)) return relayContract.defaultRemoteToolExecutionTimeoutMs;
-
   const seconds = remoteForegroundSeconds(name, args.timeout_seconds);
   return Math.min(seconds * 1000, relayContract.maximumExecutionTimeoutMs);
 }

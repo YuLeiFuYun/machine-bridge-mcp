@@ -10,6 +10,9 @@ logger.event("info", "tool.call.completed", {
   tool: "read_file",
   duration_ms: 12,
   password: "must-not-appear",
+  apiKey: "opaque-api-value",
+  proof: "opaque-proof-value",
+  monkey: "safe-animal",
   workspace_path: syntheticHomePath,
   note: "Bearer abc.def.ghi",
   timestamp: "1970-01-01T00:00:00.000Z",
@@ -31,7 +34,9 @@ assert(completed.event === "tool.call.completed", "structured event name was los
 assert(completed.component === "test" && completed.level === "info", "structured event identity is incomplete");
 assert(completed.event === "tool.call.completed" && completed.message === "Tool call completed" && completed.timestamp !== "1970-01-01T00:00:00.000Z", "structured event fields overrode authoritative local log metadata");
 assert(completed.call_id === "call-123" && completed.tool === "read_file" && completed.duration_ms === 12, "safe lifecycle fields were lost");
-assert(completed.password === "<redacted>", "sensitive structured field was not redacted");
+assert(completed.password === "<redacted>" && completed.apiKey === "<redacted>" && completed.proof === "<redacted>",
+  "sensitive structured field-name variants were not redacted");
+assert(completed.monkey === "safe-animal", "sensitive-key matching over-redacted an unrelated field name");
 assert(completed.workspace_path === "<local-path>", "local path field was not redacted");
 assert(!stdout.lines[0].includes("must-not-appear") && !stdout.lines[0].includes(syntheticHomePath), "structured log leaked sensitive values");
 assert(failed.event === "tool.call.failed" && failed.error_code === "permission_denied", "structured error event is incomplete");
@@ -66,6 +71,14 @@ assert(directInfo.timestamp !== "1970-01-01T00:00:00.000Z" && directInfo.message
 assert(directInfo.workspace_path === "<local-path>" && directInfo.attempts === 1, "direct info log omitted safe fields or leaked a path");
 assert(directWarning.level === "warn" && directWarning.attempts === 3 && directWarning.token === "<redacted>", "direct warning log omitted fields or failed redaction");
 assert(!directStderr.lines[0].includes("must-not-appear"), "direct JSON warning leaked a sensitive field");
+assert(typeof directLogger.plain === "undefined" && typeof directLogger.json === "undefined",
+  "logger exposed ambiguous raw-output method names that can be mistaken for redacted logging");
+const rawOutput = captureStream();
+const rawLogger = createLogger({ stdout: rawOutput, stderr: rawOutput, color: false });
+rawLogger.rawPlain("literal raw output");
+rawLogger.rawJson({ explicit_raw: "literal raw json" });
+assert(rawOutput.lines[0] === "literal raw output" && rawOutput.lines[1].includes("literal raw json"),
+  "explicit raw-output methods stopped preserving user-requested terminal payloads");
 
 console.log("structured logging test ok");
 

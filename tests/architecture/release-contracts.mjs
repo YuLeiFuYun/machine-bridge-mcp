@@ -140,6 +140,19 @@ if (workerToolCatalogSource.includes("use process sessions or managed jobs for l
     || !workerToolCatalogSource.includes("start_process only when interactive stdin or incremental process output is actually required")) {
   throw new Error("Worker configurable-foreground guidance can still route generic long work into process sessions");
 }
+for (const stale of ["host response/execution budget", "host budget is nearly exhausted", "continue only while the host", "read an active job at most once", "stop polling until a later user turn"]) {
+  if (workerToolCatalogSource.includes(stale)) throw new Error(`Worker tool guidance can still trigger speculative or forced hosted handoff: ${stale}`);
+}
+for (const required of ["HOSTED_CONTINUATION_RULE", "Do not infer or preempt a host/tool deadline from elapsed wall-clock time", "server-side long-poll", "wait_ms=0", "defaultManagedJobReadWaitMs", "maximumManagedJobReadWaitMs", "same MCP call", "cooldown boundary", "Tool schema generation", "workerToolSchemaGeneration"]) {
+  if (!workerToolCatalogSource.includes(required)) throw new Error(`Worker tool catalog lost autonomous/paced/schema-freshness guidance: ${required}`);
+}
+if (workerToolCatalogSource.indexOf("const HOSTED_CONTINUATION_RULE") > workerToolCatalogSource.indexOf("export const workspaceTools")) {
+  throw new Error("Worker eager tool-catalog initialization can access hosted continuation guidance before initialization");
+}
+const workerMcpConfigSource = readFileSync(join(root, "src", "worker", "worker-mcp-config.ts"), "utf8");
+if (!workerMcpConfigSource.includes("MCP_DISCOVERY_TTL_MS = 0") || !workerMcpConfigSource.includes("MCP_TOOL_LIST_TTL_MS = 0")) {
+  throw new Error("Worker discovery/tool contracts again advertise reusable cross-release semantic caches");
+}
 if (!workerTypesGeneratorSource.includes("relative(cwd, targetPath)")
     || !workerTypesGeneratorSource.includes("Wrangler types target must remain inside its working directory")
     || workerTypesGeneratorSource.includes('args: ["types", targetPath]')) {
@@ -1387,16 +1400,40 @@ if (!architecture.includes("State schema version 6") || !architecture.includes("
   throw new Error("architecture documentation omitted the current state schema or monotonic deadline contract");
 }
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
+const processSessionReadSource = readFileSync(join(root, "src", "local", "process-session-read.mjs"), "utf8");
 if (!workerToolTimeoutSource.includes("relayContract.processSessionStartExecutionTimeoutMs")) {
   throw new Error("process-session startup timeout drifted out of the shared relay contract");
 }
 const serverInfoToolDeliverySource = readFileSync(join(root, "src", "worker", "server-info-tool-delivery.ts"), "utf8");
 if (!serverInfoToolDeliverySource.includes("remote_process_session_start_execution_max_ms")
     || !serverInfoToolDeliverySource.includes("managed_job_resource_admission_wait_max_ms")
+    || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_default_ms")
+    || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_max_ms")
+    || !serverInfoToolDeliverySource.includes("tool_schema_generation")
+    || !serverInfoToolDeliverySource.includes("tool_schema_server_version")
+    || !serverInfoToolDeliverySource.includes("discovery_ttl_ms")
+    || !serverInfoToolDeliverySource.includes("tool_list_ttl_ms")
+    || !serverInfoToolDeliverySource.includes("host_visible_schema_known_to_server: false")
+    || !serverInfoToolDeliverySource.includes("host_turn_deadline_observable: false")
+    || !serverInfoToolDeliverySource.includes("managed_jobs_detached_from_mcp_response: true")
     || serverInfoToolDeliverySource.includes("remote_process_foreground_execution_max_ms")
     || serverInfoToolDeliverySource.includes("remote_process_resource_admission_wait_max_ms")
     || "maximumProcessForegroundExecutionTimeoutMs" in relayContract) {
   throw new Error("server_info or relay contract retained an obsolete/mis-scoped process timing projection");
+}
+if (relayContract.defaultManagedJobReadWaitMs !== 40_000
+    || relayContract.maximumManagedJobReadWaitMs !== 40_000
+    || relayContract.managedJobReadPollIntervalMs !== 1_000
+    || relayContract.managedJobReadReconcileIntervalMs !== 10_000
+    || Math.ceil((100 * 60 * 1000) / relayContract.defaultManagedJobReadWaitMs) > 150
+    || !workerToolTimeoutSource.includes('name === "read_job"')) {
+  throw new Error("managed-job hosted long-poll pacing or 100-minute call-density bound drifted from the bounded 40-second server-side contract");
+}
+if (!workerToolTimeoutSource.includes('name === "read_process"')
+    || !workerToolTimeoutSource.includes("waitMs === 0 ? 5_000 : relayContract.defaultRemoteToolExecutionTimeoutMs")
+    || !processSessionReadSource.includes("const cooldownDeadline = createMonotonicDeadline(remoteRead.cooldownWaitMs, now)")
+    || !processSessionReadSource.includes("while (session.closedAt === null && !cooldownDeadline.expired())")) {
+  throw new Error("read_process no longer keeps explicit-zero reads short or server-paces wait_for_exit through the cooldown");
 }
 if (relayContract.newCallReconnectGraceMs !== 15_000
     || relayContract.transportPingIntervalMs !== 5_000
@@ -1566,6 +1603,13 @@ for (const [file, content, required] of [
   ["docs/TESTING.md", testingDoc, "`full-access:test` uses an isolated resource coordinator, a synthetic healthy-host sampler, and an explicit ten-second process-admission budget"],
   ["docs/TESTING.md", testingDoc, "`local-self-test` keeps process-admission behavior deterministic instead of inheriting shared-host pressure"],
   ["docs/TESTING.md", testingDoc, "`agent-context-test` likewise uses an isolated coordinator, synthetic healthy-host sampling, and a ten-second test-only resource-admission budget"],
+  ["docs/TESTING.md", testingDoc, "`status_polling_mode=paced_followup`"],
+  ["docs/TESTING.md", testingDoc, "`status_polling_mode=bounded_followup`"],
+  ["docs/TESTING.md", testingDoc, "`host_turn_handoff_recommended=false`"],
+  ["README.md", readme, "bounded same-response `read_job` follow-up"],
+  ["README.md", readme, "`status_polling_mode=paced_followup`"],
+  ["README.md", readme, "`status_polling_mode=bounded_followup`"],
+  ["README.md", readme, "`host_turn_handoff_recommended=false`"],
   ["docs/LOGGING.md", loggingDoc, "resource_admission_reason"],
   ["docs/LOGGING.md", loggingDoc, "reason=coordinator_busy"],
   ["docs/OPERATIONS.md", operationsDoc, "managed runner can separately wait up to thirty minutes for cooperative machine-user resource admission"],
@@ -1573,8 +1617,9 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "reason=coordinator_busy"],
   ["docs/OPERATIONS.md", operationsDoc, "`server_info.tool_delivery.managed_job_resource_admission_wait_max_ms`"],
   ["docs/OPERATIONS.md", operationsDoc, "`read_job.current_phase` is `resource_admission`"],
-  ["docs/OPERATIONS.md", operationsDoc, "hosted remote projection caps each blocking wait at 1 second"],
-  ["docs/OPERATIONS.md", operationsDoc, "`status_polling_mode=checkpoint`"],
+  ["docs/OPERATIONS.md", operationsDoc, "hosted relay reads with omitted `wait_ms` default to the 1-second actual output/exit blocking cap"],
+  ["docs/OPERATIONS.md", operationsDoc, "held inside that same MCP call until output/exit or the cooldown boundary"],
+  ["docs/OPERATIONS.md", operationsDoc, "`status_polling_mode=paced_followup`"],
   ["docs/OPERATIONS.md", operationsDoc, "`blocking_poll_throttled`"],
   ["docs/OPERATIONS.md", operationsDoc, "`next_blocking_poll_after_ms`"],
   ["docs/OPERATIONS.md", operationsDoc, "`last_transport_error_reason`"],
@@ -1582,8 +1627,8 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "`relay_device_session_expired`"],
   ["docs/OPERATIONS.md", operationsDoc, "thirty-second bounded dispatch window"],
   ["docs/OPERATIONS.md", operationsDoc, "original call deadline expired during reconnect"],
-  ["docs/OPERATIONS.md", operationsDoc, "Treat `read_job` as a checkpoint"],
-  ["docs/OPERATIONS.md", operationsDoc, "`list_jobs` is a one-shot inventory checkpoint"],
+  ["docs/OPERATIONS.md", operationsDoc, "`read_job` may follow the known durable job repeatedly in the same assistant response"],
+  ["docs/OPERATIONS.md", operationsDoc, "`status_polling_mode=bounded_followup`"],
   ["docs/OPERATIONS.md", operationsDoc, "delegated non-owner reads omit that machine-user scheduling timing"],
   ["docs/OPERATIONS.md", operationsDoc, "`waiters.drain_active`"],
   ["docs/OPERATIONS.md", operationsDoc, "`pressure.state=green` means the sampled host/reservation pressure is within limits, not that fairness can admit every queued root immediately"],
@@ -1595,8 +1640,8 @@ for (const [file, content, required] of [
   ["docs/PRIVACY.md", privacyDoc, "`.git/worktrees/*/gitdir` can legitimately contain absolute local filesystem paths"],
   ["docs/PRIVACY.md", privacyDoc, "Treat that stdout/JSON as secret material"],
   ["docs/MULTI_ACCOUNT.md", multiAccountDoc, "must not be copied to shared logs or support artifacts"],
-  ["docs/MANAGED_JOBS.md", managedJobsDoc, "Use `read_job` at most once as an active-job status checkpoint"],
-  ["docs/MANAGED_JOBS.md", managedJobsDoc, "`list_jobs` as a one-shot inventory checkpoint"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "`read_job` may be used for bounded same-response follow-up until terminal state"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "do not substitute repeated `list_jobs` calls"],
   ["src/shared/server-metadata.json", serverMetadata, "durable-first one-step jobs with a 10-second acceptance budget"],
   ["src/shared/server-metadata.json", serverMetadata, "WebSocket remains the preferred daemon transport: a protocol-level Ping is attempted every 5 seconds"],
   ["src/shared/server-metadata.json", serverMetadata, "A new daemon-backed call may wait at most 15 seconds for verified recovery"],
@@ -1604,11 +1649,15 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "previous_ready_inbound_silence_ms"],
   ["src/shared/server-metadata.json", serverMetadata, "separate pre-spawn resource-admission wait of up to 30 minutes"],
   ["src/shared/server-metadata.json", serverMetadata, "read_job.current_phase=resource_admission"],
-  ["src/shared/server-metadata.json", serverMetadata, "Hosted read-only status and diagnostic tools are checkpoints, not wait loops"],
-  ["src/shared/server-metadata.json", serverMetadata, "Do not repeatedly call read_process, read_job, list_jobs, server_info, diagnose_runtime"],
-  ["src/shared/server-metadata.json", serverMetadata, "Treat read_job as a status checkpoint"],
-  ["src/shared/server-metadata.json", serverMetadata, "Treat list_jobs as a one-shot inventory checkpoint"],
-  ["src/shared/server-metadata.json", serverMetadata, "stop polling until a later user turn or explicit request"],
+  ["src/shared/server-metadata.json", serverMetadata, "Hosted read-only status and diagnostic tools must not be used as busy loops"],
+  ["src/shared/server-metadata.json", serverMetadata, "read_job's server-side paced long-poll by default"],
+  ["src/shared/server-metadata.json", serverMetadata, "repeated would-block request inside the fifteen-second cooldown stays inside that same MCP call"],
+  ["src/shared/server-metadata.json", serverMetadata, "Bounded same-response follow-up is allowed when the current task needs terminal state or additional output"],
+  ["src/shared/server-metadata.json", serverMetadata, "Do not infer or preempt a host/tool deadline from elapsed wall-clock time"],
+  ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
+  ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
+  ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 3"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "owner-authorized multi-step"],
@@ -1616,14 +1665,38 @@ for (const [file, content, required] of [
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted current hosted timing/diagnostic guidance: ${required}`);
 }
-if (serverMetadata.includes("inspect completion with read_job") || serverMetadata.includes("use short polling")) {
-  throw new Error("shared server guidance can still induce same-response durable/process polling loops");
+if (serverMetadata.includes("inspect completion with read_job")
+  || serverMetadata.includes("use short polling")
+  || serverMetadata.includes("read an active job at most once")
+  || serverMetadata.includes("stop polling until a later user turn")
+  || serverMetadata.includes("host response/execution budget")
+  || serverMetadata.includes("host budget is nearly exhausted")
+  || serverMetadata.includes("remaining host budget")) {
+  throw new Error("shared server guidance can still force a hosted-turn handoff or induce busy polling");
 }
 if (operationsDoc.includes("Use short `read_process` polls")
-  || operationsDoc.includes("read the job to a terminal state")
   || operationsDoc.includes("hosted remote projection caps each wait at 5 seconds")
-  || operationsDoc.includes("one blocking `read_process` checkpoint")) {
-  throw new Error("operations guidance can still induce same-response process/job polling loops");
+  || operationsDoc.includes("one blocking `read_process` checkpoint")
+  || operationsDoc.includes("one checkpoint per assistant response")
+  || operationsDoc.includes("host response/execution budget")
+  || operationsDoc.includes("remaining host budget")) {
+  throw new Error("operations guidance can still force one-checkpoint hosted-turn handoff");
+}
+for (const [file, content] of [["README.md", readme], ["docs/TESTING.md", testingDoc]]) {
+  for (const stale of [
+    "single live-session status checkpoint per assistant response",
+    "should call it at most once for a live session",
+    "Durable acceptance is also a hosted-turn handoff",
+    "one-live-session-checkpoint/handoff/durable-work guidance",
+    "any `running=true` checkpoint instructs host-turn handoff",
+    "active `read_job` returns checkpoint/handoff metadata",
+    "forbid both same-response terminal polling",
+    "host response/execution budget",
+    "remaining host budget",
+    "nearly exhausted",
+  ]) {
+    if (content.includes(stale)) throw new Error(`${file} retained obsolete forced-handoff guidance: ${stale}`);
+  }
 }
 for (const stale of ["`poll_throttled`", "`next_poll_after_ms`", "`remote_process_poll_wait_max_ms`", "`remote_process_poll_cooldown_ms`"]) {
   if (readme.includes(stale) || architecture.includes(stale) || operationsDoc.includes(stale) || testingDoc.includes(stale) || serverMetadata.includes(stale)) {
@@ -1673,7 +1746,7 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "TTY is optional", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "Autonomous long-running task continuity", "The user is not a polling clock", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "one-second actual output/exit blocking", "fifteen-second", "cooldown boundary", "release-blocking continuity invariant", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "TTY is optional", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
 const releasingGuide = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
@@ -1687,6 +1760,9 @@ const operationsGuide = readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8"
 if (operationsGuide.includes("failed owner-terminal command")) {
   throw new Error("operations guide retained obsolete owner-terminal activation wording");
 }
+if (operationsGuide.includes("cooldown in which another blocking request returns immediate status")) {
+  throw new Error("operations guide reintroduced the rapid process-checkpoint amplification path");
+}
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
 const sharedToolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
 if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || !toolReference.includes(`Tool count: **${sharedToolCatalog.length}**`)) {
@@ -1698,8 +1774,17 @@ if (sharedToolCatalog.some((tool) => String(tool?.description || "").includes(ob
   throw new Error("current tool catalog/reference still routes generic browser/application work into process sessions");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
-for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {
+for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Autonomous long-running work invariant", "User interaction must not be used as a scheduler tick", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "cooldown boundary", "release-blocking continuity defect", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
+}
+for (const [label, contract] of [["project standards", projectStandards], ["repository automation contract", agentContract]]) {
+  for (const forbidden of [
+    "read an active job at most once",
+    "stop polling until a later user turn",
+    "one active-job status checkpoint in the current assistant response",
+  ]) {
+    if (contract.includes(forbidden)) throw new Error(`${label} reintroduced forced user-turn long-job polling: ${forbidden}`);
+  }
 }
 if (existsSync(join(root, "src", "worker", "worker-configuration.d.ts"))) {
   throw new Error("generated Worker type declarations returned to the package source tree");

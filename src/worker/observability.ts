@@ -1,8 +1,7 @@
-import { sanitizePortableLogText } from "../shared/log-redaction.mjs";
+import { isSensitiveLogFieldName, sanitizePortableLogText } from "../shared/log-redaction.mjs";
 
 const MAX_ERROR_CODES = 64;
 const MAX_TOOLS = 128;
-const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|secret|token|verifier|private[_-]?key)/i;
 
 export type DaemonTerminalResultDisposition =
   | "committed"
@@ -136,7 +135,7 @@ function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown
   for (const [key, value] of Object.entries(fields).slice(0, 32)) {
     const safeKey = sanitizeName(key);
     if (!safeKey) continue;
-    if (SENSITIVE_FIELD.test(safeKey)) {
+    if (isSensitiveLogFieldName(key)) {
       out[safeKey] = "<redacted>";
       continue;
     }

@@ -1,14 +1,14 @@
 import { lstatSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
-import { inspectProcessInstance } from "./process-identity.mjs";
+import { inspectProcessInstance, inspectProcessInstanceAsync, processStartTimeFromSnapshot } from "./process-identity.mjs";
 
 const STAGING = /^\.(?<target>(?<kind>lease|wait)_[a-f0-9]{32}\.json)\.(?<pid>[1-9][0-9]*)\.(?<nonce>[a-f0-9]{16})\.tmp$/;
 const OWNER_STAGING = /^\.owner\.json\.(?<pid>[1-9][0-9]*)\.(?<nonce>[a-f0-9]{16})\.tmp$/;
 const FINAL = Object.freeze({ lease: /^lease_[a-f0-9]{32}\.json$/, wait: /^wait_[a-f0-9]{32}\.json$/ });
 export const RESOURCE_STAGING_BUSY_CODE = "MBM_RESOURCE_STAGING_BUSY";
 
-export function recoverResourceTransactionOwnerStaging(dir) {
+export async function recoverResourceTransactionOwnerStaging(dir) {
   const entries = readdirSync(dir, { withFileTypes: true });
   if (!entries.length) return true;
   if (entries.some((entry) => entry.name === "owner.json")) return false;
@@ -18,7 +18,7 @@ export function recoverResourceTransactionOwnerStaging(dir) {
   if (!match) throw new Error("resource transaction lock contains unexpected owner-publication state");
   const stagingPath = join(dir, entry.name);
   const staging = inspect(stagingPath, "resource transaction owner staging file");
-  if (stagingPublisherMayBeCurrent(Number(match.groups.pid), staging)) return false;
+  if (await stagingPublisherMayBeCurrentAsync(Number(match.groups.pid), staging)) return false;
   if (staging.nlink !== 1n) throw new Error("resource transaction owner staging file has unexpected links");
   const current = inspect(stagingPath, "resource transaction owner staging file");
   if (current.nlink !== 1n || !sameFilesystemIdentity(staging.identity, current.identity)) {
@@ -28,7 +28,7 @@ export function recoverResourceTransactionOwnerStaging(dir) {
   return true;
 }
 
-export function recoverResourceDirectoryStaging(dir, entries, kind) {
+export function recoverResourceDirectoryStaging(dir, entries, kind, processStarts = null) {
   const expected = FINAL[kind];
   if (!expected) throw new Error("resource staging kind is invalid");
   let recovered = false;
@@ -36,13 +36,13 @@ export function recoverResourceDirectoryStaging(dir, entries, kind) {
     if (entry.isFile() && expected.test(entry.name)) continue;
     const match = entry.isFile() ? STAGING.exec(entry.name) : null;
     if (!match || match.groups?.kind !== kind) throw new Error(`resource coordinator ${kind} directory contains an unexpected entry`);
-    recoverStagingAlias(dir, entry.name, match.groups.target, Number(match.groups.pid));
+    recoverStagingAlias(dir, entry.name, match.groups.target, Number(match.groups.pid), processStarts);
     recovered = true;
   }
   return recovered;
 }
 
-function recoverStagingAlias(dir, stagingName, targetName, publisherPid) {
+function recoverStagingAlias(dir, stagingName, targetName, publisherPid, processStarts) {
   const stagingPath = join(dir, stagingName);
   const targetPath = join(dir, targetName);
   const staging = inspect(stagingPath, "resource coordinator staging file");
@@ -55,13 +55,13 @@ function recoverStagingAlias(dir, stagingName, targetName, publisherPid) {
       unlinkSync(stagingPath);
       return;
     }
-    if (stagingPublisherMayBeCurrent(publisherPid, staging)) throw Object.assign(new Error("resource coordinator staging file is still owned by a live publisher"), { code: RESOURCE_STAGING_BUSY_CODE });
+    if (stagingPublisherMayBeCurrent(publisherPid, staging, processStarts)) throw Object.assign(new Error("resource coordinator staging file is still owned by a live publisher"), { code: RESOURCE_STAGING_BUSY_CODE });
     if (staging.nlink !== 1n || target.nlink !== 1n) throw new Error("resource coordinator uncommitted replacement staging has unexpected links");
     verifyPair(stagingPath, targetPath, staging, target, false);
     unlinkSync(stagingPath);
     return;
   }
-  if (stagingPublisherMayBeCurrent(publisherPid, staging)) throw Object.assign(new Error("resource coordinator staging file is still owned by a live publisher"), { code: RESOURCE_STAGING_BUSY_CODE });
+  if (stagingPublisherMayBeCurrent(publisherPid, staging, processStarts)) throw Object.assign(new Error("resource coordinator staging file is still owned by a live publisher"), { code: RESOURCE_STAGING_BUSY_CODE });
   if (staging.nlink !== 1n) throw new Error("resource coordinator uncommitted staging file has unexpected links");
   const current = inspect(stagingPath, "resource coordinator staging file");
   if (current.nlink !== 1n || !sameFilesystemIdentity(staging.identity, current.identity)) {
@@ -91,7 +91,9 @@ function inspectOptional(file, label) {
   catch (error) { if (error?.code === "ENOENT") return null; throw error; }
 }
 
-function stagingPublisherMayBeCurrent(pid, staging) {
-  const status = inspectProcessInstance({ pid, startedAt: staging.modified_at });
+function stagingPublisherMayBeCurrent(pid, staging, processStarts = undefined) {
+  const options = { getProcessStartTime: (value) => processStartTimeFromSnapshot(processStarts, value) };
+  const status = inspectProcessInstance({ pid, startedAt: staging.modified_at }, options);
   return status.alive === true && status.reclaimable !== true;
 }
+async function stagingPublisherMayBeCurrentAsync(pid, staging) { const status = await inspectProcessInstanceAsync({ pid, startedAt: staging.modified_at }); return status.alive === true && status.reclaimable !== true; }

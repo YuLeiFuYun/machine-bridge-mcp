@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activeManagedJobs, inspectResourceFile, launchRunner, ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { hostedManagedJobListStatus, hostedManagedJobStatus } from "../src/local/managed-job-hosted-status.mjs";
+import { managedJobReadWaitMs, waitForManagedJobRead } from "../src/local/managed-job-read-wait.mjs";
 import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local/managed-job-storage.mjs";
 import { normalizeResourceRegistry } from "../src/local/managed-job-plan.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent } from "../src/local/managed-job-runner.mjs";
@@ -55,22 +56,96 @@ function testHostedManagedJobStatusProjection() {
   const relayContext = { authority: { origin: "relay" } };
   for (const status of ["queued", "running", "cleaning", "interrupted"]) {
     const projected = hostedManagedJobStatus({ status }, relayContext);
-    assert(projected.host_turn_handoff_recommended === true && projected.status_polling_mode === "checkpoint",
-      `active managed-job state ${status} did not hand the hosted turn back`);
+    assert(projected.host_turn_handoff_recommended === false && projected.status_polling_mode === "bounded_followup"
+      && projected.tool_schema_generation === 3 && projected.host_turn_deadline_observable === false
+      && projected.managed_job_detached_from_mcp_response === true,
+      `active managed-job state ${status} did not preserve bounded same-turn follow-up`);
   }
   const terminal = hostedManagedJobStatus({ status: "succeeded" }, relayContext);
-  assert(terminal.host_turn_handoff_recommended === false && terminal.status_polling_mode === "checkpoint",
-    "terminal managed-job status incorrectly recommended hosted-turn handoff");
+  assert(terminal.host_turn_handoff_recommended === false && terminal.status_polling_mode === "terminal"
+    && terminal.tool_schema_generation === 3 && terminal.host_turn_deadline_observable === false,
+    "terminal managed-job status retained active polling semantics");
   assert(Object.keys(hostedManagedJobStatus({ status: "running" }, {})).length === 0,
     "local managed-job status gained relay-only hosted-turn metadata");
   const activeListing = hostedManagedJobListStatus([{ status: "succeeded" }, { status: "cleaning" }], relayContext);
-  assert(activeListing.host_turn_handoff_recommended === true && activeListing.status_polling_mode === "checkpoint",
-    "remote list_jobs did not hand back a visible active job");
+  assert(activeListing.host_turn_handoff_recommended === false && activeListing.status_polling_mode === "inventory"
+    && activeListing.tool_schema_generation === 3 && activeListing.host_turn_deadline_observable === false,
+    "remote list_jobs did not remain an inventory surface");
   const terminalListing = hostedManagedJobListStatus([{ status: "succeeded" }], relayContext);
-  assert(terminalListing.host_turn_handoff_recommended === false && terminalListing.status_polling_mode === "checkpoint",
-    "terminal-only remote list_jobs incorrectly recommended handoff");
+  assert(terminalListing.host_turn_handoff_recommended === false && terminalListing.status_polling_mode === "inventory",
+    "terminal-only remote list_jobs did not remain an inventory surface");
   assert(Object.keys(hostedManagedJobListStatus([{ status: "running" }], {})).length === 0,
     "local list_jobs gained relay-only hosted-turn metadata");
+}
+
+async function testManagedJobReadWaitPacing() {
+  const relayContext = { authority: { origin: "relay" } };
+  assert(managedJobReadWaitMs({}, relayContext) === 40_000, "hosted read_job did not default to the server-side long-poll interval");
+  assert(Math.ceil((100 * 60 * 1000) / managedJobReadWaitMs({}, relayContext)) <= 150,
+    "a 100-minute unchanged durable job regained excessive hosted read_job call density");
+  assert(managedJobReadWaitMs({ wait_ms: 0 }, relayContext) === 0, "hosted read_job lost its explicit immediate-checkpoint override");
+  assert(managedJobReadWaitMs({ wait_ms: 40_000 }, relayContext) === 40_000, "hosted read_job rejected its advertised maximum wait");
+  assert(managedJobReadWaitMs({}, {}) === 0 && managedJobReadWaitMs({ wait_ms: 40_000 }, {}) === 40_000,
+    "local read_job wait defaults or maximum drifted from the local contract");
+
+  let clock = 0;
+  let fullReads = 0;
+  let progressReads = 0;
+  const stable = () => ({ status: "running", current_phase: "steps", current_step: 0 });
+  const timeoutResult = await waitForManagedJobRead({
+    context: relayContext,
+    readCurrent: () => { fullReads += 1; return stable(); },
+    readProgress: () => { progressReads += 1; return stable(); },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(timeoutResult.status === "running" && timeoutResult.managed_job_read_wait_ms === 40_000
+    && timeoutResult.managed_job_read_wait_timed_out === true,
+  "unchanged hosted read_job did not hold one MCP call for the complete bounded long-poll interval");
+  assert(progressReads === 40, "hosted read_job lightweight progress probing escaped its one-second pacing bound");
+  assert(fullReads === 5, "hosted read_job repeatedly performed full runner reconciliation during one long-poll");
+
+  clock = 0;
+  fullReads = 0;
+  progressReads = 0;
+  let currentStep = 0;
+  const progressResult = await waitForManagedJobRead({
+    context: relayContext,
+    readCurrent: () => { fullReads += 1; return { status: "running", current_phase: "steps", current_step: currentStep }; },
+    readProgress: () => {
+      progressReads += 1;
+      if (progressReads >= 2) currentStep = 1;
+      return { status: "running", current_phase: "steps", current_step: currentStep };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(progressResult.current_step === 1 && progressResult.managed_job_read_wait_timed_out === false
+    && progressResult.managed_job_read_wait_ms === 2_000 && fullReads === 2 && progressReads === 2,
+  "hosted read_job did not return promptly through the authoritative full read when lightweight progress changed");
+
+  const terminalResult = await waitForManagedJobRead({
+    context: relayContext, args: { wait_ms: 0 },
+    readCurrent: () => ({ status: "succeeded", current_phase: null, current_step: null }),
+    sleep: async () => { throw new Error("terminal read_job unexpectedly slept"); },
+  });
+  assert(terminalResult.status === "succeeded" && terminalResult.managed_job_read_wait_ms === 0
+    && terminalResult.managed_job_read_wait_timed_out === false,
+  "terminal or explicit-zero read_job did not remain an immediate checkpoint");
+
+  clock = 0;
+  let cancellation = null;
+  try {
+    await waitForManagedJobRead({
+      context: relayContext,
+      readCurrent: () => ({ status: "running", current_phase: "steps", current_step: 0 }),
+      now: () => clock,
+      sleep: async (ms) => { clock += ms; },
+      throwIfCancelled: () => { if (clock >= 1_000) throw new Error("synthetic cancellation"); },
+    });
+  } catch (error) { cancellation = error; }
+  assert(String(cancellation?.message || "") === "synthetic cancellation" && clock === 1_000,
+    "hosted read_job long-poll did not observe cancellation between internal waits");
 }
 
 async function setRunnerFixtureState(jobRoot, jobId, queued) {
@@ -387,6 +462,7 @@ try {
   testTerminalPersistenceBoundary();
   testManagedStateIdentityRetry();
   testHostedManagedJobStatusProjection();
+  await testManagedJobReadWaitPacing();
   await testRunnerClaimBoundary();
   await testRecoveryClaimFailurePreservesRetryState();
   await testManagedJobCapacityBoundary();
@@ -720,8 +796,8 @@ try {
     assert(delayedStatus.status === "queued" && Number(delayedStatus.recovery_attempts || 0) === 0,
       `an active provisional runner was mistaken for an interrupted job after the recovery grace period: status=${JSON.stringify(delayedStatus)} claim=${await readFile(join(delayedDir, "runner.pid"), "utf8").catch(() => "missing")}`);
     const remoteDelayedStatus = manager.read({ job_id: delayedId }, { authority: { origin: "relay", owner: true } });
-    assert(remoteDelayedStatus.host_turn_handoff_recommended === true && remoteDelayedStatus.status_polling_mode === "checkpoint",
-      "remote active read_job did not recommend handing the hosted turn back instead of polling to terminal state");
+    assert(remoteDelayedStatus.host_turn_handoff_recommended === false && remoteDelayedStatus.status_polling_mode === "bounded_followup",
+      "remote active read_job did not preserve bounded same-turn follow-up");
     assert(!("host_turn_handoff_recommended" in delayedStatus) && !("status_polling_mode" in delayedStatus),
       "local read_job unexpectedly gained hosted-turn polling metadata");
     const inFlightFinishedAt = new Date().toISOString();
@@ -736,8 +812,8 @@ try {
       && coherentTerminalRead.artifact_cleanup_pending === true,
     "read_job combined an active status generation with a newer terminal result generation");
     const remoteTerminalRead = manager.read({ job_id: delayedId }, { authority: { origin: "relay", owner: true } });
-    assert(remoteTerminalRead.host_turn_handoff_recommended === false && remoteTerminalRead.status_polling_mode === "checkpoint",
-      "remote terminal read_job incorrectly recommended handing off an already settled job");
+    assert(remoteTerminalRead.host_turn_handoff_recommended === false && remoteTerminalRead.status_polling_mode === "terminal",
+      "remote terminal read_job retained active follow-up semantics");
     await writeFile(join(delayedDir, "result.json"), `${JSON.stringify({
       job_id: delayedId, status: "running", steps: [], finally_steps: [], finished_at: inFlightFinishedAt,
     })}\n`, { mode: 0o600 });
@@ -1336,7 +1412,7 @@ try {
     let runnerStderr = "";
     try { runnerStderr = (await readFile(join(recoverableDir, "runner.err.log"), "utf8")).slice(-2048); } catch {}
     const coordinator = { transaction_owner: "", leases: [], waiters: [] };
-    try { coordinator.transaction_owner = (await readFile(join(coordinatorRoot, "transaction.lock", "owner.json"), "utf8")).trim(); }
+    try { coordinator.transaction_owner = (await readFile(join(coordinatorRoot, "transaction.lock"), "utf8")).trim(); }
     catch (error) { coordinator.transaction_owner = `unavailable:${error?.code || "unknown"}`; }
     try { coordinator.leases = await readdir(join(coordinatorRoot, "leases")); } catch {}
     try { coordinator.waiters = await readdir(join(coordinatorRoot, "waiters")); } catch {}

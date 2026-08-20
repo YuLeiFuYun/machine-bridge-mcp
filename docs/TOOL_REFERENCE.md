@@ -3340,6 +3340,13 @@ Return one managed job status plus bounded, resource-redacted step results. curr
     "job_id": {
       "type": "string",
       "pattern": "^job_[A-Za-z0-9_-]{24,}$"
+    },
+    "wait_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 40000,
+      "default": 0,
+      "description": "Bounded wait for a status/phase change or terminal state before returning. Local calls default to an immediate checkpoint; hosted relay discovery overrides the default and maximum to its paced long-poll contract."
     }
   },
   "required": [

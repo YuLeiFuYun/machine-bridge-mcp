@@ -33,7 +33,7 @@ export function staleSchemaCompatibilityResult(
     error: {
       code: "invalid_request",
       message: toolName === "read_process"
-        ? "cached read_process arguments exceed the current server limit; refresh tools/list, use read_process at most once for a live session in the current hosted assistant response, and return progress whenever running=true even if output was returned; use run_process/read_job for non-interactive durable work"
+        ? "cached read_process arguments exceed the current server limit; refresh tools/list, keep each remote blocking wait within the current one-second limit, let the daemon pace repeated would-block reads inside the same MCP call through next_blocking_poll_after_ms/cooldown state instead of rapid retrying, and use run_process/read_job for non-interactive durable work"
         : "cached tool arguments exceed the current server limit; refresh tools/list and use request-bounded execution or durable jobs instead of holding one response open",
       retryable: false,
       details: {

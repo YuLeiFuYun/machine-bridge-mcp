@@ -234,7 +234,7 @@ read_job
 cancel_job
 ```
 
-In hosted remote use, successful `start_job` acceptance hands execution to durable background ownership; it is not a reason to keep the current assistant response open. Use `read_job` at most once as an active-job status checkpoint in that response, and use `list_jobs` as a one-shot inventory checkpoint rather than a substitute wait loop. If the returned job remains active/non-terminal, return its `job_id`, status, and current phase to the user and inspect it again only in a later user turn or on an explicit independent request. Local terminal inspection keeps its normal operator-driven behavior.
+In hosted remote use, successful `start_job` acceptance hands execution to durable background ownership without forcing the current assistant response to end. If the current task needs the result, `read_job` may be used for bounded same-response follow-up until terminal state while calls continue to be accepted. An active relay read defaults to a forty-second server-side long-poll and returns earlier on meaningful status/phase progress or terminal state; `wait_ms=0` is an explicit immediate checkpoint. Do not busy-loop, do not replace server-side pacing with rapid immediate reads, do not substitute repeated `list_jobs` calls for a known-job read, and do not infer or preempt a host/tool deadline from elapsed wall-clock time. Return the `job_id`, status, and current phase for a later turn only after an actual host/tool boundary is observed, external input or authorization is required, or the user explicitly requested a checkpoint. Local terminal inspection keeps its normal operator-driven behavior.
 
 From the local terminal:
 

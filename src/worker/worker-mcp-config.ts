@@ -10,8 +10,11 @@ export const MCP_INITIALIZATION_COMPATIBILITY_VERSIONS = Object.freeze(
 );
 export const MCP_INSTRUCTIONS = serverMetadata.instructions.map((value) => String(value)).join("\n");
 export const MCP_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: false }) });
-export const MCP_DISCOVERY_TTL_MS = 300_000;
-export const MCP_TOOL_LIST_TTL_MS = 300_000;
+export const MCP_DISCOVERY_TTL_MS = 0;
+// Tool descriptions carry execution/orchestration semantics. Do not advertise a
+// reusable tools/list cache across package/Worker replacement; a host that asks
+// again should always receive the current schema/description set.
+export const MCP_TOOL_LIST_TTL_MS = 0;
 
 export function mcpServerInfo(version: string): Readonly<Record<string, unknown>> {
   return Object.freeze(serverImplementation({

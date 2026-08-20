@@ -37,6 +37,9 @@ for (const tool of catalog) {
   assert(typeof tool.name === "string" && /^[a-z][a-z0-9_]*$/.test(tool.name), `invalid tool name: ${tool.name}`);
   assert(typeof tool.title === "string" && tool.title.length > 0, `${tool.name} is missing title`);
   assert(typeof tool.description === "string" && tool.description.length > 20, `${tool.name} has an insufficient description`);
+  if (["run_process", "run_local_command", "exec_command"].includes(tool.name)) {
+    assert(Array.isArray(tool.inputSchema?.required), `${tool.name} durable schema must declare its required fields statically`);
+  }
   assert(["always", "write", "direct-exec", "write+direct-exec", "shell-exec", "full"].includes(tool.availability), `${tool.name} has invalid availability`);
   assert(tool.inputSchema?.type === "object", `${tool.name} inputSchema must be an object`);
   assert(tool.inputSchema?.additionalProperties === false, `${tool.name} inputSchema must reject unknown fields`);

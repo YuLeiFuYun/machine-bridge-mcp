@@ -84,7 +84,7 @@ function buildServerInfoSummary(
       effective_account_tool_count: input.effectiveTools.length,
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
-      ...remoteToolDeliveryContract(),
+      ...remoteToolDeliveryContract(input.serverVersion),
     },
   };
 }
@@ -161,7 +161,7 @@ function fullToolDelivery(input: ServerInfoInput): Record<string, unknown> {
     effective_scope: "live_daemon_and_account_intersection_before_host_filtering",
     host_exposed_tools_known_to_server: false,
     host_may_expose_subset: true,
-    ...remoteToolDeliveryContract(),
+    ...remoteToolDeliveryContract(input.serverVersion),
     daemon_execution_and_worker_settlement_deadlines_separate: true,
     host_terminal_receipt_observable: false,
   };

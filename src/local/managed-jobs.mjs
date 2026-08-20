@@ -283,6 +283,17 @@ export class ManagedJobManager {
     };
   }
 
+  readProgress(args = {}, context = {}) {
+    this.authorizeTool("read_job");
+    this.assertMaintenanceAvailable();
+    const dir = this.jobDir(args.job_id);
+    const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+    assertManagedJobDirectoryIdentity(dir, status);
+    assertKnownManagedJobStatus(status);
+    assertOwnedByContext(status, context, "managed job");
+    return publicStatus(status);
+  }
+
   inspectLocal(args = {}) {
     this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);

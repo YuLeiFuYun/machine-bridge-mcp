@@ -507,6 +507,17 @@ try {
     body: JSON.stringify(currentMcpRequest(99, "tools/list", {})),
   });
   assert(retainedFamilyAccess.status === 200, "concurrent refresh retry invalidated the replacement access token");
+  const retainedFamilyTools = await retainedFamilyAccess.json();
+  assert(retainedFamilyTools.result?.ttlMs === 0, "current tools/list still advertised a reusable cross-release schema cache");
+  const retainedReadJob = retainedFamilyTools.result?.tools?.find((tool) => tool.name === "read_job");
+  assert(retainedReadJob?.inputSchema?.properties?.wait_ms?.default === 40_000
+    && retainedReadJob?.inputSchema?.properties?.wait_ms?.maximum === 40_000
+    && String(retainedReadJob?.description || "").includes("Tool schema generation 3.")
+    && String(retainedReadJob?.description || "").includes("server-side long-poll")
+    && String(retainedReadJob?.description || "").includes("wait_ms=0")
+    && String(retainedReadJob?.description || "").includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
+    && !String(retainedReadJob?.description || "").includes("read an active job at most once"),
+  "current tools/list omitted paced read_job/schema-freshness guidance");
 
   const currentDiscovery = await fetchJson(`${base}/mcp`, {
     method: "POST",
@@ -518,8 +529,10 @@ try {
     && JSON.stringify(currentDiscovery.body.result?.supportedVersions) === JSON.stringify(["2026-07-28"]),
   "current discovery omitted resultType or advertised a removed protocol version");
   assert(currentDiscovery.body.result?.cacheScope === "public"
+    && currentDiscovery.body.result?.ttlMs === 0
+    && String(currentDiscovery.body.result?.instructions || "").includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
     && currentDiscovery.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
-  "current discovery omitted cache or server identity metadata");
+  "current discovery omitted non-cacheable continuation instructions or server identity metadata");
   assert(currentDiscovery.response.headers.get("mcp-session-id") === null, "current discovery minted a protocol session");
 
   const spoofedCurrentCancelHeaders = currentMcpHeaders(ownerAccessToken, "tools/list");
@@ -822,9 +835,19 @@ try {
     && firstStatus.tool_delivery?.remote_process_acceptance_max_ms === 10_000
     && firstStatus.tool_delivery?.remote_process_execution_timeout_max_ms === 600_000
     && firstStatus.tool_delivery?.managed_job_resource_admission_wait_max_ms === 1_800_000
+    && firstStatus.tool_delivery?.remote_managed_job_read_wait_default_ms === 40_000
+    && firstStatus.tool_delivery?.remote_managed_job_read_wait_max_ms === 40_000
     && firstStatus.tool_delivery?.remote_process_session_start_execution_max_ms === 10_000
+    && firstStatus.tool_delivery?.tool_schema_generation === 3
+    && firstStatus.tool_delivery?.tool_schema_server_version === firstStatus.version
+    && firstStatus.tool_delivery?.discovery_ttl_ms === 0
+    && firstStatus.tool_delivery?.tool_list_ttl_ms === 0
+    && firstStatus.tool_delivery?.host_visible_schema_known_to_server === false
+    && firstStatus.tool_delivery?.host_schema_refresh_required_on_generation_change === true
+    && firstStatus.tool_delivery?.host_turn_deadline_observable === false
+    && firstStatus.tool_delivery?.managed_jobs_detached_from_mcp_response === true
     && !("remote_process_foreground_execution_max_ms" in firstStatus.tool_delivery),
-  "Worker server_info lost the separated durable-process acceptance/execution or managed-job admission contract");
+  "Worker server_info lost schema freshness evidence or the separated durable-process acceptance/execution contract");
 
   const timedOutCandidate = await connectDaemon(base);
   daemonSockets.push(timedOutCandidate);
@@ -1036,14 +1059,18 @@ try {
   const remoteReadProcess = remoteAgentTools.find((tool) => tool.name === "read_process");
   const remoteReadProcessDescription = String(remoteReadProcess?.description || "");
   assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1000
-    && remoteReadProcessDescription.includes("status checkpoints")
-    && remoteReadProcessDescription.includes("running=true")
-    && remoteReadProcessDescription.includes("stop polling"),
-  "remote tools/list lost the one-second process checkpoint/handoff contract");
+    && remoteReadProcess?.inputSchema?.properties?.wait_ms?.default === 1000
+    && remoteReadProcessDescription.includes("paced follow-up")
+    && remoteReadProcessDescription.includes("wait_ms=0")
+    && remoteReadProcessDescription.includes("same MCP call")
+    && remoteReadProcessDescription.includes("next_blocking_poll_after_ms")
+    && remoteReadProcessDescription.includes("must not busy-loop"),
+  "remote tools/list lost the one-second server-paced process-follow-up contract");
   const remoteListJobsDescription = String(remoteAgentTools.find((tool) => tool.name === "list_jobs")?.description || "");
-  assert(remoteListJobsDescription.includes("inventory checkpoint")
-    && remoteListJobsDescription.includes("Do not repeat list_jobs"),
-  "remote tools/list left list_jobs usable as a same-response wait loop");
+  assert(remoteListJobsDescription.includes("inventory operation")
+    && remoteListJobsDescription.includes("Do not repeat list_jobs")
+    && remoteListJobsDescription.includes("use read_job instead"),
+  "remote tools/list lost known-job routing away from list_jobs polling");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
   const overLimit = await callTool(base, ownerAccessToken, 2502, "run_process", {
     argv: ["must-not-run"], timeout_seconds: 601, idempotency_key: "worker-over-limit",
@@ -1352,12 +1379,12 @@ try {
     policy: candidatePolicy,
     relay_diagnostics: { schema_version: 1, transport: "https", outage_active: true, outage_count: 1 },
   });
-  assert(legacyTakeover.response.status === 200 && legacyTakeover.body.phase === "standby",
-    "rolling beta.103 fallback request was rejected instead of degrading safely without generation takeover");
+  assert(legacyTakeover.response.status === 400 && legacyTakeover.body.error === "invalid_daemon_http_exchange",
+    "generation-less HTTPS takeover remained accepted after its rolling compatibility boundary expired");
   const afterLegacyTakeover = await callServerInfo(base, ownerAccessToken, 8886);
   assert(afterLegacyTakeover.worker?.sockets_live?.ready === 1
     && afterLegacyTakeover.worker?.sockets_live?.https_fallback_ready === 0,
-  "legacy instance-only fallback takeover was allowed to retire a beta.104 ready WebSocket");
+  "rejected generation-less HTTPS takeover changed verified WebSocket ownership");
 
   const asymmetricRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const asymmetricCall = toolCallRequest(base, ownerAccessToken, 8890, "list_dir", { path: "." });
