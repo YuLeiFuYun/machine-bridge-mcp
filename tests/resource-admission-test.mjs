@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1252,11 +1252,16 @@ const coordinator = new ResourceCoordinator({
 try {
   await coordinator.withLock(() => {
     const lockPath = join(root, "transaction.lock");
-    assert.equal(lstatSync(lockPath).isFile(), true, "resource coordinator transaction writer did not use the owner-state file shape");
-    const owner = JSON.parse(readFileSync(lockPath, "utf8"));
-    assert.equal(owner.purpose, "resource-coordinator", "resource coordinator transaction claim lost its owner-state purpose");
-    assert.match(owner.token, /^[a-f0-9]{32}$/, "resource coordinator transaction claim lost its ownership token");
-    assert.equal(owner.pid, process.pid, "resource coordinator transaction claim lost its process owner");
+    const lockFd = openSync(lockPath, "r");
+    try {
+      assert.equal(fstatSync(lockFd).isFile(), true, "resource coordinator transaction writer did not use the owner-state file shape");
+      const owner = JSON.parse(readFileSync(lockFd, "utf8"));
+      assert.equal(owner.purpose, "resource-coordinator", "resource coordinator transaction claim lost its owner-state purpose");
+      assert.match(owner.token, /^[a-f0-9]{32}$/, "resource coordinator transaction claim lost its ownership token");
+      assert.equal(owner.pid, process.pid, "resource coordinator transaction claim lost its process owner");
+    } finally {
+      closeSync(lockFd);
+    }
   });
 
   const legacyLock = join(root, "transaction.lock");
@@ -1270,10 +1275,15 @@ try {
   })}\n`, { mode: 0o600 });
   let legacyWaits = 0;
   await withResourceTransactionLock(root, () => {
-    assert.equal(lstatSync(legacyLock).isFile(), true,
-      "current writer did not switch to the owner-state file after the beta.104 directory lock cleared");
-    const owner = JSON.parse(readFileSync(legacyLock, "utf8"));
-    assert.notEqual(owner.token, "a".repeat(32), "current writer entered while a beta.104 directory lock was still owned");
+    const legacyFd = openSync(legacyLock, "r");
+    try {
+      assert.equal(fstatSync(legacyFd).isFile(), true,
+        "current writer did not switch to the owner-state file after the beta.104 directory lock cleared");
+      const owner = JSON.parse(readFileSync(legacyFd, "utf8"));
+      assert.notEqual(owner.token, "a".repeat(32), "current writer entered while a beta.104 directory lock was still owned");
+    } finally {
+      closeSync(legacyFd);
+    }
   }, {
     timeoutMs: 500,
     random: () => 0,
