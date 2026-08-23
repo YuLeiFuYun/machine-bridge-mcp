@@ -13,6 +13,7 @@ export { CONTROL_PLANE_TOOL_NAMES };
 
 export const MAX_PENDING_CALLS = 32;
 export const RESERVED_CONTROL_PENDING_CALLS = 2;
+export const MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT = 8;
 export const WORKER_PENDING_CALL_CAPACITY = toolCallCapacityConfig(
   MAX_PENDING_CALLS,
   RESERVED_CONTROL_PENDING_CALLS,
@@ -77,6 +78,19 @@ export function pendingCallAdmission(
   config: ToolCallCapacityConfig = WORKER_PENDING_CALL_CAPACITY,
 ): ToolCallAdmission {
   return toolCallAdmission(pending, config, tool);
+}
+
+export function pendingReadJobCallsForAccount(
+  records: Iterable<Readonly<{ tool: string; owner_account_id?: string }>>,
+  accountId: string,
+): number {
+  const key = String(accountId || "");
+  if (!key) return 0;
+  let active = 0;
+  for (const record of records) {
+    if (record.tool === "read_job" && record.owner_account_id === key) active += 1;
+  }
+  return active;
 }
 
 export function pendingCapacityProjection(

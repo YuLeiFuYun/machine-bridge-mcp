@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
-import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
+import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { validateResourceRequest } from "./resource-request-contract.mjs";
 const SCHEMA = 1;
@@ -34,7 +34,7 @@ export function removeResourceWaiter(waitersDir, waiter) {
   }, { maxBytes: MAX_WAITER_BYTES });
 }
 
-export function pruneAndReadResourceWaiters(waitersDir, entries, now = Date.now()) {
+export function pruneAndReadResourceWaiters(waitersDir, entries, now = Date.now(), processStarts = null) {
   const waiters = [];
   for (const entry of entries) {
     if (!entry.isFile() || !WAITER_FILE.test(entry.name)) throw new Error("resource coordinator waiter directory contains an unexpected entry");
@@ -43,7 +43,7 @@ export function pruneAndReadResourceWaiters(waitersDir, entries, now = Date.now(
     try { waiter = readWaiter(file); }
     catch (error) { if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") continue; throw error; }
     validateWaiter(waiter);
-    if (waiterIsStale(waiter, now)) {
+    if (waiterIsStale(waiter, now, processStarts)) {
       if (!removeResourceWaiter(waitersDir, waiter)) throw new Error("resource waiter changed during stale pruning");
       continue;
     }
@@ -104,15 +104,13 @@ function compareWaiters(left, right, now) {
   const time = Date.parse(left.enqueued_at) - Date.parse(right.enqueued_at);
   return time || String(left.waiter_id).localeCompare(String(right.waiter_id));
 }
-function waiterIsStale(waiter, now) {
+function waiterIsStale(waiter, now, processStarts) {
   if (Date.parse(waiter.expires_at) < now) return true;
-  const status = inspectProcessInstance({
-    pid: waiter.owner.pid,
-    startedAt: waiter.enqueued_at,
-    processStartedAt: waiter.owner.process_started_at,
-  });
+  const status = inspectProcessInstance({ pid: waiter.owner.pid, startedAt: waiter.enqueued_at,
+    processStartedAt: waiter.owner.process_started_at }, { getProcessStartTime: (pid) => processStartTimeFromSnapshot(processStarts, pid) });
   return status.reclaimable === true;
 }
+
 function validateWaiter(waiter) {
   if (waiter?.schema_version !== SCHEMA || !/^[a-f0-9]{32}$/.test(String(waiter.waiter_id || ""))
       || !/^[a-f0-9]{64}$/.test(String(waiter.token || ""))) throw new Error("resource coordinator waiter is invalid");

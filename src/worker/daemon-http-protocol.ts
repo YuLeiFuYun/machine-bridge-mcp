@@ -34,7 +34,8 @@ export function normalizeDaemonHttpExchange(value: unknown): DaemonHttpExchange 
   const messages = normalizeMessages(body.messages);
   if (!sessionId || !instanceId || activationToken === "invalid" || !Number.isSafeInteger(ackWorkerSeq) || ackWorkerSeq < 0
       || typeof takeoverWebSocket !== "boolean" || takeoverWebSocketConnectionId === "invalid"
-      || (!takeoverWebSocket && Boolean(takeoverWebSocketConnectionId)) || !ownedCallIds || !messages) return null;
+      || (takeoverWebSocket ? !takeoverWebSocketConnectionId : Boolean(takeoverWebSocketConnectionId))
+      || !ownedCallIds || !messages) return null;
   return {
     sessionId, instanceId, activationToken, ackWorkerSeq, takeoverWebSocket, takeoverWebSocketConnectionId, ownedCallIds, messages,
     tools: body.tools, policy: body.policy, relayDiagnostics: body.relay_diagnostics,

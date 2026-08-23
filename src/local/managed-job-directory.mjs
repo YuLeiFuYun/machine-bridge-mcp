@@ -1,23 +1,27 @@
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { BridgeError } from "./errors.mjs";
 import { filesystemIdentity } from "./filesystem-identity.mjs";
-
 export const MANAGED_JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
-
 export function resolveManagedJobDirectory(jobRoot, value, options = {}) {
   const id = String(value || "");
-  if (!MANAGED_JOB_ID.test(id)) throw new Error("invalid job id");
+  if (!MANAGED_JOB_ID.test(id)) throw new BridgeError("invalid_request", "managed job id is invalid", { retryable: false });
   const root = resolveManagedJobRootIfPresent(jobRoot, options);
-  if (!root) throw new Error("job not found or expired");
+  if (!root) throw new BridgeError("not_found", "managed job was not found or is no longer retained", { retryable: false });
   const candidate = join(root, id);
-  return withPinnedManagedJobDirectory(candidate, "managed job directory", options, false, (pinned, verify) => {
-    const canonical = (options.realpathSync || realpathSync)(candidate);
-    requireContained(root, canonical);
-    if (!sameDirectory(pinned, verify(candidate)) || !sameDirectory(pinned, verify(canonical))) {
-      throw new Error("managed job directory identity changed during inspection");
+  try {
+    return withPinnedManagedJobDirectory(candidate, "managed job directory", options, false, (pinned, verify) => {
+      const canonical = (options.realpathSync || realpathSync)(candidate);
+      requireContained(root, canonical);
+      if (!sameDirectory(pinned, verify(candidate)) || !sameDirectory(pinned, verify(canonical))) throw new Error("managed job directory identity changed during inspection");
+      return canonical;
+    });
+  } catch (error) {
+    if (String(error?.message || "") === "job not found or expired" || error?.code === "ENOENT") {
+      throw new BridgeError("not_found", "managed job was not found or is no longer retained", { retryable: false });
     }
-    return canonical;
-  });
+    throw error;
+  }
 }
 
 export function resolveManagedJobRootIfPresent(jobRoot, options = {}) {
@@ -25,9 +29,7 @@ export function resolveManagedJobRootIfPresent(jobRoot, options = {}) {
   return withPinnedManagedJobDirectory(target, "managed job root", options, true, (pinned, verify) => {
     const canonical = (options.realpathSync || realpathSync)(target);
     if (!sameDirectory(pinned, verify(target))) throw new Error("managed job root identity changed during inspection");
-    if (!sameDirectory(pinned, verify(canonical))) {
-      throw new Error("managed job root canonical target does not match the inspected directory");
-    }
+    if (!sameDirectory(pinned, verify(canonical))) throw new Error("managed job root canonical target does not match the inspected directory");
     return canonical;
   });
 }

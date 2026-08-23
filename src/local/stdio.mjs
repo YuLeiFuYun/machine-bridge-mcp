@@ -25,8 +25,8 @@ const MCP_SERVER_INFO = Object.freeze(serverImplementation({
   description: "Workspace-scoped local coding tools over MCP stdio or authenticated remote relay.",
 }));
 const MCP_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: false }) });
-const MCP_DISCOVERY_TTL_MS = 300_000;
-const MCP_TOOL_LIST_TTL_MS = 300_000;
+const MCP_DISCOVERY_TTL_MS = 0;
+const MCP_TOOL_LIST_TTL_MS = 0;
 const MCP_LIMIT_EXCEEDED = -31900;
 
 export async function runStdioServer({ workspace, policy, logLevel = "info", jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "" }) {

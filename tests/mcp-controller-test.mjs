@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import { McpController } from "../src/worker/mcp-controller.ts";
+import {
+  MAX_ACTIVE_MCP_SUBSCRIPTIONS, MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT,
+  MAX_OPENED_MCP_SUBSCRIPTION_ACCOUNTS, McpSubscriptionCapacity,
+} from "../src/worker/mcp-subscription-capacity.ts";
+import { McpSubscriptionRegistry } from "../src/worker/mcp-subscription-registry.ts";
+import { McpRequestCancellationRegistry } from "../src/worker/mcp-request-cancellation.ts";
 import { removedProtocolResponse } from "../src/worker/mcp-removed-protocol.ts";
 import {
   initializationCompatibilityResponse, MCP_INITIALIZATION_COMPATIBILITY_VERSIONS,
@@ -22,8 +28,51 @@ const serverInfo = serverImplementation({ name: "machine-bridge-mcp", version: "
 const calls = [];
 const cancellations = [];
 const errors = [];
+
+let cancellationClock = 1_000;
+let cancellationFailClosedEvents = 0;
+const requestCancellations = new McpRequestCancellationRegistry({
+  now: () => cancellationClock, tombstoneTtlMs: 50, maximumTombstones: 2,
+  onFailClosed: () => { cancellationFailClosedEvents += 1; },
+});
+assert.equal(requestCancellations.cancel("stream:cancel-before-open"), true);
+const cancelledBeforeOpen = requestCancellations.open("stream:cancel-before-open", new AbortController().signal);
+assert.equal(cancelledBeforeOpen.signal.aborted, true, "pre-open MCP cancellation did not bind to the later direct request");
+cancelledBeforeOpen.release();
+const liveCancellation = requestCancellations.open("stream:cancel-active", new AbortController().signal);
+assert.equal(requestCancellations.cancel("stream:cancel-active"), true);
+assert.equal(liveCancellation.signal.aborted, true, "active MCP cancellation did not abort the direct request lease");
+liveCancellation.release();
+const alreadyAbortedController = new AbortController();
+alreadyAbortedController.abort("already gone");
+const alreadyAbortedLease = requestCancellations.open("stream:already-aborted", alreadyAbortedController.signal);
+assert.equal(alreadyAbortedLease.signal.aborted, true, "already-aborted request signal was lost while opening cancellation ownership");
+alreadyAbortedLease.release();
+requestCancellations.cancel("stream:expiring-cancel");
+cancellationClock += 51;
+assert.equal(requestCancellations.snapshot().cancelled_before_open, 0, "expired cancellation tombstone was retained indefinitely");
+requestCancellations.cancel("stream:capacity-1");
+requestCancellations.cancel("stream:capacity-2");
+requestCancellations.cancel("stream:capacity-overflow");
+requestCancellations.cancel("stream:capacity-overflow-again");
+assert.equal(requestCancellations.snapshot().fail_closed, true,
+  "pre-open cancellation tombstone overflow did not fail closed");
+assert.equal(cancellationFailClosedEvents, 1,
+  "one cancellation fail-closed window emitted duplicate observability events");
+const overflowLease = requestCancellations.open("stream:unrelated-during-overflow", new AbortController().signal);
+assert.equal(overflowLease.signal.aborted, true,
+  "cancellation tombstone overflow evicted evidence and allowed an unrelated delayed side effect to dispatch");
+overflowLease.release();
+cancellationClock += 51;
+assert.equal(requestCancellations.snapshot().fail_closed, false,
+  "bounded cancellation overflow fail-closed state did not recover after its TTL");
+requestCancellations.cancel("stream:capacity-3");
+requestCancellations.cancel("stream:capacity-4");
+requestCancellations.cancel("stream:capacity-overflow-later");
+assert.equal(cancellationFailClosedEvents, 2,
+  "a later cancellation fail-closed window did not emit fresh observability");
 const controller = new McpController({
-  capabilities: { tools: { listChanged: false } },
+  capabilities: { tools: { listChanged: true } },
   serverInfo,
   instructions: "Use tools.",
   supportedVersions: [MCP_PROTOCOL_VERSION],
@@ -194,12 +243,13 @@ assert.equal(staleReadPollSchema.result.structuredContent.error.code, "invalid_r
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.side_effects_started, false);
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.validation_issues[0].instancePath, "/wait_ms");
-assert(staleReadPollSchema.result.structuredContent.error.message.includes("at most once for a live session")
-  && staleReadPollSchema.result.structuredContent.error.message.includes("running=true")
-  && staleReadPollSchema.result.structuredContent.error.message.includes("even if output was returned")
+assert(staleReadPollSchema.result.structuredContent.error.message.includes("one-second limit")
+  && staleReadPollSchema.result.structuredContent.error.message.includes("next_blocking_poll_after_ms")
+  && staleReadPollSchema.result.structuredContent.error.message.includes("same MCP call")
+  && staleReadPollSchema.result.structuredContent.error.message.includes("instead of rapid retrying")
   && staleReadPollSchema.result.structuredContent.error.message.includes("run_process/read_job")
   && !staleReadPollSchema.result.structuredContent.error.message.includes("short polling"),
-"stale read_process compatibility guidance can still reintroduce same-turn polling loops");
+"stale read_process compatibility guidance lost server-paced follow-up limits");
 const malformedReadPoll = await jsonResult(await handle(request("tools/call", {
   name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: "5000" },
 }), { accept: "application/json" }));
@@ -242,16 +292,154 @@ const subscription = await handle(request("subscriptions/listen", {
   notifications: { toolsListChanged: true, unknownExtensionFilter: { enabled: true } },
 }));
 assert.equal(subscription.status, 200);
+assert.deepEqual(controller.toolListSubscriptionSnapshot(authorized.accountId), {
+  activeForAccount: 1, openedForAccount: true,
+});
 assert.match(subscription.headers.get("content-type") ?? "", /^text\/event-stream/);
-const subscriptionMessages = sseJsonMessages(await subscription.text());
+const subscriptionReader = subscription.body.getReader();
+const subscriptionMessages = await readSseMessages(subscriptionReader, 2);
 assert.equal(subscriptionMessages.length, 2);
 assert.equal(subscriptionMessages[0].method, "notifications/subscriptions/acknowledged");
-assert.deepEqual(subscriptionMessages[0].params.notifications, {});
+assert.deepEqual(subscriptionMessages[0].params.notifications, { toolsListChanged: true });
 assert.equal(subscriptionMessages[0].params._meta["io.modelcontextprotocol/subscriptionId"], 1);
-assert.equal(subscriptionMessages[1].id, 1);
-assert.equal(subscriptionMessages[1].result.resultType, "complete");
-assert.equal(subscriptionMessages[1].result._meta["io.modelcontextprotocol/subscriptionId"], 1);
-assert.equal(subscriptionMessages[1].result._meta["io.modelcontextprotocol/serverInfo"].name, "machine-bridge-mcp");
+assert.equal(subscriptionMessages[1].method, "notifications/tools/list_changed");
+assert.equal(subscriptionMessages[1].params._meta["io.modelcontextprotocol/subscriptionId"], 1);
+const pendingSubscriptionRead = subscriptionReader.read();
+assert.equal(await Promise.race([
+  pendingSubscriptionRead.then(() => "settled"),
+  new Promise((resolve) => { setTimeout(() => resolve("open"), 20); }),
+]), "open", "toolsListChanged subscription closed immediately after its initial freshness edge");
+await subscriptionReader.cancel("test complete");
+assert.equal((await pendingSubscriptionRead).done, true, "subscription cancellation did not settle the pending read");
+assert.deepEqual(controller.toolListSubscriptionSnapshot(authorized.accountId), {
+  activeForAccount: 0, openedForAccount: true,
+}, "subscription diagnostics forgot that the server had opened a freshness stream for this account");
+assert.deepEqual(controller.toolListSubscriptionSnapshot("different-account"), {
+  activeForAccount: 0, openedForAccount: false,
+}, "subscription diagnostics leaked another account's opened-stream state");
+
+const proxiedSubscription = await handle(request("subscriptions/listen", {
+  notifications: { toolsListChanged: true },
+}, 2), { streamId: STREAM_ID, proxyMode: "direct" });
+const proxiedSubscriptionReader = proxiedSubscription.body.getReader();
+await readSseMessages(proxiedSubscriptionReader, 2);
+const pendingProxiedRead = proxiedSubscriptionReader.read();
+const proxiedCancel = await controller.handleControl(controlRequest(STREAM_ID), "cancel");
+assert.equal(proxiedCancel.status, 202, "stream control cancellation rejected a live toolsListChanged subscription");
+assert.equal((await pendingProxiedRead).done, true,
+  "stream control cancellation did not close the live toolsListChanged subscription");
+assert.deepEqual(controller.toolListSubscriptionSnapshot(authorized.accountId), {
+  activeForAccount: 0, openedForAccount: true,
+}, "stream control cancellation did not release subscription capacity while preserving opened-stream evidence");
+
+const revokedSubscription = await handle(request("subscriptions/listen", {
+  notifications: { toolsListChanged: true },
+}, 3), { streamId: `${STREAM_ID.slice(0, -1)}B`, proxyMode: "direct" });
+const revokedSubscriptionReader = revokedSubscription.body.getReader();
+await readSseMessages(revokedSubscriptionReader, 2);
+const pendingRevokedRead = revokedSubscriptionReader.read();
+assert.equal(controller.cancelAuthority({
+  accountId: authorized.accountId,
+  accountVersion: authorized.accountVersion,
+  clientId: authorized.clientId,
+  familyId: "different-family",
+}), 0, "subscription authority revocation matched a different refresh family");
+assert.equal(controller.cancelAuthority({
+  accountId: authorized.accountId,
+  accountVersion: authorized.accountVersion,
+  clientId: authorized.clientId,
+  familyId: authorized.familyId,
+}), 1, "subscription authority revocation did not cancel the matching long-lived stream");
+assert.equal((await pendingRevokedRead).done, true,
+  "subscription authority revocation did not close the matching response stream");
+assert.deepEqual(controller.toolListSubscriptionSnapshot(authorized.accountId), {
+  activeForAccount: 0, openedForAccount: true,
+}, "subscription authority revocation leaked active capacity");
+assert.equal(controller.cancelAuthority({
+  accountId: authorized.accountId,
+  accountVersion: authorized.accountVersion,
+  clientId: authorized.clientId,
+  familyId: authorized.familyId,
+}), 0, "subscription authority revocation was not idempotent after stream cleanup");
+
+const heldSubscriptions = [];
+for (let index = 0; index < MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT; index += 1) {
+  const held = await handle(request("subscriptions/listen", {
+    notifications: { toolsListChanged: true },
+  }, 10_000 + index));
+  assert.equal(held.status, 200, "subscription capacity rejected a slot below the active-stream bound");
+  heldSubscriptions.push(held);
+}
+const overCapacitySubscription = await handle(request("subscriptions/listen", {
+  notifications: { toolsListChanged: true },
+}, 11_000));
+assert.equal(overCapacitySubscription.status, 429, "subscription capacity failed open above its active-stream bound");
+assert.equal((await overCapacitySubscription.json()).error?.message, "Subscription capacity exceeded");
+await heldSubscriptions[0].body.cancel("release capacity slot");
+const recoveredSubscription = await handle(request("subscriptions/listen", {
+  notifications: { toolsListChanged: true },
+}, 11_001));
+assert.equal(recoveredSubscription.status, 200, "subscription cancellation did not return its active-stream capacity slot");
+await recoveredSubscription.body.cancel("test complete");
+for (const held of heldSubscriptions.slice(1)) await held.body.cancel("test complete");
+
+const capacity = new McpSubscriptionCapacity();
+const capacityReleases = [];
+for (const accountId of ["account-a", "account-b", "account-c", "account-d"]) {
+  for (let index = 0; index < MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT; index += 1) {
+    const release = capacity.reserve(accountId);
+    assert.equal(typeof release, "function", "subscription capacity rejected a valid per-account/global slot");
+    capacityReleases.push(release);
+  }
+  assert.equal(capacity.reserve(accountId), null, "subscription capacity failed to isolate one account at its per-account ceiling");
+}
+assert.equal(capacityReleases.length, MAX_ACTIVE_MCP_SUBSCRIPTIONS);
+assert.equal(capacity.reserve("account-e"), null, "subscription capacity failed open beyond the global active-stream ceiling");
+capacityReleases[0]();
+capacityReleases[0]();
+const recoveredGlobalSlot = capacity.reserve("account-e");
+assert.equal(typeof recoveredGlobalSlot, "function", "idempotent release did not return exactly one global subscription slot");
+assert.deepEqual(capacity.snapshot("account-e"), { activeForAccount: 1, openedForAccount: false });
+capacity.markOpened("account-e");
+assert.deepEqual(capacity.snapshot("account-e"), { activeForAccount: 1, openedForAccount: true });
+recoveredGlobalSlot();
+assert.deepEqual(capacity.snapshot("account-e"), { activeForAccount: 0, openedForAccount: true });
+for (const release of capacityReleases.slice(1)) release();
+for (let index = 0; index <= MAX_OPENED_MCP_SUBSCRIPTION_ACCOUNTS; index += 1) {
+  const accountId = `opened-${index}`;
+  const release = capacity.reserve(accountId);
+  assert.equal(typeof release, "function");
+  capacity.markOpened(accountId);
+  release();
+}
+assert.equal(capacity.snapshot("opened-0").openedForAccount, false,
+  "subscription-open diagnostics retained an unbounded history of retired accounts");
+assert.equal(capacity.snapshot(`opened-${MAX_OPENED_MCP_SUBSCRIPTION_ACCOUNTS}`).openedForAccount, true,
+  "bounded subscription-open diagnostics evicted the newest account");
+
+const leasedRegistry = new McpSubscriptionRegistry({ leaseMs: 20 });
+const leasedAbort = new AbortController();
+const leasedResponse = leasedRegistry.open({
+  authority: authorized,
+  requestKey: "stream:leased-subscription",
+  requestSignal: leasedAbort.signal,
+  acknowledged: { jsonrpc: "2.0", method: "notifications/subscriptions/acknowledged" },
+  initialMessages: [{ jsonrpc: "2.0", method: "notifications/tools/list_changed" }],
+});
+assert(leasedResponse?.body, "bounded subscription lease did not create an SSE response");
+assert.deepEqual(leasedRegistry.snapshot(authorized.accountId), { activeForAccount: 1, openedForAccount: true },
+  "bounded subscription lease did not reserve and mark its account");
+const leasedReader = leasedResponse.body.getReader();
+await readSseMessages(leasedReader, 2);
+const leasedTerminal = leasedReader.read();
+assert.equal((await Promise.race([
+  leasedTerminal.then(() => "closed"),
+  new Promise((resolve) => { setTimeout(() => resolve("leased"), 5); }),
+])), "leased", "subscription lease expired before its configured lifetime");
+await new Promise((resolve) => { setTimeout(resolve, 25); });
+assert.equal((await leasedTerminal).done, true, "subscription lease did not close the stale SSE stream");
+assert.deepEqual(leasedRegistry.snapshot(authorized.accountId), { activeForAccount: 0, openedForAccount: true },
+  "subscription lease expiration did not release capacity while retaining server-opened evidence");
 
 let resolveStream;
 const streamController = new McpController({
@@ -270,6 +458,25 @@ assert.equal(new TextDecoder().decode((await streamReader.read()).value), ": con
 await streamReader.cancel("client closed");
 resolveStream();
 await Promise.resolve();
+
+let preCancelledDispatches = 0;
+const preCancelledController = new McpController({
+  capabilities: { tools: {} }, serverInfo, instructions: "", supportedVersions: [MCP_PROTOCOL_VERSION],
+  discoveryTtlMs: 0, toolListTtlMs: 0, tools: () => [serverInfoTool, ...workspaceTools],
+  recordError: (code) => errors.push(code), cancelClientRequest: async () => {},
+  callTool: async ({ signal }) => {
+    if (signal.aborted) throw new WorkerToolError("cancelled", "cancelled before daemon dispatch", false, { side_effects_started: false });
+    preCancelledDispatches += 1;
+    return {};
+  },
+});
+await preCancelledController.handleControl(controlRequest(STREAM_ID), "cancel");
+const preCancelledResponse = await preCancelledController.handleRequest(input(request("tools/call", {
+  name: "list_dir", arguments: { path: "." },
+}), { proxyMode: "direct", streamId: STREAM_ID }));
+await preCancelledResponse.text();
+assert.equal(preCancelledDispatches, 0,
+  "private cancellation that arrived before direct request ownership still reached the daemon dispatch gate");
 
 const brokenController = new McpController({
   capabilities: { tools: {} }, serverInfo, instructions: "", supportedVersions: [MCP_PROTOCOL_VERSION],
@@ -298,7 +505,7 @@ function input(body, options = {}) {
     headers.set(MCP_STREAM_PROXY_ID_HEADER, options.streamId);
   }
   return {
-    request: new Request("https://example.test/mcp", { method: "POST", headers, body: "{}" }),
+    request: new Request("https://example.test/mcp", { method: "POST", headers, body: "{}", signal: options.signal }),
     body,
     base: "https://example.test",
     authorized,
@@ -353,6 +560,18 @@ async function jsonResult(response) {
 
 function sseJsonMessages(text) {
   return text.split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
+}
+
+async function readSseMessages(reader, count) {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const messages = sseJsonMessages(text);
+    if (messages.length >= count) return messages.slice(0, count);
+    const chunk = await reader.read();
+    if (chunk.done) return messages;
+    text += decoder.decode(chunk.value, { stream: true });
+  }
 }
 
 function deepSubscriptionFilter(depth) {

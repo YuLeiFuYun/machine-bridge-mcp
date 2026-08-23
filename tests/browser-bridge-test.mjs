@@ -348,6 +348,18 @@ async function testBrowserRequestSettlementEvidence() {
   assert(publicError(sendFailureError).message.includes("outcome is unknown") && publicError(sendFailureError).retryable === false,
     "mutating transport send failure lost unknown non-replayable settlement");
   assert(sendFailureRegistry.pending.size === 0, "failed mutating transport send left a pending browser request");
+  const readSendFailureRegistry = new BrowserRequestRegistry();
+  const readSendFailure = readSendFailureRegistry.request({
+    transport: { send() { throw new Error("private transport path: /tmp/browser-secret.sock"); } },
+    method: "list_tabs", params: {}, timeoutSeconds: 30,
+  });
+  let readSendFailureError;
+  try { await readSendFailure; } catch (error) { readSendFailureError = error; }
+  const publicReadSendFailure = publicError(readSendFailureError);
+  assert(publicReadSendFailure.message === "browser extension send failed"
+    && !publicReadSendFailure.message.includes("/tmp/browser-secret.sock"),
+  "read-only browser transport failure exposed the raw lower-level send error");
+  assert(readSendFailureRegistry.pending.size === 0, "failed read-only transport send left a pending browser request");
 
   const sent = [];
   const transport = { send(value) { sent.push(JSON.parse(value)); } };

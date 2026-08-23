@@ -15,7 +15,9 @@ import { ResourceAdmissionError } from "../src/local/resource-admission.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import { toolResult } from "../src/local/tools.mjs";
 import { textToolResult } from "../src/worker/mcp-jsonrpc.ts";
+import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
+const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 const root = await mkdtemp(join(tmpdir(), "mbm-process-output-test-"));
 const tracker = new ProcessTracker();
 const policy = {
@@ -58,7 +60,9 @@ try {
   testProcessSessionRetentionUsesMonotonicTime();
   testRemoteReadCompletionUsesFinalSessionState();
   await testExecutionSurfaceMarkers();
+  await testProcessCancellationAfterAdmissionBeforeSpawn();
   await testRemoteSessionAdmissionIsFailFast();
+  await testSessionCancellationAfterAdmissionBeforeSpawn();
   await testRemoteSessionActivityLifetime();
   await testRemoteBlockingPollCooldown();
   await testRemoteReadCancellationAfterHelperResolution();
@@ -188,6 +192,90 @@ async function testRemoteSessionAdmissionIsFailFast() {
   assert.equal(activityStarts, 0, "structurally impossible remote session demand retained idle-sleep activity");
 }
 
+async function testProcessCancellationAfterAdmissionBeforeSpawn() {
+  const controller = new AbortController();
+  const cancellation = new BridgeError("cancelled", "cancelled after resource admission", { retryable: false });
+  let spawnCount = 0;
+  let releaseCount = 0;
+  const service = new ProcessExecutionService({
+    workspace: root,
+    policy,
+    policyGate: { assert() {} },
+    runtimeDir: root,
+    processTracker: tracker,
+    resourceCoordinator: {
+      async acquire() {
+        controller.abort(cancellation);
+        return {
+          async bindProcess() { throw new Error("cancelled pre-spawn process must not bind resources"); },
+          async release() { releaseCount += 1; return true; },
+        };
+      },
+    },
+    resolveExistingPath: async () => root,
+    resolveLocalCommand: async () => ({}),
+    displayPath: (value) => value,
+    throwIfCancelled(context) {
+      if (context.signal?.aborted) throw context.signal.reason;
+    },
+    spawnProcess() {
+      spawnCount += 1;
+      throw new Error("cancelled pre-spawn process reached spawn");
+    },
+  });
+  await assert.rejects(
+    () => service.run(process.execPath, ["-e", ""], 5_000, false, 1024, { signal: controller.signal }),
+    (error) => error === cancellation,
+    "one-shot cancellation after resource admission lost its definite pre-spawn result",
+  );
+  assert.equal(spawnCount, 0, "one-shot cancellation after resource admission still spawned a child");
+  assert.equal(releaseCount, 1, "one-shot pre-spawn cancellation did not release its admitted resource lease exactly once");
+}
+
+async function testSessionCancellationAfterAdmissionBeforeSpawn() {
+  const controller = new AbortController();
+  const cancellation = new BridgeError("cancelled", "cancelled after session resource admission", { retryable: false });
+  let spawnCount = 0;
+  let releaseCount = 0;
+  let activityStarts = 0;
+  const manager = new ProcessSessionManager({
+    workspace: root,
+    policy,
+    authorizeTool() {},
+    runtimeDir: root,
+    processTracker: tracker,
+    resourceCoordinator: {
+      async acquire() {
+        controller.abort(cancellation);
+        return {
+          async bindProcess() { throw new Error("cancelled pre-spawn session must not bind resources"); },
+          async release() { releaseCount += 1; return true; },
+        };
+      },
+    },
+    resolveCwd: async () => root,
+    displayPath: (value) => value,
+    throwIfCancelled(context) {
+      if (context.signal?.aborted) throw context.signal.reason;
+    },
+    remoteActivityGuard: { beginActivity() { activityStarts += 1; }, endActivity() {} },
+    spawnProcess() {
+      spawnCount += 1;
+      throw new Error("cancelled pre-spawn session reached spawn");
+    },
+  });
+  await assert.rejects(
+    () => manager.start({ argv: [process.execPath, "-e", ""] }, {
+      origin: "relay", authority: { origin: "relay" }, signal: controller.signal,
+    }),
+    (error) => error === cancellation,
+    "process-session cancellation after resource admission lost its definite pre-spawn result",
+  );
+  assert.equal(spawnCount, 0, "process-session cancellation after resource admission still spawned a child");
+  assert.equal(releaseCount, 1, "process-session pre-spawn cancellation did not release its admitted resource lease exactly once");
+  assert.equal(activityStarts, 0, "cancelled pre-spawn process session acquired remote activity ownership");
+}
+
 async function testRemoteBlockingPollCooldown() {
   const manager = new ProcessSessionManager({
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
@@ -198,36 +286,84 @@ async function testRemoteBlockingPollCooldown() {
     const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 2500)"] }, remoteContext);
     const immediate = await manager.read({ session_id: started.session_id, wait_ms: 0 }, remoteContext);
     assert.equal(immediate.running, true, "remote polling fixture exited before the immediate checkpoint");
-    assert.equal(immediate.status_polling_mode, "checkpoint", "remote process read omitted checkpoint semantics");
+    assert.equal(immediate.status_polling_mode, "paced_followup", "remote process read omitted paced follow-up semantics");
+    assert.equal(immediate.tool_schema_generation, TOOL_SCHEMA_GENERATION, "remote process read omitted current tool schema generation");
+    assert.equal(immediate.host_turn_deadline_observable, false, "remote process read claimed visibility into an external host turn deadline");
     assert.equal(immediate.blocking_poll_throttled, false, "non-blocking status checkpoint was marked as throttled");
     assert.equal(immediate.next_blocking_poll_after_ms, 0,
       "non-blocking status checkpoint incorrectly armed the blocking-poll cooldown");
 
     const firstStartedAt = Date.now();
-    const first = await manager.read({ session_id: started.session_id, wait_ms: 5_000 }, remoteContext);
+    const first = await manager.read({ session_id: started.session_id }, remoteContext);
     const firstElapsed = Date.now() - firstStartedAt;
     assert.equal(first.running, true, "remote polling fixture exited before the first blocking read");
     assert(firstElapsed >= 700 && firstElapsed < 2_000,
-      "daemon-side remote polling did not clamp a stale/oversized request to the one-second hosted wait");
+      "relay-origin read_process without wait_ms did not default to the one-second server-paced wait");
     assert.equal(first.blocking_poll_throttled, false, "first remote blocking read was throttled unexpectedly");
-    assert.equal(first.status_polling_mode, "checkpoint", "first remote blocking read lost checkpoint semantics");
-    assert.equal(first.host_turn_handoff_recommended, true,
-      "running remote process did not recommend yielding the hosted response");
+    assert.equal(first.status_polling_mode, "paced_followup", "first remote blocking read lost paced follow-up semantics");
+    assert.equal(first.host_turn_handoff_recommended, false,
+      "running remote process still forced hosted-turn handoff");
     assert(first.next_blocking_poll_after_ms > 0, "running remote process omitted the next blocking-poll cooldown hint");
 
     const secondStartedAt = Date.now();
     const second = await manager.read({ session_id: started.session_id, wait_ms: 5_000 }, remoteContext);
     const secondElapsed = Date.now() - secondStartedAt;
-    assert.equal(second.running, true, "remote polling fixture exited before the repeated read");
-    assert.equal(second.blocking_poll_throttled, true, "repeated remote blocking read was not converted to an immediate status read");
-    assert(secondElapsed < firstElapsed,
-      "repeated remote blocking read still consumed the original synchronous wait budget");
-    assert(second.next_blocking_poll_after_ms > 0, "throttled remote poll omitted its remaining cooldown");
+    assert.equal(second.running, false, "cooldown-paced remote read returned a rapid running checkpoint instead of waiting for process exit");
+    assert.equal(second.status_polling_mode, "terminal", "cooldown-paced remote read lost terminal state reached during server-side pacing");
+    assert.equal(second.blocking_poll_throttled, true, "repeated remote blocking read did not disclose that its cooldown paced the call");
+    assert(secondElapsed >= 900 && secondElapsed < 3_000,
+      "repeated remote blocking read did not remain inside one MCP call until output/exit or cooldown progress");
+    assert.equal(second.next_blocking_poll_after_ms, 0, "terminal cooldown-paced read retained a future blocking-poll delay");
+
+    const outputPaced = await manager.start({
+      argv: [process.execPath, "-e", "setTimeout(() => process.stdout.write('first\\n'), 100); setTimeout(() => process.stdout.write('second\\n'), 450); setTimeout(() => {}, 2500)"],
+    }, remoteContext);
+    const outputArm = await manager.read({ session_id: outputPaced.session_id, wait_ms: 5_000 }, remoteContext);
+    assert(outputArm.running && outputArm.stdout.data.includes("first") && outputArm.next_blocking_poll_after_ms > 0,
+      "output-paced fixture did not arm the initial blocking cooldown");
+    const originalOutputCooldown = outputArm.next_blocking_poll_after_ms;
+    const outputPacedStartedAt = Date.now();
+    const outputDuringCooldown = await manager.read({
+      session_id: outputPaced.session_id, wait_ms: 5_000,
+      stdout_offset: outputArm.stdout.next_offset, stderr_offset: outputArm.stderr.next_offset,
+    }, remoteContext);
+    const outputPacedElapsed = Date.now() - outputPacedStartedAt;
+    assert(outputDuringCooldown.running && outputDuringCooldown.stdout.data.includes("second"),
+      "cooldown-paced read failed to return newly available output");
+    assert.equal(outputDuringCooldown.blocking_poll_throttled, true,
+      "output wakeup inside the cooldown lost its paced-read diagnostic");
+    assert(outputPacedElapsed >= 150 && outputPacedElapsed < 1_500,
+      "cooldown-paced output read did not return promptly when new output arrived");
+    assert(outputDuringCooldown.next_blocking_poll_after_ms > 0
+      && outputDuringCooldown.next_blocking_poll_after_ms < originalOutputCooldown,
+    "output wakeup incorrectly re-armed the full blocking cooldown");
+
+    const noisyExit = await manager.start({
+      argv: [process.execPath, "-e", [
+        "setTimeout(() => { const timer = setInterval(() => process.stdout.write('tick\\n'), 75);",
+        "setTimeout(() => { clearInterval(timer); process.exit(0); }, 2200); }, 1100);",
+      ].join(" ")],
+    }, remoteContext);
+    const noisyFirst = await manager.read({ session_id: noisyExit.session_id, wait_ms: 5_000 }, remoteContext);
+    assert.equal(noisyFirst.running, true, "noisy wait_for_exit fixture exited before arming its cooldown");
+    const noisyStartedAt = Date.now();
+    const noisySettled = await manager.read({
+      session_id: noisyExit.session_id, wait_ms: 5_000, wait_for_exit: true,
+    }, remoteContext);
+    const noisyElapsed = Date.now() - noisyStartedAt;
+    assert.equal(noisySettled.running, false,
+      "wait_for_exit cooldown was released by ordinary output before the process exited");
+    assert(noisyElapsed >= 1800 && noisyElapsed < 4000,
+      "wait_for_exit cooldown did not remain server-paced across ordinary output changes");
+    assert(noisySettled.stdout.data.includes("tick"),
+      "wait_for_exit cooldown lost output produced while the same MCP call remained open");
+    assert.equal(noisySettled.blocking_poll_throttled, true,
+      "wait_for_exit cooldown did not disclose server-side cooldown pacing");
 
     const exiting = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 150)"] }, remoteContext);
     const settled = await manager.read({ session_id: exiting.session_id, wait_ms: 5_000 }, remoteContext);
     assert.equal(settled.running, false, "remote process that exited during the checkpoint was still reported running");
-    assert.equal(settled.status_polling_mode, "checkpoint", "settled remote process lost checkpoint semantics");
+    assert.equal(settled.status_polling_mode, "terminal", "settled remote process retained live follow-up semantics");
     assert.equal(settled.host_turn_handoff_recommended, false,
       "settled remote process incorrectly recommended handing the hosted turn back for more polling");
     assert.equal(settled.blocking_poll_throttled, false, "settled first blocking checkpoint was marked as throttled");
@@ -320,7 +456,7 @@ function testRemoteReadCompletionUsesFinalSessionState() {
     remoteRead: { remote: true, blocking: true, pollThrottled: false },
     stdout: { data: "" }, stderr: { data: "" },
   }, session, 200);
-  assert.equal(completed.status_polling_mode, "checkpoint", "completed remote read lost checkpoint metadata");
+  assert.equal(completed.status_polling_mode, "terminal", "completed remote read retained live follow-up metadata");
   assert.equal(completed.host_turn_handoff_recommended, false,
     "remote read completion used a stale pre-exit running state for hosted-turn handoff");
   assert.equal(completed.next_blocking_poll_after_ms, 0,
@@ -521,7 +657,7 @@ async function testSessionCancellationAfterSpawn() {
     displayPath: (value) => value,
     throwIfCancelled() {
       cancellationChecks += 1;
-      if (cancellationChecks >= 2) throw new BridgeError("cancelled", "cancelled after process spawn", { retryable: false });
+      if (cancellationChecks >= 3) throw new BridgeError("cancelled", "cancelled after process spawn", { retryable: false });
     },
   });
   try {
@@ -569,7 +705,7 @@ async function testFailedSessionOwnershipRetention(phase) {
     displayPath: (value) => value,
     throwIfCancelled() {
       cancellationChecks += 1;
-      if (phase === "cancel" && cancellationChecks >= 2) {
+      if (phase === "cancel" && cancellationChecks >= 3) {
         throw new BridgeError("cancelled", "synthetic post-spawn cancellation", { retryable: false });
       }
     },

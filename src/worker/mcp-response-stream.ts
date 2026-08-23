@@ -33,21 +33,6 @@ export function jsonRpcResponseStream(
   return eventStreamResponse(body);
 }
 
-export function closedSubscriptionResponse(
-  acknowledged: Record<string, unknown>,
-  completed: Record<string, unknown>,
-): Response {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(encoder.encode(sseMessage(acknowledged)));
-      controller.enqueue(encoder.encode(sseMessage(completed)));
-      controller.close();
-    },
-  });
-  return eventStreamResponse(body);
-}
-
 function eventStreamResponse(body: ReadableStream<Uint8Array>): Response {
   return new Response(body, {
     status: 200,

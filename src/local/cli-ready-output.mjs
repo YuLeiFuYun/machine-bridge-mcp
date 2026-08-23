@@ -1,7 +1,7 @@
 import { createLogger } from "./log.mjs";
 
 export function printStartJson(state, { requestedChangesApplied = true, notice = "", initialOwner = null } = {}) {
-  createLogger({ component: "ready" }).json({
+  createLogger({ component: "ready" }).rawJson({
     mcp: {
       server_url: state.worker.mcpServerUrl,
       worker_url: state.worker.url,
@@ -32,17 +32,17 @@ export function printMcpConnection(state, { quiet = false, verbose = false, init
   }
   const logger = output;
   logger.success("Remote MCP bridge is ready");
-  logger.plain(`  MCP Server URL: ${state.worker.mcpServerUrl}`);
+  logger.rawPlain(`  MCP Server URL: ${state.worker.mcpServerUrl}`);
   if (initialOwner) {
     logger.warn("Initial owner account created; save the password now because it is not stored locally or shown again. Do not share this terminal output; rotate the password immediately if it has been exposed.");
-    logger.plain(`  Account: ${initialOwner.name}`);
-    logger.plain(`  Password: ${initialOwner.password}`);
+    logger.rawPlain(`  Account: ${initialOwner.name}`);
+    logger.rawPlain(`  Password: ${initialOwner.password}`);
   } else {
     logger.safePlain("  Use `machine-mcp account` to manage account access.");
   }
-  logger.plain(`  Workspace: ${state.workspace.path}`);
+  logger.rawPlain(`  Workspace: ${state.workspace.path}`);
   logger.safePlain(`  Policy: ${formatPolicySummary(state.policy)}`);
-  if (verbose) logger.plain(`  State: ${state.paths.statePath}`);
+  if (verbose) logger.rawPlain(`  State: ${state.paths.statePath}`);
 }
 
 export function formatPolicySummary(policy = {}) {

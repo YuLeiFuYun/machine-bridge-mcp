@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 import {
   allToolNames, isCanonicalFullPolicy, MCP_PROTOCOL_VERSION, MCP_SUPPORTED_PROTOCOL_VERSIONS,
   POLICY_PROFILES, SERVER_NAME,
@@ -55,6 +56,11 @@ export function buildRuntimeInfo({
       full_profile_scope: "local-daemon-and-relay-advertisement",
       effective_tool_count: toolNames.length + 1,
       daemon_advertised_tool_count: daemonToolNames.length + 1,
+      tool_schema_generation: Number(serverMetadata.toolSchemaGeneration),
+      discovery_ttl_ms: 0,
+      tool_list_ttl_ms: 0,
+      host_turn_deadline_observable: false,
+      managed_jobs_detached_from_mcp_response: true,
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
     },

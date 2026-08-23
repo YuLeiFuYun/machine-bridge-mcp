@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,7 @@ import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } 
 import { applyResourceProfileEnv, resourceCommandEffectiveCwd, resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
 import { freshResourceHostSnapshot } from "../src/local/resource-host-cache.mjs";
 import { readResourceHostSample } from "../src/local/resource-host-sample-file.mjs";
-import { sampleDarwinHost, sampleDarwinHostAsync } from "../src/local/resource-host-darwin.mjs";
+import { sampleDarwinHostAsync } from "../src/local/resource-host-darwin.mjs";
 import { sampleLinuxHost } from "../src/local/resource-host-linux.mjs";
 import { aggregateResourceLeases, resourceLeaseAccountingContext, resourceRequestIncrement } from "../src/local/resource-lease-accounting.mjs";
 import { unobservedResourceCpu } from "../src/local/resource-cpu-window.mjs";
@@ -18,13 +18,14 @@ import { resourceDiskHardFloorBytes, resourceDiskSoftFloorBytes } from "../src/l
 import { fitElasticRequestToPressure, isElasticCompilerRequest, markElasticCompilerJobs, preservesCompilerJobs } from "../src/local/resource-elastic-request.mjs";
 import { mavenCoreMultiplierPlan } from "../src/local/resource-maven-concurrency.mjs";
 import { ninjaJobserverPlan } from "../src/local/resource-ninja-concurrency.mjs";
-import { cachedResourceProcessParentSampler, cachedResourceProcessParentSamplerAsync } from "../src/local/resource-process-ancestry-cache.mjs";
-import { parseResourceProcessParents, sampleResourceProcessParents } from "../src/local/resource-process-ancestry.mjs";
+import { cachedResourceProcessParentSamplerAsync, cachedResourceProcessSnapshotSamplerAsync } from "../src/local/resource-process-ancestry-cache.mjs";
+import { parseResourceProcessParents, sampleResourceProcessParentsAsync } from "../src/local/resource-process-ancestry.mjs";
 import { normalizeResourceProjectIdentity, resourceProjectContentionKey, resourceProjectHash, resourceProjectIdentityHash, resourceRequestForProject } from "../src/local/resource-project-key.mjs";
-import { sampleResourceHost, sampleResourceHostAsync } from "../src/local/resource-host-snapshot.mjs";
+import { sampleResourceHostAsync } from "../src/local/resource-host-snapshot.mjs";
 import { validateResourceRequest } from "../src/local/resource-request-contract.mjs";
 import { applyResourceProcessPriority } from "../src/local/resource-process-priority.mjs";
-import { currentProcessStartTimeMs } from "../src/local/process-identity.mjs";
+import { currentProcessStartTimeMs, sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
+import { resourceLeaseIsStale, resourceLeaseOwnerStatus } from "../src/local/resource-lease-liveness.mjs";
 import { packageName, packageVersion } from "../src/local/package-identity.mjs";
 import { releaseProcessResourcesQuietly } from "../src/local/resource-process-admission.mjs";
 import { foregroundResourceWaitMs, processSessionResourceWaitMs } from "../src/local/resource-foreground-wait.mjs";
@@ -33,7 +34,7 @@ import { releaseControlWorkspaceForCommand, releaseControlWorkspaceMatches } fro
 import { RESOURCE_STAGING_BUSY_CODE } from "../src/local/resource-staging-recovery.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
-import { createResourceWaiter, resourceWaiterDrainActive, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
+import { createResourceWaiter, pruneAndReadResourceWaiters, resourceWaiterDrainActive, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
 
 const GIB = 1024 ** 3;
 let hostSampleReads = 0;
@@ -701,8 +702,8 @@ assert.strictEqual(fitElasticRequestToPressure(explicitCargoJobs, {
   observed: { cpu_busy_cores: 6.4, unobserved_reserved_cpu: 0 },
 }), explicitCargoJobs, "explicit Cargo request was rewritten by elastic fitting");
 
-const linuxSample = sampleResourceHost({
-  platform: "linux", cpuCores: 8,
+const linuxSample = await sampleResourceHostAsync({
+  platform: "linux", cpuCores: 8, cpuSampleSleep: async () => {},
   readFile: (file) => ({
     "/proc/meminfo": "MemTotal:       16000000 kB\nMemAvailable:    8000000 kB\n",
     "/proc/pressure/cpu": "some avg10=12.50 avg60=8.00 avg300=4.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
@@ -715,7 +716,7 @@ assert.equal(linuxSample.psi_cpu_some_avg10, 12.5);
 assert.equal(linuxSample.psi_memory_full_avg10, 0.5);
 assert.equal(linuxSample.psi_io_full_avg10, 1.25);
 assert.equal(linuxSample.io_sampled, true);
-const linuxWithoutPsi = sampleResourceHost({ platform: "linux", cpuCores: 8, readFile: () => "" });
+const linuxWithoutPsi = await sampleResourceHostAsync({ platform: "linux", cpuCores: 8, cpuSampleSleep: async () => {}, readFile: () => "" });
 assert.equal(linuxWithoutPsi.io_sampled, false, "missing Linux PSI was reported as sampled I/O pressure");
 const directLinuxHost = {};
 sampleLinuxHost(directLinuxHost);
@@ -723,11 +724,9 @@ assert.equal(typeof directLinuxHost.io_sampled, "boolean", "default Linux reader
 if (process.platform !== "linux") {
   assert.equal(directLinuxHost.io_sampled, false, "default Linux reader treated unavailable /proc PSI as sampled");
 }
-const defaultSyncHost = sampleResourceHost({ platform: "linux", cpuCores: 8, readFile: () => "" });
-assert.equal(defaultSyncHost.io_sampled, false);
-const defaultAsyncHost = await sampleResourceHostAsync({ platform: "linux", cpuCores: 8, readFile: () => "" });
+const defaultAsyncHost = await sampleResourceHostAsync({ platform: "linux", cpuCores: 8, cpuSampleSleep: async () => {}, readFile: () => "" });
 assert.equal(defaultAsyncHost.io_sampled, false);
-const syntheticWindowsHost = sampleResourceHost({ platform: "win32", cpuCores: 8 });
+const syntheticWindowsHost = await sampleResourceHostAsync({ platform: "win32", cpuCores: 8, cpuSampleSleep: async () => {} });
 assert(Number.isFinite(syntheticWindowsHost.memory_free_percent)
   && syntheticWindowsHost.memory_free_percent >= 0 && syntheticWindowsHost.memory_free_percent <= 100,
 "Windows host sampling left memory pressure unknown despite Node exposing physical-memory availability");
@@ -742,10 +741,9 @@ const windowsCpuRates = deriveHostRates({
 });
 assert.equal(windowsCpuRates.cpu_busy_cores, 6,
   "cumulative Windows CPU evidence did not derive busy-core pressure from the previous host sample");
-const directDarwin = {};
-sampleDarwinHost(directDarwin, {
+const directDarwin = await sampleDarwinHostAsync({
   quick: false,
-  runCommand: (command) => {
+  runCommandAsync: async (command) => {
     if (command.endsWith("memory_pressure")) return { ok: true, stdout: "System-wide memory free percentage: 42%\n" };
     if (command.endsWith("vm_stat")) return { ok: true, stdout: "Pageouts: 123.\nSwapouts: 45.\n" };
     if (command.endsWith("iostat")) return { ok: true, stdout: "          disk0\n    KB/t xfrs MB\n    1.0 700 42\n" };
@@ -759,24 +757,21 @@ assert.equal(directDarwin.disk_iops, 700);
 assert.equal(directDarwin.disk_mb_per_s, 42);
 assert.equal(directDarwin.io_sampled, true);
 assert.equal(directDarwin.thermal_warning, false);
-const failedDarwinIo = {};
-sampleDarwinHost(failedDarwinIo, {
+const failedDarwinIo = await sampleDarwinHostAsync({
   quick: false,
-  runCommand: (command) => command.endsWith("iostat")
+  runCommandAsync: async (command) => command.endsWith("iostat")
     ? { ok: false, stdout: "" }
     : { ok: true, stdout: "" },
 });
 assert.equal(failedDarwinIo.io_sampled, undefined, "failed Darwin iostat probe was cached as successful I/O evidence");
 assert.equal(failedDarwinIo.io_sampled_at_ms, undefined, "failed Darwin iostat probe received a reusable evidence timestamp");
-const malformedDarwinIo = {};
-sampleDarwinHost(malformedDarwinIo, {
+const malformedDarwinIo = await sampleDarwinHostAsync({
   quick: false,
-  runCommand: (command) => command.endsWith("iostat")
+  runCommandAsync: async (command) => command.endsWith("iostat")
     ? { ok: true, stdout: "iostat produced no numeric sample\n" }
     : { ok: true, stdout: "" },
 });
 assert.equal(malformedDarwinIo.io_sampled, undefined, "unparseable Darwin iostat output was cached as successful I/O evidence");
-sampleDarwinHost({}, { quick: true });
 await sampleDarwinHostAsync({ quick: true });
 
 const hierarchyNow = Date.now();
@@ -788,28 +783,12 @@ const largerChild = resourceLease("c".repeat(32), 200, { ...parentEnvelope, cpu:
 const siblingChild = resourceLease("d".repeat(32), 300, { ...parentEnvelope, cpu: 2 }, hierarchyNow - 60_000);
 const processParents = parseResourceProcessParents("100 1\n150 100\n200 100\n300 100\n400 100\n");
 assert(processParents, "process parent snapshot did not parse");
-assert.deepEqual(sampleResourceProcessParents({ run: () => ({ ok: true, stdout: "100 1\n200 100\n" }) }), { "100": 1, "200": 100 });
-if (process.platform !== "win32") assert(sampleResourceProcessParents(), "default bounded process-parent probe returned no process graph");
-let ancestryClock = 10_000;
-let ancestrySamples = 0;
-const cachedParents = cachedResourceProcessParentSampler(
-  () => { ancestrySamples += 1; return processParents; }, () => ancestryClock, 1_000,
-);
-assert.equal(cachedParents(), processParents);
-ancestryClock += 999;
-assert.equal(cachedParents(), processParents);
-assert.equal(ancestrySamples, 1, "ancestry cache repeated a system-wide process scan inside its freshness window");
-ancestryClock += 2;
-assert.equal(cachedParents(), processParents);
-assert.equal(ancestrySamples, 2, "ancestry cache failed to refresh after its bounded freshness window");
-let failedAncestrySamples = 0;
-const cachedMissingParents = cachedResourceProcessParentSampler(
-  () => { failedAncestrySamples += 1; ancestryClock += 3_000; return null; }, () => ancestryClock, 1_000,
-);
-assert.equal(cachedMissingParents(), null);
-ancestryClock += 500;
-assert.equal(cachedMissingParents(), null);
-assert.equal(failedAncestrySamples, 1, "failed ancestry sampling was retried inside the cache window");
+assert.deepEqual(await sampleResourceProcessParentsAsync({
+  run: async () => ({ ok: true, stdout: "100 1\n200 100\n" }),
+}), { "100": 1, "200": 100 });
+if (process.platform !== "win32") {
+  assert(await sampleResourceProcessParentsAsync(), "default bounded async process-parent probe returned no process graph");
+}
 let asyncAncestryClock = 20_000;
 let asyncAncestrySamples = 0;
 let finishAsyncAncestry;
@@ -829,6 +808,61 @@ assert.equal(await asyncParentsB, processParents);
 asyncAncestryClock += 999;
 assert.equal(await cachedParentsAsync(), processParents);
 assert.equal(asyncAncestrySamples, 1, "async ancestry cache repeated a system-wide scan inside its freshness window");
+asyncAncestryClock += 2;
+assert.equal(await cachedParentsAsync(), processParents);
+assert.equal(asyncAncestrySamples, 2, "async ancestry cache failed to refresh after its bounded freshness window");
+let failedAsyncAncestrySamples = 0;
+const cachedMissingParentsAsync = cachedResourceProcessParentSamplerAsync(
+  async () => { failedAsyncAncestrySamples += 1; return null; },
+  () => asyncAncestryClock,
+  1_000,
+);
+assert.equal(await cachedMissingParentsAsync(), null);
+asyncAncestryClock += 500;
+assert.equal(await cachedMissingParentsAsync(), null);
+assert.equal(failedAsyncAncestrySamples, 1, "failed async ancestry sampling was retried inside the cache window");
+const currentProcessStartedAt = currentProcessStartTimeMs();
+const parsedProcessStarts = await sampleProcessStartTimesAsync({
+  platform: "win32",
+  run: async () => ({ ok: true, stdout: `${process.pid}|${new Date(currentProcessStartedAt).toISOString()}\n` }),
+});
+assert(Math.abs(parsedProcessStarts[String(process.pid)] - currentProcessStartedAt) < 2,
+  "async process-start snapshot did not parse process identity evidence");
+let processStartSnapshotCalls = 0;
+const cachedProcessStarts = cachedResourceProcessSnapshotSamplerAsync(
+  async () => { processStartSnapshotCalls += 1; return parsedProcessStarts; },
+  () => asyncAncestryClock,
+  1_000,
+);
+assert.equal(await cachedProcessStarts(), parsedProcessStarts);
+assert.equal(await cachedProcessStarts(), parsedProcessStarts);
+assert.equal(processStartSnapshotCalls, 1, "process-start snapshot cache repeated a system-wide scan inside its freshness window");
+const liveLeaseIdentity = {
+  acquired_at: new Date(currentProcessStartedAt).toISOString(),
+  owner: {
+    kind: "process", pid: process.pid, process_started_at: new Date(currentProcessStartedAt).toISOString(),
+    process_group_id: null, process_group_isolated: false,
+  },
+};
+assert.equal(resourceLeaseOwnerStatus(liveLeaseIdentity, {}).current, true,
+  "missing async process-start evidence reclaimed a still-live lease instead of failing closed");
+const reusedProcessStarts = { [String(process.pid)]: currentProcessStartedAt + 60_000 };
+assert.equal(resourceLeaseOwnerStatus(liveLeaseIdentity, reusedProcessStarts).reason, "pid_reused",
+  "process-start snapshot mismatch did not identify PID reuse");
+assert.equal(resourceLeaseIsStale(liveLeaseIdentity, reusedProcessStarts, Date.now(), 30_000), true,
+  "PID-reused lease was not reclaimable from async snapshot evidence");
+const waiterSnapshotRoot = mkdtempSync(join(tmpdir(), "mbm-resource-waiter-snapshot-"));
+const waiterSnapshotDir = join(waiterSnapshotRoot, "waiters");
+mkdirSync(waiterSnapshotDir, { mode: 0o700 });
+try {
+  createResourceWaiter(waiterSnapshotDir, scriptHeavy, 5_000, Date.now());
+  const liveEntries = readdirSync(waiterSnapshotDir, { withFileTypes: true });
+  assert.equal(pruneAndReadResourceWaiters(waiterSnapshotDir, liveEntries, Date.now(), {}).length, 1,
+    "missing async process-start evidence reclaimed a live waiter instead of failing closed");
+  const reusedEntries = readdirSync(waiterSnapshotDir, { withFileTypes: true });
+  assert.equal(pruneAndReadResourceWaiters(waiterSnapshotDir, reusedEntries, Date.now(), reusedProcessStarts).length, 0,
+    "PID-reused waiter was not reclaimed from async snapshot evidence");
+} finally { rmSync(waiterSnapshotRoot, { recursive: true, force: true }); }
 let releaseHostProbes;
 const hostProbeGate = new Promise((resolvePromise) => { releaseHostProbes = resolvePromise; });
 const hostProbeCalls = [];
@@ -880,6 +914,16 @@ assert.equal(refreshedCpuWithIoHint.cpu_busy_cores, 2, "quick CPU refresh did no
 assert.equal(refreshedCpuWithIoHint.disk_mb_per_s, 77, "non-I/O refresh discarded a valid scope-local I/O hint");
 assert.equal(refreshedCpuWithIoHint.disk_iops, 770, "non-I/O refresh discarded cached scope-local IOPS");
 assert.equal(refreshedCpuWithIoHint.io_sampled, true, "cached I/O hint lost its sampled marker during quick CPU refresh");
+const staleIoHintDiscarded = await freshResourceHostSnapshot({
+  cached: cachedIoHost, current: 6_001, cwd: "/tmp", request: { resource_class: "adaptive" }, scope: cacheScope,
+  sampleHost: async (options) => {
+    assert.equal(options.quick, true);
+    return { ...green, sampled_at_ms: 6_001, cpu_busy_cores: 2, io_sampled: false, disk_mb_per_s: null, disk_iops: null };
+  },
+});
+assert.equal(staleIoHintDiscarded.disk_mb_per_s, null, "stale I/O throughput remained attached to a current quick host sample");
+assert.equal(staleIoHintDiscarded.disk_iops, null, "stale IOPS remained attached to a current quick host sample");
+assert.equal(staleIoHintDiscarded.io_sampled, false, "stale I/O hint retained a fresh sampled marker");
 const refreshedIoWithinFreshWindow = await freshResourceHostSnapshot({
   cached: cachedIoHost, current: 1_700, cwd: "/tmp", request: { resource_class: "io" }, scope: cacheScope,
   sampleHost: async (options) => {
@@ -964,11 +1008,28 @@ let decision = evaluateResourceAdmission(green, [], cargo, Date.now());
 assert.equal(decision.admitted, true);
 assert.equal(decision.state, "green");
 const greenLimits = decision.limits;
-const red = { ...green, disk_mb_per_s: 230, disk_iops: 5100 };
-decision = evaluateResourceAdmission(red, [], cargo, Date.now());
-assert.equal(decision.admitted, false);
-assert.equal(decision.state, "red");
-const yellow = { ...green, disk_mb_per_s: 120 };
+const ioSampledAt = Date.now();
+const ioPeak = {
+  ...green, sampled_at_ms: ioSampledAt, io_sampled: true, io_sampled_at_ms: ioSampledAt,
+  disk_mb_per_s: 230, disk_iops: 5100,
+};
+decision = evaluateResourceAdmission(ioPeak, [], cargo, Date.now());
+assert.equal(decision.admitted, true, "raw macOS I/O throughput alone hard-blocked heavy work without saturation evidence");
+assert.equal(decision.state, "yellow", "raw I/O throughput did not remain a concurrency-throttling signal");
+assert(decision.pressure_reasons.includes("disk_throughput") && decision.pressure_reasons.includes("disk_iops")
+  && !decision.pressure_reasons.some((reason) => reason.endsWith("_critical")),
+"raw I/O throughput still projected a false critical-pressure reason");
+const ioBacklogCritical = evaluateResourceAdmission({ ...ioPeak, load1: 17, cpu_busy_cores: 6.5 }, [], cargo, Date.now());
+assert.equal(ioBacklogCritical.admitted, false, "corroborated severe host backlog stopped producing a red admission decision");
+assert.equal(ioBacklogCritical.reason, "host_pressure_red");
+assert(ioBacklogCritical.pressure_reasons.includes("load_backlog_critical"));
+const staleIoPeak = evaluateResourceAdmission({
+  ...ioPeak, sampled_at_ms: ioSampledAt + 5_001, load1: 2, cpu_busy_cores: 1.5,
+}, [], cargo, Date.now());
+assert.equal(staleIoPeak.state, "green", "expired I/O throughput evidence continued to throttle a current idle host sample");
+const yellow = {
+  ...green, sampled_at_ms: ioSampledAt, io_sampled: true, io_sampled_at_ms: ioSampledAt, disk_mb_per_s: 120,
+};
 decision = evaluateResourceAdmission(yellow, [], cargo, Date.now());
 assert.equal(decision.state, "yellow");
 assert.equal(decision.admitted, true);
@@ -1017,6 +1078,10 @@ assert.equal(cpuPsiYellow.state, "yellow", "Linux CPU PSI did not tighten admiss
 assert(cpuPsiYellow.limits.cpu < greenLimits.cpu, "CPU PSI did not reduce CPU admission capacity");
 assert.equal(cpuPsiYellow.limits.io, greenLimits.io, "CPU-only yellow pressure incorrectly reduced I/O capacity");
 assert.equal(cpuPsiYellow.limits.memory_mb, greenLimits.memory_mb, "CPU-only yellow pressure incorrectly reduced memory capacity");
+const ioPsiCritical = evaluateResourceAdmission({ ...green, psi_io_full_avg10: 60.1 }, [], cargo, Date.now());
+assert.equal(ioPsiCritical.state, "red", "Linux sustained full I/O PSI did not become critical pressure");
+assert.equal(ioPsiCritical.reason, "host_pressure_red", "Linux sustained full I/O PSI did not block new heavy work");
+assert(ioPsiCritical.pressure_reasons.includes("psi_io_full_critical"), "Linux critical I/O PSI lost its explicit pressure reason");
 const crowdedRoots = Array.from({ length: 17 }, (_, index) => ({
   lease_id: (index + 1).toString(16).padStart(32, "0"),
   request: { ...cargo, cpu: 0, io: 0, memory_mb: 0, disk_reserve_bytes: 0, contention_key: null },
@@ -1218,11 +1283,16 @@ const coordinator = new ResourceCoordinator({
 try {
   await coordinator.withLock(() => {
     const lockPath = join(root, "transaction.lock");
-    assert.equal(lstatSync(lockPath).isDirectory(), true, "resource coordinator lock lost beta.60-compatible directory wire shape");
-    const owner = JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf8"));
-    assert.equal(owner.schema_version, 1, "resource coordinator transaction claim lost its schema-1 compatibility marker");
-    assert.match(owner.token, /^[a-f0-9]{32}$/, "resource coordinator transaction claim lost its ownership token");
-    assert.equal(owner.pid, process.pid, "resource coordinator transaction claim lost its process owner");
+    const lockFd = openSync(lockPath, "r");
+    try {
+      assert.equal(fstatSync(lockFd).isFile(), true, "resource coordinator transaction writer did not use the owner-state file shape");
+      const owner = JSON.parse(readFileSync(lockFd, "utf8"));
+      assert.equal(owner.purpose, "resource-coordinator", "resource coordinator transaction claim lost its owner-state purpose");
+      assert.match(owner.token, /^[a-f0-9]{32}$/, "resource coordinator transaction claim lost its ownership token");
+      assert.equal(owner.pid, process.pid, "resource coordinator transaction claim lost its process owner");
+    } finally {
+      closeSync(lockFd);
+    }
   });
 
   const legacyLock = join(root, "transaction.lock");
@@ -1236,8 +1306,15 @@ try {
   })}\n`, { mode: 0o600 });
   let legacyWaits = 0;
   await withResourceTransactionLock(root, () => {
-    const owner = JSON.parse(readFileSync(join(legacyLock, "owner.json"), "utf8"));
-    assert.notEqual(owner.token, "a".repeat(32), "beta.61 entered while a beta.60 directory lock was still owned");
+    const legacyFd = openSync(legacyLock, "r");
+    try {
+      assert.equal(fstatSync(legacyFd).isFile(), true,
+        "current writer did not switch to the owner-state file after the beta.104 directory lock cleared");
+      const owner = JSON.parse(readFileSync(legacyFd, "utf8"));
+      assert.notEqual(owner.token, "a".repeat(32), "current writer entered while a beta.104 directory lock was still owned");
+    } finally {
+      closeSync(legacyFd);
+    }
   }, {
     timeoutMs: 500,
     random: () => 0,
@@ -1254,13 +1331,40 @@ try {
   })}\n`, { mode: 0o600 });
   let priorFileWaits = 0;
   await withResourceTransactionLock(root, () => {
-    assert.equal(lstatSync(legacyLock).isDirectory(), true, "beta.61 did not migrate back to the rolling-compatible directory lock after a prior file lock cleared");
+    assert.equal(lstatSync(legacyLock).isFile(), true,
+      "resource transaction writer reverted to the legacy directory shape after an owner-state file lock cleared");
   }, {
     timeoutMs: 500,
     random: () => 0,
     sleep: async () => { priorFileWaits += 1; rmSync(legacyLock, { force: true }); },
   });
   assert.equal(priorFileWaits, 1, "beta.61 did not wait for a live prior owner-state file lock");
+
+  const publicationOwner = {
+    pid: process.pid,
+    token: "9".repeat(32),
+    purpose: "resource-coordinator",
+    startedAt: new Date().toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
+  };
+  const persistentPublicationLink = join(root, "transaction.lock.persistent-hardlink");
+  writeFileSync(legacyLock, `${JSON.stringify(publicationOwner)}\n`, { mode: 0o600 });
+  linkSync(legacyLock, persistentPublicationLink);
+  let transactionDeadlineWaits = 0;
+  let persistentPublicationError = null;
+  try {
+    await withResourceTransactionLock(root, () => {}, {
+      timeoutMs: 500,
+      random: () => 0,
+      sleep: async () => { transactionDeadlineWaits += 1; },
+    });
+  } catch (error) { persistentPublicationError = error; }
+  assert.equal(persistentPublicationError?.code, "MBM_MULTIPLE_HARD_LINKS",
+    "persistent resource transaction hard links did not fail closed after the shared four-attempt publication retry");
+  assert.equal(transactionDeadlineWaits, 0,
+    "resource transaction lock expanded a multiple-hard-link integrity failure into transaction-deadline waiting");
+  rmSync(persistentPublicationLink, { force: true });
+  rmSync(legacyLock, { force: true });
 
   mkdirSync(legacyLock, { mode: 0o700 });
   const oldDirectoryTime = new Date(Date.now() - 10_000);
@@ -1269,6 +1373,8 @@ try {
   let orphanRaceWaits = 0;
   await withResourceTransactionLock(root, () => {
     assert.equal(orphanOwnerInjected, true, "stale incomplete-directory race fixture did not inject a completing beta.60 owner");
+    assert.equal(lstatSync(legacyLock).isFile(), true,
+      "resource transaction writer did not converge to the owner-state file after legacy orphan recovery");
   }, {
     timeoutMs: 500,
     random: () => 0,
@@ -1303,8 +1409,8 @@ try {
   let recoveredDeadOwnerStaging = false;
   await withResourceTransactionLock(root, () => {
     recoveredDeadOwnerStaging = true;
-    assert.deepEqual(readdirSync(legacyLock), ["owner.json"],
-      "dead owner-publication staging survived into the replacement transaction generation");
+    assert.equal(lstatSync(legacyLock).isFile(), true,
+      "dead legacy owner-publication staging did not converge to the current owner-state file generation");
   }, { timeoutMs: 500, random: () => 0, sleep: async () => {} });
   assert.equal(recoveredDeadOwnerStaging, true,
     "dead owner-publication staging permanently blocked resource transaction recovery");
@@ -1675,7 +1781,7 @@ try {
 
   const blockedCoordinator = new ResourceCoordinator({
     root: `${root}-blocked`,
-    sampleHost: () => ({ ...red, sampled_at_ms: Date.now() }),
+    sampleHost: () => ({ ...green, memory_free_percent: 7, sampled_at_ms: Date.now() }),
     sleep: async () => {}, random: () => 0,
   });
   await assert.rejects(() => blockedCoordinator.acquire(cargo), (error) => error instanceof ResourceAdmissionError && error.retryable === true);
@@ -1694,7 +1800,7 @@ try {
   );
   assert.equal(structuralSleeps, 0, "structurally impossible fixed CPU fan-out entered the resource retry sleep loop");
   const livenessCoordinator = new ResourceCoordinator({
-    root: `${root}-liveness`, sampleHost: () => ({ ...red, sampled_at_ms: Date.now() }), random: () => 0,
+    root: `${root}-liveness`, sampleHost: () => ({ ...green, memory_free_percent: 7, sampled_at_ms: Date.now() }), random: () => 0,
   });
   await assert.rejects(
     () => livenessCoordinator.acquire(cargo, { waitMs: 75 }),

@@ -22,6 +22,8 @@ export function serverImplementation(input: { name: unknown; version: unknown; t
 export function completeResult(fields?: Record<string, unknown>, serverInfo?: Record<string, unknown>): Record<string, unknown>;
 export function cacheableResult(fields: Record<string, unknown>, options: { ttlMs: number; cacheScope: "public" | "private"; serverInfo?: Record<string, unknown> }): Record<string, unknown>;
 export function discoverResult(input: { supportedVersions: readonly string[]; capabilities: Record<string, unknown>; instructions?: string; ttlMs?: number; serverInfo?: Record<string, unknown> }): Record<string, unknown>;
-export function validateSubscriptionRequest(value: unknown): void;
+export function validateSubscriptionRequest(value: unknown): Readonly<{ toolsListChanged: boolean; promptsListChanged: boolean; resourcesListChanged: boolean; resourceSubscriptions: readonly string[] }>;
+export function subscriptionAcknowledgement(requestId: string | number, notifications?: Record<string, unknown>): Record<string, unknown>;
 export function emptySubscriptionAcknowledgement(requestId: string | number): Record<string, unknown>;
+export function toolsListChangedNotification(requestId: string | number): Record<string, unknown>;
 export function subscriptionCompleteResult(requestId: string | number, serverInfo?: Record<string, unknown>): Record<string, unknown>;

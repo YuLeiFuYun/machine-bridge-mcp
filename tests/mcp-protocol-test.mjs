@@ -9,11 +9,14 @@ import {
   discoverResult,
   requestProtocolVersion,
   serverImplementation,
+  subscriptionAcknowledgement,
+  toolsListChangedNotification,
+  validateSubscriptionRequest,
   validateRequestMetadata,
 } from "../src/shared/mcp-protocol.mjs";
 import {
   MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS,
-  MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo,
+  MCP_LEGACY_SERVER_CAPABILITIES, MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo,
 } from "../src/worker/worker-mcp-config.ts";
 import {
   McpHttpContractError,
@@ -140,9 +143,21 @@ assert.deepEqual(discovery.supportedVersions, [MCP_PROTOCOL_VERSION]);
 assert.equal(discovery.cacheScope, "public");
 assert.equal(SERVER_NAME, "machine-bridge-mcp");
 assert.deepEqual(MCP_PROTOCOL_VERSIONS, [MCP_PROTOCOL_VERSION]);
-assert(MCP_INSTRUCTIONS.length > 0 && MCP_SERVER_CAPABILITIES.tools.listChanged === false);
-assert(MCP_DISCOVERY_TTL_MS > 0 && MCP_TOOL_LIST_TTL_MS > 0);
+assert(MCP_INSTRUCTIONS.length > 0 && MCP_SERVER_CAPABILITIES.tools.listChanged === true);
+assert.equal(MCP_LEGACY_SERVER_CAPABILITIES.tools.listChanged, false);
+assert(MCP_DISCOVERY_TTL_MS === 0 && MCP_TOOL_LIST_TTL_MS === 0, "discovery instructions and tool descriptions must not advertise reusable cross-release caches");
 assert.equal(mcpServerInfo("test").version, "test");
+const subscriptionFilter = validateSubscriptionRequest(request("subscriptions/listen", {
+  notifications: { toolsListChanged: true, resourcesListChanged: false, resourceSubscriptions: ["file:///a"] },
+}));
+assert.equal(subscriptionFilter.toolsListChanged, true);
+assert.deepEqual(subscriptionFilter.resourceSubscriptions, ["file:///a"]);
+const subscriptionAck = subscriptionAcknowledgement(9, { toolsListChanged: true });
+assert.equal(subscriptionAck.params.notifications.toolsListChanged, true);
+assert.equal(subscriptionAck.params._meta["io.modelcontextprotocol/subscriptionId"], 9);
+const toolListChanged = toolsListChangedNotification(9);
+assert.equal(toolListChanged.method, "notifications/tools/list_changed");
+assert.equal(toolListChanged.params._meta["io.modelcontextprotocol/subscriptionId"], 9);
 
 const unknownVersionHeaders = new Headers({
   "MCP-Protocol-Version": "1900-01-01",

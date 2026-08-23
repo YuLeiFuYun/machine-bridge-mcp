@@ -15,3 +15,9 @@ export function clampInteger(value, fallback, minimum, maximum) {
   const number = Number.isInteger(parsed) ? parsed : fallback;
   return Math.min(Math.max(number, minimum), maximum);
 }
+
+/** @param {unknown} value @param {number} fallback */
+export function positiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}

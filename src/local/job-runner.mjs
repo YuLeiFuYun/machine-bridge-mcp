@@ -394,6 +394,9 @@ async function spawnStep(argv, {
             forceDelegated: true,
           })
         : { command: admitted.command, args: admitted.args };
+      // This synchronous marker read is the launch decision point. A cancellation visible here
+      // prevents spawn; cancellation that becomes visible afterward is post-dispatch termination.
+      if (cancellationAware && isCancellationRequested()) throw new JobCancelledError();
       child = spawn(launch.command, launch.args, {
         cwd, env: admitted.environment, detached: process.platform !== "win32", windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],

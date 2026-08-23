@@ -23,7 +23,8 @@ validateCurrentMcpDeliveryDocumentation();
 const repositoryFiles = execFileSync(resolveTrustedGitExecutable({ workspace: root }), ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root })
   .toString("utf8")
   .split("\0")
-  .filter(Boolean);
+  .filter(Boolean)
+  .filter((name) => existsSync(join(root, name)));
 for (const name of repositoryFiles.filter((value) => /^(?:src|scripts|browser-extension)\/.*\.(?:js|mjs|ts)$/.test(value))) {
   const source = readFileSync(join(root, name), "utf8");
   if (hasUnexplainedCatchAndContinue(source)) {

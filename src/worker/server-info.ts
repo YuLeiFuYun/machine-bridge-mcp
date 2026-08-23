@@ -15,6 +15,7 @@ type ServerInfoInput = {
   effectiveTools: string[];
   advertisedTools: string[];
   pendingSnapshot: Record<string, unknown>;
+  toolListSubscription: Readonly<{ activeForAccount?: number; openedForAccount?: boolean }>;
   daemonRegistry: DaemonRegistry;
   observability: WorkerObservability;
 };
@@ -84,7 +85,7 @@ function buildServerInfoSummary(
       effective_account_tool_count: input.effectiveTools.length,
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
-      ...remoteToolDeliveryContract(),
+      ...remoteToolDeliveryContract(input.serverVersion, input.toolListSubscription),
     },
   };
 }
@@ -161,7 +162,7 @@ function fullToolDelivery(input: ServerInfoInput): Record<string, unknown> {
     effective_scope: "live_daemon_and_account_intersection_before_host_filtering",
     host_exposed_tools_known_to_server: false,
     host_may_expose_subset: true,
-    ...remoteToolDeliveryContract(),
+    ...remoteToolDeliveryContract(input.serverVersion, input.toolListSubscription),
     daemon_execution_and_worker_settlement_deadlines_separate: true,
     host_terminal_receipt_observable: false,
   };

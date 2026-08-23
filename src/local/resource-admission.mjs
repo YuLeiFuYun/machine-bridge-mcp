@@ -7,7 +7,7 @@ import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomically
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "./resource-wait.mjs";
 import { withResourceTransactionLock } from "./resource-transaction-lock.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
-import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMsAsync } from "./process-identity.mjs";
+import { currentProcessStartTimeMs, processStartTimeMsAsync, sampleProcessStartTimesAsync } from "./process-identity.mjs";
 import { freshResourceHostSnapshot, resourceHostNeedsFreshIo } from "./resource-host-cache.mjs";
 import { readResourceHostSample } from "./resource-host-sample-file.mjs";
 import { sampleResourceHostAsync } from "./resource-host-snapshot.mjs";
@@ -16,8 +16,9 @@ import { recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "./r
 import { deriveHostRates, evaluateResourceAdmission, resourceAdmissionDecisionRetryable, resourcePressureSnapshot } from "./resource-admission-policy.mjs";
 import { fitElasticRequestToPressure } from "./resource-elastic-request.mjs";
 import { resourceCoordinatorAccounting, resourceCoordinatorEvaluator } from "./resource-coordinator-accounting.mjs";
-import { cachedResourceProcessParentSamplerAsync } from "./resource-process-ancestry-cache.mjs";
+import { cachedResourceProcessParentSamplerAsync, cachedResourceProcessSnapshotSamplerAsync } from "./resource-process-ancestry-cache.mjs";
 import { sampleResourceProcessParentsAsync } from "./resource-process-ancestry.mjs";
+import { resourceLeaseIsStale, resourceLeaseOwnerStatusFromStart, resourceProcessGroupAlive } from "./resource-lease-liveness.mjs";
 import { resourceProjectHash, resourceRequestForProject } from "./resource-project-key.mjs";
 import { createResourceWaiter, pruneAndReadResourceWaiters, removeResourceWaiter, resourceWaiterDrainActive, resourceWaiterQueueSnapshot, selectedResourceWaiter } from "./resource-waiters.mjs";
 const SCHEMA = 1; const PROVISIONAL_TTL_MS = 30_000; const PROCESS_OWNERSHIP_LOCK_WAIT_MS = 30_000; const LEASE_FILE = /^lease_[a-f0-9]{32}\.json$/;
@@ -46,6 +47,7 @@ export class ResourceCoordinator {
     this.evaluate = options.evaluate || evaluateResourceAdmission;
     this.now = options.now || Date.now;
     this.sampleProcessParents = cachedResourceProcessParentSamplerAsync(options.sampleProcessParents || sampleResourceProcessParentsAsync, this.now, options.processParentCacheMs);
+    this.sampleProcessStarts = cachedResourceProcessSnapshotSamplerAsync(options.sampleProcessStarts || sampleProcessStartTimesAsync, this.now, options.processStartCacheMs);
     this.sleep = options.sleep || resourceSleep;
     this.random = options.random || Math.random;
     this.leasesDir = join(this.root, "leases");
@@ -72,8 +74,9 @@ export class ResourceCoordinator {
         options.cancelCheck?.();
         const host = await this.freshHostSnapshot(options.cwd || process.cwd(), coordinatedRequest);
         const processParents = readdirSync(this.leasesDir).some((name) => LEASE_FILE.test(name)) ? await this.sampleProcessParents() : {};
+        const processStarts = await this.sampleProcessStarts();
         const result = await this.withLock(() => {
-          const leases = this.pruneAndReadLeases();
+          const leases = this.pruneAndReadLeases(processStarts);
           const previous = readResourceHostSample(this.hostSampleFile, { optional: true });
           const enrichedHost = deriveHostRates(host, previous);
           this.writeJson(this.hostSampleFile, enrichedHost);
@@ -83,7 +86,7 @@ export class ResourceCoordinator {
           if (waiter.request.cpu !== effectiveRequest.cpu || waiter.request.memory_mb !== effectiveRequest.memory_mb || waiter.request.compiler_jobs !== effectiveRequest.compiler_jobs) {
             waiter.request = normalizedRequest(effectiveRequest); this.writeJson(join(this.waitersDir, `wait_${waiter.waiter_id}.json`), waiter);
           }
-          const waiters = this.pruneAndReadWaiters();
+          const waiters = this.pruneAndReadWaiters(processStarts);
           const evaluate = resourceCoordinatorEvaluator(this.evaluate, processParents, waiter.owner.pid);
           const decision = evaluate(enrichedHost, leases, effectiveRequest, this.now(), waiter);
           const selected = selectedResourceWaiter(waiters, leases, enrichedHost, evaluate, this.now());
@@ -116,9 +119,10 @@ export class ResourceCoordinator {
     const sampleRequest = options.full === true ? { resource_class: "mixed" } : { resource_class: "adaptive" };
     const host = await this.freshHostSnapshot(options.cwd || process.cwd(), sampleRequest);
     const processParents = readdirSync(this.leasesDir).some((name) => LEASE_FILE.test(name)) ? await this.sampleProcessParents() : {};
+    const processStarts = await this.sampleProcessStarts();
     return this.withLock(() => {
-      const leases = this.pruneAndReadLeases();
-      const waiters = this.pruneAndReadWaiters();
+      const leases = this.pruneAndReadLeases(processStarts);
+      const waiters = this.pruneAndReadWaiters(processStarts);
       const previous = readResourceHostSample(this.hostSampleFile, { optional: true });
       const enrichedHost = deriveHostRates(host, previous);
       this.writeJson(this.hostSampleFile, enrichedHost);
@@ -172,13 +176,20 @@ export class ResourceCoordinator {
   async releaseLease(leaseId, token) {
     if (!leaseId || !token) return false;
     this.ensureRoot();
+    const file = this.leasePath(leaseId);
+    const observedLease = this.readJson(file, 32 * 1024, "resource lease", true);
+    if (!observedLease) return false;
+    assertLeaseToken(observedLease, token);
+    const observedPid = observedLease.owner?.kind === "process" ? observedLease.owner.pid : null;
+    const observedStart = observedPid ? await processStartTimeMsAsync(observedPid) : null;
     return this.withLock(() => {
-      const file = this.leasePath(leaseId);
       const lease = this.readJson(file, 32 * 1024, "resource lease", true);
       if (!lease) return false;
       assertLeaseToken(lease, token);
-      const owner = lease.owner; const ownerStatus = owner?.kind === "process" ? inspectLeaseOwnerProcess(lease) : null;
-      if (owner?.kind === "process" && owner.process_group_isolated === true && ownerStatus?.reason !== "pid_reused" && isProcessGroupAlive(owner.process_group_id)) return true;
+      const owner = lease.owner;
+      const ownerStatus = owner?.kind === "process"
+        ? resourceLeaseOwnerStatusFromStart(lease, owner.pid === observedPid ? observedStart : null) : null;
+      if (owner?.kind === "process" && owner.process_group_isolated === true && ownerStatus?.reason !== "pid_reused" && resourceProcessGroupAlive(owner.process_group_id)) return true;
       const removed = removeOwnedJsonFileSync(file, { lease_id: leaseId, token }, { maxBytes: 32 * 1024 });
       if (!removed) throw new Error("resource lease changed before release; state may require inspection");
       signalResourceChange(this);
@@ -222,21 +233,21 @@ export class ResourceCoordinator {
       catch (error) { if (error?.code !== RESOURCE_STAGING_BUSY_CODE || attempt === 4) throw error; await this.sleep(5); }
     }
   }
-  pruneAndReadWaiters() {
+  pruneAndReadWaiters(processStarts) {
     let entries = readdirSync(this.waitersDir, { withFileTypes: true });
-    if (recoverResourceDirectoryStaging(this.waitersDir, entries, "wait")) entries = readdirSync(this.waitersDir, { withFileTypes: true });
-    const waiters = pruneAndReadResourceWaiters(this.waitersDir, entries, this.now()); if (waiters.length < entries.length) signalResourceChange(this); return waiters;
+    if (recoverResourceDirectoryStaging(this.waitersDir, entries, "wait", processStarts)) entries = readdirSync(this.waitersDir, { withFileTypes: true });
+    const waiters = pruneAndReadResourceWaiters(this.waitersDir, entries, this.now(), processStarts); if (waiters.length < entries.length) signalResourceChange(this); return waiters;
   }
-  pruneAndReadLeases() {
+  pruneAndReadLeases(processStarts) {
     const leases = []; let pruned = false;
     let entries = readdirSync(this.leasesDir, { withFileTypes: true });
-    if (recoverResourceDirectoryStaging(this.leasesDir, entries, "lease")) entries = readdirSync(this.leasesDir, { withFileTypes: true });
+    if (recoverResourceDirectoryStaging(this.leasesDir, entries, "lease", processStarts)) entries = readdirSync(this.leasesDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !LEASE_FILE.test(entry.name)) throw new Error("resource coordinator lease directory contains an unexpected entry");
       const file = join(this.leasesDir, entry.name);
       const lease = this.readJson(file, 32 * 1024, "resource lease");
       validateLease(lease);
-      if (this.leaseIsStale(lease)) {
+      if (resourceLeaseIsStale(lease, processStarts, this.now(), PROVISIONAL_TTL_MS)) {
         if (!removeOwnedJsonFileSync(file, { lease_id: lease.lease_id, token: lease.token }, { maxBytes: 32 * 1024 })) {
           throw new Error("resource lease changed during stale pruning");
         }
@@ -245,14 +256,6 @@ export class ResourceCoordinator {
       leases.push(lease);
     }
     if (pruned) signalResourceChange(this); return leases;
-  }
-
-  leaseIsStale(lease) {
-    const owner = lease.owner; const status = inspectLeaseOwnerProcess(lease);
-    if (owner.kind === "process" && status.reason === "pid_reused") return true;
-    if (owner.kind === "process" && owner.process_group_isolated === true && isProcessGroupAlive(owner.process_group_id)) return false;
-    if (owner.kind === "provisional" && this.now() - Date.parse(lease.acquired_at) > PROVISIONAL_TTL_MS) return true;
-    return status.reclaimable === true;
   }
 
   createLease(request, cwd) {
@@ -322,11 +325,6 @@ function validateLease(lease) {
 }
 function validOwner(owner) { return ["provisional", "process"].includes(owner?.kind) && Number.isInteger(owner?.pid) && owner.pid > 0 && Number.isFinite(Date.parse(String(owner.process_started_at || ""))); }
 function assertLeaseToken(lease, token) { validateLease(lease); if (lease.token !== token) throw new Error("resource lease ownership changed"); }
-function inspectLeaseOwnerProcess(lease) { return inspectProcessInstance({ pid: lease.owner.pid, startedAt: lease.acquired_at, processStartedAt: lease.owner.process_started_at }); }
-function isProcessGroupAlive(value) {
-  const pgid = Number(value); if (process.platform === "win32" || !Number.isInteger(pgid) || pgid <= 0) return false;
-  try { process.kill(-pgid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
-}
 function publicHost(host) {
   const {
     pageouts_total: _pageouts, swapouts_total: _swapouts,

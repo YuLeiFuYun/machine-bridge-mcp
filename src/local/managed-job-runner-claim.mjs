@@ -14,7 +14,7 @@ export function publishProvisionalRunnerClaim(dir, pid, launchToken) {
     createExclusiveFileSync(file, `${JSON.stringify(claim)}\n`, { mode: 0o600 });
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
-    const existing = readRunnerClaim(file, "managed job runner claim already exists but is unreadable");
+    const existing = readManagedJobRunnerClaim(file, "managed job runner claim already exists but is unreadable");
     if (Number(existing?.pid) !== pid || existing?.launchToken !== launchToken) {
       throw new Error("managed job runner claim is owned by another process or launch");
     }
@@ -42,7 +42,7 @@ export async function confirmRunnerClaim({
       await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
       continue;
     }
-    const provisional = readRunnerClaim(file, "runner ownership claim is unreadable");
+    const provisional = readManagedJobRunnerClaim(file, "runner ownership claim is unreadable");
     if (Number(provisional?.pid) !== pid || provisional?.launchToken !== launchToken) {
       throw new Error("runner ownership claim does not match the spawned process");
     }
@@ -59,12 +59,28 @@ export async function confirmRunnerClaim({
   throw new Error("runner ownership claim was not published before startup deadline");
 }
 
-function readRunnerClaim(file, message) {
+export function readManagedJobRunnerClaim(file, message = "managed job runner claim is unreadable") {
   try {
     const bytes = retryTransientMultipleLinksSync(() => readBoundedRegularFileSync(file, RUNNER_CLAIM_BYTES, "managed job runner claim", {
       verifyPathIdentity: true,
       rejectMultipleLinks: true,
     }));
-    return JSON.parse(bytes.toString("utf8"));
+    const claim = JSON.parse(bytes.toString("utf8"));
+    if (!validRunnerClaim(claim)) throw new Error("managed job runner claim has an invalid shape");
+    return claim;
   } catch (error) { throw new Error(message, { cause: error }); }
+}
+
+function validRunnerClaim(claim) {
+  if (!claim || typeof claim !== "object" || Array.isArray(claim)) return false;
+  if (!Number.isInteger(claim.pid) || claim.pid <= 0 || !validClaimTime(claim.startedAt)) return false;
+  if (claim.processStartedAt !== undefined && !validClaimTime(claim.processStartedAt)) return false;
+  if (claim.launchToken !== undefined && !/^[a-f0-9]{32}$/.test(String(claim.launchToken))) return false;
+  if (claim.committed !== undefined && typeof claim.committed !== "boolean") return false;
+  return true;
+}
+
+function validClaimTime(value) {
+  if (typeof value === "number") return Number.isFinite(value) && value > 0;
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
 }

@@ -1,5 +1,6 @@
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { clampInteger } from "./numbers.mjs";
+import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { finishRemoteProcessRead, planRemoteProcessRead } from "./process-session-remote-poll.mjs";
 import { sessionHasOutputAfter, waitForSessionChange } from "./process-session-events.mjs";
 
@@ -10,19 +11,38 @@ export async function readProcessSession({ args, context, session, throwIfCancel
   const remoteRead = planRemoteProcessRead({
     context,
     session,
-    requestedWaitMs: clampInteger(args.wait_ms, 0, 0, 30_000),
+    requestedWaitMs: clampInteger(
+      args.wait_ms,
+      context?.authority?.origin === "relay" ? relayContract.maximumProcessReadWaitMs : 0,
+      0,
+      30_000,
+    ),
     waitForExit: args.wait_for_exit === true,
     hasOutput: sessionHasOutputAfter(session, stdoutOffset, stderrOffset),
     now: now(),
   });
   throwIfCancelled(context);
+  if (remoteRead.cooldownWaitMs > 0 && session.closedAt === null
+      && (remoteRead.waitForExit || !sessionHasOutputAfter(session, stdoutOffset, stderrOffset))) {
+    if (remoteRead.waitForExit) {
+      const cooldownDeadline = createMonotonicDeadline(remoteRead.cooldownWaitMs, now);
+      while (session.closedAt === null && !cooldownDeadline.expired()) {
+        await waitForSessionChange(session, Math.max(1, cooldownDeadline.remainingMs()), () => throwIfCancelled(context));
+      }
+    } else {
+      await waitForSessionChange(session, remoteRead.cooldownWaitMs, () => throwIfCancelled(context));
+    }
+    throwIfCancelled(context);
+  }
   if (remoteRead.waitMs > 0 && session.closedAt === null) {
     const deadline = createMonotonicDeadline(remoteRead.waitMs);
     if (remoteRead.waitForExit) {
+      remoteRead.blocking = true;
       while (session.closedAt === null && !deadline.expired()) {
         await waitForSessionChange(session, Math.max(1, deadline.remainingMs()), () => throwIfCancelled(context));
       }
     } else if (!sessionHasOutputAfter(session, stdoutOffset, stderrOffset)) {
+      remoteRead.blocking = true;
       await waitForSessionChange(session, remoteRead.waitMs, () => throwIfCancelled(context));
     }
   }

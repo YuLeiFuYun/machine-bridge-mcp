@@ -1,7 +1,7 @@
 const HOST_SAMPLE_FRESH_MS = 500;
 const HOST_CPU_PREVIOUS_MAX_AGE_MS = 2_000;
 const HOST_IO_SAMPLE_FRESH_MS = 5_000;
-const HOST_IO_HINT_MAX_AGE_MS = 30_000;
+const HOST_IO_HINT_MAX_AGE_MS = HOST_IO_SAMPLE_FRESH_MS;
 
 export function resourceHostNeedsFreshIo(request) {
   return request?.resource_class === "io" || request?.resource_class === "unbounded";

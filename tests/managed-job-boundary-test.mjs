@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { managedJobCancellationRequested, writeManagedJobCancellation } from "../src/local/managed-job-cancellation.mjs";
@@ -128,6 +128,9 @@ try {
 
   const storageError = Object.assign(new Error("synthetic storage failure"), { code: "EIO" });
   assert.throws(() => managedJobCancellationRequested(marker, { inspectPath: () => { throw storageError; } }), error => error === storageError);
+  const runnerSource = readFileSync(new URL("../src/local/job-runner.mjs", import.meta.url), "utf8");
+  assert(/if \(cancellationAware && isCancellationRequested\(\)\) throw new JobCancelledError\(\);\s*child = spawn\(/.test(runnerSource),
+    "managed-job launch lost its final synchronous cancellation check immediately before spawn");
   await assert.rejects(
     confirmRunnerClaim({
       file: join(dir, "runner.pid"), pid: process.pid, processStartedAt: "1", launchToken: "a".repeat(32),

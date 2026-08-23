@@ -1,17 +1,4 @@
-import { execFile, spawnSync } from "node:child_process";
-
-export function runResourceProbeSync(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    timeout: positive(options.timeoutMs, 2_500),
-    killSignal: "SIGKILL",
-    maxBuffer: positive(options.maxOutputBytes, 256 * 1024),
-    windowsHide: true,
-    env: probeEnvironment(),
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  return { ok: !result.error && result.status === 0, stdout: String(result.stdout || "") };
-}
+import { execFile } from "node:child_process";
 
 export function runResourceProbeAsync(command, args, options = {}) {
   return new Promise((resolvePromise) => {

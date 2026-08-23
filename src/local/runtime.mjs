@@ -4,7 +4,7 @@ import { realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { isRelayReadyContext } from "./relay-connection-classification.mjs";
 import { ProcessSessionManager } from "./process-sessions.mjs";
-import { CONTROL_PLANE_TOOL_NAMES, MAX_CONCURRENT_TOOL_CALLS, RESERVED_CONTROL_TOOL_CALLS, executionGuardrailsSnapshot } from "./execution-limits.mjs";
+import { CONTROL_PLANE_TOOL_NAMES, MAX_CONCURRENT_TOOL_CALLS, RESERVED_CONTROL_TOOL_CALLS } from "./execution-limits.mjs";
 export { MAX_COMMAND_BYTES } from "./process-contract.mjs";
 import { normalizePolicy, PolicyGate } from "./tools.mjs";
 import { BridgeError, publicError } from "./errors.mjs";
@@ -12,7 +12,8 @@ import { ProcessTracker } from "./process-tracker.mjs";
 import { CallRegistry } from "./call-registry.mjs";
 import { RuntimeObservability } from "./observability.mjs";
 import { ToolExecutor } from "./tool-executor.mjs";
-import { boundedErrorMessage, ProcessExecutionService } from "./process-execution.mjs";
+import { boundedProcessErrorMessage } from "./process-error-message.mjs";
+import { ProcessExecutionService } from "./process-execution.mjs";
 import { GitService } from "./git-service.mjs";
 import { FileMutationCoordinator } from "./file-mutation-coordinator.mjs";
 import { createTrustedGitResolver } from "./trusted-git-executable.mjs";
@@ -39,7 +40,9 @@ import { OperationAuthorizer } from "./operation-authorization.mjs";
 import { SecurityAuditLog } from "./security-audit-log.mjs";
 import { delegatedProcessIsolationStatus } from "./delegated-process-sandbox.mjs";
 import { policyForContext } from "./authority-context.mjs";
-import { createRuntimeRelayConnection, normalizeRelayToolCall } from "./runtime-relay.mjs";
+import { createRuntimeRelayConnection, normalizeRelayToolCall } from "./runtime-relay.mjs"; import { relayRecoveryCapacityRejection } from "./relay-recovery-admission.mjs";
+import { runtimeControlPlaneSnapshot } from "./runtime-diagnostic-state.mjs";
+import { shortCallId } from "./short-identifiers.mjs";
 import { handleRuntimeRelayControlMessage } from "./runtime-relay-control.mjs";
 import { RelayCallRecovery } from "./relay-call-recovery.mjs";
 import { RuntimeResourceService } from "./runtime-resource-service.mjs";
@@ -78,7 +81,7 @@ export class LocalRuntime {
     this.lifecycle = new LifecycleController("local runtime");
     this.observability = new RuntimeObservability();
     this.relayInstanceId = `daemon_${randomBytes(18).toString("base64url")}`;
-    this.activeRelayCalls = new Set();
+    this.activeRelayCalls = new Map();
     this.suppressedRelayResults = new Map();
     this.relayResumeSessionId = 0; this.relayResumeMissingIds = [];
     this.remoteActivityIdleSleepGuard = new RemoteActivityIdleSleepGuard({ logger: this.logger });
@@ -231,7 +234,7 @@ export class LocalRuntime {
       logger: this.logger,
       send: (value) => this.send(value),
       isRecoverable: () => Boolean(this.relay && !this.relay.status?.().closed),
-      activeCallIds: () => this.activeRelayCalls,
+      activeCallIds: () => this.activeRelayCalls.keys(),
       suppressCall: (callId, reason) => this.suppressedRelayResults.set(callId, reason),
       cancelOrigin: (reason) => this.callRegistry.cancelOrigin("relay", reason),
       terminate: () => this.terminateActiveProcesses("SIGTERM", true),
@@ -376,11 +379,11 @@ export class LocalRuntime {
       });
       return;
     }
-    if (this.activeRelayCalls.has(envelope.id)) {
-      this.handleRelayProtocolViolation("duplicate_tool_call_id", relayContext);
-      return;
-    }
-    this.activeRelayCalls.add(envelope.id);
+    if (this.activeRelayCalls.has(envelope.id)) { this.handleRelayProtocolViolation("duplicate_tool_call_id", relayContext); return; }
+    const recoveryRejection = relayRecoveryCapacityRejection(this.activeRelayCalls.values(),
+      this.relayCallRecovery.retainedResultCount(), envelope.tool, envelope.id);
+    if (recoveryRejection) { this.relay?.sendForSession?.(recoveryRejection, Number(relayContext.sessionId) || 0); return; }
+    this.activeRelayCalls.set(envelope.id, envelope.tool);
     try {
       let response;
       try {
@@ -435,7 +438,7 @@ export class LocalRuntime {
     );
   }
 
-  relayOwnedCallIds() { return this.relayCallRecovery?.ownedCallIds?.() ?? [...this.activeRelayCalls]; }
+  relayOwnedCallIds() { return this.relayCallRecovery?.ownedCallIds?.() ?? [...this.activeRelayCalls.keys()]; }
 
   handleRelayDisconnect() {
     this.relayResumeSessionId = 0;
@@ -524,14 +527,7 @@ export class LocalRuntime {
       managedJobManager: this.managedJobManager,
       resourceCoordinatorSnapshot: () => this.resourceCoordinator.snapshot({ cwd: this.workspace }),
       relayStatus: () => this.relay?.status?.() || null,
-      controlPlaneState: {
-        lifecycle: this.lifecycle.snapshot(),
-        inFlightCalls: this.callRegistry.snapshot(),
-        processes: this.processTracker.snapshot(),
-        executionGuardrails: executionGuardrailsSnapshot(),
-        securityAudit: this.securityAudit.snapshot(),
-        idleSleepGuard: this.remoteActivityIdleSleepGuard.snapshot(),
-      },
+      controlPlaneState: runtimeControlPlaneSnapshot(this),
       throwIfCancelled: (callContext) => this.throwIfCancelled(callContext),
     }, context);
   }
@@ -656,7 +652,7 @@ export class LocalRuntime {
   }
 
   safeErrorMessage(error, toolArgs = {}, context = {}) {
-    const message = boundedErrorMessage(error);
+    const message = boundedProcessErrorMessage(error, "tool call failed");
     if (this.effectivePolicy(context).exposeAbsolutePaths) return message;
     return redactRuntimeErrorMessage(message, {
       error,
@@ -693,7 +689,3 @@ function createAppAutomationManager(runtime, applicationAutomation, runProcess, 
 }
 
 function projectRuntimeApplicationCapabilities(runtime, capabilities, context) { const available = new Set(runtime.effectiveToolNames(context)); return projectApplicationCapabilities(capabilities, (tool) => available.has(tool)); }
-
-function shortCallId(value) {
-  return String(value || "").slice(0, 20);
-}

@@ -45,6 +45,7 @@ const boundaryModules = new Set([
   "computer-use-dispatch-settlement.mjs",
   "computer-use-expectation.mjs",
   "computer-use-observation.mjs",
+  "computer-use-observation-contract.mjs",
   "computer-use-application-observation.mjs",
   "computer-use-recovery.mjs",
   "computer-use-snapshot-store.mjs",
@@ -73,6 +74,7 @@ const boundaryModules = new Set([
   "resource-command-profile.mjs",
   "resource-host-linux.mjs",
   "resource-host-snapshot.mjs",
+  "resource-lease-liveness.mjs",
   "resource-lease-accounting.mjs",
   "resource-coordinator-accounting.mjs",
   "resource-process-ancestry.mjs",
@@ -153,6 +155,11 @@ const boundaryModules = new Set([
   "runtime-tool-handlers.mjs",
   "runtime-paths.mjs",
   "relay-call-recovery.mjs",
+  "relay-recovery-admission.mjs",
+  "relay-recovery-capacity.mjs",
+  "relay-recovery-diagnostics.mjs",
+  "relay-redelivery-safety.mjs",
+  "relay-result-retention.mjs",
   "relay-connection-classification.mjs",
   "relay-liveness.mjs",
   "browser-request-registry.mjs",
@@ -169,8 +176,11 @@ const boundaryModules = new Set([
   "managed-job-projection.mjs",
   "managed-job-storage.mjs",
   "managed-job-runner.mjs",
+  "managed-job-runner-liveness.mjs",
+  "managed-job-hosted-reconcile.mjs",
   "managed-job-cancellation.mjs",
   "managed-job-directory.mjs",
+  "managed-job-idempotency.mjs",
 ]);
 for (const name of boundaryModules) {
   const file = join(localRoot, name);
@@ -195,6 +205,12 @@ const lineLimits = Object.freeze({
   "src/local/runtime-tool-handlers.mjs": 100,
   "src/local/runtime-relay.mjs": 100,
   "src/local/relay-call-recovery.mjs": 170,
+  "src/local/relay-recovery-admission.mjs": 60,
+  "src/local/relay-recovery-capacity.mjs": 40,
+  "src/local/relay-recovery-diagnostics.mjs": 40,
+  "src/local/relay-redelivery-safety.mjs": 50,
+  "src/local/relay-result-retention.mjs": 70,
+  "src/local/short-identifiers.mjs": 10,
   "src/local/runtime-paths.mjs": 120,
   "src/local/runtime-reporting.mjs": 150,
   "src/local/runtime-activity-projection.mjs": 60,
@@ -231,7 +247,10 @@ const lineLimits = Object.freeze({
   "src/local/process-foreground-timeout.mjs": 60,
   "src/local/process-output-stream.mjs": 110,
   "src/local/process-result-projection.mjs": 60,
+  "src/local/process-error-message.mjs": 20,
+  "src/local/process-session-events.mjs": 60,
   "src/local/managed-job-hosted-status.mjs": 40,
+  "src/local/managed-job-read-wait.mjs": 80,
   "src/local/managed-job-listing.mjs": 60,
   "src/local/process-session-read.mjs": 70,
   "src/local/process-session-remote-poll.mjs": 50,
@@ -290,6 +309,7 @@ const lineLimits = Object.freeze({
   "src/local/resource-host-darwin.mjs": 80,
   "src/local/resource-host-linux.mjs": 80,
   "src/local/resource-host-snapshot.mjs": 100,
+  "src/local/resource-lease-liveness.mjs": 50,
   "src/local/resource-lease-accounting.mjs": 130,
   "src/local/resource-cpu-window.mjs": 40,
   "src/local/resource-coordinator-accounting.mjs": 30,
@@ -355,6 +375,8 @@ const lineLimits = Object.freeze({
   "src/local/capability-ranking.mjs": 150,
   "src/local/execution-routing.mjs": 300,
   "src/local/managed-jobs.mjs": 700,
+  "src/local/job-runner.mjs": 710,
+  "src/local/managed-job-idempotency.mjs": 50,
   "src/local/managed-job-lock.mjs": 140,
   "src/local/managed-job-capacity.mjs": 50,
   "src/local/managed-job-retention.mjs": 130,
@@ -362,6 +384,8 @@ const lineLimits = Object.freeze({
   "src/local/managed-job-projection.mjs": 100,
   "src/local/managed-job-storage.mjs": 130,
   "src/local/managed-job-runner.mjs": 100,
+  "src/local/managed-job-runner-liveness.mjs": 60,
+  "src/local/managed-job-hosted-reconcile.mjs": 40,
   "src/local/managed-job-cancellation.mjs": 80,
   "src/local/managed-job-directory.mjs": 80,
   "src/local/managed-job-directory-generation.mjs": 70,
@@ -402,6 +426,7 @@ const lineLimits = Object.freeze({
   "src/local/computer-use-arguments.mjs": 310,
   "src/local/computer-use-expectation.mjs": 210,
   "src/local/computer-use-observation.mjs": 780,
+  "src/local/computer-use-observation-contract.mjs": 130,
   "src/local/computer-use-application-observation.mjs": 240,
   "src/local/computer-use-recovery.mjs": 90,
   "src/local/computer-use-snapshot-store.mjs": 70,
@@ -426,8 +451,15 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-access.ts": 80,
   "src/worker/mcp-stream-proxy-contract.ts": 100,
   "src/worker/mcp-http-accept.ts": 40,
+  "src/worker/mcp-response-cancel.ts": 50,
   "src/worker/mcp-response-proxy.ts": 140,
   "src/worker/mcp-response-stream.ts": 90,
+  "src/worker/mcp-request-cancellation.ts": 130,
+  "src/worker/mcp-streamed-tool-response.ts": 50,
+  "src/worker/mcp-subscription-stream.ts": 90,
+  "src/worker/mcp-subscription-contract.ts": 20,
+  "src/worker/mcp-subscription-capacity.ts": 60,
+  "src/worker/mcp-subscription-registry.ts": 130,
   "src/worker/mcp-controller.ts": 220,
   "src/worker/mcp-initialization-compat.ts": 170,
   "src/worker/mcp-removed-protocol.ts": 40,
@@ -436,6 +468,8 @@ const lineLimits = Object.freeze({
   "src/worker/worker-edge-guard.ts": 100,
   "src/worker/worker-rate-limit-key.ts": 50,
   "src/worker/worker-edge-log.ts": 80,
+  "src/worker/managed-job-read-timeout.ts": 40,
+  "src/worker/tool-call-recovery.ts": 40,
   "src/worker/oauth-token-issuance.ts": 120,
   "src/worker/oauth-token-derivation.ts": 70,
   "src/worker/oauth-refresh-exchange.ts": 180,
@@ -457,6 +491,8 @@ const lineLimits = Object.freeze({
   "src/worker/daemon-http-registry.ts": 100,
   "src/worker/daemon-ready-messages.ts": 80,
   "src/worker/daemon-ready-waiters.ts": 80,
+  "src/worker/daemon-ready-waiter-policy.ts": 80,
+  "src/worker/daemon-ready-waiter-state.ts": 80,
   "src/worker/daemon-ready-dispatch.ts": 30,
   "src/worker/daemon-recovery-budget.ts": 30,
   "src/worker/daemon-socket-attachment.ts": 80,
@@ -465,7 +501,7 @@ const lineLimits = Object.freeze({
   "src/worker/observability.ts": 180,
   "src/worker/pending-calls.ts": 180,
   "src/worker/pending-call-capacity.ts": 150,
-  "src/worker/pending-admission.ts": 40,
+  "src/worker/pending-call-registration.ts": 80,
   "src/worker/pending-call-deadlines.ts": 80,
   "src/worker/mcp-jsonrpc.ts": 130,
   "src/worker/websocket-protocol.ts": 60,
@@ -535,25 +571,35 @@ const resourceAdmissionSource = readFileSync(join(localRoot, "resource-admission
 for (const required of ["createResourceWaiter", "selectedResourceWaiter", "process_group_isolated", "contention_key", "ResourceAdmissionError"]) {
   if (!resourceAdmissionSource.includes(required)) throw new Error(`resource admission lost durable/fair ownership contract: ${required}`);
 }
+for (const required of ["sampleProcessStartTimesAsync", "cachedResourceProcessSnapshotSamplerAsync", "pruneAndReadLeases(processStarts)", "pruneAndReadWaiters(processStarts)", 'recoverResourceDirectoryStaging(this.leasesDir, entries, "lease", processStarts)', 'recoverResourceDirectoryStaging(this.waitersDir, entries, "wait", processStarts)']) {
+  if (!resourceAdmissionSource.includes(required)) throw new Error(`resource coordinator lost lock-external async process-identity sampling: ${required}`);
+}
 if (!resourceAdmissionSource.includes('from "./resource-wait.mjs"') || resourceAdmissionSource.includes("timer.unref")) {
   throw new Error("resource admission wait liveness regressed to an unreferenced timer");
 }
 if (!resourceAdmissionSource.includes("withResourceTransactionLock") || resourceAdmissionSource.includes("withOwnerStateLock")) {
-  throw new Error("resource admission lost the beta.60-compatible transaction-lock boundary required for rolling activation");
+  throw new Error("resource admission lost the resource-specific transaction-lock boundary required for rolling activation");
 }
 for (const required of ["PROCESS_OWNERSHIP_LOCK_WAIT_MS = 30_000", "Math.min(PROCESS_OWNERSHIP_LOCK_WAIT_MS, waitMs - (performance.now() - started))", "}, PROCESS_OWNERSHIP_LOCK_WAIT_MS);"]) {
   if (!resourceAdmissionSource.includes(required)) throw new Error(`resource coordinator lost operation-bounded transaction-lock waiting: ${required}`);
 }
 const resourceTransactionLockSource = readFileSync(join(localRoot, "resource-transaction-lock.mjs"), "utf8");
-for (const required of ["mkdirSync(lockPath", 'OWNER_NAME = "owner.json"', "validDirectoryOwner", "validPriorFileOwner", "removeDirectoryGeneration", "recoverResourceTransactionOwnerStaging", "rmdirSync(lockPath)", "resource transaction lock was replaced before quarantine restore"]) {
+for (const required of ["createExclusiveFileSync(lockPath", "removeOwnedJsonFileSync(lockPath", "retryTransientMultipleLinksSync", 'OWNER_NAME = "owner.json"', "validDirectoryOwner", "validFileOwner", "removeDirectoryGeneration", "recoverResourceTransactionOwnerStaging", "rmdirSync(lockPath)", "resource transaction lock was replaced before quarantine restore"]) {
   if (!resourceTransactionLockSource.includes(required)) throw new Error(`resource transaction lock lost rolling-version ownership semantics: ${required}`);
+}
+if (resourceTransactionLockSource.includes("mkdirSync(lockPath") || resourceTransactionLockSource.includes("replaceFileAtomicallySync(join(lockPath, OWNER_NAME)")) {
+  throw new Error("resource transaction lock current writer regressed to the legacy visible-directory publication path");
 }
 const resourceStagingRecoverySource = readFileSync(join(localRoot, "resource-staging-recovery.mjs"), "utf8");
 for (const required of ["OWNER_STAGING", "recoverResourceTransactionOwnerStaging", "stagingPublisherMayBeCurrent", "unexpected owner-publication state"]) {
   if (!resourceStagingRecoverySource.includes(required)) throw new Error(`resource transaction owner-staging recovery regressed: ${required}`);
 }
-if (!resourceTransactionLockSource.includes('schema_version: 1') || !resourceTransactionLockSource.includes('kind: "file"')) {
-  throw new Error("resource transaction lock no longer interoperates with beta.60 directories and prior beta.61 owner-state files");
+if (!resourceStagingRecoverySource.includes("processStartTimeFromSnapshot")
+    || !resourceStagingRecoverySource.includes("recoverResourceDirectoryStaging(dir, entries, kind, processStarts = null)")) {
+  throw new Error("current lease/waiter staging recovery lost lock-external process-generation evidence");
+}
+if (!resourceTransactionLockSource.includes("owner?.schema_version === 1") || !resourceTransactionLockSource.includes('kind: "file"')) {
+  throw new Error("resource transaction lock no longer interoperates with beta.104 schema-1 directories and owner-state files");
 }
 const resourceWaitSource = readFileSync(join(localRoot, "resource-wait.mjs"), "utf8");
 for (const required of ["setTimeout", "removeEventListener", "signal?.aborted", "resourceRetryDelayMs", "resourceChangeSignal", "signalResourceChange", "waitForResourceChange", "WeakMap", "2 ** step"]) {
@@ -573,8 +619,12 @@ for (const required of ["aggregateResourceLeases", "resourceRequestIncrement", "
   if (!resourcePolicySource.includes(required)) throw new Error(`resource admission lost work-conserving multi-resource policy: ${required}`);
 }
 const resourcePressureSource = readFileSync(join(localRoot, "resource-pressure.mjs"), "utf8");
-for (const required of ["resourcePressureState", "psi_memory_full", "load_backlog", 'platform !== "darwin"', "heavy_root_count"]) {
+for (const required of ["resourcePressureState", "psi_memory_full", "psi_io_full", "load_backlog", 'platform !== "darwin"', "heavy_root_count", "IO_PRESSURE_FRESH_MS = 5_000", "freshIoPressureSignals"]) {
   if (!resourcePressureSource.includes(required)) throw new Error(`resource pressure classification lost current host-signal policy: ${required}`);
+}
+if (resourcePressureSource.includes('mark(2, "disk_iops_critical")')
+    || resourcePressureSource.includes('mark(2, "disk_throughput_critical")')) {
+  throw new Error("raw macOS I/O throughput regained a false hard-red pressure classification");
 }
 const resourceDiskHeadroomSource = readFileSync(join(localRoot, "resource-disk-headroom.mjs"), "utf8");
 for (const required of ["resourceDiskHardFloorBytes", "resourceDiskSoftFloorBytes", "Math.min(50 * GIB", "Math.min(80 * GIB"]) {
@@ -699,6 +749,13 @@ for (const required of ["elasticMemoryJobLimit", "elasticMemoryMb", "memory_over
 }
 const resourceWaitersSource = readFileSync(join(localRoot, "resource-waiters.mjs"), "utf8");
 if (!resourceWaitersSource.includes("resource waiter changed during stale pruning")) throw new Error("resource waiter stale pruning lost fail-closed ownership revalidation");
+if (!resourceWaitersSource.includes("processStartTimeFromSnapshot") || !resourceWaitersSource.includes("getProcessStartTime")) {
+  throw new Error("resource waiter pruning regained an implicit synchronous process-start probe");
+}
+const resourceLeaseLivenessSource = readFileSync(join(localRoot, "resource-lease-liveness.mjs"), "utf8");
+for (const required of ["resourceLeaseOwnerStatus", "resourceLeaseIsStale", "processStartTimeFromSnapshot", "pid_reused", "resourceProcessGroupAlive"]) {
+  if (!resourceLeaseLivenessSource.includes(required)) throw new Error(`resource lease liveness lost fail-closed generation evidence: ${required}`);
+}
 if (["elasticCompilerJobs", "preserveCompilerJobs"].some((marker) => resourceAdmissionSource.includes(marker)
     || resourceWaitersSource.includes(marker))) {
   throw new Error("elastic compiler marker leaked into persisted resource coordinator request schema");
@@ -715,11 +772,24 @@ for (const required of ["sampleDarwinHostAsync", "Promise.all", "memory_pressure
   if (!resourceDarwinHostSource.includes(required)) throw new Error(`Darwin resource host sampling lost parallel pressure probes: ${required}`);
 }
 const resourceProbeSource = readFileSync(join(localRoot, "resource-probe-command.mjs"), "utf8");
-for (const required of ["runResourceProbeAsync", "execFile", "runResourceProbeSync", "spawnSync", 'killSignal: "SIGKILL"']) {
-  if (!resourceProbeSource.includes(required)) throw new Error(`resource probe transport lost bounded sync/async execution: ${required}`);
+for (const required of ["runResourceProbeAsync", "execFile", 'killSignal: "SIGKILL"']) {
+  if (!resourceProbeSource.includes(required)) throw new Error(`resource probe transport lost bounded async execution: ${required}`);
+}
+if (resourceProbeSource.includes("runResourceProbeSync") || resourceProbeSource.includes("spawnSync")) {
+  throw new Error("resource probe transport regained a blocking child-process path");
+}
+if (!resourceTransactionLockSource.includes("await inspectProcessInstanceAsync")
+    || !resourceTransactionLockSource.includes("await recoverResourceTransactionOwnerStaging")
+    || !resourceStagingRecoverySource.includes("inspectProcessInstanceAsync")
+    || !resourceStagingRecoverySource.includes("processStartTimeFromSnapshot")) {
+  throw new Error("resource ownership recovery regained synchronous process-start identity sampling");
+}
+if (!resourceTransactionLockSource.includes("retryTransientMultipleLinksSync")
+    || resourceTransactionLockSource.includes('error?.code !== "MBM_MULTIPLE_HARD_LINKS"')) {
+  throw new Error("resource transaction lock stopped using the shared fixed four-attempt multiple-link publication retry");
 }
 const resourceHostCacheSource = readFileSync(join(localRoot, "resource-host-cache.mjs"), "utf8");
-for (const required of ["HOST_SAMPLE_FRESH_MS = 500", "HOST_CPU_PREVIOUS_MAX_AGE_MS = 2_000", "HOST_IO_SAMPLE_FRESH_MS = 5_000", "HOST_IO_HINT_MAX_AGE_MS = 30_000", "cached?.sample_scope === scope", "previous: cpuPrevious", "withCachedIo(quick, scopedCached)", "io_sampled_at_ms"]) {
+for (const required of ["HOST_SAMPLE_FRESH_MS = 500", "HOST_CPU_PREVIOUS_MAX_AGE_MS = 2_000", "HOST_IO_SAMPLE_FRESH_MS = 5_000", "HOST_IO_HINT_MAX_AGE_MS = HOST_IO_SAMPLE_FRESH_MS", "cached?.sample_scope === scope", "previous: cpuPrevious", "withCachedIo(quick, scopedCached)", "io_sampled_at_ms"]) {
   if (!resourceHostCacheSource.includes(required)) throw new Error(`resource host cache lost global-CPU/scoped-I/O freshness split: ${required}`);
 }
 if (!resourceAdmissionSource.includes("hostSamplesInFlight") || !resourceAdmissionSource.includes("resourceProjectHash(cwd)") || !resourceAdmissionSource.includes("resourceHostNeedsFreshIo")) {
@@ -1105,6 +1175,65 @@ for (const forbidden of [
 ]) {
   if (runtimeBoundarySource.includes(forbidden)) throw new Error(`LocalRuntime regained low-level responsibility: ${forbidden}`);
 }
+const relayRecoveryAdmissionBoundary = readFileSync(join(localRoot, "relay-recovery-admission.mjs"), "utf8");
+for (const required of [
+  "toolCallAdmission", "RELAY_RECOVERY_CAPACITY", "relayRecoveryCapacityInput",
+  "side_effects_started: false", 'capacity_scope: "relay_result_recovery"',
+]) {
+  if (!relayRecoveryAdmissionBoundary.includes(required)) throw new Error(`relay result-recovery admission lost shared bounded-capacity semantics: ${required}`);
+}
+const relayRecoveryCapacityBoundary = readFileSync(join(localRoot, "relay-recovery-capacity.mjs"), "utf8");
+for (const required of [
+  "toolCallCapacityConfig", "MAX_CONCURRENT_TOOL_CALLS", "RESERVED_CONTROL_TOOL_CALLS", "CONTROL_PLANE_TOOL_NAMES",
+  "RETAINED_RESULT_TOOL", "relayRecoveryCapacityInput",
+]) {
+  if (!relayRecoveryCapacityBoundary.includes(required)) throw new Error(`relay result-recovery capacity policy lost shared bounded-capacity semantics: ${required}`);
+}
+const relayRecoveryDiagnosticsBoundary = readFileSync(join(localRoot, "relay-recovery-diagnostics.mjs"), "utf8");
+for (const required of [
+  "relayRecoveryCapacitySnapshot", "relayRecoveryRuntimeSnapshot", "unsafe_call_tombstones", "global_redelivery_disabled",
+  "retained_results", "active_ownership", "redeliverySafetySnapshot()",
+]) {
+  if (!relayRecoveryDiagnosticsBoundary.includes(required)) throw new Error(`relay result-recovery diagnostics lost bounded aggregate projection: ${required}`);
+}
+const relayCallRecoveryBoundary = readFileSync(join(localRoot, "relay-call-recovery.mjs"), "utf8");
+if (relayCallRecoveryBoundary.includes("this.pendingResults")) {
+  throw new Error("relay result-recovery orchestration re-exposed mutable retained-result storage");
+}
+for (const required of [
+  "RelayResultRetention", "this.resultRetention.pruneExpired()", "retainForDelivery(callId, response)", "retainedResultCount()",
+]) {
+  if (!relayCallRecoveryBoundary.includes(required)) throw new Error(`relay result-recovery orchestration lost bounded result-retention ownership: ${required}`);
+}
+const relayResultRetentionBoundary = readFileSync(join(localRoot, "relay-result-retention.mjs"), "utf8");
+for (const required of [
+  "MAX_CONCURRENT_TOOL_CALLS", "relayContract.maximumRelayToolTimeoutMs", "performance.now()",
+  "MAX_RETAINED_RESULTS_WITH_EMERGENCY_SLOT", "#entries.size >= maximum", "retainForDelivery(callId, response)",
+  "relay.tool_result.retention_capacity", "emergency_slot_used: true", "relay.tool_results.ack_expired", "acknowledgement_retention_ms",
+  "onOwnershipLost", "discardAll()",
+]) {
+  if (!relayResultRetentionBoundary.includes(required)) throw new Error(`relay completed-result retention lost bounded acknowledgement lifetime/capacity: ${required}`);
+}
+const relayRedeliverySafetyBoundary = readFileSync(join(localRoot, "relay-redelivery-safety.mjs"), "utf8");
+for (const required of [
+  "MAX_UNSAFE_CALL_TOMBSTONES", "#unsafeCallIds", "#globalRedeliveryDisabled", "canProveMissing(callId)",
+  "observeResumedCallIds(callIds)", "markUnsafe(callId)", "relay.tool_result.unsafe_tombstone_capacity",
+]) {
+  if (!relayRedeliverySafetyBoundary.includes(required)) throw new Error(`relay redelivery safety lost bounded per-call non-delivery proof: ${required}`);
+}
+for (const required of [
+  "this.activeRelayCalls = new Map()", "activeCallIds: () => this.activeRelayCalls.keys()",
+  "relayRecoveryCapacityRejection", "this.relayCallRecovery.retainedResultCount()",
+  "this.activeRelayCalls.set(envelope.id, envelope.tool)", "sendForSession?.(recoveryRejection",
+  "runtimeControlPlaneSnapshot(this)",
+]) {
+  if (!runtimeBoundarySource.includes(required)) throw new Error(`LocalRuntime lost bounded relay result-recovery ownership admission: ${required}`);
+}
+const runtimeDiagnosticStateBoundary = readFileSync(join(localRoot, "runtime-diagnostic-state.mjs"), "utf8");
+if (!runtimeDiagnosticStateBoundary.includes("relayRecoveryRuntimeSnapshot(runtime.activeRelayCalls.values(), runtime.relayCallRecovery)")
+    || !runtimeDiagnosticStateBoundary.includes("relay_result_recovery: state.relayResultRecovery ?? null")) {
+  throw new Error("runtime diagnostics lost aggregate relay result-recovery ownership projection");
+}
 const authorityRevocationBoundary = /async applyAuthorityRevocation\(revocation\)[\s\S]*?\n  runProcess\(/.exec(runtimeBoundarySource)?.[0] || "";
 for (const required of ["async applyAuthorityRevocation", "try { calls =", "sessionRevocation = Promise.resolve(this.processSessionManager.revokeAuthority", "try { jobs =", "sessions = await sessionRevocation", "failures.length", "retained revocation must be retried"]) {
   if (!authorityRevocationBoundary.includes(required)) throw new Error(`authority revocation lost all-category fail-closed application: ${required}`);
@@ -1153,6 +1282,25 @@ for (const required of ["includeContent = false", '"resource file", { verifyPath
   if (!managedJobPlanBoundary.includes(required)) throw new Error(`resource inspection lost validated-byte snapshot behavior: ${required}`);
 }
 const managedJobsBoundary = readFileSync(join(localRoot, "managed-jobs.mjs"), "utf8");
+const runtimeToolHandlersBoundary = readFileSync(join(localRoot, "runtime-tool-handlers.mjs"), "utf8");
+const managedJobReadWaitBoundary = readFileSync(join(localRoot, "managed-job-read-wait.mjs"), "utf8");
+if (managedJobsBoundary.includes("managed-job-read-wait") || !runtimeToolHandlersBoundary.includes("waitForManagedJobRead")
+    || !runtimeToolHandlersBoundary.includes("managedJobManager.readProgress")) {
+  throw new Error("hosted managed-job pacing leaked into the synchronous persistence manager or disappeared from the MCP handler boundary");
+}
+if (!managedJobsBoundary.includes("readProgress(args = {}, context = {})") || !managedJobsBoundary.includes("return publicStatus(status)")) {
+  throw new Error("managed-job long-poll lost its lightweight status-only progress probe");
+}
+for (const required of ["defaultManagedJobReadWaitMs", "managedJobReadPollIntervalMs", "managedJobReadReconcileIntervalMs", "readProgress", "createMonotonicDeadline", "throwIfCancelled", "managed_job_read_wait_timed_out"]) {
+  if (!managedJobReadWaitBoundary.includes(required)) throw new Error(`managed-job read pacing lost bounded server-side long-poll behavior: ${required}`);
+}
+const readDeadlineIndex = managedJobReadWaitBoundary.indexOf("const deadline = createMonotonicDeadline(waitMs, now)");
+const initialReadIndex = managedJobReadWaitBoundary.indexOf("let current = await readCurrent()", readDeadlineIndex);
+if (readDeadlineIndex < 0 || initialReadIndex <= readDeadlineIndex
+    || managedJobReadWaitBoundary.includes("const finalElapsedMs")
+    || managedJobReadWaitBoundary.includes("lastReconcileElapsedMs < finalElapsedMs")) {
+  throw new Error("managed-job hosted wait no longer bounds initial reconciliation or regained a heavy post-deadline reconcile");
+}
 const managedJobRetentionBoundary = readFileSync(join(localRoot, "managed-job-retention.mjs"), "utf8");
 const managedJobTerminalMaintenanceBoundary = readFileSync(join(localRoot, "managed-job-terminal-maintenance.mjs"), "utf8");
 const externalPlanBoundary = /export function loadManagedJobPlan[\s\S]*?function failRunnerLaunch/.exec(managedJobsBoundary)?.[0] || "";
@@ -1303,8 +1451,12 @@ for (const required of ["PONG_TIMEOUT_MS", 'type: "ping"', "pingSequence", "brow
   if (!brokerLivenessBoundary.includes(required)) throw new Error(`browser broker liveness guard lost boundary: ${required}`);
 }
 const mcpResponseProxyBoundary = readFileSync(join(root, "src", "worker", "mcp-response-proxy.ts"), "utf8");
-for (const required of ["proxyMcpResponseStream", '"direct"', '"cancel"', "waitUntil", "cancelCall"]) {
+for (const required of ["proxyMcpResponseStream", '"direct"', "waitUntil", "cancelMcpResponseStream"]) {
   if (!mcpResponseProxyBoundary.includes(required)) throw new Error(`current MCP response proxy lost request-scoped stream/cancellation ownership: ${required}`);
+}
+const mcpResponseCancelBoundary = readFileSync(join(root, "src", "worker", "mcp-response-cancel.ts"), "utf8");
+for (const required of ['"cancel"', "CANCEL_CONTROL_TIMEOUT_MS", "AbortController", "withProxyHeaders"]) {
+  if (!mcpResponseCancelBoundary.includes(required)) throw new Error(`private MCP response cancellation lost bounded control ownership: ${required}`);
 }
 const mcpStreamProxyContractBoundary = readFileSync(join(root, "src", "worker", "mcp-stream-proxy-contract.ts"), "utf8");
 for (const forbidden of ["prepare", "subscribe", "retry", "descriptor", "last-event-id", "Mcp-Session-Id"]) {
@@ -1319,8 +1471,12 @@ for (const required of [
   if (!mcpStreamProxyContractBoundary.includes(required)) throw new Error(`MCP stream proxy contract lost boundary hardening: ${required}`);
 }
 const mcpControllerBoundary = readFileSync(join(root, "src", "worker", "mcp-controller.ts"), "utf8");
-for (const required of ["class McpController", "server/discover", "tools/list", "tools/call", "subscriptions/listen", "jsonRpcResponseStream"]) {
+for (const required of ["class McpController", "server/discover", "tools/list", "tools/call", "subscriptions/listen", "streamedMcpToolResponse", "McpRequestCancellationRegistry"]) {
   if (!mcpControllerBoundary.includes(required)) throw new Error(`current MCP controller lost request-scoped responsibility: ${required}`);
+}
+const mcpStreamedToolResponseBoundary = readFileSync(join(root, "src", "worker", "mcp-streamed-tool-response.ts"), "utf8");
+for (const required of ["jsonRpcResponseStream", "cancellations.open", "cancellation.signal", "cancellation.release", "client response stream closed"]) {
+  if (!mcpStreamedToolResponseBoundary.includes(required)) throw new Error(`streamed MCP tool-response lifecycle lost cancellation/settlement responsibility: ${required}`);
 }
 for (const forbidden of ["mcp-subscriptions", "subscriptionResponse(", "subscriptions/acknowledged"]) {
   if (mcpControllerBoundary.includes(forbidden)) throw new Error(`current MCP controller regained unused change-subscription machinery: ${forbidden}`);
@@ -1422,12 +1578,37 @@ for (const required of ["projectRuntimeInfo", 'detail !== "summary"', "compactPr
   if (!localInfoProjectionBoundary.includes(required)) throw new Error(`local server_info lost compact/full projection boundary: ${required}`);
 }
 const pendingCallsBoundary = readFileSync(join(root, "src", "worker", "pending-calls.ts"), "utf8");
-for (const required of ["register(input", "detachSocket", "rebindInstance", "resultOwnership"]) {
+for (const required of [
+  "register(input", "detachSocket", "rebindInstance", "resultOwnership",
+  "assertPendingCallRegistration", "pendingCallTimeoutMaximumMs", "readJobCallsForAccount",
+]) {
   if (!pendingCallsBoundary.includes(required)) throw new Error(`pending-call registry lost bounded JSON-call semantics: ${required}`);
 }
+const pendingRegistrationBoundary = readFileSync(join(root, "src", "worker", "pending-call-registration.ts"), "utf8");
+for (const required of [
+  "pendingCallTimeoutMaximumMs", "maximumOrdinaryRelayToolTimeoutMs", "maximumRelayToolTimeoutMs",
+  "MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT", "pendingReadJobCallsForAccount", "toolCallAdmission",
+]) {
+  if (!pendingRegistrationBoundary.includes(required)) throw new Error(`pending-call registration policy lost tool-specific timeout or per-account fairness: ${required}`);
+}
 const pendingCapacityBoundary = readFileSync(join(root, "src", "worker", "pending-call-capacity.ts"), "utf8");
-for (const required of ["pendingCapacityProjection", "pre_dispatch_waiters", "capacity_active_ordinary", "capacity_active_reserved"]) {
+for (const required of [
+  "pendingCapacityProjection", "pre_dispatch_waiters", "capacity_active_ordinary", "capacity_active_reserved",
+  "MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT = 8", "pendingReadJobCallsForAccount", 'record.tool === "read_job"',
+]) {
   if (!pendingCapacityBoundary.includes(required)) throw new Error(`pending-call capacity projection lost pre-dispatch accounting: ${required}`);
+}
+if (existsSync(join(root, "src", "worker", "pending-admission.ts"))
+    || workerIndexBoundary.includes("PendingAdmissionGate")
+    || workerIndexBoundary.includes("pendingAdmission.run")) {
+  throw new Error("redundant asynchronous pending-admission queue returned to the synchronous register/send critical section");
+}
+const admissionIndex = workerIndexBoundary.indexOf("assertWorkerPendingCallAdmission(this.pending.snapshot(), name)");
+const registrationIndex = workerIndexBoundary.indexOf("result = this.pending.register({", admissionIndex);
+const sendIndex = workerIndexBoundary.indexOf("sent = trySendDaemonChannel(socket, {", registrationIndex);
+if (admissionIndex < 0 || registrationIndex <= admissionIndex || sendIndex <= registrationIndex
+    || /\bawait\b/.test(workerIndexBoundary.slice(admissionIndex, sendIndex))) {
+  throw new Error("Worker pending capacity -> registration -> daemon-send critical section regained an asynchronous interleaving point");
 }
 for (const forbidden of ["registerEvent", "settlement.kind", 'kind: "event"']) {
   if (pendingCallsBoundary.includes(forbidden)) throw new Error(`obsolete event settlement returned to the transient pending registry: ${forbidden}`);
@@ -1453,9 +1634,22 @@ for (const required of ["class DaemonSocketRegistry", "beginProbe", "promote", "
 const daemonReadyWaiterBoundary = readFileSync(join(root, "src", "worker", "daemon-ready-waiters.ts"), "utf8");
 for (const required of [
   "relayContract.newCallReconnectGraceMs", "waitForReadyDaemon", "notifyReadyDaemon", "readyDaemonWaiterSnapshot", "AbortSignal",
-  "PendingCapacitySnapshot", "assertWorkerPendingCallAdmission",
+  "PendingCapacitySnapshot", "assertWorkerPendingCallAdmission", "assertReadyWaiterReadJobCapacity",
+  "readyWaiterAuthorityFields", "activeReadJobCallsForAccount", "authorization_denied", "hadWaiters",
+  "setTimeout(() => finish(undefined, unavailableError(graceMs)), graceMs)",
 ]) {
   if (!daemonReadyWaiterBoundary.includes(required)) throw new Error(`daemon reconnect admission lost shared-capacity new-call recovery: ${required}`);
+}
+const daemonReadyWaiterPolicyBoundary = readFileSync(join(root, "src", "worker", "daemon-ready-waiter-policy.ts"), "utf8");
+for (const required of [
+  "MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT", 'tool !== "read_job"', "pendingReadJobCallsForAccount",
+  "recordMatchesAuthorityRevocation", "owner_account_version", "owner_client_id", "owner_family_id",
+]) {
+  if (!daemonReadyWaiterPolicyBoundary.includes(required)) throw new Error(`daemon reconnect waiter policy lost account fairness/revocation identity: ${required}`);
+}
+const daemonReadyWaiterStateBoundary = readFileSync(join(root, "src", "worker", "daemon-ready-waiter-state.ts"), "utf8");
+for (const required of ["cancelReadyDaemonAuthority", "readyWaiterMatchesRevocation", "waiter.revoke()", "releaseReadyWaiter"]) {
+  if (!daemonReadyWaiterStateBoundary.includes(required)) throw new Error(`daemon reconnect waiter state lost revocation/cleanup ownership: ${required}`);
 }
 if (daemonReadyWaiterBoundary.includes("DEFAULT_GRACE_MS = 10_000")) {
   throw new Error("daemon reconnect admission regained the obsolete private ten-second recovery default");
@@ -1465,7 +1659,7 @@ for (const required of ["daemonToolTimeoutBudgetAfterDelay", "workerSettlementOv
   if (!daemonRecoveryBudgetBoundary.includes(required)) throw new Error(`daemon recovery budget lost hosted-deadline accounting: ${required}`);
 }
 const daemonReadyDispatchBoundary = readFileSync(join(root, "src", "worker", "daemon-ready-dispatch.ts"), "utf8");
-for (const required of ["readyDaemonForDispatch", "recoveryDelayMs: 0", "waitForReadyDaemon", "performance.now()"]) {
+for (const required of ["immediateReadyDaemonForDispatch", "readyDaemonWaiterSnapshot(registry).active > 0", "readyDaemonForDispatch", "recoveryDelayMs: 0", "waitForReadyDaemon", "performance.now()"]) {
   if (!daemonReadyDispatchBoundary.includes(required)) throw new Error(`daemon ready dispatch lost zero-cost ready-path accounting: ${required}`);
 }
 for (const required of [
@@ -1474,7 +1668,10 @@ for (const required of [
   "Math.min(NEW_CALL_RECONNECT_GRACE_MS, timeoutBudget.executionTimeoutMs)",
   "pending: this.pending.snapshot()",
   "tool: name",
+  "activeReadJobCallsForAccount: this.pending.readJobCallsForAccount(authorized.accountId)",
+  "accountVersion: authorized.accountVersion",
   "daemonToolTimeoutBudgetAfterDelay",
+  "cancelReadyDaemonAuthority(this.daemonRegistry, revocation)",
   "pendingCapacityProjection(this.pending.snapshot(), readyDaemonWaiterSnapshot(this.daemonRegistry))",
   "notifyReadyDaemon(this.daemonRegistry)",
 ]) {
@@ -1482,7 +1679,15 @@ for (const required of [
 }
 const readyAckSend = workerIndexBoundary.indexOf('ws.send(JSON.stringify({ type: "ready_ack"');
 const readyWaiterNotify = workerIndexBoundary.indexOf("notifyReadyDaemon(this.daemonRegistry)");
-if (readyAckSend < 0 || readyWaiterNotify < readyAckSend) throw new Error("new daemon calls may be released before ready acknowledgement is sent");
+const readinessAlarmBeforeNotify = workerIndexBoundary.lastIndexOf("await this.scheduleRuntimeAlarm()", readyWaiterNotify);
+if (readyAckSend < 0 || readyWaiterNotify < readyAckSend || readinessAlarmBeforeNotify < readyAckSend) {
+  throw new Error("new daemon calls may be released before verified handover cleanup/alarm settlement reaches its final no-await point");
+}
+const httpReadyNotify = daemonHttpControllerBoundary.indexOf("notifyReadyDaemon(input.registry)");
+const httpReadyAlarm = daemonHttpControllerBoundary.lastIndexOf("await input.scheduleAlarm()", httpReadyNotify);
+if (httpReadyNotify < 0 || httpReadyAlarm < 0 || httpReadyNotify < httpReadyAlarm) {
+  throw new Error("HTTPS fallback releases ready-daemon waiters before its final asynchronous readiness settlement");
+}
 for (const forbidden of ["serializeAttachment({ role: \"candidate\"", "serializeAttachment({ role: \"probing\"", "serializeAttachment({ role: \"daemon\""]) {
   if (workerIndexBoundary.includes(forbidden)) throw new Error(`Worker index regained daemon socket state mutation: ${forbidden}`);
 }

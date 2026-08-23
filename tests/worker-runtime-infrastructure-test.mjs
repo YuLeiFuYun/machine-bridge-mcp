@@ -1,9 +1,11 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
-import { pendingCapacityProjection } from "../src/worker/pending-call-capacity.ts";
-import { PendingAdmissionGate } from "../src/worker/pending-admission.ts";
+import {
+  MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT,
+  pendingCapacityProjection,
+} from "../src/worker/pending-call-capacity.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
-import { notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../src/worker/daemon-ready-waiters.ts";
-import { readyDaemonForDispatch } from "../src/worker/daemon-ready-dispatch.ts";
+import { cancelReadyDaemonAuthority, notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../src/worker/daemon-ready-waiters.ts";
+import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "../src/worker/daemon-ready-dispatch.ts";
 import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "../src/worker/daemon-recovery-budget.ts";
 import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
@@ -14,7 +16,9 @@ import {
   outerWorkerErrorClass, statefulRateLimitKey, statefulRouteClass, workerGatewayErrorResponse,
 } from "../src/worker/worker-edge-guard.ts";
 import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
-import { validateWorkerToolArguments, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "../src/worker/managed-job-read-timeout.ts";
+import { serverInfoTool, validateWorkerToolArguments, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { daemonToolRecovery } from "../src/worker/tool-call-recovery.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import {
   daemonCallNotReceivedAfterReconnectError, daemonToolError, dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError,
@@ -26,6 +30,7 @@ import { daemonStatusSnapshot } from "../src/worker/daemon-status.ts";
 import { DaemonLastObservation } from "../src/worker/daemon-last-observation.ts";
 import { buildServerInfoResult, serverInfoDetail } from "../src/worker/server-info.ts";
 import { remoteToolDeliveryContract } from "../src/worker/server-info-tool-delivery.ts";
+import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../src/worker/mcp-subscription-contract.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { retainWorkerTask } from "../src/worker/worker-task-lifetime.ts";
 import { applyCors, corsPreflight, searchParamsObject } from "../src/worker/http.ts";
@@ -81,13 +86,13 @@ await testAuthorityRevocationPending();
 await testRegistrationFailures();
 await testInvalidPendingDelays();
 await testPendingControlCapacity();
+await testPendingReadJobAccountCapacity();
 await testTerminalPaths();
 await testReconnectRebinding();
 await testDetachedTimeoutPause();
 await testEventBoundaryDeadlineSweep();
 await testRuntimeAlarmCoordinator();
 await testTimeoutCallbackFailure();
-await testPendingAdmissionGate();
 await testDaemonReadyWaiters();
 await testAbortSignalCleanup();
 await testDaemonSocketIsolation();
@@ -188,7 +193,10 @@ async function testRegistrationFailures() {
 
 async function testInvalidPendingDelays() {
   const socket = {};
-  for (const timeoutMs of [Number.POSITIVE_INFINITY, Number.NaN, 0, -1, relayContract.maximumRelayToolTimeoutMs + 1]) {
+  for (const timeoutMs of [
+    Number.POSITIVE_INFINITY, Number.NaN, 0, -1,
+    relayContract.maximumOrdinaryRelayToolTimeoutMs + 1,
+  ]) {
     const registry = new PendingCallRegistry(1);
     expectThrow(() => registry.register({
       id: `invalid-delay-${String(timeoutMs)}`, tool: "read_file", socket, timeoutMs,
@@ -196,6 +204,20 @@ async function testInvalidPendingDelays() {
     }), "pending-call delay must be an integer");
     assert(registry.snapshot().active === 0, "invalid operation timeout mutated pending state before rejection");
   }
+
+  const managedReadRegistry = new PendingCallRegistry(1);
+  const maximumManagedRead = managedReadRegistry.register({
+    id: "maximum-managed-read-delay", tool: "read_job", socket,
+    timeoutMs: relayContract.maximumRelayToolTimeoutMs,
+    onTimeout: () => new Error("timeout"),
+  });
+  await managedReadRegistry.resolve("maximum-managed-read-delay", socket, true);
+  assert(await maximumManagedRead === true, "pending registry rejected the dedicated read_job long-poll deadline");
+  expectThrow(() => new PendingCallRegistry(1).register({
+    id: "managed-read-over-limit", tool: "read_job", socket,
+    timeoutMs: relayContract.maximumRelayToolTimeoutMs + 1,
+    onTimeout: () => new Error("timeout"),
+  }), "pending-call delay must be an integer");
 
   const registry = new PendingCallRegistry(1);
   const pending = registry.register({
@@ -243,6 +265,60 @@ async function testPendingControlCapacity() {
   for (let index = 0; index < 3; index += 1) await registry.resolve(`ordinary-${index}`, socket, index);
   await registry.resolve("control", socket, true);
   await Promise.all([...pending, control]);
+}
+
+async function testPendingReadJobAccountCapacity() {
+  const socket = {};
+  const registry = new PendingCallRegistry(20);
+  const authority = (accountId) => ({
+    accountId, accountVersion: 1,
+    clientId: `client-${accountId}`, familyId: `family-${accountId}`,
+  });
+  const accountA = "account-long-poll-a";
+  const accountB = "account-long-poll-b";
+  const held = [];
+  for (let index = 0; index < MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT; index += 1) {
+    held.push(registry.register({
+      id: `account-a-read-${index}`, tool: "read_job", socket,
+      authority: authority(accountA), timeoutMs: relayContract.maximumRelayToolTimeoutMs,
+      onTimeout: () => new Error("timeout"),
+    }));
+  }
+  expectRegistrationError(() => registry.register({
+    id: "account-a-read-overflow", tool: "read_job", socket,
+    authority: authority(accountA), timeoutMs: relayContract.maximumRelayToolTimeoutMs,
+    onTimeout: () => new Error("timeout"),
+  }), "limit_exceeded", true);
+
+  const sameAccountOrdinary = registry.register({
+    id: "account-a-ordinary", tool: "read_file", socket,
+    authority: authority(accountA), timeoutMs: 10_000,
+    onTimeout: () => new Error("timeout"),
+  });
+  const otherAccountRead = registry.register({
+    id: "account-b-read", tool: "read_job", socket,
+    authority: authority(accountB), timeoutMs: relayContract.maximumRelayToolTimeoutMs,
+    onTimeout: () => new Error("timeout"),
+  });
+  assert(registry.snapshot().by_tool.read_job === MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT + 1,
+    "per-account managed-job read ceiling became a global long-poll ceiling");
+
+  await registry.resolve("account-a-read-0", socket, true);
+  assert(await held[0] === true, "managed-job read slot did not settle before reuse");
+  const recovered = registry.register({
+    id: "account-a-read-recovered", tool: "read_job", socket,
+    authority: authority(accountA), timeoutMs: relayContract.maximumRelayToolTimeoutMs,
+    onTimeout: () => new Error("timeout"),
+  });
+
+  for (let index = 1; index < MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT; index += 1) {
+    await registry.resolve(`account-a-read-${index}`, socket, true);
+  }
+  await registry.resolve("account-a-ordinary", socket, true);
+  await registry.resolve("account-b-read", socket, true);
+  await registry.resolve("account-a-read-recovered", socket, true);
+  await Promise.all([...held.slice(1), sameAccountOrdinary, otherAccountRead, recovered]);
+  assert(registry.snapshot().active === 0, "per-account managed-job read test leaked pending calls");
 }
 
 async function testTerminalPaths() {
@@ -661,32 +737,6 @@ async function testTimeoutCallbackFailure() {
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "throwing timeout callback leaked pending indexes");
 }
 
-async function testPendingAdmissionGate() {
-  const gate = new PendingAdmissionGate();
-  const order = [];
-  let unblock = () => {};
-  let markStarted = () => {};
-  const blocker = new Promise((resolve) => { unblock = resolve; });
-  const started = new Promise((resolve) => { markStarted = resolve; });
-  const first = gate.run(async () => {
-    order.push("first-start");
-    markStarted();
-    await blocker;
-    order.push("first-end");
-  });
-  await started;
-  const second = gate.run(() => { order.push("second"); });
-  await Promise.resolve();
-  assert(!order.includes("second"), "pending admission allowed concurrent mixed-capacity decisions");
-  unblock();
-  await Promise.all([first, second]);
-  assert(order.join(",") === "first-start,first-end,second", "pending admission did not preserve FIFO serialization");
-  await expectRejectType(gate.run(() => { throw new RangeError("synthetic admission failure"); }), RangeError);
-  let recovered = false;
-  await gate.run(() => { recovered = true; });
-  assert(recovered, "failed pending admission permanently blocked later calls");
-}
-
 async function testDaemonReadyWaiters() {
   let readySockets = [];
   const registry = { readySockets: () => readySockets };
@@ -698,6 +748,9 @@ async function testDaemonReadyWaiters() {
     "brief daemon reconnect did not wake a waiting new call");
   assert(await waitForReadyDaemon(registry, { graceMs: 1 }) === socket,
     "ready daemon call admission unnecessarily waited");
+  const synchronousImmediate = immediateReadyDaemonForDispatch(registry);
+  assert(synchronousImmediate?.socket === socket && synchronousImmediate.recoveryDelayMs === 0,
+    "ready daemon dispatch lost its synchronous no-yield admission path");
   let immediateClockReads = 0;
   const immediateDispatch = await readyDaemonForDispatch(registry, { graceMs: 1 }, () => {
     immediateClockReads += 1;
@@ -727,6 +780,31 @@ async function testDaemonReadyWaiters() {
   assert(defaultClockRecovered.socket === socket && defaultClockRecovered.recoveryDelayMs >= 0,
     "default monotonic recovery clock did not produce a bounded interval");
   readySockets = [];
+  const handoverFirst = waitForReadyDaemon(registry, { graceMs: 100 });
+  await Promise.resolve();
+  readySockets = [socket];
+  assert(immediateReadyDaemonForDispatch(registry) === null,
+    "new call bypassed retained pre-dispatch waiters while daemon handover was not yet released");
+  let handoverSecondSettled = false;
+  const handoverSecond = waitForReadyDaemon(registry, { graceMs: 100 }).then((value) => {
+    handoverSecondSettled = true;
+    return value;
+  });
+  await Promise.resolve();
+  assert(handoverSecondSettled === false && readyDaemonWaiterSnapshot(registry).active === 2,
+    "ready socket let fresh traffic leapfrog reconnect waiters before final handover notification");
+  assert(notifyReadyDaemon(registry) === 2
+    && (await handoverFirst) === socket && (await handoverSecond) === socket,
+  "final daemon handover did not release the complete capacity-reserved waiter batch");
+  readySockets = [];
+  const unreleasedReady = waitForReadyDaemon(registry, { graceMs: 5 });
+  await Promise.resolve();
+  readySockets = [socket];
+  let unreleasedReadyError = null;
+  try { await unreleasedReady; } catch (error) { unreleasedReadyError = error; }
+  assert(unreleasedReadyError?.code === "unavailable",
+    "ready-daemon waiter timeout bypassed the missing final handover notification");
+  readySockets = [];
   let timeoutError = null;
   try { await waitForReadyDaemon(registry, { graceMs: 5 }); } catch (error) { timeoutError = error; }
   assert(timeoutError?.code === "unavailable", "daemon reconnect admission timeout did not remain retryable-unavailable");
@@ -736,6 +814,86 @@ async function testDaemonReadyWaiters() {
   let abortError = null;
   try { await aborted; } catch (error) { abortError = error; }
   assert(abortError?.code === "cancelled", "daemon reconnect admission ignored client cancellation");
+  const accountA = "account-ready-read-a";
+  const accountB = "account-ready-read-b";
+  const waiterAuthority = (accountId, familyId = `family-${accountId}`) => ({
+    accountId, accountVersion: 4, clientId: `client-${accountId}`, familyId,
+  });
+  const revokedWaiter = waitForReadyDaemon(registry, {
+    graceMs: 1000, tool: "read_file", authority: waiterAuthority(accountA),
+    pending: { active: 0, by_tool: {} },
+  });
+  assert(cancelReadyDaemonAuthority(registry, {
+    accountId: accountA, accountVersion: 4,
+    clientId: `client-${accountA}`, familyId: "different-family",
+  }) === 0, "daemon readiness authority revocation matched a different refresh family");
+  assert(cancelReadyDaemonAuthority(registry, waiterAuthority(accountA)) === 1,
+    "daemon readiness authority revocation did not cancel a matching pre-dispatch waiter");
+  let revokedWaiterError = null;
+  try { await revokedWaiter; } catch (error) { revokedWaiterError = error; }
+  assert(revokedWaiterError?.code === "authorization_denied" && readyDaemonWaiterSnapshot(registry).active === 0,
+    "revoked pre-dispatch daemon waiter retained stale authority or capacity");
+  const handoverRevoked = waitForReadyDaemon(registry, {
+    graceMs: 1000, tool: "read_file", authority: waiterAuthority(accountA),
+    pending: { active: 0, by_tool: {} },
+  });
+  await Promise.resolve();
+  readySockets = [socket];
+  assert(immediateReadyDaemonForDispatch(registry) === null
+    && cancelReadyDaemonAuthority(registry, waiterAuthority(accountA)) === 1,
+  "visible ready socket bypassed authority revocation before final handover release");
+  let handoverRevokedError = null;
+  try { await handoverRevoked; } catch (error) { handoverRevokedError = error; }
+  assert(handoverRevokedError?.code === "authorization_denied" && readyDaemonWaiterSnapshot(registry).active === 0,
+    "handover-phase ready waiter escaped revocation before pending ownership transfer");
+  readySockets = [];
+  const readJobWaiters = [];
+  for (let index = 0; index < MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT; index += 1) {
+    readJobWaiters.push(waitForReadyDaemon(registry, {
+      graceMs: 1000, tool: "read_job", authority: waiterAuthority(accountA),
+      activeReadJobCallsForAccount: 0, pending: { active: 0, by_tool: {} },
+    }));
+  }
+  let accountReadLimitError = null;
+  try {
+    await waitForReadyDaemon(registry, {
+      graceMs: 1000, tool: "read_job", authority: waiterAuthority(accountA),
+      activeReadJobCallsForAccount: 0, pending: { active: 0, by_tool: {} },
+    });
+  } catch (error) { accountReadLimitError = error; }
+  assert(accountReadLimitError?.code === "limit_exceeded",
+    "daemon reconnect waiters let one account monopolize managed-job long-poll recovery capacity");
+  const otherAccountReadWaiter = waitForReadyDaemon(registry, {
+    graceMs: 1000, tool: "read_job", authority: waiterAuthority(accountB),
+    activeReadJobCallsForAccount: 0, pending: { active: 0, by_tool: {} },
+  });
+  assert(readyDaemonWaiterSnapshot(registry).by_tool.read_job === MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT + 1,
+    "daemon reconnect managed-job read ceiling became a global account-independent ceiling");
+  readySockets = [socket];
+  assert(notifyReadyDaemon(registry) === MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT + 1,
+    "daemon reconnect did not release the account-bounded read_job waiter batch");
+  assert((await Promise.all([...readJobWaiters, otherAccountReadWaiter])).every((value) => value === socket),
+    "account-bounded daemon reconnect waiters did not settle on the recovered daemon");
+  readySockets = [];
+  const activeReadWaiter = waitForReadyDaemon(registry, {
+    graceMs: 1000, tool: "read_job", authority: waiterAuthority(accountA),
+    activeReadJobCallsForAccount: MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT - 1,
+    pending: { active: MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT - 1, by_tool: { read_job: MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT - 1 } },
+  });
+  let combinedReadLimitError = null;
+  try {
+    await waitForReadyDaemon(registry, {
+      graceMs: 1000, tool: "read_job", authority: waiterAuthority(accountA),
+      activeReadJobCallsForAccount: MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT - 1,
+      pending: { active: MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT - 1, by_tool: { read_job: MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT - 1 } },
+    });
+  } catch (error) { combinedReadLimitError = error; }
+  assert(combinedReadLimitError?.code === "limit_exceeded",
+    "daemon reconnect read_job ceiling ignored already-active long polls for the same account");
+  readySockets = [socket];
+  assert(notifyReadyDaemon(registry) === 1 && await activeReadWaiter === socket,
+    "daemon reconnect read_job waiter did not release after combining active and waiting account usage");
+  readySockets = [];
   const detachedPending = { active: 29, by_tool: { read_file: 29 } };
   const ordinaryWaiter = waitForReadyDaemon(registry, {
     graceMs: 1000, tool: "read_file", pending: detachedPending,
@@ -1157,6 +1315,9 @@ function testRelayTimeoutContract() {
       && budget.settlementTimeoutMs === expectedDefault * 1000 + relayContract.workerSettlementOverheadMs,
     `remote ${tool.name} runtime default did not preserve a distinct settlement margin`);
   }
+  assert(String(serverInfoTool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)
+    && workspaceTools.every((tool) => String(tool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)),
+  "host-visible tool descriptions omitted the current schema generation marker");
   const remoteBrowserDescription = String(workspaceTools.find((tool) => tool.name === "browser_action")?.description || "");
   assert(remoteBrowserDescription.includes("request-bounded")
     && remoteBrowserDescription.includes("split longer browser/application workflows")
@@ -1171,65 +1332,138 @@ function testRelayTimeoutContract() {
     && remoteExecDescription.includes("read_job")
     && remoteExecDescription.includes("30 minutes pre-spawn")
     && remoteExecDescription.includes("current_phase=resource_admission")
-    && remoteExecDescription.includes("status checkpoint")
-    && remoteExecDescription.includes("stop polling"),
-  "remote exec_command description omitted the durable execution, pre-spawn admission, recovery, or host-turn handoff contract");
-  const remoteStartJobDescription = String(workspaceTools.find((tool) => tool.name === "start_job")?.description || "");
+    && remoteExecDescription.includes("bounded same-response read_job follow-up")
+    && remoteExecDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
+    && remoteExecDescription.includes(`Tool schema generation ${workerToolSchemaGeneration}.`),
+  "remote exec_command description omitted the durable execution, pre-spawn admission, recovery, or bounded follow-up contract");
+  const remoteStartJob = workspaceTools.find((tool) => tool.name === "start_job");
+  const remoteStageJob = workspaceTools.find((tool) => tool.name === "stage_job");
+  const remoteStartJobDescription = String(remoteStartJob?.description || "");
   const remoteListJobsDescription = String(workspaceTools.find((tool) => tool.name === "list_jobs")?.description || "");
-  const remoteReadJobDescription = String(workspaceTools.find((tool) => tool.name === "read_job")?.description || "");
-  assert(remoteStartJobDescription.includes("background execution")
-    && remoteStartJobDescription.includes("read_job at most once")
-    && remoteStartJobDescription.includes("stop polling"),
-  "remote start_job description omitted the background handoff contract");
-  assert(remoteListJobsDescription.includes("inventory checkpoint")
+  const remoteReadJob = workspaceTools.find((tool) => tool.name === "read_job");
+  const remoteReadJobDescription = String(remoteReadJob?.description || "");
+  assert(remoteStartJob?.inputSchema?.required?.includes("idempotency_key")
+    && remoteStartJobDescription.includes("idempotency_key known before dispatch")
+    && remoteStartJobDescription.includes("same idempotency_key")
+    && remoteStartJobDescription.includes("durable background ownership")
+    && remoteStartJobDescription.includes("bounded same-response read_job follow-up")
+    && remoteStartJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
+  "remote start_job schema/description omitted idempotent acceptance recovery or the durable autonomous-follow-up contract");
+  const startJobWithoutRecoveryKey = validateWorkerToolArguments("start_job", { steps: [{ argv: ["true"] }] });
+  const startJobWithRecoveryKey = validateWorkerToolArguments("start_job", {
+    idempotency_key: "hosted-start-job-validator", steps: [{ argv: ["true"] }],
+  });
+  assert(startJobWithoutRecoveryKey.known && !startJobWithoutRecoveryKey.valid
+    && startJobWithoutRecoveryKey.issues.some((issue) => issue.keyword === "required")
+    && startJobWithRecoveryKey.known && startJobWithRecoveryKey.valid,
+  "actual Worker invocation validator did not enforce hosted start_job recovery-key admission");
+  const startJobRecovery = daemonToolRecovery("start_job", { idempotency_key: "hosted-start-job-recovery" });
+  assert(startJobRecovery?.credential === "idempotency_key"
+    && startJobRecovery?.action === "retry_same_tool_arguments_with_same_idempotency_key"
+    && startJobRecovery?.result_tool_after_acceptance === "read_job"
+    && daemonToolRecovery("start_job", {}) === null,
+  "hosted start_job timeout/disconnect recovery did not bind the same idempotency credential used by admission");
+  for (const tool of [remoteStageJob, remoteStartJob]) {
+    assert(tool?.inputSchema?.properties?.steps?.items?.properties?.timeout_seconds?.maximum === 21_600
+      && tool?.inputSchema?.properties?.finally_steps?.items?.properties?.timeout_seconds?.maximum === 21_600,
+    "remote managed-job schema cannot express one continuous step beyond 100 minutes");
+  }
+  assert(remoteListJobsDescription.includes("inventory operation")
     && remoteListJobsDescription.includes("Do not repeat list_jobs")
-    && remoteListJobsDescription.includes("hand the turn back"),
-  "remote list_jobs description can still induce same-response active-job polling");
-  assert(remoteReadJobDescription.includes("status checkpoints")
-    && remoteReadJobDescription.includes("at most once")
-    && remoteReadJobDescription.includes("stop polling")
-    && remoteReadJobDescription.includes("active/non-terminal")
-    && remoteReadJobDescription.includes("later user turn"),
-  "remote read_job description can still induce same-turn terminal polling");
+    && remoteListJobsDescription.includes("use read_job instead"),
+  "remote list_jobs description no longer routes known-job follow-up through read_job");
+  assert(remoteReadJob?.inputSchema?.properties?.wait_ms?.default === 40_000
+    && remoteReadJob?.inputSchema?.properties?.wait_ms?.maximum === 300_000
+    && remoteReadJobDescription.includes("server-side long-poll")
+    && remoteReadJobDescription.includes("wait up to 40 seconds")
+    && remoteReadJobDescription.includes("wait_ms=0")
+    && remoteReadJobDescription.includes("same assistant response")
+    && remoteReadJobDescription.includes("Do not busy-loop")
+    && remoteReadJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
+  "remote read_job schema/description lost paced same-turn autonomous follow-up");
+  const immediateJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 0 });
+  const defaultJobReadBudget = daemonToolTimeoutBudget("read_job", {});
+  const maximumJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 300_000 });
+  assert(immediateJobReadBudget.executionTimeoutMs === 10_000 && immediateJobReadBudget.settlementTimeoutMs === 15_000
+    && defaultJobReadBudget.executionTimeoutMs === 50_000 && defaultJobReadBudget.settlementTimeoutMs === 55_000
+    && maximumJobReadBudget.executionTimeoutMs === 310_000 && maximumJobReadBudget.settlementTimeoutMs === 315_000,
+  "remote read_job long-poll did not retain enough execution/settlement headroom inside its dedicated relay ceiling");
+  const recoveredJobReadBudget = daemonToolTimeoutBudgetAfterDelay(defaultJobReadBudget, 15_000);
+  const recoveredJobReadArgs = managedJobReadArgumentsWithinExecutionBudget({}, recoveredJobReadBudget.executionTimeoutMs);
+  assert(recoveredJobReadBudget.executionTimeoutMs === 35_000
+    && recoveredJobReadBudget.settlementTimeoutMs === 40_000
+    && recoveredJobReadArgs.wait_ms === 25_000,
+  "daemon recovery left read_job sleeping beyond its reduced execution deadline");
+  const shortJobReadArgs = { wait_ms: 20_000 };
+  assert(managedJobReadArgumentsWithinExecutionBudget(shortJobReadArgs, recoveredJobReadBudget.executionTimeoutMs) === shortJobReadArgs,
+    "daemon recovery rewrote a read_job wait that already fit inside the remaining execution budget");
+  assert(managedJobReadArgumentsWithinExecutionBudget({ wait_ms: 0 }, 1_000).wait_ms === 0,
+    "read_job recovery budget rewrote an explicit immediate checkpoint");
+  assert(managedJobReadArgumentsWithinExecutionBudget({}, 20_000).wait_ms === 10_000,
+    "read_job redelivery did not reserve reconciliation headroom from the remaining execution window");
+  assert(managedJobReadExecutionBudgetHasHeadroom(10_000) === true
+    && managedJobReadExecutionBudgetHasHeadroom(9_999) === false
+    && managedJobReadExecutionBudgetHasHeadroom(Number.NaN) === false,
+  "read_job recovery accepted a dispatch window that cannot cover its bounded reconciliation headroom");
   const remoteStartProcess = workspaceTools.find((tool) => tool.name === "start_process");
   const remoteStartProcessDescription = String(remoteStartProcess?.description || "");
   assert(remoteStartProcessDescription.includes("interactive stdin or incremental-output")
     && remoteStartProcessDescription.includes("run_process")
-    && remoteStartProcessDescription.includes("read_process at most once")
-    && remoteStartProcessDescription.includes("running=true")
-    && remoteStartProcessDescription.includes("even when new output was returned")
-    && remoteStartProcessDescription.includes("stop polling"),
-  "remote start_process description omitted the hosted-response anti-polling contract");
+    && remoteStartProcessDescription.includes("Bounded same-response read_process follow-up")
+    && remoteStartProcessDescription.includes("blocking-poll cooldown")
+    && remoteStartProcessDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
+  "remote start_process description omitted the paced hosted-follow-up contract");
   const remoteReadProcess = workspaceTools.find((tool) => tool.name === "read_process");
   const remoteReadProcessDescription = String(remoteReadProcess?.description || "");
-  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1_000,
-    "remote read_process schema regained a long blocking poll");
-  assert(remoteReadProcessDescription.includes("status checkpoints")
-    && remoteReadProcessDescription.includes("at most once")
-    && remoteReadProcessDescription.includes("running=true")
-    && remoteReadProcessDescription.includes("even when output was returned")
-    && remoteReadProcessDescription.includes("stop polling")
+  assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1_000
+    && remoteReadProcess?.inputSchema?.properties?.wait_ms?.default === 1_000,
+    "remote read_process schema lost its one-second server-paced default/maximum");
+  assert(remoteReadProcessDescription.includes("paced follow-up")
+    && remoteReadProcessDescription.includes("same MCP call")
+    && remoteReadProcessDescription.includes("cooldown boundary")
+    && remoteReadProcessDescription.includes("same assistant response")
+    && remoteReadProcessDescription.includes("next_blocking_poll_after_ms")
+    && remoteReadProcessDescription.includes("must not busy-loop")
     && remoteReadProcessDescription.includes("run_process/read_job")
     && !remoteReadProcessDescription.includes("poll again"),
-  "remote read_process description can still induce repeated same-response live-session polling");
+  "remote read_process description lost server-paced same-response follow-up limits");
   const immediateReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 0 });
+  const defaultReadBudget = daemonToolTimeoutBudget("read_process", {});
   const maximumReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 1_000 });
   assert(immediateReadBudget.executionTimeoutMs === 5_000 && immediateReadBudget.settlementTimeoutMs === 10_000
-    && maximumReadBudget.executionTimeoutMs === 6_000 && maximumReadBudget.settlementTimeoutMs === 11_000,
-  "remote process polling did not retain its short settlement budget");
+    && defaultReadBudget.executionTimeoutMs === 20_000 && defaultReadBudget.settlementTimeoutMs === 25_000
+    && maximumReadBudget.executionTimeoutMs === 20_000 && maximumReadBudget.settlementTimeoutMs === 25_000,
+  "remote process polling budget cannot cover the server-paced default/cooldown without widening the relay ceiling");
   const startProcessBudget = daemonToolTimeoutBudget("start_process", {});
   assert(startProcessBudget.executionTimeoutMs === relayContract.processSessionStartExecutionTimeoutMs
     && startProcessBudget.settlementTimeoutMs === relayContract.processSessionStartExecutionTimeoutMs + relayContract.workerSettlementOverheadMs,
     "process-session startup regained an interruption-prone remote deadline");
   assert(relayContract.maximumExecutionTimeoutMs === 45_000
-    && relayContract.maximumRelayToolTimeoutMs === 50_000,
-  "relay envelope can still hold a synchronous remote tool beyond the reply-safe ceiling");
-  const deliveryContract = remoteToolDeliveryContract();
+    && relayContract.maximumOrdinaryRelayToolTimeoutMs === 50_000
+    && relayContract.maximumRelayToolTimeoutMs === 315_000,
+  "ordinary relay tools lost their reply-safe ceiling or managed-job status lost its dedicated long-poll envelope");
+  const deliveryContract = remoteToolDeliveryContract("test-version", { activeForAccount: 1, openedForAccount: true });
   assert(deliveryContract.remote_process_blocking_poll_wait_max_ms === 1_000
     && deliveryContract.remote_process_blocking_poll_cooldown_ms === 15_000
+    && deliveryContract.remote_managed_job_read_wait_default_ms === 40_000
+    && deliveryContract.remote_managed_job_read_wait_max_ms === 300_000
+    && deliveryContract.remote_managed_job_read_concurrency_max_per_account === MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT
+    && deliveryContract.tool_schema_generation === workerToolSchemaGeneration
+    && deliveryContract.tool_schema_server_version === "test-version"
+    && deliveryContract.discovery_ttl_ms === 0
+    && deliveryContract.tool_list_ttl_ms === 0
+    && deliveryContract.host_visible_schema_known_to_server === false
+    && deliveryContract.host_schema_refresh_required_on_generation_change === true
+    && deliveryContract.tools_list_change_subscription_supported === true
+    && deliveryContract.tools_list_change_subscription_active_for_account === 1
+    && deliveryContract.tools_list_change_subscription_opened_for_account === true
+    && deliveryContract.tools_list_change_subscription_client_receipt_observable === false
+    && deliveryContract.tools_list_change_subscription_lease_ms === MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS
+    && deliveryContract.host_turn_deadline_observable === false
+    && deliveryContract.managed_jobs_detached_from_mcp_response === true
     && !("remote_process_poll_wait_max_ms" in deliveryContract)
     && !("remote_process_poll_cooldown_ms" in deliveryContract),
-  "server_info tool-delivery projection retained ambiguous process-poll field names");
+  "server_info tool-delivery projection lost schema freshness evidence or retained ambiguous process-poll field names");
 }
 
 function testWorkerPolicyParity() {
@@ -1351,22 +1585,25 @@ function testWorkerErrors() {
   "dispatched daemon timeout lost ambiguous-side-effect settlement metadata");
   const durableRecovery = {
     mode: "idempotent_replay", source_tool: "run_process", credential: "idempotency_key",
-    idempotency_key: "worker-timeout-recovery", action: "retry_same_tool_arguments_with_same_idempotency_key",
+    credential_source: "original_request_arguments", action: "retry_same_tool_arguments_with_same_idempotency_key",
   };
   const durableTimedOut = publicWorkerToolError(dispatchedDaemonTimeoutError("run_process", true, durableRecovery));
   assert(durableTimedOut.details?.recovery?.credential === "idempotency_key"
-    && durableTimedOut.details?.recovery?.idempotency_key === "worker-timeout-recovery"
+    && durableTimedOut.details?.recovery?.credential_source === "original_request_arguments"
+    && durableTimedOut.details?.recovery?.idempotency_key === undefined
     && durableTimedOut.details?.recovery?.action === "retry_same_tool_arguments_with_same_idempotency_key",
-  "durable process acceptance timeout lost its caller-held recovery credential");
+  "durable process acceptance timeout lost its recovery instruction or echoed the caller-held key");
   const durableDisconnected = publicWorkerToolError(dispatchedDaemonDisconnectError("daemon disconnected", durableRecovery));
-  assert(durableDisconnected.details?.recovery?.idempotency_key === "worker-timeout-recovery",
-    "durable process daemon disconnect lost its idempotent replay recovery contract");
+  assert(durableDisconnected.details?.recovery?.credential_source === "original_request_arguments"
+    && durableDisconnected.details?.recovery?.idempotency_key === undefined,
+  "durable process daemon disconnect lost its idempotent replay recovery contract or echoed the recovery key");
   const notReceived = publicWorkerToolError(daemonCallNotReceivedAfterReconnectError(durableRecovery));
   assert(notReceived.code === "unavailable" && notReceived.retryable === true
     && notReceived.details?.side_effects_started === false
     && notReceived.details?.reason === "daemon_call_not_received_after_reconnect"
-    && notReceived.details?.recovery?.idempotency_key === "worker-timeout-recovery",
-  "daemon-proven non-delivery did not become a safe retry with the durable recovery credential intact");
+    && notReceived.details?.recovery?.credential_source === "original_request_arguments"
+    && notReceived.details?.recovery?.idempotency_key === undefined,
+  "daemon-proven non-delivery did not become a safe retry without echoing the durable recovery key");
   const cancelUnknown = publicWorkerToolError(dispatchedDaemonCancellationError("cancelled after disconnect", false));
   assert(cancelUnknown.code === "cancelled" && cancelUnknown.details?.termination_requested === false
     && cancelUnknown.details?.effect_settlement === "unknown",
@@ -1581,6 +1818,9 @@ function testWorkerObservability() {
   try {
     metrics.event("warn", "security.test", {
       access_token: "must-not-leak",
+      api_key: "opaque-api-value",
+      proof: "opaque-proof-value",
+      monkey: "safe-animal",
       path: "/mcp",
       detail: "Bearer abcdefghijklmnopqrstuvwxyz for operator@example.com under /Users/example/private",
       level: "info",
@@ -1592,7 +1832,10 @@ function testWorkerObservability() {
     console.warn = originalWarn;
   }
   const event = JSON.parse(lines[0]);
-  assert(event.access_token === "<redacted>" && !lines[0].includes("must-not-leak"), "Worker structured event leaked a sensitive field");
+  assert(event.access_token === "<redacted>" && event.api_key === "<redacted>" && event.proof === "<redacted>"
+    && !lines[0].includes("must-not-leak") && !lines[0].includes("opaque-api-value") && !lines[0].includes("opaque-proof-value"),
+  "Worker structured event leaked a sensitive field-name variant");
+  assert(event.monkey === "safe-animal", "Worker sensitive-key matching over-redacted an unrelated field name");
   assert(event.path === "/mcp", "Worker structured event removed a safe route field");
   assert(!lines[0].includes("abcdefghijklmnopqrstuvwxyz") && !lines[0].includes("operator@example.com") && !lines[0].includes("/Users/example"), "Worker structured event leaked a sensitive value embedded in a non-sensitive field");
   assert(event.detail.includes("Bearer <redacted>") && event.detail.includes("<redacted-email>") && event.detail.includes("<home>"), "Worker structured event did not retain redaction markers");
@@ -1623,10 +1866,6 @@ function expectRegistrationError(operation, code, retryable) {
 async function expectReject(promise, expected) {
   try { await promise; } catch (error) { assert(String(error?.message || error).includes(expected), `expected ${expected}`); return; }
   throw new Error(`expected rejection containing ${expected}`);
-}
-async function expectRejectType(promise, constructor) {
-  try { await promise; } catch (error) { assert(error instanceof constructor, `expected ${constructor.name}`); return; }
-  throw new Error(`expected rejection of type ${constructor.name}`);
 }
 function assert(condition, message) { if (!condition) throw new Error(message); }
 function expectThrow(operation, expected) { try { operation(); } catch (error) { assert(String(error?.message || error).includes(expected), `expected ${expected}`); return; } throw new Error(`expected throw containing ${expected}`); }
@@ -1671,27 +1910,36 @@ function testDaemonLiveness() {
 
 function testThrottledEdgeLogger() {
   let now = 1_000;
+  let wallNow = 1_700_000_000_000;
   const lines = [];
   const log = createThrottledEdgeLogger({
     intervalMs: 100,
-    now: () => now,
+    monotonicNow: () => now,
+    wallNow: () => wallNow,
     write: (level, text) => lines.push({ level, value: JSON.parse(text) }),
   });
   assert(log("warn", "rate.failure", {
     detail: "Bearer abcdefghijklmnopqrstuvwxyz for operator@example.com under /Users/example/private\nline",
     access_token: "must-not-leak",
+    apiKey: "opaque-api-value",
+    proof: "opaque-proof-value",
+    monkey: "safe-animal",
   }) === true, "first edge degradation log was suppressed");
   assert(log("warn", "rate.failure", { detail: "second" }) === false, "duplicate edge degradation log was not suppressed");
   assert(log("warn", "rate.failure", { detail: "third" }) === false, "repeated edge degradation log was not suppressed");
+  wallNow -= 60_000;
   now += 100;
-  assert(log("warn", "rate.failure", { detail: "reopened" }) === true, "edge degradation log did not reopen after its interval");
+  assert(log("warn", "rate.failure", { detail: "reopened" }) === true,
+    "edge degradation log did not reopen on monotonic time after a wall-clock rollback");
   assert(lines.length === 2 && lines[1].value.suppressed === 2, "edge log did not report its suppressed duplicate count");
   assert(lines[0].value.detail.includes("Bearer <redacted>")
     && lines[0].value.detail.includes("<redacted-email>") && lines[0].value.detail.includes("<home>")
     && lines[0].value.component === "worker-edge" && lines[0].value.access_token === "<redacted>"
-    && !JSON.stringify(lines[0]).includes("must-not-leak") && !JSON.stringify(lines[0]).includes("abcdefghijklmnopqrstuvwxyz")
+    && lines[0].value.apikey === "<redacted>" && lines[0].value.proof === "<redacted>" && lines[0].value.monkey === "safe-animal"
+    && !JSON.stringify(lines[0]).includes("must-not-leak") && !JSON.stringify(lines[0]).includes("opaque-api-value")
+    && !JSON.stringify(lines[0]).includes("opaque-proof-value") && !JSON.stringify(lines[0]).includes("abcdefghijklmnopqrstuvwxyz")
     && !JSON.stringify(lines[0]).includes("operator@example.com") && !JSON.stringify(lines[0]).includes("/Users/example"),
-  "edge log did not apply value-level privacy redaction, redact sensitive fields, or preserve authoritative metadata");
+  "edge log did not apply shared field/value privacy redaction without over-redacting unrelated names");
   now += 100;
   assert(log("warn", "prototype.fields", JSON.parse('{"__proto__":"ordinary-proto","constructor":"ordinary-constructor","private_key":"must-not-leak"}')) === true,
     "prototype-shaped edge log was unexpectedly suppressed");
@@ -1708,7 +1956,7 @@ function testThrottledEdgeLogger() {
   console.warn = (line) => defaultLines.push({ level: "warn", value: JSON.parse(String(line)) });
   console.error = (line) => defaultLines.push({ level: "error", value: JSON.parse(String(line)) });
   try {
-    const defaultLog = createThrottledEdgeLogger({ intervalMs: 0, now: () => defaultNow });
+    const defaultLog = createThrottledEdgeLogger({ intervalMs: 0, monotonicNow: () => defaultNow });
     assert(defaultLog("warn", "Default Writer", { count: 1, ok: true, empty: null, nested: { dropped: true } }),
       "default edge logger suppressed its first warning");
     defaultNow += 60_000;

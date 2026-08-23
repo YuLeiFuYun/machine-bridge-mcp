@@ -1,12 +1,6 @@
-import { runResourceProbeAsync, runResourceProbeSync } from "./resource-probe-command.mjs";
+import { runResourceProbeAsync } from "./resource-probe-command.mjs";
 
 const COMMAND_OPTIONS = { timeoutMs: 3_000, maxOutputBytes: 1024 * 1024 };
-
-export function sampleResourceProcessParents(options = {}) {
-  const run = options.run || ((command, args) => runResourceProbeSync(command, args, COMMAND_OPTIONS));
-  const result = processParentCommand(run);
-  return result?.ok ? parseResourceProcessParents(result.stdout) : null;
-}
 
 export async function sampleResourceProcessParentsAsync(options = {}) {
   const run = options.run || ((command, args) => runResourceProbeAsync(command, args, COMMAND_OPTIONS));

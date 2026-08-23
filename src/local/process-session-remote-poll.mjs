@@ -1,4 +1,5 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
+import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 
 export function planRemoteProcessRead({ context, session, requestedWaitMs, waitForExit, hasOutput, now }) {
   const remote = context?.authority?.origin === "relay";
@@ -11,9 +12,12 @@ export function planRemoteProcessRead({ context, session, requestedWaitMs, waitF
     : null;
   const elapsed = lastBlockingReadAt === null ? Number.POSITIVE_INFINITY : Math.max(0, now - lastBlockingReadAt);
   if (elapsed < relayContract.remoteProcessBlockingPollCooldownMs) {
-    return { remote: true, waitMs: 0, waitForExit, blocking: false, pollThrottled: true };
+    return {
+      remote: true, waitMs, waitForExit, blocking: false, pollThrottled: true,
+      cooldownWaitMs: Math.max(1, Math.ceil(relayContract.remoteProcessBlockingPollCooldownMs - elapsed)),
+    };
   }
-  return { remote: true, waitMs, waitForExit, blocking: true, pollThrottled: false };
+  return { remote: true, waitMs, waitForExit, blocking: true, pollThrottled: false, cooldownWaitMs: 0 };
 }
 
 export function finishRemoteProcessRead(plan, session, now) {
@@ -24,8 +28,10 @@ export function finishRemoteProcessRead(plan, session, now) {
     : 0;
   return {
     blocking_poll_throttled: plan.pollThrottled,
-    host_turn_handoff_recommended: session.closedAt === null,
-    status_polling_mode: "checkpoint",
+    host_turn_handoff_recommended: false,
+    status_polling_mode: session.closedAt === null ? "paced_followup" : "terminal",
+    tool_schema_generation: Number(serverMetadata.toolSchemaGeneration),
+    host_turn_deadline_observable: false,
     next_blocking_poll_after_ms: nextBlockingPollAfterMs,
   };
 }

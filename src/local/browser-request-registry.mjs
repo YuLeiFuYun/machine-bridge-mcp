@@ -37,7 +37,7 @@ export class BrowserRequestRegistry {
         clearTimeout(timeout);
         this.pending.delete(id);
         rejectPromise(pending.dispatchAttempted
-          ? browserRequestTransportError({ pending, code: "unavailable", fallback: error })
+          ? browserRequestTransportError({ pending, code: "unavailable", fallback: "browser extension send failed" })
           : error);
       }
     });

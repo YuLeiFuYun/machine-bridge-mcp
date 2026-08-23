@@ -1477,7 +1477,7 @@ async function workerSourceSelfTest() {
     "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
     "oauth-token-issuance.ts", "oauth-refresh-exchange.ts", "oauth-refresh-persistence.ts", "oauth-controller.ts", "oauth-authorization-page.ts", "authority-revocations.ts", "observability.ts", "tool-timeout.ts", "daemon-liveness.ts",
     "daemon-sockets.ts", "daemon-socket-attachment.ts", "runtime-alarm.ts", "runtime-alarm-storage.ts",
-    "pending-admission.ts", "mcp-jsonrpc.ts", "mcp-http-contract.ts", "mcp-controller.ts",
+    "mcp-jsonrpc.ts", "mcp-http-contract.ts", "mcp-controller.ts",
     "mcp-response-stream.ts", "mcp-response-proxy.ts", "mcp-http-accept.ts", "mcp-removed-protocol.ts",
     "worker-mcp-config.ts", "mcp-stream-proxy-contract.ts", "websocket-protocol.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
@@ -1527,7 +1527,6 @@ async function workerSourceSelfTest() {
     "detachSocket",
     "rebindInstance",
     "clientRequestKey",
-    "PendingAdmissionGate",
     "Object.create(null)",
     'role: "candidate"',
     'role: "probing"',

@@ -1,7 +1,9 @@
 // @ts-check
-
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
-
+import { RelayResultRetention } from "./relay-result-retention.mjs";
+import { RelayRedeliverySafety } from "./relay-redelivery-safety.mjs";
+import { positiveInteger } from "./numbers.mjs";
+import { shortCallId } from "./short-identifiers.mjs";
 /** @typedef {{id?: unknown, [key: string]: unknown}} RelayResult */
 /** @typedef {{event?: (level: string, name: string, fields: Record<string, unknown>, message: string) => void, warn?: (message: string) => void}} RecoveryLogger */
 /** @typedef {{setTimeout: (callback: () => void, delay: number) => any, clearTimeout: (handle: any) => void}} RecoveryScheduler */
@@ -14,7 +16,7 @@ import relayContract from "../shared/relay-contract.json" with { type: "json" };
  *   suppressCall?: (callId: string, reason: string) => void,
  *   cancelOrigin?: (reason: string) => number,
  *   terminate?: () => void,
- *   graceMs?: unknown,
+ *   graceMs?: unknown, now?: () => number,
  *   scheduler?: RecoveryScheduler,
  * }} RelayCallRecoveryOptions
  */
@@ -34,8 +36,11 @@ export class RelayCallRecovery {
     this.terminate = typeof options.terminate === "function" ? options.terminate : () => {};
     this.graceMs = positiveInteger(options.graceMs, DEFAULT_RECONNECT_GRACE_MS);
     this.scheduler = options.scheduler || { setTimeout, clearTimeout };
-    /** @type {Map<string, RelayResult>} */
-    this.pendingResults = new Map();
+    this.redeliverySafety = new RelayRedeliverySafety({ logger: this.logger });
+    this.resultRetention = new RelayResultRetention({
+      logger: this.logger, now: options.now,
+      onOwnershipLost: (callId) => this.redeliverySafety.markUnsafe(callId),
+    });
     /** @type {any} */
     this.reconnectTimer = null;
   }
@@ -51,41 +56,43 @@ export class RelayCallRecovery {
       return false;
     }
 
-    // Retain sent results until the Worker commits and acknowledges them.
-    this.pendingResults.set(callId, response);
+    this.resultRetention.pruneExpired();
+    const retention = this.resultRetention.retainForDelivery(callId, response);
+    if (retention === "full") return false;
     const sent = this.send(response);
     if (sent) {
       this.logger.event?.("debug", "relay.tool_result.awaiting_ack", {
-        call_id: shortCallId(callId), unacknowledged_results: this.pendingResults.size,
+        call_id: shortCallId(callId), unacknowledged_results: this.resultRetention.size,
       }, "Delivered a tool result and retained it until Worker acknowledgement");
       return true;
     }
 
     this.scheduleExpiry();
     this.logger.event?.("debug", "relay.tool_result.queued", {
-      call_id: shortCallId(callId), queued_results: this.pendingResults.size,
+      call_id: shortCallId(callId), queued_results: this.resultRetention.size,
     }, "Queued a completed tool result while the relay reconnects");
     return false;
   }
 
-  /** @param {unknown} callId */
-  acknowledge(callId) { return this.pendingResults.delete(String(callId)); }
+  /** @param {string} callId */ acknowledge(callId) { return this.resultRetention.delete(callId); }
+  /** @param {string} callId */ discard(callId) { return this.resultRetention.delete(callId); }
+  retainedResultCount() { return this.resultRetention.size; }
+  /** @param {string} callId */ hasRetainedResult(callId) { return this.resultRetention.has(callId); }
 
-  /** @param {unknown} callId */
-  discard(callId) { return this.pendingResults.delete(String(callId)); }
-
-  ownedCallIds() { return [...new Set([...this.activeCallIds(), ...this.pendingResults.keys()])]; }
+  ownedCallIds() { return [...new Set([...this.activeCallIds(), ...this.resultRetention.keys()])]; }
 
   /** @param {Iterable<string>} resumedCallIds @param {(callId: string) => boolean} cancelCall */
   reconcile(resumedCallIds, cancelCall) {
+    this.resultRetention.pruneExpired();
     const resumed = new Set(resumedCallIds);
+    this.redeliverySafety.observeResumedCallIds(resumed);
     const active = [...this.activeCallIds()];
     const locallyOwned = new Set(this.ownedCallIds());
-    const missing = [...resumed].filter((callId) => !locallyOwned.has(callId));
+    const missing = [...resumed].filter((callId) => !locallyOwned.has(callId) && this.redeliverySafety.canProveMissing(callId));
     let cancelled = 0; let discarded = 0;
     for (const callId of active) if (!resumed.has(callId) && cancelCall(callId)) cancelled += 1;
-    for (const callId of [...this.pendingResults.keys()]) {
-      if (!resumed.has(callId) && this.pendingResults.delete(callId)) discarded += 1;
+    for (const callId of [...this.resultRetention.keys()]) {
+      if (!resumed.has(callId) && this.resultRetention.delete(callId)) discarded += 1;
     }
     if (cancelled > 0 || discarded > 0 || missing.length > 0) this.logger.event?.(
       "debug", "relay.calls.reconciled",
@@ -97,10 +104,10 @@ export class RelayCallRecovery {
 
   disconnected() {
     const activeCalls = [...this.activeCallIds()].length;
-    if (activeCalls === 0 && this.pendingResults.size === 0) return;
+    if (activeCalls === 0 && this.resultRetention.size === 0) return;
     this.scheduleExpiry();
     this.logger.event?.("debug", "relay.calls.awaiting_reconnect", {
-      active_calls: activeCalls, queued_results: this.pendingResults.size, grace_ms: this.graceMs,
+      active_calls: activeCalls, queued_results: this.resultRetention.size, grace_ms: this.graceMs,
     }, "Keeping in-flight tool calls alive during a brief relay interruption");
   }
 
@@ -110,8 +117,9 @@ export class RelayCallRecovery {
 
   /** @param {string} reason */
   retryUnacknowledged(reason) {
+    this.resultRetention.pruneExpired();
     let delivered = 0;
-    for (const response of this.pendingResults.values()) {
+    for (const response of this.resultRetention.values()) {
       if (!this.send(response)) {
         this.scheduleExpiry();
         break;
@@ -122,14 +130,14 @@ export class RelayCallRecovery {
       this.logger.event?.(reason === "reconnected" ? "info" : "debug", "relay.tool_results.redelivered", {
         delivered_results: delivered,
         reason,
-        unacknowledged_results: this.pendingResults.size,
+        unacknowledged_results: this.resultRetention.size,
       }, "Redelivered completed tool results awaiting Worker acknowledgement");
     }
   }
 
   stop() {
     this.clearTimer();
-    this.pendingResults.clear();
+    this.resultRetention.discardAll();
   }
 
   scheduleExpiry() {
@@ -138,8 +146,7 @@ export class RelayCallRecovery {
       this.reconnectTimer = null;
       for (const callId of this.activeCallIds()) this.suppressCall(callId, "relay_reconnect_timeout");
       const cancelled = this.cancelOrigin("remote relay reconnect grace expired");
-      const discarded = this.pendingResults.size;
-      this.pendingResults.clear();
+      const discarded = this.resultRetention.discardAll();
       if (cancelled > 0) this.terminate();
       if (cancelled > 0 || discarded > 0) {
         const message = `remote relay did not recover within ${this.graceMs / 1000} seconds; cancelled ${cancelled} call(s) and discarded ${discarded} queued result(s)`;
@@ -156,13 +163,6 @@ export class RelayCallRecovery {
     this.scheduler.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
   }
-}
 
-/** @param {unknown} value @param {number} fallback */
-function positiveInteger(value, fallback) { const number = Number(value); return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback; }
-
-/** @param {unknown} value */
-function shortCallId(value) {
-  const text = String(value || "");
-  return text.length <= 18 ? text : `${text.slice(0, 10)}...${text.slice(-5)}`;
+  redeliverySafetySnapshot() { return this.redeliverySafety.snapshot(); }
 }

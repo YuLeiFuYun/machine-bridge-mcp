@@ -1988,7 +1988,7 @@ List effective direct-argv commands from project manifests and safe automatic pa
 
 **Run registered local command**
 
-Prefer this when the repository already defines the desired operation as a registered command or package script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation; use exec_command for ad hoc pipelines or run_process for an unregistered executable argv. Local foreground execution remains request-scoped. Remote execution is durable-first: the command is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required.
+Prefer this when the repository already defines the desired operation as a registered local command; a registered command may explicitly wrap a package-manager script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation. A package script name is not implicitly registered: use run_process with the package manager argv when no registered command exists, or exec_command for ad hoc shell composition. Local foreground execution remains request-scoped. Remote execution is durable-first: the command is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required.
 
 | Contract field | Value |
 |---|---|
@@ -2880,7 +2880,7 @@ Generate or reuse an Ed25519 SSH key pair on the local machine and register the 
 
 **Stage managed job draft**
 
-Validate and persist a durable managed-job draft without starting any process. This is a non-executing record only; a trusted owner client starts work with start_job after reviewing or reconstructing the plan.
+Validate and persist a durable managed-job draft without starting any process. This is a non-executing record only; a trusted owner client starts work with start_job after reviewing or reconstructing the plan. Main and finally steps default to 600 seconds and may explicitly request up to 21600 seconds (six hours), so one continuous command can exceed 100 minutes without artificial step splitting.
 
 | Contract field | Value |
 |---|---|
@@ -2951,7 +2951,7 @@ Validate and persist a durable managed-job draft without starting any process. T
           "timeout_seconds": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 3600,
+            "maximum": 21600,
             "default": 600
           },
           "allow_failure": {
@@ -3023,7 +3023,7 @@ Validate and persist a durable managed-job draft without starting any process. T
           "timeout_seconds": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 3600,
+            "maximum": 21600,
             "default": 600
           },
           "allow_failure": {
@@ -3083,7 +3083,7 @@ Validate and persist a durable managed-job draft without starting any process. T
 
 **Start managed job**
 
-Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, and guaranteed-attempt finally steps. The independent local runner continues if the MCP connection disappears. On macOS, an authorized remote account job keeps a runner-owned idle-sleep assertion only after the runner ownership claim is confirmed and persisted account ownership is validated, then through admission, steps, cleanup, and terminal persistence; local managed jobs do not acquire this remote-continuity assertion, and it does not override explicit sleep or lid-close behavior. Use an idempotency_key to deduplicate an uncertain retry while the original job record is retained; eviction/retention expiry ends that deduplication window, so this is not permanent exactly-once execution. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments.
+Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, and guaranteed-attempt finally steps. The independent local runner continues if the MCP connection disappears. On macOS, an authorized remote account job keeps a runner-owned idle-sleep assertion only after the runner ownership claim is confirmed and persisted account ownership is validated, then through admission, steps, cleanup, and terminal persistence; local managed jobs do not acquire this remote-continuity assertion, and it does not override explicit sleep or lid-close behavior. Use an idempotency_key to deduplicate an uncertain retry while the original job record is retained; eviction/retention expiry ends that deduplication window, so this is not permanent exactly-once execution. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments. Each main/finally step defaults to 600 seconds and may explicitly request up to 21600 seconds (six hours); use this managed-job surface when one continuous command legitimately needs more than the 600-second durable one-step process limit.
 
 | Contract field | Value |
 |---|---|
@@ -3158,7 +3158,7 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
           "timeout_seconds": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 3600,
+            "maximum": 21600,
             "default": 600
           },
           "allow_failure": {
@@ -3230,7 +3230,7 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
           "timeout_seconds": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 3600,
+            "maximum": 21600,
             "default": 600
           },
           "allow_failure": {
@@ -3321,7 +3321,7 @@ List recent detached managed jobs and their lifecycle status without returning s
 
 **Read managed job**
 
-Return one managed job status plus bounded, resource-redacted step results. current_phase=resource_admission means the runner is still in cooperative pre-spawn resource admission and no child for that step has started yet. Completed step results keep duration_ms as total orchestration duration; local/owner reads additionally expose resource_admission_ms as the pre-spawn portion, while delegated non-owner reads omit that machine-user scheduling timing. Registered resource paths and contents are never returned.
+Return one managed job status plus bounded, resource-redacted step results. current_phase=resource_admission means the runner is still in cooperative pre-spawn resource admission and no child for that step has started yet. Completed step results keep duration_ms as total orchestration duration; local/owner reads additionally expose resource_admission_ms as the pre-spawn portion, while delegated non-owner reads omit that machine-user scheduling timing. Registered resource paths and contents are never returned. A valid job_id whose retained record no longer exists fails with typed not_found; absence of retained state is not proof that the underlying operation never executed, so callers must not blindly resubmit side effects.
 
 | Contract field | Value |
 |---|---|
@@ -3340,6 +3340,13 @@ Return one managed job status plus bounded, resource-redacted step results. curr
     "job_id": {
       "type": "string",
       "pattern": "^job_[A-Za-z0-9_-]{24,}$"
+    },
+    "wait_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 40000,
+      "default": 0,
+      "description": "Bounded wait for a status/phase change or terminal state before returning. Local calls default to an immediate checkpoint; hosted relay discovery overrides the default and maximum to its paced long-poll contract."
     }
   },
   "required": [

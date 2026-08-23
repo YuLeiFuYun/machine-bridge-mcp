@@ -40,8 +40,3 @@ export function waitForSessionChange(session, waitMs, cancellationCheck, options
     if (options.keepAlive !== true) timer.unref?.();
   });
 }
-
-export function boundedErrorMessage(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/[\r\n]+/g, " ").slice(0, 4096) || "process failed";
-}

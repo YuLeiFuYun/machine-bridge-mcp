@@ -38,9 +38,12 @@ export function normalizeRelayToolCall(message) {
   const argumentsValue = message.arguments === undefined ? {} : message.arguments;
   const authorization = normalizeRelayAuthorization(message.authorization);
   const timeoutMs = message.timeout_ms;
+  const maximumTimeoutMs = tool === "read_job"
+    ? relayContract.maximumRelayToolTimeoutMs
+    : relayContract.maximumOrdinaryRelayToolTimeoutMs;
   if (!id || !tool || !isPlainRecord(argumentsValue) || !authorization
       || typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs)
-      || timeoutMs < 1000 || timeoutMs > relayContract.maximumRelayToolTimeoutMs) return { ok: false, id };
+      || timeoutMs < 1000 || timeoutMs > maximumTimeoutMs) return { ok: false, id };
   return {
     ok: true,
     id,

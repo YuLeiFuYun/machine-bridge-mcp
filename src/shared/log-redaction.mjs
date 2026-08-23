@@ -12,6 +12,14 @@ const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\
 const URL_CREDENTIALS = /https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@[^\s/"'<>]+/gi;
 const API_SECRET = /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g;
 const PRIVATE_KEY_HEADER = /-----BEGIN\s+(?:(?:OPENSSH|RSA|EC|DSA)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/g;
+const SENSITIVE_FIELD_NAME = /(?:authorization|cookie|password|passwd|secret|token|verifier|proof|credential|(?:api|private|access|signing)[._-]?key|(?:^|[._-])key(?:$|[._-]))/i;
+
+export function isSensitiveLogFieldName(value) {
+  let name;
+  try { name = String(value ?? "").replace(/([a-z0-9])([A-Z])/g, "$1_$2"); }
+  catch { return true; }
+  return SENSITIVE_FIELD_NAME.test(name);
+}
 
 export function sanitizePortableLogText(value, options = {}) {
   let raw;

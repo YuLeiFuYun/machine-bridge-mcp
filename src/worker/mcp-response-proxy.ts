@@ -1,5 +1,6 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { MCP_PROTOCOL_VERSION } from "../shared/mcp-protocol.mjs";
+import { cancelMcpResponseStream } from "./mcp-response-cancel.ts";
 import { randomToken } from "./oauth-state.ts";
 import { acceptsEventStream } from "./mcp-http-accept.ts";
 import {
@@ -36,12 +37,12 @@ export async function proxyMcpResponseStream(input: {
     ));
   } catch (error) {
     input.request.signal.removeEventListener("abort", earlyAbort);
-    if (earlyAbortReason !== undefined) input.ctx.waitUntil(cancelCall(input.bridge, input.request, streamId));
+    if (earlyAbortReason !== undefined) input.ctx.waitUntil(cancelMcpResponseStream(input.bridge, input.request, streamId));
     throw error;
   }
   if (!upstream.body || !upstream.headers.get("content-type")?.toLowerCase().startsWith("text/event-stream")) {
     input.request.signal.removeEventListener("abort", earlyAbort);
-    if (earlyAbortReason !== undefined) input.ctx.waitUntil(cancelCall(input.bridge, input.request, streamId));
+    if (earlyAbortReason !== undefined) input.ctx.waitUntil(cancelMcpResponseStream(input.bridge, input.request, streamId));
     return upstream;
   }
 
@@ -49,6 +50,7 @@ export async function proxyMcpResponseStream(input: {
   let closed = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let publicTarget: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let cancellation: Promise<void> | undefined;
   const finish = () => {
     if (closed) return false;
     closed = true;
@@ -63,11 +65,13 @@ export async function proxyMcpResponseStream(input: {
   const cancel = (reason: unknown, closeResponse = true): boolean => {
     if (!finish()) return false;
     upstreamController.abort(reason);
-    void reader.cancel(reason)
-      .catch(() => { /* Public-stream cancellation is already authoritative; upstream cancel is best-effort cleanup. */ })
-      .finally(() => releaseReaderQuietly(reader));
-    if (closeResponse) closePublic();
-    input.ctx.waitUntil(cancelCall(input.bridge, input.request, streamId));
+    cancellation = Promise.allSettled([reader.cancel(reason), cancelMcpResponseStream(input.bridge, input.request, streamId)])
+      .then(() => undefined)
+      .finally(() => {
+        releaseReaderQuietly(reader);
+        if (closeResponse) closePublic();
+      });
+    input.ctx.waitUntil(cancellation);
     return true;
   };
   const abort = () => cancel(input.request.signal.reason ?? "client request aborted");
@@ -89,7 +93,7 @@ export async function proxyMcpResponseStream(input: {
       }, HEARTBEAT_MS);
       void pumpUpstream(reader, target, finish, (reason) => cancel(reason, false));
     },
-    cancel(reason) { cancel(reason); },
+    cancel(reason) { cancel(reason); return cancellation; },
   });
   return new Response(body, {
     status: upstream.status,
@@ -123,13 +127,4 @@ async function pumpUpstream(
 
 function releaseReaderQuietly(reader: ReadableStreamDefaultReader<Uint8Array>): void {
   try { reader.releaseLock(); } catch { /* The reader may already be released by cancellation cleanup. */ }
-}
-
-async function cancelCall(bridge: BridgeFetcher, request: Request, streamId: string): Promise<void> {
-  try {
-    const control = new Request(request.url, { method: "POST" });
-    await bridge.fetch(withProxyHeaders(control, "cancel", streamId));
-  } catch {
-    // The daemon call retains its bounded operation timeout if cancellation delivery fails.
-  }
 }

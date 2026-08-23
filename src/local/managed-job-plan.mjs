@@ -9,6 +9,7 @@ const MAX_RESOURCE_BYTES = 1024 * 1024;
 const MAX_JOB_RESOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_RESOURCES = 64;
 const MAX_TEMPORARY_FILE_BYTES = 512 * 1024;
+export const MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS = 6 * 60 * 60;
 
 export function validateResourceName(value) {
   const name = String(value || "").trim();
@@ -113,7 +114,10 @@ function validateSteps(value, label, context, allowEmpty = false) {
       env_resources: envResources,
       stdin,
       stdin_resource: stdinResource,
-      timeout_seconds: optionalInteger(input.timeout_seconds, 600, 1, 3600, `${label}[${index}].timeout_seconds`),
+      timeout_seconds: optionalInteger(
+        input.timeout_seconds, 600, 1, MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS,
+        `${label}[${index}].timeout_seconds`,
+      ),
       allow_failure: optionalBoolean(input.allow_failure, `${label}[${index}].allow_failure`),
       capture_output: validateCaptureOutput(input.capture_output, `${label}[${index}].capture_output`),
     };

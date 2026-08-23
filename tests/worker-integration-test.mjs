@@ -11,12 +11,15 @@ import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-aut
 import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
 import { accountRoleToolNames } from "../src/worker/access.ts";
 import { workspaceTools } from "../src/worker/tool-catalog.ts";
+import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
+import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../src/worker/mcp-subscription-contract.ts";
 import { runOfficialMcpConformance } from "../scripts/official-mcp-conformance.mjs";
 
 let daemonInstanceSequence = 0;
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 const port = await openPort();
 const base = `http://127.0.0.1:${port}`;
 const persistDir = await mkdtemp(path.join(os.tmpdir(), "mbm-worker-test-"));
@@ -507,6 +510,17 @@ try {
     body: JSON.stringify(currentMcpRequest(99, "tools/list", {})),
   });
   assert(retainedFamilyAccess.status === 200, "concurrent refresh retry invalidated the replacement access token");
+  const retainedFamilyTools = await retainedFamilyAccess.json();
+  assert(retainedFamilyTools.result?.ttlMs === 0, "current tools/list still advertised a reusable cross-release schema cache");
+  const retainedReadJob = retainedFamilyTools.result?.tools?.find((tool) => tool.name === "read_job");
+  assert(retainedReadJob?.inputSchema?.properties?.wait_ms?.default === 40_000
+    && retainedReadJob?.inputSchema?.properties?.wait_ms?.maximum === 300_000
+    && String(retainedReadJob?.description || "").includes(`Tool schema generation ${TOOL_SCHEMA_GENERATION}.`)
+    && String(retainedReadJob?.description || "").includes("server-side long-poll")
+    && String(retainedReadJob?.description || "").includes("wait_ms=0")
+    && String(retainedReadJob?.description || "").includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
+    && !String(retainedReadJob?.description || "").includes("read an active job at most once"),
+  "current tools/list omitted paced read_job/schema-freshness guidance");
 
   const currentDiscovery = await fetchJson(`${base}/mcp`, {
     method: "POST",
@@ -518,8 +532,10 @@ try {
     && JSON.stringify(currentDiscovery.body.result?.supportedVersions) === JSON.stringify(["2026-07-28"]),
   "current discovery omitted resultType or advertised a removed protocol version");
   assert(currentDiscovery.body.result?.cacheScope === "public"
+    && currentDiscovery.body.result?.ttlMs === 0
+    && String(currentDiscovery.body.result?.instructions || "").includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
     && currentDiscovery.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
-  "current discovery omitted cache or server identity metadata");
+  "current discovery omitted non-cacheable continuation instructions or server identity metadata");
   assert(currentDiscovery.response.headers.get("mcp-session-id") === null, "current discovery minted a protocol session");
 
   const spoofedCurrentCancelHeaders = currentMcpHeaders(ownerAccessToken, "tools/list");
@@ -804,7 +820,8 @@ try {
   const compactFirstStatusJson = JSON.stringify(compactFirstStatus);
   assert(compactFirstStatusJson.length < JSON.stringify(firstStatus).length * 0.6,
     "remote compact server_info did not materially reduce the payload");
-  assert(compactFirstStatusJson.length <= 2400,
+  // Current freshness adds bounded per-account subscription diagnostics; keep explicit headroom without dropping prior summary fields.
+  assert(compactFirstStatusJson.length <= 2600,
     `remote compact server_info exceeded its hot-path output budget: ${compactFirstStatusJson.length} chars`);
   const invalidProbeCandidate = await connectDaemon(base);
   daemonSockets.push(invalidProbeCandidate);
@@ -822,9 +839,19 @@ try {
     && firstStatus.tool_delivery?.remote_process_acceptance_max_ms === 10_000
     && firstStatus.tool_delivery?.remote_process_execution_timeout_max_ms === 600_000
     && firstStatus.tool_delivery?.managed_job_resource_admission_wait_max_ms === 1_800_000
+    && firstStatus.tool_delivery?.remote_managed_job_read_wait_default_ms === 40_000
+    && firstStatus.tool_delivery?.remote_managed_job_read_wait_max_ms === 300_000
     && firstStatus.tool_delivery?.remote_process_session_start_execution_max_ms === 10_000
+    && firstStatus.tool_delivery?.tool_schema_generation === TOOL_SCHEMA_GENERATION
+    && firstStatus.tool_delivery?.tool_schema_server_version === firstStatus.version
+    && firstStatus.tool_delivery?.discovery_ttl_ms === 0
+    && firstStatus.tool_delivery?.tool_list_ttl_ms === 0
+    && firstStatus.tool_delivery?.host_visible_schema_known_to_server === false
+    && firstStatus.tool_delivery?.host_schema_refresh_required_on_generation_change === true
+    && firstStatus.tool_delivery?.host_turn_deadline_observable === false
+    && firstStatus.tool_delivery?.managed_jobs_detached_from_mcp_response === true
     && !("remote_process_foreground_execution_max_ms" in firstStatus.tool_delivery),
-  "Worker server_info lost the separated durable-process acceptance/execution or managed-job admission contract");
+  "Worker server_info lost schema freshness evidence or the separated durable-process acceptance/execution contract");
 
   const timedOutCandidate = await connectDaemon(base);
   daemonSockets.push(timedOutCandidate);
@@ -965,27 +992,58 @@ try {
   assert(invalidSubscription.response.status === 400 && invalidSubscription.body.error?.code === -32602,
     "current HTTP accepted a subscription without notifications");
 
+  const subscriptionAbort = new AbortController();
   const subscriptionResponse = await stableFetch(`${base}/mcp`, {
     method: "POST",
     headers: currentMcpHeaders(ownerAccessToken, "subscriptions/listen"),
     body: JSON.stringify(currentMcpRequest(9104, "subscriptions/listen", {
       notifications: { toolsListChanged: true },
     })),
+    signal: subscriptionAbort.signal,
   });
-  const subscriptionMessages = parseSseJsonMessages(await subscriptionResponse.text());
+  const subscriptionReader = subscriptionResponse.body.getReader();
+  const subscriptionMessages = await readSseJsonMessages(subscriptionReader, 2);
   assert(subscriptionResponse.status === 200
       && subscriptionResponse.headers.get("content-type")?.startsWith("text/event-stream"),
   "current HTTP subscription did not use its request-scoped SSE response");
   assert(subscriptionMessages.length === 2
       && subscriptionMessages[0].method === "notifications/subscriptions/acknowledged"
-      && Object.keys(subscriptionMessages[0].params?.notifications ?? {}).length === 0,
-  "current HTTP subscription did not acknowledge the empty supported notification subset");
+      && subscriptionMessages[0].params?.notifications?.toolsListChanged === true,
+  "current HTTP subscription did not acknowledge the supported toolsListChanged notification");
   assert(subscriptionMessages[0].params?._meta?.["io.modelcontextprotocol/subscriptionId"] === 9104
-      && subscriptionMessages[1].id === 9104
-      && subscriptionMessages[1].result?.resultType === "complete"
-      && subscriptionMessages[1].result?._meta?.["io.modelcontextprotocol/subscriptionId"] === 9104,
-  "current HTTP subscription did not close gracefully with correlated result metadata");
-
+      && subscriptionMessages[1].method === "notifications/tools/list_changed"
+      && subscriptionMessages[1].params?._meta?.["io.modelcontextprotocol/subscriptionId"] === 9104,
+  "current HTTP subscription did not emit a correlated tool-list freshness edge");
+  const activeSubscriptionStatus = await callServerInfo(base, ownerAccessToken, 9120);
+  assert(activeSubscriptionStatus.tool_delivery?.tools_list_change_subscription_supported === true
+      && activeSubscriptionStatus.tool_delivery?.tools_list_change_subscription_active_for_account === 1
+      && activeSubscriptionStatus.tool_delivery?.tools_list_change_subscription_opened_for_account === true
+      && activeSubscriptionStatus.tool_delivery?.tools_list_change_subscription_client_receipt_observable === false
+      && activeSubscriptionStatus.tool_delivery?.tools_list_change_subscription_lease_ms === MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS,
+  "server_info did not distinguish a server-opened toolsListChanged stream from unobservable client receipt");
+  const pendingSubscriptionRead = subscriptionReader.read();
+  assert(await Promise.race([
+    pendingSubscriptionRead.then(() => "settled"),
+    new Promise((resolve) => { setTimeout(() => resolve("open"), 25); }),
+  ]) === "open", "current HTTP toolsListChanged subscription closed before its bounded server lease");
+  subscriptionAbort.abort();
+  const cancelledSubscriptionRead = await Promise.race([
+    pendingSubscriptionRead.then((result) => ({ settled: true, done: result.done === true }), () => ({ settled: true, done: true })),
+    sleep(1_000).then(() => ({ settled: false, done: false })),
+  ]);
+  assert(cancelledSubscriptionRead.settled && cancelledSubscriptionRead.done,
+    "current HTTP request abort did not settle the subscription response body");
+  let releasedSubscriptionStatus = await callServerInfo(base, ownerAccessToken, 9121);
+  const releaseDeadline = Date.now() + MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS + 2_000;
+  let releaseProbeId = 9122;
+  while (releasedSubscriptionStatus.tool_delivery?.tools_list_change_subscription_active_for_account !== 0
+      && Date.now() < releaseDeadline) {
+    await sleep(250);
+    releasedSubscriptionStatus = await callServerInfo(base, ownerAccessToken, releaseProbeId++);
+  }
+  assert(releasedSubscriptionStatus.tool_delivery?.tools_list_change_subscription_active_for_account === 0
+      && releasedSubscriptionStatus.tool_delivery?.tools_list_change_subscription_opened_for_account === true,
+  "current HTTP request abort did not release Durable Object subscription capacity within the bounded server lease");
   const currentNotification = await fetchJson(`${base}/mcp`, {
     method: "POST",
     headers: currentMcpHeaders(ownerAccessToken, "notifications/cancelled"),
@@ -1036,14 +1094,18 @@ try {
   const remoteReadProcess = remoteAgentTools.find((tool) => tool.name === "read_process");
   const remoteReadProcessDescription = String(remoteReadProcess?.description || "");
   assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1000
-    && remoteReadProcessDescription.includes("status checkpoints")
-    && remoteReadProcessDescription.includes("running=true")
-    && remoteReadProcessDescription.includes("stop polling"),
-  "remote tools/list lost the one-second process checkpoint/handoff contract");
+    && remoteReadProcess?.inputSchema?.properties?.wait_ms?.default === 1000
+    && remoteReadProcessDescription.includes("paced follow-up")
+    && remoteReadProcessDescription.includes("wait_ms=0")
+    && remoteReadProcessDescription.includes("same MCP call")
+    && remoteReadProcessDescription.includes("next_blocking_poll_after_ms")
+    && remoteReadProcessDescription.includes("must not busy-loop"),
+  "remote tools/list lost the one-second server-paced process-follow-up contract");
   const remoteListJobsDescription = String(remoteAgentTools.find((tool) => tool.name === "list_jobs")?.description || "");
-  assert(remoteListJobsDescription.includes("inventory checkpoint")
-    && remoteListJobsDescription.includes("Do not repeat list_jobs"),
-  "remote tools/list left list_jobs usable as a same-response wait loop");
+  assert(remoteListJobsDescription.includes("inventory operation")
+    && remoteListJobsDescription.includes("Do not repeat list_jobs")
+    && remoteListJobsDescription.includes("use read_job instead"),
+  "remote tools/list lost known-job routing away from list_jobs polling");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
   const overLimit = await callTool(base, ownerAccessToken, 2502, "run_process", {
     argv: ["must-not-run"], timeout_seconds: 601, idempotency_key: "worker-over-limit",
@@ -1352,12 +1414,12 @@ try {
     policy: candidatePolicy,
     relay_diagnostics: { schema_version: 1, transport: "https", outage_active: true, outage_count: 1 },
   });
-  assert(legacyTakeover.response.status === 200 && legacyTakeover.body.phase === "standby",
-    "rolling beta.103 fallback request was rejected instead of degrading safely without generation takeover");
+  assert(legacyTakeover.response.status === 400 && legacyTakeover.body.error === "invalid_daemon_http_exchange",
+    "generation-less HTTPS takeover remained accepted after its rolling compatibility boundary expired");
   const afterLegacyTakeover = await callServerInfo(base, ownerAccessToken, 8886);
   assert(afterLegacyTakeover.worker?.sockets_live?.ready === 1
     && afterLegacyTakeover.worker?.sockets_live?.https_fallback_ready === 0,
-  "legacy instance-only fallback takeover was allowed to retire a beta.104 ready WebSocket");
+  "rejected generation-less HTTPS takeover changed verified WebSocket ownership");
 
   const asymmetricRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const asymmetricCall = toolCallRequest(base, ownerAccessToken, 8890, "list_dir", { path: "." });
@@ -1580,15 +1642,29 @@ try {
     && ambiguousError?.code === "timeout"
     && ambiguousError?.details?.side_effects_started === true
     && ambiguousError?.details?.recovery?.credential === "idempotency_key"
-    && ambiguousError?.details?.recovery?.idempotency_key === ambiguousAcceptanceKey
+    && ambiguousError?.details?.recovery?.credential_source === "original_request_arguments"
+    && ambiguousError?.details?.recovery?.idempotency_key === undefined
     && ambiguousError?.details?.recovery?.action === "retry_same_tool_arguments_with_same_idempotency_key",
-  "lost durable acceptance response did not return the original idempotent recovery credential");
+  "lost durable acceptance response did not return a non-echoing idempotent recovery instruction");
 
   const demoteLastOwner = await stableFetch(`${base}/admin/accounts`, adminRequest("PATCH", "/admin/accounts", {
     account_id: ownerAccount.body.account.account_id, role: "reviewer",
   }));
   assert(demoteLastOwner.status === 409, "last active owner could be demoted");
 
+  const reviewerRevokedSubscriptionResponse = await stableFetch(`${base}/mcp`, {
+    method: "POST",
+    headers: currentMcpHeaders(reviewerToken, "subscriptions/listen"),
+    body: JSON.stringify(currentMcpRequest(2729, "subscriptions/listen", {
+      notifications: { toolsListChanged: true },
+    })),
+  });
+  const reviewerRevokedSubscriptionReader = reviewerRevokedSubscriptionResponse.body.getReader();
+  const reviewerRevokedSubscriptionMessages = await readSseJsonMessages(reviewerRevokedSubscriptionReader, 2);
+  assert(reviewerRevokedSubscriptionResponse.status === 200
+      && reviewerRevokedSubscriptionMessages[1]?.method === "notifications/tools/list_changed",
+  "reviewer authority-revocation fixture did not establish a live subscription");
+  const reviewerRevokedSubscriptionPending = reviewerRevokedSubscriptionReader.read();
   const reviewerRevokedCall = currentMcpCall(base, reviewerToken, 2730, "tools/call", {
     name: "list_dir", arguments: { path: "." },
   });
@@ -1607,6 +1683,12 @@ try {
   assert(reviewerRevokedResult.body.result?.isError === true
     && reviewerRevokedResult.body.result?.structuredContent?.error?.code === "authorization_denied",
   "reviewer in-flight call survived its account-version revocation");
+  const revokedSubscriptionSettlement = await Promise.race([
+    reviewerRevokedSubscriptionPending.then((result) => ({ settled: true, done: result.done === true }), () => ({ settled: true, done: true })),
+    sleep(1_000).then(() => ({ settled: false, done: false })),
+  ]);
+  assert(revokedSubscriptionSettlement.settled && revokedSubscriptionSettlement.done,
+    "reviewer account-version revocation left its authenticated subscription stream alive");
 
   const replacedForRevocation = candidateDaemon;
   const replacedForRevocationClosed = waitForWsClose(replacedForRevocation);
@@ -2279,6 +2361,18 @@ function parseSseJsonMessages(text) {
     try { messages.push(JSON.parse(line.slice(6))); } catch {}
   }
   return messages;
+}
+
+async function readSseJsonMessages(reader, count) {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const messages = parseSseJsonMessages(text);
+    if (messages.length >= count) return messages.slice(0, count);
+    const chunk = await reader.read();
+    if (chunk.done) return messages;
+    text += decoder.decode(chunk.value, { stream: true });
+  }
 }
 
 function fetchJson(url, options) {

@@ -12,11 +12,12 @@ import { ProcessTracker } from "../src/local/process-tracker.mjs";
 import { childExitedBeforeTimeout, createChildProcessSettlement } from "../src/local/child-process-settlement.mjs";
 import { processState } from "../src/local/process-identity.mjs";
 import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
-import { executionGuardrailsSnapshot } from "../src/local/execution-limits.mjs";
+import { executionGuardrailsSnapshot, MAX_CONCURRENT_TOOL_CALLS } from "../src/local/execution-limits.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
 import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
+import { boundedProcessErrorMessage } from "../src/local/process-error-message.mjs";
 import { runExecutable, workspaceShellCommand } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
@@ -28,6 +29,8 @@ import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/
 import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
+import { relayRecoveryCapacityRejection } from "../src/local/relay-recovery-admission.mjs";
+import { relayRecoveryCapacitySnapshot } from "../src/local/relay-recovery-diagnostics.mjs";
 import { startAutostartLogMaintenance } from "../src/local/autostart-log-maintenance.mjs";
 import { createSecurityAuditFailureReporter } from "../src/local/security-audit-warning.mjs";
 import { resourceAdmissionLogFields } from "../src/local/resource-admission-diagnostics.mjs";
@@ -46,6 +49,7 @@ await testWorkspaceSearchFanout();
 await testRuntimeInfoProjection();
 testToolResultBoundary();
 await testDuplicateRelayCallId();
+await testRelayRecoveryAdmissionRejectsBeforeExecution();
 testRelayReadinessProbe();
 await testRelayReadinessStateGuards();
 testRelayCancellationSuppression();
@@ -55,6 +59,7 @@ testRelayHandshakeDiagnostics();
 testRuntimeConvenienceMethods();
 await testRuntimeStartStopRace();
 testRemoteActivityIdleSleepGuard();
+testRelayRecoveryCapacity();
 testRelayReconnectDelivery();
 testAutostartLogMaintenance();
 await testProcessExecutionNoShell();
@@ -520,6 +525,34 @@ async function testToolExecutor() {
   assert(events.some((event) => event.name === "tool.call.started") && events.some((event) => event.name === "tool.call.failed"), "structured lifecycle events were not emitted");
   assert(registry.snapshot().active === 0, "tool executor leaked call lifecycle state");
 
+  const managedJobReadExecutor = new ToolExecutor({
+    handlers: { read_job: async (args) => ({ wait_ms: args.wait_ms }) },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, source: "trusted-owner", category: "ordinary operation", scopes: [] }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    logger: { event() {} },
+  });
+  assert((await managedJobReadExecutor.execute("read_job", { job_id: "job_123456789012345678901234", wait_ms: 40_001 }, {
+    callId: "relay-read-job-over-local-maximum", origin: "relay", authorization: { role: "owner" },
+  })).wait_ms === 40_001, "relay read_job did not accept the hosted wait extension above the local schema maximum");
+  assert((await managedJobReadExecutor.execute("read_job", { job_id: "job_123456789012345678901234", wait_ms: 300_000 }, {
+    callId: "relay-read-job-hosted-maximum", origin: "relay", authorization: { role: "owner" },
+  })).wait_ms === 300_000, "relay read_job did not accept the hosted maximum wait");
+  await expectReject(() => managedJobReadExecutor.execute("read_job", {
+    job_id: "job_123456789012345678901234", wait_ms: 300_001,
+  }, { callId: "relay-read-job-over-hosted-maximum", origin: "relay", authorization: { role: "owner" } }),
+  "invalid_request", "tool arguments do not match the input schema");
+  await expectReject(() => managedJobReadExecutor.execute("read_job", {
+    job_id: "job_123456789012345678901234", wait_ms: 40_001,
+  }, { callId: "local-read-job-over-local-maximum", origin: "stdio" }),
+  "invalid_request", "tool arguments do not match the input schema");
+  await expectReject(() => managedJobReadExecutor.execute("read_job", {
+    job_id: "job_123456789012345678901234", wait_ms: 40_000.5,
+  }, { callId: "relay-read-job-non-integer", origin: "relay", authorization: { role: "owner" } }),
+  "invalid_request", "tool arguments do not match the input schema");
+
   let authorizedRelayActivityStarts = 0;
   let authorizedRelayActivityEnds = 0;
   let authorizedHandlerRuns = 0;
@@ -776,7 +809,7 @@ async function testDuplicateRelayCallId() {
   let violation = "";
   const callId = "call_duplicate_12345678";
   const runtime = {
-    activeRelayCalls: new Set([callId]),
+    activeRelayCalls: new Map([[callId, "read_file"]]),
     handleRelayProtocolViolation(reason) { violation = reason; },
   };
   await LocalRuntime.prototype.handleRelayToolCall.call(runtime, {
@@ -791,9 +824,38 @@ async function testDuplicateRelayCallId() {
   assert(runtime.activeRelayCalls.has(callId), "duplicate relay call removed the original call lifecycle");
 }
 
+async function testRelayRecoveryAdmissionRejectsBeforeExecution() {
+  let toolCalls = 0;
+  let delivered = null;
+  const pendingResults = new Map();
+  for (let index = 0; index < 14; index += 1) pendingResults.set(`call_old_${index}`, { id: `call_old_${index}` });
+  const runtime = {
+    activeRelayCalls: new Map(),
+    relayCallRecovery: { retainedResultCount: () => pendingResults.size },
+    suppressedRelayResults: new Map(),
+    relay: {
+      sendForSession(value, sessionId) { delivered = { value, sessionId }; return { ok: true, reason: "sent" }; },
+    },
+    executeTool: async () => { toolCalls += 1; return { unexpected: true }; },
+    handleRelayProtocolViolation() { throw new Error("capacity fixture unexpectedly hit a protocol violation"); },
+  };
+  await LocalRuntime.prototype.handleRelayToolCall.call(runtime, {
+    type: "tool_call", id: "call_capacity_runtime_12345678", tool: "read_file", arguments: { path: "README.md" },
+    authorization: {
+      account_id: "acct_testowner_12345678901234567890", account_version: 1,
+      client_id: `mcp_client_${"c".repeat(43)}`, family_id: `mcp_family_${"c".repeat(43)}`, role: "owner",
+    },
+    timeout_ms: 5_000,
+  }, { sessionId: 77 });
+  assert(toolCalls === 0 && runtime.activeRelayCalls.size === 0
+    && delivered?.sessionId === 77 && delivered?.value?.error?.code === "limit_exceeded"
+    && delivered.value.error?.details?.side_effects_started === false,
+  "relay recovery ownership overflow executed a tool or failed to return a session-bound retry-safe rejection");
+}
+
 function testRelayCancellationSuppression() {
   const runtime = {
-    activeRelayCalls: new Set(["result-window"]),
+    activeRelayCalls: new Map([["result-window", "read_file"]]),
     suppressedRelayResults: new Map(),
     relayCallRecovery: { discard() { return false; } },
     callRegistry: { cancel() { return false; } },
@@ -815,7 +877,9 @@ async function testRelayResumeReconciliation() {
   const cancelled = [];
   const events = [];
   const runtime = {
-    activeRelayCalls: new Set(["call_keep_12345678", "call_cancel_12345678"]),
+    activeRelayCalls: new Map([
+      ["call_keep_12345678", "read_file"], ["call_cancel_12345678", "read_file"],
+    ]),
     suppressedRelayResults: new Map(),
     callRegistry: { cancel(id) { cancelled.push(id); return true; } },
     cancelCall: LocalRuntime.prototype.cancelCall,
@@ -823,17 +887,18 @@ async function testRelayResumeReconciliation() {
     logger: { event(level, name, fields) { events.push({ level, name, fields }); } },
   };
   runtime.relayCallRecovery = new RelayCallRecovery({
-    logger: runtime.logger, activeCallIds: () => runtime.activeRelayCalls,
+    logger: runtime.logger, activeCallIds: () => runtime.activeRelayCalls.keys(),
+    isRecoverable: () => true, send: () => true,
   });
-  runtime.relayCallRecovery.pendingResults.set("call_keep_12345678", { id: "call_keep_12345678" });
-  runtime.relayCallRecovery.pendingResults.set("call_discard_12345678", { id: "call_discard_12345678" });
+  runtime.relayCallRecovery.deliver({ id: "call_keep_12345678" });
+  runtime.relayCallRecovery.deliver({ id: "call_discard_12345678" });
   const missingResumedCalls = LocalRuntime.prototype.reconcileRelayCalls.call(runtime, ["call_keep_12345678", "call_missing_12345678"]);
   assert(JSON.stringify(missingResumedCalls) === JSON.stringify(["call_missing_12345678"]),
     "reconnect reconciliation did not prove which Worker-resumed call was never received by the daemon");
   assert(cancelled.join(",") === "call_cancel_12345678", "reconnect reconciliation cancelled the wrong active call");
   assert(runtime.suppressedRelayResults.get("call_cancel_12345678") === "caller_no_longer_waiting", "orphaned active call result was not suppressed");
-  assert(runtime.relayCallRecovery.pendingResults.has("call_keep_12345678")
-    && !runtime.relayCallRecovery.pendingResults.has("call_discard_12345678"), "reconnect reconciliation retained an orphaned queued result");
+  assert(runtime.relayCallRecovery.hasRetainedResult("call_keep_12345678")
+    && !runtime.relayCallRecovery.hasRetainedResult("call_discard_12345678"), "reconnect reconciliation retained an orphaned queued result");
   const reconciledEvent = events.find((event) => event.name === "relay.calls.reconciled");
   assert(reconciledEvent?.fields?.missing_resumed_calls === 1,
     "reconnect reconciliation did not expose the aggregate daemon-proven missing-call count");
@@ -1115,10 +1180,11 @@ function testRelayToolTimeoutNormalization() {
     tool: "exec_command",
     arguments: { command: "true" },
     authorization,
-    timeout_ms: relayContract.maximumRelayToolTimeoutMs,
+    timeout_ms: relayContract.maximumOrdinaryRelayToolTimeoutMs,
   });
-  assert(accepted.ok && accepted.timeoutMs === relayContract.maximumRelayToolTimeoutMs, "local relay rejected the shared maximum call deadline");
-  for (const timeout_ms of [relayContract.maximumRelayToolTimeoutMs + 1, -1, "5000", undefined]) {
+  assert(accepted.ok && accepted.timeoutMs === relayContract.maximumOrdinaryRelayToolTimeoutMs,
+    "local relay rejected the ordinary-tool maximum call deadline");
+  for (const timeout_ms of [relayContract.maximumOrdinaryRelayToolTimeoutMs + 1, -1, "5000", undefined]) {
     const rejected = normalizeRelayToolCall({
       id: "call_timeout_rejected_12345678",
       tool: "exec_command",
@@ -1126,8 +1192,25 @@ function testRelayToolTimeoutNormalization() {
       authorization,
       ...(timeout_ms === undefined ? {} : { timeout_ms }),
     });
-    assert(!rejected.ok, `local relay accepted malformed timeout ${String(timeout_ms)}`);
+    assert(!rejected.ok, `local relay accepted malformed or over-limit ordinary timeout ${String(timeout_ms)}`);
   }
+  const acceptedManagedJobRead = normalizeRelayToolCall({
+    id: "call_read_job_timeout_12345678",
+    tool: "read_job",
+    arguments: { job_id: "job_fixture" },
+    authorization,
+    timeout_ms: relayContract.maximumRelayToolTimeoutMs,
+  });
+  assert(acceptedManagedJobRead.ok && acceptedManagedJobRead.timeoutMs === relayContract.maximumRelayToolTimeoutMs,
+    "local relay rejected the dedicated managed-job read maximum deadline");
+  const rejectedManagedJobRead = normalizeRelayToolCall({
+    id: "call_read_job_overlimit_12345678",
+    tool: "read_job",
+    arguments: { job_id: "job_fixture" },
+    authorization,
+    timeout_ms: relayContract.maximumRelayToolTimeoutMs + 1,
+  });
+  assert(!rejectedManagedJobRead.ok, "local relay accepted a managed-job read above its dedicated deadline");
   const invalidId = normalizeRelayToolCall({
     id: "arbitrary id with spaces",
     tool: "exec_command",
@@ -1237,14 +1320,14 @@ function testRelayReconnectDelivery() {
   sendSucceeds = true;
   activeCalls.add("call_ack");
   assert(recovery.deliver({ id: "call_ack", ok: true }) === true, "connected result was not sent");
-  assert(recovery.pendingResults.has("call_ack"), "connected result was discarded before Worker acknowledgement");
-  assert(recovery.acknowledge("call_ack") && !recovery.pendingResults.has("call_ack"),
+  assert(recovery.hasRetainedResult("call_ack"), "connected result was discarded before Worker acknowledgement");
+  assert(recovery.acknowledge("call_ack") && !recovery.hasRetainedResult("call_ack"),
     "Worker acknowledgement did not clear a connected result");
   activeCalls.delete("call_ack");
   sendSucceeds = false;
 
   assert(recovery.deliver({ id: "call_reconnect", ok: true }) === false, "result queued during an outage was reported as delivered");
-  assert(recovery.pendingResults.has("call_reconnect"), "completed result was not retained for reconnect delivery");
+  assert(recovery.hasRetainedResult("call_reconnect"), "completed result was not retained for reconnect delivery");
   assert(scheduled === 1 && typeof scheduledCallback === "function", "queued result did not arm reconnect expiry");
   recovery.disconnected();
   assert(scheduled === 1, "disconnect armed a duplicate reconnect-expiry timer");
@@ -1252,12 +1335,12 @@ function testRelayReconnectDelivery() {
 
   sendSucceeds = true;
   recovery.ready();
-  assert(recovery.pendingResults.has("call_reconnect") && scheduledCallback === null,
+  assert(recovery.hasRetainedResult("call_reconnect") && scheduledCallback === null,
     "replayed result was discarded before Worker acknowledgement");
   assert(events.some((event) => event.name === "relay.tool_results.redelivered" && event.fields.delivered_results === 1), "redelivered result was not observable");
   recovery.pulse();
-  assert(recovery.pendingResults.has("call_reconnect"), "heartbeat replay discarded an unacknowledged result");
-  assert(recovery.acknowledge("call_reconnect") && recovery.pendingResults.size === 0,
+  assert(recovery.hasRetainedResult("call_reconnect"), "heartbeat replay discarded an unacknowledged result");
+  assert(recovery.acknowledge("call_reconnect") && recovery.retainedResultCount() === 0,
     "Worker acknowledgement did not clear the retained result");
   activeCalls.delete("call_reconnect");
 
@@ -1269,13 +1352,107 @@ function testRelayReconnectDelivery() {
   expire();
   assert(cancelled === 1 && terminated === 1, "reconnect expiry did not cancel calls and terminate ordinary processes");
   assert(suppressed.get("call_expire") === "relay_reconnect_timeout", "reconnect expiry did not suppress the eventual result");
-  assert(recovery.pendingResults.size === 0, "reconnect expiry retained queued results");
+  assert(recovery.retainedResultCount() === 0, "reconnect expiry retained queued results");
+  const reconnectSafety = recovery.redeliverySafetySnapshot();
+  assert(reconnectSafety.automaticRedeliverySafe === false
+    && reconnectSafety.unsafeCallTombstones === 1
+    && reconnectSafety.globalRedeliveryDisabled === false,
+  "reconnect-grace result discard did not retain bounded per-call replay-safety evidence");
+  assert(JSON.stringify(recovery.reconcile(["call_expire", "call_fresh_missing"], () => false)) === JSON.stringify(["call_fresh_missing"]),
+    "one unsafe completed call disabled automatic non-delivery proof for an unrelated resumed call");
   const reconnectExpired = events.find((event) => event.name === "relay.calls.reconnect_expired");
   assert(reconnectExpired?.level === "warn"
     && reconnectExpired.fields?.cancelled_calls === 1
     && reconnectExpired.fields?.discarded_results === 1
     && reconnectExpired.fields?.grace_ms === 30_000,
   "reconnect expiry did not emit structured loss diagnostics");
+}
+
+function testRelayRecoveryCapacity() {
+  const ordinary = Array(14).fill("read_file");
+  assert(relayRecoveryCapacityRejection(ordinary.slice(0, 13), 0, "read_file", "call_capacity_1") === null,
+    "relay recovery capacity rejected an ordinary call below its reserved-control boundary");
+  const ordinaryRejection = relayRecoveryCapacityRejection(ordinary, 0, "read_file", "call_capacity_2");
+  assert(ordinaryRejection?.error?.code === "limit_exceeded"
+    && ordinaryRejection.error?.retryable === true
+    && ordinaryRejection.error?.details?.side_effects_started === false,
+  "relay recovery ownership did not reserve control-plane capacity with a retry-safe pre-dispatch rejection");
+  assert(relayRecoveryCapacityRejection(ordinary, 0, "diagnose_runtime", "call_capacity_3") === null,
+    "relay recovery ownership let ordinary calls consume reserved diagnosis capacity");
+  assert(relayRecoveryCapacityRejection(Array(16).fill("read_file"), 0, "diagnose_runtime", "call_capacity_4")?.error?.code === "limit_exceeded",
+    "relay recovery ownership exceeded the total call-capacity ceiling");
+  assert(relayRecoveryCapacityRejection(["diagnose_runtime", "list_roots", ...Array(12).fill("read_file")], 0,
+    "read_file", "call_capacity_5") === null,
+  "relay recovery ownership conservatively misclassified active control calls as ordinary retained results");
+  assert(relayRecoveryCapacityRejection([], 14, "read_file", "call_capacity_6")?.error?.code === "limit_exceeded"
+    && relayRecoveryCapacityRejection([], 14, "diagnose_runtime", "call_capacity_7") === null,
+  "unacknowledged relay results did not consume ordinary capacity while preserving reserved control capacity");
+  const snapshot = relayRecoveryCapacitySnapshot(["read_file", "diagnose_runtime"], 3, false, 2, false);
+  assert(snapshot.active_calls === 2 && snapshot.retained_results === 3 && snapshot.active_ownership === 5
+    && snapshot.maximum === 16 && snapshot.ordinary_capacity === 14 && snapshot.reserved_control_capacity === 2
+    && snapshot.automatic_redelivery_safe === false && snapshot.unsafe_call_tombstones === 2
+    && snapshot.global_redelivery_disabled === false
+    && !JSON.stringify(snapshot).includes("read_file") && !JSON.stringify(snapshot).includes("diagnose_runtime"),
+  "relay recovery capacity diagnostics lost bounded aggregate-only projection");
+
+  let overflowSends = 0;
+  const overflowEvents = [];
+  const recovery = new RelayCallRecovery({
+    isRecoverable: () => true,
+    send: () => { overflowSends += 1; return true; },
+    logger: { event: (level, name, fields) => { overflowEvents.push({ level, name, fields }); } },
+  });
+  for (let index = 0; index < MAX_CONCURRENT_TOOL_CALLS; index += 1) {
+    assert(recovery.deliver({ id: `call_retained_${index}`, ok: true }) === true,
+      "relay recovery failed before the normal retained-result ceiling");
+  }
+  assert(recovery.deliver({ id: "call_retained_overflow", ok: true }) === true
+    && recovery.retainedResultCount() === MAX_CONCURRENT_TOOL_CALLS + 1 && overflowSends === MAX_CONCURRENT_TOOL_CALLS + 1
+    && recovery.hasRetainedResult("call_retained_overflow")
+    && overflowEvents.some((event) => event.level === "error" && event.name === "relay.tool_result.retention_capacity"
+      && event.fields?.emergency_slot_used === true),
+  "relay recovery invariant failure sent a completed result without preserving acknowledgement ownership");
+  assert(recovery.deliver({ id: "call_retained_second_overflow", ok: true }) === false
+    && recovery.retainedResultCount() === MAX_CONCURRENT_TOOL_CALLS + 1 && overflowSends === MAX_CONCURRENT_TOOL_CALLS + 1,
+  "relay recovery accepted a second result after its single emergency ownership slot was occupied");
+  const resumedAfterInvariantFailure = [
+    ...Array.from({ length: MAX_CONCURRENT_TOOL_CALLS }, (_, index) => `call_retained_${index}`),
+    "call_retained_overflow", "call_retained_second_overflow", "call_never_owned_after_invariant_failure",
+  ];
+  assert(JSON.stringify(recovery.reconcile(resumedAfterInvariantFailure, () => false)) === JSON.stringify(["call_never_owned_after_invariant_failure"]),
+    "per-call retention loss either replayed the unsafe call or disabled safe missing-ID recovery for an unrelated call");
+
+  let clock = 0;
+  const retentionEvents = [];
+  const expiring = new RelayCallRecovery({
+    isRecoverable: () => true,
+    send: () => true,
+    now: () => clock,
+    logger: { event: (_level, name, fields) => { retentionEvents.push({ name, fields }); } },
+  });
+  assert(expiring.deliver({ id: "call_ack_lost_12345678", ok: true }) === true && expiring.retainedResultCount() === 1,
+    "successful relay result was not retained for Worker acknowledgement");
+  clock = Number(relayContract.maximumRelayToolTimeoutMs) - 1;
+  expiring.pulse();
+  assert(expiring.retainedResultCount() === 1, "relay result retention expired before the maximum Worker settlement lifetime");
+  clock = Number(relayContract.maximumRelayToolTimeoutMs) + 1;
+  expiring.pulse();
+  const expiredSafety = expiring.redeliverySafetySnapshot();
+  assert(expiring.retainedResultCount() === 0
+    && expiredSafety.automaticRedeliverySafe === false
+    && expiredSafety.unsafeCallTombstones === 1
+    && expiredSafety.globalRedeliveryDisabled === false
+    && retentionEvents.some((event) => event.name === "relay.tool_results.ack_expired"
+      && event.fields?.expired_results === 1
+      && event.fields?.acknowledgement_retention_ms === relayContract.maximumRelayToolTimeoutMs),
+  "lost Worker acknowledgement retained completed relay result beyond the bounded settlement lifetime");
+  assert(JSON.stringify(expiring.reconcile(["call_ack_lost_12345678", "call_safe_after_old_loss"], () => false)) === JSON.stringify(["call_safe_after_old_loss"]),
+    "expired acknowledgement ownership either became replayable or globally disabled unrelated recovery");
+  assert(JSON.stringify(expiring.reconcile(["call_safe_after_old_loss"], () => false)) === JSON.stringify(["call_safe_after_old_loss"]),
+    "safe resumed call was not classified as daemon-proven missing after the old unsafe tombstone retired");
+  const recoveredSafety = expiring.redeliverySafetySnapshot();
+  assert(recoveredSafety.automaticRedeliverySafe === true && recoveredSafety.unsafeCallTombstones === 0,
+    "unsafe relay call tombstone did not retire after the Worker stopped resuming that call");
 }
 
 
@@ -2066,6 +2243,13 @@ function testExecutionGuardrails() {
 }
 
 function testErrors() {
+  assert(boundedProcessErrorMessage(new Error("bad\u001b[31m\r\nvalue\u0000"))
+      .split("").every((character) => !/[\u0000-\u001f\u007f-\u009f]/.test(character)),
+    "bounded process error normalization retained terminal/control characters");
+  assert(boundedProcessErrorMessage({ toString() { throw new Error("synthetic conversion failure"); } }, "safe fallback") === "safe fallback",
+    "bounded process error normalization propagated a hostile toString failure");
+  assert(boundedProcessErrorMessage(new Error("x".repeat(5000))).length === 4096,
+    "bounded process error normalization exceeded its public message ceiling");
   assert(errorCode(Object.assign(new Error("missing"), { code: "ENOENT" })) === "not_found", "Node error code classification failed");
   assert(errorCode(new Error("something timed out")) === "execution_failed", "untyped messages must not be reclassified heuristically");
   const publicValue = publicError(new BridgeError("network_error", "network unavailable"));

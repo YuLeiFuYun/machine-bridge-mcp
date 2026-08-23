@@ -2,9 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { BridgeError, errorCode } from "./errors.mjs";
 import {
-  browserScrollDelta, clampInt, computerScreenshotFormat, normalizeApplicationAction, normalizeBrowserAction,
+  browserScrollDelta, clampInt, normalizeApplicationAction, normalizeBrowserAction,
   normalizeInputMode, normalizeNavigationWait, normalizePostObservationDetail, normalizePostScreenshotPolicy,
-  optionalApplicationFocusQuery, optionalBoolean, optionalPositiveInt, requiredResource, requiredSnapshotId,
+  optionalApplicationFocusQuery, optionalBoolean, requiredResource, requiredSnapshotId,
   requiredString, requiredStringAllowEmpty, requiredSurface, requiredTargetRef, shouldIncludePostScreenshot,
   validateActionDispatchArguments, validateDragTargets, validateObserveArgs, validateSurfaceActionArgs,
 } from "./computer-use-arguments.mjs";
@@ -16,6 +16,7 @@ import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation } from "./computer-use-observation.mjs";
 import { buildRetryGuidance } from "./computer-use-recovery.mjs";
 import { applicationElementSupportsPointClick, applicationMatchesSelector, prepareApplicationObservationElements } from "./computer-use-application-observation.mjs";
+import { browserObservationArgs, validateApplicationInspectionEvidence, validateBrowserObservationForSnapshot } from "./computer-use-observation-contract.mjs";
 import {
   assertObservationResultFits, fitActionResultToBudget, isResultLimitExceeded, RESULT_BUDGET_OMISSION_REASON,
   observationResult, omitApplicationScreenshotForResultBudget, omitBrowserScreenshotForResultBudget,
@@ -32,7 +33,6 @@ const BROWSER_SNAPSHOT_IDENTITY_FIELDS = Object.freeze([
 const BROWSER_SNAPSHOT_BOOLEAN_IDENTITY_FIELDS = new Set(["sensitive", "in_shadow_dom"]);
 const APPLICATION_VERIFY_POLL_MS = 100;
 const APPLICATION_VERIFY_MAX_CAPTURES = 9;
-const MAX_APPLICATION_OBSERVATION_ELEMENTS = 500;
 const MAX_APPLICATION_SCREENSHOT_BYTES = 32 * 1024 * 1024;
 
 export class ComputerUseManager {
@@ -1513,99 +1513,6 @@ function browserPostFocusQuery(target) {
   const element = target.element || {};
   const value = element.name || element.label || element.placeholder || element.text || element.id || "";
   return String(value).trim().slice(0, 1000) || undefined;
-}
-
-function validateApplicationInspectionEvidence(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("application observation is invalid");
-  applicationObservationString(value.process_name, 1000, false);
-  if (!Array.isArray(value.elements) || value.elements.length > MAX_APPLICATION_OBSERVATION_ELEMENTS) {
-    throw new Error("application observation elements are invalid");
-  }
-  for (const element of value.elements) {
-    if (!element || typeof element !== "object" || Array.isArray(element)) throw new Error("application observation element is invalid");
-  }
-  for (const field of ["frontmost", "truncated", "menus_included"]) {
-    if (typeof value[field] !== "boolean") throw new Error(`application observation ${field} is invalid`);
-  }
-}
-
-function applicationObservationString(value, maxLength, allowEmpty) {
-  if (typeof value !== "string" || (!allowEmpty && !value) || value.length > maxLength || value.includes("\0")) {
-    throw new Error("application observation string is invalid");
-  }
-  return value;
-}
-
-function validateBrowserObservationForSnapshot(captured) {
-  if (!captured || typeof captured !== "object" || Array.isArray(captured)) throw new Error("browser observation is invalid");
-  if (!Number.isSafeInteger(captured.tab_id) || captured.tab_id < 1) throw new Error("browser observation tab id is invalid");
-  browserObservationAuthorityString(captured.url, 32768, false);
-  browserObservationString(captured.title, 32768, true);
-  if (captured.document_epoch !== undefined) browserObservationAuthorityString(captured.document_epoch, 9000, true);
-  if (captured.capture !== undefined) {
-    if (!captured.capture || typeof captured.capture !== "object" || Array.isArray(captured.capture)) throw new Error("browser observation capture is invalid");
-    if (captured.capture.semantic_epoch !== undefined) browserObservationAuthorityString(captured.capture.semantic_epoch, 9000, true);
-    if (captured.capture.cdp_epoch !== undefined) browserObservationAuthorityString(captured.capture.cdp_epoch, 9000, true);
-  }
-  if (captured.semantic === undefined) return;
-  if (!captured.semantic || typeof captured.semantic !== "object" || Array.isArray(captured.semantic)) {
-    throw new Error("browser observation semantic payload is invalid");
-  }
-  if (captured.semantic.tab_id !== undefined) {
-    if (!Number.isSafeInteger(captured.semantic.tab_id) || captured.semantic.tab_id < 1) throw new Error("browser observation tab id is invalid");
-  }
-  if (captured.semantic.url !== undefined) browserObservationAuthorityString(captured.semantic.url, 32768, false);
-  if (captured.semantic.title !== undefined) browserObservationString(captured.semantic.title, 32768, true);
-  if (typeof captured.semantic.frames_truncated !== "boolean") {
-    throw new Error("browser observation truncation evidence is invalid");
-  }
-  if (captured.semantic.frames === undefined) return;
-  if (!Array.isArray(captured.semantic.frames)) throw new Error("browser observation semantic frames are invalid");
-  for (const frame of captured.semantic.frames) {
-    if (!frame || typeof frame !== "object" || Array.isArray(frame) || !Number.isSafeInteger(frame.frame_id) || frame.frame_id < 0) {
-      throw new Error("browser observation frame authority is invalid");
-    }
-    if (typeof frame.truncated !== "boolean") {
-      throw new Error("browser observation truncation evidence is invalid");
-    }
-    if (frame.document === undefined) continue;
-    if (!frame.document || typeof frame.document !== "object" || Array.isArray(frame.document)) {
-      throw new Error("browser observation frame authority is invalid");
-    }
-    if (frame.document.epoch !== undefined) browserObservationAuthorityString(frame.document.epoch, 9000, true);
-    if (frame.document.url !== undefined) browserObservationAuthorityString(frame.document.url, 32768, false);
-  }
-}
-
-function browserObservationAuthorityString(value, maxLength, allowEmpty) {
-  if (typeof value !== "string" || (!allowEmpty && !value) || value.length > maxLength || value.includes("\0")) {
-    throw new Error("browser observation authority string is invalid");
-  }
-  return value;
-}
-
-function browserObservationString(value, maxLength, allowEmpty) {
-  if (typeof value !== "string" || (!allowEmpty && !value) || value.length > maxLength || value.includes("\0")) {
-    throw new Error("browser observation string is invalid");
-  }
-  return value;
-}
-
-function browserObservationArgs(args) {
-  return {
-    tab_id: optionalPositiveInt(args.tab_id, "tab_id"),
-    max_elements: clampInt(args.max_elements, 300, 1, 1000),
-    max_ax_nodes: clampInt(args.max_ax_nodes, 600, 1, 2000),
-    max_frames: clampInt(args.max_frames, 32, 1, 64),
-    ax_depth: clampInt(args.ax_depth, 12, 1, 16),
-    include_values: optionalBoolean(args.include_values, "include_values", false),
-    all_frames: optionalBoolean(args.all_frames, "all_frames", true),
-    include_screenshot: optionalBoolean(args.include_screenshot, "include_screenshot", true),
-    screenshot_format: computerScreenshotFormat(args.screenshot_format),
-    screenshot_quality: clampInt(args.screenshot_quality, 90, 1, 100),
-    timeout_seconds: clampInt(args.timeout_seconds, 30, 1, 60),
-    focus_query: args.focus_query === undefined ? undefined : requiredStringAllowEmpty(args.focus_query, "focus_query", 1000),
-  };
 }
 
 function findApplicationMatch(elements, selector, occurrence) {

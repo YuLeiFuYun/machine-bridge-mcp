@@ -120,21 +120,46 @@ export function validateSubscriptionRequest(value) {
     }
   }
   const resources = notifications.resourceSubscriptions;
-  if (resources === undefined) return;
+  if (resources === undefined) {
+    return Object.freeze({
+      toolsListChanged: notifications.toolsListChanged === true,
+      promptsListChanged: notifications.promptsListChanged === true,
+      resourcesListChanged: notifications.resourcesListChanged === true,
+      resourceSubscriptions: Object.freeze([]),
+    });
+  }
   if (!Array.isArray(resources) || resources.length > MAX_RESOURCE_SUBSCRIPTIONS
       || resources.some((uri) => typeof uri !== "string" || !uri || uri.length > MAX_RESOURCE_SUBSCRIPTION_URI_LENGTH)) {
     throw new McpProtocolError(-32602, "Invalid subscriptions/listen notification filter: resourceSubscriptions");
   }
+  return Object.freeze({
+    toolsListChanged: notifications.toolsListChanged === true,
+    promptsListChanged: notifications.promptsListChanged === true,
+    resourcesListChanged: notifications.resourcesListChanged === true,
+    resourceSubscriptions: Object.freeze([...resources]),
+  });
 }
 
-export function emptySubscriptionAcknowledgement(requestId) {
+export function subscriptionAcknowledgement(requestId, notifications = {}) {
   return {
     jsonrpc: "2.0",
     method: "notifications/subscriptions/acknowledged",
     params: {
-      notifications: {},
+      notifications: structuredClone(notifications),
       _meta: { [SUBSCRIPTION_ID_KEY]: requestId },
     },
+  };
+}
+
+export function emptySubscriptionAcknowledgement(requestId) {
+  return subscriptionAcknowledgement(requestId);
+}
+
+export function toolsListChangedNotification(requestId) {
+  return {
+    jsonrpc: "2.0",
+    method: "notifications/tools/list_changed",
+    params: { _meta: { [SUBSCRIPTION_ID_KEY]: requestId } },
   };
 }
 
