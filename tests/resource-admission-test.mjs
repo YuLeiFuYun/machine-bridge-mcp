@@ -1651,9 +1651,18 @@ try {
   const reusedPublisherId = "8".repeat(32);
   const reusedPublisherStaging = join(root, "leases", `.lease_${reusedPublisherId}.json.${process.pid}.${"7".repeat(16)}.tmp`);
   writeFileSync(reusedPublisherStaging, "stale-publisher-generation", { mode: 0o600 });
-  const beforeCurrentProcess = new Date(currentProcessStartTimeMs() - 60_000);
+  const currentProcessStartedAt = currentProcessStartTimeMs();
+  const beforeCurrentProcess = new Date(currentProcessStartedAt - 60_000);
   utimesSync(reusedPublisherStaging, beforeCurrentProcess, beforeCurrentProcess);
-  snapshot = await coordinator.snapshot({ cwd: root });
+  const reusedPublisherCoordinator = new ResourceCoordinator({
+    root,
+    now: () => now,
+    sampleHost: () => ({ ...green, sampled_at_ms: now }),
+    sampleProcessStarts: async () => ({ [String(process.pid)]: currentProcessStartedAt }),
+    sleep: async () => {},
+    random: () => 0,
+  });
+  snapshot = await reusedPublisherCoordinator.snapshot({ cwd: root });
   assert.equal(snapshot.active_leases, 0);
   assert.equal(await import("node:fs").then((fs) => fs.existsSync(reusedPublisherStaging)), false,
     "reused publisher PID kept a stale resource staging artifact alive");
