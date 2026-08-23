@@ -9,6 +9,7 @@ import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { BridgeError } from "./errors.mjs";
 import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
+import { boundedProcessErrorMessage } from "./process-error-message.mjs";
 import { processForegroundTimeoutSeconds, registeredCommandTimeoutSeconds } from "./process-foreground-timeout.mjs";
 import { processFailureMessage, publicProcessToolResult } from "./process-result-projection.mjs";
 import { processCancellationFailure, processChildErrorFailure, processPostSpawnFailure, processPreSpawnFailure, processTimeoutFailure } from "./process-nonreplayable-settlement.mjs";
@@ -158,6 +159,7 @@ export class ProcessExecutionService {
         const launch = internalFixed
           ? { command: cmd, args }
           : delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
+        this.throwIfCancelled(context);
         child = this.spawnProcess(launch.command, launch.args, {
           cwd,
           env: admitted.environment,
@@ -266,7 +268,7 @@ function processResult(code, stdout, stderr, retainedStdout = null, retainedStde
   const result = {
     code,
     stdout: stdout instanceof BoundedOutput ? stdout.text() : String(stdout || ""),
-    stderr: stderrBuffer ? stderrBuffer.text() : boundedErrorMessage(stderr),
+    stderr: stderrBuffer ? stderrBuffer.text() : boundedProcessErrorMessage(stderr, "tool call failed"),
     stdout_truncated_bytes: stdout instanceof BoundedOutput ? stdout.truncatedBytes : 0,
     stderr_truncated_bytes: stderrBuffer ? stderrBuffer.truncatedBytes : 0,
   };
@@ -277,8 +279,4 @@ function processResult(code, stdout, stderr, retainedStdout = null, retainedStde
     });
   }
   return result;
-}
-export function boundedErrorMessage(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/[\r\n]+/g, " ").slice(0, 4096) || "tool call failed";
 }

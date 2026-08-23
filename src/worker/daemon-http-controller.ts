@@ -111,7 +111,6 @@ export async function handleDaemonHttpRelay(input: {
           input.registry.http.close(old);
         }
         input.observability.event("info", "daemon.https_fallback.ready", { daemon_owned_calls: exchange.ownedCallIds.length });
-        notifyReadyDaemon(input.registry);
         continue;
       }
       const handled = await handleReadyDaemonMessage({
@@ -121,6 +120,7 @@ export async function handleDaemonHttpRelay(input: {
       channel.commitDaemonSequence(message.seq);
     }
     await input.scheduleAlarm();
+    if (channel.readyState === 1) notifyReadyDaemon(input.registry);
     return relayResponse(channel.readyState === 1 ? "ready" : "probing", channel.activationToken, channel.daemonSequence, channel.outboundMessages());
   }
 

@@ -1,13 +1,18 @@
 import type { AuthorizedToken } from "./access.ts";
+import type { AuthorityRevocation } from "../shared/authority-revocation.mjs";
 import { publicWorkerToolError } from "./errors.ts";
 import { inspectWorkerToolCall } from "./mcp-tool-call-input.ts";
 import { acceptsEventStream } from "./mcp-http-accept.ts";
 import { mcpStreamProxyId, mcpStreamRequestKey, type StreamProxyMode } from "./mcp-stream-proxy-contract.ts";
-import { closedSubscriptionResponse, jsonRpcResponseStream } from "./mcp-response-stream.ts";
+import { McpRequestCancellationRegistry } from "./mcp-request-cancellation.ts";
+import { streamedMcpToolResponse } from "./mcp-streamed-tool-response.ts";
+import { closedSubscriptionResponse } from "./mcp-subscription-stream.ts";
+import { McpSubscriptionRegistry } from "./mcp-subscription-registry.ts";
 import { json } from "./http.ts";
 import {
   cacheableResult, discoverResult, emptySubscriptionAcknowledgement,
-  McpProtocolError, subscriptionCompleteResult, validateSubscriptionRequest,
+  McpProtocolError, subscriptionAcknowledgement, subscriptionCompleteResult,
+  toolsListChangedNotification, validateSubscriptionRequest,
 } from "../shared/mcp-protocol.mjs";
 import {
   rpcError, rpcResult, textToolResult, type JsonRpcRequest,
@@ -41,14 +46,27 @@ type McpDispatchResult = Readonly<{
 
 export class McpController {
   private readonly config: McpConfig;
+  private readonly subscriptions = new McpSubscriptionRegistry();
+  private readonly requestCancellations: McpRequestCancellationRegistry;
 
   constructor(config: McpConfig) {
     this.config = config;
+    this.requestCancellations = new McpRequestCancellationRegistry({ onFailClosed: () => config.recordError("mcp_request_cancellation_fail_closed") });
+  }
+
+  toolListSubscriptionSnapshot(accountId: string) {
+    return this.subscriptions.snapshot(accountId);
+  }
+
+  cancelAuthority(revocation: AuthorityRevocation): number {
+    return this.subscriptions.cancelAuthority(revocation);
   }
 
   async handleControl(request: Request, mode: StreamProxyMode): Promise<Response | null> {
     if (mode !== "cancel") return null;
     const requestKey = mcpStreamRequestKey(mcpStreamProxyId(request));
+    this.requestCancellations.cancel(requestKey);
+    this.subscriptions.cancelRequest(requestKey);
     await this.config.cancelClientRequest(requestKey);
     return new Response(null, { status: requestKey ? 202 : 400 });
   }
@@ -74,7 +92,24 @@ export class McpController {
         return json(rpcError(body.id, -32602, "subscriptions/listen requires text/event-stream support"), 406);
       }
       try {
-        validateSubscriptionRequest(body);
+        const filter = validateSubscriptionRequest(body);
+        const toolsListChanged = filter.toolsListChanged === true
+          && (this.config.capabilities.tools as { listChanged?: unknown } | undefined)?.listChanged === true;
+        if (toolsListChanged) {
+          const response = this.subscriptions.open({
+            authority: {
+              accountId: input.authorized.accountId,
+              accountVersion: input.authorized.accountVersion,
+              clientId: input.authorized.clientId,
+              familyId: input.authorized.familyId,
+            },
+            requestKey,
+            requestSignal: request.signal,
+            acknowledged: subscriptionAcknowledgement(body.id, { toolsListChanged: true }),
+            initialMessages: [toolsListChangedNotification(body.id)],
+          });
+          return response ?? json(rpcError(body.id, -32000, "Subscription capacity exceeded"), 429);
+        }
         return closedSubscriptionResponse(
           emptySubscriptionAcknowledgement(body.id),
           rpcResult(body.id, subscriptionCompleteResult(body.id, this.config.serverInfo))!,
@@ -97,14 +132,10 @@ export class McpController {
     proxyMode: StreamProxyMode;
     requestKey?: string;
   }): Response {
-    const controller = new AbortController();
-    const cancel = () => controller.abort();
-    input.request.signal.addEventListener("abort", cancel, { once: true });
-    const result = this.dispatch(input.body, input.base, input.authorized, controller.signal, input.requestKey)
-      .then((outcome) => outcome.message)
-      .finally(() => input.request.signal.removeEventListener("abort", cancel));
-    return jsonRpcResponseStream(result, {
-      onCancel: cancel,
+    return streamedMcpToolResponse({
+      request: input.request, requestKey: input.requestKey, cancellations: this.requestCancellations,
+      dispatch: (signal) => this.dispatch(input.body, input.base, input.authorized, signal, input.requestKey)
+        .then((outcome) => outcome.message),
       onError: () => {
         this.config.recordError("mcp_stream_dispatch_failed");
         return rpcError(input.body.id, -32603, "Internal error");

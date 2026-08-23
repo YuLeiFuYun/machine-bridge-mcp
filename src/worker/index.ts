@@ -3,13 +3,12 @@ import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { PendingCallRegistrationError } from "./pending-call-contract.ts";
 import { PendingCallRegistry } from "./pending-calls.ts";
 import { MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission, pendingCapacityProjection } from "./pending-call-capacity.ts";
-import { PendingAdmissionGate } from "./pending-admission.ts";
 import { daemonLivenessDeadlineMs, isFreshDaemonCandidate } from "./daemon-liveness.ts";
 import { DaemonRegistry } from "./daemon-registry.ts";
 import type { DaemonChannel } from "./daemon-channel.ts";
 import { trySendDaemonChannel } from "./daemon-channel.ts";
-import { notifyReadyDaemon, readyDaemonWaiterSnapshot } from "./daemon-ready-waiters.ts";
-import { readyDaemonForDispatch } from "./daemon-ready-dispatch.ts";
+import { cancelReadyDaemonAuthority, notifyReadyDaemon, readyDaemonWaiterSnapshot } from "./daemon-ready-waiters.ts";
+import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "./daemon-ready-dispatch.ts";
 import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "./daemon-recovery-budget.ts";
 import { daemonStatusSnapshot } from "./daemon-status.ts";
 import { sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
@@ -25,7 +24,8 @@ import { initializationCompatibilityResponse } from "./mcp-initialization-compat
 import { mcpStreamProxyMode } from "./mcp-stream-proxy-contract.ts";
 import { buildServerInfoResult, serverInfoDetail } from "./server-info.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
-import { daemonToolTimeoutBudget, isRemoteDurableProcessTool } from "./tool-timeout.ts";
+import { daemonToolTimeoutBudget } from "./tool-timeout.ts";
+import { daemonToolRecovery } from "./tool-call-recovery.ts";
 import { WorkerObservability } from "./observability.ts";
 import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
@@ -49,15 +49,16 @@ import { retainWorkerTask } from "./worker-task-lifetime.ts";
 import { statefulRouteClass } from "./worker-rate-limit-key.ts";
 import {
   MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS,
-  MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo,
+  MCP_LEGACY_SERVER_CAPABILITIES, MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo,
 } from "./worker-mcp-config.ts";
 import { projectOverviewDetail, projectProjectOverview } from "../shared/project-overview-projection.mjs";
 import { asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError } from "./mcp-jsonrpc.ts";
+import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "./managed-job-read-timeout.ts";
 import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.108";
+const SERVER_VERSION = "3.0.0-beta.115";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -66,7 +67,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly observability = new WorkerObservability();
   private readonly oauth: OAuthController;
   private readonly daemonRegistry: DaemonRegistry;
-  private readonly pendingAdmission = new PendingAdmissionGate();
   private readonly mcp: McpController;
 
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
@@ -152,14 +152,27 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return;
     }
     if (queued.length === 0) return;
-    let cancelled = 0;
+    let cancelledWaiters = 0;
+    let cancelledPending = 0;
+    let cancelledSubscriptions = 0;
     for (const record of queued) {
-      cancelled += await this.pending.cancelAuthority({
+      const revocation = {
         accountId: record.account_id, accountVersion: record.account_version,
         clientId: record.client_id, familyId: record.family_id,
-      }, () => revokedDaemonAuthorityError());
+      };
+      cancelledWaiters += cancelReadyDaemonAuthority(this.daemonRegistry, revocation);
+      cancelledPending += await this.pending.cancelAuthority(revocation, () => revokedDaemonAuthorityError());
+      cancelledSubscriptions += this.mcp.cancelAuthority(revocation);
     }
-    if (cancelled > 0) this.observability.event("info", "authority.revocation.pending_calls_cancelled", { calls: cancelled });
+    if (cancelledWaiters > 0) {
+      this.observability.event("info", "authority.revocation.pre_dispatch_waiters_cancelled", { waiters: cancelledWaiters });
+    }
+    if (cancelledPending > 0) {
+      this.observability.event("info", "authority.revocation.pending_calls_cancelled", { calls: cancelledPending });
+    }
+    if (cancelledSubscriptions > 0) {
+      this.observability.event("info", "authority.revocation.subscriptions_cancelled", { subscriptions: cancelledSubscriptions });
+    }
     for (const socket of this.daemonRegistry.readyChannels()) {
       for (const revocation of queued) {
         if (trySendDaemonChannel(socket, authorityRevocationWireMessage(revocation))) continue;
@@ -340,7 +353,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return;
       }
       this.observability.socketReady();
-      notifyReadyDaemon(this.daemonRegistry);
       for (const previous of previousSockets) {
         const cleanup = this.cleanupDaemonSocket(previous, "daemon connection replaced after verified handover");
         closeWebSocketQuietly(previous, 1012, "replaced by verified daemon");
@@ -351,6 +363,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         this.daemonRegistry.http.close(previous);
       }
       await this.scheduleRuntimeAlarm();
+      notifyReadyDaemon(this.daemonRegistry);
       return;
     }
 
@@ -419,7 +432,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     try {
       const compatibility = await initializationCompatibilityResponse({
         request, body, base, authorized: access.authorized, controller: this.mcp,
-        capabilities: MCP_SERVER_CAPABILITIES, serverInfo: MCP_SERVER_INFO, instructions: MCP_INSTRUCTIONS,
+        capabilities: MCP_LEGACY_SERVER_CAPABILITIES, serverInfo: MCP_SERVER_INFO, instructions: MCP_INSTRUCTIONS,
         tools: this.allTools(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
       });
       if (compatibility) return compatibility;
@@ -446,6 +459,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       serverName: SERVER_NAME, serverVersion: SERVER_VERSION, base,
       oauth: authorizationServerMetadata(base, SERVER_NAME), authorization, daemon,
       effectiveTools, advertisedTools, pendingSnapshot,
+      toolListSubscription: this.mcp.toolListSubscriptionSnapshot(authorized.accountId),
       daemonRegistry: this.daemonRegistry, observability: this.observability,
     }, serverInfoDetail(args));
   }
@@ -493,76 +507,93 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   ): Promise<unknown> {
     this.reclaimStaleDaemonSockets();
     const timeoutBudget = daemonToolTimeoutBudget(name, args);
-    const ready = await readyDaemonForDispatch(this.daemonRegistry, {
+    const ready = immediateReadyDaemonForDispatch(this.daemonRegistry) ?? await readyDaemonForDispatch(this.daemonRegistry, {
       graceMs: Math.min(NEW_CALL_RECONNECT_GRACE_MS, timeoutBudget.executionTimeoutMs),
       signal,
       tool: name,
       pending: this.pending.snapshot(),
+      authority: {
+        accountId: authorized.accountId,
+        accountVersion: authorized.accountVersion,
+        clientId: authorized.clientId,
+        familyId: authorized.familyId,
+      },
+      activeReadJobCallsForAccount: this.pending.readJobCallsForAccount(authorized.accountId),
     });
     const socket = ready.socket;
     const dispatchBudget = daemonToolTimeoutBudgetAfterDelay(timeoutBudget, ready.recoveryDelayMs);
+    if (name === "read_job" && !managedJobReadExecutionBudgetHasHeadroom(dispatchBudget.executionTimeoutMs)) {
+      throw new WorkerToolError("unavailable", "local daemon recovery left insufficient managed-job read execution headroom; retry the call",
+        true, { side_effects_started: false });
+    }
+    const daemonArgs = name === "read_job"
+      ? managedJobReadArgumentsWithinExecutionBudget(args, dispatchBudget.executionTimeoutMs)
+      : args;
     const daemonAttachment = this.daemonRegistry.readyAttachment(socket);
     const daemonInstanceId = daemonAttachment?.instanceId ?? "";
     if (!daemonInstanceId) throw new WorkerToolError("unavailable", "local daemon connection is missing its instance identity", true);
     if (!daemonAttachment?.tools?.includes(name)) throw new WorkerToolError("authorization_denied", `tool disabled by local daemon policy: ${name}`);
     const id = randomToken("call");
-    const recovery = durableProcessRecovery(name, args);
-    let result!: Promise<unknown>;
+    const recovery = daemonToolRecovery(name, args);
+    let result!: Promise<unknown>; let sent = false;
     try {
-      await this.pendingAdmission.run(async () => {
-        assertWorkerPendingCallAdmission(this.pending.snapshot(), name);
-        result = this.pending.register({
-          id,
-          socket,
-          daemonInstanceId,
-          clientRequestKey: requestKey,
-          authority: {
-            accountId: authorized.accountId, accountVersion: authorized.accountVersion,
-            clientId: authorized.clientId, familyId: authorized.familyId,
-          },
-          tool: name,
-          ...(recovery ? { recovery } : {}),
-          timeoutMs: dispatchBudget.settlementTimeoutMs,
-          onTimeout: (record) => this.daemonCallTimeout(record, name),
-          redeliverAfterProvenMissing: (record, channel) => {
-            const remainingExecutionMs = Math.min(dispatchBudget.executionTimeoutMs,
-              Math.floor(record.startedAt + dispatchBudget.executionTimeoutMs - performance.now()));
-            if (remainingExecutionMs < 1_000) return false;
-            return trySendDaemonChannel(channel, {
-              type: "tool_call", id: record.id, tool: name, arguments: args, timeout_ms: remainingExecutionMs,
-              authorization: {
-                account_id: authorized.accountId, account_version: authorized.accountVersion,
-                client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
-              },
-            });
-          },
-          signal,
-          onAbort: (record) => this.daemonCallCancellation(record),
-        });
+      if (signal?.aborted) {
+        throw new WorkerToolError("cancelled", "tool call cancelled before daemon dispatch", false, { side_effects_started: false });
+      }
+      assertWorkerPendingCallAdmission(this.pending.snapshot(), name);
+      result = this.pending.register({
+        id,
+        socket,
+        daemonInstanceId,
+        clientRequestKey: requestKey,
+        authority: {
+          accountId: authorized.accountId, accountVersion: authorized.accountVersion,
+          clientId: authorized.clientId, familyId: authorized.familyId,
+        },
+        tool: name,
+        ...(recovery ? { recovery } : {}),
+        timeoutMs: dispatchBudget.settlementTimeoutMs,
+        onTimeout: (record) => this.daemonCallTimeout(record, name),
+        redeliverAfterProvenMissing: (record, channel) => {
+          const remainingExecutionMs = Math.min(dispatchBudget.executionTimeoutMs,
+            Math.floor(record.startedAt + dispatchBudget.executionTimeoutMs - performance.now()));
+          if (remainingExecutionMs < 1_000) return false;
+          if (name === "read_job" && !managedJobReadExecutionBudgetHasHeadroom(remainingExecutionMs)) return false;
+          const redeliveryArgs = name === "read_job"
+            ? managedJobReadArgumentsWithinExecutionBudget(args, remainingExecutionMs)
+            : args;
+          return trySendDaemonChannel(channel, {
+            type: "tool_call", id: record.id, tool: name, arguments: redeliveryArgs, timeout_ms: remainingExecutionMs,
+            authorization: {
+              account_id: authorized.accountId, account_version: authorized.accountVersion,
+              client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
+            },
+          });
+        },
+        signal,
+        onAbort: (record) => this.daemonCallCancellation(record),
       });
+      try {
+        sent = trySendDaemonChannel(socket, {
+          type: "tool_call", id, tool: name, arguments: daemonArgs, timeout_ms: dispatchBudget.executionTimeoutMs,
+          authorization: {
+            account_id: authorized.accountId, account_version: authorized.accountVersion,
+            client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
+          },
+        });
+      } catch { sent = false; }
     } catch (error) {
       if (error instanceof PendingCallRegistrationError) {
         throw new WorkerToolError(error.code, error.message, error.retryable);
       }
       throw error;
     }
-    await this.scheduleRuntimeAlarm();
-    this.observability.callStarted(name);
-    try {
-      if (!trySendDaemonChannel(socket, {
-          type: "tool_call", id, tool: name, arguments: args, timeout_ms: dispatchBudget.executionTimeoutMs,
-          authorization: {
-            account_id: authorized.accountId,
-            account_version: authorized.accountVersion,
-            client_id: authorized.clientId,
-            family_id: authorized.familyId,
-            role: authorized.role,
-          },
-      })) throw new Error("daemon channel send failed");
-    } catch {
+    if (!sent) {
       await this.pending.reject(id, new WorkerToolError("network_error", "failed to send daemon tool call", true), socket);
       await this.invalidateDaemonChannel(socket, "failed to send daemon tool call", "daemon_transport_error");
     }
+    await this.scheduleRuntimeAlarm();
+    this.observability.callStarted(name);
     try {
       const value = await result;
       this.observability.callFinished(name);
@@ -776,21 +807,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return daemonStatusSnapshot(this.daemonRegistry, detail);
   }
 
-}
-
-function durableProcessRecovery(name: string, args: Record<string, unknown>): Record<string, unknown> | null {
-  if (!isRemoteDurableProcessTool(name)) return null;
-  const idempotencyKey = args.idempotency_key;
-  if (typeof idempotencyKey !== "string" || !idempotencyKey) return null;
-  return {
-    mode: "idempotent_replay",
-    source_tool: name,
-    credential: "idempotency_key",
-    idempotency_key: idempotencyKey,
-    action: "retry_same_tool_arguments_with_same_idempotency_key",
-    result_tool_after_acceptance: "read_job",
-    duplicate_execution_prevented_by_key: true,
-  };
 }
 
 export default {

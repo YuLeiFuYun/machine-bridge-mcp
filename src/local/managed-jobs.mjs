@@ -12,10 +12,12 @@ import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock, acquireRecoveryLock } from "./managed-job-lock.mjs";
 import { hostedManagedJobStatus } from "./managed-job-hosted-status.mjs";
+import { reconcileManagedJobStatusHosted } from "./managed-job-hosted-reconcile.mjs";
 import { listManagedJobs } from "./managed-job-listing.mjs";
 import { projectManagedJobResult, publicStatus, reviewablePlan } from "./managed-job-projection.mjs";
 import { atomicWriteJson, readBoundedFile, readJson, readRequiredJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
+import { managedJobIdempotencyDigest, normalizeJobIdempotencyKey, omitJobIdempotencyKey } from "./managed-job-idempotency.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "./managed-job-directory.mjs";
 import { retiredManagedJobDirectories } from "./managed-job-directory-generation.mjs";
 import { managedJobCapacitySnapshot, MAX_JOBS } from "./managed-job-capacity.mjs";
@@ -123,7 +125,7 @@ export class ManagedJobManager {
     return startDurableProcessJob(this, args, context);
   }
 
-  createJob(args, { launch, executionPriority = "background", delegatedProcess = false }, context = {}) {
+  createJob(args, { launch, executionPriority = "background", delegatedProcess = false, retentionClass = "managed" }, context = {}) {
     const effectivePolicy = this.policyForContext(context);
     const idempotencyKey = launch ? normalizeJobIdempotencyKey(args?.idempotency_key) : null;
     const planArgs = idempotencyKey === null ? args : omitJobIdempotencyKey(args);
@@ -211,6 +213,7 @@ export class ManagedJobManager {
           approval: launch ? "mcp" : "review-only",
           plan_sha256: planSha256,
           cleanup_guarantee: launch ? "best-effort-finally-and-recovery" : "not-started",
+          ...(retentionClass === "transient_process" ? { retention_class: "transient_process" } : {}),
           ...principalBinding(context),
         };
         atomicWriteJson(statusFile, status, 256 * 1024);
@@ -254,11 +257,11 @@ export class ManagedJobManager {
     });
   }
 
-  read(args = {}, context = {}) {
+  read(args = {}, context = {}, options = {}) {
     this.authorizeTool("read_job");
     this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
-    this.reconcileStatus(dir);
+    if (options.skipReconcile !== true) this.reconcileStatus(dir);
     const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
     assertManagedJobDirectoryIdentity(dir, status);
     assertKnownManagedJobStatus(status);
@@ -281,6 +284,14 @@ export class ManagedJobManager {
       ...hostedManagedJobStatus(projectedStatus, context),
       ...(result ? { result: projectManagedJobResult(result, { includeResourceAdmissionTiming: context?.authority?.owner !== false }) } : {}),
     };
+  }
+
+  async readHosted(args = {}, context = {}) {
+    this.authorizeTool("read_job");
+    this.assertMaintenanceAvailable();
+    const dir = this.jobDir(args.job_id);
+    await reconcileManagedJobStatusHosted(this, dir);
+    return this.read(args, context, { skipReconcile: true });
   }
 
   readProgress(args = {}, context = {}) {
@@ -624,32 +635,6 @@ function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recov
 
 function runnerLaunchOptions(fullEnv, logger, overrides = {}) {
   return { logger, fullEnv, env: { ...process.env, ...overrides } };
-}
-
-function normalizeJobIdempotencyKey(value) {
-  if (value === undefined) return null;
-  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/.test(value)) {
-    throw new BridgeError("invalid_request", "idempotency_key must be a 1-128 character identifier using letters, digits, dot, underscore, tilde, colon, or hyphen");
-  }
-  return value;
-}
-
-function omitJobIdempotencyKey(args) {
-  const { idempotency_key: _ignored, ...planArgs } = args;
-  return planArgs;
-}
-
-function managedJobIdempotencyDigest(key, context) {
-  const binding = principalBinding(context);
-  const scope = binding.owner_kind === "account"
-    ? [binding.owner_kind, binding.owner_account_id, binding.owner_account_version, binding.owner_client_id, binding.owner_family_id].join("\0")
-    : "local";
-  return createHash("sha256")
-    .update("machine-bridge-managed-job-idempotency-v1\0")
-    .update(scope)
-    .update("\0")
-    .update(key)
-    .digest("hex");
 }
 
 function acceptedJobProjection(status, plan, { idempotencyReplay = false, idempotencyAccepted = true } = {}) {

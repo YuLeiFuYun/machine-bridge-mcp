@@ -1,15 +1,22 @@
 import { MCP_PROTOCOL_VERSION } from "../src/shared/mcp-protocol.mjs";
+import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { acceptsEventStream } from "../src/worker/mcp-http-accept.ts";
 import { proxyMcpResponseStream } from "../src/worker/mcp-response-proxy.ts";
 import {
   MCP_STREAM_PROXY_ID_HEADER,
   MCP_STREAM_PROXY_MODE_HEADER,
+  mcpStreamRequestKey,
   mcpStreamProxyId,
   mcpStreamProxyMode,
+  sanitizeBridgeRequest,
+  withProxyHeaders,
 } from "../src/worker/mcp-stream-proxy-contract.ts";
 
 await testPublicReaderCancellation();
 await testRequestSignalCancellation();
+await testAlreadyAbortedRequest();
+await testRequestAbortWaitsForPrivateSettlement();
+await testRequestAbortBoundsStalledPrivateSettlement();
 await testEarlyRequestAbort();
 await testNonStreamPassthrough();
 await testUpstreamCompletion();
@@ -17,6 +24,7 @@ await testUpstreamFailure();
 await testCancellationDeliveryFailure();
 await testEligibility();
 testAcceptNegotiation();
+testStreamProxyContractEdges();
 console.log("MCP response proxy test ok");
 
 async function testPublicReaderCancellation() {
@@ -43,6 +51,86 @@ async function testRequestSignalCancellation() {
   const first = await reader.read();
   const terminal = first.done ? first : await reader.read();
   assert(terminal.done === true, "request abort left the public response stream open after queued data drained");
+}
+
+async function testAlreadyAbortedRequest() {
+  const controller = new AbortController();
+  controller.abort("request was already aborted");
+  const fixture = proxyFixture(controller.signal);
+  const response = await proxyMcpResponseStream(fixture.input);
+  assert(response?.body, "already-aborted request did not create its bounded terminal response body");
+  const reader = response.body.getReader();
+  assert((await reader.read()).done === true,
+    "already-aborted request exposed upstream response data after cancellation ownership was known");
+  await fixture.settle();
+  assertCancellationPair(fixture.requests, "already-aborted request");
+}
+
+async function testRequestAbortWaitsForPrivateSettlement() {
+  const controller = new AbortController();
+  const requests = [];
+  const retained = [];
+  let releaseCancel;
+  const cancelSettled = new Promise((resolve) => { releaseCancel = resolve; });
+  const response = await proxyMcpResponseStream({
+    request: currentRequest(controller.signal),
+    bridge: {
+      async fetch(request) {
+        requests.push(request);
+        if (mcpStreamProxyMode(request) === "cancel") { await cancelSettled; return new Response(null, { status: 202 }); }
+        return new Response(new ReadableStream({
+          start(target) { target.enqueue(new TextEncoder().encode(": upstream\n\n")); },
+        }), { headers: { "content-type": "text/event-stream" } });
+      },
+    },
+    ctx: { waitUntil(promise) { retained.push(Promise.resolve(promise)); } },
+  });
+  const reader = response.body.getReader();
+  await reader.read();
+  const terminal = reader.read();
+  controller.abort("request aborted during subscription");
+  assert(await Promise.race([
+    terminal.then(() => "closed"),
+    new Promise((resolve) => { setTimeout(() => resolve("waiting"), 20); }),
+  ]) === "waiting", "request abort exposed public stream closure before private Durable Object cancellation settled");
+  releaseCancel();
+  assert((await terminal).done === true, "private cancellation settlement did not close the public response stream");
+  await Promise.all(retained);
+  assertCancellationPair(requests, "request abort settlement ordering");
+}
+
+async function testRequestAbortBoundsStalledPrivateSettlement() {
+  const controller = new AbortController();
+  const retained = [];
+  let cancelSignal = null;
+  const response = await proxyMcpResponseStream({
+    request: currentRequest(controller.signal),
+    bridge: {
+      async fetch(request) {
+        if (mcpStreamProxyMode(request) === "cancel") {
+          cancelSignal = request.signal;
+          return await new Promise(() => {});
+        }
+        return new Response(new ReadableStream({
+          start(target) { target.enqueue(new TextEncoder().encode(": upstream\n\n")); },
+        }), { headers: { "content-type": "text/event-stream" } });
+      },
+    },
+    ctx: { waitUntil(promise) { retained.push(Promise.resolve(promise)); } },
+  });
+  const reader = response.body.getReader();
+  await reader.read();
+  const started = Date.now();
+  const terminal = reader.read();
+  controller.abort("request aborted while private cancellation is stalled");
+  assert((await terminal).done === true,
+    "stalled private cancellation kept the public response stream open indefinitely");
+  const elapsed = Date.now() - started;
+  assert(elapsed >= Number(relayContract.streamCancelTimeoutMs) - 100
+    && elapsed < Number(relayContract.streamCancelTimeoutMs) + 1500,
+  "stalled private cancellation did not settle at the configured bounded deadline");
+  assert(cancelSignal?.aborted === true, "stalled private cancellation did not abort its internal control request");
+  await Promise.all(retained);
 }
 
 async function testEarlyRequestAbort() {
@@ -196,6 +284,36 @@ function testAcceptNegotiation() {
   assert(!accepts("text/event-stream; q=0"), "q=0 SSE Accept was treated as acceptable");
   assert(!accepts("text/event-stream; q=bogus"), "invalid SSE quality was treated as acceptable");
   assert(accepts("application/json; q=1, text/event-stream; q=0.1"), "positive SSE quality was rejected");
+}
+
+function testStreamProxyContractEdges() {
+  const callerId = `stream_${"C".repeat(43)}`;
+  const source = currentRequest(undefined);
+  const sanitized = sanitizeBridgeRequest(source);
+  assert(sanitized.headers.get(MCP_STREAM_PROXY_MODE_HEADER) === null
+    && sanitized.headers.get(MCP_STREAM_PROXY_ID_HEADER) === null,
+  "stream proxy sanitization retained caller-supplied internal control headers");
+
+  assert(mcpStreamProxyMode({ headers: new Headers({ [MCP_STREAM_PROXY_MODE_HEADER]: " DIRECT " }) }) === "direct"
+    && mcpStreamProxyMode({ headers: new Headers({ [MCP_STREAM_PROXY_MODE_HEADER]: "unexpected" }) }) === "",
+  "stream proxy mode normalization accepted or rejected the wrong internal mode");
+  assert(mcpStreamProxyId({ headers: new Headers({ [MCP_STREAM_PROXY_ID_HEADER]: callerId }) }) === callerId
+    && mcpStreamProxyId({ headers: new Headers({ [MCP_STREAM_PROXY_ID_HEADER]: "stream_short" }) }) === "",
+  "stream proxy id validation accepted or rejected the wrong capability shape");
+  assert(mcpStreamRequestKey(callerId) === `stream:${callerId}` && mcpStreamRequestKey("stream_short") === undefined,
+    "stream request-key projection lost its validated capability boundary");
+
+  const directWithoutId = withProxyHeaders(currentRequest(undefined), "direct");
+  assert(directWithoutId.method === "POST" && mcpStreamProxyMode(directWithoutId) === "direct"
+    && mcpStreamProxyId(directWithoutId) === "",
+  "direct proxy without a stream capability retained caller control state");
+  const cancel = withProxyHeaders(currentRequest(undefined), "cancel", callerId);
+  assert(cancel.method === "POST" && mcpStreamProxyMode(cancel) === "cancel" && mcpStreamProxyId(cancel) === callerId,
+    "cancel proxy did not force the private POST control contract");
+  let invalidIdRejected = false;
+  try { withProxyHeaders(currentRequest(undefined), "direct", "stream_short"); }
+  catch (error) { invalidIdRejected = String(error?.message || "").includes("invalid MCP internal stream id"); }
+  assert(invalidIdRejected, "proxy headers accepted an invalid internal stream capability");
 }
 
 function proxyFixture(signal, options = {}) {

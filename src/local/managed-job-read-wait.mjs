@@ -19,14 +19,18 @@ export async function waitForManagedJobRead({
   sleep = defaultSleep, now = undefined,
 }) {
   throwIfCancelled();
-  let current = await readCurrent();
   const waitMs = managedJobReadWaitMs(args, context);
-  const initialSignature = managedJobProgressSignature(current);
-  if (!ACTIVE_JOB_STATES.has(String(current?.status || "")) || waitMs <= 0) {
+  if (waitMs <= 0) {
+    const current = await readCurrent();
     return withHostedWaitMetadata(current, context, 0, false);
   }
   const deadline = createMonotonicDeadline(waitMs, now);
-  let lastReconcileElapsedMs = 0;
+  let current = await readCurrent();
+  const initialSignature = managedJobProgressSignature(current);
+  if (!ACTIVE_JOB_STATES.has(String(current?.status || ""))) {
+    return withHostedWaitMetadata(current, context, 0, false);
+  }
+  let lastReconcileElapsedMs = deadline.elapsedMs();
   while (ACTIVE_JOB_STATES.has(String(current?.status || "")) && !deadline.expired()) {
     throwIfCancelled();
     await sleep(Math.min(relayContract.managedJobReadPollIntervalMs, Math.max(1, deadline.remainingMs())));
@@ -36,16 +40,13 @@ export async function waitForManagedJobRead({
       current = await readCurrent();
       break;
     }
+    current = { ...current, ...progress };
     const elapsed = deadline.elapsedMs();
     if (elapsed - lastReconcileElapsedMs >= relayContract.managedJobReadReconcileIntervalMs) {
       current = await readCurrent();
-      lastReconcileElapsedMs = elapsed;
+      lastReconcileElapsedMs = deadline.elapsedMs();
       if (managedJobProgressSignature(current) !== initialSignature) break;
     }
-  }
-  const finalElapsedMs = deadline.elapsedMs();
-  if (managedJobProgressSignature(current) === initialSignature && lastReconcileElapsedMs < finalElapsedMs) {
-    current = await readCurrent();
   }
   const timedOut = ACTIVE_JOB_STATES.has(String(current?.status || ""))
     && managedJobProgressSignature(current) === initialSignature && deadline.expired();

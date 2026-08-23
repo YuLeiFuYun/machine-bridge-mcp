@@ -1,5 +1,7 @@
 import { resourceDiskHardFloorBytes, resourceDiskSoftFloorBytes } from "./resource-disk-headroom.mjs";
 
+const IO_PRESSURE_FRESH_MS = 5_000;
+
 export function resourcePressureState(host, used) {
   const cores = Math.max(1, Number(host?.cpu_cores) || 1);
   const reasons = [];
@@ -12,13 +14,14 @@ export function resourcePressureState(host, used) {
   };
   if (host?.thermal_warning === true) mark(2, "thermal_warning");
   thresholdPressure(optionalResourceNumber(host?.memory_free_percent), { critical: 8, warning: 18, lowerIsWorse: true }, mark, "memory_pressure");
-  thresholdPressure(optionalResourceNumber(host?.disk_mb_per_s), { critical: 220, warning: 100 }, mark, "disk_throughput");
-  thresholdPressure(optionalResourceNumber(host?.disk_iops), { critical: 5000, warning: 2500 }, mark, "disk_iops");
+  const io = freshIoPressureSignals(host);
+  if ((io.diskMbPerSecond ?? 0) >= 100) mark(1, "disk_throughput");
+  if ((io.diskIops ?? 0) >= 2500) mark(1, "disk_iops");
   thresholdPressure(optionalResourceNumber(host?.pageouts_per_s), { critical: 1024, warning: 256 }, mark, "pageout_rate");
   thresholdPressure(optionalResourceNumber(host?.swapouts_per_s), { critical: 512, warning: 128 }, mark, "swapout_rate");
   markDiskHeadroom(host, mark);
   markPsiPressure(host, mark);
-  markCpuLoadPressure(host, cores, mark);
+  markCpuLoadPressure(host, cores, mark, io);
   if (used.heavy_leases > cores * 2) mark(1, "heavy_root_count");
   return { state: level === 2 ? "red" : level === 1 ? "yellow" : "green", reasons, critical_reasons: criticalReasons };
 }
@@ -39,16 +42,18 @@ function markDiskHeadroom(host, mark) {
 
 function markPsiPressure(host, mark) {
   const memoryFull = optionalResourceNumber(host?.psi_memory_full_avg10);
+  const ioFull = optionalResourceNumber(host?.psi_io_full_avg10);
   thresholdPressure(memoryFull, { critical: 60, warning: 10 }, mark, "psi_memory_full");
+  thresholdPressure(ioFull, { critical: 60, warning: 10 }, mark, "psi_io_full");
   for (const [value, reason] of [
     [host?.psi_cpu_some_avg10, "psi_cpu_some"], [host?.psi_memory_some_avg10, "psi_memory_some"],
-    [host?.psi_io_some_avg10, "psi_io_some"], [host?.psi_io_full_avg10, "psi_io_full"],
+    [host?.psi_io_some_avg10, "psi_io_some"],
   ]) if ((optionalResourceNumber(value) ?? 0) >= 10) mark(1, reason);
 }
 
-function markCpuLoadPressure(host, cores, mark) {
+function markCpuLoadPressure(host, cores, mark, io) {
   const cpu = optionalResourceNumber(host?.cpu_busy_cores); const load = optionalResourceNumber(host?.load1);
-  const ioMb = optionalResourceNumber(host?.disk_mb_per_s); const iops = optionalResourceNumber(host?.disk_iops);
+  const ioMb = io.diskMbPerSecond; const iops = io.diskIops;
   if (cpu !== null && cpu >= cores * 0.9) mark(1, "cpu_busy");
   if (load === null) return;
   const psiBacklog = [host?.psi_cpu_some_avg10, host?.psi_memory_some_avg10, host?.psi_io_some_avg10, host?.psi_io_full_avg10]
@@ -56,6 +61,20 @@ function markCpuLoadPressure(host, cores, mark) {
   const corroborated = (cpu ?? 0) >= cores * 0.70 || (ioMb ?? 0) >= 50 || (iops ?? 0) >= 1250 || psiBacklog;
   if (load >= cores * 1.25 && (host?.platform !== "darwin" || corroborated)) mark(1, "load_backlog");
   if (load >= cores * 2 && ((cpu ?? 0) >= cores * 0.75 || (ioMb ?? 0) >= 100 || (iops ?? 0) >= 2500)) mark(2, "load_backlog_critical");
+}
+
+function freshIoPressureSignals(host) {
+  if (host?.io_sampled !== true) return { diskMbPerSecond: null, diskIops: null };
+  const sampledAt = Number(host?.sampled_at_ms);
+  const ioSampledAt = Number(host?.io_sampled_at_ms);
+  if (!Number.isFinite(sampledAt) || !Number.isFinite(ioSampledAt)
+      || ioSampledAt > sampledAt || sampledAt - ioSampledAt > IO_PRESSURE_FRESH_MS) {
+    return { diskMbPerSecond: null, diskIops: null };
+  }
+  return {
+    diskMbPerSecond: optionalResourceNumber(host?.disk_mb_per_s),
+    diskIops: optionalResourceNumber(host?.disk_iops),
+  };
 }
 
 function thresholdPressure(value, thresholds, mark, label) {

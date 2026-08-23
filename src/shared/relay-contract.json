@@ -20,6 +20,7 @@
   "httpFallbackMaximumMessageBytes": 8388608,
   "httpFallbackMaximumEnvelopeBytes": 8454144,
   "streamHeartbeatMs": 5000,
+  "streamCancelTimeoutMs": 2000,
   "maximumExecutionTimeoutMs": 45000,
   "defaultRemoteToolExecutionTimeoutMs": 20000,
   "maximumInteractiveExecutionTimeoutMs": 45000,
@@ -28,11 +29,13 @@
   "maximumDurableProcessExecutionTimeoutMs": 600000,
   "maximumManagedJobResourceAdmissionWaitMs": 1800000,
   "defaultManagedJobReadWaitMs": 40000,
-  "maximumManagedJobReadWaitMs": 40000,
-  "managedJobReadPollIntervalMs": 1000,
-  "managedJobReadReconcileIntervalMs": 10000,
+  "maximumManagedJobReadWaitMs": 300000,
+  "managedJobReadPollIntervalMs": 5000,
+  "managedJobReadReconcileIntervalMs": 30000,
+  "managedJobReadExecutionHeadroomMs": 10000,
   "maximumProcessReadWaitMs": 1000,
   "remoteProcessBlockingPollCooldownMs": 15000,
   "workerSettlementOverheadMs": 5000,
-  "maximumRelayToolTimeoutMs": 50000
+  "maximumOrdinaryRelayToolTimeoutMs": 50000,
+  "maximumRelayToolTimeoutMs": 315000
 }

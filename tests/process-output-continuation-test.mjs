@@ -15,7 +15,9 @@ import { ResourceAdmissionError } from "../src/local/resource-admission.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import { toolResult } from "../src/local/tools.mjs";
 import { textToolResult } from "../src/worker/mcp-jsonrpc.ts";
+import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
+const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 const root = await mkdtemp(join(tmpdir(), "mbm-process-output-test-"));
 const tracker = new ProcessTracker();
 const policy = {
@@ -58,7 +60,9 @@ try {
   testProcessSessionRetentionUsesMonotonicTime();
   testRemoteReadCompletionUsesFinalSessionState();
   await testExecutionSurfaceMarkers();
+  await testProcessCancellationAfterAdmissionBeforeSpawn();
   await testRemoteSessionAdmissionIsFailFast();
+  await testSessionCancellationAfterAdmissionBeforeSpawn();
   await testRemoteSessionActivityLifetime();
   await testRemoteBlockingPollCooldown();
   await testRemoteReadCancellationAfterHelperResolution();
@@ -188,6 +192,90 @@ async function testRemoteSessionAdmissionIsFailFast() {
   assert.equal(activityStarts, 0, "structurally impossible remote session demand retained idle-sleep activity");
 }
 
+async function testProcessCancellationAfterAdmissionBeforeSpawn() {
+  const controller = new AbortController();
+  const cancellation = new BridgeError("cancelled", "cancelled after resource admission", { retryable: false });
+  let spawnCount = 0;
+  let releaseCount = 0;
+  const service = new ProcessExecutionService({
+    workspace: root,
+    policy,
+    policyGate: { assert() {} },
+    runtimeDir: root,
+    processTracker: tracker,
+    resourceCoordinator: {
+      async acquire() {
+        controller.abort(cancellation);
+        return {
+          async bindProcess() { throw new Error("cancelled pre-spawn process must not bind resources"); },
+          async release() { releaseCount += 1; return true; },
+        };
+      },
+    },
+    resolveExistingPath: async () => root,
+    resolveLocalCommand: async () => ({}),
+    displayPath: (value) => value,
+    throwIfCancelled(context) {
+      if (context.signal?.aborted) throw context.signal.reason;
+    },
+    spawnProcess() {
+      spawnCount += 1;
+      throw new Error("cancelled pre-spawn process reached spawn");
+    },
+  });
+  await assert.rejects(
+    () => service.run(process.execPath, ["-e", ""], 5_000, false, 1024, { signal: controller.signal }),
+    (error) => error === cancellation,
+    "one-shot cancellation after resource admission lost its definite pre-spawn result",
+  );
+  assert.equal(spawnCount, 0, "one-shot cancellation after resource admission still spawned a child");
+  assert.equal(releaseCount, 1, "one-shot pre-spawn cancellation did not release its admitted resource lease exactly once");
+}
+
+async function testSessionCancellationAfterAdmissionBeforeSpawn() {
+  const controller = new AbortController();
+  const cancellation = new BridgeError("cancelled", "cancelled after session resource admission", { retryable: false });
+  let spawnCount = 0;
+  let releaseCount = 0;
+  let activityStarts = 0;
+  const manager = new ProcessSessionManager({
+    workspace: root,
+    policy,
+    authorizeTool() {},
+    runtimeDir: root,
+    processTracker: tracker,
+    resourceCoordinator: {
+      async acquire() {
+        controller.abort(cancellation);
+        return {
+          async bindProcess() { throw new Error("cancelled pre-spawn session must not bind resources"); },
+          async release() { releaseCount += 1; return true; },
+        };
+      },
+    },
+    resolveCwd: async () => root,
+    displayPath: (value) => value,
+    throwIfCancelled(context) {
+      if (context.signal?.aborted) throw context.signal.reason;
+    },
+    remoteActivityGuard: { beginActivity() { activityStarts += 1; }, endActivity() {} },
+    spawnProcess() {
+      spawnCount += 1;
+      throw new Error("cancelled pre-spawn session reached spawn");
+    },
+  });
+  await assert.rejects(
+    () => manager.start({ argv: [process.execPath, "-e", ""] }, {
+      origin: "relay", authority: { origin: "relay" }, signal: controller.signal,
+    }),
+    (error) => error === cancellation,
+    "process-session cancellation after resource admission lost its definite pre-spawn result",
+  );
+  assert.equal(spawnCount, 0, "process-session cancellation after resource admission still spawned a child");
+  assert.equal(releaseCount, 1, "process-session pre-spawn cancellation did not release its admitted resource lease exactly once");
+  assert.equal(activityStarts, 0, "cancelled pre-spawn process session acquired remote activity ownership");
+}
+
 async function testRemoteBlockingPollCooldown() {
   const manager = new ProcessSessionManager({
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
@@ -199,7 +287,7 @@ async function testRemoteBlockingPollCooldown() {
     const immediate = await manager.read({ session_id: started.session_id, wait_ms: 0 }, remoteContext);
     assert.equal(immediate.running, true, "remote polling fixture exited before the immediate checkpoint");
     assert.equal(immediate.status_polling_mode, "paced_followup", "remote process read omitted paced follow-up semantics");
-    assert.equal(immediate.tool_schema_generation, 3, "remote process read omitted current tool schema generation");
+    assert.equal(immediate.tool_schema_generation, TOOL_SCHEMA_GENERATION, "remote process read omitted current tool schema generation");
     assert.equal(immediate.host_turn_deadline_observable, false, "remote process read claimed visibility into an external host turn deadline");
     assert.equal(immediate.blocking_poll_throttled, false, "non-blocking status checkpoint was marked as throttled");
     assert.equal(immediate.next_blocking_poll_after_ms, 0,
@@ -569,7 +657,7 @@ async function testSessionCancellationAfterSpawn() {
     displayPath: (value) => value,
     throwIfCancelled() {
       cancellationChecks += 1;
-      if (cancellationChecks >= 2) throw new BridgeError("cancelled", "cancelled after process spawn", { retryable: false });
+      if (cancellationChecks >= 3) throw new BridgeError("cancelled", "cancelled after process spawn", { retryable: false });
     },
   });
   try {
@@ -617,7 +705,7 @@ async function testFailedSessionOwnershipRetention(phase) {
     displayPath: (value) => value,
     throwIfCancelled() {
       cancellationChecks += 1;
-      if (phase === "cancel" && cancellationChecks >= 2) {
+      if (phase === "cancel" && cancellationChecks >= 3) {
         throw new BridgeError("cancelled", "synthetic post-spawn cancellation", { retryable: false });
       }
     },

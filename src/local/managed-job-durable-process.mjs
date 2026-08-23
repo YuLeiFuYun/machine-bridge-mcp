@@ -28,6 +28,7 @@ export function startDurableProcessJob(manager, args = {}, context = {}) {
     launch: true,
     executionPriority: "interactive",
     delegatedProcess: args.delegatedProcess === true,
+    retentionClass: "transient_process",
   }, context);
   return {
     ...accepted,

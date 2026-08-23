@@ -914,6 +914,16 @@ assert.equal(refreshedCpuWithIoHint.cpu_busy_cores, 2, "quick CPU refresh did no
 assert.equal(refreshedCpuWithIoHint.disk_mb_per_s, 77, "non-I/O refresh discarded a valid scope-local I/O hint");
 assert.equal(refreshedCpuWithIoHint.disk_iops, 770, "non-I/O refresh discarded cached scope-local IOPS");
 assert.equal(refreshedCpuWithIoHint.io_sampled, true, "cached I/O hint lost its sampled marker during quick CPU refresh");
+const staleIoHintDiscarded = await freshResourceHostSnapshot({
+  cached: cachedIoHost, current: 6_001, cwd: "/tmp", request: { resource_class: "adaptive" }, scope: cacheScope,
+  sampleHost: async (options) => {
+    assert.equal(options.quick, true);
+    return { ...green, sampled_at_ms: 6_001, cpu_busy_cores: 2, io_sampled: false, disk_mb_per_s: null, disk_iops: null };
+  },
+});
+assert.equal(staleIoHintDiscarded.disk_mb_per_s, null, "stale I/O throughput remained attached to a current quick host sample");
+assert.equal(staleIoHintDiscarded.disk_iops, null, "stale IOPS remained attached to a current quick host sample");
+assert.equal(staleIoHintDiscarded.io_sampled, false, "stale I/O hint retained a fresh sampled marker");
 const refreshedIoWithinFreshWindow = await freshResourceHostSnapshot({
   cached: cachedIoHost, current: 1_700, cwd: "/tmp", request: { resource_class: "io" }, scope: cacheScope,
   sampleHost: async (options) => {
@@ -998,11 +1008,28 @@ let decision = evaluateResourceAdmission(green, [], cargo, Date.now());
 assert.equal(decision.admitted, true);
 assert.equal(decision.state, "green");
 const greenLimits = decision.limits;
-const red = { ...green, disk_mb_per_s: 230, disk_iops: 5100 };
-decision = evaluateResourceAdmission(red, [], cargo, Date.now());
-assert.equal(decision.admitted, false);
-assert.equal(decision.state, "red");
-const yellow = { ...green, disk_mb_per_s: 120 };
+const ioSampledAt = Date.now();
+const ioPeak = {
+  ...green, sampled_at_ms: ioSampledAt, io_sampled: true, io_sampled_at_ms: ioSampledAt,
+  disk_mb_per_s: 230, disk_iops: 5100,
+};
+decision = evaluateResourceAdmission(ioPeak, [], cargo, Date.now());
+assert.equal(decision.admitted, true, "raw macOS I/O throughput alone hard-blocked heavy work without saturation evidence");
+assert.equal(decision.state, "yellow", "raw I/O throughput did not remain a concurrency-throttling signal");
+assert(decision.pressure_reasons.includes("disk_throughput") && decision.pressure_reasons.includes("disk_iops")
+  && !decision.pressure_reasons.some((reason) => reason.endsWith("_critical")),
+"raw I/O throughput still projected a false critical-pressure reason");
+const ioBacklogCritical = evaluateResourceAdmission({ ...ioPeak, load1: 17, cpu_busy_cores: 6.5 }, [], cargo, Date.now());
+assert.equal(ioBacklogCritical.admitted, false, "corroborated severe host backlog stopped producing a red admission decision");
+assert.equal(ioBacklogCritical.reason, "host_pressure_red");
+assert(ioBacklogCritical.pressure_reasons.includes("load_backlog_critical"));
+const staleIoPeak = evaluateResourceAdmission({
+  ...ioPeak, sampled_at_ms: ioSampledAt + 5_001, load1: 2, cpu_busy_cores: 1.5,
+}, [], cargo, Date.now());
+assert.equal(staleIoPeak.state, "green", "expired I/O throughput evidence continued to throttle a current idle host sample");
+const yellow = {
+  ...green, sampled_at_ms: ioSampledAt, io_sampled: true, io_sampled_at_ms: ioSampledAt, disk_mb_per_s: 120,
+};
 decision = evaluateResourceAdmission(yellow, [], cargo, Date.now());
 assert.equal(decision.state, "yellow");
 assert.equal(decision.admitted, true);
@@ -1051,6 +1078,10 @@ assert.equal(cpuPsiYellow.state, "yellow", "Linux CPU PSI did not tighten admiss
 assert(cpuPsiYellow.limits.cpu < greenLimits.cpu, "CPU PSI did not reduce CPU admission capacity");
 assert.equal(cpuPsiYellow.limits.io, greenLimits.io, "CPU-only yellow pressure incorrectly reduced I/O capacity");
 assert.equal(cpuPsiYellow.limits.memory_mb, greenLimits.memory_mb, "CPU-only yellow pressure incorrectly reduced memory capacity");
+const ioPsiCritical = evaluateResourceAdmission({ ...green, psi_io_full_avg10: 60.1 }, [], cargo, Date.now());
+assert.equal(ioPsiCritical.state, "red", "Linux sustained full I/O PSI did not become critical pressure");
+assert.equal(ioPsiCritical.reason, "host_pressure_red", "Linux sustained full I/O PSI did not block new heavy work");
+assert(ioPsiCritical.pressure_reasons.includes("psi_io_full_critical"), "Linux critical I/O PSI lost its explicit pressure reason");
 const crowdedRoots = Array.from({ length: 17 }, (_, index) => ({
   lease_id: (index + 1).toString(16).padStart(32, "0"),
   request: { ...cargo, cpu: 0, io: 0, memory_mb: 0, disk_reserve_bytes: 0, contention_key: null },
@@ -1308,6 +1339,32 @@ try {
     sleep: async () => { priorFileWaits += 1; rmSync(legacyLock, { force: true }); },
   });
   assert.equal(priorFileWaits, 1, "beta.61 did not wait for a live prior owner-state file lock");
+
+  const publicationOwner = {
+    pid: process.pid,
+    token: "9".repeat(32),
+    purpose: "resource-coordinator",
+    startedAt: new Date().toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
+  };
+  const persistentPublicationLink = join(root, "transaction.lock.persistent-hardlink");
+  writeFileSync(legacyLock, `${JSON.stringify(publicationOwner)}\n`, { mode: 0o600 });
+  linkSync(legacyLock, persistentPublicationLink);
+  let transactionDeadlineWaits = 0;
+  let persistentPublicationError = null;
+  try {
+    await withResourceTransactionLock(root, () => {}, {
+      timeoutMs: 500,
+      random: () => 0,
+      sleep: async () => { transactionDeadlineWaits += 1; },
+    });
+  } catch (error) { persistentPublicationError = error; }
+  assert.equal(persistentPublicationError?.code, "MBM_MULTIPLE_HARD_LINKS",
+    "persistent resource transaction hard links did not fail closed after the shared four-attempt publication retry");
+  assert.equal(transactionDeadlineWaits, 0,
+    "resource transaction lock expanded a multiple-hard-link integrity failure into transaction-deadline waiting");
+  rmSync(persistentPublicationLink, { force: true });
+  rmSync(legacyLock, { force: true });
 
   mkdirSync(legacyLock, { mode: 0o700 });
   const oldDirectoryTime = new Date(Date.now() - 10_000);
@@ -1724,7 +1781,7 @@ try {
 
   const blockedCoordinator = new ResourceCoordinator({
     root: `${root}-blocked`,
-    sampleHost: () => ({ ...red, sampled_at_ms: Date.now() }),
+    sampleHost: () => ({ ...green, memory_free_percent: 7, sampled_at_ms: Date.now() }),
     sleep: async () => {}, random: () => 0,
   });
   await assert.rejects(() => blockedCoordinator.acquire(cargo), (error) => error instanceof ResourceAdmissionError && error.retryable === true);
@@ -1743,7 +1800,7 @@ try {
   );
   assert.equal(structuralSleeps, 0, "structurally impossible fixed CPU fan-out entered the resource retry sleep loop");
   const livenessCoordinator = new ResourceCoordinator({
-    root: `${root}-liveness`, sampleHost: () => ({ ...red, sampled_at_ms: Date.now() }), random: () => 0,
+    root: `${root}-liveness`, sampleHost: () => ({ ...green, memory_free_percent: 7, sampled_at_ms: Date.now() }), random: () => 0,
   });
   await assert.rejects(
     () => livenessCoordinator.acquire(cargo, { waitMs: 75 }),

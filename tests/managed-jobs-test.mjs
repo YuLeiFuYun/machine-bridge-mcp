@@ -10,12 +10,13 @@ import { hostedManagedJobListStatus, hostedManagedJobStatus } from "../src/local
 import { managedJobReadWaitMs, waitForManagedJobRead } from "../src/local/managed-job-read-wait.mjs";
 import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local/managed-job-storage.mjs";
 import { normalizeResourceRegistry } from "../src/local/managed-job-plan.mjs";
-import { managedRunnerEnvironment, runnerProcessIsCurrent } from "../src/local/managed-job-runner.mjs";
+import { managedRunnerEnvironment, runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../src/local/managed-job-runner.mjs";
 import { confirmRunnerClaim, publishProvisionalRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
 import { managedJobFinalStatus, persistManagedJobTerminal } from "../src/local/managed-job-terminal.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/managed-job-lock.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
+import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const MANAGED_JOB_TEST_WAIT_MS = 480_000;
 const MANAGED_JOB_MULTI_STEP_WAIT_MS = 600_000;
@@ -23,6 +24,7 @@ const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 120;
 const MANAGED_JOB_TREE_TIMEOUT_SECONDS = 15;
 const MANAGED_JOB_TREE_READY_MS = 10_000;
 const RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500;
+const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 
 function testManagedStateIdentityRetry() {
   let attempts = 0;
@@ -57,19 +59,19 @@ function testHostedManagedJobStatusProjection() {
   for (const status of ["queued", "running", "cleaning", "interrupted"]) {
     const projected = hostedManagedJobStatus({ status }, relayContext);
     assert(projected.host_turn_handoff_recommended === false && projected.status_polling_mode === "bounded_followup"
-      && projected.tool_schema_generation === 3 && projected.host_turn_deadline_observable === false
+      && projected.tool_schema_generation === TOOL_SCHEMA_GENERATION && projected.host_turn_deadline_observable === false
       && projected.managed_job_detached_from_mcp_response === true,
       `active managed-job state ${status} did not preserve bounded same-turn follow-up`);
   }
   const terminal = hostedManagedJobStatus({ status: "succeeded" }, relayContext);
   assert(terminal.host_turn_handoff_recommended === false && terminal.status_polling_mode === "terminal"
-    && terminal.tool_schema_generation === 3 && terminal.host_turn_deadline_observable === false,
+    && terminal.tool_schema_generation === TOOL_SCHEMA_GENERATION && terminal.host_turn_deadline_observable === false,
     "terminal managed-job status retained active polling semantics");
   assert(Object.keys(hostedManagedJobStatus({ status: "running" }, {})).length === 0,
     "local managed-job status gained relay-only hosted-turn metadata");
   const activeListing = hostedManagedJobListStatus([{ status: "succeeded" }, { status: "cleaning" }], relayContext);
   assert(activeListing.host_turn_handoff_recommended === false && activeListing.status_polling_mode === "inventory"
-    && activeListing.tool_schema_generation === 3 && activeListing.host_turn_deadline_observable === false,
+    && activeListing.tool_schema_generation === TOOL_SCHEMA_GENERATION && activeListing.host_turn_deadline_observable === false,
     "remote list_jobs did not remain an inventory surface");
   const terminalListing = hostedManagedJobListStatus([{ status: "succeeded" }], relayContext);
   assert(terminalListing.host_turn_handoff_recommended === false && terminalListing.status_polling_mode === "inventory",
@@ -80,11 +82,11 @@ function testHostedManagedJobStatusProjection() {
 
 async function testManagedJobReadWaitPacing() {
   const relayContext = { authority: { origin: "relay" } };
-  assert(managedJobReadWaitMs({}, relayContext) === 40_000, "hosted read_job did not default to the server-side long-poll interval");
+  assert(managedJobReadWaitMs({}, relayContext) === 40_000, "hosted read_job did not default to the host-safe server-side long-poll interval");
   assert(Math.ceil((100 * 60 * 1000) / managedJobReadWaitMs({}, relayContext)) <= 150,
-    "a 100-minute unchanged durable job regained excessive hosted read_job call density");
+    "the default hosted wait interval regained the prior high-density read_job amplification; this arithmetic is a density guard, not aggregate host-lifetime evidence");
   assert(managedJobReadWaitMs({ wait_ms: 0 }, relayContext) === 0, "hosted read_job lost its explicit immediate-checkpoint override");
-  assert(managedJobReadWaitMs({ wait_ms: 40_000 }, relayContext) === 40_000, "hosted read_job rejected its advertised maximum wait");
+  assert(managedJobReadWaitMs({ wait_ms: 300_000 }, relayContext) === 300_000, "hosted read_job rejected its advertised maximum wait");
   assert(managedJobReadWaitMs({}, {}) === 0 && managedJobReadWaitMs({ wait_ms: 40_000 }, {}) === 40_000,
     "local read_job wait defaults or maximum drifted from the local contract");
 
@@ -102,8 +104,46 @@ async function testManagedJobReadWaitPacing() {
   assert(timeoutResult.status === "running" && timeoutResult.managed_job_read_wait_ms === 40_000
     && timeoutResult.managed_job_read_wait_timed_out === true,
   "unchanged hosted read_job did not hold one MCP call for the complete bounded long-poll interval");
-  assert(progressReads === 40, "hosted read_job lightweight progress probing escaped its one-second pacing bound");
-  assert(fullReads === 5, "hosted read_job repeatedly performed full runner reconciliation during one long-poll");
+  assert(progressReads === 8, "hosted read_job lightweight progress probing escaped its five-second pacing bound");
+  assert(fullReads === 2, "hosted read_job repeatedly performed full runner reconciliation during one long-poll");
+
+  clock = 0;
+  const hostedMetadataResult = await waitForManagedJobRead({
+    context: relayContext, args: { wait_ms: 5_000 },
+    readCurrent: () => ({
+      ...stable(),
+      host_turn_handoff_recommended: false,
+      status_polling_mode: "bounded_followup",
+      tool_schema_generation: TOOL_SCHEMA_GENERATION,
+      host_turn_deadline_observable: false,
+      managed_job_detached_from_mcp_response: true,
+    }),
+    readProgress: () => stable(),
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(hostedMetadataResult.managed_job_read_wait_timed_out === true
+    && hostedMetadataResult.host_turn_handoff_recommended === false
+    && hostedMetadataResult.status_polling_mode === "bounded_followup"
+    && hostedMetadataResult.tool_schema_generation === TOOL_SCHEMA_GENERATION
+    && hostedMetadataResult.host_turn_deadline_observable === false
+    && hostedMetadataResult.managed_job_detached_from_mcp_response === true,
+  "unchanged hosted read_job lost full-read continuity metadata after a lightweight progress probe");
+
+  clock = 0;
+  fullReads = 0;
+  progressReads = 0;
+  const expensiveInitialResult = await waitForManagedJobRead({
+    context: relayContext,
+    readCurrent: () => { fullReads += 1; clock += 12_000; return stable(); },
+    readProgress: () => { progressReads += 1; return stable(); },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(expensiveInitialResult.managed_job_read_wait_ms === 40_000
+    && expensiveInitialResult.managed_job_read_wait_timed_out === true
+    && clock === 40_000 && fullReads === 1 && progressReads === 6,
+  "hosted read_job excluded initial reconciliation from its advertised wait or added a heavy post-deadline reconcile");
 
   clock = 0;
   fullReads = 0;
@@ -121,7 +161,7 @@ async function testManagedJobReadWaitPacing() {
     sleep: async (ms) => { clock += ms; },
   });
   assert(progressResult.current_step === 1 && progressResult.managed_job_read_wait_timed_out === false
-    && progressResult.managed_job_read_wait_ms === 2_000 && fullReads === 2 && progressReads === 2,
+    && progressResult.managed_job_read_wait_ms === 10_000 && fullReads === 2 && progressReads === 2,
   "hosted read_job did not return promptly through the authoritative full read when lightweight progress changed");
 
   const terminalResult = await waitForManagedJobRead({
@@ -135,16 +175,17 @@ async function testManagedJobReadWaitPacing() {
 
   clock = 0;
   let cancellation = null;
+  let slept = false;
   try {
     await waitForManagedJobRead({
       context: relayContext,
       readCurrent: () => ({ status: "running", current_phase: "steps", current_step: 0 }),
       now: () => clock,
-      sleep: async (ms) => { clock += ms; },
-      throwIfCancelled: () => { if (clock >= 1_000) throw new Error("synthetic cancellation"); },
+      sleep: async (ms) => { clock += ms; slept = true; },
+      throwIfCancelled: () => { if (slept) throw new Error("synthetic cancellation"); },
     });
   } catch (error) { cancellation = error; }
-  assert(String(cancellation?.message || "") === "synthetic cancellation" && clock === 1_000,
+  assert(String(cancellation?.message || "") === "synthetic cancellation" && clock === 5_000,
     "hosted read_job long-poll did not observe cancellation between internal waits");
 }
 
@@ -245,17 +286,68 @@ async function testRunnerClaimBoundary() {
     assert(hardClaimFailure?.cause?.code === "MBM_MULTIPLE_HARD_LINKS"
       && await readFile(hardClaimFile, "utf8") === await readFile(hardClaimAlias, "utf8"),
     "managed-job runner claim accepted or modified multiply-linked ownership evidence");
+    let livenessHardClaimFailure = null;
+    try {
+      runnerProcessIsCurrent({ runner_pid: process.pid, runner_process_started_at: processStartedAt }, hardClaimDir);
+    } catch (error) { livenessHardClaimFailure = error; }
+    assert(livenessHardClaimFailure?.cause?.code === "MBM_MULTIPLE_HARD_LINKS",
+      "managed-job runner liveness bypassed the secure multiply-linked claim reader");
   }
 
   const oversizedRunnerDir = join(root, "runner-owner-oversized");
   await mkdir(oversizedRunnerDir, { recursive: true });
   await writeFile(join(oversizedRunnerDir, "runner.pid"), "x".repeat(1025), { mode: 0o600 });
-  expectThrow(
-    () => runnerProcessIsCurrent({ runner_pid: 2_147_483_647, runner_process_started_at: processStartedAt }, oversizedRunnerDir),
-    "file exceeds 1024 bytes",
-  );
+  let oversizedRunnerFailure = null;
+  try {
+    runnerProcessIsCurrent({ runner_pid: 2_147_483_647, runner_process_started_at: processStartedAt }, oversizedRunnerDir);
+  } catch (error) { oversizedRunnerFailure = error; }
+  assert(String(oversizedRunnerFailure?.message || "").includes("runner claim is invalid")
+    && String(oversizedRunnerFailure?.cause?.message || "").includes("file exceeds 1024 bytes"),
+  "managed-job runner liveness stopped bounding the secure ownership-claim read");
   expectThrow(() => runnerProcessIsCurrent({ runner_pid: process.pid, runner_process_started_at: processStartedAt }, unreadableDir),
     "runner claim is invalid");
+
+  for (const [name, claim] of [
+    ["string-pid", { pid: String(process.pid), startedAt: new Date().toISOString(), processStartedAt }],
+    ["invalid-started-at", { pid: process.pid, startedAt: "not-a-time", processStartedAt }],
+    ["invalid-process-start", { pid: process.pid, startedAt: new Date().toISOString(), processStartedAt: "not-a-time" }],
+    ["invalid-launch-token", { pid: process.pid, startedAt: new Date().toISOString(), launchToken: "not-a-token", committed: true }],
+    ["invalid-commit-marker", { pid: process.pid, startedAt: new Date().toISOString(), launchToken: token, committed: "yes" }],
+  ]) {
+    const invalidClaimDir = join(root, `runner-owner-${name}`);
+    await mkdir(invalidClaimDir, { recursive: true });
+    await writeFile(join(invalidClaimDir, "runner.pid"), `${JSON.stringify(claim)}\n`, { mode: 0o600 });
+    expectThrow(
+      () => runnerProcessIsCurrent({ runner_pid: process.pid, runner_process_started_at: processStartedAt }, invalidClaimDir),
+      "runner claim is invalid",
+    );
+  }
+
+  const asyncRunnerDir = join(root, "runner-owner-async");
+  await mkdir(asyncRunnerDir, { recursive: true });
+  const asyncStartedAt = new Date().toISOString();
+  await writeFile(join(asyncRunnerDir, "runner.pid"), `${JSON.stringify({
+    pid: process.pid, startedAt: asyncStartedAt, processStartedAt,
+  })}\n`, { mode: 0o600 });
+  let releaseAsyncIdentity;
+  let asyncIdentityStarted = false;
+  const asyncIdentity = runnerProcessIsCurrentAsync({
+    runner_pid: process.pid, runner_process_started_at: processStartedAt, started_at: asyncStartedAt,
+  }, asyncRunnerDir, {
+    isAlive: () => true,
+    getProcessStartTimeAsync: async () => {
+      asyncIdentityStarted = true;
+      await new Promise((resolvePromise) => { releaseAsyncIdentity = resolvePromise; });
+      return Date.parse(processStartedAt);
+    },
+  });
+  await Promise.resolve();
+  assert(asyncIdentityStarted === true, "managed-job async runner identity probe did not start");
+  let eventLoopResponsive = false;
+  await new Promise((resolvePromise) => { setTimeout(() => { eventLoopResponsive = true; resolvePromise(); }, 5); });
+  assert(eventLoopResponsive === true, "managed-job async runner identity probe blocked the Node event loop");
+  releaseAsyncIdentity();
+  assert(await asyncIdentity === true, "managed-job async runner identity lost current-process semantics");
 }
 
 async function testRecoveryClaimFailurePreservesRetryState() {
@@ -366,6 +458,71 @@ async function testManagedJobCapacityBoundary() {
   assert(terminalManager.read({ job_id: replacement.job_id }).status === "staged",
     "capacity reservation removed or failed to create the replacement staged job");
   terminalManager.cancel({ job_id: replacement.job_id });
+  let missingJobError = null;
+  try { terminalManager.read({ job_id: `job_${"Z".repeat(24)}` }); }
+  catch (error) { missingJobError = error; }
+  assert(missingJobError?.code === "not_found" && missingJobError?.retryable === false
+    && !String(missingJobError?.message || "").includes(terminalRoot),
+  "missing managed-job recovery state did not return a privacy-safe typed not_found error");
+
+  const durableHelperRoot = join(root, "durable-helper-retention-jobs");
+  const durableHelperManager = createManagedJobTestManager({
+    jobRoot: durableHelperRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true },
+    resources: {},
+    recover: false,
+  });
+  const durableHelper = durableHelperManager.startDurableProcess({
+    sourceTool: "run_process",
+    name: "retention class wiring",
+    argv: [process.execPath, "-e", ""],
+    cwd: workspace,
+    timeoutSeconds: 30,
+  });
+  await waitForJob(durableHelperManager, durableHelper.job_id);
+  const durableHelperPrivateStatus = JSON.parse(await readFile(join(durableHelperRoot, durableHelper.job_id, "status.json"), "utf8"));
+  assert(durableHelperPrivateStatus.retention_class === "transient_process",
+    "durable one-step process carrier did not persist the transient retention class through terminal settlement");
+  assert(!Object.hasOwn(durableHelperManager.read({ job_id: durableHelper.job_id }), "retention_class")
+    && !durableHelperManager.list({ limit: 10 }).jobs.some((job) => Object.hasOwn(job, "retention_class")),
+  "durable one-step process retention class leaked through public managed-job projections");
+
+  const mixedRoot = join(root, "capacity-mixed-retention-jobs");
+  const mixedManager = createManagedJobTestManager({
+    jobRoot: mixedRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true },
+    resources: {},
+    recover: false,
+  });
+  const protectedManaged = mixedManager.stage({
+    name: "explicit managed recovery result",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  mixedManager.cancel({ job_id: protectedManaged.job_id });
+  const transientIds = [];
+  for (let index = 0; index < 49; index += 1) {
+    const transient = mixedManager.createJob({
+      name: `transient helper ${index}`,
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    }, { launch: false, retentionClass: "transient_process" });
+    transientIds.push(transient.job_id);
+    mixedManager.cancel({ job_id: transient.job_id });
+  }
+  const transientReplacement = mixedManager.createJob({
+    name: "transient helper replacement",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false, retentionClass: "transient_process" });
+  assert(await exists(join(mixedRoot, protectedManaged.job_id)),
+    "transient helper churn evicted an explicit managed-job recovery result while transient terminal history was removable");
+  const survivingTransient = (await Promise.all(transientIds.map((id) => exists(join(mixedRoot, id))))).filter(Boolean).length;
+  assert(survivingTransient === 48 && mixedManager.list({ limit: 50 }).retained === 50,
+    "mixed retention pruning did not reclaim exactly one transient helper record at the hard capacity boundary");
+  mixedManager.cancel({ job_id: transientReplacement.job_id });
+  assert(!Object.hasOwn(mixedManager.read({ job_id: transientReplacement.job_id }), "retention_class")
+    && !mixedManager.list({ limit: 50 }).jobs.some((job) => Object.hasOwn(job, "retention_class")),
+  "internal transient-process retention class leaked through public managed-job projections");
 
   const stagedRoot = join(root, "capacity-staged-jobs");
   const stagedManager = createManagedJobTestManager({
@@ -961,7 +1118,19 @@ try {
   expectThrow(() => manager.stage({ name: "bad finally", steps: [{ argv: [process.execPath, "-e", ""] }], finally_steps: "" }), "finally_steps must contain 0-16 steps");
   expectThrow(() => manager.stage({ name: "bad temp", steps: [{ argv: [process.execPath, "-e", ""] }], temporary_files: 0 }), "temporary_files must contain 0-16 files");
   expectThrow(() => manager.stage({ name: "bad bool", steps: [{ argv: [process.execPath, "-e", ""], allow_failure: "true" }] }), "allow_failure must be a boolean");
-  expectThrow(() => manager.stage({ name: "bad timeout", steps: [{ argv: [process.execPath, "-e", ""], timeout_seconds: "60" }] }), "timeout_seconds must be an integer between 1 and 3600");
+  expectThrow(() => manager.stage({ name: "bad timeout", steps: [{ argv: [process.execPath, "-e", ""], timeout_seconds: "60" }] }), "timeout_seconds must be an integer between 1 and 21600");
+  const hundredMinuteStage = manager.stage({
+    name: "single-step over 100 minutes",
+    steps: [{ argv: [process.execPath, "-e", ""], timeout_seconds: 6_100 }],
+  });
+  const hundredMinuteInspection = manager.inspectLocal({ job_id: hundredMinuteStage.job_id });
+  assert(hundredMinuteInspection.review_plan?.steps?.[0]?.timeout_seconds === 6_100,
+    "managed-job plan could not retain one continuous step beyond 100 minutes");
+  manager.cancel({ job_id: hundredMinuteStage.job_id });
+  expectThrow(() => manager.stage({
+    name: "step timeout beyond managed-job ceiling",
+    steps: [{ argv: [process.execPath, "-e", ""], timeout_seconds: 21_601 }],
+  }), "timeout_seconds must be an integer between 1 and 21600");
   expectThrow(() => manager.stage({ name: "bad executable", temporary_files: [{ name: "helper.js", content: "", executable: "true" }], steps: [{ argv: [process.execPath, "-e", ""] }] }), "temporary_files[0].executable must be a boolean");
 
   const stagedMarker = join(workspace, "staged-review-only.txt");

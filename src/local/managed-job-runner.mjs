@@ -3,12 +3,12 @@ import { randomBytes } from "node:crypto";
 import { closeSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inspectProcessInstance } from "./process-identity.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { ownerOnlyFile } from "./secure-file.mjs";
-import { openPrivateAppendFile, readBoundedFile, trimDiagnosticFile } from "./managed-job-storage.mjs";
+import { openPrivateAppendFile, trimDiagnosticFile } from "./managed-job-storage.mjs";
 import { publishProvisionalRunnerClaim } from "./managed-job-runner-claim.mjs";
 import { EXECUTION_SURFACE, withExecutionSurface } from "./execution-surface.mjs";
+export { runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "./managed-job-runner-liveness.mjs";
 
 const RUNNER_PATH = fileURLToPath(new URL("./job-runner.mjs", import.meta.url));
 
@@ -58,29 +58,6 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
   }
   child.unref();
   return pid;
-}
-
-export function runnerProcessIsCurrent(status, dir, { ownerOnly = false } = {}) {
-  const fallback = ownerOnly ? status : {
-    pid: Number(status?.runner_pid) || undefined,
-    processStartedAt: status?.runner_process_started_at,
-    startedAt: status?.started_at || status?.updated_at || status?.created_at,
-  };
-  const owner = readRunnerOwner(dir, fallback);
-  if (!owner.pid) return false;
-  const identity = inspectProcessInstance(owner, { maxAgeMs: Number.POSITIVE_INFINITY });
-  return identity.current || (identity.alive && !identity.reclaimable);
-}
-
-function readRunnerOwner(dir, fallback = {}) {
-  let text;
-  try { text = readBoundedFile(join(dir, "runner.pid"), 1024).toString("utf8"); }
-  catch (error) { if (error?.code === "ENOENT") return { ...fallback }; throw error; }
-  let parsed;
-  try { parsed = JSON.parse(text); }
-  catch (error) { throw new Error("managed job runner claim is invalid", { cause: error }); }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("managed job runner claim is invalid");
-  return { ...fallback, ...parsed };
 }
 
 export function managedRunnerEnvironment({ fullEnv = false, recoveryToken = "", launchToken = "", source = process.env } = {}) {

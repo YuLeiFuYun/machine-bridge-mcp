@@ -1,8 +1,9 @@
-import { toolCallAdmission, toolCallCapacityConfig, type ToolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
+import { toolCallCapacityConfig, type ToolCallCapacityConfig } from "../shared/tool-call-capacity.mjs";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
-import { PendingCallRegistrationError, type PendingCallOutcome, type PendingCallRecord, type PendingCallSettlement, type RegisterPendingCall } from "./pending-call-contract.ts";
+import { type PendingCallOutcome, type PendingCallRecord, type PendingCallSettlement, type RegisterPendingCall } from "./pending-call-contract.ts";
 import { boundedPendingDelayMs, PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
-import { pendingRegistrySnapshot } from "./pending-call-capacity.ts";
+import { pendingReadJobCallsForAccount, pendingRegistrySnapshot } from "./pending-call-capacity.ts";
+import { assertPendingCallRegistration, pendingCallTimeoutMaximumMs } from "./pending-call-registration.ts";
 import { recordMatchesAuthorityRevocation, type AuthorityRevocation } from "../shared/authority-revocation.mjs";
 import type { DaemonChannel } from "./daemon-channel.ts";
 type PendingCallRegistryOptions = PendingCallDeadlineOptions & {
@@ -19,6 +20,7 @@ export class PendingCallRegistry {
     this.deadlines = new PendingCallDeadlines(options);
   }
   get size(): number { return this.byId.size; } hasRequestKey(requestKey?: string): boolean { return Boolean(requestKey && this.byRequestKey.has(requestKey)); }
+  readJobCallsForAccount(accountId: string): number { return pendingReadJobCallsForAccount(this.byId.values(), accountId); }
   resultOwnership(id: string, socket: DaemonChannel): "owned" | "missing" | "stale" {
     const record = this.byId.get(id); return !record ? "missing" : record.socket === socket ? "owned" : "stale";
   }
@@ -104,22 +106,15 @@ export class PendingCallRegistry {
 
   private assertCanRegister(input: RegisterPendingCall): void {
     const snapshot = this.snapshot();
-    const decision = toolCallAdmission({ active: snapshot.active, byTool: snapshot.by_tool }, this.capacity, input.tool);
-    if (!decision.allowed) {
-      const message = decision.reason === "ordinary_capacity"
-        ? `ordinary daemon-call capacity reached (${decision.ordinaryMaximum}); control-plane capacity is reserved for diagnosis and recovery`
-        : "too many concurrent daemon tool calls";
-      throw new PendingCallRegistrationError("limit_exceeded", message, true);
-    }
-    if (this.byId.has(input.id)) throw new PendingCallRegistrationError("conflict", "duplicate internal daemon call id");
-    if (input.clientRequestKey && this.byRequestKey.has(input.clientRequestKey)) {
-      throw new PendingCallRegistrationError("conflict", "duplicate in-flight response-stream request key");
-    }
+    assertPendingCallRegistration(input, {
+      records: this.byId.values(), active: snapshot.active, byTool: snapshot.by_tool, capacity: this.capacity,
+      idExists: this.byId.has(input.id), requestKeyExists: Boolean(input.clientRequestKey && this.byRequestKey.has(input.clientRequestKey)),
+    });
   }
 
   private add(input: RegisterPendingCall, settlement: PendingCallSettlement): void {
     const startedAt = this.deadlines.now();
-    const timeoutMs = boundedPendingDelayMs(input.timeoutMs, relayContract.maximumRelayToolTimeoutMs);
+    const timeoutMs = boundedPendingDelayMs(input.timeoutMs, pendingCallTimeoutMaximumMs(input.tool));
     const abortHandler = input.signal ? () => { void this.expire(input.id, input.onAbort, "pending daemon call was cancelled"); } : undefined;
     const record: PendingCallRecord = {
       id: input.id, socket: input.socket, daemonInstanceId: input.daemonInstanceId, clientRequestKey: input.clientRequestKey,

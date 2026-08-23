@@ -13,7 +13,8 @@ import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError, errorCode } from "./errors.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
-import { boundedErrorMessage, notifySessionWaiters, waitForSpawn } from "./process-session-events.mjs";
+import { boundedProcessErrorMessage } from "./process-error-message.mjs";
+import { notifySessionWaiters, waitForSpawn } from "./process-session-events.mjs";
 import { completeProcessSessionRead, readProcessSession } from "./process-session-read.mjs";
 import { terminateProcessSessions } from "./process-session-termination.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
@@ -111,10 +112,12 @@ export class ProcessSessionManager {
     const admitted = await acquireProcessResources(this.resourceCoordinator, argv[0], argv.slice(1), executionEnvironment, {
       cwd, priority: "interactive", waitMs: processSessionResourceWaitMs(this.resourceWaitMs, { remote: context?.authority?.origin === "relay" }), signal: context.signal,
     });
-    const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
-    const remoteActivityHeld = beginRemoteProcessSessionActivity(context, this.remoteActivityGuard);
+    let remoteActivityHeld = false;
     let child;
     try {
+      const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
+      this.throwIfCancelled(context);
+      remoteActivityHeld = beginRemoteProcessSessionActivity(context, this.remoteActivityGuard);
       child = this.spawnProcess(launch.command, launch.args, { cwd, env: admitted.environment, detached: process.platform !== "win32", windowsHide: true });
     } catch (error) {
       endRemoteProcessSessionActivity(remoteActivityHeld, this.remoteActivityGuard);
@@ -174,7 +177,7 @@ export class ProcessSessionManager {
     });
 
     child.on("error", (error) => {
-      session.stderr.append(Buffer.from(`${boundedErrorMessage(error)}\n`));
+      session.stderr.append(Buffer.from(`${boundedProcessErrorMessage(error)}\n`));
       this.markActivity(session);
       notifySessionWaiters(session);
     });

@@ -150,8 +150,24 @@ if (workerToolCatalogSource.indexOf("const HOSTED_CONTINUATION_RULE") > workerTo
   throw new Error("Worker eager tool-catalog initialization can access hosted continuation guidance before initialization");
 }
 const workerMcpConfigSource = readFileSync(join(root, "src", "worker", "worker-mcp-config.ts"), "utf8");
+const mcpControllerSource = readFileSync(join(root, "src", "worker", "mcp-controller.ts"), "utf8");
+const mcpSubscriptionCapacitySource = readFileSync(join(root, "src", "worker", "mcp-subscription-capacity.ts"), "utf8");
+const mcpSubscriptionRegistrySource = readFileSync(join(root, "src", "worker", "mcp-subscription-registry.ts"), "utf8");
 if (!workerMcpConfigSource.includes("MCP_DISCOVERY_TTL_MS = 0") || !workerMcpConfigSource.includes("MCP_TOOL_LIST_TTL_MS = 0")) {
   throw new Error("Worker discovery/tool contracts again advertise reusable cross-release semantic caches");
+}
+const managedJobPlanSource = readFileSync(join(root, "src", "local", "managed-job-plan.mjs"), "utf8");
+if (!managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS = 6 * 60 * 60")
+    || !managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS,")) {
+  throw new Error("managed-job plan lost the six-hour single-step timeout needed for 100+ minute durable work");
+}
+const sharedToolCatalogSource = readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8");
+if ((sharedToolCatalogSource.match(/\"maximum\": 21600/g) || []).length !== 4) {
+  throw new Error("stage_job/start_job schemas no longer expose the six-hour step/finally timeout ceiling");
+}
+if (!sharedToolCatalogSource.includes("A package script name is not implicitly registered")
+    || sharedToolCatalogSource.includes("registered command or package script")) {
+  throw new Error("run_local_command again implies that arbitrary package scripts are implicit registered commands");
 }
 if (!workerTypesGeneratorSource.includes("relative(cwd, targetPath)")
     || !workerTypesGeneratorSource.includes("Wrangler types target must remain inside its working directory")
@@ -958,12 +974,19 @@ if (!readFileSync(join(root, "tests", "browser-extension-identity-test.mjs"), "u
   throw new Error("browser pairing rollback compatibility fixture is missing");
 }
 const managedJobSource = readFileSync(join(root, "src", "local", "managed-jobs.mjs"), "utf8");
+const managedJobRunnerLivenessSource = readFileSync(join(root, "src", "local", "managed-job-runner-liveness.mjs"), "utf8");
+const managedJobHostedReconcileSource = readFileSync(join(root, "src", "local", "managed-job-hosted-reconcile.mjs"), "utf8");
+const runtimeToolHandlersSource = readFileSync(join(root, "src", "local", "runtime-tool-handlers.mjs"), "utf8");
 const cliOptionsSource = readFileSync(join(root, "src", "local", "cli-options.mjs"), "utf8");
 for (const removed of ["approval: new Set", "approve: 2", "APPROVAL_POSITIONAL_LIMITS", "approval(args)"]) {
   if (cliOptionsSource.includes(removed)) throw new Error(`removed approval CLI parsing surface returned: ${removed}`);
 }
 const managedJobProjectionSource = readFileSync(join(root, "src", "local", "managed-job-projection.mjs"), "utf8");
 const managedJobRetentionSource = readFileSync(join(root, "src", "local", "managed-job-retention.mjs"), "utf8");
+const managedJobDurableProcessSource = readFileSync(join(root, "src", "local", "managed-job-durable-process.mjs"), "utf8");
+const relayCallRecoverySource = readFileSync(join(root, "src", "local", "relay-call-recovery.mjs"), "utf8");
+const relayResultRetentionSource = readFileSync(join(root, "src", "local", "relay-result-retention.mjs"), "utf8");
+const relayRedeliverySafetySource = readFileSync(join(root, "src", "local", "relay-redelivery-safety.mjs"), "utf8");
 const managedJobTerminalSource = readFileSync(join(root, "src", "local", "managed-job-terminal.mjs"), "utf8");
 const managedJobClaimSource = readFileSync(join(root, "src", "local", "managed-job-runner-claim.mjs"), "utf8");
 const managedJobCancellationSource = readFileSync(join(root, "src", "local", "managed-job-cancellation.mjs"), "utf8");
@@ -974,6 +997,22 @@ const managedJobsIntegrationSource = readFileSync(join(root, "tests", "managed-j
 if (!managedJobsIntegrationSource.includes("RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500")
     || !/withResourceTransactionLock\(coordinatorRoot,[\s\S]{0,400}\{ timeoutMs: 30_000 \}\)/.test(managedJobsIntegrationSource)) {
   throw new Error("managed-job resource-contention regression lost its setup/acquisition timing separation");
+}
+if (!managedJobRunnerLivenessSource.includes("inspectProcessInstanceAsync")
+    || !managedJobRunnerLivenessSource.includes("readManagedJobRunnerClaim")
+    || managedJobRunnerLivenessSource.includes("readBoundedFile")
+    || !managedJobClaimSource.includes("export function readManagedJobRunnerClaim")
+    || !managedJobClaimSource.includes("retryTransientMultipleLinksSync")
+    || !managedJobClaimSource.includes("validRunnerClaim")
+    || !managedJobClaimSource.includes("Number.isInteger(claim.pid)")
+    || !managedJobClaimSource.includes('typeof claim.committed !== "boolean"')
+    || !managedJobSource.includes("async readHosted")
+    || !managedJobSource.includes("await reconcileManagedJobStatusHosted(this, dir)")
+    || !managedJobHostedReconcileSource.includes("await runnerProcessIsCurrentAsync(initial, dir)")
+    || !managedJobHostedReconcileSource.includes("manager.reconcileStatus(dir)")
+    || !runtimeToolHandlersSource.includes('context?.authority?.origin === "relay"')
+    || !runtimeToolHandlersSource.includes("runtime.managedJobManager.readHosted(args, context)")) {
+  throw new Error("hosted managed-job reconciliation regained synchronous runner process-identity sampling on the long-task status path");
 }
 if (!managedJobRunnerSource.includes('current_phase: "resource_admission"')
     || !managedJobRunnerSource.includes("onAdmissionStart?.();")
@@ -1008,6 +1047,30 @@ if (!coverageRunnerSource.includes('"src/local/managed-job-directory-generation.
 }
 if (!coverageRunnerSource.includes('"src/local/managed-job-retention.mjs"')) {
   throw new Error("critical managed-job retention coverage threshold is missing");
+}
+if (!managedJobSource.includes('retentionClass = "managed"')
+    || !managedJobSource.includes('retention_class: "transient_process"')
+    || !managedJobDurableProcessSource.includes('retentionClass: "transient_process"')
+    || !managedJobRetentionSource.includes("terminalEvictionPriority")
+    || !managedJobRetentionSource.includes('status?.retention_class === "transient_process"')
+    || !managedJobsIntegrationSource.includes("durable one-step process carrier did not persist the transient retention class through terminal settlement")
+    || !managedJobsIntegrationSource.includes("transient helper churn evicted an explicit managed-job recovery result")
+    || !managedJobsIntegrationSource.includes("internal transient-process retention class leaked through public managed-job projections")
+    || !managedJobsIntegrationSource.includes('missingJobError?.code === "not_found"')) {
+  throw new Error("managed-job retention again lets transient process-helper churn preferentially evict explicit durable recovery results or obscures missing retained state");
+}
+if (!relayRedeliverySafetySource.includes("#unsafeCallIds = new Set()")
+    || !relayRedeliverySafetySource.includes("#globalRedeliveryDisabled = false")
+    || !relayRedeliverySafetySource.includes("canProveMissing(callId)")
+    || !relayRedeliverySafetySource.includes("observeResumedCallIds(callIds)")
+    || !relayRedeliverySafetySource.includes("markUnsafe(callId)")
+    || !relayResultRetentionSource.includes("onOwnershipLost")
+    || !relayResultRetentionSource.includes("discardAll()")
+    || !relayCallRecoverySource.includes("this.redeliverySafety.canProveMissing(callId)")
+    || !relayCallRecoverySource.includes("this.redeliverySafety.observeResumedCallIds(resumed)")
+    || !relayCallRecoverySource.includes("this.resultRetention.discardAll()")
+    || !readFileSync(join(root, "tests", "runtime-infrastructure-test.mjs"), "utf8").includes("globally disabled unrelated recovery")) {
+  throw new Error("relay acknowledgement loss can again replay an unsafe call or globally disable unrelated missing-call recovery");
 }
 if (!coverageRunnerSource.includes('"src/local/managed-job-terminal-maintenance.mjs"')) {
   throw new Error("critical managed-job terminal-maintenance coverage threshold is missing");
@@ -1400,6 +1463,8 @@ if (!architecture.includes("State schema version 6") || !architecture.includes("
   throw new Error("architecture documentation omitted the current state schema or monotonic deadline contract");
 }
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
+const managedJobReadTimeoutSource = readFileSync(join(root, "src", "worker", "managed-job-read-timeout.ts"), "utf8");
+const workerRuntimeSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const processSessionReadSource = readFileSync(join(root, "src", "local", "process-session-read.mjs"), "utf8");
 if (!workerToolTimeoutSource.includes("relayContract.processSessionStartExecutionTimeoutMs")) {
   throw new Error("process-session startup timeout drifted out of the shared relay contract");
@@ -1409,11 +1474,18 @@ if (!serverInfoToolDeliverySource.includes("remote_process_session_start_executi
     || !serverInfoToolDeliverySource.includes("managed_job_resource_admission_wait_max_ms")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_default_ms")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_max_ms")
+    || !serverInfoToolDeliverySource.includes("remote_managed_job_read_concurrency_max_per_account")
+    || !serverInfoToolDeliverySource.includes("MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT")
     || !serverInfoToolDeliverySource.includes("tool_schema_generation")
     || !serverInfoToolDeliverySource.includes("tool_schema_server_version")
     || !serverInfoToolDeliverySource.includes("discovery_ttl_ms")
     || !serverInfoToolDeliverySource.includes("tool_list_ttl_ms")
     || !serverInfoToolDeliverySource.includes("host_visible_schema_known_to_server: false")
+    || !serverInfoToolDeliverySource.includes("tools_list_change_subscription_supported: true")
+    || !serverInfoToolDeliverySource.includes("tools_list_change_subscription_active_for_account")
+    || !serverInfoToolDeliverySource.includes("tools_list_change_subscription_opened_for_account")
+    || !serverInfoToolDeliverySource.includes("tools_list_change_subscription_client_receipt_observable: false")
+    || !serverInfoToolDeliverySource.includes("tools_list_change_subscription_lease_ms")
     || !serverInfoToolDeliverySource.includes("host_turn_deadline_observable: false")
     || !serverInfoToolDeliverySource.includes("managed_jobs_detached_from_mcp_response: true")
     || serverInfoToolDeliverySource.includes("remote_process_foreground_execution_max_ms")
@@ -1422,12 +1494,60 @@ if (!serverInfoToolDeliverySource.includes("remote_process_session_start_executi
   throw new Error("server_info or relay contract retained an obsolete/mis-scoped process timing projection");
 }
 if (relayContract.defaultManagedJobReadWaitMs !== 40_000
-    || relayContract.maximumManagedJobReadWaitMs !== 40_000
-    || relayContract.managedJobReadPollIntervalMs !== 1_000
-    || relayContract.managedJobReadReconcileIntervalMs !== 10_000
+    || relayContract.maximumManagedJobReadWaitMs !== 300_000
+    || relayContract.managedJobReadPollIntervalMs !== 5_000
+    || relayContract.managedJobReadReconcileIntervalMs !== 30_000
+    || relayContract.managedJobReadExecutionHeadroomMs !== 10_000
+    || relayContract.maximumOrdinaryRelayToolTimeoutMs !== 50_000
+    || relayContract.maximumRelayToolTimeoutMs !== 315_000
     || Math.ceil((100 * 60 * 1000) / relayContract.defaultManagedJobReadWaitMs) > 150
-    || !workerToolTimeoutSource.includes('name === "read_job"')) {
-  throw new Error("managed-job hosted long-poll pacing or 100-minute call-density bound drifted from the bounded 40-second server-side contract");
+    || !workerToolTimeoutSource.includes('name === "read_job"')
+    || !managedJobReadTimeoutSource.includes("managedJobReadArgumentsWithinExecutionBudget")
+    || !managedJobReadTimeoutSource.includes("managedJobReadExecutionBudgetHasHeadroom")
+    || !managedJobReadTimeoutSource.includes("relayContract.managedJobReadExecutionHeadroomMs")
+    || !managedJobReadTimeoutSource.includes("executionMs - relayContract.managedJobReadExecutionHeadroomMs")
+    || !managedJobReadTimeoutSource.includes("relayContract.workerSettlementOverheadMs")
+    || !workerRuntimeSource.includes("managedJobReadArgumentsWithinExecutionBudget(args, dispatchBudget.executionTimeoutMs)")
+    || !workerRuntimeSource.includes("managedJobReadArgumentsWithinExecutionBudget(args, remainingExecutionMs)")
+    || (workerRuntimeSource.match(/managedJobReadExecutionBudgetHasHeadroom/g) || []).length < 3
+    || !workerRuntimeSource.includes("immediateReadyDaemonForDispatch(this.daemonRegistry) ?? await readyDaemonForDispatch")) {
+  throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / five-minute opt-in contract");
+}
+const mcpResponseProxySource = readFileSync(join(root, "src", "worker", "mcp-response-proxy.ts"), "utf8");
+const mcpResponseCancelSource = readFileSync(join(root, "src", "worker", "mcp-response-cancel.ts"), "utf8");
+if (relayContract.streamCancelTimeoutMs !== 2_000
+    || !mcpResponseProxySource.includes("cancelMcpResponseStream")
+    || !mcpResponseCancelSource.includes("CANCEL_CONTROL_TIMEOUT_MS")
+    || !mcpResponseCancelSource.includes("private stream cancellation settlement timed out")
+    || !readFileSync(join(root, "tests", "mcp-response-proxy-test.mjs"), "utf8").includes("stalled private cancellation kept the public response stream open indefinitely")) {
+  throw new Error("public MCP stream cancellation lost its bounded private-control settlement deadline");
+}
+if (!workerMcpConfigSource.includes("MCP_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: true }) })")
+    || !workerMcpConfigSource.includes("MCP_LEGACY_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: false }) })")
+    || !mcpSubscriptionCapacitySource.includes("MAX_ACTIVE_MCP_SUBSCRIPTIONS = 32")
+    || !mcpSubscriptionCapacitySource.includes("MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT = 8")
+    || !mcpSubscriptionCapacitySource.includes("MAX_OPENED_MCP_SUBSCRIPTION_ACCOUNTS = 64")
+    || !mcpSubscriptionCapacitySource.includes("accountActive >= MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT")
+    || !mcpControllerSource.includes("Subscription capacity exceeded")
+    || !mcpControllerSource.includes("subscriptionAcknowledgement(body.id, { toolsListChanged: true })")
+    || !mcpControllerSource.includes("toolsListChangedNotification(body.id)")
+    || !mcpControllerSource.includes("new McpSubscriptionRegistry()")
+    || !mcpControllerSource.includes("this.subscriptions.cancelRequest(requestKey)")
+    || !mcpControllerSource.includes("this.subscriptions.cancelAuthority(revocation)")
+    || !mcpControllerSource.includes("this.subscriptions.open({")
+    || !mcpSubscriptionRegistrySource.includes("new McpSubscriptionCapacity()")
+    || !mcpSubscriptionRegistrySource.includes("recordMatchesAuthorityRevocation")
+    || !mcpSubscriptionRegistrySource.includes("cancelAuthority(revocation")
+    || !mcpSubscriptionRegistrySource.includes("this.active.delete(active)")
+    || !mcpSubscriptionRegistrySource.includes("cancelByRequestKey")
+    || !mcpSubscriptionRegistrySource.includes("openSubscriptionResponse")
+    || !mcpSubscriptionRegistrySource.includes('input.requestSignal.addEventListener("abort"')
+    || !mcpSubscriptionRegistrySource.includes("this.cancelByRequestKey.set(input.requestKey, cancel)")
+    || !mcpSubscriptionRegistrySource.includes("releaseCapacity()")
+    || !workerRuntimeSource.includes("cancelReadyDaemonAuthority(this.daemonRegistry, revocation)")
+    || !workerRuntimeSource.includes("this.mcp.cancelAuthority(revocation)")
+    || !workerRuntimeSource.includes("authority.revocation.pre_dispatch_waiters_cancelled")) {
+  throw new Error("current MCP tool-list freshness/capacity no longer serves bounded toolsListChanged subscriptions while legacy capability remains isolated");
 }
 if (!workerToolTimeoutSource.includes('name === "read_process"')
     || !workerToolTimeoutSource.includes("waitMs === 0 ? 5_000 : relayContract.defaultRemoteToolExecutionTimeoutMs")
@@ -1610,6 +1730,8 @@ for (const [file, content, required] of [
   ["README.md", readme, "`status_polling_mode=paced_followup`"],
   ["README.md", readme, "`status_polling_mode=bounded_followup`"],
   ["README.md", readme, "`host_turn_handoff_recommended=false`"],
+  ["README.md", readme, "21,600 seconds (six hours)"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "timeout_seconds=21600"],
   ["docs/LOGGING.md", loggingDoc, "resource_admission_reason"],
   ["docs/LOGGING.md", loggingDoc, "reason=coordinator_busy"],
   ["docs/OPERATIONS.md", operationsDoc, "managed runner can separately wait up to thirty minutes for cooperative machine-user resource admission"],
@@ -1645,7 +1767,8 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "durable-first one-step jobs with a 10-second acceptance budget"],
   ["src/shared/server-metadata.json", serverMetadata, "WebSocket remains the preferred daemon transport: a protocol-level Ping is attempted every 5 seconds"],
   ["src/shared/server-metadata.json", serverMetadata, "A new daemon-backed call may wait at most 15 seconds for verified recovery"],
-  ["src/shared/server-metadata.json", serverMetadata, "A resume_calls_ack.missing_ids entry proves the same daemon has neither active-call nor retained-result ownership"],
+  ["src/shared/server-metadata.json", serverMetadata, "A resume_calls_ack.missing_ids entry is emitted only while the daemon still has a fail-closed proof"],
+  ["src/shared/server-metadata.json", serverMetadata, "automatic_redelivery_safe becomes false"],
   ["src/shared/server-metadata.json", serverMetadata, "previous_ready_inbound_silence_ms"],
   ["src/shared/server-metadata.json", serverMetadata, "separate pre-spawn resource-admission wait of up to 30 minutes"],
   ["src/shared/server-metadata.json", serverMetadata, "read_job.current_phase=resource_admission"],
@@ -1657,7 +1780,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 3"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 6"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "owner-authorized multi-step"],
@@ -1746,12 +1869,98 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "Autonomous long-running task continuity", "The user is not a polling clock", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "one-second actual output/exit blocking", "fifteen-second", "cooldown boundary", "release-blocking continuity invariant", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "TTY is optional", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "Autonomous long-running task continuity", "The user is not a polling clock", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "one-second actual output/exit blocking", "fifteen-second", "cooldown boundary", "release-blocking continuity invariant", "21,600 seconds", "six hours", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "TTY is optional", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
+for (const required of [
+  "aggregate host-response lifetime are separate constraints",
+  "Response-count arithmetic alone does not prove cross-boundary recovery",
+  "typed `read_job` `not_found`",
+  "lower-priority terminal retention than explicit managed jobs",
+]) {
+  if (!projectStandards.includes(required)) throw new Error(`project standards omitted cross-host-boundary continuity evidence: ${required}`);
+}
 const releasingGuide = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
+for (const [name, guide, required] of [
+  ["project standards", projectStandards, "not a universal candidate-acceptance gate"],
+  ["release guide", releasingGuide, "Do not make a fixed-duration >100-minute live managed-job soak a release-acceptance prerequisite"],
+  ["upgrade guide", upgradingGuide, "fixed >100-minute soak is not a release-acceptance prerequisite"],
+]) {
+  if (!guide.includes(required)) throw new Error(`${name} did not remove the fixed >100-minute soak acceptance gate`);
+  for (const forbidden of [
+    "When the target is >100-minute continuity, also run an actual >100-minute job",
+    "When the change targets >100-minute continuity, perform an actual >100-minute live managed-job soak",
+    "For a >100-minute continuity change, an actual long job must",
+  ]) {
+    if (guide.includes(forbidden)) throw new Error(`release documentation restored obsolete fixed-duration acceptance policy: ${forbidden}`);
+  }
+}
 for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-confirm", "npm run release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "A TTY is optional", "Conversational authorization is sufficient", "owner or an authorized agent runs exactly", "600-second durable-process ceiling", "detached `start_job`", "larger explicit step timeout"]) {
   if (!releasingGuide.includes(required)) throw new Error(`release guide omitted explicit-authorization publication contract: ${required}`);
+}
+for (const [name, guide] of [["release guide", releasingGuide], ["upgrade guide", upgradingGuide]]) {
+  for (const required of [
+    "frozen approved tool/input snapshot", "Action control", "Refresh",
+    "invocation", "wait_ms=40001", "timeout_seconds=3601", "not_found",
+  ]) {
+    if (!guide.includes(required)) throw new Error(`${name} omitted hosted action-snapshot freshness/remediation boundary: ${required}`);
+  }
+}
+if (!releasingGuide.includes("does not prove that the external client read either SSE frame")
+    || !upgradingGuide.includes("cannot prove client receipt or catalog refresh")) {
+  throw new Error("release documentation overstates a server-opened list-change subscription as external client receipt evidence");
+}
+for (const required of [
+  "aggregate host-response lifetime",
+  "after realistic `exec_command`/`run_process` helper churn",
+  "typed `not_found`",
+  "disables daemon-proven missing-id automatic redelivery",
+]) {
+  if (!releasingGuide.includes(required)) throw new Error(`release guide omitted interruption recovery acceptance boundary: ${required}`);
+}
+if (!testingGuide.includes("server-opened subscription evidence cannot prove external client receipt")
+    || !testingGuide.includes("owner-authorized **Action control** snapshot")
+    || !testingGuide.includes("opaque host-internal cache inspection is intentionally excluded from release acceptance")
+    || !testingGuide.includes("harmless invocation probe")) {
+  throw new Error("testing guide omitted the governed ChatGPT action-snapshot freshness/remediation model");
+}
+for (const [name, guide] of [
+  ["operations guide", readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8")],
+  ["clients guide", readFileSync(join(root, "docs", "CLIENTS.md"), "utf8")],
+]) {
+  if (!guide.includes("Action control") || !guide.toLowerCase().includes("host-internal cache inspection")) {
+    throw new Error(`${name} omitted the workspace/runtime freshness boundary`);
+  }
+}
+for (const [name, guide] of [["project standards", projectStandards], ["release guide", releasingGuide], ["upgrade guide", upgradingGuide]]) {
+  for (const forbidden of ["Acceptance must sample multiple host discovery paths", "query multiple host discovery paths"]) {
+    if (guide.includes(forbidden)) throw new Error(`${name} retained filtered host-search results as schema-freshness authority: ${forbidden}`);
+  }
+  for (const required of ["ChatGPT host-control-plane UI", "current task", "open, navigate to, inspect", "Action control"]) {
+    if (!guide.includes(required)) throw new Error(`${name} omitted the explicit ChatGPT product-control-plane mutation boundary: ${required}`);
+  }
+}
+for (const [name, guide] of [
+  ["project standards", projectStandards],
+  ["release guide", releasingGuide],
+  ["upgrade guide", upgradingGuide],
+  ["testing guide", testingGuide],
+  ["operations guide", readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8")],
+  ["clients guide", readFileSync(join(root, "docs", "CLIENTS.md"), "utf8")],
+]) {
+  for (const forbidden of [
+    "`api_tool`",
+    "api_tool.list_resources",
+    "tool-loader",
+    "complete unfiltered host catalog snapshot as the schema-freshness authority",
+    "treat that one full-catalog snapshot as the schema-freshness authority",
+    "Whole-catalog freshness evidence must come from one complete unfiltered",
+  ]) {
+    if (guide.includes(forbidden)) throw new Error(`${name} reintroduced ChatGPT internal loader-cache inspection into the release process: ${forbidden}`);
+  }
+  if (!guide.includes("Action control") || !guide.includes("invocation")) {
+    throw new Error(`${name} omitted the governed Workspace plus live-invocation freshness evidence model`);
+  }
 }
 for (const stale of ["owner-terminal attempt", "real owner-terminal activation", "The coding agent must stop and present this command", "After the owner command completes"]) {
   if (releasingGuide.includes(stale)) throw new Error(`release guide retained obsolete owner-terminal activation contract: ${stale}`);
@@ -1774,6 +1983,20 @@ if (sharedToolCatalog.some((tool) => String(tool?.description || "").includes(ob
   throw new Error("current tool catalog/reference still routes generic browser/application work into process sessions");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
+for (const required of [
+  "ChatGPT host-control-plane UI hard gate",
+  "explicitly authorizes ChatGPT host-control-plane UI work in the current task",
+  "do **not** open, navigate to, inspect, click through, create, edit, refresh, review, publish, test, connect, disconnect, recreate",
+  "filtered tool/resource search is a routing aid, not authoritative schema-freshness evidence",
+  "complete `machine-mcp` tool catalog **without a query filter**",
+  "stale host query/search-index cache",
+  "unfiltered full catalog is itself stale, partial, or mixed-generation",
+  "stale filtered-search result alone must not block acceptance",
+  "external acceptance blocker",
+  "not standing agent authority",
+]) {
+  if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted ChatGPT host-control-plane UI boundary: ${required}`);
+}
 for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Autonomous long-running work invariant", "User interaction must not be used as a scheduler tick", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "cooldown boundary", "release-blocking continuity defect", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
 }

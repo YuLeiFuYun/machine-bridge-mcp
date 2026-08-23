@@ -7,9 +7,11 @@ import { fileURLToPath } from "node:url";
 import { loadState } from "../src/local/state.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
+import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const MANAGED_JOB_SETTLEMENT_WAIT_MS = 5 * 60_000;
+const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 const temp = await mkdtemp(join(tmpdir(), "mbm-stdio-test-"));
 const workspace = join(temp, "workspace");
 const stateDir = join(temp, "state");
@@ -174,6 +176,12 @@ try {
   assert(tools.get("read_job")?.inputSchema?.properties?.wait_ms?.default === 0
     && tools.get("read_job")?.inputSchema?.properties?.wait_ms?.maximum === 40_000,
   "stdio read_job lost its local immediate-default / bounded optional-wait contract");
+  for (const jobTool of ["stage_job", "start_job"]) {
+    const schema = tools.get(jobTool)?.inputSchema;
+    assert(schema?.properties?.steps?.items?.properties?.timeout_seconds?.maximum === 21_600
+      && schema?.properties?.finally_steps?.items?.properties?.timeout_seconds?.maximum === 21_600,
+    `${jobTool} no longer permits one continuous managed-job step beyond 100 minutes`);
+  }
 
   send({ jsonrpc: "2.0", id: 201, method: "tools/call", params: { name: "session_bootstrap", arguments: { path: "." } } });
   const bootstrap = await responseFor(201);
@@ -273,7 +281,7 @@ try {
   assert(serverInfo.result?.structuredContent?.enforcement?.host_policy_is_independent === true, "server_info did not disclose the independent host-policy boundary");
   assert(serverInfo.result?.structuredContent?.tool_delivery?.host_exposed_tools_known_to_server === false, "server_info incorrectly claimed visibility into host-exposed tools");
   assert(serverInfo.result?.structuredContent?.tool_delivery?.host_may_expose_subset === true, "server_info did not disclose host-side tool filtering");
-  assert(serverInfo.result?.structuredContent?.tool_delivery?.tool_schema_generation === 3
+  assert(serverInfo.result?.structuredContent?.tool_delivery?.tool_schema_generation === TOOL_SCHEMA_GENERATION
     && serverInfo.result?.structuredContent?.tool_delivery?.discovery_ttl_ms === 0
     && serverInfo.result?.structuredContent?.tool_delivery?.tool_list_ttl_ms === 0
     && serverInfo.result?.structuredContent?.tool_delivery?.host_turn_deadline_observable === false
@@ -284,7 +292,7 @@ try {
   const compactInfo = compactServerInfo.result?.structuredContent;
   assert(compactInfo?.detail === "summary" && compactInfo?.policy?.profile === "full"
     && compactInfo?.runtime?.lifecycle && compactInfo?.tool_delivery?.daemon_advertised_tool_count === serverInfo.result?.structuredContent?.tool_delivery?.daemon_advertised_tool_count
-    && compactInfo?.tool_delivery?.tool_schema_generation === 3
+    && compactInfo?.tool_delivery?.tool_schema_generation === TOOL_SCHEMA_GENERATION
     && compactInfo?.tool_delivery?.host_turn_deadline_observable === false,
   "stdio compact server_info omitted core health or policy state");
   assert(!("tools" in compactInfo) && !("observability" in compactInfo) && !("security_audit" in compactInfo) && !("trust" in compactInfo)

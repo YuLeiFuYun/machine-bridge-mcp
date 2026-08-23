@@ -95,12 +95,13 @@ export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0 }
   if (retainedCount() <= targetMaximum) return;
   const removable = entries
     .filter(({ status }) => status && isTerminalManagedJobStatus(status.status))
-    .sort((a, b) => terminalRetentionTime(a.status, a.mtime) - terminalRetentionTime(b.status, b.mtime));
+    .sort((a, b) => terminalEvictionPriority(a.status) - terminalEvictionPriority(b.status) || terminalRetentionTime(a.status, a.mtime) - terminalRetentionTime(b.status, b.mtime));
   for (const item of removable) {
     if (retainedCount() <= targetMaximum) break;
     removeManagedJobDirectoryIfCurrent(item.dir, item.generation);
   }
 }
+function terminalEvictionPriority(status) { return status?.retention_class === "transient_process" ? 0 : 1; }
 function stagedPlanExpired(status, fallbackMtime) {
   const createdAt = Date.parse(String(status?.created_at || ""));
   const baseline = Number.isFinite(createdAt) ? createdAt : fallbackMtime;

@@ -50,7 +50,9 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   list_jobs: (runtime, args, context) => runtime.managedJobManager.list(args, context),
   read_job: (runtime, args, context) => waitForManagedJobRead({
     args, context,
-    readCurrent: () => runtime.managedJobManager.read(args, context),
+    readCurrent: () => context?.authority?.origin === "relay"
+      ? runtime.managedJobManager.readHosted(args, context)
+      : runtime.managedJobManager.read(args, context),
     readProgress: () => runtime.managedJobManager.readProgress(args, context),
     throwIfCancelled: () => runtime.throwIfCancelled(context),
   }),
