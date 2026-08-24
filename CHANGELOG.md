@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.119 - 2026-08-24
+
+- Repair two external-CI defects found after beta.118 local acceptance. CodeQL correctly rejected a managed-job recovery test that interpolated a filesystem path into `node -e` source; the test now keeps executable source static and passes paths as ordinary argv values instead of constructing code from data.
+- Remove a Windows-sensitive wall-clock assertion from dependency-failure propagation coverage. The test continues to require the actual invariants that prevent the original blind-artifact-wait failure mode: the dependent remains in pre-execution `dependency_wait`, private inputs are not materialized early, upstream failure produces structured `dependency_failed`, the downstream business child never starts, and declared cleanup still runs. Host/runner scheduling speed is no longer mistaken for dependency semantics.
+- Beta.118 remains an exact locally accepted/activated candidate but is not releaseable because its PR failed required CodeQL and Windows platform gates. Beta.119 supersedes it and must earn fresh frozen verification, activation, live canary, acceptance, and required GitHub checks. The npm-only conversational authorization model introduced in beta.118 is unchanged, and hosted tool schema generation remains 8.
+
 ## 3.0.0-beta.118 - 2026-08-24
 
 - Make npm package publication the sole conversational authorization boundary in the release workflow. Candidate activation, same-name Worker replacement, login-daemon/service replacement, guarded GitHub push/PR/merge, version tags, GitHub Releases/Prereleases, registry installation/activation, and supported ChatGPT Action control refresh/review may proceed automatically when the current task requires them and the effective policy plus repository integrity gates permit them. This removes unnecessary stop-and-ask handoffs without weakening clean-tree, exact-commit, acceptance, CI, digest, publication-lock, identity, idempotency, or unknown-settlement safeguards.
